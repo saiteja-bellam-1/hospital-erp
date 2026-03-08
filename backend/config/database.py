@@ -3,7 +3,10 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import os
 
-DATABASE_URL = "sqlite:///./hospital_erp.db"
+from app.utils.paths import get_db_path
+
+_db_path = get_db_path()
+DATABASE_URL = f"sqlite:///{_db_path}"
 
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

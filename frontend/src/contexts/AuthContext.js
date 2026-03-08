@@ -21,7 +21,7 @@ export const AuthProvider = ({ children }) => {
   });
 
   // Configure axios defaults
-  axios.defaults.baseURL = 'http://localhost:8000';
+  axios.defaults.baseURL = '';
   axios.defaults.timeout = 10000;
   
   if (token) {

@@ -983,7 +983,7 @@ async def download_report_pdf(
 
     report_data = _build_report_response(report, db)
 
-    # Get hospital info
+    # Get hospital info (fallback)
     from app.models.hospital import Hospital
     hospital = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
     hospital_info = {
@@ -993,9 +993,16 @@ async def download_report_pdf(
         "email": hospital.email if hospital else ""
     }
 
+    # Get lab-specific config from HospitalSettings
+    from app.models.permissions import HospitalSettings
+    lab_settings = db.query(HospitalSettings).filter(
+        HospitalSettings.setting_category == "lab_config"
+    ).all()
+    lab_config = {s.setting_key: s.setting_value for s in lab_settings}
+
     try:
         from app.utils.pdf_service import pdf_service
-        pdf_buffer = pdf_service.generate_lab_report_pdf(report_data, hospital_info)
+        pdf_buffer = pdf_service.generate_lab_report_pdf(report_data, hospital_info, lab_config)
         filename = f"lab_report_{report_data['order_number']}_{datetime.now().strftime('%Y%m%d')}.pdf"
         return StreamingResponse(
             pdf_buffer,

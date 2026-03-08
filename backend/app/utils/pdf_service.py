@@ -625,8 +625,11 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_lab_report_pdf(self, report_data, hospital_info):
+    def generate_lab_report_pdf(self, report_data, hospital_info, lab_config=None):
         """Generate PDF for lab report"""
+        if lab_config is None:
+            lab_config = {}
+
         buffer = BytesIO()
 
         doc = SimpleDocTemplate(
@@ -645,6 +648,10 @@ class PDFService:
         subtitle_style = ParagraphStyle('LabSubtitle', parent=self.styles['Normal'],
             fontSize=9, alignment=1, fontName='Helvetica',
             textColor=colors.black, spaceAfter=2)
+
+        reg_style = ParagraphStyle('LabReg', parent=self.styles['Normal'],
+            fontSize=8, alignment=1, fontName='Helvetica',
+            textColor=colors.grey, spaceAfter=1)
 
         report_title_style = ParagraphStyle('LabReportTitle', parent=self.styles['Normal'],
             fontSize=12, alignment=1, fontName='Helvetica-Bold',
@@ -668,20 +675,95 @@ class PDFService:
         def lv(label, value):
             return Paragraph(f"<b>{label}</b> :  {value}", cell_value)
 
+        # Use lab config provider details if available, fall back to hospital info
+        provider_name = lab_config.get('provider_name') or hospital_info.get('name', 'HOSPITAL')
+        provider_address_parts = []
+        if lab_config.get('provider_address'):
+            provider_address_parts.append(lab_config['provider_address'])
+        if lab_config.get('provider_city'):
+            provider_address_parts.append(lab_config['provider_city'])
+        if lab_config.get('provider_state'):
+            provider_address_parts.append(lab_config['provider_state'])
+        if lab_config.get('provider_pincode'):
+            provider_address_parts.append(f"- {lab_config['provider_pincode']}")
+        provider_address = ", ".join(provider_address_parts) if provider_address_parts else hospital_info.get('address', '')
+
+        provider_phone = lab_config.get('provider_phone') or hospital_info.get('phone', '')
+        provider_email = lab_config.get('provider_email') or hospital_info.get('email', '')
+
         # ============================================================
-        # HEADER
+        # HEADER — Logo + Provider Name side by side
         # ============================================================
-        elements.append(Paragraph(hospital_info.get('name', 'HOSPITAL').upper(), title_style))
-        address = hospital_info.get('address', '')
-        if address:
-            elements.append(Paragraph(address, subtitle_style))
-        contact_parts = []
-        if hospital_info.get('email'):
-            contact_parts.append(f"Email: {hospital_info['email']}")
-        if hospital_info.get('phone'):
-            contact_parts.append(f"Phone: {hospital_info['phone']}")
-        if contact_parts:
-            elements.append(Paragraph("  |  ".join(contact_parts), subtitle_style))
+        logo_path = lab_config.get('provider_logo', '')
+        uploads_base = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
+
+        has_logo = False
+        full_logo_path = ''
+        if logo_path:
+            # logo_path is like /uploads/module-config/xyz.png — strip leading /uploads/
+            relative = logo_path.lstrip('/')
+            if relative.startswith('uploads/'):
+                relative = relative[len('uploads/'):]
+            full_logo_path = os.path.join(uploads_base, relative)
+            has_logo = os.path.exists(full_logo_path)
+
+        if has_logo:
+            try:
+                logo_img = Image(full_logo_path, width=60, height=60)
+                logo_img.hAlign = 'CENTER'
+
+                header_text_parts = []
+                header_text_parts.append(Paragraph(provider_name.upper(), title_style))
+                if provider_address:
+                    header_text_parts.append(Paragraph(provider_address, subtitle_style))
+                contact_parts = []
+                if provider_email:
+                    contact_parts.append(f"Email: {provider_email}")
+                if provider_phone:
+                    contact_parts.append(f"Phone: {provider_phone}")
+                if contact_parts:
+                    header_text_parts.append(Paragraph("  |  ".join(contact_parts), subtitle_style))
+
+                from reportlab.platypus import KeepTogether
+                header_table = Table(
+                    [[logo_img, header_text_parts]],
+                    colWidths=[80, page_width - 80]
+                )
+                header_table.setStyle(TableStyle([
+                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                    ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+                    ('TOPPADDING', (0, 0), (-1, -1), 0),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+                ]))
+                elements.append(header_table)
+            except Exception:
+                # Fallback if logo can't be loaded
+                elements.append(Paragraph(provider_name.upper(), title_style))
+                if provider_address:
+                    elements.append(Paragraph(provider_address, subtitle_style))
+        else:
+            elements.append(Paragraph(provider_name.upper(), title_style))
+            if provider_address:
+                elements.append(Paragraph(provider_address, subtitle_style))
+            contact_parts = []
+            if provider_email:
+                contact_parts.append(f"Email: {provider_email}")
+            if provider_phone:
+                contact_parts.append(f"Phone: {provider_phone}")
+            if contact_parts:
+                elements.append(Paragraph("  |  ".join(contact_parts), subtitle_style))
+
+        # Registration details line
+        reg_parts = []
+        if lab_config.get('registration_number'):
+            reg_parts.append(f"Reg No: {lab_config['registration_number']}")
+        if lab_config.get('nabl_number'):
+            reg_parts.append(f"NABL: {lab_config['nabl_number']}")
+        if lab_config.get('license_number'):
+            reg_parts.append(f"Lic No: {lab_config['license_number']}")
+        if reg_parts:
+            elements.append(Paragraph("  |  ".join(reg_parts), reg_style))
 
         elements.append(Spacer(1, 6))
         elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
@@ -811,13 +893,47 @@ class PDFService:
         # ============================================================
         elements.append(Spacer(1, 30))
         tech_name = report_data.get('technician_name', '')
+
+        # Build signatory column — use pathologist info from lab config
+        pathologist_name = lab_config.get('pathologist_name', '')
+        pathologist_qual = lab_config.get('pathologist_qualification', '')
+        sig_image_path = lab_config.get('signature_image', '')
+
+        # Left column: Lab Technician
+        left_col = Paragraph(f"<b>Lab Technician:</b> {tech_name}", cell_value)
+
+        # Right column: Authorized Signatory with optional signature image
+        right_col_parts = []
+
+        # Add signature image if available
+        if sig_image_path:
+            relative = sig_image_path.lstrip('/')
+            if relative.startswith('uploads/'):
+                relative = relative[len('uploads/'):]
+            full_sig_path = os.path.join(uploads_base, relative)
+            if os.path.exists(full_sig_path):
+                try:
+                    sig_img = Image(full_sig_path, width=80, height=35)
+                    sig_img.hAlign = 'LEFT'
+                    right_col_parts.append(sig_img)
+                except Exception:
+                    pass
+
+        if pathologist_name:
+            right_col_parts.append(Paragraph(f"<b>{pathologist_name}</b>", cell_value))
+        if pathologist_qual:
+            qual_style = ParagraphStyle('LabQual', parent=self.styles['Normal'],
+                fontSize=8, fontName='Helvetica', textColor=colors.grey)
+            right_col_parts.append(Paragraph(pathologist_qual, qual_style))
+        if not pathologist_name:
+            right_col_parts.append(Paragraph("<b>Authorized Signatory</b>", cell_value))
+
         sig_data = [
-            [Paragraph(f"<b>Lab Technician:</b> {tech_name}", cell_value),
-             Paragraph("<b>Authorized Signatory</b>", cell_value)],
+            [left_col, right_col_parts],
         ]
         sig_table = Table(sig_data, colWidths=[page_width / 2, page_width / 2])
         sig_table.setStyle(TableStyle([
-            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('VALIGN', (0, 0), (-1, -1), 'BOTTOM'),
             ('TOPPADDING', (0, 0), (-1, -1), 3),
         ]))
         elements.append(sig_table)

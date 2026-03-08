@@ -40,7 +40,7 @@ const BillingManager = ({ consultation, onPaymentUpdate }) => {
       const token = localStorage.getItem('token');
       
       // Try to get existing bill first
-      let response = await fetch(`http://localhost:8000/api/consultations/${consultation.id}/bill`, {
+      let response = await fetch(`/api/consultations/${consultation.id}/bill`, {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
@@ -49,7 +49,7 @@ const BillingManager = ({ consultation, onPaymentUpdate }) => {
 
       if (!response.ok) {
         // If no bill exists, generate one
-        response = await fetch(`http://localhost:8000/api/consultations/${consultation.id}/generate-bill`, {
+        response = await fetch(`/api/consultations/${consultation.id}/generate-bill`, {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${token}`,
@@ -80,7 +80,7 @@ const BillingManager = ({ consultation, onPaymentUpdate }) => {
     setLoading(true);
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch(`http://localhost:8000/api/consultations/${consultation.id}/bill/payment`, {
+      const response = await fetch(`/api/consultations/${consultation.id}/bill/payment`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -130,7 +130,7 @@ const BillingManager = ({ consultation, onPaymentUpdate }) => {
   const fetchPrintData = async () => {
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch(`http://localhost:8000/api/consultations/${consultation.id}/bill/print`, {
+      const response = await fetch(`/api/consultations/${consultation.id}/bill/print`, {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
@@ -153,7 +153,7 @@ const BillingManager = ({ consultation, onPaymentUpdate }) => {
   const handleDirectPrint = async () => {
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch(`http://localhost:8000/api/consultations/${consultation.id}/bill/download`, {
+      const response = await fetch(`/api/consultations/${consultation.id}/bill/download`, {
         headers: {
           'Authorization': `Bearer ${token}`,
         }

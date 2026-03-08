@@ -1,10 +1,13 @@
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBearer
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 import uvicorn
 import os
+
+from app.utils.paths import get_uploads_dir, get_frontend_dir, is_bundled
 
 from config.database import get_db, create_tables
 from config.settings import settings
@@ -32,7 +35,7 @@ app = FastAPI(
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # React dev server
+    allow_origins=["*"],  # Allow all origins (LAN access from any device + dev server)
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -51,6 +54,10 @@ async def startup_event():
 
 @app.get("/")
 async def root():
+    # If frontend build exists, serve it
+    frontend_index = os.path.join(get_frontend_dir(), "index.html")
+    if os.path.isfile(frontend_index):
+        return FileResponse(frontend_index)
     return {"message": "Hospital ERP API is running"}
 
 @app.get("/health")
@@ -92,8 +99,35 @@ app.include_router(license.router, prefix="/api/license", tags=["License"])
 # app.include_router(inpatient.router, prefix="/api/inpatient", tags=["Inpatient"])
 
 # Serve uploaded files
-os.makedirs("uploads", exist_ok=True)
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+_uploads_dir = get_uploads_dir()
+os.makedirs(_uploads_dir, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=_uploads_dir), name="uploads")
+
+# Serve React frontend build (for bundled mode or when build exists)
+_frontend_dir = get_frontend_dir()
+if os.path.isdir(_frontend_dir):
+    # Mount static assets (JS/CSS/images)
+    _static_dir = os.path.join(_frontend_dir, "static")
+    if os.path.isdir(_static_dir):
+        app.mount("/static", StaticFiles(directory=_static_dir), name="frontend_static")
+
+    # SPA catch-all: serve index.html for non-API routes
+    @app.get("/{full_path:path}")
+    async def serve_spa(request: Request, full_path: str):
+        # Don't intercept API routes or uploads
+        if full_path.startswith("api/") or full_path.startswith("uploads/"):
+            raise HTTPException(status_code=404)
+
+        # Try to serve the exact file first (e.g., favicon.ico, manifest.json)
+        file_path = os.path.join(_frontend_dir, full_path)
+        if full_path and os.path.isfile(file_path):
+            return FileResponse(file_path)
+
+        # Otherwise serve index.html for SPA routing
+        index_path = os.path.join(_frontend_dir, "index.html")
+        if os.path.isfile(index_path):
+            return FileResponse(index_path)
+        raise HTTPException(status_code=404)
 
 if __name__ == "__main__":
     uvicorn.run(

@@ -13,7 +13,9 @@ from app.models.hospital import Hospital
 from app.models.permissions import HospitalSettings
 from app.utils.dependencies import get_current_user
 
-UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads", "module-config")
+from app.utils.paths import get_uploads_dir
+
+UPLOAD_DIR = os.path.join(get_uploads_dir(), "module-config")
 
 router = APIRouter()
 

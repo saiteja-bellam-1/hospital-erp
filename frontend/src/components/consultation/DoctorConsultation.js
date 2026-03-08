@@ -41,7 +41,7 @@ const DoctorConsultation = ({ consultation, onUpdate }) => {
   const fetchLabRecommendations = async () => {
     try {
       const token = localStorage.getItem('auth_token');
-      const response = await fetch(`http://localhost:8000/api/consultations/${consultation.id}/test-recommendations`, {
+      const response = await fetch(`/api/consultations/${consultation.id}/test-recommendations`, {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
@@ -60,7 +60,7 @@ const DoctorConsultation = ({ consultation, onUpdate }) => {
   const fetchAvailableTests = async () => {
     try {
       const token = localStorage.getItem('auth_token');
-      const response = await fetch(`http://localhost:8000/api/consultations/${consultation.id}/available-tests`, {
+      const response = await fetch(`/api/consultations/${consultation.id}/available-tests`, {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
@@ -79,7 +79,7 @@ const DoctorConsultation = ({ consultation, onUpdate }) => {
   const fetchExistingLabOrders = async () => {
     try {
       const token = localStorage.getItem('auth_token');
-      const response = await fetch(`http://localhost:8000/api/consultations/${consultation.id}/lab-orders`, {
+      const response = await fetch(`/api/consultations/${consultation.id}/lab-orders`, {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
@@ -98,7 +98,7 @@ const DoctorConsultation = ({ consultation, onUpdate }) => {
   const fetchBill = async () => {
     try {
       const token = localStorage.getItem('auth_token');
-      const response = await fetch(`http://localhost:8000/api/consultations/${consultation.id}/bill`, {
+      const response = await fetch(`/api/consultations/${consultation.id}/bill`, {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
@@ -121,7 +121,7 @@ const DoctorConsultation = ({ consultation, onUpdate }) => {
     setLoading(true);
     try {
       const token = localStorage.getItem('auth_token');
-      const response = await fetch(`http://localhost:8000/api/consultations/${consultation.id}/lab-orders`, {
+      const response = await fetch(`/api/consultations/${consultation.id}/lab-orders`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -150,7 +150,7 @@ const DoctorConsultation = ({ consultation, onUpdate }) => {
   const generateBill = async () => {
     try {
       const token = localStorage.getItem('auth_token');
-      const response = await fetch(`http://localhost:8000/api/consultations/${consultation.id}/generate-bill`, {
+      const response = await fetch(`/api/consultations/${consultation.id}/generate-bill`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,

@@ -72,7 +72,7 @@ const ImageUploadField = ({ label, configKey, value, onChange }) => {
         {value ? (
           <div className="relative">
             <img
-              src={`http://localhost:8000${value}`}
+              src={`${value}`}
               alt={label}
               className="h-16 w-auto border rounded object-contain bg-white"
             />
