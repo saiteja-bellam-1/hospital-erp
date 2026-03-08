@@ -1,0 +1,1967 @@
+import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
+import { Button } from '../../components/ui/button';
+import { Input } from '../../components/ui/input';
+import { Label } from '../../components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select';
+import { Textarea } from '../../components/ui/textarea';
+import { Badge } from '../../components/ui/badge';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/tabs';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../components/ui/dialog';
+import {
+  Calendar, Clock, User, FileText, TestTube, Pill, CheckCircle, XCircle,
+  Activity, Info, Printer, RefreshCw, Eye, Hash,
+  History, Stethoscope, AlertCircle
+} from 'lucide-react';
+import { format } from 'date-fns';
+import VitalsForm from '../../components/vitals/VitalsForm';
+
+const DoctorDashboard = () => {
+  const navigate = useNavigate();
+  const [user, setUser] = useState(null);
+  const [appointments, setAppointments] = useState([]);
+  const [completedAppointments, setCompletedAppointments] = useState([]);
+  const [showCompletedAppointments, setShowCompletedAppointments] = useState(false);
+  const [selectedAppointment, setSelectedAppointment] = useState(null);
+  const [prescriptions, setPrescriptions] = useState([]);
+  const [showPrescriptionDialog, setShowPrescriptionDialog] = useState(false);
+  const [showLabOrderDialog, setShowLabOrderDialog] = useState(false);
+  const [showVitalsDialog, setShowVitalsDialog] = useState(false);
+  const [showPrintPreviewDialog, setShowPrintPreviewDialog] = useState(false);
+  const [activeTab, setActiveTab] = useState('appointments');
+  const [loading, setLoading] = useState(false);
+
+  // Preview state
+  const [previewPrescription, setPreviewPrescription] = useState(null);
+  const [previewPdfUrl, setPreviewPdfUrl] = useState(null);
+  const [includeHeader, setIncludeHeader] = useState(true);
+
+  // Success feedback state
+  const [successMessage, setSuccessMessage] = useState('');
+  const [showSuccessDialog, setShowSuccessDialog] = useState(false);
+  const [createdPrescription, setCreatedPrescription] = useState(null);
+
+  // Consultation dialog state
+  const [showConsultationDialog, setShowConsultationDialog] = useState(false);
+  const [consultationForm, setConsultationForm] = useState({
+    chief_complaint: '',
+    present_history: '',
+    examination_findings: '',
+    notes: '',
+    follow_up_date: ''
+  });
+  const [activeConsultation, setActiveConsultation] = useState(null);
+
+  // Patient history dialog state
+  const [showHistoryDialog, setShowHistoryDialog] = useState(false);
+  const [patientHistory, setPatientHistory] = useState(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  // Notes dialog state
+  const [showNotesDialog, setShowNotesDialog] = useState(false);
+  const [notesText, setNotesText] = useState('');
+  const [notesAppointment, setNotesAppointment] = useState(null);
+
+  // Queue state
+  const [queueData, setQueueData] = useState(null);
+
+  // Auto-refresh
+  const [lastRefreshed, setLastRefreshed] = useState(new Date());
+
+  // Prescription form state
+  const [prescriptionForm, setPrescriptionForm] = useState({
+    medications: [{
+      medicine_name: '',
+      quantity_prescribed: 1,
+      dosage: '',
+      frequency_schedule: '1-0-0',
+      food_timing: 'after_food',
+      duration: '',
+      instructions: ''
+    }],
+    diagnosis: '',
+    notes: '',
+    follow_up_date: ''
+  });
+
+  // Lab order form state
+  const [availableLabTests, setAvailableLabTests] = useState([]);
+  const [labCategories, setLabCategories] = useState([]);
+  const [selectedLabTests, setSelectedLabTests] = useState([]);
+  const [labOrderPriority, setLabOrderPriority] = useState('normal');
+  const [labOrderNotes, setLabOrderNotes] = useState('');
+  const [labSearchQuery, setLabSearchQuery] = useState('');
+  const [labCategoryFilter, setLabCategoryFilter] = useState('all');
+  const [labOrderSubmitting, setLabOrderSubmitting] = useState(false);
+
+  const [customLabTests, setCustomLabTests] = useState([]);
+  const [customLabTestInput, setCustomLabTestInput] = useState('');
+
+  // Lab results state
+  const [labOrders, setLabOrders] = useState([]);
+  const [labReports, setLabReports] = useState([]);
+  const [showLabReportDialog, setShowLabReportDialog] = useState(false);
+  const [viewingLabReport, setViewingLabReport] = useState(null);
+
+  // --- Time formatting helper ---
+  const formatTime = (timeStr) => {
+    if (!timeStr) return '';
+    const parts = timeStr.split(':');
+    let hours = parseInt(parts[0], 10);
+    const minutes = parts[1];
+    const ampm = hours >= 12 ? 'PM' : 'AM';
+    hours = hours % 12 || 12;
+    return `${hours}:${minutes} ${ampm}`;
+  };
+
+  // --- Data fetching ---
+  useEffect(() => {
+    fetchUserProfile();
+  }, []);
+
+  // Auto-refresh every 30 seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (user) {
+        fetchTodayAppointments(user.id);
+        fetchQueueData(user.id);
+        setLastRefreshed(new Date());
+      }
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [user]);
+
+  const fetchUserProfile = async () => {
+    try {
+      const userStr = localStorage.getItem('user');
+      if (userStr) {
+        const userData = JSON.parse(userStr);
+        setUser(userData);
+        fetchTodayAppointments(userData.id);
+        fetchPrescriptions();
+        fetchQueueData(userData.id);
+        fetchAvailableLabTests();
+        fetchLabOrders();
+      }
+    } catch (error) {
+      console.error('Error fetching user profile:', error);
+    }
+  };
+
+  const fetchTodayAppointments = async (doctorId = null) => {
+    try {
+      const token = localStorage.getItem('token');
+      const today = format(new Date(), 'yyyy-MM-dd');
+
+      let url;
+      if (doctorId) {
+        url = `/api/appointments/doctor/${doctorId}?date_from=${today}&date_to=${today}`;
+      } else {
+        url = `/api/appointments/?date_from=${today}&date_to=${today}`;
+      }
+
+      const response = await fetch(url, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (doctorId) {
+          setAppointments(data);
+        } else {
+          const userData = user || JSON.parse(localStorage.getItem('user') || '{}');
+          setAppointments(data.filter(apt => apt.doctor_id === userData.id));
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching appointments:', error);
+    }
+  };
+
+  const fetchCompletedAppointments = async (doctorId = null) => {
+    try {
+      const token = localStorage.getItem('token');
+      const today = format(new Date(), 'yyyy-MM-dd');
+      const thirtyDaysAgo = format(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000), 'yyyy-MM-dd');
+
+      let url;
+      if (doctorId) {
+        url = `/api/appointments/doctor/${doctorId}?date_from=${thirtyDaysAgo}&date_to=${today}`;
+      } else {
+        url = `/api/appointments/?date_from=${thirtyDaysAgo}&date_to=${today}`;
+      }
+
+      const response = await fetch(url, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setCompletedAppointments(data.filter(apt => apt.status === 'completed'));
+      }
+    } catch (error) {
+      console.error('Error fetching completed appointments:', error);
+    }
+  };
+
+  const fetchPrescriptions = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch('/api/prescriptions-simple/', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setPrescriptions(data);
+      }
+    } catch (error) {
+      console.error('Error fetching prescriptions:', error);
+    }
+  };
+
+  const fetchQueueData = async (doctorId) => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`/api/appointments/queue/${doctorId}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setQueueData(data);
+      }
+    } catch (error) {
+      console.error('Error fetching queue:', error);
+    }
+  };
+
+  // --- Patient history ---
+  const fetchPatientHistory = async (appointment) => {
+    setHistoryLoading(true);
+    setShowHistoryDialog(true);
+    try {
+      const token = localStorage.getItem('token');
+      // First get patient UUID from search
+      const searchResponse = await fetch('/api/patients/search', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          search_term: appointment.patient_name.split(' ')[0],
+          sort_by: 'name',
+          sort_order: 'asc'
+        })
+      });
+
+      if (searchResponse.ok) {
+        const searchData = await searchResponse.json();
+        const patient = searchData.patients?.find(p =>
+          `${p.first_name} ${p.last_name}` === appointment.patient_name
+        );
+
+        if (patient) {
+          const historyResponse = await fetch(`/api/appointments/patient/${patient.patient_id}/history`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          if (historyResponse.ok) {
+            setPatientHistory(await historyResponse.json());
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching patient history:', error);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  // --- Appointment notes ---
+  const openNotesDialog = (appointment) => {
+    setNotesAppointment(appointment);
+    setNotesText(appointment.notes || '');
+    setShowNotesDialog(true);
+  };
+
+  const handleSaveNotes = async () => {
+    if (!notesAppointment) return;
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`/api/appointments/${notesAppointment.id}/notes`, {
+        method: 'PUT',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ notes: notesText })
+      });
+      if (response.ok) {
+        setAppointments(prev =>
+          prev.map(apt => apt.id === notesAppointment.id ? { ...apt, notes: notesText } : apt)
+        );
+        setShowNotesDialog(false);
+      } else {
+        alert('Failed to save notes');
+      }
+    } catch (error) {
+      console.error('Error saving notes:', error);
+    }
+  };
+
+  // --- Consultation ---
+  const openConsultationDialog = (appointment) => {
+    setSelectedAppointment(appointment);
+    setConsultationForm({
+      chief_complaint: appointment.reason || '',
+      present_history: '',
+      examination_findings: '',
+      notes: '',
+      follow_up_date: ''
+    });
+    setActiveConsultation(null);
+    setShowConsultationDialog(true);
+  };
+
+  const handleSaveConsultation = async () => {
+    if (!selectedAppointment) return;
+    setLoading(true);
+    try {
+      const token = localStorage.getItem('token');
+
+      if (activeConsultation) {
+        // Update existing
+        const response = await fetch(`/api/consultations/by-id/${activeConsultation.id}`, {
+          method: 'PUT',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chief_complaint: consultationForm.chief_complaint,
+            present_history: consultationForm.present_history,
+            examination_findings: consultationForm.examination_findings,
+            notes: consultationForm.notes,
+            follow_up_date: consultationForm.follow_up_date || null
+          })
+        });
+        if (response.ok) {
+          const data = await response.json();
+          setActiveConsultation(data);
+          alert('Consultation updated successfully');
+        } else {
+          alert('Failed to update consultation');
+        }
+      } else {
+        // Create new
+        const response = await fetch('/api/consultations/', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            patient_id: selectedAppointment.patient_id,
+            appointment_id: selectedAppointment.id,
+            consultation_type: selectedAppointment.appointment_type === 'followup' ? 'followup' : 'outpatient',
+            chief_complaint: consultationForm.chief_complaint,
+            present_history: consultationForm.present_history,
+            examination_findings: consultationForm.examination_findings,
+            consultation_fee: selectedAppointment.consultation_fee || 0,
+            notes: consultationForm.notes
+          })
+        });
+        if (response.ok) {
+          const data = await response.json();
+          setActiveConsultation(data);
+          alert('Consultation record created successfully');
+        } else {
+          const error = await response.json();
+          alert(`Error: ${error.detail || 'Failed to create consultation'}`);
+        }
+      }
+    } catch (error) {
+      console.error('Error saving consultation:', error);
+      alert('Error saving consultation');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCompleteConsultation = async () => {
+    if (!activeConsultation) return;
+    setLoading(true);
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`/api/consultations/by-id/${activeConsultation.id}`, {
+        method: 'PUT',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          status: 'completed',
+          follow_up_date: consultationForm.follow_up_date || null,
+          chief_complaint: consultationForm.chief_complaint,
+          present_history: consultationForm.present_history,
+          examination_findings: consultationForm.examination_findings,
+          notes: consultationForm.notes
+        })
+      });
+      if (response.ok) {
+        setShowConsultationDialog(false);
+        alert('Consultation completed');
+      }
+    } catch (error) {
+      console.error('Error completing consultation:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // --- Prescription ---
+  const showPrintPreview = async (prescription, headerOverride = null) => {
+    try {
+      const token = localStorage.getItem('token');
+      const headerValue = headerOverride !== null ? headerOverride : includeHeader;
+      const response = await fetch(`/api/prescriptions-simple/${prescription.prescription_id}/download?include_header=${headerValue}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (response.ok) {
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        setPreviewPrescription(prescription);
+        setPreviewPdfUrl(url);
+        setShowPrintPreviewDialog(true);
+      } else {
+        alert('Failed to load prescription preview');
+      }
+    } catch (error) {
+      console.error('Error loading prescription preview:', error);
+    }
+  };
+
+  const refreshPreview = async () => {
+    if (previewPrescription) {
+      if (previewPdfUrl) {
+        window.URL.revokeObjectURL(previewPdfUrl);
+        setPreviewPdfUrl(null);
+      }
+      await showPrintPreview(previewPrescription);
+    }
+  };
+
+  const printFromPreview = () => {
+    if (previewPdfUrl) {
+      const iframe = document.createElement('iframe');
+      iframe.style.display = 'none';
+      document.body.appendChild(iframe);
+      iframe.src = previewPdfUrl;
+      iframe.onload = () => {
+        iframe.contentWindow.print();
+        setTimeout(() => document.body.removeChild(iframe), 1000);
+      };
+      closePrintPreview();
+    }
+  };
+
+  const closePrintPreview = () => {
+    if (previewPdfUrl) window.URL.revokeObjectURL(previewPdfUrl);
+    setPreviewPdfUrl(null);
+    setPreviewPrescription(null);
+    setShowPrintPreviewDialog(false);
+  };
+
+  const submitPrescription = async () => {
+    if (!selectedAppointment) return;
+
+    try {
+      setLoading(true);
+      const token = localStorage.getItem('token');
+
+      // Get patient UUID
+      let patient_uuid = null;
+      try {
+        const patientResponse = await fetch('/api/patients/search', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            search_term: selectedAppointment.patient_name.split(' ')[0],
+            sort_by: 'name', sort_order: 'asc'
+          })
+        });
+        if (patientResponse.ok) {
+          const patientData = await patientResponse.json();
+          const patient = patientData.patients?.find(p =>
+            `${p.first_name} ${p.last_name}` === selectedAppointment.patient_name
+          );
+          if (patient) patient_uuid = patient.patient_id;
+        }
+      } catch (e) { console.error('Error fetching patient:', e); }
+
+      if (!patient_uuid) {
+        alert('Could not find patient information. Please try again.');
+        return;
+      }
+
+      const prescriptionData = {
+        patient_id: patient_uuid,
+        consultation_id: activeConsultation?.id || null,
+        medicines: prescriptionForm.medications
+          .filter(med => med.medicine_name && med.medicine_name.trim() !== '')
+          .map(med => {
+            const schedule = med.frequency_schedule || '1-0-0';
+            const [morning, afternoon, night] = schedule.split('-');
+            const timings = [];
+            if (morning === '1') timings.push('morning');
+            if (afternoon === '1') timings.push('afternoon');
+            if (night === '1') timings.push('night');
+            const frequencyText = timings.length > 0 ? timings.join(', ') : 'once daily';
+            const foodTimingTexts = {
+              'before_food': 'before food', 'after_food': 'after food',
+              'with_food': 'with food', 'on_empty_stomach': 'on empty stomach', 'anytime': 'anytime'
+            };
+            const dosageInstruction = `${med.dosage || '1 dose'} - ${frequencyText} ${foodTimingTexts[med.food_timing] || 'after food'}`;
+            return {
+              name: med.medicine_name,
+              dosage: dosageInstruction,
+              duration: med.duration || 'Complete course',
+              instructions: med.instructions || 'Take as prescribed',
+              quantity: med.quantity_prescribed ? `${med.quantity_prescribed} units` : '1 unit',
+              frequency_schedule: med.frequency_schedule,
+              food_timing: med.food_timing
+            };
+          }),
+        diagnosis: prescriptionForm.diagnosis || '',
+        notes: prescriptionForm.notes || ''
+      };
+
+      const response = await fetch('/api/prescriptions-simple/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(prescriptionData)
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        setCreatedPrescription(result);
+        setSuccessMessage(`Prescription created successfully! Prescription ID: ${result.prescription_id}`);
+        setShowSuccessDialog(true);
+        setShowPrescriptionDialog(false);
+
+        // Also update follow-up on appointment if set
+        if (prescriptionForm.follow_up_date) {
+          try {
+            await fetch(`/api/appointments/${selectedAppointment.id}/notes`, {
+              method: 'PUT',
+              headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                notes: `${selectedAppointment.notes ? selectedAppointment.notes + '\n' : ''}Follow-up: ${prescriptionForm.follow_up_date}`
+              })
+            });
+          } catch (e) { console.error('Error saving follow-up:', e); }
+        }
+
+        setPrescriptionForm({
+          medications: [{
+            medicine_name: '', quantity_prescribed: 1, dosage: '',
+            frequency_schedule: '1-0-0', food_timing: 'after_food', duration: '', instructions: ''
+          }],
+          diagnosis: '', notes: '', follow_up_date: ''
+        });
+        fetchPrescriptions();
+      } else {
+        const error = await response.json();
+        alert(`Error creating prescription: ${error.detail || 'Unknown error'}`);
+      }
+    } catch (error) {
+      console.error('Error creating prescription:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const updateAppointmentStatus = async (appointmentId, status) => {
+    setLoading(true);
+    try {
+      const token = localStorage.getItem('token');
+
+      // Use dedicated endpoints for status changes
+      let url = `/api/appointments/${appointmentId}`;
+      let method = 'PUT';
+      let body = JSON.stringify({ status });
+
+      if (status === 'in_progress') {
+        url = `/api/appointments/${appointmentId}/start-consultation`;
+        method = 'POST';
+        body = undefined;
+      } else if (status === 'no_show') {
+        url = `/api/appointments/${appointmentId}/no-show`;
+        method = 'POST';
+        body = undefined;
+      }
+
+      const response = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        ...(body ? { body } : {})
+      });
+
+      if (response.ok) {
+        fetchTodayAppointments(user?.id);
+        fetchQueueData(user?.id);
+      } else {
+        alert('Error updating appointment status');
+      }
+    } catch (error) {
+      console.error('Error:', error);
+    }
+    setLoading(false);
+  };
+
+  // --- Medication helpers ---
+  const addMedication = () => {
+    setPrescriptionForm(prev => ({
+      ...prev,
+      medications: [...prev.medications, {
+        medicine_name: '', quantity_prescribed: 1, dosage: '',
+        frequency_schedule: '1-0-0', food_timing: 'after_food', duration: '', instructions: ''
+      }]
+    }));
+  };
+
+  const updateMedication = (index, field, value) => {
+    setPrescriptionForm(prev => ({
+      ...prev,
+      medications: prev.medications.map((med, i) => i === index ? { ...med, [field]: value } : med)
+    }));
+  };
+
+  const removeMedication = (index) => {
+    setPrescriptionForm(prev => ({
+      ...prev,
+      medications: prev.medications.filter((_, i) => i !== index)
+    }));
+  };
+
+  // Lab helpers
+  const fetchAvailableLabTests = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const [testsRes, catsRes] = await Promise.all([
+        fetch('/api/lab/tests', { headers: { Authorization: `Bearer ${token}` } }),
+        fetch('/api/lab/categories', { headers: { Authorization: `Bearer ${token}` } })
+      ]);
+      if (testsRes.ok) setAvailableLabTests(await testsRes.json());
+      if (catsRes.ok) setLabCategories(await catsRes.json());
+    } catch (err) {
+      console.error('Failed to fetch lab tests:', err);
+    }
+  };
+
+  const fetchLabOrders = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch('/api/lab/orders', { headers: { Authorization: `Bearer ${token}` } });
+      if (res.ok) setLabOrders(await res.json());
+    } catch (err) {
+      console.error('Failed to fetch lab orders:', err);
+    }
+  };
+
+  const handleSubmitLabOrder = async () => {
+    if (!selectedAppointment || (selectedLabTests.length === 0 && customLabTests.length === 0)) return;
+    setLabOrderSubmitting(true);
+    try {
+      const token = localStorage.getItem('token');
+      // Build notes: combine doctor notes + custom test names
+      let combinedNotes = labOrderNotes || '';
+      if (customLabTests.length > 0) {
+        const customNote = `Other tests requested: ${customLabTests.join(', ')}`;
+        combinedNotes = combinedNotes ? `${combinedNotes}\n${customNote}` : customNote;
+      }
+
+      // Submit catalog tests via API
+      if (selectedLabTests.length > 0) {
+        const res = await fetch('/api/lab/orders', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            patient_id: selectedAppointment.patient_id,
+            test_ids: selectedLabTests,
+            priority: labOrderPriority,
+            notes: combinedNotes || null
+          })
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          alert(err.detail || 'Failed to create lab orders');
+          setLabOrderSubmitting(false);
+          return;
+        }
+      }
+
+      setShowLabOrderDialog(false);
+      setSelectedLabTests([]);
+      setCustomLabTests([]);
+      setCustomLabTestInput('');
+      setLabOrderPriority('normal');
+      setLabOrderNotes('');
+      fetchLabOrders();
+      const count = selectedLabTests.length + customLabTests.length;
+      alert(`${count} lab order(s) created successfully${customLabTests.length > 0 ? '. Custom tests have been noted for the lab team.' : ''}`);
+    } catch (err) {
+      alert('Failed to create lab orders');
+    } finally {
+      setLabOrderSubmitting(false);
+    }
+  };
+
+  const addCustomLabTest = () => {
+    const name = customLabTestInput.trim();
+    if (name && !customLabTests.includes(name)) {
+      setCustomLabTests(prev => [...prev, name]);
+      setCustomLabTestInput('');
+    }
+  };
+
+  const removeCustomLabTest = (name) => {
+    setCustomLabTests(prev => prev.filter(t => t !== name));
+  };
+
+  const openLabReport = async (reportId) => {
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`/api/lab/reports/${reportId}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        setViewingLabReport(await res.json());
+        setShowLabReportDialog(true);
+      }
+    } catch (err) {
+      console.error('Failed to fetch report:', err);
+    }
+  };
+
+  const toggleLabTestSelection = (testId) => {
+    setSelectedLabTests(prev =>
+      prev.includes(testId) ? prev.filter(id => id !== testId) : [...prev, testId]
+    );
+  };
+
+  const filteredLabTests = availableLabTests.filter(t => {
+    if (!t.is_active) return false;
+    if (labCategoryFilter !== 'all' && String(t.category_id) !== labCategoryFilter) return false;
+    if (labSearchQuery) {
+      const q = labSearchQuery.toLowerCase();
+      return t.name.toLowerCase().includes(q) || t.test_code.toLowerCase().includes(q);
+    }
+    return true;
+  });
+
+  // --- Status helpers ---
+  const getStatusColor = (status) => {
+    const colors = {
+      scheduled: 'bg-blue-100 text-blue-800',
+      confirmed: 'bg-green-100 text-green-800',
+      in_progress: 'bg-yellow-100 text-yellow-800',
+      completed: 'bg-gray-100 text-gray-800',
+      cancelled: 'bg-red-100 text-red-800',
+      no_show: 'bg-orange-100 text-orange-800'
+    };
+    return colors[status] || 'bg-gray-100 text-gray-800';
+  };
+
+  const getStatusLabel = (status) => {
+    const labels = {
+      scheduled: 'Scheduled', confirmed: 'Checked In', in_progress: 'In Progress',
+      completed: 'Completed', cancelled: 'Cancelled', no_show: 'No Show'
+    };
+    return labels[status] || status;
+  };
+
+  const getPriorityColor = (priority) => {
+    const colors = { normal: 'bg-blue-100 text-blue-800', urgent: 'bg-orange-100 text-orange-800', emergency: 'bg-red-100 text-red-800' };
+    return colors[priority] || 'bg-gray-100 text-gray-800';
+  };
+
+  const getTimeSlotStatus = (appointmentTime, status) => {
+    const currentTime = new Date();
+    const [hours, minutes] = appointmentTime.split(':');
+    const appointmentDate = new Date();
+    appointmentDate.setHours(parseInt(hours), parseInt(minutes));
+    if (status === 'completed') return 'completed';
+    if (status === 'cancelled' || status === 'no_show') return 'cancelled';
+    if (appointmentDate < currentTime) return 'overdue';
+    if (appointmentDate.getTime() - currentTime.getTime() <= 30 * 60 * 1000) return 'upcoming';
+    return 'scheduled';
+  };
+
+  // --- Summary stats ---
+  const stats = {
+    total: appointments.length,
+    scheduled: appointments.filter(a => a.status === 'scheduled').length,
+    checked_in: appointments.filter(a => a.status === 'confirmed').length,
+    in_progress: appointments.filter(a => a.status === 'in_progress').length,
+    completed: appointments.filter(a => a.status === 'completed').length,
+    no_show: appointments.filter(a => a.status === 'no_show').length,
+  };
+
+  // Lab order stats
+  const labStats = {
+    total: labOrders.length,
+    ordered: labOrders.filter(o => o.status === 'ordered').length,
+    processing: labOrders.filter(o => o.status === 'processing' || o.status === 'collected').length,
+    completed: labOrders.filter(o => o.status === 'completed').length,
+    withReport: labOrders.filter(o => o.status === 'completed' && o.has_report).length,
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex justify-between items-center">
+        <div>
+          <h1 className="text-3xl font-bold text-gray-900">Doctor Dashboard</h1>
+          {user && (
+            <p className="text-gray-600">
+              Welcome, Dr. {user.full_name} - {user.specialization || 'General Medicine'}
+            </p>
+          )}
+        </div>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-gray-400">
+            Last refreshed: {lastRefreshed.toLocaleTimeString()}
+          </span>
+          <Button variant="outline" size="sm" onClick={() => {
+            fetchTodayAppointments(user?.id);
+            fetchQueueData(user?.id);
+            setLastRefreshed(new Date());
+          }}>
+            <RefreshCw className="h-4 w-4 mr-1" /> Refresh
+          </Button>
+        </div>
+      </div>
+
+      {/* Summary Stats Cards */}
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+        <Card>
+          <CardContent className="p-4 text-center">
+            <div className="text-2xl font-bold text-blue-600">{stats.total}</div>
+            <div className="text-xs text-gray-500">Total</div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4 text-center">
+            <div className="text-2xl font-bold text-blue-500">{stats.scheduled}</div>
+            <div className="text-xs text-gray-500">Scheduled</div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4 text-center">
+            <div className="text-2xl font-bold text-green-600">{stats.checked_in}</div>
+            <div className="text-xs text-gray-500">Checked In</div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4 text-center">
+            <div className="text-2xl font-bold text-yellow-600">{stats.in_progress}</div>
+            <div className="text-xs text-gray-500">In Progress</div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4 text-center">
+            <div className="text-2xl font-bold text-gray-600">{stats.completed}</div>
+            <div className="text-xs text-gray-500">Completed</div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4 text-center">
+            <div className="text-2xl font-bold text-orange-600">{stats.no_show}</div>
+            <div className="text-xs text-gray-500">No Show</div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Quick Actions + Reports Row */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* Queue Info */}
+        <Card className="border-l-4 border-l-blue-500">
+          <CardContent className="p-4">
+            <h3 className="text-sm font-semibold text-gray-500 mb-2">CURRENT QUEUE</h3>
+            {queueData && queueData.queue && queueData.queue.length > 0 ? (
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <Hash className="h-5 w-5 text-blue-600" />
+                  <div>
+                    {queueData.current_patient ? (
+                      <span className="font-medium text-blue-700">
+                        Token #{queueData.current_patient.token_number} - {queueData.current_patient.patient_name}
+                      </span>
+                    ) : (
+                      <span className="text-gray-500">No patient in consultation</span>
+                    )}
+                  </div>
+                </div>
+                <Badge variant="outline">{queueData.queue.filter(q => q.status === 'confirmed').length} waiting</Badge>
+              </div>
+            ) : (
+              <p className="text-sm text-gray-400">No patients in queue</p>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Lab Reports Quick View */}
+        <Card className="border-l-4 border-l-purple-500">
+          <CardContent className="p-4">
+            <h3 className="text-sm font-semibold text-gray-500 mb-2">LAB ORDERS STATUS</h3>
+            <div className="flex items-center justify-between">
+              <div className="flex gap-4 text-sm">
+                <span><span className="font-bold text-blue-600">{labStats.ordered}</span> <span className="text-gray-500">Pending</span></span>
+                <span><span className="font-bold text-yellow-600">{labStats.processing}</span> <span className="text-gray-500">Processing</span></span>
+                <span><span className="font-bold text-green-600">{labStats.withReport}</span> <span className="text-gray-500">Reports Ready</span></span>
+              </div>
+              {labStats.withReport > 0 && (
+                <Button size="sm" variant="outline" onClick={() => setActiveTab('lab-orders')}>
+                  <Eye className="h-3.5 w-3.5 mr-1" /> View Reports
+                </Button>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Quick Actions */}
+      <Card>
+        <CardContent className="p-4">
+          <h3 className="text-sm font-semibold text-gray-500 mb-3">QUICK ACTIONS</h3>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" size="sm" onClick={() => navigate('/dashboard/ehr')}>
+              <FileText className="h-4 w-4 mr-1" /> Patient Records (EHR)
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => navigate('/dashboard/availability')}>
+              <Calendar className="h-4 w-4 mr-1" /> Manage Availability
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => { setActiveTab('lab-orders'); }}>
+              <TestTube className="h-4 w-4 mr-1" /> Lab Orders ({labStats.total})
+            </Button>
+            {labStats.withReport > 0 && (
+              <Button size="sm" className="bg-green-600 hover:bg-green-700" onClick={() => setActiveTab('lab-orders')}>
+                <CheckCircle className="h-4 w-4 mr-1" /> {labStats.withReport} Lab Report(s) Ready
+              </Button>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+        <TabsList className="grid w-full grid-cols-3">
+          <TabsTrigger value="appointments">Today's Schedule</TabsTrigger>
+          <TabsTrigger value="prescriptions">Prescriptions</TabsTrigger>
+          <TabsTrigger value="lab-orders">
+            Lab Orders
+            {labStats.withReport > 0 && (
+              <Badge className="ml-1.5 bg-green-500 text-white text-xs px-1.5">{labStats.withReport}</Badge>
+            )}
+          </TabsTrigger>
+        </TabsList>
+
+        {/* Appointments Tab */}
+        <TabsContent value="appointments" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <CardTitle className="flex items-center gap-2">
+                  <Calendar className="h-5 w-5" />
+                  Appointment Schedule - {format(new Date(), 'EEEE, MMMM do, yyyy')}
+                </CardTitle>
+                <Button
+                  variant="outline" size="sm"
+                  onClick={() => {
+                    setShowCompletedAppointments(true);
+                    fetchCompletedAppointments(user?.id);
+                  }}
+                >
+                  <Info className="h-4 w-4 mr-2" /> View Completed
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                {appointments.length === 0 ? (
+                  <p className="text-gray-500 text-center py-8">No appointments scheduled for today</p>
+                ) : (
+                  appointments.map((appointment) => {
+                    const timeStatus = getTimeSlotStatus(appointment.appointment_time, appointment.status);
+                    return (
+                      <Card
+                        key={appointment.id}
+                        className={`border-l-4 ${
+                          timeStatus === 'overdue' ? 'border-l-red-500' :
+                          timeStatus === 'upcoming' ? 'border-l-yellow-500' :
+                          timeStatus === 'completed' ? 'border-l-green-500' :
+                          timeStatus === 'cancelled' ? 'border-l-gray-300' :
+                          'border-l-blue-500'
+                        }`}
+                      >
+                        <CardContent className="pt-4">
+                          <div className="flex justify-between items-start">
+                            <div className="space-y-2 flex-1">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                {appointment.token_number && (
+                                  <Badge variant="outline" className="bg-blue-50 text-blue-700 font-mono">
+                                    <Hash className="h-3 w-3 mr-1" />#{appointment.token_number}
+                                  </Badge>
+                                )}
+                                <h3 className="font-semibold text-lg">{appointment.patient_name}</h3>
+                                <Badge className={getPriorityColor(appointment.priority)}>
+                                  {appointment.priority}
+                                </Badge>
+                                <Badge className={getStatusColor(appointment.status)}>
+                                  {getStatusLabel(appointment.status)}
+                                </Badge>
+                              </div>
+                              <div className="flex items-center gap-4 text-sm text-gray-600">
+                                <span className="flex items-center gap-1">
+                                  <Clock className="h-4 w-4" />
+                                  {formatTime(appointment.appointment_time)} ({appointment.duration_minutes} min)
+                                </span>
+                                <span>#{appointment.appointment_number}</span>
+                              </div>
+                              <div className="text-sm text-gray-600">
+                                <strong>Type:</strong> {appointment.appointment_type}
+                                {appointment.reason && (
+                                  <> &middot; <strong>Reason:</strong> {appointment.reason}</>
+                                )}
+                              </div>
+                              {appointment.notes && (
+                                <div className="text-xs text-gray-500 bg-gray-50 p-2 rounded">
+                                  <strong>Notes:</strong> {appointment.notes}
+                                </div>
+                              )}
+                            </div>
+                            <div className="flex flex-wrap gap-2 ml-4 justify-end max-w-[320px]">
+                              <Button size="sm" variant="outline" onClick={() => fetchPatientHistory(appointment)}>
+                                <History className="h-4 w-4 mr-1" /> History
+                              </Button>
+                              <Button size="sm" variant="outline" onClick={() => openNotesDialog(appointment)}>
+                                <FileText className="h-4 w-4 mr-1" /> Notes
+                              </Button>
+
+                              {appointment.status === 'scheduled' && (
+                                <>
+                                  <Button size="sm" variant="outline"
+                                    onClick={() => updateAppointmentStatus(appointment.id, 'confirmed')}
+                                    disabled={loading}>
+                                    <CheckCircle className="h-4 w-4 mr-1" /> Confirm
+                                  </Button>
+                                  <Button size="sm"
+                                    onClick={() => updateAppointmentStatus(appointment.id, 'in_progress')}
+                                    disabled={loading}>
+                                    Start Consultation
+                                  </Button>
+                                </>
+                              )}
+                              {appointment.status === 'confirmed' && (
+                                <Button size="sm"
+                                  onClick={() => updateAppointmentStatus(appointment.id, 'in_progress')}
+                                  disabled={loading}>
+                                  Start Consultation
+                                </Button>
+                              )}
+                              {appointment.status === 'in_progress' && (
+                                <>
+                                  <Button size="sm" variant="outline"
+                                    onClick={() => navigate(`/dashboard/consultation?appointmentId=${appointment.id}&patientId=${appointment.patient_id}&patientUuid=${appointment.patient_uuid || ''}&patientName=${encodeURIComponent(appointment.patient_name)}`)}>
+                                    <Stethoscope className="h-4 w-4 mr-1" /> Consult
+                                  </Button>
+                                  <Button size="sm" className="bg-green-600 hover:bg-green-700"
+                                    onClick={() => updateAppointmentStatus(appointment.id, 'completed')}
+                                    disabled={loading}>
+                                    <CheckCircle className="h-4 w-4 mr-1" /> Complete
+                                  </Button>
+                                </>
+                              )}
+                              {(appointment.status === 'scheduled' || appointment.status === 'confirmed') && (
+                                <Button size="sm" variant="destructive"
+                                  onClick={() => updateAppointmentStatus(appointment.id, 'cancelled')}
+                                  disabled={loading}>
+                                  <XCircle className="h-4 w-4 mr-1" /> Cancel
+                                </Button>
+                              )}
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    );
+                  })
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Prescriptions Tab */}
+        <TabsContent value="prescriptions" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center justify-between">
+                <span className="flex items-center gap-2">
+                  <Pill className="h-5 w-5" />
+                  My Prescriptions ({prescriptions.length})
+                </span>
+                <Button onClick={fetchPrescriptions} variant="outline" size="sm">
+                  <RefreshCw className="h-4 w-4 mr-2" /> Refresh
+                </Button>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {prescriptions.length === 0 ? (
+                <div className="text-center py-8">
+                  <Pill className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                  <p className="text-gray-500">No prescriptions created yet</p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {prescriptions.map((prescription) => (
+                    <Card key={prescription.id} className="border-l-4 border-l-green-500">
+                      <CardContent className="pt-4">
+                        <div className="flex justify-between items-start mb-4">
+                          <div className="space-y-2">
+                            <div className="flex items-center gap-2">
+                              <h4 className="font-semibold">{prescription.prescription_id}</h4>
+                              <Badge className={
+                                prescription.status === 'active' ? 'bg-green-100 text-green-800' :
+                                prescription.status === 'cancelled' ? 'bg-red-100 text-red-800' :
+                                'bg-gray-100 text-gray-800'
+                              }>
+                                {prescription.status.toUpperCase()}
+                              </Badge>
+                            </div>
+                            <p className="text-sm text-gray-600">
+                              <User className="h-3 w-3 inline mr-1" />
+                              {prescription.patient_name}
+                            </p>
+                            <p className="text-xs text-gray-500">
+                              {new Date(prescription.prescription_date).toLocaleDateString()} at{' '}
+                              {new Date(prescription.prescription_date).toLocaleTimeString()}
+                            </p>
+                          </div>
+                          <Button size="sm" variant="outline" onClick={() => showPrintPreview(prescription)}>
+                            <Eye className="h-4 w-4 mr-2" /> Preview & Print
+                          </Button>
+                        </div>
+                        <div className="space-y-2">
+                          <h5 className="text-sm font-medium text-gray-700">Prescribed Medicines:</h5>
+                          <div className="bg-gray-50 rounded p-3">
+                            {prescription.medicines.map((medicine, idx) => (
+                              <div key={idx} className="text-sm mb-2 last:mb-0">
+                                <span className="font-medium">{medicine.name}</span>
+                                <div className="text-xs text-gray-600 ml-2">
+                                  • {medicine.dosage} • {medicine.duration}
+                                  {medicine.instructions && ` • ${medicine.instructions}`}
+                                  {medicine.quantity && ` • Qty: ${medicine.quantity}`}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                        {(prescription.diagnosis || prescription.notes) && (
+                          <div className="mt-3 pt-3 border-t">
+                            {prescription.diagnosis && <p className="text-sm"><strong>Diagnosis:</strong> {prescription.diagnosis}</p>}
+                            {prescription.notes && <p className="text-sm mt-1"><strong>Notes:</strong> {prescription.notes}</p>}
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Lab Orders Tab */}
+        <TabsContent value="lab-orders" className="space-y-4">
+          {/* Completed Results Section */}
+          {labOrders.filter(o => o.status === 'completed' && o.has_report).length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center justify-between">
+                  <span className="flex items-center gap-2">
+                    <CheckCircle className="h-5 w-5 text-green-600" />
+                    Lab Results Ready
+                  </span>
+                  <Badge className="bg-green-100 text-green-700">
+                    {labOrders.filter(o => o.status === 'completed' && o.has_report).length} report(s)
+                  </Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-2">
+                  {labOrders.filter(o => o.status === 'completed' && o.has_report).map(order => (
+                    <div key={order.id} className="flex items-center justify-between p-3 border rounded-lg bg-green-50 hover:bg-green-100">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium">{order.patient_name}</span>
+                          <Badge variant="outline" className="text-xs">{order.test_code}</Badge>
+                        </div>
+                        <div className="text-sm text-gray-600 mt-0.5">
+                          {order.test_name} | {order.order_date && format(new Date(order.order_date), 'dd MMM yyyy')}
+                        </div>
+                      </div>
+                      <Button size="sm" onClick={() => openLabReport(order.report_id)}>
+                        <Eye className="h-4 w-4 mr-1" /> View Report
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Pending Orders Section */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center justify-between">
+                <span className="flex items-center gap-2">
+                  <TestTube className="h-5 w-5" />
+                  All Lab Orders
+                </span>
+                <Button variant="outline" size="sm" onClick={fetchLabOrders}>
+                  <RefreshCw className="h-4 w-4" />
+                </Button>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {labOrders.length === 0 ? (
+                <div className="text-center py-8">
+                  <TestTube className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                  <p className="text-gray-600">No lab orders yet.</p>
+                  <p className="text-sm text-gray-400 mt-1">Order lab tests from the appointment card during consultation.</p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {labOrders.map(order => (
+                    <div key={order.id} className={`flex items-center justify-between p-3 border rounded-lg hover:bg-gray-50 ${
+                      order.status === 'completed' ? 'opacity-60' : ''
+                    }`}>
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium">{order.patient_name}</span>
+                          <Badge className={
+                            order.status === 'completed' ? 'bg-green-100 text-green-700' :
+                            order.status === 'processing' ? 'bg-purple-100 text-purple-700' :
+                            order.status === 'collected' ? 'bg-yellow-100 text-yellow-700' :
+                            order.status === 'cancelled' ? 'bg-red-100 text-red-700' :
+                            'bg-blue-100 text-blue-700'
+                          }>{order.status}</Badge>
+                          {order.priority !== 'normal' && (
+                            <Badge variant="destructive">{order.priority.toUpperCase()}</Badge>
+                          )}
+                        </div>
+                        <div className="text-sm text-gray-500 mt-0.5">
+                          {order.test_name} ({order.test_code}) | #{order.order_number}
+                          {order.order_date && ` | ${format(new Date(order.order_date), 'dd MMM yyyy, hh:mm a')}`}
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        {order.status === 'completed' && order.has_report && (
+                          <Button size="sm" variant="outline" onClick={() => openLabReport(order.report_id)}>
+                            <Eye className="h-4 w-4 mr-1" /> View
+                          </Button>
+                        )}
+                        {['ordered', 'collected', 'processing'].includes(order.status) && (
+                          <Badge variant="outline" className="text-xs">Pending</Badge>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
+
+      {/* === DIALOGS === */}
+
+      {/* Consultation Dialog */}
+      <Dialog open={showConsultationDialog} onOpenChange={setShowConsultationDialog}>
+        <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Stethoscope className="h-5 w-5" />
+              Consultation - {selectedAppointment?.patient_name}
+              {activeConsultation && (
+                <Badge className="bg-green-100 text-green-800 ml-2">
+                  {activeConsultation.consultation_number}
+                </Badge>
+              )}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label>Chief Complaint *</Label>
+              <Textarea
+                value={consultationForm.chief_complaint}
+                onChange={(e) => setConsultationForm(prev => ({ ...prev, chief_complaint: e.target.value }))}
+                placeholder="Patient's primary complaint..."
+                rows={2}
+              />
+            </div>
+            <div>
+              <Label>Present History</Label>
+              <Textarea
+                value={consultationForm.present_history}
+                onChange={(e) => setConsultationForm(prev => ({ ...prev, present_history: e.target.value }))}
+                placeholder="History of present illness, onset, duration, associated symptoms..."
+                rows={3}
+              />
+            </div>
+            <div>
+              <Label>Examination Findings</Label>
+              <Textarea
+                value={consultationForm.examination_findings}
+                onChange={(e) => setConsultationForm(prev => ({ ...prev, examination_findings: e.target.value }))}
+                placeholder="Physical examination findings..."
+                rows={3}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label>Follow-up Date</Label>
+                <Input
+                  type="date"
+                  value={consultationForm.follow_up_date}
+                  onChange={(e) => setConsultationForm(prev => ({ ...prev, follow_up_date: e.target.value }))}
+                />
+              </div>
+              <div>
+                <Label>Notes</Label>
+                <Textarea
+                  value={consultationForm.notes}
+                  onChange={(e) => setConsultationForm(prev => ({ ...prev, notes: e.target.value }))}
+                  placeholder="Additional clinical notes..."
+                  rows={2}
+                />
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2 pt-4 border-t">
+              <Button variant="outline" size="sm"
+                onClick={() => { setShowConsultationDialog(false); setShowVitalsDialog(true); }}>
+                <Activity className="h-4 w-4 mr-1" /> Vitals
+              </Button>
+              <Button variant="outline" size="sm"
+                onClick={() => { setShowConsultationDialog(false); setShowPrescriptionDialog(true); }}>
+                <Pill className="h-4 w-4 mr-1" /> Prescribe
+              </Button>
+              <Button variant="outline" size="sm"
+                onClick={() => { setShowConsultationDialog(false); setShowLabOrderDialog(true); }}>
+                <TestTube className="h-4 w-4 mr-1" /> Lab Order
+              </Button>
+              <div className="flex-1" />
+              <Button variant="outline" onClick={() => setShowConsultationDialog(false)}>Cancel</Button>
+              <Button onClick={handleSaveConsultation} disabled={loading}>
+                {activeConsultation ? 'Update Consultation' : 'Create Consultation'}
+              </Button>
+              {activeConsultation && activeConsultation.status === 'ongoing' && (
+                <Button variant="default" className="bg-green-600 hover:bg-green-700"
+                  onClick={handleCompleteConsultation} disabled={loading}>
+                  <CheckCircle className="h-4 w-4 mr-1" /> Complete
+                </Button>
+              )}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Patient History Dialog */}
+      <Dialog open={showHistoryDialog} onOpenChange={setShowHistoryDialog}>
+        <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <History className="h-5 w-5" />
+              Patient Visit History
+              {patientHistory && (
+                <span className="text-sm font-normal text-gray-600 ml-2">
+                  - {patientHistory.patient_name}
+                </span>
+              )}
+            </DialogTitle>
+          </DialogHeader>
+          {historyLoading ? (
+            <div className="text-center py-8">
+              <RefreshCw className="h-8 w-8 animate-spin mx-auto mb-4 text-blue-600" />
+              <p className="text-gray-600">Loading history...</p>
+            </div>
+          ) : patientHistory?.appointments?.length > 0 ? (
+            <div className="space-y-3">
+              {patientHistory.appointments.map((apt, idx) => (
+                <div key={idx} className="border rounded-lg p-3">
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium">
+                          {apt.appointment_date ? new Date(apt.appointment_date).toLocaleDateString() : 'N/A'}
+                        </span>
+                        <span className="text-sm text-gray-600">
+                          {apt.appointment_time ? formatTime(apt.appointment_time) : ''}
+                        </span>
+                        <Badge className={getStatusColor(apt.status)}>{getStatusLabel(apt.status)}</Badge>
+                      </div>
+                      <p className="text-sm text-gray-600 mt-1">{apt.doctor_name}</p>
+                      {apt.reason && <p className="text-sm text-gray-500">Reason: {apt.reason}</p>}
+                      {apt.notes && <p className="text-xs text-gray-400 mt-1">Notes: {apt.notes}</p>}
+                    </div>
+                    <div className="text-right text-sm">
+                      <Badge variant="outline">{apt.appointment_type}</Badge>
+                      {apt.consultation_fee > 0 && (
+                        <div className="text-gray-500 mt-1">₹{apt.consultation_fee}</div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-center text-gray-500 py-8">No visit history found</p>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Notes Dialog */}
+      <Dialog open={showNotesDialog} onOpenChange={setShowNotesDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileText className="h-5 w-5" />
+              Appointment Notes - {notesAppointment?.patient_name}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <Textarea
+              value={notesText}
+              onChange={(e) => setNotesText(e.target.value)}
+              placeholder="Add clinical notes, observations, instructions..."
+              rows={5}
+            />
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setShowNotesDialog(false)}>Cancel</Button>
+              <Button onClick={handleSaveNotes}>Save Notes</Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Prescription Dialog */}
+      <Dialog open={showPrescriptionDialog} onOpenChange={setShowPrescriptionDialog}>
+        <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Write Prescription - {selectedAppointment?.patient_name}</DialogTitle>
+          </DialogHeader>
+          <form className="space-y-6" onSubmit={(e) => { e.preventDefault(); submitPrescription(); }}>
+            <div>
+              <Label htmlFor="diagnosis">Diagnosis</Label>
+              <Textarea
+                id="diagnosis"
+                value={prescriptionForm.diagnosis}
+                onChange={(e) => setPrescriptionForm(prev => ({ ...prev, diagnosis: e.target.value }))}
+                placeholder="Enter diagnosis..."
+              />
+            </div>
+            <div>
+              <div className="flex justify-between items-center mb-4">
+                <Label>Medications</Label>
+                <Button type="button" onClick={addMedication} size="sm">Add Medication</Button>
+              </div>
+              {prescriptionForm.medications.map((medication, index) => (
+                <Card key={index} className="p-4 mb-4">
+                  <div className="grid grid-cols-2 gap-4 mb-4">
+                    <div>
+                      <Label>Medicine Name</Label>
+                      <Input
+                        type="text"
+                        placeholder="e.g., Paracetamol 500mg"
+                        value={medication.medicine_name || ''}
+                        onChange={(e) => updateMedication(index, 'medicine_name', e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <Label>Quantity</Label>
+                      <Input
+                        type="number" min="1"
+                        value={medication.quantity_prescribed}
+                        onChange={(e) => updateMedication(index, 'quantity_prescribed', parseInt(e.target.value) || 1)}
+                      />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-4 mb-4">
+                    <div>
+                      <Label>Dosage (per dose)</Label>
+                      <Input
+                        value={medication.dosage}
+                        onChange={(e) => updateMedication(index, 'dosage', e.target.value)}
+                        placeholder="e.g., 1 tablet"
+                      />
+                    </div>
+                    <div>
+                      <Label>Dosing Schedule</Label>
+                      <div className="flex space-x-4 mt-1">
+                        {['Morning', 'Afternoon', 'Night'].map((time, timeIndex) => {
+                          const schedule = medication.frequency_schedule || '1-0-0';
+                          const scheduleArray = schedule.split('-');
+                          const isChecked = scheduleArray[timeIndex] === '1';
+                          return (
+                            <div key={time} className="flex items-center space-x-2">
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                onChange={(e) => {
+                                  const newSchedule = [...scheduleArray];
+                                  newSchedule[timeIndex] = e.target.checked ? '1' : '0';
+                                  updateMedication(index, 'frequency_schedule', newSchedule.join('-'));
+                                }}
+                                className="w-4 h-4"
+                              />
+                              <Label className="text-sm">{time}</Label>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <div>
+                      <Label>Food timing</Label>
+                      <Select
+                        value={medication.food_timing || 'after_food'}
+                        onValueChange={(value) => updateMedication(index, 'food_timing', value)}
+                      >
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="before_food">Before food</SelectItem>
+                          <SelectItem value="after_food">After food</SelectItem>
+                          <SelectItem value="with_food">With food</SelectItem>
+                          <SelectItem value="on_empty_stomach">Empty stomach</SelectItem>
+                          <SelectItem value="anytime">Anytime</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 gap-4 mb-4">
+                    <div>
+                      <Label>Duration</Label>
+                      <Input
+                        value={medication.duration}
+                        onChange={(e) => updateMedication(index, 'duration', e.target.value)}
+                        placeholder="e.g., 7 days"
+                      />
+                    </div>
+                  </div>
+                  <div className="mb-2">
+                    <Label>Instructions</Label>
+                    <Textarea
+                      value={medication.instructions}
+                      onChange={(e) => updateMedication(index, 'instructions', e.target.value)}
+                      placeholder="Special instructions..."
+                    />
+                  </div>
+                  {prescriptionForm.medications.length > 1 && (
+                    <Button type="button" variant="destructive" size="sm" onClick={() => removeMedication(index)}>
+                      Remove
+                    </Button>
+                  )}
+                </Card>
+              ))}
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label>Follow-up Date</Label>
+                <Input
+                  type="date"
+                  value={prescriptionForm.follow_up_date}
+                  onChange={(e) => setPrescriptionForm(prev => ({ ...prev, follow_up_date: e.target.value }))}
+                />
+              </div>
+              <div>
+                <Label>Additional Notes</Label>
+                <Textarea
+                  value={prescriptionForm.notes}
+                  onChange={(e) => setPrescriptionForm(prev => ({ ...prev, notes: e.target.value }))}
+                  placeholder="Additional notes..."
+                />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="outline" onClick={() => setShowPrescriptionDialog(false)}>Cancel</Button>
+              <Button type="submit" disabled={loading}>Save Prescription</Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Lab Order Dialog */}
+      <Dialog open={showLabOrderDialog} onOpenChange={(open) => {
+        setShowLabOrderDialog(open);
+        if (open) {
+          fetchAvailableLabTests();
+          setSelectedLabTests([]);
+          setCustomLabTests([]);
+          setCustomLabTestInput('');
+          setLabSearchQuery('');
+          setLabCategoryFilter('all');
+        }
+      }}>
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Order Lab Tests - {selectedAppointment?.patient_name}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="flex gap-3">
+              <div className="relative flex-1">
+                <Input placeholder="Search tests..." value={labSearchQuery}
+                  onChange={(e) => setLabSearchQuery(e.target.value)} className="pl-8" />
+                <TestTube className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-400" />
+              </div>
+              <Select value={labCategoryFilter} onValueChange={setLabCategoryFilter}>
+                <SelectTrigger className="w-[180px]"><SelectValue placeholder="All Categories" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Categories</SelectItem>
+                  {labCategories.map(cat => (
+                    <SelectItem key={cat.id} value={String(cat.id)}>{cat.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {(selectedLabTests.length > 0 || customLabTests.length > 0) && (
+              <div className="bg-blue-50 p-2 rounded-lg">
+                <p className="text-sm text-blue-700 font-medium mb-1">
+                  {selectedLabTests.length + customLabTests.length} test(s) selected
+                </p>
+                <div className="flex flex-wrap gap-1">
+                  {selectedLabTests.map(id => {
+                    const t = availableLabTests.find(t => t.id === id);
+                    return t ? (
+                      <Badge key={id} variant="secondary" className="cursor-pointer" onClick={() => toggleLabTestSelection(id)}>
+                        {t.name} x
+                      </Badge>
+                    ) : null;
+                  })}
+                  {customLabTests.map(name => (
+                    <Badge key={name} variant="outline" className="cursor-pointer bg-orange-50 text-orange-700 border-orange-300"
+                      onClick={() => removeCustomLabTest(name)}>
+                      {name} (custom) x
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="border rounded-lg max-h-[300px] overflow-y-auto">
+              {filteredLabTests.length === 0 ? (
+                <p className="text-center text-gray-500 py-6">No tests available. Ask admin to configure lab tests.</p>
+              ) : (
+                filteredLabTests.map(test => (
+                  <div key={test.id}
+                    className={`flex items-center justify-between p-3 border-b last:border-0 cursor-pointer hover:bg-gray-50 ${
+                      selectedLabTests.includes(test.id) ? 'bg-blue-50' : ''
+                    }`}
+                    onClick={() => toggleLabTestSelection(test.id)}>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <input type="checkbox" checked={selectedLabTests.includes(test.id)} readOnly className="rounded" />
+                        <span className="font-medium">{test.name}</span>
+                        <Badge variant="outline" className="text-xs">{test.test_code}</Badge>
+                      </div>
+                      <div className="text-xs text-gray-500 ml-6">
+                        {test.category_name} | Rs. {test.cost}
+                        {test.sample_type && ` | ${test.sample_type}`}
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="border rounded-lg p-3 space-y-2">
+              <Label className="text-sm font-medium">Other (test not in list)</Label>
+              <div className="flex gap-2">
+                <Input value={customLabTestInput}
+                  onChange={(e) => setCustomLabTestInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addCustomLabTest(); } }}
+                  placeholder="Enter test name and press Enter or Add"
+                  className="flex-1" />
+                <Button type="button" size="sm" variant="outline" onClick={addCustomLabTest}
+                  disabled={!customLabTestInput.trim()}>
+                  Add
+                </Button>
+              </div>
+              {customLabTests.length > 0 && (
+                <p className="text-xs text-orange-600">
+                  Custom tests will be noted for the lab team to process manually.
+                </p>
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label>Priority</Label>
+                <Select value={labOrderPriority} onValueChange={setLabOrderPriority}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="normal">Normal</SelectItem>
+                    <SelectItem value="urgent">Urgent</SelectItem>
+                    <SelectItem value="stat">STAT (Emergency)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Notes</Label>
+                <Textarea value={labOrderNotes} onChange={(e) => setLabOrderNotes(e.target.value)}
+                  placeholder="Clinical notes..." rows={2} />
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setShowLabOrderDialog(false)}>Cancel</Button>
+              <Button onClick={handleSubmitLabOrder}
+                disabled={(selectedLabTests.length === 0 && customLabTests.length === 0) || labOrderSubmitting}>
+                {labOrderSubmitting ? 'Ordering...' : `Order ${selectedLabTests.length + customLabTests.length} Test(s)`}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Lab Report View Dialog */}
+      <Dialog open={showLabReportDialog} onOpenChange={setShowLabReportDialog}>
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Lab Report - {viewingLabReport?.test_name}</DialogTitle>
+          </DialogHeader>
+          {viewingLabReport && (
+            <div className="space-y-4">
+              <div className="text-sm space-y-1">
+                <p>Patient: <strong>{viewingLabReport.patient_name}</strong>
+                  {viewingLabReport.patient_gender && ` (${viewingLabReport.patient_gender})`}
+                  {viewingLabReport.patient_age && `, ${viewingLabReport.patient_age} yrs`}
+                </p>
+                <p className="text-gray-500">Order: #{viewingLabReport.order_number} | Date: {format(new Date(viewingLabReport.report_date), 'dd MMM yyyy, hh:mm a')}</p>
+              </div>
+
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-left text-gray-500">
+                    <th className="pb-2 pr-3">Parameter</th>
+                    <th className="pb-2 pr-3">Result</th>
+                    <th className="pb-2 pr-3">Unit</th>
+                    <th className="pb-2 pr-3">Reference</th>
+                    <th className="pb-2">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {viewingLabReport.results?.map((r, idx) => (
+                    <tr key={idx} className={`border-b ${r.is_abnormal ? 'bg-red-50' : ''}`}>
+                      <td className="py-2 pr-3 font-medium">{r.parameter_name}</td>
+                      <td className={`py-2 pr-3 ${r.is_abnormal ? 'text-red-600 font-bold' : ''}`}>{r.value}</td>
+                      <td className="py-2 pr-3 text-gray-500">{r.unit || '-'}</td>
+                      <td className="py-2 pr-3 text-gray-500 text-xs">
+                        {r.reference_min != null || r.reference_max != null
+                          ? `${r.reference_min ?? '–'} - ${r.reference_max ?? '–'}` : '-'}
+                      </td>
+                      <td className="py-2">
+                        {r.is_abnormal ? (
+                          <Badge variant="destructive" className="text-xs">
+                            <AlertCircle className="h-3 w-3 mr-1" /> Abnormal
+                          </Badge>
+                        ) : r.field_type === 'numeric' && (r.reference_min != null || r.reference_max != null) ? (
+                          <Badge variant="secondary" className="text-xs">Normal</Badge>
+                        ) : null}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+              {viewingLabReport.interpretation && (
+                <div className="p-3 bg-gray-50 rounded-lg">
+                  <p className="text-sm font-medium text-gray-700">Interpretation</p>
+                  <p className="text-sm text-gray-600 mt-1">{viewingLabReport.interpretation}</p>
+                </div>
+              )}
+
+              <div className="flex justify-end mt-4">
+                <Button variant="outline" onClick={async () => {
+                  try {
+                    const token = localStorage.getItem('token');
+                    const res = await fetch(`/api/lab/reports/${viewingLabReport.id}/download`, {
+                      headers: { Authorization: `Bearer ${token}` }
+                    });
+                    const blob = await res.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `lab_report_${viewingLabReport.order_number}.pdf`;
+                    a.click();
+                    window.URL.revokeObjectURL(url);
+                  } catch (err) {
+                    console.error('Failed to download PDF:', err);
+                  }
+                }}>
+                  <Printer className="h-4 w-4 mr-2" /> Download PDF
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Completed Appointments Dialog */}
+      <Dialog open={showCompletedAppointments} onOpenChange={setShowCompletedAppointments}>
+        <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <CheckCircle className="h-5 w-5" />
+              Completed Appointments (Last 30 Days)
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            {completedAppointments.length === 0 ? (
+              <p className="text-gray-500 text-center py-8">No completed appointments found</p>
+            ) : (
+              completedAppointments.map((appointment) => (
+                <Card key={appointment.id} className="border-l-4 border-l-green-500">
+                  <CardContent className="pt-4">
+                    <div className="flex justify-between items-start">
+                      <div className="space-y-2">
+                        <div className="font-semibold flex items-center gap-2">
+                          <User className="h-4 w-4" />
+                          {appointment.patient_name || 'Unknown Patient'}
+                        </div>
+                        <div className="text-sm text-gray-600 flex items-center gap-2">
+                          <Calendar className="h-4 w-4" />
+                          {format(new Date(appointment.appointment_date), 'MMMM do, yyyy')}
+                          <Clock className="h-4 w-4 ml-2" />
+                          {formatTime(appointment.appointment_time)}
+                        </div>
+                        {appointment.reason && (
+                          <div className="text-sm text-gray-600"><strong>Reason:</strong> {appointment.reason}</div>
+                        )}
+                      </div>
+                      <div className="text-right">
+                        <Badge className="bg-green-100 text-green-800 mb-2">Completed</Badge>
+                        {appointment.consultation_fee > 0 && (
+                          <div className="text-sm text-gray-600">Fee: ₹{appointment.consultation_fee}</div>
+                        )}
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Vitals Dialog */}
+      <VitalsForm
+        isOpen={showVitalsDialog}
+        onClose={() => setShowVitalsDialog(false)}
+        selectedPatient={selectedAppointment ? {
+          id: selectedAppointment.patient_id,
+          first_name: selectedAppointment.patient_name?.split(' ')[0] || '',
+          last_name: selectedAppointment.patient_name?.split(' ').slice(1).join(' ') || ''
+        } : null}
+        userRole="doctor"
+        onSave={(vitalsData) => {
+          console.log('Vitals saved by doctor:', vitalsData);
+        }}
+      />
+
+      {/* Success Dialog */}
+      <Dialog open={showSuccessDialog} onOpenChange={setShowSuccessDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-green-700">
+              <CheckCircle className="h-5 w-5" />
+              Prescription Created Successfully!
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="text-center py-4">
+              <div className="mb-4">
+                <div className="mx-auto w-16 h-16 bg-green-100 rounded-full flex items-center justify-center">
+                  <CheckCircle className="h-8 w-8 text-green-600" />
+                </div>
+              </div>
+              <p className="text-gray-700 mb-2">{successMessage}</p>
+              {createdPrescription && (
+                <div className="text-sm text-gray-600 space-y-1">
+                  <p><strong>Patient:</strong> {createdPrescription.patient_name}</p>
+                  <p><strong>Medicines:</strong> {createdPrescription.medicines.length} items</p>
+                </div>
+              )}
+            </div>
+            <div className="flex gap-3">
+              <Button variant="outline" onClick={() => setShowSuccessDialog(false)} className="flex-1">Continue</Button>
+              {createdPrescription && (
+                <Button onClick={() => { setShowSuccessDialog(false); showPrintPreview(createdPrescription); }}
+                  className="flex-1 flex items-center gap-2">
+                  <Eye className="h-4 w-4" /> Preview & Print
+                </Button>
+              )}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Print Preview Dialog */}
+      <Dialog open={showPrintPreviewDialog} onOpenChange={(open) => { if (!open) closePrintPreview(); }}>
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Eye className="h-5 w-5" />
+              Prescription Preview
+              {previewPrescription && (
+                <span className="text-sm font-normal text-gray-600">- {previewPrescription.prescription_id}</span>
+              )}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="flex-1 overflow-hidden">
+            {previewPdfUrl && (
+              <iframe src={previewPdfUrl} className="w-full h-[60vh] border rounded-lg" title="Prescription Preview" />
+            )}
+          </div>
+          <div className="pt-4 border-t space-y-3">
+            <div className="flex items-center gap-4">
+              <div className="flex items-center space-x-2">
+                <input
+                  type="checkbox" id="include-header"
+                  checked={includeHeader}
+                  onChange={async (e) => {
+                    const newHeaderValue = e.target.checked;
+                    setIncludeHeader(newHeaderValue);
+                    if (previewPrescription) {
+                      if (previewPdfUrl) { window.URL.revokeObjectURL(previewPdfUrl); setPreviewPdfUrl(null); }
+                      await showPrintPreview(previewPrescription, newHeaderValue);
+                    }
+                  }}
+                  className="w-4 h-4"
+                />
+                <Label htmlFor="include-header" className="text-sm">Include hospital letterhead</Label>
+              </div>
+              <Button variant="outline" size="sm" onClick={refreshPreview}>
+                <RefreshCw className="h-3 w-3 mr-1" /> Refresh Preview
+              </Button>
+            </div>
+            <div className="flex justify-between items-center">
+              <div className="text-sm text-gray-600">
+                {previewPrescription && (
+                  <span>
+                    Patient: {previewPrescription.patient_name} |
+                    Doctor: {previewPrescription.doctor_name} |
+                    Date: {new Date(previewPrescription.prescription_date).toLocaleDateString()}
+                  </span>
+                )}
+              </div>
+              <div className="flex gap-3">
+                <Button variant="outline" onClick={closePrintPreview}>Cancel</Button>
+                <Button onClick={printFromPreview}>
+                  <Printer className="h-4 w-4 mr-2" /> Print Now
+                </Button>
+              </div>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+};
+
+export default DoctorDashboard;

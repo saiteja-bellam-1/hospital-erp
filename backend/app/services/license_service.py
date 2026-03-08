@@ -1,0 +1,154 @@
+from datetime import datetime, timedelta
+from sqlalchemy.orm import Session
+from app.models.license import License
+from app.licensing.crypto import verify_license_file
+
+# License status constants
+STATUS_ACTIVE = "active"
+STATUS_EXPIRING_SOON = "expiring_soon"
+STATUS_GRACE_PERIOD = "grace_period"
+STATUS_EXPIRED = "expired"
+STATUS_NO_LICENSE = "no_license"
+
+EXPIRING_SOON_DAYS = 30
+GRACE_PERIOD_DAYS = 15
+
+
+def compute_license_status(expires_at: datetime) -> str:
+    now = datetime.utcnow()
+    days_remaining = (expires_at - now).days
+
+    if days_remaining > EXPIRING_SOON_DAYS:
+        return STATUS_ACTIVE
+    elif days_remaining > 0:
+        return STATUS_EXPIRING_SOON
+    elif days_remaining >= -GRACE_PERIOD_DAYS:
+        return STATUS_GRACE_PERIOD
+    else:
+        return STATUS_EXPIRED
+
+
+def get_current_license(db: Session) -> License | None:
+    """Get the most recent license from DB."""
+    return db.query(License).order_by(License.id.desc()).first()
+
+
+def get_license_status(db: Session) -> dict:
+    """Get current license status info for API responses."""
+    license_record = get_current_license(db)
+    if not license_record:
+        return {
+            "status": STATUS_NO_LICENSE,
+            "message": "No license installed",
+            "days_remaining": 0,
+            "expires_at": None,
+            "plan": None,
+            "max_users": 0,
+            "features": [],
+        }
+
+    status = compute_license_status(license_record.expires_at)
+    days_remaining = (license_record.expires_at - datetime.utcnow()).days
+
+    # Update status in DB if changed
+    if license_record.status != status:
+        license_record.status = status
+        db.commit()
+
+    return {
+        "status": status,
+        "message": _status_message(status, days_remaining),
+        "days_remaining": days_remaining,
+        "expires_at": license_record.expires_at.isoformat(),
+        "plan": license_record.plan,
+        "max_users": license_record.max_users,
+        "features": license_record.features or [],
+        "hospital_name": license_record.hospital_name,
+        "license_id": license_record.license_id,
+        "issued_at": license_record.issued_at.isoformat(),
+    }
+
+
+def upload_license(db: Session, file_content: str, uploaded_by: int = None) -> dict:
+    """Verify and store a new license file."""
+    # Verify signature and parse
+    license_data = verify_license_file(file_content)
+
+    # Parse dates (strip timezone to keep everything as naive UTC)
+    issued_at = datetime.fromisoformat(license_data["issued_at"]).replace(tzinfo=None)
+    expires_at = datetime.fromisoformat(license_data["expires_at"]).replace(tzinfo=None)
+
+    # Validate dates
+    if expires_at <= issued_at:
+        raise ValueError("License expiry date must be after issue date")
+
+    status = compute_license_status(expires_at)
+
+    # Check if this license_id already exists (re-upload)
+    existing = db.query(License).filter(
+        License.license_id == license_data["license_id"]
+    ).first()
+
+    if existing:
+        # Update existing record
+        existing.hospital_id = license_data.get("hospital_id", existing.hospital_id)
+        existing.hospital_name = license_data.get("hospital_name", existing.hospital_name)
+        existing.plan = license_data.get("plan", existing.plan)
+        existing.max_users = license_data.get("max_users", existing.max_users)
+        existing.features = license_data.get("features", existing.features)
+        existing.issued_at = issued_at
+        existing.expires_at = expires_at
+        existing.status = status
+        existing.raw_license_data = file_content
+        existing.uploaded_by = uploaded_by
+        db.commit()
+    else:
+        # Create new license record
+        new_license = License(
+            license_id=license_data["license_id"],
+            hospital_id=license_data.get("hospital_id", ""),
+            hospital_name=license_data.get("hospital_name", ""),
+            plan=license_data.get("plan", "standard"),
+            max_users=license_data.get("max_users", 50),
+            features=license_data.get("features", []),
+            issued_at=issued_at,
+            expires_at=expires_at,
+            status=status,
+            raw_license_data=file_content,
+            uploaded_by=uploaded_by,
+        )
+        db.add(new_license)
+        db.commit()
+
+    return get_license_status(db)
+
+
+def is_license_valid_for_login(db: Session, role_name: str) -> tuple[bool, str]:
+    """Check if a user with the given role is allowed to log in.
+    Super_admin and hospital_admin are always allowed (to upload/renew license).
+    Returns (allowed, reason).
+    """
+    if role_name in ("super_admin", "hospital_admin"):
+        return True, ""
+
+    license_record = get_current_license(db)
+    if not license_record:
+        return False, "No valid license installed. Contact your administrator."
+
+    status = compute_license_status(license_record.expires_at)
+    if status == STATUS_EXPIRED:
+        return False, "License has expired. Contact your administrator to renew."
+
+    return True, ""
+
+
+def _status_message(status: str, days_remaining: int) -> str:
+    if status == STATUS_ACTIVE:
+        return f"License active. {days_remaining} days remaining."
+    elif status == STATUS_EXPIRING_SOON:
+        return f"License expiring in {days_remaining} days. Please renew soon."
+    elif status == STATUS_GRACE_PERIOD:
+        grace_left = GRACE_PERIOD_DAYS + days_remaining  # days_remaining is negative
+        return f"License expired! Grace period: {grace_left} days remaining. Renew immediately."
+    else:
+        return "License has expired. System access is restricted."

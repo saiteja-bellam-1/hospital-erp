@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+backend/venv/
+frontend/build/
+
+# Database
+*.db
+*.db-journal
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# License sensitive files
+license-tools/keys/private_key.pem
+license-tools/*.lic
+license-tools/license_log.json
+
+# Environment
+.env
+.env.local
+.env.production
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Uploads (user-generated content)
+backend/uploads/
+
+# Claude internal
+.claude/
