@@ -76,7 +76,21 @@ def get_frontend_dir():
 def get_db_path():
     """
     Get the SQLite database file path.
+    Checks config.json first for a user-chosen path (set during setup wizard).
+    Falls back to:
     - Bundled: data/hospital_erp.db next to the .exe
     - Dev: backend/hospital_erp.db
     """
+    # Check if user configured a custom DB path via setup wizard
+    config_path = os.path.join(get_base_dir(), "config.json")
+    if os.path.isfile(config_path):
+        try:
+            import json
+            with open(config_path, "r") as f:
+                config = json.load(f)
+            custom_path = config.get("db_path", "")
+            if custom_path and os.path.isdir(os.path.dirname(custom_path)):
+                return custom_path
+        except Exception:
+            pass
     return os.path.join(get_data_dir(), "hospital_erp.db")

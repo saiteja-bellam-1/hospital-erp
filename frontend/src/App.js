@@ -1,16 +1,25 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { ToastProvider, ToastViewport } from './components/ui/toast';
 
 import { useAuth } from './contexts/AuthContext';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
+import SetupWizard from './pages/SetupWizard';
 import ProtectedRoute from './components/ProtectedRoute';
 
 function App() {
   const { loading, user } = useAuth();
+  const [setupComplete, setSetupComplete] = useState(null); // null = checking
 
-  if (loading) {
+  useEffect(() => {
+    fetch('/api/setup/status')
+      .then(res => res.json())
+      .then(data => setSetupComplete(data.setup_complete))
+      .catch(() => setSetupComplete(true)); // If API fails, assume setup done (dev mode)
+  }, []);
+
+  if (loading || setupComplete === null) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
@@ -18,26 +27,39 @@ function App() {
     );
   }
 
+  // Show setup wizard if not yet configured
+  if (!setupComplete) {
+    return (
+      <ToastProvider>
+        <SetupWizard onComplete={() => {
+          setSetupComplete(true);
+          window.location.reload(); // Reload so backend picks up new DB
+        }} />
+        <ToastViewport />
+      </ToastProvider>
+    );
+  }
+
   return (
     <ToastProvider>
       <Routes>
-        <Route 
-          path="/login" 
-          element={user ? <Navigate to="/dashboard" replace /> : <Login />} 
+        <Route
+          path="/login"
+          element={user ? <Navigate to="/dashboard" replace /> : <Login />}
         />
-        
-        <Route 
-          path="/dashboard/*" 
+
+        <Route
+          path="/dashboard/*"
           element={
             <ProtectedRoute>
               <Dashboard />
             </ProtectedRoute>
-          } 
+          }
         />
-        
-        <Route 
-          path="/" 
-          element={<Navigate to={user ? "/dashboard" : "/login"} replace />} 
+
+        <Route
+          path="/"
+          element={<Navigate to={user ? "/dashboard" : "/login"} replace />}
         />
       </Routes>
       <ToastViewport />

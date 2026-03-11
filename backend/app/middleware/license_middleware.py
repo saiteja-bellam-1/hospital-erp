@@ -20,6 +20,8 @@ SKIP_PATHS = [
     "/openapi.json",
     "/redoc",
     "/uploads",
+    "/api/setup",
+    "/static",
 ]
 
 

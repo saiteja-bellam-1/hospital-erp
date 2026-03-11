@@ -23,7 +23,7 @@ from app.models.doctor_availability import DoctorAvailability, DoctorSpecialSche
 from app.models.license import License
 
 # Import route modules
-from app.routes import auth, patients, admin, system, module_admin, hospital_admin, appointments, prescriptions, medicines, consultations, prescriptions_simple, doctor_availability, lab, ehr, license
+from app.routes import auth, patients, admin, system, module_admin, hospital_admin, appointments, prescriptions, medicines, consultations, prescriptions_simple, doctor_availability, lab, ehr, license, setup, backup
 from app.middleware.license_middleware import LicenseMiddleware
 
 app = FastAPI(
@@ -49,8 +49,13 @@ security = HTTPBearer()
 
 @app.on_event("startup")
 async def startup_event():
-    create_tables()
-    print("Database tables created successfully")
+    from app.utils.config import is_setup_complete
+    if is_setup_complete():
+        # Only create tables and seed if setup wizard has been completed
+        create_tables()
+        print("Database tables created successfully")
+    else:
+        print("Setup not complete — waiting for setup wizard")
 
 @app.get("/")
 async def root():
@@ -95,6 +100,8 @@ app.include_router(lab.router, prefix="/api/lab", tags=["Laboratory"])
 # app.include_router(billing.router, prefix="/api/billing", tags=["Billing"])
 app.include_router(ehr.router, prefix="/api/ehr", tags=["EHR"])
 app.include_router(license.router, prefix="/api/license", tags=["License"])
+app.include_router(setup.router, prefix="/api/setup", tags=["Setup Wizard"])
+app.include_router(backup.router, prefix="/api/backup", tags=["Backup"])
 # app.include_router(outpatient.router, prefix="/api/outpatient", tags=["Outpatient"])
 # app.include_router(inpatient.router, prefix="/api/inpatient", tags=["Inpatient"])
 

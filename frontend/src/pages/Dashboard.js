@@ -27,6 +27,7 @@ import {
   Calendar,
   TrendingUp,
   Shield,
+  Database,
 } from 'lucide-react';
 import axios from 'axios';
 
@@ -54,6 +55,7 @@ import AvailabilityModule from './modules/AvailabilityModule';
 import LabTechDashboard from './modules/LabTechDashboard';
 import ConsultationPage from './modules/ConsultationPage';
 import LicenseManagement from './modules/LicenseManagement';
+import BackupManagement from './modules/BackupManagement';
 import LicenseBanner from '../components/LicenseBanner';
 
 const Dashboard = () => {
@@ -174,6 +176,7 @@ const Dashboard = () => {
     }
     if (user.role === 'super_admin' || user.role === 'hospital_admin') {
       adminItems.push({ text: 'License', icon: <Shield className="h-4 w-4" />, path: '/dashboard/license' });
+      adminItems.push({ text: 'Backup', icon: <Database className="h-4 w-4" />, path: '/dashboard/backup' });
     }
 
     return [...baseItems, ...moduleItems, ...adminItems];
@@ -306,6 +309,7 @@ const Dashboard = () => {
             <Route path="/admin/*" element={<AdminModule />} />
             <Route path="/hospital-admin/*" element={<HospitalAdminModule />} />
             <Route path="/license" element={<LicenseManagement />} />
+            <Route path="/backup" element={<BackupManagement />} />
           </Routes>
         </main>
       </div>

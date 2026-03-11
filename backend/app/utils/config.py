@@ -1,0 +1,110 @@
+"""
+Configuration manager for Hospital ERP.
+Reads/writes config.json which stores setup wizard choices.
+"""
+import json
+import os
+import shutil
+import datetime
+from app.utils.paths import get_data_dir, is_bundled, get_base_dir
+
+
+CONFIG_FILENAME = "config.json"
+
+
+def _get_config_path():
+    """Get the path to config.json."""
+    if is_bundled():
+        return os.path.join(get_base_dir(), CONFIG_FILENAME)
+    return os.path.join(get_base_dir(), CONFIG_FILENAME)
+
+
+def load_config():
+    """Load config from disk. Returns empty dict if not found."""
+    path = _get_config_path()
+    if os.path.isfile(path):
+        with open(path, "r") as f:
+            return json.load(f)
+    return {}
+
+
+def save_config(config: dict):
+    """Write config to disk."""
+    path = _get_config_path()
+    with open(path, "w") as f:
+        json.dump(config, f, indent=2)
+
+
+def is_setup_complete():
+    """
+    Check if the initial setup wizard has been completed.
+    Also returns True if a database already exists (backward compatibility
+    for existing installations that pre-date the setup wizard).
+    """
+    config = load_config()
+    if config.get("setup_complete", False):
+        return True
+
+    # Backward compat: if DB file already exists, setup was done before the wizard existed
+    from app.utils.paths import get_db_path
+    db_path = get_db_path()
+    if os.path.isfile(db_path) and os.path.getsize(db_path) > 0:
+        return True
+
+    return False
+
+
+def get_configured_db_path():
+    """
+    Get the DB path from config. Falls back to default if not configured.
+    """
+    config = load_config()
+    custom_path = config.get("db_path", "")
+    if custom_path and os.path.isdir(os.path.dirname(custom_path)):
+        return custom_path
+    # Default
+    from app.utils.paths import get_db_path
+    return get_db_path()
+
+
+def get_backup_locations():
+    """Get configured backup locations."""
+    config = load_config()
+    return config.get("backup_locations", [])
+
+
+def run_backup():
+    """
+    Copy the SQLite database file to all configured backup locations.
+    Returns a dict with results for each location.
+    """
+    config = load_config()
+    db_path = get_configured_db_path()
+    backup_locations = config.get("backup_locations", [])
+    results = []
+
+    if not os.path.isfile(db_path):
+        return {"success": False, "error": "Database file not found", "results": []}
+
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_filename = f"hospital_erp_backup_{timestamp}.db"
+
+    for location in backup_locations:
+        entry = {"path": location, "success": False, "message": ""}
+        try:
+            os.makedirs(location, exist_ok=True)
+            dest = os.path.join(location, backup_filename)
+            shutil.copy2(db_path, dest)
+            entry["success"] = True
+            entry["message"] = f"Backed up to {dest}"
+        except Exception as e:
+            entry["message"] = str(e)
+        results.append(entry)
+
+    all_ok = all(r["success"] for r in results) if results else False
+    return {
+        "success": all_ok,
+        "backup_file": backup_filename,
+        "db_source": db_path,
+        "results": results,
+    }

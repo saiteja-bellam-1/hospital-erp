@@ -7,7 +7,7 @@ import sys
 import os
 
 # Add the backend directory to Python path
-sys.path.insert(0, '/Users/saiteja/Documents/GitHub/hospital-ERP/backend')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config.database import SessionLocal, create_tables
 from app.models.system import SystemModule, SystemSettings
@@ -179,25 +179,70 @@ def setup_default_hospital():
     finally:
         db.close()
 
+def setup_default_super_admin():
+    """Create default super admin user if no users exist"""
+    db = SessionLocal()
+
+    try:
+        existing_user = db.query(User).first()
+        if existing_user:
+            print("Users already exist, skipping default admin creation")
+            return
+
+        # Get the super_admin role
+        admin_role = db.query(UserRole).filter(UserRole.name == "super_admin").first()
+        if not admin_role:
+            print("super_admin role not found — run setup_default_roles() first")
+            return
+
+        # Get default hospital
+        hospital = db.query(Hospital).first()
+
+        admin = User(
+            user_id=str(uuid.uuid4()),
+            username="admin",
+            email="admin@hospital.com",
+            password_hash=get_password_hash("admin123"),
+            first_name="System",
+            last_name="Administrator",
+            role_id=admin_role.id,
+            hospital_id=hospital.id if hospital else None,
+            is_active=True,
+        )
+        db.add(admin)
+        db.commit()
+        print("Created default super admin:")
+        print("  Username: admin")
+        print("  Password: admin123")
+        print("  ** CHANGE THIS PASSWORD AFTER FIRST LOGIN **")
+
+    except Exception as e:
+        print(f"Error creating default admin: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
 def main():
     """Main setup function"""
-    print("🏥 Hospital ERP System Setup")
+    print("Hospital ERP System Setup")
     print("=" * 40)
-    
+
     # Create all tables
     print("Creating database tables...")
     create_tables()
-    print("✅ Database tables created")
-    
+    print("Database tables created")
+
     # Setup system data
     setup_system_modules()
     setup_default_roles()
     setup_default_hospital()
-    
-    print("\n🎉 System setup completed successfully!")
+    setup_default_super_admin()
+
+    print("\nSystem setup completed successfully!")
     print("\nYou can now:")
     print("1. Start the backend server")
-    print("2. Login with existing super admin credentials")
+    print("2. Login with  username: admin  password: admin123")
     print("3. Use the admin panel to manage modules and users")
 
 if __name__ == "__main__":
