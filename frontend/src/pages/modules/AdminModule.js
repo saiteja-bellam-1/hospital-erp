@@ -5,6 +5,7 @@ import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../hooks/use-toast';
+import { ConfirmDialog } from '../../components/ui/confirm-dialog';
 import {
   Settings,
   Users,
@@ -30,6 +31,7 @@ const AdminModule = () => {
   const [editingUser, setEditingUser] = useState(null);
   const [editingRole, setEditingRole] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [confirmState, setConfirmState] = useState({ open: false });
 
   const [userForm, setUserForm] = useState({
     username: '',
@@ -231,42 +233,52 @@ const AdminModule = () => {
     }
   };
 
-  const deleteUser = async (userId) => {
-    if (window.confirm('Are you sure you want to delete this user?')) {
-      try {
-        await axios.delete(`/api/admin/users/${userId}`);
-        toast({
-          title: "Success",
-          description: "User deleted successfully"
-        });
-        fetchUsers();
-      } catch (error) {
-        toast({
-          variant: "destructive",
-          title: "Error",
-          description: error.response?.data?.detail || "Failed to delete user"
-        });
+  const deleteUser = (userId) => {
+    setConfirmState({
+      open: true,
+      message: 'Are you sure you want to delete this user?',
+      onConfirm: async () => {
+        setConfirmState({ open: false });
+        try {
+          await axios.delete(`/api/admin/users/${userId}`);
+          toast({
+            title: "Success",
+            description: "User deleted successfully"
+          });
+          fetchUsers();
+        } catch (error) {
+          toast({
+            variant: "destructive",
+            title: "Error",
+            description: error.response?.data?.detail || "Failed to delete user"
+          });
+        }
       }
-    }
+    });
   };
 
-  const deleteRole = async (roleId) => {
-    if (window.confirm('Are you sure you want to delete this role?')) {
-      try {
-        await axios.delete(`/api/admin/roles/${roleId}`);
-        toast({
-          title: "Success",
-          description: "Role deleted successfully"
-        });
-        fetchRoles();
-      } catch (error) {
-        toast({
-          variant: "destructive",
-          title: "Error",
-          description: error.response?.data?.detail || "Failed to delete role"
-        });
+  const deleteRole = (roleId) => {
+    setConfirmState({
+      open: true,
+      message: 'Are you sure you want to delete this role?',
+      onConfirm: async () => {
+        setConfirmState({ open: false });
+        try {
+          await axios.delete(`/api/admin/roles/${roleId}`);
+          toast({
+            title: "Success",
+            description: "Role deleted successfully"
+          });
+          fetchRoles();
+        } catch (error) {
+          toast({
+            variant: "destructive",
+            title: "Error",
+            description: error.response?.data?.detail || "Failed to delete role"
+          });
+        }
       }
-    }
+    });
   };
 
   const editUser = (user) => {
@@ -828,6 +840,13 @@ const AdminModule = () => {
           </Card>
         </div>
       )}
+
+      <ConfirmDialog
+        open={confirmState.open}
+        message={confirmState.message}
+        onConfirm={() => { confirmState.onConfirm?.(); }}
+        onCancel={() => setConfirmState({ open: false })}
+      />
     </div>
   );
 };

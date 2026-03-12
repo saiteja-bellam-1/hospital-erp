@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../../../components/ui
 import { Button } from '../../../components/ui/button';
 import { Badge } from '../../../components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../../components/ui/dialog';
+import { useToast } from '../../../hooks/use-toast';
 import {
   Users,
   Calendar,
@@ -23,6 +24,7 @@ import {
 } from 'lucide-react';
 
 const ReceptionDashboard = () => {
+  const { toast } = useToast();
   const [stats, setStats] = useState({
     todayAppointments: 0,
     pendingAppointments: 0,
@@ -171,7 +173,7 @@ const ReceptionDashboard = () => {
       }
     } catch (error) {
       console.error('Error fetching lab bill:', error);
-      alert('Failed to load bill');
+      toast({ title: 'Error', description: 'Failed to load bill', variant: 'destructive' });
     }
   };
 
@@ -210,11 +212,11 @@ const ReceptionDashboard = () => {
         setPrescriptionPdfUrl(window.URL.createObjectURL(blob));
         setShowPrescriptionDialog(true);
       } else {
-        alert('Failed to load prescription PDF');
+        toast({ title: 'Error', description: 'Failed to load prescription PDF', variant: 'destructive' });
       }
     } catch (error) {
       console.error('Error fetching prescription:', error);
-      alert('Error loading prescription');
+      toast({ title: 'Error', description: 'Error loading prescription', variant: 'destructive' });
     }
   };
 

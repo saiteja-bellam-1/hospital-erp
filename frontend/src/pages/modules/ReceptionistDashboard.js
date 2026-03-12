@@ -25,8 +25,10 @@ import {
 } from 'lucide-react';
 import BillingManager from '../../components/billing/BillingManager';
 import VitalsForm from '../../components/vitals/VitalsForm';
+import { useToast } from '../../hooks/use-toast';
 
 const ReceptionistDashboard = () => {
+  const { toast } = useToast();
   const [patients, setPatients] = useState([]);
   const [filteredPatients, setFilteredPatients] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -285,12 +287,12 @@ const ReceptionistDashboard = () => {
         if (appointmentData.consultation_fee > 0) {
           showBillPreview(appointmentData.id);
         } else {
-          alert('Appointment booked successfully!');
+          toast({ title: 'Success', description: 'Appointment booked successfully!' });
         }
       } else {
         const errorData = await response.json();
         console.error('Appointment creation failed:', errorData);
-        alert(`Failed to book appointment: ${errorData.detail || 'Unknown error'}`);
+        toast({ title: 'Error', description: `Failed to book appointment: ${errorData.detail || 'Unknown error'}`, variant: 'destructive' });
       }
     } catch (error) {
       console.error('Error creating appointment:', error);
@@ -327,7 +329,7 @@ const ReceptionistDashboard = () => {
       }
     } catch (error) {
       console.error('Error fetching bill:', error);
-      alert('Failed to load bill preview');
+      toast({ title: 'Error', description: 'Failed to load bill preview', variant: 'destructive' });
     }
   };
 
@@ -419,11 +421,11 @@ const ReceptionistDashboard = () => {
           }, 1000);
         };
       } else {
-        alert('Failed to print prescription');
+        toast({ title: 'Error', description: 'Failed to print prescription', variant: 'destructive' });
       }
     } catch (error) {
       console.error('Error printing prescription:', error);
-      alert('Error printing prescription');
+      toast({ title: 'Error', description: 'Error printing prescription', variant: 'destructive' });
     }
   };
 

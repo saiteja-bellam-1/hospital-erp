@@ -7,6 +7,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Badge } from '../../../components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../../../components/ui/dialog';
 import { Textarea } from '../../../components/ui/textarea';
+import { useToast } from '../../../hooks/use-toast';
+import { ConfirmDialog } from '../../../components/ui/confirm-dialog';
 import {
   Calendar,
   Clock,
@@ -32,6 +34,8 @@ import {
 } from 'lucide-react';
 
 const ReceptionAppointmentsPage = () => {
+  const { toast } = useToast();
+  const [confirmState, setConfirmState] = useState({ open: false });
   const [selectedPatient, setSelectedPatient] = useState(null);
   const [doctors, setDoctors] = useState([]);
   const [todayAppointments, setTodayAppointments] = useState([]);
@@ -258,7 +262,7 @@ const ReceptionAppointmentsPage = () => {
       if (response.ok) {
         const prescriptions = await response.json();
         if (prescriptions.length === 0) {
-          alert('No prescriptions found for this patient.');
+          toast({ title: 'Info', description: 'No prescriptions found for this patient.' });
           return;
         }
         // Get the latest prescription
@@ -275,12 +279,12 @@ const ReceptionAppointmentsPage = () => {
           setPrescriptionPdfUrl(url);
           setShowPrescriptionDialog(true);
         } else {
-          alert('Failed to load prescription PDF');
+          toast({ variant: 'destructive', title: 'Error', description: 'Failed to load prescription PDF' });
         }
       }
     } catch (error) {
       console.error('Error fetching prescription:', error);
-      alert('Error loading prescription');
+      toast({ variant: 'destructive', title: 'Error', description: 'Error loading prescription' });
     }
   };
 
@@ -338,7 +342,7 @@ const ReceptionAppointmentsPage = () => {
         setPendingLabOrders(prev => prev.filter(o => o.id !== orderId));
       } else {
         const err = await res.json();
-        alert(err.detail || 'Payment failed');
+        toast({ variant: 'destructive', title: 'Error', description: err.detail || 'Payment failed' });
       }
     } catch (err) {
       console.error('Payment failed:', err);
@@ -366,7 +370,7 @@ const ReceptionAppointmentsPage = () => {
       );
 
       if (!availabilityCheck.is_available) {
-        alert(`Cannot book appointment: ${availabilityCheck.reason}`);
+        toast({ variant: 'destructive', title: 'Error', description: `Cannot book appointment: ${availabilityCheck.reason}` });
         setLoading(false);
         return;
       }
@@ -408,16 +412,16 @@ const ReceptionAppointmentsPage = () => {
         if (appointmentData.consultation_fee > 0) {
           showBillPreview(appointmentData.id);
         } else {
-          alert('Appointment booked successfully!');
+          toast({ title: 'Success', description: 'Appointment booked successfully!' });
         }
       } else {
         const errorData = await response.json();
         console.error('Appointment creation failed:', errorData);
-        alert(`Failed to book appointment: ${errorData.detail || 'Unknown error'}`);
+        toast({ variant: 'destructive', title: 'Error', description: `Failed to book appointment: ${errorData.detail || 'Unknown error'}` });
       }
     } catch (error) {
       console.error('Error creating appointment:', error);
-      alert('Error creating appointment. Please try again.');
+      toast({ variant: 'destructive', title: 'Error', description: 'Error creating appointment. Please try again.' });
     } finally {
       setLoading(false);
     }
@@ -451,7 +455,7 @@ const ReceptionAppointmentsPage = () => {
       }
     } catch (error) {
       console.error('Error fetching bill:', error);
-      alert('Failed to load bill preview');
+      toast({ variant: 'destructive', title: 'Error', description: 'Failed to load bill preview' });
     }
   };
 
@@ -490,15 +494,15 @@ const ReceptionAppointmentsPage = () => {
       });
       if (response.ok) {
         const data = await response.json();
-        alert(`Patient checked in! Token #${data.token_number}`);
+        toast({ title: 'Success', description: `Patient checked in! Token #${data.token_number}` });
         fetchAppointmentsByDate(filterDate);
       } else {
         const err = await response.json();
-        alert(err.detail || 'Check-in failed');
+        toast({ variant: 'destructive', title: 'Error', description: err.detail || 'Check-in failed' });
       }
     } catch (error) {
       console.error('Check-in error:', error);
-      alert('Error during check-in');
+      toast({ variant: 'destructive', title: 'Error', description: 'Error during check-in' });
     }
   };
 
@@ -511,15 +515,15 @@ const ReceptionAppointmentsPage = () => {
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
       });
       if (response.ok) {
-        alert('Patient checked out successfully');
+        toast({ title: 'Success', description: 'Patient checked out successfully' });
         fetchAppointmentsByDate(filterDate);
       } else {
         const err = await response.json();
-        alert(err.detail || 'Check-out failed');
+        toast({ variant: 'destructive', title: 'Error', description: err.detail || 'Check-out failed' });
       }
     } catch (error) {
       console.error('Check-out error:', error);
-      alert('Error during check-out');
+      toast({ variant: 'destructive', title: 'Error', description: 'Error during check-out' });
     }
   };
 
@@ -532,7 +536,7 @@ const ReceptionAppointmentsPage = () => {
 
   const handleCancelAppointment = async () => {
     if (!cancelReason.trim()) {
-      alert('Please provide a reason for cancellation');
+      toast({ variant: 'destructive', title: 'Validation', description: 'Please provide a reason for cancellation' });
       return;
     }
     try {
@@ -543,16 +547,16 @@ const ReceptionAppointmentsPage = () => {
         body: JSON.stringify({ reason: cancelReason })
       });
       if (response.ok) {
-        alert('Appointment cancelled');
+        toast({ title: 'Success', description: 'Appointment cancelled' });
         setShowCancelDialog(false);
         fetchAppointmentsByDate(filterDate);
       } else {
         const err = await response.json();
-        alert(err.detail || 'Cancel failed');
+        toast({ variant: 'destructive', title: 'Error', description: err.detail || 'Cancel failed' });
       }
     } catch (error) {
       console.error('Cancel error:', error);
-      alert('Error cancelling appointment');
+      toast({ variant: 'destructive', title: 'Error', description: 'Error cancelling appointment' });
     }
   };
 
@@ -584,7 +588,7 @@ const ReceptionAppointmentsPage = () => {
 
   const handleReschedule = async () => {
     if (!rescheduleForm.new_date || !rescheduleForm.new_time) {
-      alert('Please select a new date and time');
+      toast({ variant: 'destructive', title: 'Validation', description: 'Please select a new date and time' });
       return;
     }
     try {
@@ -596,16 +600,16 @@ const ReceptionAppointmentsPage = () => {
       });
       if (response.ok) {
         const data = await response.json();
-        alert(`Appointment rescheduled! New appointment: ${data.new_appointment.appointment_number}`);
+        toast({ title: 'Success', description: `Appointment rescheduled! New appointment: ${data.new_appointment.appointment_number}` });
         setShowRescheduleDialog(false);
         fetchAppointmentsByDate(filterDate);
       } else {
         const err = await response.json();
-        alert(err.detail || 'Reschedule failed');
+        toast({ variant: 'destructive', title: 'Error', description: err.detail || 'Reschedule failed' });
       }
     } catch (error) {
       console.error('Reschedule error:', error);
-      alert('Error rescheduling appointment');
+      toast({ variant: 'destructive', title: 'Error', description: 'Error rescheduling appointment' });
     }
   };
 
@@ -621,7 +625,7 @@ const ReceptionAppointmentsPage = () => {
         fetchAppointmentsByDate(filterDate);
       } else {
         const err = await response.json();
-        alert(err.detail || 'Failed to start consultation');
+        toast({ variant: 'destructive', title: 'Error', description: err.detail || 'Failed to start consultation' });
       }
     } catch (error) {
       console.error('Start consultation error:', error);
@@ -629,23 +633,30 @@ const ReceptionAppointmentsPage = () => {
   };
 
   // No-show handler
-  const handleNoShow = async (appointmentId) => {
-    if (!window.confirm('Mark this patient as no-show?')) return;
-    try {
-      const token = localStorage.getItem('token');
-      const response = await fetch(`/api/appointments/${appointmentId}/no-show`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
-      });
-      if (response.ok) {
-        fetchAppointmentsByDate(filterDate);
-      } else {
-        const err = await response.json();
-        alert(err.detail || 'Failed to mark no-show');
+  const handleNoShow = (appointmentId) => {
+    setConfirmState({
+      open: true,
+      title: 'Mark No-Show',
+      description: 'Mark this patient as no-show?',
+      onConfirm: async () => {
+        setConfirmState({ open: false });
+        try {
+          const token = localStorage.getItem('token');
+          const response = await fetch(`/api/appointments/${appointmentId}/no-show`, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+          });
+          if (response.ok) {
+            fetchAppointmentsByDate(filterDate);
+          } else {
+            const err = await response.json();
+            toast({ variant: 'destructive', title: 'Error', description: err.detail || 'Failed to mark no-show' });
+          }
+        } catch (error) {
+          console.error('No-show error:', error);
+        }
       }
-    } catch (error) {
-      console.error('No-show error:', error);
-    }
+    });
   };
 
   // Notes handlers
@@ -668,7 +679,7 @@ const ReceptionAppointmentsPage = () => {
         fetchAppointmentsByDate(filterDate);
       } else {
         const err = await response.json();
-        alert(err.detail || 'Failed to save notes');
+        toast({ variant: 'destructive', title: 'Error', description: err.detail || 'Failed to save notes' });
       }
     } catch (error) {
       console.error('Save notes error:', error);
@@ -1493,6 +1504,15 @@ const ReceptionAppointmentsPage = () => {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Confirm Dialog */}
+      <ConfirmDialog
+        open={confirmState.open}
+        onOpenChange={(open) => setConfirmState(prev => ({ ...prev, open }))}
+        title={confirmState.title}
+        description={confirmState.description}
+        onConfirm={confirmState.onConfirm}
+      />
     </div>
   );
 };

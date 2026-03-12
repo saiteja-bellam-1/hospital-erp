@@ -6,7 +6,7 @@ import { Label } from '../ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { Textarea } from '../ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../ui/dialog';
-import { 
+import {
   Heart,
   Thermometer,
   Scale,
@@ -14,6 +14,7 @@ import {
   Save,
   Activity
 } from 'lucide-react';
+import { useToast } from '../../hooks/use-toast';
 
 const VitalsForm = ({ 
   isOpen, 
@@ -22,6 +23,7 @@ const VitalsForm = ({
   onSave, 
   userRole = 'nurse' 
 }) => {
+  const { toast } = useToast();
   const [loading, setLoading] = useState(false);
   const [vitalsForm, setVitalsForm] = useState({
     blood_pressure_systolic: '',
@@ -105,14 +107,14 @@ const VitalsForm = ({
       });
 
       if (response.ok) {
-        alert('Vitals recorded successfully!');
+        toast({ title: 'Success', description: 'Vitals recorded successfully!' });
         if (onSave) onSave(vitalsData);
         onClose();
         resetForm();
       } else {
         // If the API doesn't exist yet, show a success message for demo
         console.log('Vitals would be saved:', vitalsData);
-        alert('Vitals recorded successfully! (Demo mode)');
+        toast({ title: 'Success', description: 'Vitals recorded successfully! (Demo mode)' });
         if (onSave) onSave(vitalsData);
         onClose();
         resetForm();
@@ -120,7 +122,7 @@ const VitalsForm = ({
     } catch (error) {
       console.error('Error saving vitals:', error);
       // For demo purposes, still show success
-      alert('Vitals recorded successfully! (Demo mode)');
+      toast({ title: 'Success', description: 'Vitals recorded successfully! (Demo mode)' });
       if (onSave) onSave(vitalsForm);
       onClose();
       resetForm();

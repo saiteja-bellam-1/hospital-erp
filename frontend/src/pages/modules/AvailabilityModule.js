@@ -8,8 +8,10 @@ import { Textarea } from '../../components/ui/textarea';
 import { Badge } from '../../components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../components/ui/dialog';
 import { Calendar, Clock, Activity, Plus, Save, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { useToast } from '../../hooks/use-toast';
 
 const AvailabilityModule = () => {
+  const { toast } = useToast();
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(false);
   
@@ -85,16 +87,16 @@ const AvailabilityModule = () => {
       if (response.ok) {
         const data = await response.json();
         setAvailabilitySettings(data);
-        alert('Settings updated successfully!');
+        toast({ title: 'Settings updated successfully!', variant: 'default' });
         return true;
       } else {
         const error = await response.json();
-        alert(`Error updating settings: ${error.detail || 'Unknown error'}`);
+        toast({ title: 'Error updating settings', description: error.detail || 'Unknown error', variant: 'destructive' });
         return false;
       }
     } catch (error) {
       console.error('Error updating availability settings:', error);
-      alert('Error updating settings. Please try again.');
+      toast({ title: 'Error updating settings', description: 'Please try again.', variant: 'destructive' });
       return false;
     } finally {
       setLoading(false);
@@ -126,14 +128,14 @@ const AvailabilityModule = () => {
       
       // Validate required fields
       if (!specialScheduleForm.date || !specialScheduleForm.title) {
-        alert('Please fill in all required fields (Date and Title)');
+        toast({ title: 'Please fill in all required fields (Date and Title)', variant: 'destructive' });
         return false;
       }
 
       // Validate modified hours require start and end times
       if (specialScheduleForm.schedule_type === 'modified_hours' && 
           (!specialScheduleForm.start_time || !specialScheduleForm.end_time)) {
-        alert('Modified hours require both start and end times');
+        toast({ title: 'Modified hours require both start and end times', variant: 'destructive' });
         return false;
       }
 
@@ -177,7 +179,7 @@ const AvailabilityModule = () => {
           emergency_only: false,
           notify_patients: true
         });
-        alert('Special schedule created successfully!');
+        toast({ title: 'Special schedule created successfully!', variant: 'default' });
         return true;
       } else {
         const errorData = await response.json();
@@ -196,13 +198,13 @@ const AvailabilityModule = () => {
           errorMessage = errorData.detail;
         }
         
-        alert(`Error creating special schedule: ${errorMessage}`);
+        toast({ title: 'Error creating special schedule', description: errorMessage, variant: 'destructive' });
         console.error('API Error:', errorData);
         return false;
       }
     } catch (error) {
       console.error('Error creating special schedule:', error);
-      alert('Network error. Please check your connection and try again.');
+      toast({ title: 'Network error', description: 'Please check your connection and try again.', variant: 'destructive' });
       return false;
     } finally {
       setLoading(false);
@@ -227,16 +229,16 @@ const AvailabilityModule = () => {
       if (response.ok) {
         setAvailabilityStatus(newStatus);
         setStatusMessage(message);
-        alert('Status updated successfully!');
+        toast({ title: 'Status updated successfully!', variant: 'default' });
         return true;
       } else {
         const error = await response.json();
-        alert(`Error updating status: ${error.detail || 'Unknown error'}`);
+        toast({ title: 'Error updating status', description: error.detail || 'Unknown error', variant: 'destructive' });
         return false;
       }
     } catch (error) {
       console.error('Error updating availability status:', error);
-      alert('Error updating status. Please try again.');
+      toast({ title: 'Error updating status', description: 'Please try again.', variant: 'destructive' });
       return false;
     }
   };

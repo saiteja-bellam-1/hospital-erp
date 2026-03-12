@@ -8,8 +8,9 @@ import { Textarea } from '../../components/ui/textarea';
 import { Badge } from '../../components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../../components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/tabs';
-import { 
-  Search, 
+import { useToast } from '../../hooks/use-toast';
+import {
+  Search,
   Calendar,
   User,
   Phone,
@@ -28,6 +29,7 @@ import {
 } from 'lucide-react';
 
 const NurseDashboard = () => {
+  const { toast } = useToast();
   const [patients, setPatients] = useState([]);
   const [filteredPatients, setFilteredPatients] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -171,20 +173,20 @@ const NurseDashboard = () => {
       });
 
       if (response.ok) {
-        alert('Vitals recorded successfully!');
+        toast({ title: 'Success', description: 'Vitals recorded successfully!' });
         setShowVitalsDialog(false);
         resetVitalsForm();
       } else {
         // If the API doesn't exist yet, show a success message for demo
         console.log('Vitals would be saved:', vitalsData);
-        alert('Vitals recorded successfully! (Demo mode)');
+        toast({ title: 'Success', description: 'Vitals recorded successfully! (Demo mode)' });
         setShowVitalsDialog(false);
         resetVitalsForm();
       }
     } catch (error) {
       console.error('Error saving vitals:', error);
       // For demo purposes, still show success
-      alert('Vitals recorded successfully! (Demo mode)');
+      toast({ title: 'Success', description: 'Vitals recorded successfully! (Demo mode)' });
       setShowVitalsDialog(false);
       resetVitalsForm();
     } finally {

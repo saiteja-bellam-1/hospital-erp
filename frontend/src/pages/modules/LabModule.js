@@ -8,6 +8,7 @@ import { Textarea } from '../../components/ui/textarea';
 import { Badge } from '../../components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/tabs';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../components/ui/dialog';
+import { ConfirmDialog } from '../../components/ui/confirm-dialog';
 import {
   TestTube, Plus, Edit2, Trash2, Search, RefreshCw, ChevronDown, ChevronUp,
   Activity, ClipboardList, CheckCircle, AlertCircle, Loader2, Database, X
@@ -49,6 +50,11 @@ const LabModule = () => {
   });
   const [paramTestId, setParamTestId] = useState(null);
   const [genderSpecific, setGenderSpecific] = useState(false);
+
+  // Confirm dialog
+  const [confirmState, setConfirmState] = useState({ open: false });
+  const confirm = (message, onConfirm, title) =>
+    setConfirmState({ open: true, message, onConfirm, title });
 
   // Seed loading
   const [seeding, setSeeding] = useState(false);
@@ -137,16 +143,17 @@ const LabModule = () => {
     }
   };
 
-  const handleDeleteCategory = async (id) => {
-    if (!window.confirm('Delete this category? Tests in this category will not be deleted.')) return;
-    try {
-      await axios.delete(`/api/lab/categories/${id}`);
-      showFeedback('Category deleted');
-      fetchCategories();
-      fetchStats();
-    } catch (err) {
-      showFeedback(err.response?.data?.detail || 'Failed to delete category', 'error');
-    }
+  const handleDeleteCategory = (id) => {
+    confirm('Delete this category? Tests in this category will not be deleted.', async () => {
+      try {
+        await axios.delete(`/api/lab/categories/${id}`);
+        showFeedback('Category deleted');
+        fetchCategories();
+        fetchStats();
+      } catch (err) {
+        showFeedback(err.response?.data?.detail || 'Failed to delete category', 'error');
+      }
+    }, 'Delete Category');
   };
 
   // ============ Test CRUD ============
@@ -193,16 +200,17 @@ const LabModule = () => {
     }
   };
 
-  const handleDeleteTest = async (id) => {
-    if (!window.confirm('Delete this test? This will deactivate the test.')) return;
-    try {
-      await axios.delete(`/api/lab/tests/${id}`);
-      showFeedback('Test deleted');
-      fetchTests();
-      fetchStats();
-    } catch (err) {
-      showFeedback(err.response?.data?.detail || 'Failed to delete test', 'error');
-    }
+  const handleDeleteTest = (id) => {
+    confirm('Delete this test? This will deactivate the test.', async () => {
+      try {
+        await axios.delete(`/api/lab/tests/${id}`);
+        showFeedback('Test deleted');
+        fetchTests();
+        fetchStats();
+      } catch (err) {
+        showFeedback(err.response?.data?.detail || 'Failed to delete test', 'error');
+      }
+    }, 'Delete Test');
   };
 
   // ============ Parameter CRUD ============
@@ -273,33 +281,39 @@ const LabModule = () => {
     }
   };
 
-  const handleDeleteParam = async (testId, paramId) => {
-    if (!window.confirm('Delete this parameter?')) return;
-    try {
-      await axios.delete(`/api/lab/tests/${testId}/parameters/${paramId}`);
-      showFeedback('Parameter deleted');
-      fetchTests();
-    } catch (err) {
-      showFeedback(err.response?.data?.detail || 'Failed to delete parameter', 'error');
-    }
+  const handleDeleteParam = (testId, paramId) => {
+    confirm('Delete this parameter?', async () => {
+      try {
+        await axios.delete(`/api/lab/tests/${testId}/parameters/${paramId}`);
+        showFeedback('Parameter deleted');
+        fetchTests();
+      } catch (err) {
+        showFeedback(err.response?.data?.detail || 'Failed to delete parameter', 'error');
+      }
+    }, 'Delete Parameter');
   };
 
   // ============ Seed defaults ============
 
-  const handleSeedDefaults = async () => {
-    if (!window.confirm('This will seed default lab tests (CBC, LFT, RFT, etc.) with standard parameters and reference ranges. Existing tests will not be duplicated. Continue?')) return;
-    setSeeding(true);
-    try {
-      const res = await axios.post('/api/lab/seed-defaults');
-      showFeedback(res.data.message || 'Default tests seeded successfully');
-      fetchTests();
-      fetchCategories();
-      fetchStats();
-    } catch (err) {
-      showFeedback(err.response?.data?.detail || 'Failed to seed defaults', 'error');
-    } finally {
-      setSeeding(false);
-    }
+  const handleSeedDefaults = () => {
+    confirm(
+      'This will seed default lab tests (CBC, LFT, RFT, etc.) with standard parameters and reference ranges. Existing tests will not be duplicated. Continue?',
+      async () => {
+        setSeeding(true);
+        try {
+          const res = await axios.post('/api/lab/seed-defaults');
+          showFeedback(res.data.message || 'Default tests seeded successfully');
+          fetchTests();
+          fetchCategories();
+          fetchStats();
+        } catch (err) {
+          showFeedback(err.response?.data?.detail || 'Failed to seed defaults', 'error');
+        } finally {
+          setSeeding(false);
+        }
+      },
+      'Seed Default Tests'
+    );
   };
 
   // ============ Render helpers ============
@@ -873,6 +887,14 @@ const LabModule = () => {
       {renderCategoryDialog()}
       {renderTestDialog()}
       {renderParamDialog()}
+
+      <ConfirmDialog
+        open={confirmState.open}
+        title={confirmState.title}
+        message={confirmState.message}
+        onConfirm={() => { confirmState.onConfirm?.(); setConfirmState({ open: false }); }}
+        onCancel={() => setConfirmState({ open: false })}
+      />
     </div>
   );
 };

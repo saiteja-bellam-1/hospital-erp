@@ -12,8 +12,10 @@ import {
   Printer,
   CheckCircle
 } from 'lucide-react';
+import { useToast } from '../../hooks/use-toast';
 
 const BillingManager = ({ consultation, onPaymentUpdate }) => {
+  const { toast } = useToast();
   const [bill, setBill] = useState(null);
   const [loading, setLoading] = useState(false);
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
@@ -117,11 +119,11 @@ const BillingManager = ({ consultation, onPaymentUpdate }) => {
         setPrintDialogOpen(true);
       } else {
         const error = await response.json();
-        alert(error.detail || 'Payment processing failed');
+        toast({ variant: 'destructive', title: 'Error', description: error.detail || 'Payment processing failed' });
       }
     } catch (error) {
       console.error('Error processing payment:', error);
-      alert('Payment processing failed');
+      toast({ variant: 'destructive', title: 'Error', description: 'Payment processing failed' });
     } finally {
       setLoading(false);
     }
@@ -178,11 +180,11 @@ const BillingManager = ({ consultation, onPaymentUpdate }) => {
           }, 1000);
         };
       } else {
-        alert('Failed to print bill');
+        toast({ variant: 'destructive', title: 'Error', description: 'Failed to print bill' });
       }
     } catch (error) {
       console.error('Error printing bill:', error);
-      alert('Error printing bill');
+      toast({ variant: 'destructive', title: 'Error', description: 'Error printing bill' });
     }
   };
 

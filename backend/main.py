@@ -51,11 +51,40 @@ security = HTTPBearer()
 async def startup_event():
     from app.utils.config import is_setup_complete
     if is_setup_complete():
-        # Only create tables and seed if setup wizard has been completed
         create_tables()
         print("Database tables created successfully")
+        # Ensure role permissions exist (for installations that pre-date the wizard)
+        _ensure_role_permissions()
     else:
         print("Setup not complete — waiting for setup wizard")
+
+
+def _ensure_role_permissions():
+    """Seed/update role permissions on every startup to keep them in sync."""
+    from config.database import SessionLocal
+    from app.models.permissions import RoleModulePermission
+    from app.models.user import UserRole
+    from app.routes.setup import _seed_role_permissions
+    db = SessionLocal()
+    try:
+        # Always upsert role permissions (creates missing, updates existing)
+        _seed_role_permissions(db, UserRole, RoleModulePermission)
+        db.commit()
+        print("Role permissions synced")
+
+        # Ensure outpatient module is enabled (core module)
+        from app.models.system import SystemModule
+        outpatient = db.query(SystemModule).filter(SystemModule.module_name == "outpatient").first()
+        if outpatient and not outpatient.is_enabled:
+            outpatient.is_enabled = True
+            outpatient.is_always_enabled = True
+            db.commit()
+            print("Enabled outpatient module")
+    except Exception as e:
+        print(f"Warning: Could not seed role permissions: {e}")
+        db.rollback()
+    finally:
+        db.close()
 
 @app.get("/")
 async def root():

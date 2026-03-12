@@ -24,8 +24,10 @@ import {
   ChevronRight
 } from 'lucide-react';
 import VitalsForm from '../../../components/vitals/VitalsForm';
+import { useToast } from '../../../hooks/use-toast';
 
 const ReceptionPatientsPage = () => {
+  const { toast } = useToast();
   const [patients, setPatients] = useState([]);
   const [filteredPatients, setFilteredPatients] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -187,15 +189,15 @@ const ReceptionPatientsPage = () => {
           emergency_contact_phone: '',
           address: ''
         });
-        alert('Patient registered successfully!');
+        toast({ title: 'Success', description: 'Patient registered successfully!' });
       } else {
         const errorData = await response.json();
         console.error('Patient creation failed:', errorData);
-        alert(`Failed to register patient: ${errorData.detail || 'Unknown error'}`);
+        toast({ title: 'Registration Failed', description: errorData.detail || 'Unknown error', variant: 'destructive' });
       }
     } catch (error) {
       console.error('Error creating patient:', error);
-      alert('Error registering patient');
+      toast({ title: 'Error', description: 'Error registering patient', variant: 'destructive' });
     } finally {
       setLoading(false);
     }
@@ -250,11 +252,11 @@ const ReceptionPatientsPage = () => {
           }, 1000);
         };
       } else {
-        alert('Failed to print prescription');
+        toast({ title: 'Print Failed', description: 'Failed to print prescription', variant: 'destructive' });
       }
     } catch (error) {
       console.error('Error printing prescription:', error);
-      alert('Error printing prescription');
+      toast({ title: 'Error', description: 'Error printing prescription', variant: 'destructive' });
     }
   };
 
@@ -300,16 +302,16 @@ const ReceptionPatientsPage = () => {
         body: JSON.stringify(updateData)
       });
       if (response.ok) {
-        alert('Patient updated successfully!');
+        toast({ title: 'Success', description: 'Patient updated successfully!' });
         setShowEditPatientDialog(false);
         fetchPatients();
       } else {
         const err = await response.json();
-        alert(err.detail || 'Failed to update patient');
+        toast({ title: 'Update Failed', description: err.detail || 'Failed to update patient', variant: 'destructive' });
       }
     } catch (error) {
       console.error('Error updating patient:', error);
-      alert('Error updating patient');
+      toast({ title: 'Error', description: 'Error updating patient', variant: 'destructive' });
     } finally {
       setLoading(false);
     }
@@ -830,7 +832,7 @@ const ReceptionPatientsPage = () => {
               patient={selectedPatient}
               onSuccess={() => {
                 setShowVitalsDialog(false);
-                alert('Vitals recorded successfully!');
+                toast({ title: 'Success', description: 'Vitals recorded successfully!' });
               }}
             />
           )}

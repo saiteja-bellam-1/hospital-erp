@@ -16,9 +16,11 @@ import {
 } from 'lucide-react';
 import { format } from 'date-fns';
 import VitalsForm from '../../components/vitals/VitalsForm';
+import { useToast } from '../../hooks/use-toast';
 
 const DoctorDashboard = () => {
   const navigate = useNavigate();
+  const { toast } = useToast();
   const [user, setUser] = useState(null);
   const [appointments, setAppointments] = useState([]);
   const [completedAppointments, setCompletedAppointments] = useState([]);
@@ -297,7 +299,7 @@ const DoctorDashboard = () => {
         );
         setShowNotesDialog(false);
       } else {
-        alert('Failed to save notes');
+        toast({ variant: 'destructive', title: 'Error', description: 'Failed to save notes' });
       }
     } catch (error) {
       console.error('Error saving notes:', error);
@@ -340,9 +342,9 @@ const DoctorDashboard = () => {
         if (response.ok) {
           const data = await response.json();
           setActiveConsultation(data);
-          alert('Consultation updated successfully');
+          toast({ title: 'Success', description: 'Consultation updated successfully' });
         } else {
-          alert('Failed to update consultation');
+          toast({ variant: 'destructive', title: 'Error', description: 'Failed to update consultation' });
         }
       } else {
         // Create new
@@ -363,15 +365,15 @@ const DoctorDashboard = () => {
         if (response.ok) {
           const data = await response.json();
           setActiveConsultation(data);
-          alert('Consultation record created successfully');
+          toast({ title: 'Success', description: 'Consultation record created successfully' });
         } else {
           const error = await response.json();
-          alert(`Error: ${error.detail || 'Failed to create consultation'}`);
+          toast({ variant: 'destructive', title: 'Error', description: error.detail || 'Failed to create consultation' });
         }
       }
     } catch (error) {
       console.error('Error saving consultation:', error);
-      alert('Error saving consultation');
+      toast({ variant: 'destructive', title: 'Error', description: 'Error saving consultation' });
     } finally {
       setLoading(false);
     }
@@ -396,7 +398,7 @@ const DoctorDashboard = () => {
       });
       if (response.ok) {
         setShowConsultationDialog(false);
-        alert('Consultation completed');
+        toast({ title: 'Success', description: 'Consultation completed' });
       }
     } catch (error) {
       console.error('Error completing consultation:', error);
@@ -420,7 +422,7 @@ const DoctorDashboard = () => {
         setPreviewPdfUrl(url);
         setShowPrintPreviewDialog(true);
       } else {
-        alert('Failed to load prescription preview');
+        toast({ variant: 'destructive', title: 'Error', description: 'Failed to load prescription preview' });
       }
     } catch (error) {
       console.error('Error loading prescription preview:', error);
@@ -486,7 +488,7 @@ const DoctorDashboard = () => {
       } catch (e) { console.error('Error fetching patient:', e); }
 
       if (!patient_uuid) {
-        alert('Could not find patient information. Please try again.');
+        toast({ variant: 'destructive', title: 'Error', description: 'Could not find patient information. Please try again.' });
         return;
       }
 
@@ -558,7 +560,7 @@ const DoctorDashboard = () => {
         fetchPrescriptions();
       } else {
         const error = await response.json();
-        alert(`Error creating prescription: ${error.detail || 'Unknown error'}`);
+        toast({ variant: 'destructive', title: 'Error', description: `Error creating prescription: ${error.detail || 'Unknown error'}` });
       }
     } catch (error) {
       console.error('Error creating prescription:', error);
@@ -597,7 +599,7 @@ const DoctorDashboard = () => {
         fetchTodayAppointments(user?.id);
         fetchQueueData(user?.id);
       } else {
-        alert('Error updating appointment status');
+        toast({ variant: 'destructive', title: 'Error', description: 'Error updating appointment status' });
       }
     } catch (error) {
       console.error('Error:', error);
@@ -681,7 +683,7 @@ const DoctorDashboard = () => {
         });
         if (!res.ok) {
           const err = await res.json();
-          alert(err.detail || 'Failed to create lab orders');
+          toast({ variant: 'destructive', title: 'Error', description: err.detail || 'Failed to create lab orders' });
           setLabOrderSubmitting(false);
           return;
         }
@@ -695,9 +697,9 @@ const DoctorDashboard = () => {
       setLabOrderNotes('');
       fetchLabOrders();
       const count = selectedLabTests.length + customLabTests.length;
-      alert(`${count} lab order(s) created successfully${customLabTests.length > 0 ? '. Custom tests have been noted for the lab team.' : ''}`);
+      toast({ title: 'Success', description: `${count} lab order(s) created successfully${customLabTests.length > 0 ? '. Custom tests have been noted for the lab team.' : ''}` });
     } catch (err) {
-      alert('Failed to create lab orders');
+      toast({ variant: 'destructive', title: 'Error', description: 'Failed to create lab orders' });
     } finally {
       setLabOrderSubmitting(false);
     }

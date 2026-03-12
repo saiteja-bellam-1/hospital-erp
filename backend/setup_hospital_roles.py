@@ -192,13 +192,13 @@ def setup_role_permissions():
             "ehr": ["view_records", "edit_records", "create_prescriptions", "manage_templates", "view_history", "generate_reports"]
         },
         "hospital_admin": {
-            "admin": ["view_system_reports", "manage_settings"],
+            "admin": ["manage_users", "manage_roles", "view_system_reports", "manage_settings"],
             "lab": ["view_reports", "create_reports"],
             "pharmacy": ["view_prescriptions", "generate_reports"],
-            "billing": ["view_financial_reports", "manage_insurance"],
-            "outpatient": ["manage_schedules", "view_appointments"],
+            "billing": ["view_financial_reports", "manage_insurance", "process_payments", "generate_invoices"],
+            "outpatient": ["schedule_appointments", "manage_schedules", "register_patients", "manage_queues", "view_appointments", "cancel_appointments"],
             "inpatient": ["view_occupancy"],
-            "ehr": ["view_records", "view_history", "generate_reports"]
+            "ehr": ["view_records", "edit_records", "view_history", "generate_reports"]
         },
         "lab_admin": {
             "lab": ["manage_tests", "set_rates", "view_reports", "create_reports", "manage_equipment", "manage_templates"]
@@ -233,6 +233,11 @@ def setup_role_permissions():
         },
         "pharmacist": {
             "pharmacy": ["dispense_medications", "view_prescriptions", "manage_inventory"]
+        },
+        "receptionist": {
+            "outpatient": ["schedule_appointments", "register_patients", "manage_queues", "view_appointments", "cancel_appointments"],
+            "billing": ["process_payments", "generate_invoices", "view_financial_reports"],
+            "ehr": ["view_records", "view_history"]
         }
     }
     

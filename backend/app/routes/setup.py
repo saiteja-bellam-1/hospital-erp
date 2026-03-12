@@ -46,6 +46,44 @@ async def get_setup_status():
     return {"setup_complete": is_setup_complete()}
 
 
+@router.get("/debug-permissions")
+async def debug_permissions():
+    """Diagnostic endpoint to check role permissions state."""
+    from config.database import SessionLocal
+    from app.models.permissions import RoleModulePermission
+    from app.models.user import UserRole
+    from app.models.system import SystemModule
+
+    db = SessionLocal()
+    try:
+        roles = db.query(UserRole).all()
+        role_perms = db.query(RoleModulePermission).all()
+        modules = db.query(SystemModule).all()
+
+        return {
+            "roles": [{"id": r.id, "name": r.name} for r in roles],
+            "role_permissions_count": len(role_perms),
+            "role_permissions": [
+                {
+                    "role_id": rp.role_id,
+                    "module": rp.module_name,
+                    "permissions": rp.permissions,
+                }
+                for rp in role_perms
+            ],
+            "modules": [
+                {
+                    "name": m.module_name,
+                    "enabled": m.is_enabled,
+                    "always_enabled": m.is_always_enabled,
+                }
+                for m in modules
+            ],
+        }
+    finally:
+        db.close()
+
+
 @router.post("/validate-path")
 async def validate_path(data: dict):
     """Validate that a directory path exists and is writable."""
@@ -183,9 +221,9 @@ def _init_database_and_seed(setup_data: SetupRequest, db_path: str):
                 db.add(UserRole(name=name, description=desc))
         db.flush()
 
-        # 2. Create system modules
+        # 2. Create system modules (outpatient enabled by default — core module)
         modules = [
-            ("outpatient", "Outpatient", False, False),
+            ("outpatient", "Outpatient", True, True),
             ("inpatient", "Inpatient", False, False),
             ("lab", "Laboratory", False, False),
             ("pharmacy", "Pharmacy", False, False),
@@ -236,6 +274,9 @@ def _init_database_and_seed(setup_data: SetupRequest, db_path: str):
             )
             db.add(admin)
 
+        # 5. Create role-module permissions for all roles
+        _seed_role_permissions(db, UserRole, RoleModulePermission)
+
         db.commit()
     except Exception as e:
         db.rollback()
@@ -243,6 +284,74 @@ def _init_database_and_seed(setup_data: SetupRequest, db_path: str):
     finally:
         db.close()
         engine.dispose()
+
+
+def _seed_role_permissions(db, UserRole, RoleModulePermission):
+    """Create RoleModulePermission records so each role can access its modules."""
+    role_permissions_map = {
+        "super_admin": {
+            "admin": ["manage_users", "manage_roles", "manage_modules", "view_system_reports", "manage_settings"],
+            "lab": ["manage_tests", "set_rates", "view_reports", "create_reports", "manage_equipment", "manage_templates"],
+            "pharmacy": ["manage_inventory", "set_drug_rates", "dispense_medications", "view_prescriptions", "manage_suppliers", "generate_reports"],
+            "billing": ["manage_rates", "process_payments", "generate_invoices", "view_financial_reports", "manage_insurance", "handle_refunds"],
+            "outpatient": ["schedule_appointments", "manage_schedules", "register_patients", "manage_queues", "view_appointments", "cancel_appointments"],
+            "inpatient": ["manage_beds", "admit_patients", "discharge_patients", "manage_wards", "set_room_rates", "view_occupancy"],
+            "ehr": ["view_records", "edit_records", "create_prescriptions", "manage_templates", "view_history", "generate_reports"],
+        },
+        "hospital_admin": {
+            "admin": ["manage_users", "manage_roles", "view_system_reports", "manage_settings"],
+            "lab": ["view_reports", "create_reports"],
+            "pharmacy": ["view_prescriptions", "generate_reports"],
+            "billing": ["view_financial_reports", "manage_insurance", "process_payments", "generate_invoices"],
+            "outpatient": ["schedule_appointments", "manage_schedules", "register_patients", "manage_queues", "view_appointments", "cancel_appointments"],
+            "inpatient": ["view_occupancy"],
+            "ehr": ["view_records", "edit_records", "view_history", "generate_reports"],
+        },
+        "doctor": {
+            "ehr": ["view_records", "edit_records", "create_prescriptions", "view_history", "generate_reports"],
+            "lab": ["view_reports", "create_reports"],
+            "pharmacy": ["view_prescriptions"],
+            "outpatient": ["view_appointments"],
+            "inpatient": ["admit_patients", "discharge_patients", "view_occupancy"],
+        },
+        "nurse": {
+            "ehr": ["view_records", "edit_records", "view_history"],
+            "inpatient": ["view_occupancy"],
+            "outpatient": ["manage_queues", "view_appointments"],
+        },
+        "receptionist": {
+            "outpatient": ["schedule_appointments", "register_patients", "manage_queues", "view_appointments", "cancel_appointments"],
+            "billing": ["process_payments", "generate_invoices", "view_financial_reports"],
+            "ehr": ["view_records", "view_history"],
+        },
+        "lab_admin": {
+            "lab": ["manage_tests", "set_rates", "view_reports", "create_reports", "manage_equipment", "manage_templates"],
+        },
+        "lab_technician": {
+            "lab": ["view_reports", "create_reports"],
+        },
+        "pharmacist": {
+            "pharmacy": ["dispense_medications", "view_prescriptions", "manage_inventory"],
+        },
+    }
+
+    for role_name, module_perms in role_permissions_map.items():
+        role = db.query(UserRole).filter(UserRole.name == role_name).first()
+        if not role:
+            continue
+        for module_name, permissions in module_perms.items():
+            existing = db.query(RoleModulePermission).filter(
+                RoleModulePermission.role_id == role.id,
+                RoleModulePermission.module_name == module_name,
+            ).first()
+            if existing:
+                existing.permissions = permissions
+            else:
+                db.add(RoleModulePermission(
+                    role_id=role.id,
+                    module_name=module_name,
+                    permissions=permissions,
+                ))
 
 
 def _store_license(license_content: str, db_path: str):

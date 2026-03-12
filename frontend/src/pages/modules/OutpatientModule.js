@@ -10,8 +10,12 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/ta
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../../components/ui/dialog';
 import { Plus, Search, Calendar as CalendarIcon, Clock, User, Trash2 } from 'lucide-react';
 import { format } from 'date-fns';
+import { useToast } from '../../hooks/use-toast';
+import { ConfirmDialog } from '../../components/ui/confirm-dialog';
 
 const OutpatientModule = () => {
+  const { toast } = useToast();
+  const [confirmState, setConfirmState] = useState({ open: false });
   const [activeTab, setActiveTab] = useState('reception');
   const [appointments, setAppointments] = useState([]);
   const [doctors, setDoctors] = useState([]);
@@ -129,11 +133,11 @@ const OutpatientModule = () => {
         setShowPatientDialog(true);
       } else {
         console.error('Error searching patient:', response.status);
-        alert('Error searching patient. Please try again.');
+        toast({ variant: 'destructive', title: 'Error', description: 'Error searching patient. Please try again.' });
       }
     } catch (error) {
       console.error('Error searching patient:', error);
-      alert('Error searching patient. Please check your connection.');
+      toast({ variant: 'destructive', title: 'Error', description: 'Error searching patient. Please check your connection.' });
     }
     setLoading(false);
   };
@@ -167,11 +171,11 @@ const OutpatientModule = () => {
         setSelectedPatient(null);
       } else {
         console.error('Error searching patients:', response.status);
-        alert('Error searching patients. Please try again.');
+        toast({ variant: 'destructive', title: 'Error', description: 'Error searching patients. Please try again.' });
       }
     } catch (error) {
       console.error('Error searching patients:', error);
-      alert('Error searching patients. Please check your connection.');
+      toast({ variant: 'destructive', title: 'Error', description: 'Error searching patients. Please check your connection.' });
     }
     setLoading(false);
   };
@@ -252,11 +256,11 @@ const OutpatientModule = () => {
         });
       } else {
         const error = await response.json();
-        alert(`Error creating patient: ${error.detail}`);
+        toast({ variant: 'destructive', title: 'Error', description: `Error creating patient: ${error.detail}` });
       }
     } catch (error) {
       console.error('Error creating patient:', error);
-      alert('Error creating patient');
+      toast({ variant: 'destructive', title: 'Error', description: 'Error creating patient' });
     }
     setLoading(false);
   };
@@ -298,14 +302,14 @@ const OutpatientModule = () => {
         });
         setSelectedPatient(null);
         setSearchPhone('');
-        alert('Appointment created successfully!');
+        toast({ title: 'Success', description: 'Appointment created successfully!' });
       } else {
         const error = await response.json();
-        alert(`Error creating appointment: ${error.detail}`);
+        toast({ variant: 'destructive', title: 'Error', description: `Error creating appointment: ${error.detail}` });
       }
     } catch (error) {
       console.error('Error creating appointment:', error);
-      alert('Error creating appointment');
+      toast({ variant: 'destructive', title: 'Error', description: 'Error creating appointment' });
     }
     setLoading(false);
   };
@@ -332,10 +336,6 @@ const OutpatientModule = () => {
   };
 
   const deleteAppointment = async (appointmentId) => {
-    if (!window.confirm('Are you sure you want to delete this appointment?')) {
-      return;
-    }
-
     try {
       const token = localStorage.getItem('token');
       const response = await fetch(`/api/appointments/${appointmentId}`, {
@@ -345,15 +345,26 @@ const OutpatientModule = () => {
 
       if (response.ok) {
         setAppointments(prev => prev.filter(apt => apt.id !== appointmentId));
-        alert('Appointment deleted successfully!');
+        toast({ title: 'Success', description: 'Appointment deleted successfully!' });
       } else {
         const errorData = await response.json();
-        alert(`Error deleting appointment: ${errorData.detail}`);
+        toast({ variant: 'destructive', title: 'Error', description: `Error deleting appointment: ${errorData.detail}` });
       }
     } catch (error) {
       console.error('Error deleting appointment:', error);
-      alert('Error deleting appointment');
+      toast({ variant: 'destructive', title: 'Error', description: 'Error deleting appointment' });
     }
+  };
+
+  const handleDeleteClick = (appointmentId) => {
+    setConfirmState({
+      open: true,
+      message: 'Are you sure you want to delete this appointment?',
+      onConfirm: () => {
+        setConfirmState({ open: false });
+        deleteAppointment(appointmentId);
+      }
+    });
   };
 
   return (
@@ -1030,7 +1041,7 @@ const OutpatientModule = () => {
                               <Button
                                 variant="ghost"
                                 size="sm"
-                                onClick={() => deleteAppointment(appointment.id)}
+                                onClick={() => handleDeleteClick(appointment.id)}
                                 className="h-8 w-8 p-0 text-red-600 hover:text-red-800 hover:bg-red-50"
                                 title="Delete appointment"
                               >
@@ -1051,6 +1062,14 @@ const OutpatientModule = () => {
           </Card>
         </TabsContent>
       </Tabs>
+      <ConfirmDialog
+        open={confirmState.open}
+        title="Delete Appointment"
+        message={confirmState.message}
+        confirmLabel="Delete"
+        onConfirm={confirmState.onConfirm}
+        onCancel={() => setConfirmState({ open: false })}
+      />
     </div>
   );
 };
