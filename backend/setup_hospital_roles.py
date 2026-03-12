@@ -220,7 +220,7 @@ def setup_role_permissions():
             "ehr": ["view_records", "edit_records", "create_prescriptions", "view_history", "generate_reports"],
             "lab": ["view_reports", "create_reports"],
             "pharmacy": ["view_prescriptions"],
-            "outpatient": ["view_appointments"],
+            "outpatient": ["view_appointments", "view_patients", "schedule_appointments", "update_appointments", "register_patients", "manage_queues", "cancel_appointments"],
             "inpatient": ["admit_patients", "discharge_patients", "view_occupancy"]
         },
         "nurse": {
