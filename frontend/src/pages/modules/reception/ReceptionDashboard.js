@@ -1,8 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '../../../components/ui/card';
 import { Button } from '../../../components/ui/button';
 import { Badge } from '../../../components/ui/badge';
+import { Input } from '../../../components/ui/input';
+import { Label } from '../../../components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../../components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../../components/ui/dialog';
 import { useToast } from '../../../hooks/use-toast';
 import {
@@ -20,11 +23,14 @@ import {
   Receipt,
   FileText,
   RefreshCw,
-  Eye
+  Eye,
+  Download,
+  ArrowRight
 } from 'lucide-react';
 
 const ReceptionDashboard = () => {
   const { toast } = useToast();
+  const navigate = useNavigate();
   const [stats, setStats] = useState({
     todayAppointments: 0,
     pendingAppointments: 0,
@@ -35,12 +41,21 @@ const ReceptionDashboard = () => {
   const [todayAppointments, setTodayAppointments] = useState([]);
   const [labOrders, setLabOrders] = useState([]);
   const [recentPrescriptions, setRecentPrescriptions] = useState([]);
+
+  // Register patient dialog
+  const [showRegisterDialog, setShowRegisterDialog] = useState(false);
+  const [registerLoading, setRegisterLoading] = useState(false);
+  const emptyPatientForm = {
+    first_name: '', last_name: '', date_of_birth: '', gender: '',
+    blood_group: '', marital_status: '', abha_id: '', email: '',
+    primary_phone: '', emergency_contact_name: '', emergency_contact_phone: '',
+    emergency_contact_relation: '', address_line1: '', address_line2: '',
+    village: '', mandal: '', district: '',
+  };
+  const [patientForm, setPatientForm] = useState(emptyPatientForm);
   const [loading, setLoading] = useState(true);
 
   // Dialog states
-  const [showBillDialog, setShowBillDialog] = useState(false);
-  const [billPdfUrl, setBillPdfUrl] = useState(null);
-  const [billData, setBillData] = useState(null);
   const [showPrescriptionDialog, setShowPrescriptionDialog] = useState(false);
   const [prescriptionPdfUrl, setPrescriptionPdfUrl] = useState(null);
   const [prescriptionData, setPrescriptionData] = useState(null);
@@ -139,64 +154,119 @@ const ReceptionDashboard = () => {
     }
   };
 
-  // Bill preview for lab orders
-  const showLabBillPreview = async (order) => {
+  const createPatient = async () => {
+    setRegisterLoading(true);
     try {
       const token = localStorage.getItem('token');
-      // If the order has a consultation_id, use consultation bill endpoint
-      if (order.consultation_id) {
-        const billResponse = await fetch(`/api/consultations/${order.consultation_id}/bill`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
-        if (billResponse.ok) {
-          const data = await billResponse.json();
-          setBillData(data);
-          const pdfResponse = await fetch(`/api/consultations/${order.consultation_id}/bill/download`, {
-            headers: { 'Authorization': `Bearer ${token}` }
-          });
-          if (pdfResponse.ok) {
-            const blob = await pdfResponse.blob();
-            setBillPdfUrl(window.URL.createObjectURL(blob));
-            setShowBillDialog(true);
-          }
-        }
+      const response = await fetch('/api/patients/', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(patientForm)
+      });
+      if (response.ok) {
+        setShowRegisterDialog(false);
+        setPatientForm(emptyPatientForm);
+        toast({ title: 'Success', description: 'Patient registered successfully!' });
+        fetchDashboardData();
       } else {
-        // Show basic order info as bill
-        setBillData({
-          bill_number: order.order_number,
-          patient_name: order.patient_name,
-          doctor_name: order.doctor_name,
-          total_amount: 0,
-          items: [{ item_name: order.test_name, quantity: 1 }]
-        });
-        setShowBillDialog(true);
+        const err = await response.json();
+        toast({ title: 'Registration Failed', description: err.detail || 'Unknown error', variant: 'destructive' });
       }
     } catch (error) {
-      console.error('Error fetching lab bill:', error);
-      toast({ title: 'Error', description: 'Failed to load bill', variant: 'destructive' });
+      toast({ title: 'Error', description: 'Error registering patient', variant: 'destructive' });
+    } finally {
+      setRegisterLoading(false);
     }
   };
 
-  const printBill = () => {
-    if (billPdfUrl) {
-      const iframe = document.createElement('iframe');
-      iframe.style.display = 'none';
-      document.body.appendChild(iframe);
-      iframe.src = billPdfUrl;
-      iframe.onload = () => {
-        iframe.contentWindow.print();
-        setTimeout(() => document.body.removeChild(iframe), 1000);
-      };
+  // Lab payment dialog
+  const [showLabPaymentDialog, setShowLabPaymentDialog] = useState(false);
+  const [pendingLabOrders, setPendingLabOrders] = useState([]);
+  const [labPaymentLoading, setLabPaymentLoading] = useState(false);
+  const [labPaymentMethod, setLabPaymentMethod] = useState('cash');
+  const [allLabOrdersForPatient, setAllLabOrdersForPatient] = useState([]);
+
+  const openLabPaymentDialog = async (patientId) => {
+    setLabPaymentLoading(true);
+    setShowLabPaymentDialog(true);
+    setPendingLabOrders([]);
+    setAllLabOrdersForPatient([]);
+    try {
+      const token = localStorage.getItem('token');
+      const [pendingRes, allRes] = await Promise.all([
+        fetch(`/api/lab/orders/patient/${patientId}/pending-payment`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        }),
+        fetch(`/api/lab/orders/patient/${patientId}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        })
+      ]);
+      if (pendingRes.ok) setPendingLabOrders(await pendingRes.json());
+      if (allRes.ok) setAllLabOrdersForPatient(await allRes.json());
+    } catch (err) {
+      console.error('Failed to fetch lab orders:', err);
+    } finally {
+      setLabPaymentLoading(false);
     }
   };
 
-  const closeBillDialog = () => {
-    setShowBillDialog(false);
-    if (billPdfUrl) {
-      window.URL.revokeObjectURL(billPdfUrl);
-      setBillPdfUrl(null);
+  const collectAllLabPayments = async () => {
+    if (pendingLabOrders.length === 0) return;
+    const patientId = pendingLabOrders[0].patient_id;
+    setLabPaymentLoading(true);
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`/api/lab/orders/patient/${patientId}/bill`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ payment_method: labPaymentMethod })
+      });
+      if (res.ok) {
+        const blob = await res.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `lab_bill_${patientId}_${Date.now()}.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+        setPendingLabOrders([]);
+        toast({ title: 'Success', description: 'Lab bill generated and payment collected' });
+        fetchDashboardData();
+      } else {
+        const err = await res.json();
+        toast({ variant: 'destructive', title: 'Error', description: err.detail || 'Bill generation failed' });
+      }
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Error', description: 'Failed to generate lab bill' });
+    } finally {
+      setLabPaymentLoading(false);
     }
-    setBillData(null);
+  };
+
+  const downloadLabReport = async (reportId, orderNumber) => {
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`/api/lab/reports/${reportId}/download`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const blob = await res.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `lab_report_${orderNumber}.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+      } else {
+        toast({ variant: 'destructive', title: 'Error', description: 'Failed to download report' });
+      }
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Error', description: 'Failed to download report' });
+    }
   };
 
   // Prescription preview
@@ -391,7 +461,10 @@ const ReceptionDashboard = () => {
             ) : (
               <div className="space-y-3">
                 {todayAppointments.map((appointment) => (
-                  <div key={appointment.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                  <div key={appointment.id}
+                    className="flex items-center justify-between p-3 bg-gray-50 rounded-lg cursor-pointer hover:bg-gray-100 transition-colors"
+                    onClick={() => navigate('/dashboard/reception/appointments')}
+                  >
                     <div className="flex-1">
                       <div className="flex items-center space-x-3">
                         <div className="flex-1">
@@ -401,11 +474,12 @@ const ReceptionDashboard = () => {
                         <div className="text-right">
                           <p className="font-medium">{appointment.appointment_time}</p>
                           <span className={`px-2 py-1 text-xs rounded-full ${getStatusBadge(appointment.status)}`}>
-                            {appointment.status}
+                            {appointment.status.replace('_', ' ')}
                           </span>
                         </div>
                       </div>
                     </div>
+                    <ArrowRight className="h-4 w-4 text-gray-400 ml-2 flex-shrink-0" />
                   </div>
                 ))}
                 {todayAppointments.length >= 5 && (
@@ -429,18 +503,14 @@ const ReceptionDashboard = () => {
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-1 gap-3">
-              <Link to="/dashboard/reception/patients">
-                <Button variant="outline" className="w-full justify-start">
-                  <UserPlus className="h-4 w-4 mr-2" />
-                  Register New Patient
-                </Button>
-              </Link>
-              <Link to="/dashboard/reception/appointments">
-                <Button variant="outline" className="w-full justify-start">
-                  <CalendarPlus className="h-4 w-4 mr-2" />
-                  Schedule Appointment
-                </Button>
-              </Link>
+              <Button variant="outline" className="w-full justify-start" onClick={() => { setPatientForm(emptyPatientForm); setShowRegisterDialog(true); }}>
+                <UserPlus className="h-4 w-4 mr-2" />
+                Register New Patient
+              </Button>
+              <Button variant="outline" className="w-full justify-start" onClick={() => navigate('/dashboard/reception/appointments?action=schedule')}>
+                <CalendarPlus className="h-4 w-4 mr-2" />
+                Schedule Appointment
+              </Button>
               <Link to="/dashboard/reception/appointments">
                 <Button variant="outline" className="w-full justify-start">
                   <Calendar className="h-4 w-4 mr-2" />
@@ -461,11 +531,18 @@ const ReceptionDashboard = () => {
         {/* Today's Lab Orders */}
         <Card>
           <CardHeader>
-            <CardTitle className="flex items-center space-x-2">
-              <TestTube className="h-5 w-5" />
-              <span>Today's Lab Orders</span>
-              <Badge variant="outline" className="ml-2">{labOrders.length}</Badge>
-            </CardTitle>
+            <div className="flex items-center justify-between">
+              <CardTitle className="flex items-center space-x-2">
+                <TestTube className="h-5 w-5" />
+                <span>Today's Lab Orders</span>
+                <Badge variant="outline" className="ml-2">{labOrders.length}</Badge>
+              </CardTitle>
+              <Link to="/dashboard/reception/appointments">
+                <Button variant="ghost" size="sm" className="text-xs text-gray-500">
+                  View All <ArrowRight className="h-3 w-3 ml-1" />
+                </Button>
+              </Link>
+            </div>
           </CardHeader>
           <CardContent>
             {labOrders.length === 0 ? (
@@ -483,15 +560,26 @@ const ReceptionDashboard = () => {
                         <Badge className={`text-xs ${getLabStatusColor(order.status)}`}>
                           {order.status}
                         </Badge>
+                        <Badge className={`text-xs ${order.payment_status === 'paid' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+                          {order.payment_status === 'paid' ? 'Paid' : 'Unpaid'}
+                        </Badge>
                       </div>
-                      <p className="text-sm text-gray-600 truncate">{order.test_name}</p>
+                      <p className="text-sm text-gray-600 truncate">{order.test_name} — ₹{(order.amount || 0).toFixed(0)}</p>
                       <p className="text-xs text-gray-400">#{order.order_number} • {order.doctor_name}</p>
                     </div>
                     <div className="flex items-center gap-1 ml-2">
-                      <Button size="sm" variant="outline" className="h-7 px-2 text-xs"
-                        onClick={() => showLabBillPreview(order)} title="View/Print Bill">
-                        <Receipt className="h-3 w-3 mr-1" />Bill
-                      </Button>
+                      {order.payment_status !== 'paid' && (
+                        <Button size="sm" className="h-7 px-2 text-xs"
+                          onClick={() => openLabPaymentDialog(order.patient_id)}>
+                          Collect Payment
+                        </Button>
+                      )}
+                      {order.has_report && (
+                        <Button size="sm" variant="outline" className="h-7 px-2 text-xs"
+                          onClick={() => downloadLabReport(order.report_id, order.order_number)}>
+                          <Download className="h-3 w-3 mr-1" />Report
+                        </Button>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -503,11 +591,18 @@ const ReceptionDashboard = () => {
         {/* Recent Prescriptions */}
         <Card>
           <CardHeader>
-            <CardTitle className="flex items-center space-x-2">
-              <FileText className="h-5 w-5" />
-              <span>Recent Prescriptions</span>
-              <Badge variant="outline" className="ml-2">{recentPrescriptions.length}</Badge>
-            </CardTitle>
+            <div className="flex items-center justify-between">
+              <CardTitle className="flex items-center space-x-2">
+                <FileText className="h-5 w-5" />
+                <span>Recent Prescriptions</span>
+                <Badge variant="outline" className="ml-2">{recentPrescriptions.length}</Badge>
+              </CardTitle>
+              <Link to="/dashboard/reception/appointments">
+                <Button variant="ghost" size="sm" className="text-xs text-gray-500">
+                  View All <ArrowRight className="h-3 w-3 ml-1" />
+                </Button>
+              </Link>
+            </div>
           </CardHeader>
           <CardContent>
             {recentPrescriptions.length === 0 ? (
@@ -540,51 +635,90 @@ const ReceptionDashboard = () => {
         </Card>
       </div>
 
-      {/* Bill Preview Dialog */}
-      <Dialog open={showBillDialog} onOpenChange={closeBillDialog}>
-        <DialogContent className="max-w-4xl max-h-[90vh] overflow-hidden">
+      {/* Lab Payment Dialog */}
+      <Dialog open={showLabPaymentDialog} onOpenChange={setShowLabPaymentDialog}>
+        <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <Receipt className="h-5 w-5" />
-              Bill Preview - {billData?.bill_number}
+              <TestTube className="h-5 w-5" />
+              Lab Order Payments
             </DialogTitle>
           </DialogHeader>
-          <div className="flex flex-col space-y-4 h-full">
-            {billData && (
-              <div className="grid grid-cols-2 gap-4 p-4 bg-gray-50 rounded-lg">
-                <div>
-                  <p className="text-sm text-gray-600">Patient</p>
-                  <p className="font-semibold">{billData.patient_name}</p>
-                </div>
-                <div>
-                  <p className="text-sm text-gray-600">Doctor</p>
-                  <p className="font-semibold">{billData.doctor_name}</p>
-                </div>
-                {billData.total_amount > 0 && (
-                  <div>
-                    <p className="text-sm text-gray-600">Total Amount</p>
-                    <p className="font-semibold text-green-600">₹{billData.total_amount?.toFixed(2)}</p>
-                  </div>
+          <div className="space-y-4">
+            {labPaymentLoading ? (
+              <div className="text-center py-8 text-gray-500">
+                <RefreshCw className="h-6 w-6 animate-spin mx-auto mb-2" />
+                Loading...
+              </div>
+            ) : pendingLabOrders.length === 0 && allLabOrdersForPatient.filter(o => o.has_report).length === 0 ? (
+              <div className="text-center py-8 text-gray-400">
+                <TestTube className="h-10 w-10 mx-auto mb-2 text-gray-300" />
+                <p>No pending lab payments for this patient.</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {pendingLabOrders.length > 0 && (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-medium text-gray-700">Pending Payment ({pendingLabOrders.length})</p>
+                      <p className="font-semibold text-green-700">
+                        Total: ₹{pendingLabOrders.reduce((sum, o) => sum + (o.amount || 0), 0).toFixed(2)}
+                      </p>
+                    </div>
+                    <div className="border rounded-lg divide-y max-h-48 overflow-y-auto">
+                      {pendingLabOrders.map(order => (
+                        <div key={order.id} className="p-3 flex items-center justify-between">
+                          <div>
+                            <p className="font-medium text-sm">{order.test_name}</p>
+                            <p className="text-xs text-gray-500">{order.order_number} | {order.test_code} | {order.doctor_name}</p>
+                          </div>
+                          <p className="font-semibold text-sm">₹{(order.amount || 0).toFixed(2)}</p>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <div className="flex-1">
+                        <Label className="text-xs">Payment Method</Label>
+                        <Select value={labPaymentMethod} onValueChange={setLabPaymentMethod}>
+                          <SelectTrigger className="h-8">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="cash">Cash</SelectItem>
+                            <SelectItem value="card">Card</SelectItem>
+                            <SelectItem value="online">Online</SelectItem>
+                            <SelectItem value="insurance">Insurance</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <Button className="mt-4" onClick={collectAllLabPayments} disabled={labPaymentLoading}>
+                        {labPaymentLoading ? 'Generating Bill...' : `Pay & Download Bill (₹${pendingLabOrders.reduce((sum, o) => sum + (o.amount || 0), 0).toFixed(2)})`}
+                      </Button>
+                    </div>
+                  </>
+                )}
+
+                {allLabOrdersForPatient.filter(o => o.has_report).length > 0 && (
+                  <>
+                    {pendingLabOrders.length > 0 && <hr className="my-2" />}
+                    <p className="text-sm font-medium text-gray-700">Completed Reports</p>
+                    <div className="border rounded-lg divide-y max-h-48 overflow-y-auto">
+                      {allLabOrdersForPatient.filter(o => o.has_report).map(order => (
+                        <div key={order.id} className="p-3 flex items-center justify-between">
+                          <div>
+                            <p className="font-medium text-sm">{order.test_name}</p>
+                            <p className="text-xs text-gray-500">{order.order_number} | {order.test_code}</p>
+                          </div>
+                          <Button size="sm" variant="outline" className="h-7 px-3 text-xs" onClick={() => downloadLabReport(order.report_id, order.order_number)}>
+                            <Download className="h-3 w-3 mr-1" />Download Report
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  </>
                 )}
               </div>
             )}
-            {billPdfUrl ? (
-              <div className="flex-1 min-h-[400px] border rounded-lg overflow-hidden">
-                <iframe src={billPdfUrl} className="w-full h-full border-0" title="Bill Preview" />
-              </div>
-            ) : (
-              <div className="flex-1 min-h-[200px] flex items-center justify-center text-gray-500">
-                <p>No bill PDF available. Generate bill from the consultation first.</p>
-              </div>
-            )}
-            <div className="flex gap-2 pt-4">
-              <Button variant="outline" onClick={closeBillDialog} className="flex-1">Close</Button>
-              {billPdfUrl && (
-                <Button onClick={printBill} className="flex-1 bg-blue-600 hover:bg-blue-700">
-                  <Printer className="h-4 w-4 mr-2" />Print Bill
-                </Button>
-              )}
-            </div>
           </div>
         </DialogContent>
       </Dialog>
@@ -630,6 +764,136 @@ const ReceptionDashboard = () => {
                 <Printer className="h-4 w-4 mr-2" />Print Prescription
               </Button>
             </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Register Patient Dialog */}
+      <Dialog open={showRegisterDialog} onOpenChange={setShowRegisterDialog}>
+        <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Register New Patient</DialogTitle>
+          </DialogHeader>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <Label>First Name *</Label>
+              <Input value={patientForm.first_name} onChange={(e) => setPatientForm({...patientForm, first_name: e.target.value})} />
+            </div>
+            <div>
+              <Label>Last Name *</Label>
+              <Input value={patientForm.last_name} onChange={(e) => setPatientForm({...patientForm, last_name: e.target.value})} />
+            </div>
+            <div>
+              <Label>Date of Birth</Label>
+              <Input type="date" value={patientForm.date_of_birth} onChange={(e) => setPatientForm({...patientForm, date_of_birth: e.target.value})} />
+            </div>
+            <div>
+              <Label>Gender</Label>
+              <Select value={patientForm.gender} onValueChange={(v) => setPatientForm({...patientForm, gender: v})}>
+                <SelectTrigger><SelectValue placeholder="Select Gender" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Male">Male</SelectItem>
+                  <SelectItem value="Female">Female</SelectItem>
+                  <SelectItem value="Other">Other</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Blood Group</Label>
+              <Select value={patientForm.blood_group} onValueChange={(v) => setPatientForm({...patientForm, blood_group: v})}>
+                <SelectTrigger><SelectValue placeholder="Select Blood Group" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="A+">A+</SelectItem>
+                  <SelectItem value="A-">A-</SelectItem>
+                  <SelectItem value="B+">B+</SelectItem>
+                  <SelectItem value="B-">B-</SelectItem>
+                  <SelectItem value="AB+">AB+</SelectItem>
+                  <SelectItem value="AB-">AB-</SelectItem>
+                  <SelectItem value="O+">O+</SelectItem>
+                  <SelectItem value="O-">O-</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Marital Status</Label>
+              <Select value={patientForm.marital_status} onValueChange={(v) => setPatientForm({...patientForm, marital_status: v})}>
+                <SelectTrigger><SelectValue placeholder="Select Status" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Single">Single</SelectItem>
+                  <SelectItem value="Married">Married</SelectItem>
+                  <SelectItem value="Widowed">Widowed</SelectItem>
+                  <SelectItem value="Divorced">Divorced</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>ABHA ID</Label>
+              <Input value={patientForm.abha_id} onChange={(e) => setPatientForm({...patientForm, abha_id: e.target.value})} placeholder="14-digit ABHA number" />
+            </div>
+            <div>
+              <Label>Email</Label>
+              <Input type="email" value={patientForm.email} onChange={(e) => setPatientForm({...patientForm, email: e.target.value})} />
+            </div>
+            <div>
+              <Label>Primary Phone *</Label>
+              <Input value={patientForm.primary_phone} onChange={(e) => setPatientForm({...patientForm, primary_phone: e.target.value})} />
+            </div>
+
+            <div className="col-span-2 border-t pt-3 mt-2">
+              <Label className="text-sm font-semibold text-gray-700">Emergency Contact</Label>
+            </div>
+            <div>
+              <Label>Contact Name</Label>
+              <Input value={patientForm.emergency_contact_name} onChange={(e) => setPatientForm({...patientForm, emergency_contact_name: e.target.value})} />
+            </div>
+            <div>
+              <Label>Contact Phone</Label>
+              <Input value={patientForm.emergency_contact_phone} onChange={(e) => setPatientForm({...patientForm, emergency_contact_phone: e.target.value})} />
+            </div>
+            <div>
+              <Label>Relation</Label>
+              <Select value={patientForm.emergency_contact_relation} onValueChange={(v) => setPatientForm({...patientForm, emergency_contact_relation: v})}>
+                <SelectTrigger><SelectValue placeholder="Select Relation" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Spouse">Spouse</SelectItem>
+                  <SelectItem value="Parent">Parent</SelectItem>
+                  <SelectItem value="Child">Child</SelectItem>
+                  <SelectItem value="Sibling">Sibling</SelectItem>
+                  <SelectItem value="Friend">Friend</SelectItem>
+                  <SelectItem value="Other">Other</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="col-span-2 border-t pt-3 mt-2">
+              <Label className="text-sm font-semibold text-gray-700">Address</Label>
+            </div>
+            <div className="col-span-2">
+              <Label>Address Line 1</Label>
+              <Input value={patientForm.address_line1} onChange={(e) => setPatientForm({...patientForm, address_line1: e.target.value})} placeholder="House/Flat No, Street" />
+            </div>
+            <div className="col-span-2">
+              <Label>Address Line 2</Label>
+              <Input value={patientForm.address_line2} onChange={(e) => setPatientForm({...patientForm, address_line2: e.target.value})} placeholder="Area, Landmark" />
+            </div>
+            <div>
+              <Label>Village / Town</Label>
+              <Input value={patientForm.village} onChange={(e) => setPatientForm({...patientForm, village: e.target.value})} />
+            </div>
+            <div>
+              <Label>Mandal / Taluka</Label>
+              <Input value={patientForm.mandal} onChange={(e) => setPatientForm({...patientForm, mandal: e.target.value})} />
+            </div>
+            <div>
+              <Label>District</Label>
+              <Input value={patientForm.district} onChange={(e) => setPatientForm({...patientForm, district: e.target.value})} />
+            </div>
+          </div>
+          <div className="flex gap-2 pt-4">
+            <Button variant="outline" onClick={() => setShowRegisterDialog(false)} className="flex-1">Cancel</Button>
+            <Button onClick={createPatient} disabled={registerLoading || !patientForm.first_name || !patientForm.last_name || !patientForm.primary_phone} className="flex-1">
+              {registerLoading ? 'Registering...' : 'Register Patient'}
+            </Button>
           </div>
         </DialogContent>
       </Dialog>

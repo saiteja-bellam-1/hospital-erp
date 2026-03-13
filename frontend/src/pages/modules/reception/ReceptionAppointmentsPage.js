@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '../../../components/ui/card';
 import { Button } from '../../../components/ui/button';
 import { Input } from '../../../components/ui/input';
@@ -30,11 +31,13 @@ import {
   UserX,
   FileText,
   History,
-  TestTube
+  TestTube,
+  Download
 } from 'lucide-react';
 
 const ReceptionAppointmentsPage = () => {
   const { toast } = useToast();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [confirmState, setConfirmState] = useState({ open: false });
   const [selectedPatient, setSelectedPatient] = useState(null);
   const [doctors, setDoctors] = useState([]);
@@ -111,6 +114,11 @@ const ReceptionAppointmentsPage = () => {
   useEffect(() => {
     fetchDoctors();
     fetchTodayAppointments();
+    // Auto-open schedule dialog if navigated with ?action=schedule
+    if (searchParams.get('action') === 'schedule') {
+      setShowAppointmentDialog(true);
+      setSearchParams({}, { replace: true });
+    }
   }, []);
 
   // Fetch appointments when filter date changes
@@ -317,20 +325,31 @@ const ReceptionAppointmentsPage = () => {
   };
 
   // Lab Payment functions
+  const [allLabOrders, setAllLabOrders] = useState([]);
+
   const openLabPaymentDialog = async (patientId) => {
     setLabPaymentLoading(true);
     setShowLabPaymentDialog(true);
     setPendingLabOrders([]);
+    setAllLabOrders([]);
     try {
       const token = localStorage.getItem('token');
+      // Fetch pending payment orders
       const res = await fetch(`/api/lab/orders/patient/${patientId}/pending-payment`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (res.ok) {
         setPendingLabOrders(await res.json());
       }
+      // Fetch all orders (for report downloads)
+      const allRes = await fetch(`/api/lab/orders/patient/${patientId}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (allRes.ok) {
+        setAllLabOrders(await allRes.json());
+      }
     } catch (err) {
-      console.error('Failed to fetch pending lab orders:', err);
+      console.error('Failed to fetch lab orders:', err);
     } finally {
       setLabPaymentLoading(false);
     }
@@ -356,8 +375,62 @@ const ReceptionAppointmentsPage = () => {
   };
 
   const collectAllLabPayments = async () => {
-    for (const order of pendingLabOrders) {
-      await collectLabPayment(order.id);
+    if (pendingLabOrders.length === 0) return;
+    const patientId = pendingLabOrders[0].patient_id;
+    setLabPaymentLoading(true);
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`/api/lab/orders/patient/${patientId}/bill`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ payment_method: labPaymentMethod })
+      });
+      if (res.ok) {
+        const blob = await res.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `lab_bill_${patientId}_${Date.now()}.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+        setPendingLabOrders([]);
+        toast({ title: 'Success', description: 'Lab bill generated and payment collected' });
+        fetchTodayAppointments();
+      } else {
+        const err = await res.json();
+        toast({ variant: 'destructive', title: 'Error', description: err.detail || 'Bill generation failed' });
+      }
+    } catch (err) {
+      console.error('Bill generation failed:', err);
+      toast({ variant: 'destructive', title: 'Error', description: 'Failed to generate lab bill' });
+    } finally {
+      setLabPaymentLoading(false);
+    }
+  };
+
+  const downloadLabReport = async (reportId, orderNumber) => {
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`/api/lab/reports/${reportId}/download`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const blob = await res.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `lab_report_${orderNumber}.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+      } else {
+        toast({ variant: 'destructive', title: 'Error', description: 'Failed to download report' });
+      }
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Error', description: 'Failed to download report' });
     }
   };
 
@@ -896,105 +969,111 @@ const ReceptionAppointmentsPage = () => {
               <p className="text-gray-500">No appointments found for the selected criteria</p>
             </div>
           ) : (
-            <div className="space-y-4">
+            <div className="space-y-3">
               {todayAppointments.map((appointment) => (
-                <div key={appointment.id} className="border rounded-lg p-4 hover:bg-gray-50">
-                  <div className="flex justify-between items-center gap-4">
-                    <div className="flex-1 grid grid-cols-1 md:grid-cols-4 gap-4 min-w-0">
+                <div key={appointment.id} className="border border-gray-200 rounded-xl overflow-hidden hover:border-gray-300 transition-colors">
+                  {/* Top row: Patient info */}
+                  <div className="px-4 py-3 flex items-start justify-between gap-4">
+                    <div className="flex-1 grid grid-cols-1 md:grid-cols-4 gap-x-6 gap-y-2 min-w-0">
                       <div>
-                        <div className="flex items-center space-x-2 mb-1">
+                        <div className="flex items-center gap-2 mb-0.5">
                           {appointment.token_number && (
-                            <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-blue-100 text-blue-800 font-bold text-xs flex-shrink-0">
+                            <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-sidebar text-white font-bold text-[10px] flex-shrink-0">
                               {appointment.token_number}
                             </span>
                           )}
-                          <User className="h-4 w-4 text-gray-500 flex-shrink-0" />
-                          <span className="font-semibold truncate">{appointment.patient_name}</span>
+                          <span className="font-semibold text-gray-900 truncate">{appointment.patient_name}</span>
                         </div>
-                        <p className="text-sm text-gray-600">#{appointment.appointment_number}</p>
+                        <p className="text-xs text-gray-500 pl-8">#{appointment.appointment_number}</p>
                       </div>
 
                       <div>
-                        <p className="font-medium truncate">{appointment.doctor_name}</p>
-                        <p className="text-sm text-gray-600">{appointment.appointment_type}</p>
+                        <p className="font-medium text-gray-800 truncate">{appointment.doctor_name}</p>
+                        <p className="text-xs text-gray-500">{appointment.appointment_type}</p>
                       </div>
 
                       <div>
-                        <div className="flex items-center space-x-2 mb-1">
-                          <Clock className="h-4 w-4 text-gray-500 flex-shrink-0" />
-                          <span className="font-medium">{formatTime(appointment.appointment_time)}</span>
-                        </div>
-                        <Badge className={`${getStatusBadge(appointment.status)}`}>
-                          {appointment.status}
+                        <p className="font-medium text-gray-800">{formatTime(appointment.appointment_time)}</p>
+                        <Badge className={`${getStatusBadge(appointment.status)} mt-0.5`}>
+                          {appointment.status.replace('_', ' ')}
                         </Badge>
                         {appointment.cancellation_reason && (
-                          <p className="text-xs text-red-500 mt-1 truncate" title={appointment.cancellation_reason}>Reason: {appointment.cancellation_reason}</p>
+                          <p className="text-xs text-red-500 mt-0.5 truncate" title={appointment.cancellation_reason}>Reason: {appointment.cancellation_reason}</p>
                         )}
                       </div>
 
                       <div>
                         {(appointment.consultation_fee > 0 || appointment.registration_fee > 0) && (
                           <div>
-                            <p className="font-medium text-green-600">₹{appointment.final_amount}</p>
+                            <p className="font-semibold text-green-700">₹{appointment.final_amount}</p>
                             {appointment.registration_fee > 0 && (
-                              <p className="text-xs text-blue-500">incl. reg. ₹{appointment.registration_fee}</p>
+                              <p className="text-xs text-blue-600">incl. reg. ₹{appointment.registration_fee}</p>
                             )}
-                            <Badge variant={appointment.payment_status === 'paid' ? 'success' : 'secondary'}>
+                            <Badge variant={appointment.payment_status === 'paid' ? 'success' : 'secondary'} className="mt-0.5">
                               {appointment.payment_status}
                             </Badge>
                           </div>
                         )}
                       </div>
                     </div>
+                  </div>
 
-                      <div className="flex items-center gap-1 flex-shrink-0 flex-wrap justify-end">
-                        {appointment.status === 'scheduled' && !appointment.checked_in_at && (
-                          <Button size="sm" variant="outline" className="text-green-600 border-green-300 h-7 px-2 text-xs" onClick={() => handleCheckIn(appointment.id)} title="Check In">
-                            <LogIn className="h-3 w-3 mr-1" />Check In
-                          </Button>
-                        )}
-                        {appointment.checked_in_at && appointment.status === 'confirmed' && (
-                          <Button size="sm" variant="outline" className="text-blue-600 border-blue-300 h-7 px-2 text-xs" onClick={() => handleStartConsultation(appointment.id)} title="Start Consultation">
-                            <Play className="h-3 w-3 mr-1" />Start
-                          </Button>
-                        )}
-                        {appointment.status === 'in_progress' && (
-                          <Button size="sm" variant="outline" className="text-orange-600 border-orange-300 h-7 px-2 text-xs" onClick={() => handleCheckOut(appointment.id)} title="Check Out">
-                            <LogOut className="h-3 w-3 mr-1" />Check Out
-                          </Button>
-                        )}
-                        {['scheduled', 'confirmed'].includes(appointment.status) && (
-                          <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => openRescheduleDialog(appointment)} title="Reschedule">
-                            <CalendarClock className="h-3 w-3 mr-1" />Reschedule
-                          </Button>
-                        )}
-                        {['scheduled', 'confirmed'].includes(appointment.status) && (
-                          <Button size="sm" variant="outline" className="text-amber-600 border-amber-300 h-7 px-2 text-xs" onClick={() => handleNoShow(appointment.id)} title="No Show">
-                            <UserX className="h-3 w-3 mr-1" />No Show
-                          </Button>
-                        )}
-                        {!['cancelled', 'completed', 'no_show'].includes(appointment.status) && (
-                          <Button size="sm" variant="outline" className="text-red-600 border-red-300 h-7 px-2 text-xs" onClick={() => openCancelDialog(appointment.id)} title="Cancel">
-                            <XCircle className="h-3 w-3 mr-1" />Cancel
-                          </Button>
-                        )}
-                        <Button size="sm" variant="outline" className="h-7 w-7 p-0" onClick={() => openNotesDialog(appointment)} title="Notes">
-                          <FileText className="h-3 w-3" />
-                        </Button>
-                        {appointment.consultation_fee > 0 && (
-                          <Button size="sm" variant="outline" className="h-7 w-7 p-0" onClick={() => showBillPreview(appointment.id)} title="View Bill">
-                            <Receipt className="h-3 w-3" />
-                          </Button>
-                        )}
-                        {['completed', 'in_progress'].includes(appointment.status) && appointment.patient_uuid && (
-                          <Button size="sm" variant="outline" className="h-7 px-2 text-xs text-purple-600 border-purple-300" onClick={() => showPrescriptionPreview(appointment.id, appointment.patient_uuid)} title="Print Prescription">
-                            <Printer className="h-3 w-3 mr-1" />Rx
-                          </Button>
-                        )}
-                        <Button size="sm" variant="outline" className="h-7 px-2 text-xs text-teal-600 border-teal-300" onClick={() => openLabPaymentDialog(appointment.patient_id)} title="Lab Bill">
-                          <TestTube className="h-3 w-3 mr-1" />Lab Bill
-                        </Button>
-                      </div>
+                  {/* Bottom row: Action buttons — text-first, clean layout */}
+                  <div className="px-4 py-2 bg-gray-50/80 border-t border-gray-100 flex items-center gap-2 flex-wrap">
+                    {/* Primary action — contextual */}
+                    {appointment.status === 'scheduled' && !appointment.checked_in_at && (
+                      <Button size="sm" className="h-7 px-3 text-xs bg-green-600 hover:bg-green-700 text-white" onClick={() => handleCheckIn(appointment.id)}>
+                        Check In
+                      </Button>
+                    )}
+                    {appointment.checked_in_at && appointment.status === 'confirmed' && (
+                      <Button size="sm" className="h-7 px-3 text-xs bg-blue-600 hover:bg-blue-700 text-white" onClick={() => handleStartConsultation(appointment.id)}>
+                        Start Consultation
+                      </Button>
+                    )}
+                    {appointment.status === 'in_progress' && (
+                      <Button size="sm" className="h-7 px-3 text-xs bg-orange-500 hover:bg-orange-600 text-white" onClick={() => handleCheckOut(appointment.id)}>
+                        Check Out
+                      </Button>
+                    )}
+
+                    {/* Secondary actions */}
+                    {['scheduled', 'confirmed'].includes(appointment.status) && (
+                      <Button size="sm" variant="outline" className="h-7 px-3 text-xs text-gray-700" onClick={() => openRescheduleDialog(appointment)}>
+                        Reschedule
+                      </Button>
+                    )}
+                    {['scheduled', 'confirmed'].includes(appointment.status) && (
+                      <Button size="sm" variant="outline" className="h-7 px-3 text-xs text-amber-700 border-amber-300 hover:bg-amber-50" onClick={() => handleNoShow(appointment.id)}>
+                        No Show
+                      </Button>
+                    )}
+                    {!['cancelled', 'completed', 'no_show'].includes(appointment.status) && (
+                      <Button size="sm" variant="outline" className="h-7 px-3 text-xs text-red-600 border-red-200 hover:bg-red-50" onClick={() => openCancelDialog(appointment.id)}>
+                        Cancel
+                      </Button>
+                    )}
+
+                    {/* Divider */}
+                    <div className="w-px h-4 bg-gray-300 mx-1 hidden md:block" />
+
+                    {/* Document actions */}
+                    <Button size="sm" variant="ghost" className="h-7 px-3 text-xs text-gray-600 hover:text-gray-900" onClick={() => openNotesDialog(appointment)}>
+                      Notes
+                    </Button>
+                    {appointment.consultation_fee > 0 && (
+                      <Button size="sm" variant="ghost" className="h-7 px-3 text-xs text-gray-600 hover:text-gray-900" onClick={() => showBillPreview(appointment.id)}>
+                        View Bill
+                      </Button>
+                    )}
+                    {['completed', 'in_progress'].includes(appointment.status) && appointment.patient_uuid && (
+                      <Button size="sm" variant="ghost" className="h-7 px-3 text-xs text-purple-600 hover:text-purple-800" onClick={() => showPrescriptionPreview(appointment.id, appointment.patient_uuid)}>
+                        Prescription
+                      </Button>
+                    )}
+                    <Button size="sm" variant="ghost" className="h-7 px-3 text-xs text-teal-600 hover:text-teal-800" onClick={() => openLabPaymentDialog(appointment.patient_id)}>
+                      Lab Orders
+                    </Button>
                   </div>
                 </div>
               ))}
@@ -1434,58 +1513,79 @@ const ReceptionAppointmentsPage = () => {
                 <RefreshCw className="h-6 w-6 animate-spin mx-auto mb-2" />
                 Loading pending orders...
               </div>
-            ) : pendingLabOrders.length === 0 ? (
+            ) : pendingLabOrders.length === 0 && allLabOrders.filter(o => o.has_report).length === 0 ? (
               <div className="text-center py-8 text-gray-400">
                 <TestTube className="h-10 w-10 mx-auto mb-2 text-gray-300" />
                 <p>No pending lab payments for this patient.</p>
               </div>
             ) : (
-              <>
-                <div className="flex items-center justify-between">
-                  <p className="text-sm text-gray-600">{pendingLabOrders.length} order(s) pending payment</p>
-                  <p className="font-semibold text-green-700">
-                    Total: ₹{pendingLabOrders.reduce((sum, o) => sum + (o.amount || 0), 0).toFixed(2)}
-                  </p>
-                </div>
-
-                <div className="border rounded-lg divide-y max-h-60 overflow-y-auto">
-                  {pendingLabOrders.map(order => (
-                    <div key={order.id} className="p-3 flex items-center justify-between">
-                      <div>
-                        <p className="font-medium text-sm">{order.test_name}</p>
-                        <p className="text-xs text-gray-500">{order.order_number} | {order.test_code} | Dr. {order.doctor_name?.replace('Dr. ', '')}</p>
-                        {order.priority !== 'normal' && <Badge variant="destructive" className="text-xs mt-0.5">{order.priority}</Badge>}
-                      </div>
-                      <div className="text-right">
-                        <p className="font-semibold text-sm">₹{(order.amount || 0).toFixed(2)}</p>
-                        <Button size="sm" className="h-6 px-2 text-xs mt-1" onClick={() => collectLabPayment(order.id)}>
-                          Collect
-                        </Button>
-                      </div>
+              <div className="space-y-4">
+                {/* Pending Payment Orders */}
+                {pendingLabOrders.length > 0 && (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-medium text-gray-700">Pending Payment ({pendingLabOrders.length})</p>
+                      <p className="font-semibold text-green-700">
+                        Total: ₹{pendingLabOrders.reduce((sum, o) => sum + (o.amount || 0), 0).toFixed(2)}
+                      </p>
                     </div>
-                  ))}
-                </div>
 
-                <div className="flex items-center gap-3">
-                  <div className="flex-1">
-                    <Label className="text-xs">Payment Method</Label>
-                    <Select value={labPaymentMethod} onValueChange={setLabPaymentMethod}>
-                      <SelectTrigger className="h-8">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="cash">Cash</SelectItem>
-                        <SelectItem value="card">Card</SelectItem>
-                        <SelectItem value="online">Online</SelectItem>
-                        <SelectItem value="insurance">Insurance</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <Button className="mt-4" onClick={collectAllLabPayments}>
-                    Collect All (₹{pendingLabOrders.reduce((sum, o) => sum + (o.amount || 0), 0).toFixed(2)})
-                  </Button>
-                </div>
-              </>
+                    <div className="border rounded-lg divide-y max-h-48 overflow-y-auto">
+                      {pendingLabOrders.map(order => (
+                        <div key={order.id} className="p-3 flex items-center justify-between">
+                          <div>
+                            <p className="font-medium text-sm">{order.test_name}</p>
+                            <p className="text-xs text-gray-500">{order.order_number} | {order.test_code} | Dr. {order.doctor_name?.replace('Dr. ', '')}</p>
+                            {order.priority !== 'normal' && <Badge variant="destructive" className="text-xs mt-0.5">{order.priority}</Badge>}
+                          </div>
+                          <p className="font-semibold text-sm">₹{(order.amount || 0).toFixed(2)}</p>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                      <div className="flex-1">
+                        <Label className="text-xs">Payment Method</Label>
+                        <Select value={labPaymentMethod} onValueChange={setLabPaymentMethod}>
+                          <SelectTrigger className="h-8">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="cash">Cash</SelectItem>
+                            <SelectItem value="card">Card</SelectItem>
+                            <SelectItem value="online">Online</SelectItem>
+                            <SelectItem value="insurance">Insurance</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <Button className="mt-4" onClick={collectAllLabPayments} disabled={labPaymentLoading}>
+                        {labPaymentLoading ? 'Generating Bill...' : `Pay & Download Bill (₹${pendingLabOrders.reduce((sum, o) => sum + (o.amount || 0), 0).toFixed(2)})`}
+                      </Button>
+                    </div>
+                  </>
+                )}
+
+                {/* Completed Reports - Download */}
+                {allLabOrders.filter(o => o.has_report).length > 0 && (
+                  <>
+                    {pendingLabOrders.length > 0 && <hr className="my-2" />}
+                    <p className="text-sm font-medium text-gray-700">Completed Reports</p>
+                    <div className="border rounded-lg divide-y max-h-48 overflow-y-auto">
+                      {allLabOrders.filter(o => o.has_report).map(order => (
+                        <div key={order.id} className="p-3 flex items-center justify-between">
+                          <div>
+                            <p className="font-medium text-sm">{order.test_name}</p>
+                            <p className="text-xs text-gray-500">{order.order_number} | {order.test_code}</p>
+                          </div>
+                          <Button size="sm" variant="outline" className="h-7 px-3 text-xs" onClick={() => downloadLabReport(order.report_id, order.order_number)}>
+                            <Printer className="h-3 w-3 mr-1" />Download Report
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
             )}
           </div>
         </DialogContent>

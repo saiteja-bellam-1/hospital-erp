@@ -6,16 +6,20 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 from datetime import datetime, date
 import uuid
+import io
 
 from config.database import get_db
 from app.models.user import User
 from app.models.patient import Patient
+from app.models.hospital import Hospital
+from app.models.permissions import HospitalSettings
 from app.models.lab import (
     LabTestCategory, LabTest, LabTestParameter,
     PatientLabOrder, LabReport
 )
 from app.utils.dependencies import get_current_user, require_permission
 from app.utils.auth import Modules
+from app.utils.pdf_service import pdf_service
 
 router = APIRouter()
 
@@ -797,6 +801,116 @@ async def update_order_payment(
     return _build_order_response(order, db)
 
 
+@router.post("/orders/patient/{patient_id}/bill")
+async def generate_lab_bill(
+    patient_id: int,
+    data: LabPaymentUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Pay all pending lab orders for a patient and generate a combined PDF bill.
+    Uses lab config provider details if available, falls back to hospital info."""
+    allowed = ['receptionist', 'hospital_admin', 'super_admin']
+    if current_user.role.name not in allowed:
+        raise HTTPException(status_code=403, detail="Only reception or admin can generate lab bills")
+
+    # Get pending orders
+    orders = db.query(PatientLabOrder).join(Patient).filter(
+        PatientLabOrder.patient_id == patient_id,
+        Patient.hospital_id == current_user.hospital_id,
+        PatientLabOrder.payment_status == "pending",
+        PatientLabOrder.status != "cancelled"
+    ).order_by(PatientLabOrder.order_date.desc()).all()
+
+    if not orders:
+        raise HTTPException(status_code=404, detail="No pending lab orders found")
+
+    patient = db.query(Patient).filter(Patient.id == patient_id).first()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
+    # Mark all orders as paid
+    for order in orders:
+        order.payment_status = "paid"
+        order.payment_method = data.payment_method
+        order.payment_date = datetime.now()
+
+    db.commit()
+
+    # Build bill data
+    items = []
+    total = 0.0
+    for order in orders:
+        test = db.query(LabTest).filter(LabTest.id == order.test_id).first()
+        doctor = db.query(User).filter(User.id == order.doctor_id).first() if order.doctor_id else None
+        amount = order.amount or (test.cost if test else 0.0)
+        total += amount
+        items.append({
+            "item_name": test.name if test else "Lab Test",
+            "item_code": test.test_code if test else "",
+            "total_price": amount,
+        })
+
+    # Get hospital info
+    hospital = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
+
+    # Get lab config
+    lab_settings = db.query(HospitalSettings).filter(
+        HospitalSettings.setting_category == "lab_config"
+    ).all()
+    lab_config = {s.setting_key: s.setting_value for s in lab_settings}
+
+    # Use lab provider info if available, fallback to hospital
+    provider_name = lab_config.get('provider_name') or (hospital.name if hospital else 'Hospital')
+    provider_address = lab_config.get('provider_address') or (hospital.address if hospital else '')
+    provider_phone = lab_config.get('provider_phone') or (hospital.phone if hospital else '')
+    provider_email = lab_config.get('provider_email') or (hospital.email if hospital else '')
+
+    hospital_info = {
+        "name": provider_name,
+        "address": provider_address,
+        "phone": provider_phone,
+        "email": provider_email,
+    }
+
+    # Calculate patient age
+    age = ""
+    if patient.date_of_birth:
+        today = date.today()
+        age = str(today.year - patient.date_of_birth.year - ((today.month, today.day) < (patient.date_of_birth.month, patient.date_of_birth.day)))
+
+    bill_number = f"LB-{datetime.now().strftime('%Y%m%d%H%M%S')}-{patient_id}"
+
+    bill_data = {
+        "bill_number": bill_number,
+        "bill_date": datetime.now().isoformat(),
+        "patient_name": f"{patient.first_name} {patient.last_name}",
+        "patient_age": age,
+        "patient_gender": patient.gender,
+        "patient_phone": patient.primary_phone or "",
+        "reg_no": patient.patient_id,
+        "doctor_name": "",
+        "payment_method": data.payment_method.capitalize(),
+        "items": items,
+        "subtotal": total,
+        "discount_amount": 0,
+        "amount_paid": total,
+        "balance_due": 0,
+        "prepared_by": f"{current_user.first_name} {current_user.last_name}",
+    }
+
+    try:
+        pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info)
+        filename = f"lab_bill_{bill_number}.pdf"
+        return StreamingResponse(
+            pdf_buffer,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PDF generation error: {str(e)}")
+
+
 @router.get("/orders/patient/{patient_id}/pending-payment", response_model=List[OrderResponse])
 async def get_pending_payment_orders(
     patient_id: int,
@@ -815,7 +929,7 @@ async def get_pending_payment_orders(
 @router.get("/orders/patient/{patient_id}", response_model=List[OrderResponse])
 async def get_patient_orders(
     patient_id: int,
-    current_user: User = Depends(require_permission(Modules.LAB, "read")),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     orders = db.query(PatientLabOrder).join(Patient).filter(
@@ -973,10 +1087,10 @@ async def get_report(
 @router.get("/reports/{report_id}/download")
 async def download_report_pdf(
     report_id: int,
-    current_user: User = Depends(require_permission(Modules.LAB, "read")),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Download lab report as PDF"""
+    """Download lab report as PDF. Accessible by lab staff, doctors, receptionists, and admins."""
     report = db.query(LabReport).filter(LabReport.id == report_id).first()
     if not report:
         raise HTTPException(status_code=404, detail="Report not found")
@@ -984,7 +1098,6 @@ async def download_report_pdf(
     report_data = _build_report_response(report, db)
 
     # Get hospital info (fallback)
-    from app.models.hospital import Hospital
     hospital = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
     hospital_info = {
         "name": hospital.name if hospital else "Hospital",
@@ -994,14 +1107,12 @@ async def download_report_pdf(
     }
 
     # Get lab-specific config from HospitalSettings
-    from app.models.permissions import HospitalSettings
     lab_settings = db.query(HospitalSettings).filter(
         HospitalSettings.setting_category == "lab_config"
     ).all()
     lab_config = {s.setting_key: s.setting_value for s in lab_settings}
 
     try:
-        from app.utils.pdf_service import pdf_service
         pdf_buffer = pdf_service.generate_lab_report_pdf(report_data, hospital_info, lab_config)
         filename = f"lab_report_{report_data['order_number']}_{datetime.now().strftime('%Y%m%d')}.pdf"
         return StreamingResponse(

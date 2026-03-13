@@ -534,7 +534,9 @@ async def create_consultation_lab_orders(
             consultation_id=consultation_id,
             priority=lab_order_data.priority,
             notes=lab_order_data.notes,
-            status="ordered"
+            status="ordered",
+            amount=lab_test.cost or 0.0,
+            payment_status="pending"
         )
         
         db.add(lab_order)
