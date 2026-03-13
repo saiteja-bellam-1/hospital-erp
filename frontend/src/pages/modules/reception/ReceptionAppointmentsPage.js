@@ -45,7 +45,6 @@ const ReceptionAppointmentsPage = () => {
 
   // Patient search state
   const [patientSearchQuery, setPatientSearchQuery] = useState('');
-  const [allPatientsList, setAllPatientsList] = useState([]);
   const [patientSearchResults, setPatientSearchResults] = useState([]);
   const [patientSearching, setPatientSearching] = useState(false);
   const [showPatientResults, setShowPatientResults] = useState(true);
@@ -83,6 +82,9 @@ const ReceptionAppointmentsPage = () => {
   const [showNotesDialog, setShowNotesDialog] = useState(false);
   const [notesAppointmentId, setNotesAppointmentId] = useState(null);
   const [notesText, setNotesText] = useState('');
+
+  // Patient fee info
+  const [patientFeeInfo, setPatientFeeInfo] = useState({ is_new_patient: false, registration_fee: 0 });
 
   // Search and filter states
   const [searchTerm, setSearchTerm] = useState('');
@@ -192,6 +194,7 @@ const ReceptionAppointmentsPage = () => {
       if (response.ok) {
         const patient = await response.json();
         setSelectedPatient(patient);
+        fetchPatientFeeInfo(patient.patient_id);
         return patient;
       }
     } catch (error) {
@@ -200,55 +203,58 @@ const ReceptionAppointmentsPage = () => {
     return null;
   };
 
-  // Load all patients for the dialog
-  const fetchAllPatientsForDialog = async () => {
-    setPatientSearching(true);
+  // Real-time patient search with debounce
+  useEffect(() => {
+    if (!patientSearchQuery.trim()) {
+      setPatientSearchResults([]);
+      setShowPatientResults(false);
+      return;
+    }
+
+    const debounceTimer = setTimeout(async () => {
+      setPatientSearching(true);
+      setShowPatientResults(true);
+      try {
+        const token = localStorage.getItem('token');
+        const response = await fetch('/api/patients/search', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ search_term: patientSearchQuery.trim(), sort_by: 'name', sort_order: 'asc' })
+        });
+        if (response.ok) {
+          const data = await response.json();
+          setPatientSearchResults(data.patients || []);
+        }
+      } catch (error) {
+        console.error('Error searching patients:', error);
+      } finally {
+        setPatientSearching(false);
+      }
+    }, 300);
+
+    return () => clearTimeout(debounceTimer);
+  }, [patientSearchQuery]);
+
+  const fetchPatientFeeInfo = async (patientUuid) => {
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch('/api/patients/search', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ search_term: '', sort_by: 'name', sort_order: 'asc' })
+      const response = await fetch(`/api/appointments/patient-fee-info/${patientUuid}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
       });
       if (response.ok) {
         const data = await response.json();
-        const list = data.patients || [];
-        setAllPatientsList(list);
-        setPatientSearchResults(list);
+        setPatientFeeInfo(data);
       }
     } catch (error) {
-      console.error('Error fetching patients:', error);
-    } finally {
-      setPatientSearching(false);
+      console.error('Error fetching patient fee info:', error);
     }
   };
-
-  // Filter patients client-side: matching patients at top, rest below
-  useEffect(() => {
-    if (!patientSearchQuery.trim()) {
-      setPatientSearchResults(allPatientsList);
-      return;
-    }
-    const q = patientSearchQuery.toLowerCase();
-    const matched = [];
-    const rest = [];
-    for (const p of allPatientsList) {
-      const name = `${p.first_name} ${p.last_name}`.toLowerCase();
-      const phone = (p.primary_phone || '').toLowerCase();
-      const pid = (p.patient_id || '').toLowerCase();
-      if (name.includes(q) || phone.includes(q) || pid.includes(q)) {
-        matched.push(p);
-      } else {
-        rest.push(p);
-      }
-    }
-    setPatientSearchResults([...matched, ...rest]);
-  }, [patientSearchQuery, allPatientsList]);
 
   const selectPatient = (patient) => {
     setSelectedPatient(patient);
     setPatientSearchQuery('');
     setShowPatientResults(false);
+    fetchPatientFeeInfo(patient.patient_id);
   };
 
   // Prescription preview
@@ -407,9 +413,10 @@ const ReceptionAppointmentsPage = () => {
         });
         setAvailableSlots([]);
         setSelectedPatient(null);
-        
-        // Show bill preview if consultation fee exists
-        if (appointmentData.consultation_fee > 0) {
+        setPatientFeeInfo({ is_new_patient: false, registration_fee: 0 });
+
+        // Show bill preview if consultation fee exists or registration fee charged
+        if (appointmentData.consultation_fee > 0 || appointmentData.registration_fee > 0) {
           showBillPreview(appointmentData.id);
         } else {
           toast({ title: 'Success', description: 'Appointment booked successfully!' });
@@ -795,8 +802,8 @@ const ReceptionAppointmentsPage = () => {
             if (open) {
               setSelectedPatient(null);
               setPatientSearchQuery('');
-              setShowPatientResults(true);
-              fetchAllPatientsForDialog();
+              setPatientSearchResults([]);
+              setShowPatientResults(false);
             }
           }}>
             <DialogTrigger asChild>
@@ -886,15 +893,7 @@ const ReceptionAppointmentsPage = () => {
           {todayAppointments.length === 0 ? (
             <div className="text-center py-8">
               <Calendar className="h-12 w-12 text-gray-400 mx-auto mb-3" />
-              <p className="text-gray-500 mb-3">No appointments found for the selected criteria</p>
-              <Dialog open={showAppointmentDialog} onOpenChange={setShowAppointmentDialog}>
-                <DialogTrigger asChild>
-                  <Button>
-                    <CalendarPlus className="h-4 w-4 mr-2" />
-                    Schedule Appointment
-                  </Button>
-                </DialogTrigger>
-              </Dialog>
+              <p className="text-gray-500">No appointments found for the selected criteria</p>
             </div>
           ) : (
             <div className="space-y-4">
@@ -934,9 +933,12 @@ const ReceptionAppointmentsPage = () => {
                       </div>
 
                       <div>
-                        {appointment.consultation_fee > 0 && (
+                        {(appointment.consultation_fee > 0 || appointment.registration_fee > 0) && (
                           <div>
                             <p className="font-medium text-green-600">₹{appointment.final_amount}</p>
+                            {appointment.registration_fee > 0 && (
+                              <p className="text-xs text-blue-500">incl. reg. ₹{appointment.registration_fee}</p>
+                            )}
                             <Badge variant={appointment.payment_status === 'paid' ? 'success' : 'secondary'}>
                               {appointment.payment_status}
                             </Badge>
@@ -1044,21 +1046,23 @@ const ReceptionAppointmentsPage = () => {
                       </div>
                     )}
                   </div>
+                  {!patientSearchQuery.trim() && !showPatientResults && (
+                    <p className="text-gray-400 text-xs mt-1.5">Start typing to search patients...</p>
+                  )}
                   {showPatientResults && (
                     <div className="mt-1 border rounded-lg max-h-48 overflow-y-auto">
-                      {patientSearchResults.length === 0 && !patientSearching ? (
+                      {patientSearching ? (
+                        <div className="flex items-center justify-center py-4 gap-2 text-gray-400">
+                          <RefreshCw className="h-4 w-4 animate-spin" />
+                          <span className="text-sm">Searching...</span>
+                        </div>
+                      ) : patientSearchResults.length === 0 ? (
                         <p className="text-gray-500 text-sm text-center py-4">No patients found. Please register the patient first.</p>
-                      ) : patientSearchResults.map((patient) => {
-                        const q = patientSearchQuery.toLowerCase();
-                        const isMatch = q && (
-                          `${patient.first_name} ${patient.last_name}`.toLowerCase().includes(q) ||
-                          (patient.primary_phone || '').includes(q) ||
-                          (patient.patient_id || '').toLowerCase().includes(q)
-                        );
-                        return (
+                      ) : (
+                        patientSearchResults.map((patient) => (
                           <div
                             key={patient.patient_id}
-                            className={`px-4 py-2.5 hover:bg-blue-50 cursor-pointer border-b last:border-b-0 ${isMatch ? 'bg-yellow-50' : ''}`}
+                            className="px-4 py-2.5 hover:bg-blue-50 cursor-pointer border-b last:border-b-0"
                             onClick={() => selectPatient(patient)}
                           >
                             <div className="flex justify-between items-center">
@@ -1071,8 +1075,8 @@ const ReceptionAppointmentsPage = () => {
                               </Badge>
                             </div>
                           </div>
-                        );
-                      })}
+                        ))
+                      )}
                     </div>
                   )}
                 </>
@@ -1190,6 +1194,48 @@ const ReceptionAppointmentsPage = () => {
                 </Select>
               </div>
             </div>
+
+            {/* Fee Summary */}
+            {selectedPatient && appointmentForm.doctor_id && (
+              <div className="bg-gray-50 rounded-lg p-4 border">
+                <h4 className="font-medium mb-2">Fee Summary</h4>
+                <div className="space-y-1 text-sm">
+                  {(() => {
+                    const doctor = doctors.find(d => d.id.toString() === appointmentForm.doctor_id.toString());
+                    const consultFee = doctor?.consultation_fee_inr
+                      ? parseFloat(doctor.consultation_fee_inr.replace('₹', '').replace(',', '').trim()) || 0
+                      : 0;
+                    const regFee = patientFeeInfo.is_new_patient ? patientFeeInfo.registration_fee : 0;
+                    const total = consultFee + regFee - (parseFloat(appointmentForm.discount_amount) || 0);
+                    return (
+                      <>
+                        <div className="flex justify-between">
+                          <span>Consultation Fee</span>
+                          <span>₹{consultFee.toFixed(2)}</span>
+                        </div>
+                        {patientFeeInfo.is_new_patient && regFee > 0 && (
+                          <div className="flex justify-between text-blue-600">
+                            <span>Registration Fee (New Patient)</span>
+                            <span>₹{regFee.toFixed(2)}</span>
+                          </div>
+                        )}
+                        {patientFeeInfo.is_new_patient && regFee === 0 && (
+                          <div className="flex justify-between text-gray-400">
+                            <span>Registration Fee (Not set)</span>
+                            <span>₹0.00</span>
+                          </div>
+                        )}
+                        <hr className="my-1" />
+                        <div className="flex justify-between font-semibold text-base">
+                          <span>Total</span>
+                          <span>₹{total.toFixed(2)}</span>
+                        </div>
+                      </>
+                    );
+                  })()}
+                </div>
+              </div>
+            )}
 
             <div>
               <Label htmlFor="reason">Reason for Visit</Label>

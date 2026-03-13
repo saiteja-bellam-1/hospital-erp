@@ -36,6 +36,7 @@ class Appointment(Base):
 
     # Payment-related fields
     consultation_fee = Column(Float, default=0.0)
+    registration_fee = Column(Float, default=0.0)  # Charged only for new patients
     payment_status = Column(String(20), default="pending")  # pending, paid, partial, cancelled, waived
     payment_method = Column(String(50))  # cash, card, insurance, online, bank_transfer
     payment_date = Column(DateTime)

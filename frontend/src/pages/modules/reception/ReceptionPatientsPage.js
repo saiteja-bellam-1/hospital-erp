@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '../../../components/ui/card';
 import { Button } from '../../../components/ui/button';
 import { Input } from '../../../components/ui/input';
@@ -28,6 +29,7 @@ import { useToast } from '../../../hooks/use-toast';
 
 const ReceptionPatientsPage = () => {
   const { toast } = useToast();
+  const navigate = useNavigate();
   const [patients, setPatients] = useState([]);
   const [filteredPatients, setFilteredPatients] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -46,7 +48,9 @@ const ReceptionPatientsPage = () => {
   // Edit patient form
   const [editPatientForm, setEditPatientForm] = useState({
     first_name: '', last_name: '', date_of_birth: '', gender: '',
-    blood_group: '', emergency_contact_phone: '', address: ''
+    blood_group: '', marital_status: '', abha_id: '', email: '',
+    emergency_contact_name: '', emergency_contact_phone: '', emergency_contact_relation: '',
+    address_line1: '', address_line2: '', village: '', mandal: '', district: ''
   });
 
   // Prescription state
@@ -67,9 +71,18 @@ const ReceptionPatientsPage = () => {
     date_of_birth: '',
     gender: '',
     blood_group: '',
+    marital_status: '',
+    abha_id: '',
+    email: '',
     primary_phone: '',
+    emergency_contact_name: '',
     emergency_contact_phone: '',
-    address: ''
+    emergency_contact_relation: '',
+    address_line1: '',
+    address_line2: '',
+    village: '',
+    mandal: '',
+    district: '',
   });
 
   // Load initial data
@@ -185,9 +198,18 @@ const ReceptionPatientsPage = () => {
           date_of_birth: '',
           gender: '',
           blood_group: '',
+          marital_status: '',
+          abha_id: '',
+          email: '',
           primary_phone: '',
+          emergency_contact_name: '',
           emergency_contact_phone: '',
-          address: ''
+          emergency_contact_relation: '',
+          address_line1: '',
+          address_line2: '',
+          village: '',
+          mandal: '',
+          district: '',
         });
         toast({ title: 'Success', description: 'Patient registered successfully!' });
       } else {
@@ -274,8 +296,17 @@ const ReceptionPatientsPage = () => {
       date_of_birth: patient.date_of_birth || '',
       gender: patient.gender || '',
       blood_group: patient.blood_group || '',
+      marital_status: patient.marital_status || '',
+      abha_id: patient.abha_id || '',
+      email: patient.email || '',
+      emergency_contact_name: patient.emergency_contact_name || '',
       emergency_contact_phone: patient.emergency_contact_phone || '',
-      address: patient.address || ''
+      emergency_contact_relation: patient.emergency_contact_relation || '',
+      address_line1: patient.address_line1 || '',
+      address_line2: patient.address_line2 || '',
+      village: patient.village || '',
+      mandal: patient.mandal || '',
+      district: patient.district || '',
     });
     setShowEditPatientDialog(true);
   };
@@ -569,9 +600,7 @@ const ReceptionPatientsPage = () => {
                           Edit
                         </Button>
                         <Button size="sm" onClick={() => {
-                          setSelectedPatient(patient);
-                          // Navigate to appointments page or open appointment dialog
-                          window.location.href = '/reception/appointments';
+                          navigate('/dashboard/reception/appointments');
                         }}>
                           Create Appointment
                         </Button>
@@ -625,7 +654,7 @@ const ReceptionPatientsPage = () => {
 
       {/* Register Patient Dialog */}
       <Dialog open={showPatientDialog} onOpenChange={setShowPatientDialog}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Register New Patient</DialogTitle>
           </DialogHeader>
@@ -689,6 +718,26 @@ const ReceptionPatientsPage = () => {
               </Select>
             </div>
             <div>
+              <Label>Marital Status</Label>
+              <Select value={patientForm.marital_status} onValueChange={(value) => setPatientForm({...patientForm, marital_status: value})}>
+                <SelectTrigger><SelectValue placeholder="Select Status" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Single">Single</SelectItem>
+                  <SelectItem value="Married">Married</SelectItem>
+                  <SelectItem value="Widowed">Widowed</SelectItem>
+                  <SelectItem value="Divorced">Divorced</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>ABHA ID</Label>
+              <Input value={patientForm.abha_id} onChange={(e) => setPatientForm({...patientForm, abha_id: e.target.value})} placeholder="14-digit ABHA number" />
+            </div>
+            <div>
+              <Label>Email</Label>
+              <Input type="email" value={patientForm.email} onChange={(e) => setPatientForm({...patientForm, email: e.target.value})} placeholder="patient@email.com" />
+            </div>
+            <div>
               <Label htmlFor="primary_phone">Primary Phone *</Label>
               <Input
                 id="primary_phone"
@@ -697,21 +746,57 @@ const ReceptionPatientsPage = () => {
                 required
               />
             </div>
-            <div className="col-span-2">
-              <Label htmlFor="emergency_contact_phone">Emergency Contact Phone</Label>
-              <Input
-                id="emergency_contact_phone"
-                value={patientForm.emergency_contact_phone}
-                onChange={(e) => setPatientForm({...patientForm, emergency_contact_phone: e.target.value})}
-              />
+
+            {/* Emergency Contact Section */}
+            <div className="col-span-2 border-t pt-3 mt-2">
+              <Label className="text-sm font-semibold text-gray-700">Emergency Contact</Label>
+            </div>
+            <div>
+              <Label>Contact Name</Label>
+              <Input value={patientForm.emergency_contact_name} onChange={(e) => setPatientForm({...patientForm, emergency_contact_name: e.target.value})} placeholder="Emergency contact name" />
+            </div>
+            <div>
+              <Label>Contact Phone</Label>
+              <Input value={patientForm.emergency_contact_phone} onChange={(e) => setPatientForm({...patientForm, emergency_contact_phone: e.target.value})} placeholder="Phone number" />
+            </div>
+            <div>
+              <Label>Relation</Label>
+              <Select value={patientForm.emergency_contact_relation} onValueChange={(value) => setPatientForm({...patientForm, emergency_contact_relation: value})}>
+                <SelectTrigger><SelectValue placeholder="Select Relation" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Spouse">Spouse</SelectItem>
+                  <SelectItem value="Parent">Parent</SelectItem>
+                  <SelectItem value="Child">Child</SelectItem>
+                  <SelectItem value="Sibling">Sibling</SelectItem>
+                  <SelectItem value="Friend">Friend</SelectItem>
+                  <SelectItem value="Other">Other</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Address Section */}
+            <div className="col-span-2 border-t pt-3 mt-2">
+              <Label className="text-sm font-semibold text-gray-700">Address</Label>
             </div>
             <div className="col-span-2">
-              <Label htmlFor="address">Address</Label>
-              <Input
-                id="address"
-                value={patientForm.address}
-                onChange={(e) => setPatientForm({...patientForm, address: e.target.value})}
-              />
+              <Label>Address Line 1</Label>
+              <Input value={patientForm.address_line1} onChange={(e) => setPatientForm({...patientForm, address_line1: e.target.value})} placeholder="House/Flat No, Street" />
+            </div>
+            <div className="col-span-2">
+              <Label>Address Line 2</Label>
+              <Input value={patientForm.address_line2} onChange={(e) => setPatientForm({...patientForm, address_line2: e.target.value})} placeholder="Area, Landmark" />
+            </div>
+            <div>
+              <Label>Village / Town</Label>
+              <Input value={patientForm.village} onChange={(e) => setPatientForm({...patientForm, village: e.target.value})} />
+            </div>
+            <div>
+              <Label>Mandal / Taluka</Label>
+              <Input value={patientForm.mandal} onChange={(e) => setPatientForm({...patientForm, mandal: e.target.value})} />
+            </div>
+            <div>
+              <Label>District</Label>
+              <Input value={patientForm.district} onChange={(e) => setPatientForm({...patientForm, district: e.target.value})} />
             </div>
           </div>
           <div className="flex gap-2 pt-4">
@@ -731,7 +816,7 @@ const ReceptionPatientsPage = () => {
 
       {/* Edit Patient Dialog */}
       <Dialog open={showEditPatientDialog} onOpenChange={setShowEditPatientDialog}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Edit Patient - {selectedPatient?.first_name} {selectedPatient?.last_name}</DialogTitle>
           </DialogHeader>
@@ -792,18 +877,78 @@ const ReceptionPatientsPage = () => {
               </Select>
             </div>
             <div>
-              <Label>Emergency Contact Phone</Label>
-              <Input
-                value={editPatientForm.emergency_contact_phone}
-                onChange={(e) => setEditPatientForm({...editPatientForm, emergency_contact_phone: e.target.value})}
-              />
+              <Label>Marital Status</Label>
+              <Select value={editPatientForm.marital_status || 'none'} onValueChange={(value) => setEditPatientForm({...editPatientForm, marital_status: value === 'none' ? '' : value})}>
+                <SelectTrigger><SelectValue placeholder="Select Status" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Not specified</SelectItem>
+                  <SelectItem value="Single">Single</SelectItem>
+                  <SelectItem value="Married">Married</SelectItem>
+                  <SelectItem value="Widowed">Widowed</SelectItem>
+                  <SelectItem value="Divorced">Divorced</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>ABHA ID</Label>
+              <Input value={editPatientForm.abha_id} onChange={(e) => setEditPatientForm({...editPatientForm, abha_id: e.target.value})} placeholder="14-digit ABHA number" />
+            </div>
+            <div>
+              <Label>Email</Label>
+              <Input type="email" value={editPatientForm.email} onChange={(e) => setEditPatientForm({...editPatientForm, email: e.target.value})} placeholder="patient@email.com" />
+            </div>
+
+            {/* Emergency Contact Section */}
+            <div className="col-span-2 border-t pt-3 mt-2">
+              <Label className="text-sm font-semibold text-gray-700">Emergency Contact</Label>
+            </div>
+            <div>
+              <Label>Contact Name</Label>
+              <Input value={editPatientForm.emergency_contact_name} onChange={(e) => setEditPatientForm({...editPatientForm, emergency_contact_name: e.target.value})} placeholder="Emergency contact name" />
+            </div>
+            <div>
+              <Label>Contact Phone</Label>
+              <Input value={editPatientForm.emergency_contact_phone} onChange={(e) => setEditPatientForm({...editPatientForm, emergency_contact_phone: e.target.value})} placeholder="Phone number" />
+            </div>
+            <div>
+              <Label>Relation</Label>
+              <Select value={editPatientForm.emergency_contact_relation || 'none'} onValueChange={(value) => setEditPatientForm({...editPatientForm, emergency_contact_relation: value === 'none' ? '' : value})}>
+                <SelectTrigger><SelectValue placeholder="Select Relation" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Not specified</SelectItem>
+                  <SelectItem value="Spouse">Spouse</SelectItem>
+                  <SelectItem value="Parent">Parent</SelectItem>
+                  <SelectItem value="Child">Child</SelectItem>
+                  <SelectItem value="Sibling">Sibling</SelectItem>
+                  <SelectItem value="Friend">Friend</SelectItem>
+                  <SelectItem value="Other">Other</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Address Section */}
+            <div className="col-span-2 border-t pt-3 mt-2">
+              <Label className="text-sm font-semibold text-gray-700">Address</Label>
             </div>
             <div className="col-span-2">
-              <Label>Address</Label>
-              <Input
-                value={editPatientForm.address}
-                onChange={(e) => setEditPatientForm({...editPatientForm, address: e.target.value})}
-              />
+              <Label>Address Line 1</Label>
+              <Input value={editPatientForm.address_line1} onChange={(e) => setEditPatientForm({...editPatientForm, address_line1: e.target.value})} placeholder="House/Flat No, Street" />
+            </div>
+            <div className="col-span-2">
+              <Label>Address Line 2</Label>
+              <Input value={editPatientForm.address_line2} onChange={(e) => setEditPatientForm({...editPatientForm, address_line2: e.target.value})} placeholder="Area, Landmark" />
+            </div>
+            <div>
+              <Label>Village / Town</Label>
+              <Input value={editPatientForm.village} onChange={(e) => setEditPatientForm({...editPatientForm, village: e.target.value})} />
+            </div>
+            <div>
+              <Label>Mandal / Taluka</Label>
+              <Input value={editPatientForm.mandal} onChange={(e) => setEditPatientForm({...editPatientForm, mandal: e.target.value})} />
+            </div>
+            <div>
+              <Label>District</Label>
+              <Input value={editPatientForm.district} onChange={(e) => setEditPatientForm({...editPatientForm, district: e.target.value})} />
             </div>
           </div>
           <div className="flex gap-2 pt-4">

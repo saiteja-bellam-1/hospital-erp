@@ -47,9 +47,18 @@ const OutpatientModule = () => {
     date_of_birth: '',
     gender: '',
     blood_group: '',
+    marital_status: '',
+    abha_id: '',
+    email: '',
     primary_phone: '',
+    emergency_contact_name: '',
     emergency_contact_phone: '',
-    address: ''
+    emergency_contact_relation: '',
+    address_line1: '',
+    address_line2: '',
+    village: '',
+    mandal: '',
+    district: '',
   });
 
   // Appointment form state
@@ -250,9 +259,18 @@ const OutpatientModule = () => {
           date_of_birth: '',
           gender: '',
           blood_group: '',
+          marital_status: '',
+          abha_id: '',
+          email: '',
           primary_phone: '',
+          emergency_contact_name: '',
           emergency_contact_phone: '',
-          address: ''
+          emergency_contact_relation: '',
+          address_line1: '',
+          address_line2: '',
+          village: '',
+          mandal: '',
+          district: '',
         });
       } else {
         const error = await response.json();
@@ -708,7 +726,7 @@ const OutpatientModule = () => {
                       Register New Patient
                     </Button>
                   </DialogTrigger>
-                  <DialogContent className="max-w-md">
+                  <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
                     <DialogHeader>
                       <DialogTitle>Register New Patient</DialogTitle>
                     </DialogHeader>
@@ -789,14 +807,130 @@ const OutpatientModule = () => {
                             </SelectContent>
                           </Select>
                         </div>
+                        <div>
+                          <Label htmlFor="marital_status">Marital Status</Label>
+                          <Select
+                            value={patientForm.marital_status}
+                            onValueChange={(value) => setPatientForm(prev => ({ ...prev, marital_status: value }))}
+                          >
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select marital status" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="Single">Single</SelectItem>
+                              <SelectItem value="Married">Married</SelectItem>
+                              <SelectItem value="Widowed">Widowed</SelectItem>
+                              <SelectItem value="Divorced">Divorced</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div>
+                          <Label htmlFor="abha_id">ABHA ID</Label>
+                          <Input
+                            id="abha_id"
+                            placeholder="14-digit ABHA number"
+                            value={patientForm.abha_id}
+                            onChange={(e) => setPatientForm(prev => ({ ...prev, abha_id: e.target.value }))}
+                          />
+                        </div>
                       </div>
                       <div>
-                        <Label htmlFor="address">Address</Label>
-                        <Textarea
-                          id="address"
-                          value={patientForm.address}
-                          onChange={(e) => setPatientForm(prev => ({ ...prev, address: e.target.value }))}
+                        <Label htmlFor="email">Email</Label>
+                        <Input
+                          id="email"
+                          type="email"
+                          value={patientForm.email}
+                          onChange={(e) => setPatientForm(prev => ({ ...prev, email: e.target.value }))}
                         />
+                      </div>
+
+                      {/* Emergency Contact */}
+                      <div className="col-span-2 border-t pt-4">
+                        <h4 className="font-medium text-sm mb-3">Emergency Contact</h4>
+                      </div>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <Label htmlFor="emergency_contact_name">Contact Name</Label>
+                          <Input
+                            id="emergency_contact_name"
+                            value={patientForm.emergency_contact_name}
+                            onChange={(e) => setPatientForm(prev => ({ ...prev, emergency_contact_name: e.target.value }))}
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="emergency_contact_phone">Contact Phone</Label>
+                          <Input
+                            id="emergency_contact_phone"
+                            value={patientForm.emergency_contact_phone}
+                            onChange={(e) => setPatientForm(prev => ({ ...prev, emergency_contact_phone: e.target.value }))}
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="emergency_contact_relation">Relation</Label>
+                          <Select
+                            value={patientForm.emergency_contact_relation}
+                            onValueChange={(value) => setPatientForm(prev => ({ ...prev, emergency_contact_relation: value }))}
+                          >
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select relation" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="Spouse">Spouse</SelectItem>
+                              <SelectItem value="Parent">Parent</SelectItem>
+                              <SelectItem value="Child">Child</SelectItem>
+                              <SelectItem value="Sibling">Sibling</SelectItem>
+                              <SelectItem value="Friend">Friend</SelectItem>
+                              <SelectItem value="Other">Other</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+
+                      {/* Address */}
+                      <div className="col-span-2 border-t pt-4">
+                        <h4 className="font-medium text-sm mb-3">Address</h4>
+                      </div>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="col-span-2">
+                          <Label htmlFor="address_line1">Address Line 1</Label>
+                          <Input
+                            id="address_line1"
+                            value={patientForm.address_line1}
+                            onChange={(e) => setPatientForm(prev => ({ ...prev, address_line1: e.target.value }))}
+                          />
+                        </div>
+                        <div className="col-span-2">
+                          <Label htmlFor="address_line2">Address Line 2</Label>
+                          <Input
+                            id="address_line2"
+                            value={patientForm.address_line2}
+                            onChange={(e) => setPatientForm(prev => ({ ...prev, address_line2: e.target.value }))}
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="village">Village/Town</Label>
+                          <Input
+                            id="village"
+                            value={patientForm.village}
+                            onChange={(e) => setPatientForm(prev => ({ ...prev, village: e.target.value }))}
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="mandal">Mandal/Taluka</Label>
+                          <Input
+                            id="mandal"
+                            value={patientForm.mandal}
+                            onChange={(e) => setPatientForm(prev => ({ ...prev, mandal: e.target.value }))}
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="district">District</Label>
+                          <Input
+                            id="district"
+                            value={patientForm.district}
+                            onChange={(e) => setPatientForm(prev => ({ ...prev, district: e.target.value }))}
+                          />
+                        </div>
                       </div>
                       <Button type="submit" disabled={loading} className="w-full">
                         {loading ? 'Creating...' : 'Create Patient'}

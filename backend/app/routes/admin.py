@@ -342,28 +342,53 @@ async def update_user(
     )
 
 @router.delete("/users/{user_id}")
-async def delete_user(
+async def archive_user(
     user_id: int,
-    current_user: User = Depends(require_super_admin),
+    current_user: User = Depends(require_admin_access),
     db: Session = Depends(get_db)
 ):
-    """Delete a user (Super admin only)"""
+    """Archive a user (set is_active=False). Does not delete from DB."""
     if current_user.id == user_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot delete your own account"
+            detail="Cannot archive your own account"
         )
-    
+
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
         )
-    
-    db.delete(user)
+
+    if user.role.name == 'super_admin':
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot archive a super admin account"
+        )
+
+    user.is_active = False
     db.commit()
-    return {"message": "User deleted successfully"}
+    return {"message": "User archived successfully"}
+
+
+@router.put("/users/{user_id}/restore")
+async def restore_user(
+    user_id: int,
+    current_user: User = Depends(require_admin_access),
+    db: Session = Depends(get_db)
+):
+    """Restore an archived user (set is_active=True)."""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+
+    user.is_active = True
+    db.commit()
+    return {"message": "User restored successfully"}
 
 # ROLE MANAGEMENT ENDPOINTS
 @router.get("/roles", response_model=List[RoleResponse])

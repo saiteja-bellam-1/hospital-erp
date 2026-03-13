@@ -475,3 +475,49 @@ async def update_module_config(
 
     db.commit()
     return {"message": f"{module_name.title()} configuration saved successfully"}
+
+
+# REGISTRATION FEE ENDPOINTS
+@router.get("/registration-fee")
+async def get_registration_fee(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get the current patient registration fee"""
+    setting = db.query(HospitalSettings).filter(
+        HospitalSettings.setting_category == "billing",
+        HospitalSettings.setting_key == "registration_fee"
+    ).first()
+    return {"registration_fee": float(setting.setting_value) if setting else 0.0}
+
+
+class RegistrationFeeRequest(BaseModel):
+    registration_fee: float
+
+
+@router.put("/registration-fee")
+async def set_registration_fee(
+    data: RegistrationFeeRequest,
+    current_user: User = Depends(require_hospital_admin),
+    db: Session = Depends(get_db)
+):
+    """Set the patient registration fee (hospital admin only)"""
+    existing = db.query(HospitalSettings).filter(
+        HospitalSettings.setting_category == "billing",
+        HospitalSettings.setting_key == "registration_fee"
+    ).first()
+
+    if existing:
+        existing.setting_value = str(data.registration_fee)
+    else:
+        db.add(HospitalSettings(
+            setting_category="billing",
+            setting_key="registration_fee",
+            setting_value=str(data.registration_fee),
+            setting_type="number",
+            description="One-time registration fee for new patients",
+            created_by=current_user.id,
+        ))
+
+    db.commit()
+    return {"message": "Registration fee updated", "registration_fee": data.registration_fee}

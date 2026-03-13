@@ -15,7 +15,8 @@ import {
   Plus,
   Edit,
   Trash2,
-  X
+  X,
+  Receipt
 } from 'lucide-react';
 import axios from 'axios';
 import ModuleConfigForm from './ModuleConfigForm';
@@ -56,6 +57,9 @@ const HospitalAdminModule = () => {
     experience_years: ''
   });
 
+  // Registration Fee State
+  const [registrationFee, setRegistrationFee] = useState(0);
+
   // Module Settings State
   const [selectedModule, setSelectedModule] = useState('lab');
   const [moduleSettings, setModuleSettings] = useState([]);
@@ -79,6 +83,7 @@ const HospitalAdminModule = () => {
     if (user?.role === 'super_admin' || user?.role === 'hospital_admin') {
       fetchHospitalInfo();
       fetchDoctors();
+      fetchRegistrationFee();
       if (selectedModule) {
         fetchModuleSettings(selectedModule);
       }
@@ -121,6 +126,27 @@ const HospitalAdminModule = () => {
         title: "Error",
         description: "Failed to fetch module settings"
       });
+    }
+  };
+
+  const fetchRegistrationFee = async () => {
+    try {
+      const response = await axios.get('/api/hospital/registration-fee');
+      setRegistrationFee(response.data.registration_fee || 0);
+    } catch (error) {
+      console.error('Failed to fetch registration fee:', error);
+    }
+  };
+
+  const saveRegistrationFee = async () => {
+    setLoading(true);
+    try {
+      await axios.put('/api/hospital/registration-fee', { registration_fee: parseFloat(registrationFee) || 0 });
+      toast({ title: 'Success', description: 'Registration fee updated successfully' });
+    } catch (error) {
+      toast({ variant: 'destructive', title: 'Error', description: 'Failed to update registration fee' });
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -270,6 +296,18 @@ const HospitalAdminModule = () => {
         >
           <Settings className="h-4 w-4 mr-2" />
           Module Settings
+        </Button>
+        <Button
+          variant="ghost"
+          className={`px-4 py-2 ${
+            activeTab === 'billing-settings'
+              ? 'border-b-2 border-blue-500 text-blue-600'
+              : 'text-gray-600 hover:text-gray-800'
+          }`}
+          onClick={() => setActiveTab('billing-settings')}
+        >
+          <Receipt className="h-4 w-4 mr-2" />
+          Billing Settings
         </Button>
       </div>
 
@@ -570,6 +608,47 @@ const HospitalAdminModule = () => {
             </div>
           )}
         </div>
+      )}
+
+      {/* Billing Settings Tab */}
+      {activeTab === 'billing-settings' && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center">
+              <Receipt className="h-5 w-5 mr-2" />
+              Billing Settings
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            <div className="max-w-md">
+              <Label htmlFor="registration_fee" className="text-base font-medium">
+                Patient Registration Fee (₹)
+              </Label>
+              <p className="text-sm text-gray-500 mt-1 mb-3">
+                One-time fee charged when a new patient registers. This fee is automatically added to the first appointment bill. Existing patients are not charged this fee.
+              </p>
+              <div className="flex items-center gap-3">
+                <div className="relative flex-1">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">₹</span>
+                  <Input
+                    id="registration_fee"
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={registrationFee}
+                    onChange={(e) => setRegistrationFee(e.target.value)}
+                    className="pl-8"
+                    placeholder="0"
+                  />
+                </div>
+                <Button onClick={saveRegistrationFee} disabled={loading}>
+                  <Save className="h-4 w-4 mr-2" />
+                  Save
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
       )}
 
       {/* Module Settings Tab */}

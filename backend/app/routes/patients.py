@@ -20,8 +20,18 @@ class PatientCreate(BaseModel):
     date_of_birth: Optional[date] = None
     gender: Optional[str] = Field(None, max_length=10)
     blood_group: Optional[str] = Field(None, max_length=5)
+    marital_status: Optional[str] = Field(None, max_length=20)
+    abha_id: Optional[str] = Field(None, max_length=30)
+    email: Optional[str] = Field(None, max_length=100)
     primary_phone: str = Field(..., min_length=10, max_length=15)
     emergency_contact_phone: Optional[str] = Field(None, max_length=15)
+    emergency_contact_name: Optional[str] = Field(None, max_length=100)
+    emergency_contact_relation: Optional[str] = Field(None, max_length=50)
+    address_line1: Optional[str] = Field(None, max_length=255)
+    address_line2: Optional[str] = Field(None, max_length=255)
+    village: Optional[str] = Field(None, max_length=100)
+    mandal: Optional[str] = Field(None, max_length=100)
+    district: Optional[str] = Field(None, max_length=100)
     address: Optional[str] = None
 
 class PatientResponse(BaseModel):
@@ -32,11 +42,21 @@ class PatientResponse(BaseModel):
     date_of_birth: Optional[date]
     gender: Optional[str]
     blood_group: Optional[str]
+    marital_status: Optional[str] = None
+    abha_id: Optional[str] = None
+    email: Optional[str] = None
     primary_phone: str
     emergency_contact_phone: Optional[str]
+    emergency_contact_name: Optional[str] = None
+    emergency_contact_relation: Optional[str] = None
+    address_line1: Optional[str] = None
+    address_line2: Optional[str] = None
+    village: Optional[str] = None
+    mandal: Optional[str] = None
+    district: Optional[str] = None
     address: Optional[str]
     is_active: bool
-    
+
     class Config:
         from_attributes = True
 
@@ -49,15 +69,25 @@ class PatientSearchResponse(BaseModel):
     age: Optional[int]
     gender: Optional[str]
     blood_group: Optional[str]
+    marital_status: Optional[str] = None
+    abha_id: Optional[str] = None
+    email: Optional[str] = None
     primary_phone: str
     emergency_contact_phone: Optional[str]
+    emergency_contact_name: Optional[str] = None
+    emergency_contact_relation: Optional[str] = None
+    address_line1: Optional[str] = None
+    address_line2: Optional[str] = None
+    village: Optional[str] = None
+    mandal: Optional[str] = None
+    district: Optional[str] = None
     address: Optional[str]
     is_active: bool
     created_at: datetime
     last_appointment_date: Optional[datetime]
     total_appointments: int
     recent_visit_status: Optional[str]
-    
+
     class Config:
         from_attributes = True
 
@@ -87,7 +117,17 @@ class PatientUpdate(BaseModel):
     date_of_birth: Optional[date] = None
     gender: Optional[str] = Field(None, max_length=10)
     blood_group: Optional[str] = Field(None, max_length=5)
+    marital_status: Optional[str] = Field(None, max_length=20)
+    abha_id: Optional[str] = Field(None, max_length=30)
+    email: Optional[str] = Field(None, max_length=100)
     emergency_contact_phone: Optional[str] = Field(None, max_length=15)
+    emergency_contact_name: Optional[str] = Field(None, max_length=100)
+    emergency_contact_relation: Optional[str] = Field(None, max_length=50)
+    address_line1: Optional[str] = Field(None, max_length=255)
+    address_line2: Optional[str] = Field(None, max_length=255)
+    village: Optional[str] = Field(None, max_length=100)
+    mandal: Optional[str] = Field(None, max_length=100)
+    district: Optional[str] = Field(None, max_length=100)
     address: Optional[str] = None
 
 @router.post("/", response_model=PatientResponse)

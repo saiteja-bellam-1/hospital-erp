@@ -11,6 +11,7 @@ from app.models.user import User
 from app.models.patient import Patient
 from app.models.outpatient import Appointment
 from app.models.hospital import Hospital
+from app.models.permissions import HospitalSettings
 from app.utils.dependencies import get_current_user, require_permission
 from app.utils.auth import Modules
 from app.utils.pdf_service import pdf_service
@@ -71,6 +72,7 @@ class AppointmentResponse(BaseModel):
 
     # Payment fields
     consultation_fee: float = 0.0
+    registration_fee: float = 0.0
     payment_status: str = "pending"
     payment_method: Optional[str] = None
     payment_date: Optional[datetime] = None
@@ -128,6 +130,40 @@ async def get_available_doctors(
         )
         for doctor in doctors
     ]
+
+@router.get("/patient-fee-info/{patient_uuid}")
+async def get_patient_fee_info(
+    patient_uuid: str,
+    current_user: User = Depends(require_permission(Modules.OUTPATIENT, "read")),
+    db: Session = Depends(get_db)
+):
+    """Check if patient is new and return applicable registration fee"""
+    patient = db.query(Patient).filter(Patient.patient_id == patient_uuid).first()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
+    existing_appointments = db.query(Appointment).filter(
+        Appointment.patient_id == patient.id
+    ).count()
+
+    is_new_patient = existing_appointments == 0
+    registration_fee = 0.0
+
+    if is_new_patient:
+        fee_setting = db.query(HospitalSettings).filter(
+            HospitalSettings.setting_category == "billing",
+            HospitalSettings.setting_key == "registration_fee"
+        ).first()
+        if fee_setting:
+            try:
+                registration_fee = float(fee_setting.setting_value)
+            except (ValueError, TypeError):
+                registration_fee = 0.0
+
+    return {
+        "is_new_patient": is_new_patient,
+        "registration_fee": registration_fee
+    }
 
 @router.get("/doctors/{doctor_id}/availability")
 async def check_doctor_availability(
@@ -240,10 +276,26 @@ async def create_appointment(
             consultation_fee = float(fee_str)
         except ValueError:
             consultation_fee = 0.0
-    
+
+    # Check if patient is new (no previous appointments) → add registration fee
+    registration_fee = 0.0
+    existing_appointments = db.query(Appointment).filter(
+        Appointment.patient_id == patient.id
+    ).count()
+    if existing_appointments == 0:
+        fee_setting = db.query(HospitalSettings).filter(
+            HospitalSettings.setting_category == "billing",
+            HospitalSettings.setting_key == "registration_fee"
+        ).first()
+        if fee_setting:
+            try:
+                registration_fee = float(fee_setting.setting_value)
+            except (ValueError, TypeError):
+                registration_fee = 0.0
+
     # Calculate final amount after discount
-    final_amount = consultation_fee - appointment_data.discount_amount
-    
+    final_amount = consultation_fee + registration_fee - appointment_data.discount_amount
+
     # Create appointment
     appointment = Appointment(
         appointment_number=generate_appointment_number(),
@@ -259,6 +311,7 @@ async def create_appointment(
         booked_by_id=current_user.id,
         # Payment fields
         consultation_fee=consultation_fee,
+        registration_fee=registration_fee,
         payment_status=appointment_data.payment_status,
         payment_method=appointment_data.payment_method,
         payment_notes=appointment_data.payment_notes,
@@ -1024,6 +1077,30 @@ async def get_appointment_bill(
     # Generate bill number
     bill_number = f"BILL-APT-{appointment.appointment_number}"
     
+    # Prepare bill items
+    items = [
+        {
+            "item_name": f"Consultation Fee - {appointment.doctor.specialization or 'General'}",
+            "item_code": "CONSULT",
+            "quantity": 1,
+            "unit_price": appointment.consultation_fee or 0.0,
+            "total_price": appointment.consultation_fee or 0.0
+        }
+    ]
+
+    # Add registration fee as separate line item if charged
+    reg_fee = getattr(appointment, 'registration_fee', 0.0) or 0.0
+    if reg_fee > 0:
+        items.append({
+            "item_name": "Patient Registration Fee",
+            "item_code": "REG",
+            "quantity": 1,
+            "unit_price": reg_fee,
+            "total_price": reg_fee
+        })
+
+    subtotal = (appointment.consultation_fee or 0.0) + reg_fee
+
     # Prepare bill data
     bill_data = {
         "bill_number": bill_number,
@@ -1031,16 +1108,8 @@ async def get_appointment_bill(
         "patient_name": f"{appointment.patient.first_name} {appointment.patient.last_name}",
         "doctor_name": f"Dr. {appointment.doctor.first_name} {appointment.doctor.last_name}",
         "status": "generated",
-        "items": [
-            {
-                "item_name": f"Consultation Fee - {appointment.doctor.specialization or 'General'}",
-                "item_code": "CONSULT",
-                "quantity": 1,
-                "unit_price": appointment.consultation_fee or 0.0,
-                "total_price": appointment.consultation_fee or 0.0
-            }
-        ],
-        "subtotal": appointment.consultation_fee or 0.0,
+        "items": items,
+        "subtotal": subtotal,
         "discount_amount": appointment.discount_amount or 0.0,
         "tax_amount": 0.0,
         "total_amount": appointment.final_amount or 0.0,
@@ -1120,8 +1189,14 @@ async def download_appointment_bill(
                 "unit_price": appointment.consultation_fee or 0.0,
                 "total_price": appointment.consultation_fee or 0.0
             }
-        ],
-        "subtotal": appointment.consultation_fee or 0.0,
+        ] + ([{
+                "item_name": "Patient Registration Fee",
+                "item_code": "REG",
+                "quantity": 1,
+                "unit_price": appointment.registration_fee,
+                "total_price": appointment.registration_fee
+        }] if getattr(appointment, 'registration_fee', 0) else []),
+        "subtotal": (appointment.consultation_fee or 0.0) + (getattr(appointment, 'registration_fee', 0.0) or 0.0),
         "discount_amount": appointment.discount_amount or 0.0,
         "total_amount": appointment.final_amount or 0.0,
         "amount_paid": appointment.final_amount if appointment.payment_status == "paid" else 0.0,

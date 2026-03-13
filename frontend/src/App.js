@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
-import { ToastProvider, ToastViewport } from './components/ui/toast';
+import { Toaster } from './components/ui/toaster';
 
 import { useAuth } from './contexts/AuthContext';
 import Login from './pages/Login';
@@ -30,18 +30,18 @@ function App() {
   // Show setup wizard if not yet configured
   if (!setupComplete) {
     return (
-      <ToastProvider>
+      <>
         <SetupWizard onComplete={() => {
           setSetupComplete(true);
           window.location.reload(); // Reload so backend picks up new DB
         }} />
-        <ToastViewport />
-      </ToastProvider>
+        <Toaster />
+      </>
     );
   }
 
   return (
-    <ToastProvider>
+    <>
       <Routes>
         <Route
           path="/login"
@@ -62,8 +62,8 @@ function App() {
           element={<Navigate to={user ? "/dashboard" : "/login"} replace />}
         />
       </Routes>
-      <ToastViewport />
-    </ToastProvider>
+      <Toaster />
+    </>
   );
 }
 

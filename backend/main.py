@@ -53,6 +53,12 @@ async def startup_event():
     if is_setup_complete():
         create_tables()
         print("Database tables created successfully")
+        # Run migrations for new columns on existing DBs
+        try:
+            from migrate_patient_fields import migrate
+            migrate()
+        except Exception as e:
+            print(f"Migration note: {e}")
         # Ensure role permissions exist (for installations that pre-date the wizard)
         _ensure_role_permissions()
     else:

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, useLocation, Link } from 'react-router-dom';
 import { Button } from '../components/ui/button';
 import { Avatar, AvatarFallback } from '../components/ui/avatar';
 import {
@@ -28,6 +28,9 @@ import {
   TrendingUp,
   Shield,
   Database,
+  X,
+  ChevronRight,
+  Bell,
 } from 'lucide-react';
 import axios from 'axios';
 
@@ -62,6 +65,7 @@ const Dashboard = () => {
   const { user, logout, licenseStatus } = useAuth();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [enabledModules, setEnabledModules] = useState({});
+  const location = useLocation();
 
   useEffect(() => {
     const fetchEnabledModules = async () => {
@@ -74,7 +78,6 @@ const Dashboard = () => {
         setEnabledModules(moduleMap);
       } catch (error) {
         console.error('Failed to fetch enabled modules:', error);
-        // Set default values if API fails
         setEnabledModules({
           outpatient: true,
           inpatient: true,
@@ -91,207 +94,354 @@ const Dashboard = () => {
     }
   }, [user]);
 
-  // Define navigation items based on user role and enabled modules
-  const getNavigationItems = () => {
-    // Separate navigation for receptionist with dedicated pages
+  // Close sidebar on route change (mobile)
+  useEffect(() => {
+    setSidebarOpen(false);
+  }, [location.pathname]);
+
+  const getRoleLabel = () => {
+    const labels = {
+      super_admin: 'Super Admin',
+      hospital_admin: 'Hospital Admin',
+      doctor: 'Doctor',
+      receptionist: 'Receptionist',
+      lab_technician: 'Lab Technician',
+      nurse: 'Nurse',
+    };
+    return labels[user.role] || 'Staff';
+  };
+
+  const getPageTitle = () => {
+    const path = location.pathname;
+    if (path === '/dashboard') {
+      const titles = {
+        doctor: 'Doctor Portal',
+        receptionist: 'Reception Desk',
+        lab_technician: 'Lab Dashboard',
+        nurse: 'Nurse Station',
+      };
+      return titles[user.role] || 'Dashboard';
+    }
+    const routeTitles = {
+      '/dashboard/reception/patients': 'Patients',
+      '/dashboard/reception/appointments': 'Appointments',
+      '/dashboard/reception/doctor-availability': 'Doctor Schedule',
+      '/dashboard/reception/reports': 'Reports',
+      '/dashboard/patients': 'Patients',
+      '/dashboard/lab': 'Laboratory',
+      '/dashboard/pharmacy': 'Pharmacy',
+      '/dashboard/billing': 'Billing',
+      '/dashboard/ehr': 'Health Records',
+      '/dashboard/availability': 'Availability',
+      '/dashboard/outpatient': 'Outpatient',
+      '/dashboard/inpatient': 'Inpatient',
+      '/dashboard/admin': 'Administration',
+      '/dashboard/hospital-admin': 'Hospital Config',
+      '/dashboard/license': 'License',
+      '/dashboard/backup': 'Backup',
+      '/dashboard/consultation': 'Consultation',
+    };
+    return routeTitles[path] || 'Dashboard';
+  };
+
+  // Build navigation with sections
+  const getNavigationSections = () => {
     if (user.role === 'receptionist') {
       return [
-        { text: 'Reception Desk', icon: <Home className="h-4 w-4" />, path: '/dashboard' },
-        { text: 'Patients', icon: <Users className="h-4 w-4" />, path: '/dashboard/reception/patients' },
-        { text: 'Appointments', icon: <Calendar className="h-4 w-4" />, path: '/dashboard/reception/appointments' },
-        { text: 'Doctor Schedule', icon: <Stethoscope className="h-4 w-4" />, path: '/dashboard/reception/doctor-availability' },
-        { text: 'Reports', icon: <TrendingUp className="h-4 w-4" />, path: '/dashboard/reception/reports' }
+        {
+          label: 'Main',
+          items: [
+            { text: 'Reception Desk', icon: <Home className="h-[18px] w-[18px]" />, path: '/dashboard' },
+            { text: 'Patients', icon: <Users className="h-[18px] w-[18px]" />, path: '/dashboard/reception/patients' },
+            { text: 'Appointments', icon: <Calendar className="h-[18px] w-[18px]" />, path: '/dashboard/reception/appointments' },
+          ]
+        },
+        {
+          label: 'Info',
+          items: [
+            { text: 'Doctor Schedule', icon: <Stethoscope className="h-[18px] w-[18px]" />, path: '/dashboard/reception/doctor-availability' },
+            { text: 'Reports', icon: <TrendingUp className="h-[18px] w-[18px]" />, path: '/dashboard/reception/reports' },
+          ]
+        }
       ];
     }
 
-    // Lab technician navigation
     if (user.role === 'lab_technician') {
-      return [
-        { text: 'Lab Dashboard', icon: <Home className="h-4 w-4" />, path: '/dashboard' },
-        { text: 'Laboratory', icon: <Stethoscope className="h-4 w-4" />, path: '/dashboard/lab' }
-      ];
+      return [{
+        label: 'Main',
+        items: [
+          { text: 'Lab Dashboard', icon: <Home className="h-[18px] w-[18px]" />, path: '/dashboard' },
+          { text: 'Laboratory', icon: <Stethoscope className="h-[18px] w-[18px]" />, path: '/dashboard/lab' },
+        ]
+      }];
     }
 
-    // Simplified navigation for nurse
     if (user.role === 'nurse') {
-      return [
-        { text: 'Nurse Station', icon: <Home className="h-4 w-4" />, path: '/dashboard' }
-      ];
+      return [{
+        label: 'Main',
+        items: [
+          { text: 'Nurse Station', icon: <Home className="h-[18px] w-[18px]" />, path: '/dashboard' },
+        ]
+      }];
     }
 
-    const baseItems = [
-      { text: 'Dashboard', icon: <Home className="h-4 w-4" />, path: '/dashboard' },
+    // Admin / Doctor / Others
+    const mainItems = [
+      { text: 'Dashboard', icon: <Home className="h-[18px] w-[18px]" />, path: '/dashboard' },
     ];
-
-    // Patients nav - not for doctors (they use EHR instead)
     if (user.role !== 'doctor') {
-      baseItems.push({ text: 'Patients', icon: <Users className="h-4 w-4" />, path: '/dashboard/patients' });
+      mainItems.push({ text: 'Patients', icon: <Users className="h-[18px] w-[18px]" />, path: '/dashboard/patients' });
     }
 
     const moduleItems = [];
-
-    // Add modules based on user role AND module enablement
-    if ((user.role === 'super_admin' || user.role === 'hospital_admin' || user.role === 'lab_admin')
-        && enabledModules.lab) {
-      moduleItems.push({ text: 'Laboratory', icon: <Stethoscope className="h-4 w-4" />, path: '/dashboard/lab' });
+    if ((user.role === 'super_admin' || user.role === 'hospital_admin' || user.role === 'lab_admin') && enabledModules.lab) {
+      moduleItems.push({ text: 'Laboratory', icon: <Stethoscope className="h-[18px] w-[18px]" />, path: '/dashboard/lab' });
     }
-
-    if ((user.role === 'super_admin' || user.role === 'hospital_admin' || user.role === 'pharmacy_admin' || user.role === 'doctor') 
-        && enabledModules.pharmacy) {
-      moduleItems.push({ text: 'Pharmacy', icon: <Pill className="h-4 w-4" />, path: '/dashboard/pharmacy' });
+    if ((user.role === 'super_admin' || user.role === 'hospital_admin' || user.role === 'pharmacy_admin' || user.role === 'doctor') && enabledModules.pharmacy) {
+      moduleItems.push({ text: 'Pharmacy', icon: <Pill className="h-[18px] w-[18px]" />, path: '/dashboard/pharmacy' });
     }
-
-    if ((user.role === 'super_admin' || user.role === 'hospital_admin' || user.role === 'billing_admin') 
-        && enabledModules.billing) {
-      moduleItems.push({ text: 'Billing', icon: <Receipt className="h-4 w-4" />, path: '/dashboard/billing' });
+    if ((user.role === 'super_admin' || user.role === 'hospital_admin' || user.role === 'billing_admin') && enabledModules.billing) {
+      moduleItems.push({ text: 'Billing', icon: <Receipt className="h-[18px] w-[18px]" />, path: '/dashboard/billing' });
     }
-
-    // EHR is always enabled
     if (user.role === 'super_admin' || user.role === 'hospital_admin' || user.role === 'doctor') {
-      moduleItems.push({ text: 'EHR', icon: <FileText className="h-4 w-4" />, path: '/dashboard/ehr' });
+      moduleItems.push({ text: 'EHR', icon: <FileText className="h-[18px] w-[18px]" />, path: '/dashboard/ehr' });
     }
-
-    // Availability management for doctors
     if (user.role === 'doctor') {
-      moduleItems.push({ text: 'Availability', icon: <Calendar className="h-4 w-4" />, path: '/dashboard/availability' });
+      moduleItems.push({ text: 'Availability', icon: <Calendar className="h-[18px] w-[18px]" />, path: '/dashboard/availability' });
+    }
+    if ((user.role === 'super_admin' || user.role === 'hospital_admin' || user.role === 'outpatient_admin') && enabledModules.outpatient) {
+      moduleItems.push({ text: 'Outpatient', icon: <UserPlus className="h-[18px] w-[18px]" />, path: '/dashboard/outpatient' });
+    }
+    if ((user.role === 'super_admin' || user.role === 'hospital_admin' || user.role === 'inpatient_admin') && enabledModules.inpatient) {
+      moduleItems.push({ text: 'Inpatient', icon: <Bed className="h-[18px] w-[18px]" />, path: '/dashboard/inpatient' });
     }
 
-    if ((user.role === 'super_admin' || user.role === 'hospital_admin' || user.role === 'outpatient_admin')
-        && enabledModules.outpatient) {
-      moduleItems.push({ text: 'Outpatient', icon: <UserPlus className="h-4 w-4" />, path: '/dashboard/outpatient' });
-    }
-
-    if ((user.role === 'super_admin' || user.role === 'hospital_admin' || user.role === 'inpatient_admin') 
-        && enabledModules.inpatient) {
-      moduleItems.push({ text: 'Inpatient', icon: <Bed className="h-4 w-4" />, path: '/dashboard/inpatient' });
-    }
-
-    // Admin is always enabled
     const adminItems = [];
     if (user.role === 'super_admin' || user.role === 'hospital_admin') {
-      adminItems.push({ text: 'Administration', icon: <Settings className="h-4 w-4" />, path: '/dashboard/admin' });
-    }
-    if (user.role === 'super_admin' || user.role === 'hospital_admin') {
-      adminItems.push({ text: 'Hospital Config', icon: <Building2 className="h-4 w-4" />, path: '/dashboard/hospital-admin' });
-    }
-    if (user.role === 'super_admin' || user.role === 'hospital_admin') {
-      adminItems.push({ text: 'License', icon: <Shield className="h-4 w-4" />, path: '/dashboard/license' });
-      adminItems.push({ text: 'Backup', icon: <Database className="h-4 w-4" />, path: '/dashboard/backup' });
+      adminItems.push({ text: 'Administration', icon: <Settings className="h-[18px] w-[18px]" />, path: '/dashboard/admin' });
+      adminItems.push({ text: 'Hospital Config', icon: <Building2 className="h-[18px] w-[18px]" />, path: '/dashboard/hospital-admin' });
+      adminItems.push({ text: 'License', icon: <Shield className="h-[18px] w-[18px]" />, path: '/dashboard/license' });
+      adminItems.push({ text: 'Backup', icon: <Database className="h-[18px] w-[18px]" />, path: '/dashboard/backup' });
     }
 
-    return [...baseItems, ...moduleItems, ...adminItems];
+    const sections = [{ label: 'Overview', items: mainItems }];
+    if (moduleItems.length > 0) sections.push({ label: 'Modules', items: moduleItems });
+    if (adminItems.length > 0) sections.push({ label: 'Settings', items: adminItems });
+    return sections;
   };
 
-  const navigationItems = getNavigationItems();
+  const navigationSections = getNavigationSections();
+
+  const isActive = (path) => {
+    if (path === '/dashboard') return location.pathname === '/dashboard';
+    return location.pathname.startsWith(path);
+  };
+
+  const userInitials = user.full_name
+    ? user.full_name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)
+    : 'U';
 
   return (
-    <div className="flex h-screen bg-gray-100">
+    <div className="flex h-screen overflow-hidden" style={{ background: 'hsl(var(--background))' }}>
       {/* Sidebar */}
-      <div className={`${
-        sidebarOpen ? 'translate-x-0' : '-translate-x-full'
-      } fixed inset-y-0 left-0 z-50 w-64 bg-white shadow-lg transform transition-transform duration-300 ease-in-out lg:translate-x-0 lg:static lg:inset-0`}>
-        <div className="flex items-center justify-between h-16 px-6 bg-white border-b">
-          <div className="flex items-center">
-            <img 
-              src={hospitalLogo} 
-              alt="KT Health Soft - Hospital Management System" 
-              className="h-10 w-auto max-w-[200px]"
+      <aside className={`
+        ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
+        fixed inset-y-0 left-0 z-50 w-[260px] flex flex-col
+        transform transition-transform duration-300 ease-in-out
+        lg:translate-x-0 lg:static lg:inset-0
+      `}
+        style={{
+          background: 'hsl(var(--sidebar-bg))',
+          borderRight: '1px solid hsl(var(--sidebar-border))',
+        }}
+      >
+        {/* Logo area */}
+        <div className="flex items-center justify-between h-16 px-5 flex-shrink-0"
+          style={{ borderBottom: '1px solid hsl(var(--sidebar-border))' }}
+        >
+          <div className="flex items-center gap-2">
+            <img
+              src={hospitalLogo}
+              alt="KT Health Soft"
+              className="h-9 w-auto max-w-[180px] rounded"
+              style={{ filter: 'brightness(1.1) contrast(1.05)' }}
             />
           </div>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="lg:hidden text-gray-600"
+          <button
+            className="lg:hidden p-1 rounded-md hover:bg-white/10 transition-colors"
+            style={{ color: 'hsl(var(--sidebar-fg))' }}
             onClick={() => setSidebarOpen(false)}
           >
-            ×
-          </Button>
+            <X className="h-5 w-5" />
+          </button>
         </div>
-        <nav className="mt-8">
-          {navigationItems.map((item) => (
-            <a
-              key={item.text}
-              href={item.path}
-              className="flex items-center px-6 py-3 text-gray-600 hover:bg-gray-100 hover:text-gray-900"
-            >
-              {item.icon}
-              <span className="ml-3">{item.text}</span>
-            </a>
+
+        {/* Navigation */}
+        <nav className="sidebar-nav flex-1 overflow-y-auto py-4 px-3">
+          {navigationSections.map((section, sIdx) => (
+            <div key={section.label} className={sIdx > 0 ? 'mt-6' : ''}>
+              <p
+                className="px-3 mb-2 text-[11px] font-semibold tracking-wider uppercase"
+                style={{ color: 'hsl(var(--sidebar-muted))' }}
+              >
+                {section.label}
+              </p>
+              <div className="space-y-0.5">
+                {section.items.map((item) => {
+                  const active = isActive(item.path);
+                  return (
+                    <Link
+                      key={item.text}
+                      to={item.path}
+                      className={`
+                        group flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13.5px] font-medium
+                        transition-all duration-150 relative
+                        ${active ? 'nav-item-active' : ''}
+                      `}
+                      style={{
+                        color: active ? '#fff' : 'hsl(var(--sidebar-fg))',
+                        background: active ? 'hsl(var(--sidebar-active))' : 'transparent',
+                      }}
+                      onMouseEnter={(e) => {
+                        if (!active) {
+                          e.currentTarget.style.background = 'hsl(var(--sidebar-hover))';
+                          e.currentTarget.style.color = '#fff';
+                        }
+                      }}
+                      onMouseLeave={(e) => {
+                        if (!active) {
+                          e.currentTarget.style.background = 'transparent';
+                          e.currentTarget.style.color = 'hsl(var(--sidebar-fg))';
+                        }
+                      }}
+                    >
+                      <span className="flex-shrink-0 opacity-80 group-hover:opacity-100" style={active ? { opacity: 1 } : {}}>
+                        {item.icon}
+                      </span>
+                      <span className="truncate">{item.text}</span>
+                      {active && (
+                        <ChevronRight className="h-3.5 w-3.5 ml-auto opacity-60" />
+                      )}
+                    </Link>
+                  );
+                })}
+              </div>
+            </div>
           ))}
         </nav>
-      </div>
 
-      {/* Main content */}
-      <div className="flex-1 flex flex-col lg:ml-0">
+        {/* User info at bottom of sidebar */}
+        <div className="flex-shrink-0 p-3" style={{ borderTop: '1px solid hsl(var(--sidebar-border))' }}>
+          <div className="flex items-center gap-3 px-2 py-2 rounded-lg"
+            style={{ background: 'hsl(var(--sidebar-hover))' }}
+          >
+            <div
+              className="h-8 w-8 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0"
+              style={{
+                background: 'hsl(var(--sidebar-active))',
+                color: '#fff',
+              }}
+            >
+              {userInitials}
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium truncate" style={{ color: '#fff' }}>
+                {user.full_name}
+              </p>
+              <p className="text-[11px] truncate" style={{ color: 'hsl(var(--sidebar-muted))' }}>
+                {getRoleLabel()}
+              </p>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      {/* Main content area */}
+      <div className="flex-1 flex flex-col min-w-0">
         {/* License Banner */}
         <LicenseBanner licenseStatus={licenseStatus} />
-        {/* Top bar */}
-        <header className="flex items-center justify-between h-16 px-6 bg-white border-b">
-          <div className="flex items-center">
-            <Button
-              variant="ghost"
-              size="icon"
-              className="lg:hidden"
+
+        {/* Top header */}
+        <header className="flex items-center justify-between h-14 px-4 lg:px-6 flex-shrink-0 bg-white border-b border-border">
+          <div className="flex items-center gap-3">
+            <button
+              className="lg:hidden p-2 -ml-2 rounded-lg hover:bg-gray-100 transition-colors"
               onClick={() => setSidebarOpen(true)}
             >
-              <Menu className="h-6 w-6" />
-            </Button>
-            <h2 className="ml-4 text-xl font-semibold text-gray-800">
-              {user.role === 'super_admin' ? 'Super Admin' : 
-               user.role === 'hospital_admin' ? 'Hospital Admin' :
-               user.role === 'doctor' ? 'Doctor Portal' :
-               user.role === 'receptionist' ? 'Reception Desk' :
-               user.role === 'lab_technician' ? 'Lab Technician' :
-               user.role === 'nurse' ? 'Nurse Station' :
-               'User Portal'}
-            </h2>
+              <Menu className="h-5 w-5 text-gray-600" />
+            </button>
+            <div>
+              <h1 className="text-lg font-semibold text-gray-900 leading-tight">
+                {getPageTitle()}
+              </h1>
+            </div>
           </div>
-          
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" className="relative h-8 w-8 rounded-full">
-                <Avatar className="h-8 w-8">
-                  <AvatarFallback>
-                    <User className="h-4 w-4" />
-                  </AvatarFallback>
-                </Avatar>
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent className="w-56" align="end" forceMount>
-              <DropdownMenuLabel className="font-normal">
-                <div className="flex flex-col space-y-1">
-                  <p className="text-sm font-medium leading-none">{user.full_name}</p>
-                  <p className="text-xs leading-none text-muted-foreground">
-                    {user.email}
-                  </p>
-                </div>
-              </DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem>
-                <User className="mr-2 h-4 w-4" />
-                <span>Profile</span>
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={logout}>
-                <LogOut className="mr-2 h-4 w-4" />
-                <span>Log out</span>
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+
+          <div className="flex items-center gap-2">
+            {/* Notification bell placeholder */}
+            <button className="p-2 rounded-lg hover:bg-gray-100 transition-colors relative">
+              <Bell className="h-5 w-5 text-gray-500" />
+            </button>
+
+            {/* User dropdown */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button className="flex items-center gap-2 p-1.5 pr-3 rounded-lg hover:bg-gray-100 transition-colors">
+                  <Avatar className="h-8 w-8 border-2 border-gray-200">
+                    <AvatarFallback
+                      className="text-xs font-semibold"
+                      style={{
+                        background: 'hsl(var(--primary))',
+                        color: '#fff',
+                      }}
+                    >
+                      {userInitials}
+                    </AvatarFallback>
+                  </Avatar>
+                  <span className="hidden sm:block text-sm font-medium text-gray-700">
+                    {user.full_name?.split(' ')[0]}
+                  </span>
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent className="w-56" align="end" forceMount>
+                <DropdownMenuLabel className="font-normal">
+                  <div className="flex flex-col space-y-1">
+                    <p className="text-sm font-semibold leading-none">{user.full_name}</p>
+                    <p className="text-xs leading-none text-muted-foreground">{user.email}</p>
+                    <p className="text-[11px] leading-none font-medium mt-1"
+                      style={{ color: 'hsl(var(--primary))' }}
+                    >
+                      {getRoleLabel()}
+                    </p>
+                  </div>
+                </DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem>
+                  <User className="mr-2 h-4 w-4" />
+                  <span>Profile</span>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={logout} className="text-red-600 focus:text-red-600">
+                  <LogOut className="mr-2 h-4 w-4" />
+                  <span>Log out</span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </header>
 
         {/* Page content */}
-        <main className="flex-1 overflow-y-auto p-6">
+        <main className="flex-1 overflow-y-auto p-4 lg:p-6">
           <Routes>
-            <Route 
-              path="/" 
+            <Route
+              path="/"
               element={
                 user.role === 'doctor' ? <DoctorDashboard /> :
                 user.role === 'receptionist' ? <ReceptionDashboard /> :
                 user.role === 'lab_technician' ? <LabTechDashboard /> :
                 user.role === 'nurse' ? <NurseDashboard /> :
                 <DashboardHome />
-              } 
+              }
             />
             <Route path="/reception/patients" element={<ReceptionPatientsPage />} />
             <Route path="/reception/appointments" element={<ReceptionAppointmentsPage />} />
@@ -314,10 +464,10 @@ const Dashboard = () => {
         </main>
       </div>
 
-      {/* Overlay for mobile */}
+      {/* Mobile overlay */}
       {sidebarOpen && (
-        <div 
-          className="fixed inset-0 bg-black bg-opacity-50 z-40 lg:hidden"
+        <div
+          className="fixed inset-0 bg-black/40 backdrop-blur-sm z-40 lg:hidden"
           onClick={() => setSidebarOpen(false)}
         />
       )}

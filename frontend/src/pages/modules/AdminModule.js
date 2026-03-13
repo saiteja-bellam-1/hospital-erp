@@ -15,7 +15,8 @@ import {
   Edit,
   Trash2,
   Save,
-  X
+  X,
+  RefreshCw
 } from 'lucide-react';
 import axios from 'axios';
 
@@ -233,28 +234,45 @@ const AdminModule = () => {
     }
   };
 
-  const deleteUser = (userId) => {
+  const archiveUser = (userId, userName) => {
     setConfirmState({
       open: true,
-      message: 'Are you sure you want to delete this user?',
+      message: `Are you sure you want to archive "${userName}"? They will no longer be able to log in, but their data will be preserved.`,
       onConfirm: async () => {
         setConfirmState({ open: false });
         try {
           await axios.delete(`/api/admin/users/${userId}`);
           toast({
             title: "Success",
-            description: "User deleted successfully"
+            description: "User archived successfully"
           });
           fetchUsers();
         } catch (error) {
           toast({
             variant: "destructive",
             title: "Error",
-            description: error.response?.data?.detail || "Failed to delete user"
+            description: error.response?.data?.detail || "Failed to archive user"
           });
         }
       }
     });
+  };
+
+  const restoreUser = async (userId) => {
+    try {
+      await axios.put(`/api/admin/users/${userId}/restore`);
+      toast({
+        title: "Success",
+        description: "User restored successfully"
+      });
+      fetchUsers();
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: error.response?.data?.detail || "Failed to restore user"
+      });
+    }
   };
 
   const deleteRole = (roleId) => {
@@ -717,13 +735,26 @@ const AdminModule = () => {
                               <Edit className="h-4 w-4" />
                             </Button>
                             {user.user_role.name !== 'super_admin' && (
-                              <Button
-                                size="sm"
-                                variant="destructive"
-                                onClick={() => deleteUser(user.id)}
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </Button>
+                              user.is_active ? (
+                                <Button
+                                  size="sm"
+                                  variant="destructive"
+                                  onClick={() => archiveUser(user.id, `${user.first_name} ${user.last_name}`)}
+                                  title="Archive user"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              ) : (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="text-green-600 border-green-300 hover:bg-green-50"
+                                  onClick={() => restoreUser(user.id)}
+                                  title="Restore user"
+                                >
+                                  <RefreshCw className="h-4 w-4" />
+                                </Button>
+                              )
                             )}
                           </div>
                         </td>
