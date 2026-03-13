@@ -6,7 +6,7 @@ import { Label } from '../components/ui/label';
 import {
   Building2, Database, UserCog, Shield, FolderSync,
   ChevronRight, ChevronLeft, Check, Plus, X, Eye, EyeOff,
-  AlertCircle, CheckCircle2
+  AlertCircle, CheckCircle2, FolderOpen
 } from 'lucide-react';
 
 const STEPS = [
@@ -62,6 +62,23 @@ const SetupWizard = ({ onComplete }) => {
       setPathValidation(prev => ({ ...prev, [key]: data }));
     } catch {
       setPathValidation(prev => ({ ...prev, [key]: { valid: false, message: 'Could not validate path' } }));
+    }
+  };
+
+  const [browsing, setBrowsing] = useState(false);
+
+  const browseFolder = async (onSelect) => {
+    setBrowsing(true);
+    try {
+      const res = await fetch('/api/setup/browse-folder');
+      const data = await res.json();
+      if (data.path) {
+        onSelect(data.path);
+      }
+    } catch {
+      // Folder picker not available (e.g. dev mode without tkinter)
+    } finally {
+      setBrowsing(false);
     }
   };
 
@@ -202,13 +219,28 @@ const SetupWizard = ({ onComplete }) => {
             </div>
             <div className="space-y-2">
               <Label htmlFor="db_location">Database Folder Path</Label>
-              <Input
-                id="db_location"
-                value={formData.db_location}
-                onChange={(e) => updateField('db_location', e.target.value)}
-                onBlur={(e) => validatePath(e.target.value, 'db')}
-                placeholder="Leave empty for default location"
-              />
+              <div className="flex gap-2">
+                <Input
+                  id="db_location"
+                  value={formData.db_location}
+                  onChange={(e) => updateField('db_location', e.target.value)}
+                  onBlur={(e) => validatePath(e.target.value, 'db')}
+                  placeholder="Leave empty for default location"
+                  className="flex-1"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => browseFolder((path) => {
+                    updateField('db_location', path);
+                    validatePath(path, 'db');
+                  })}
+                  disabled={browsing}
+                >
+                  <FolderOpen className="w-4 h-4 mr-1" />
+                  {browsing ? 'Opening...' : 'Browse'}
+                </Button>
+              </div>
               {pathValidation.db && (
                 <div className={`flex items-center gap-2 text-sm ${pathValidation.db.valid ? 'text-green-600' : 'text-red-600'}`}>
                   {pathValidation.db.valid ? <CheckCircle2 className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />}
@@ -324,7 +356,17 @@ const SetupWizard = ({ onComplete }) => {
                 onChange={(e) => setNewBackupPath(e.target.value)}
                 placeholder="E:\Backups\HospitalERP"
                 onKeyDown={(e) => e.key === 'Enter' && addBackupLocation()}
+                className="flex-1"
               />
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => browseFolder((path) => setNewBackupPath(path))}
+                disabled={browsing}
+              >
+                <FolderOpen className="w-4 h-4 mr-1" />
+                {browsing ? 'Opening...' : 'Browse'}
+              </Button>
               <Button type="button" variant="outline" onClick={addBackupLocation} disabled={!newBackupPath.trim()}>
                 <Plus className="w-4 h-4 mr-1" /> Add
               </Button>

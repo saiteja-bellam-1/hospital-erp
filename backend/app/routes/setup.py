@@ -84,6 +84,37 @@ async def debug_permissions():
         db.close()
 
 
+@router.get("/browse-folder")
+async def browse_folder():
+    """Open a native OS folder picker dialog and return the selected path."""
+    import threading
+
+    result = {"path": ""}
+
+    def _pick():
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            folder = filedialog.askdirectory(title="Select Folder")
+            root.destroy()
+            if folder:
+                result["path"] = folder
+        except Exception:
+            pass
+
+    # Run in a thread to avoid blocking the event loop
+    t = threading.Thread(target=_pick)
+    t.start()
+    t.join(timeout=120)  # 2 min timeout
+
+    if result["path"]:
+        return {"path": result["path"]}
+    return {"path": ""}
+
+
 @router.post("/validate-path")
 async def validate_path(data: dict):
     """Validate that a directory path exists and is writable."""
