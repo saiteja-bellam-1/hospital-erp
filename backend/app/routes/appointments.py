@@ -42,9 +42,10 @@ class AppointmentCreate(BaseModel):
     
     # Payment fields
     payment_status: str = Field(default="pending")
-    payment_method: Optional[str] = None
+    payment_method: Optional[str] = Field(None, pattern="^(cash|card|upi|cheque|online|insurance)$")
     discount_amount: float = Field(default=0.0, ge=0)
     payment_notes: Optional[str] = None
+    referred_by: Optional[str] = Field(None, max_length=100)
 
 class AppointmentResponse(BaseModel):
     id: int
@@ -79,9 +80,10 @@ class AppointmentResponse(BaseModel):
     payment_notes: Optional[str] = None
     discount_amount: float = 0.0
     final_amount: float = 0.0
-    
+    referred_by: Optional[str] = None
+
     created_at: datetime
-    
+
     class Config:
         from_attributes = True
 
@@ -97,7 +99,7 @@ class AppointmentUpdate(BaseModel):
 
     # Payment update fields
     payment_status: Optional[str] = None
-    payment_method: Optional[str] = None
+    payment_method: Optional[str] = Field(None, pattern="^(cash|card|upi|cheque|online|insurance)$")
     discount_amount: Optional[float] = Field(None, ge=0)
     payment_notes: Optional[str] = None
 
@@ -316,7 +318,8 @@ async def create_appointment(
         payment_method=appointment_data.payment_method,
         payment_notes=appointment_data.payment_notes,
         discount_amount=appointment_data.discount_amount,
-        final_amount=final_amount
+        final_amount=final_amount,
+        referred_by=appointment_data.referred_by
     )
     
     db.add(appointment)
@@ -419,8 +422,13 @@ async def get_appointment(
     
     if not appointment:
         raise HTTPException(status_code=404, detail="Appointment not found")
-    
-    return appointment
+
+    # Build response with patient_uuid
+    response = AppointmentResponse.model_validate(appointment)
+    response.patient_uuid = appointment.patient.patient_id if appointment.patient else None
+    response.patient_name = f"{appointment.patient.first_name} {appointment.patient.last_name}" if appointment.patient else None
+    response.doctor_name = f"Dr. {appointment.doctor.first_name} {appointment.doctor.last_name}" if appointment.doctor else None
+    return response
 
 @router.put("/{appointment_id}", response_model=AppointmentResponse)
 async def update_appointment(
@@ -504,6 +512,7 @@ async def get_doctor_appointments(
             "notes": apt.notes,
             "created_at": apt.created_at,
             "patient_name": f"{apt.patient.first_name} {apt.patient.last_name}",
+            "patient_uuid": apt.patient.patient_id if apt.patient else None,
             "doctor_name": f"Dr. {doctor.first_name} {doctor.last_name}",
             # Queue / check-in fields
             "token_number": apt.token_number,
@@ -686,6 +695,7 @@ async def reschedule_appointment(
         payment_notes=appointment.payment_notes,
         discount_amount=appointment.discount_amount,
         final_amount=appointment.final_amount,
+        referred_by=appointment.referred_by,
         rescheduled_from_id=appointment.id
     )
 
@@ -1132,6 +1142,7 @@ async def get_appointment_bill(
 @router.get("/{appointment_id}/bill/download")
 async def download_appointment_bill(
     appointment_id: int,
+    include_header: bool = True,
     current_user: User = Depends(require_permission(Modules.OUTPATIENT, "read")),
     db: Session = Depends(get_db)
 ):
@@ -1216,8 +1227,8 @@ async def download_appointment_bill(
             bill_data["patient_age"] = ""
 
     # Generate PDF
-    pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info)
-    
+    pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, include_header=include_header)
+
     return StreamingResponse(
         io.BytesIO(pdf_buffer.read()),
         media_type="application/pdf",

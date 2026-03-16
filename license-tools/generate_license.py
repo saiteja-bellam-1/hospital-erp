@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 License Generator Tool (Vendor-only) — Standalone, no backend dependency.
-Generates signed .lic files for Hospital ERP customers.
+Generates signed .lic files for KT HEALTH ERP customers.
 
 Usage:
   python generate_license.py generate-keys
@@ -147,7 +147,7 @@ def cmd_create_license(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Hospital ERP License Generator")
+    parser = argparse.ArgumentParser(description="KT HEALTH ERP License Generator")
     subparsers = parser.add_subparsers(dest="command")
 
     # Generate keys

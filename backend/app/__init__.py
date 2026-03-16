@@ -1,1 +1,1 @@
-# Hospital ERP Backend Application
+# KT HEALTH ERP Backend Application

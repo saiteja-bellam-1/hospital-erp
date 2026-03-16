@@ -18,6 +18,7 @@ class PatientCreate(BaseModel):
     first_name: str = Field(..., min_length=1, max_length=50)
     last_name: str = Field(..., min_length=1, max_length=50)
     date_of_birth: Optional[date] = None
+    age: Optional[int] = Field(None, ge=0, le=150)
     gender: Optional[str] = Field(None, max_length=10)
     blood_group: Optional[str] = Field(None, max_length=5)
     marital_status: Optional[str] = Field(None, max_length=20)
@@ -33,6 +34,7 @@ class PatientCreate(BaseModel):
     mandal: Optional[str] = Field(None, max_length=100)
     district: Optional[str] = Field(None, max_length=100)
     address: Optional[str] = None
+    referred_by: Optional[str] = Field(None, max_length=100)
 
 class PatientResponse(BaseModel):
     id: int
@@ -40,6 +42,7 @@ class PatientResponse(BaseModel):
     first_name: str
     last_name: str
     date_of_birth: Optional[date]
+    age: Optional[int] = None
     gender: Optional[str]
     blood_group: Optional[str]
     marital_status: Optional[str] = None
@@ -55,6 +58,7 @@ class PatientResponse(BaseModel):
     mandal: Optional[str] = None
     district: Optional[str] = None
     address: Optional[str]
+    referred_by: Optional[str] = None
     is_active: bool
 
     class Config:
@@ -115,6 +119,7 @@ class PatientUpdate(BaseModel):
     first_name: Optional[str] = Field(None, min_length=1, max_length=50)
     last_name: Optional[str] = Field(None, min_length=1, max_length=50)
     date_of_birth: Optional[date] = None
+    age: Optional[int] = Field(None, ge=0, le=150)
     gender: Optional[str] = Field(None, max_length=10)
     blood_group: Optional[str] = Field(None, max_length=5)
     marital_status: Optional[str] = Field(None, max_length=20)
@@ -136,23 +141,23 @@ async def create_patient(
     current_user: User = Depends(require_permission(Modules.OUTPATIENT, "write")),
     db: Session = Depends(get_db)
 ):
-    """Create a new patient or return existing patient by phone number"""
+    """Create a new patient"""
     if not current_user.hospital_id:
         raise HTTPException(status_code=400, detail="User not assigned to a hospital")
-    
+
     patient_service = PatientService(db)
-    
-    # Check if patient already exists with this phone number
-    existing_patient = patient_service.get_patient_by_phone(patient_data.primary_phone)
-    if existing_patient:
-        if existing_patient.hospital_id != current_user.hospital_id:
-            raise HTTPException(status_code=400, detail="Patient belongs to different hospital")
-        return existing_patient
-    
+
     # Create new patient
     patient_dict = patient_data.dict()
     patient_dict["hospital_id"] = current_user.hospital_id
-    
+
+    # Auto-calculate age from DOB if DOB is provided but age is not
+    if patient_dict.get("date_of_birth") and not patient_dict.get("age"):
+        from datetime import date as date_type
+        today = date_type.today()
+        dob = patient_dict["date_of_birth"]
+        patient_dict["age"] = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+
     patient = patient_service.create_patient(patient_dict)
     return patient
 
@@ -307,9 +312,9 @@ async def record_patient_vitals(
     # Verify patient exists and belongs to same hospital
     patient_service = PatientService(db)
     patient = patient_service.get_patient_by_id(vitals_data.patient_id)
-    
+
     if not patient:
-        raise HTTPException(status_code=404, detail="Patient not found")
+        raise HTTPException(status_code=404, detail=f"Patient not found for id: {vitals_data.patient_id}")
     
     if patient.hospital_id != current_user.hospital_id:
         raise HTTPException(status_code=403, detail="Access denied")

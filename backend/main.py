@@ -28,7 +28,7 @@ from app.middleware.license_middleware import LicenseMiddleware
 
 app = FastAPI(
     title=settings.app_name,
-    description="Complete Hospital ERP System",
+    description="Complete KT HEALTH ERP System",
     version="1.0.0"
 )
 
@@ -98,7 +98,7 @@ async def root():
     frontend_index = os.path.join(get_frontend_dir(), "index.html")
     if os.path.isfile(frontend_index):
         return FileResponse(frontend_index)
-    return {"message": "Hospital ERP API is running"}
+    return {"message": "KT HEALTH ERP API is running"}
 
 @app.get("/health")
 async def health_check():

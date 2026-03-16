@@ -153,7 +153,7 @@ const SetupWizard = ({ onComplete }) => {
               <Building2 className="w-10 h-10 text-primary" />
             </div>
             <div>
-              <h2 className="text-2xl font-bold">Welcome to Hospital ERP</h2>
+              <h2 className="text-2xl font-bold">Welcome to KT HEALTH ERP</h2>
               <p className="text-muted-foreground mt-2 max-w-md mx-auto">
                 Let's set up your system. This wizard will configure your database,
                 create an admin account, and set up backup locations.
@@ -249,8 +249,8 @@ const SetupWizard = ({ onComplete }) => {
               )}
             </div>
             <div className="text-sm text-muted-foreground">
-              <p>The database file <code className="bg-gray-100 px-1 rounded">hospital_erp.db</code> will be created in this folder.</p>
-              <p className="mt-1">Examples: <code className="bg-gray-100 px-1 rounded">D:\HospitalData</code> or <code className="bg-gray-100 px-1 rounded">C:\Users\Admin\Documents\HospitalERP</code></p>
+              <p>The database file <code className="bg-gray-100 px-1 rounded">kthealth_erp.db</code> will be created in this folder.</p>
+              <p className="mt-1">Examples: <code className="bg-gray-100 px-1 rounded">D:\KTHealthData</code> or <code className="bg-gray-100 px-1 rounded">C:\Users\Admin\Documents\KTHEALTHERP</code></p>
             </div>
           </div>
         );
@@ -354,7 +354,7 @@ const SetupWizard = ({ onComplete }) => {
               <Input
                 value={newBackupPath}
                 onChange={(e) => setNewBackupPath(e.target.value)}
-                placeholder="E:\Backups\HospitalERP"
+                placeholder="E:\Backups\KTHEALTHERP"
                 onKeyDown={(e) => e.key === 'Enter' && addBackupLocation()}
                 className="flex-1"
               />

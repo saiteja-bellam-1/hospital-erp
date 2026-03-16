@@ -12,7 +12,7 @@ os.chdir(backend_dir)
 # Add the backend directory to Python path
 sys.path.insert(0, backend_dir)
 
-print("🏥 Starting Hospital ERP Backend Server...")
+print("🏥 Starting KT HEALTH ERP Backend Server...")
 print("==========================================")
 print(f"Working directory: {backend_dir}")
 print(f"Python path: {sys.path[0]}")

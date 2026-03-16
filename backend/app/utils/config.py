@@ -1,5 +1,5 @@
 """
-Configuration manager for Hospital ERP.
+Configuration manager for KT HEALTH ERP.
 Reads/writes config.json which stores setup wizard choices.
 """
 import json
@@ -87,7 +87,7 @@ def run_backup():
         return {"success": False, "error": "Database file not found", "results": []}
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_filename = f"hospital_erp_backup_{timestamp}.db"
+    backup_filename = f"kthealth_erp_backup_{timestamp}.db"
 
     for location in backup_locations:
         entry = {"path": location, "success": False, "message": ""}

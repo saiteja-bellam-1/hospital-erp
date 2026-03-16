@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Initial setup script for Hospital ERP
+Initial setup script for KT HEALTH ERP
 Creates initial roles, super admin user, and sample data
 """
 
@@ -55,7 +55,7 @@ def create_super_admin(db: Session):
         admin_user = User(
             user_id=str(uuid.uuid4()),
             username="superadmin",
-            email="admin@hospital-erp.local",
+            email="admin@kthealth-erp.local",
             password_hash=get_password_hash("admin123"),
             first_name="Super",
             last_name="Admin",
@@ -150,7 +150,7 @@ def create_demo_hospital_admin(db: Session, hospital_id: int):
 
 def main():
     """Main setup function"""
-    print("Setting up Hospital ERP Database...")
+    print("Setting up KT HEALTH ERP Database...")
     
     # Create all tables
     create_tables()
@@ -166,7 +166,7 @@ def main():
         create_demo_hospital(db)
         
         print("\n" + "="*50)
-        print("Hospital ERP Setup Complete!")
+        print("KT HEALTH ERP Setup Complete!")
         print("="*50)
         print("Default Login Credentials:")
         print("-" * 30)

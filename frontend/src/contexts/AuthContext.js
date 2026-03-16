@@ -23,10 +23,31 @@ export const AuthProvider = ({ children }) => {
   // Configure axios defaults
   axios.defaults.baseURL = '';
   axios.defaults.timeout = 10000;
-  
+
   if (token) {
     axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
   }
+
+  // Global 401 interceptor — auto-logout on expired/invalid token
+  useEffect(() => {
+    const interceptor = axios.interceptors.response.use(
+      (response) => response,
+      (error) => {
+        if (error.response?.status === 401 && token) {
+          // Token expired or invalid — clear session
+          setToken(null);
+          setUser(null);
+          setLicenseStatus(null);
+          localStorage.removeItem('token');
+          localStorage.removeItem('user');
+          localStorage.removeItem('licenseStatus');
+          delete axios.defaults.headers.common['Authorization'];
+        }
+        return Promise.reject(error);
+      }
+    );
+    return () => axios.interceptors.response.eject(interceptor);
+  }, [token]);
 
   const login = async (credentials) => {
     try {

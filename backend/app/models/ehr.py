@@ -10,6 +10,7 @@ class Consultation(Base):
     consultation_number = Column(String(50), unique=True, nullable=False)
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
     doctor_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    appointment_id = Column(Integer, ForeignKey("appointments.id"), nullable=True)
     consultation_date = Column(DateTime(timezone=True), server_default=func.now())
     consultation_type = Column(String(20), nullable=False)  # outpatient, inpatient, emergency, followup
     chief_complaint = Column(Text)

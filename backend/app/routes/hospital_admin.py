@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from sqlalchemy.orm import Session
+from sqlalchemy import func as sql_func, cast, Date
 from pydantic import BaseModel
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, date, timedelta
 import os
 import uuid
 import json
@@ -11,6 +12,10 @@ from config.database import get_db
 from app.models.user import User
 from app.models.hospital import Hospital
 from app.models.permissions import HospitalSettings
+from app.models.patient import Patient
+from app.models.outpatient import Appointment
+from app.models.ehr import Consultation
+from app.models.lab import PatientLabOrder, LabTest, LabTestCategory
 from app.utils.dependencies import get_current_user
 
 from app.utils.paths import get_uploads_dir
@@ -521,3 +526,204 @@ async def set_registration_fee(
 
     db.commit()
     return {"message": "Registration fee updated", "registration_fee": data.registration_fee}
+
+
+@router.get("/dashboard-overview")
+async def get_dashboard_overview(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Aggregated dashboard data for hospital admin."""
+    import traceback
+    if current_user.role.name not in ("super_admin", "hospital_admin"):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    try:
+        return _get_dashboard_data(current_user, db)
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _get_dashboard_data(current_user, db):
+    hospital_id = current_user.hospital_id
+    today = date.today()
+    week_ago = today - timedelta(days=7)
+    month_start = today.replace(day=1)
+
+    # --- Patient Stats ---
+    total_patients = db.query(sql_func.count(Patient.id)).filter(
+        Patient.hospital_id == hospital_id
+    ).scalar() or 0
+
+    new_patients_today = db.query(sql_func.count(Patient.id)).filter(
+        Patient.hospital_id == hospital_id,
+        cast(Patient.created_at, Date) == today
+    ).scalar() or 0
+
+    new_patients_this_month = db.query(sql_func.count(Patient.id)).filter(
+        Patient.hospital_id == hospital_id,
+        cast(Patient.created_at, Date) >= month_start
+    ).scalar() or 0
+
+    # --- Appointment Stats ---
+    today_appointments = db.query(Appointment).filter(
+        Appointment.doctor.has(hospital_id=hospital_id),
+        cast(Appointment.appointment_date, Date) == today
+    ).all()
+
+    total_today = len(today_appointments)
+    appt_by_status = {}
+    for a in today_appointments:
+        appt_by_status[a.status] = appt_by_status.get(a.status, 0) + 1
+
+    # Revenue today from appointments
+    revenue_today = sum(a.final_amount or 0 for a in today_appointments if a.payment_status == 'paid')
+    revenue_pending = sum(a.final_amount or 0 for a in today_appointments if a.payment_status in ('pending', 'partial'))
+
+    # Monthly revenue
+    month_appointments = db.query(Appointment).filter(
+        Appointment.doctor.has(hospital_id=hospital_id),
+        cast(Appointment.appointment_date, Date) >= month_start,
+        Appointment.payment_status == 'paid'
+    ).all()
+    revenue_this_month = sum(a.final_amount or 0 for a in month_appointments)
+
+    # Doctor performance today
+    doctor_stats = {}
+    for a in today_appointments:
+        doc_name = f"Dr. {a.doctor.first_name} {a.doctor.last_name}" if a.doctor else "Unknown"
+        if doc_name not in doctor_stats:
+            doctor_stats[doc_name] = {"appointments": 0, "completed": 0, "revenue": 0, "specialization": getattr(a.doctor, 'specialization', '') or ''}
+        doctor_stats[doc_name]["appointments"] += 1
+        if a.status == 'completed':
+            doctor_stats[doc_name]["completed"] += 1
+        if a.payment_status == 'paid':
+            doctor_stats[doc_name]["revenue"] += a.final_amount or 0
+
+    # --- Lab Stats ---
+    lab_orders_today = db.query(sql_func.count(PatientLabOrder.id)).filter(
+        PatientLabOrder.patient.has(hospital_id=hospital_id),
+        cast(PatientLabOrder.order_date, Date) == today
+    ).scalar() or 0
+
+    lab_pending = db.query(sql_func.count(PatientLabOrder.id)).filter(
+        PatientLabOrder.patient.has(hospital_id=hospital_id),
+        PatientLabOrder.status.in_(["ordered", "collected", "processing"])
+    ).scalar() or 0
+
+    lab_completed_today = db.query(sql_func.count(PatientLabOrder.id)).filter(
+        PatientLabOrder.patient.has(hospital_id=hospital_id),
+        PatientLabOrder.status == "completed",
+        cast(PatientLabOrder.completion_date, Date) == today
+    ).scalar() or 0
+
+    lab_revenue_today = db.query(sql_func.coalesce(sql_func.sum(PatientLabOrder.amount), 0)).filter(
+        PatientLabOrder.patient.has(hospital_id=hospital_id),
+        PatientLabOrder.payment_status == "paid",
+        cast(PatientLabOrder.payment_date, Date) == today
+    ).scalar() or 0
+
+    lab_revenue_month = db.query(sql_func.coalesce(sql_func.sum(PatientLabOrder.amount), 0)).filter(
+        PatientLabOrder.patient.has(hospital_id=hospital_id),
+        PatientLabOrder.payment_status == "paid",
+        cast(PatientLabOrder.payment_date, Date) >= month_start
+    ).scalar() or 0
+
+    # --- Consultation Stats ---
+    consultations_today = db.query(sql_func.count(Consultation.id)).join(
+        User, Consultation.doctor_id == User.id
+    ).filter(
+        User.hospital_id == hospital_id,
+        cast(Consultation.consultation_date, Date) == today
+    ).scalar() or 0
+
+    # --- Staff Stats ---
+    total_doctors = db.query(sql_func.count(User.id)).filter(
+        User.hospital_id == hospital_id, User.role.has(name="doctor"), User.is_active == True
+    ).scalar() or 0
+
+    total_staff = db.query(sql_func.count(User.id)).filter(
+        User.hospital_id == hospital_id, User.is_active == True
+    ).scalar() or 0
+
+    # --- Recent appointments (last 5 completed) ---
+    recent_appointments = db.query(Appointment).filter(
+        Appointment.doctor.has(hospital_id=hospital_id),
+        Appointment.status == "completed",
+    ).order_by(Appointment.updated_at.desc()).limit(5).all()
+
+    recent_activity = []
+    for a in recent_appointments:
+        recent_activity.append({
+            "type": "appointment",
+            "patient": f"{a.patient.first_name} {a.patient.last_name}" if a.patient else "Unknown",
+            "doctor": f"Dr. {a.doctor.first_name} {a.doctor.last_name}" if a.doctor else "Unknown",
+            "status": a.status,
+            "time": a.updated_at.isoformat() if a.updated_at else a.created_at.isoformat(),
+            "amount": a.final_amount or 0,
+        })
+
+    # --- Pending lab orders (last 5) ---
+    pending_labs = db.query(PatientLabOrder).filter(
+        PatientLabOrder.patient.has(hospital_id=hospital_id),
+        PatientLabOrder.status.in_(["ordered", "collected", "processing"])
+    ).order_by(PatientLabOrder.order_date.desc()).limit(5).all()
+
+    pending_lab_list = []
+    for lo in pending_labs:
+        pending_lab_list.append({
+            "order_number": lo.order_number,
+            "patient": f"{lo.patient.first_name} {lo.patient.last_name}" if lo.patient else "Unknown",
+            "test": lo.test.name if lo.test else "Unknown",
+            "status": lo.status,
+            "payment_status": lo.payment_status,
+            "ordered_at": lo.order_date.isoformat() if lo.order_date else "",
+        })
+
+    # --- Weekly trend (appointments per day for last 7 days) ---
+    weekly_trend = []
+    for i in range(6, -1, -1):
+        d = today - timedelta(days=i)
+        count = db.query(sql_func.count(Appointment.id)).filter(
+            Appointment.doctor.has(hospital_id=hospital_id),
+            cast(Appointment.appointment_date, Date) == d
+        ).scalar() or 0
+        weekly_trend.append({"date": d.isoformat(), "day": d.strftime("%a"), "count": count})
+
+    return {
+        "patients": {
+            "total": total_patients,
+            "new_today": new_patients_today,
+            "new_this_month": new_patients_this_month,
+        },
+        "appointments": {
+            "total_today": total_today,
+            "by_status": appt_by_status,
+            "consultations_today": consultations_today,
+        },
+        "revenue": {
+            "today": revenue_today,
+            "today_pending": revenue_pending,
+            "this_month": revenue_this_month,
+            "lab_today": float(lab_revenue_today),
+            "lab_this_month": float(lab_revenue_month),
+        },
+        "lab": {
+            "orders_today": lab_orders_today,
+            "pending": lab_pending,
+            "completed_today": lab_completed_today,
+        },
+        "staff": {
+            "total_doctors": total_doctors,
+            "total_staff": total_staff,
+        },
+        "doctor_performance": [
+            {"name": name, **stats} for name, stats in doctor_stats.items()
+        ],
+        "recent_activity": recent_activity,
+        "pending_labs": pending_lab_list,
+        "weekly_trend": weekly_trend,
+    }

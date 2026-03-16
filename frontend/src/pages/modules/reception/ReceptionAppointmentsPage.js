@@ -32,7 +32,8 @@ import {
   FileText,
   History,
   TestTube,
-  Download
+  Download,
+  Package
 } from 'lucide-react';
 
 const ReceptionAppointmentsPage = () => {
@@ -56,6 +57,7 @@ const ReceptionAppointmentsPage = () => {
   const [showPrescriptionDialog, setShowPrescriptionDialog] = useState(false);
   const [prescriptionPdfUrl, setPrescriptionPdfUrl] = useState(null);
   const [prescriptionData, setPrescriptionData] = useState(null);
+  const [rxIncludeHeader, setRxIncludeHeader] = useState(true);
 
   // Lab payment dialog state
   const [showLabPaymentDialog, setShowLabPaymentDialog] = useState(false);
@@ -68,6 +70,8 @@ const ReceptionAppointmentsPage = () => {
   const [showBillPreviewDialog, setShowBillPreviewDialog] = useState(false);
   const [currentBill, setCurrentBill] = useState(null);
   const [billPdfUrl, setBillPdfUrl] = useState(null);
+  const [billIncludeHeader, setBillIncludeHeader] = useState(true);
+  const [currentBillAppointmentId, setCurrentBillAppointmentId] = useState(null);
 
   // Cancel dialog
   const [showCancelDialog, setShowCancelDialog] = useState(false);
@@ -107,7 +111,8 @@ const ReceptionAppointmentsPage = () => {
     payment_status: 'paid',
     payment_method: 'cash',
     discount_amount: 0,
-    payment_notes: ''
+    payment_notes: '',
+    referred_by: ''
   });
 
   // Load initial data
@@ -284,17 +289,7 @@ const ReceptionAppointmentsPage = () => {
         setPrescriptionData(latest);
 
         // Fetch PDF
-        const pdfResponse = await fetch(`/api/prescriptions-simple/${latest.prescription_id}/download?include_header=true`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
-        if (pdfResponse.ok) {
-          const blob = await pdfResponse.blob();
-          const url = window.URL.createObjectURL(blob);
-          setPrescriptionPdfUrl(url);
-          setShowPrescriptionDialog(true);
-        } else {
-          toast({ variant: 'destructive', title: 'Error', description: 'Failed to load prescription PDF' });
-        }
+        await fetchPrescriptionPdf(latest.prescription_id, true);
       }
     } catch (error) {
       console.error('Error fetching prescription:', error);
@@ -312,6 +307,26 @@ const ReceptionAppointmentsPage = () => {
         iframe.contentWindow.print();
         setTimeout(() => document.body.removeChild(iframe), 1000);
       };
+    }
+  };
+
+  const fetchPrescriptionPdf = async (prescriptionId, includeHeader) => {
+    try {
+      const token = localStorage.getItem('token');
+      const pdfResponse = await fetch(`/api/prescriptions-simple/${prescriptionId}/download?include_header=${includeHeader}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (pdfResponse.ok) {
+        const blob = await pdfResponse.blob();
+        if (prescriptionPdfUrl) window.URL.revokeObjectURL(prescriptionPdfUrl);
+        const url = window.URL.createObjectURL(blob);
+        setPrescriptionPdfUrl(url);
+        setShowPrescriptionDialog(true);
+      } else {
+        toast({ variant: 'destructive', title: 'Error', description: 'Failed to load prescription PDF' });
+      }
+    } catch (error) {
+      console.error('Error fetching PDF:', error);
     }
   };
 
@@ -410,10 +425,10 @@ const ReceptionAppointmentsPage = () => {
     }
   };
 
-  const downloadLabReport = async (reportId, orderNumber) => {
+  const downloadLabReport = async (reportId, orderNumber, includeHeader = true) => {
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch(`/api/lab/reports/${reportId}/download`, {
+      const res = await fetch(`/api/lab/reports/${reportId}/download?include_header=${includeHeader}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (res.ok) {
@@ -508,25 +523,28 @@ const ReceptionAppointmentsPage = () => {
   };
 
   // Bill preview functions
-  const showBillPreview = async (appointmentId) => {
+  const showBillPreview = async (appointmentId, includeHeader = true) => {
     try {
       const token = localStorage.getItem('token');
-      
+      setCurrentBillAppointmentId(appointmentId);
+      setBillIncludeHeader(includeHeader);
+
       // Fetch bill data
       const billResponse = await fetch(`/api/appointments/${appointmentId}/bill`, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      
+
       if (billResponse.ok) {
         const billData = await billResponse.json();
         setCurrentBill(billData);
-        
+
         // Fetch PDF for preview
-        const pdfResponse = await fetch(`/api/appointments/${appointmentId}/bill/download`, {
+        const pdfResponse = await fetch(`/api/appointments/${appointmentId}/bill/download?include_header=${includeHeader}`, {
           headers: { Authorization: `Bearer ${token}` }
         });
-        
+
         if (pdfResponse.ok) {
+          if (billPdfUrl) window.URL.revokeObjectURL(billPdfUrl);
           const blob = await pdfResponse.blob();
           const url = window.URL.createObjectURL(blob);
           setBillPdfUrl(url);
@@ -659,7 +677,17 @@ const ReceptionAppointmentsPage = () => {
       );
       if (response.ok) {
         const data = await response.json();
-        setRescheduleSlots(data.available_slots || []);
+        let slots = data.available_slots || [];
+
+        // Filter out past time slots if the selected date is today
+        const today = new Date().toISOString().split('T')[0];
+        if (newDate === today) {
+          const now = new Date();
+          const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+          slots = slots.filter(slot => slot.start_time >= currentTime);
+        }
+
+        setRescheduleSlots(slots);
       }
     } catch (error) {
       console.error('Error fetching reschedule slots:', error);
@@ -820,7 +848,17 @@ const ReceptionAppointmentsPage = () => {
 
       if (response.ok) {
         const data = await response.json();
-        setAvailableSlots(data.available_slots || []);
+        let slots = data.available_slots || [];
+
+        // Filter out past time slots if the selected date is today
+        const today = new Date().toISOString().split('T')[0];
+        if (date === today) {
+          const now = new Date();
+          const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+          slots = slots.filter(slot => slot.start_time >= currentTime);
+        }
+
+        setAvailableSlots(slots);
       } else {
         console.error('Failed to fetch available slots');
         setAvailableSlots([]);
@@ -1267,8 +1305,10 @@ const ReceptionAppointmentsPage = () => {
                   <SelectContent>
                     <SelectItem value="cash">Cash</SelectItem>
                     <SelectItem value="card">Card</SelectItem>
+                    <SelectItem value="upi">UPI</SelectItem>
                     <SelectItem value="online">Online</SelectItem>
                     <SelectItem value="insurance">Insurance</SelectItem>
+                    <SelectItem value="cheque">Cheque</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -1304,6 +1344,21 @@ const ReceptionAppointmentsPage = () => {
                             <span>₹0.00</span>
                           </div>
                         )}
+                        <div className="flex items-center justify-between">
+                          <span>Discount</span>
+                          <div className="flex items-center gap-1">
+                            <span className="text-gray-400">₹</span>
+                            <Input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={appointmentForm.discount_amount || ''}
+                              onChange={(e) => setAppointmentForm({...appointmentForm, discount_amount: parseFloat(e.target.value) || 0})}
+                              placeholder="0"
+                              className="w-24 h-7 text-right text-sm"
+                            />
+                          </div>
+                        </div>
                         <hr className="my-1" />
                         <div className="flex justify-between font-semibold text-base">
                           <span>Total</span>
@@ -1323,6 +1378,16 @@ const ReceptionAppointmentsPage = () => {
                 value={appointmentForm.reason}
                 onChange={(e) => setAppointmentForm({...appointmentForm, reason: e.target.value})}
                 placeholder="Brief description of the visit reason"
+              />
+            </div>
+
+            <div>
+              <Label htmlFor="apt_referred_by">Referred By</Label>
+              <Input
+                id="apt_referred_by"
+                value={appointmentForm.referred_by}
+                onChange={(e) => setAppointmentForm({...appointmentForm, referred_by: e.target.value})}
+                placeholder="Referring doctor / person name"
               />
             </div>
 
@@ -1487,12 +1552,29 @@ const ReceptionAppointmentsPage = () => {
                 <iframe src={prescriptionPdfUrl} className="w-full h-full border-0" title="Prescription Preview" />
               )}
             </div>
-            <div className="flex gap-2 pt-4">
-              <Button variant="outline" onClick={closePrescriptionPreview} className="flex-1">Close</Button>
-              <Button onClick={printPrescription} className="flex-1 bg-purple-600 hover:bg-purple-700">
-                <Printer className="h-4 w-4 mr-2" />
-                Print Prescription
-              </Button>
+            <div className="flex items-center justify-between pt-4">
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={rxIncludeHeader}
+                  onChange={async (e) => {
+                    const val = e.target.checked;
+                    setRxIncludeHeader(val);
+                    if (prescriptionData) {
+                      await fetchPrescriptionPdf(prescriptionData.prescription_id, val);
+                    }
+                  }}
+                  className="rounded border-gray-300"
+                />
+                <span className="text-sm text-gray-600">Include hospital letterhead</span>
+              </label>
+              <div className="flex gap-2">
+                <Button variant="outline" onClick={closePrescriptionPreview}>Close</Button>
+                <Button onClick={printPrescription} className="bg-purple-600 hover:bg-purple-700">
+                  <Printer className="h-4 w-4 mr-2" />
+                  Print
+                </Button>
+              </div>
             </div>
           </div>
         </DialogContent>
@@ -1531,16 +1613,56 @@ const ReceptionAppointmentsPage = () => {
                     </div>
 
                     <div className="border rounded-lg divide-y max-h-48 overflow-y-auto">
-                      {pendingLabOrders.map(order => (
-                        <div key={order.id} className="p-3 flex items-center justify-between">
-                          <div>
-                            <p className="font-medium text-sm">{order.test_name}</p>
-                            <p className="text-xs text-gray-500">{order.order_number} | {order.test_code} | Dr. {order.doctor_name?.replace('Dr. ', '')}</p>
-                            {order.priority !== 'normal' && <Badge variant="destructive" className="text-xs mt-0.5">{order.priority}</Badge>}
-                          </div>
-                          <p className="font-semibold text-sm">₹{(order.amount || 0).toFixed(2)}</p>
-                        </div>
-                      ))}
+                      {(() => {
+                        const groups = [];
+                        const pkgMap = {};
+                        for (const order of pendingLabOrders) {
+                          if (order.package_booking_id) {
+                            if (!pkgMap[order.package_booking_id]) {
+                              pkgMap[order.package_booking_id] = { name: order.package_name || 'Package', orders: [] };
+                              groups.push({ type: 'package', key: order.package_booking_id, data: pkgMap[order.package_booking_id] });
+                            }
+                            pkgMap[order.package_booking_id].orders.push(order);
+                          } else {
+                            groups.push({ type: 'single', key: order.id, data: order });
+                          }
+                        }
+                        return groups.map(g => {
+                          if (g.type === 'package') {
+                            const pkg = g.data;
+                            return (
+                              <div key={g.key} className="bg-indigo-50/50 border-l-4 border-indigo-400">
+                                <div className="flex items-center gap-2 px-3 pt-2 pb-1">
+                                  <Package className="h-3.5 w-3.5 text-indigo-600" />
+                                  <span className="font-semibold text-xs text-indigo-700">{pkg.name}</span>
+                                  <span className="text-xs text-indigo-500">({pkg.orders.length} tests)</span>
+                                  <span className="ml-auto font-semibold text-sm">₹{pkg.orders.reduce((s, o) => s + (o.amount || 0), 0).toFixed(2)}</span>
+                                </div>
+                                {pkg.orders.map(order => (
+                                  <div key={order.id} className="px-3 py-1.5 pl-8 flex items-center justify-between">
+                                    <div>
+                                      <p className="text-sm">{order.test_name}</p>
+                                      <p className="text-xs text-gray-400">#{order.order_number} | {order.test_code}</p>
+                                    </div>
+                                    <p className="text-xs text-gray-500">₹{(order.amount || 0).toFixed(2)}</p>
+                                  </div>
+                                ))}
+                              </div>
+                            );
+                          }
+                          const order = g.data;
+                          return (
+                            <div key={order.id} className="p-3 flex items-center justify-between">
+                              <div>
+                                <p className="font-medium text-sm">{order.test_name}</p>
+                                <p className="text-xs text-gray-500">{order.order_number} | {order.test_code} | Dr. {order.doctor_name?.replace('Dr. ', '')}</p>
+                                {order.priority !== 'normal' && <Badge variant="destructive" className="text-xs mt-0.5">{order.priority}</Badge>}
+                              </div>
+                              <p className="font-semibold text-sm">₹{(order.amount || 0).toFixed(2)}</p>
+                            </div>
+                          );
+                        });
+                      })()}
                     </div>
 
                     <div className="flex items-center gap-3">
@@ -1553,8 +1675,10 @@ const ReceptionAppointmentsPage = () => {
                           <SelectContent>
                             <SelectItem value="cash">Cash</SelectItem>
                             <SelectItem value="card">Card</SelectItem>
+                            <SelectItem value="upi">UPI</SelectItem>
                             <SelectItem value="online">Online</SelectItem>
                             <SelectItem value="insurance">Insurance</SelectItem>
+                            <SelectItem value="cheque">Cheque</SelectItem>
                           </SelectContent>
                         </Select>
                       </div>
@@ -1571,17 +1695,69 @@ const ReceptionAppointmentsPage = () => {
                     {pendingLabOrders.length > 0 && <hr className="my-2" />}
                     <p className="text-sm font-medium text-gray-700">Completed Reports</p>
                     <div className="border rounded-lg divide-y max-h-48 overflow-y-auto">
-                      {allLabOrders.filter(o => o.has_report).map(order => (
-                        <div key={order.id} className="p-3 flex items-center justify-between">
-                          <div>
-                            <p className="font-medium text-sm">{order.test_name}</p>
-                            <p className="text-xs text-gray-500">{order.order_number} | {order.test_code}</p>
-                          </div>
-                          <Button size="sm" variant="outline" className="h-7 px-3 text-xs" onClick={() => downloadLabReport(order.report_id, order.order_number)}>
-                            <Printer className="h-3 w-3 mr-1" />Download Report
-                          </Button>
-                        </div>
-                      ))}
+                      {(() => {
+                        const reportOrders = allLabOrders.filter(o => o.has_report);
+                        const groups = [];
+                        const pkgMap = {};
+                        for (const order of reportOrders) {
+                          if (order.package_booking_id) {
+                            if (!pkgMap[order.package_booking_id]) {
+                              pkgMap[order.package_booking_id] = { name: order.package_name || 'Package', orders: [] };
+                              groups.push({ type: 'package', key: order.package_booking_id, data: pkgMap[order.package_booking_id] });
+                            }
+                            pkgMap[order.package_booking_id].orders.push(order);
+                          } else {
+                            groups.push({ type: 'single', key: order.id, data: order });
+                          }
+                        }
+                        return groups.map(g => {
+                          if (g.type === 'package') {
+                            const pkg = g.data;
+                            return (
+                              <div key={g.key} className="bg-indigo-50/50 border-l-4 border-indigo-400">
+                                <div className="flex items-center gap-2 px-3 pt-2 pb-1">
+                                  <Package className="h-3.5 w-3.5 text-indigo-600" />
+                                  <span className="font-semibold text-xs text-indigo-700">{pkg.name}</span>
+                                  <span className="text-xs text-indigo-500">({pkg.orders.length} tests)</span>
+                                </div>
+                                {pkg.orders.map(order => (
+                                  <div key={order.id} className="px-3 py-1.5 pl-8 flex items-center justify-between">
+                                    <div>
+                                      <p className="text-sm">{order.test_name}</p>
+                                      <p className="text-xs text-gray-400">#{order.order_number} | {order.test_code}</p>
+                                    </div>
+                                    <div className="flex gap-1">
+                                      <Button size="sm" variant="outline" className="h-6 px-2 text-xs" onClick={() => downloadLabReport(order.report_id, order.order_number, true)}>
+                                        <Printer className="h-3 w-3 mr-1" />With Header
+                                      </Button>
+                                      <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => downloadLabReport(order.report_id, order.order_number, false)}>
+                                        Without Header
+                                      </Button>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            );
+                          }
+                          const order = g.data;
+                          return (
+                            <div key={order.id} className="p-3 flex items-center justify-between">
+                              <div>
+                                <p className="font-medium text-sm">{order.test_name}</p>
+                                <p className="text-xs text-gray-500">{order.order_number} | {order.test_code}</p>
+                              </div>
+                              <div className="flex gap-1">
+                                <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => downloadLabReport(order.report_id, order.order_number, true)}>
+                                  <Printer className="h-3 w-3 mr-1" />With Header
+                                </Button>
+                                <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => downloadLabReport(order.report_id, order.order_number, false)}>
+                                  Without Header
+                                </Button>
+                              </div>
+                            </div>
+                          );
+                        });
+                      })()}
                     </div>
                   </>
                 )}
@@ -1638,7 +1814,20 @@ const ReceptionAppointmentsPage = () => {
             </div>
 
             {/* Action Buttons */}
-            <div className="flex gap-2 pt-4">
+            <div className="flex items-center gap-3 pt-4">
+              <div className="flex items-center space-x-2">
+                <input type="checkbox" id="bill-include-header" checked={billIncludeHeader}
+                  onChange={async (e) => {
+                    const newVal = e.target.checked;
+                    setBillIncludeHeader(newVal);
+                    if (currentBillAppointmentId) {
+                      if (billPdfUrl) { window.URL.revokeObjectURL(billPdfUrl); setBillPdfUrl(null); }
+                      await showBillPreview(currentBillAppointmentId, newVal);
+                    }
+                  }}
+                  className="w-4 h-4" />
+                <Label htmlFor="bill-include-header" className="text-sm">Include header</Label>
+              </div>
               <Button variant="outline" onClick={closeBillPreview} className="flex-1">
                 Close
               </Button>

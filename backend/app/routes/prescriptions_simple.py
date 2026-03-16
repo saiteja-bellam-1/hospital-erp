@@ -72,13 +72,13 @@ async def create_prescription(
     db: Session = Depends(get_db)
 ):
     """Create a new prescription with JSON medicine storage"""
-    
+
     # Verify patient exists
     patient = db.query(Patient).filter(Patient.patient_id == prescription_data.patient_id).first()
     if not patient:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Patient not found"
+            detail=f"Patient not found for id: {prescription_data.patient_id}"
         )
     
     # Verify patient belongs to same hospital
@@ -141,6 +141,7 @@ async def create_prescription(
 async def get_prescriptions(
     patient_id: Optional[str] = None,
     doctor_id: Optional[int] = None,
+    consultation_id: Optional[int] = None,
     status: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
@@ -151,14 +152,17 @@ async def get_prescriptions(
     query = db.query(SimplePrescription).filter(
         SimplePrescription.hospital_id == current_user.hospital_id
     )
-    
+
     # Apply filters
     if patient_id:
         query = query.filter(SimplePrescription.patient_id == patient_id)
-    
+
     if doctor_id:
         query = query.filter(SimplePrescription.doctor_id == doctor_id)
-        
+
+    if consultation_id:
+        query = query.filter(SimplePrescription.consultation_id == consultation_id)
+
     if status:
         query = query.filter(SimplePrescription.status == status)
     
@@ -358,9 +362,11 @@ async def download_prescription_pdf(
     patient_age = ''
     patient_gender = ''
     patient_phone = ''
+    patient_blood_group = ''
     if patient:
         patient_phone = patient.primary_phone or ''
         patient_gender = (patient.gender or '').capitalize()
+        patient_blood_group = patient.blood_group or ''
         if patient.date_of_birth:
             from datetime import date
             today = date.today()
@@ -368,17 +374,32 @@ async def download_prescription_pdf(
                 (today.month, today.day) < (patient.date_of_birth.month, patient.date_of_birth.day)
             ))
 
+    # Get appointment reason if linked
+    appointment_reason = ''
+    if consultation and hasattr(consultation, 'chief_complaint') and consultation.chief_complaint:
+        appointment_reason = consultation.chief_complaint
+    if not appointment_reason and patient:
+        from app.models.outpatient import Appointment as Apt
+        latest_apt = db.query(Apt).filter(
+            Apt.patient_id == patient.id
+        ).order_by(Apt.created_at.desc()).first()
+        if latest_apt and latest_apt.reason:
+            appointment_reason = latest_apt.reason
+
     # Format prescription data for PDF
-    prescription_data = {
+    prescription_pdf_data = {
         "prescription_number": prescription.prescription_id,
         "prescription_date": prescription.prescription_date.isoformat(),
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "Unknown",
         "patient_age": patient_age,
         "patient_gender": patient_gender,
         "patient_phone": patient_phone,
+        "patient_blood_group": patient_blood_group,
         "patient_id_display": prescription.patient_id,
         "doctor_name": f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else "Unknown",
         "doctor_specialization": doctor.specialization if doctor and hasattr(doctor, 'specialization') else '',
+        "doctor_registration_number": doctor.license_number if doctor and hasattr(doctor, 'license_number') else '',
+        "appointment_reason": appointment_reason,
         "status": prescription.status,
         "notes": prescription.notes,
         "diagnosis": prescription.diagnosis,
@@ -403,11 +424,12 @@ async def download_prescription_pdf(
         "name": hospital.name if hospital else "General Hospital",
         "address": hospital.address if hospital else "Hospital Address",
         "phone": hospital.phone if hospital else "+1-000-000-0000",
-        "email": hospital.email if hospital else "info@hospital.com"
+        "email": hospital.email if hospital else "info@hospital.com",
+        "logo_url": hospital.logo_url if hospital and hasattr(hospital, 'logo_url') else ''
     }
 
     # Generate PDF
-    pdf_buffer = pdf_service.generate_prescription_pdf(prescription_data, hospital_info, include_header)
+    pdf_buffer = pdf_service.generate_prescription_pdf(prescription_pdf_data, hospital_info, include_header)
 
     # Create filename
     filename = f"prescription_{prescription.prescription_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"

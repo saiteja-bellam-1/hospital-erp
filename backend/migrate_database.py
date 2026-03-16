@@ -12,7 +12,7 @@ sys.path.insert(0, '/Users/saiteja/Documents/GitHub/hospital-ERP/backend')
 
 def migrate_database():
     """Add new columns to existing tables"""
-    db_path = '/Users/saiteja/Documents/GitHub/hospital-ERP/backend/hospital_erp.db'
+    db_path = '/Users/saiteja/Documents/GitHub/hospital-ERP/backend/kthealth_erp.db'
     
     try:
         conn = sqlite3.connect(db_path)

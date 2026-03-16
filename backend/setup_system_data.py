@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Setup script to initialize system modules and data for the Hospital ERP
+Setup script to initialize system modules and data for the KT HEALTH ERP
 """
 
 import sys
@@ -225,7 +225,7 @@ def setup_default_super_admin():
 
 def main():
     """Main setup function"""
-    print("Hospital ERP System Setup")
+    print("KT HEALTH ERP System Setup")
     print("=" * 40)
 
     # Create all tables

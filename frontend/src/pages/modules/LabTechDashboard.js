@@ -10,7 +10,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/ta
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../components/ui/dialog';
 import {
   TestTube, Clock, CheckCircle, AlertCircle, RefreshCw, Loader2,
-  User, FileText, Activity, Search, Beaker
+  User, FileText, Activity, Search, Beaker, Package
 } from 'lucide-react';
 import axios from 'axios';
 import { format } from 'date-fns';
@@ -19,6 +19,10 @@ const LabTechDashboard = () => {
   const [orders, setOrders] = useState([]);
   const [completedOrders, setCompletedOrders] = useState([]);
   const [loading, setLoading] = useState(false);
+
+  // Detect role for title
+  const userData = JSON.parse(localStorage.getItem('user') || '{}');
+  const isLabAdmin = userData.role === 'lab_admin';
   const [activeTab, setActiveTab] = useState('pending');
   const [statusFilter, setStatusFilter] = useState('all_pending');
   const [searchQuery, setSearchQuery] = useState('');
@@ -201,11 +205,43 @@ const LabTechDashboard = () => {
       return (
         order.patient_name?.toLowerCase().includes(q) ||
         order.test_name?.toLowerCase().includes(q) ||
-        order.order_number?.toLowerCase().includes(q)
+        order.order_number?.toLowerCase().includes(q) ||
+        order.package_name?.toLowerCase().includes(q)
       );
     }
     return true;
   });
+
+  // Group orders: package orders grouped by package_booking_id, individual orders standalone
+  const groupOrders = (orderList) => {
+    const groups = [];
+    const packageMap = {};
+    for (const order of orderList) {
+      if (order.package_booking_id) {
+        if (!packageMap[order.package_booking_id]) {
+          packageMap[order.package_booking_id] = {
+            type: 'package',
+            package_name: order.package_name || 'Package',
+            package_booking_id: order.package_booking_id,
+            patient_name: order.patient_name,
+            doctor_name: order.doctor_name,
+            priority: order.priority,
+            order_date: order.order_date,
+            orders: [],
+          };
+          groups.push(packageMap[order.package_booking_id]);
+        }
+        packageMap[order.package_booking_id].orders.push(order);
+        // Escalate priority if any order is urgent/emergency
+        if (order.priority === 'emergency' || (order.priority === 'urgent' && packageMap[order.package_booking_id].priority === 'normal')) {
+          packageMap[order.package_booking_id].priority = order.priority;
+        }
+      } else {
+        groups.push({ type: 'single', order });
+      }
+    }
+    return groups;
+  };
 
   // ============ Render ============
 
@@ -317,6 +353,75 @@ const LabTechDashboard = () => {
     </Card>
   );
 
+  const renderPackageGroup = (group, key) => {
+    const completedCount = group.orders.filter(o => o.status === 'completed').length;
+    const totalCount = group.orders.length;
+    return (
+      <Card key={`pkg-${key}`} className="border-2 border-indigo-200 bg-indigo-50/30">
+        <CardContent className="py-3 px-4">
+          {/* Package header */}
+          <div className="flex items-center justify-between mb-3 pb-2 border-b border-indigo-200">
+            <div className="flex items-center gap-2">
+              <span className="font-semibold text-gray-900">{group.patient_name}</span>
+              <span className="text-gray-400">|</span>
+              <Package className="h-4 w-4 text-indigo-600" />
+              <span className="font-semibold text-indigo-700">{group.package_name}</span>
+              <Badge className="bg-indigo-100 text-indigo-700 text-xs">{totalCount} tests</Badge>
+              {completedCount > 0 && (
+                <Badge className="bg-green-100 text-green-700 text-xs">{completedCount}/{totalCount} done</Badge>
+              )}
+              {group.priority !== 'normal' && (
+                <Badge variant={getPriorityColor(group.priority)}>{group.priority.toUpperCase()}</Badge>
+              )}
+            </div>
+            <div className="text-xs text-gray-500">
+              <User className="inline h-3 w-3 mr-1" />{group.doctor_name || 'N/A'}
+            </div>
+          </div>
+          {/* Individual tests within package */}
+          <div className="space-y-2">
+            {group.orders.map(order => (
+              <div key={order.id} className="flex items-center justify-between bg-white rounded-lg p-3 border border-indigo-100">
+                <div className="flex-1">
+                  <div className="flex items-center gap-2 mb-0.5">
+                    <span className="font-semibold text-sm">{order.patient_name}</span>
+                    <span className="text-gray-300">|</span>
+                    <TestTube className="h-3 w-3 text-gray-400" />
+                    <span className="font-medium text-sm">{order.test_name} ({order.test_code})</span>
+                    <Badge className={`text-xs ${getStatusColor(order.status)}`}>{order.status}</Badge>
+                  </div>
+                  <p className="text-xs text-gray-400 ml-5">#{order.order_number}</p>
+                </div>
+                <div className="flex gap-2 ml-4">
+                  {order.status === 'ordered' && (
+                    <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => handleUpdateStatus(order.id, 'collected')}>
+                      Mark Collected
+                    </Button>
+                  )}
+                  {order.status === 'collected' && (
+                    <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => handleUpdateStatus(order.id, 'processing')}>
+                      Start Processing
+                    </Button>
+                  )}
+                  {(order.status === 'collected' || order.status === 'processing') && (
+                    <Button size="sm" className="h-7 text-xs" onClick={() => openEntryForm(order.id)}>
+                      <FileText className="h-3 w-3 mr-1" /> Enter Results
+                    </Button>
+                  )}
+                  {order.status === 'completed' && order.has_report && (
+                    <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => openReport(order.report_id)}>
+                      View Report
+                    </Button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+    );
+  };
+
   const renderPendingTab = () => (
     <div className="space-y-4">
       <div className="flex flex-col md:flex-row gap-3">
@@ -353,7 +458,9 @@ const LabTechDashboard = () => {
         </Card>
       ) : (
         <div className="space-y-3">
-          {filteredOrders.map(renderOrderCard)}
+          {groupOrders(filteredOrders).map((group, gi) =>
+            group.type === 'package' ? renderPackageGroup(group, gi) : renderOrderCard(group.order)
+          )}
         </div>
       )}
     </div>
@@ -368,7 +475,9 @@ const LabTechDashboard = () => {
           </CardContent>
         </Card>
       ) : (
-        completedOrders.map(renderOrderCard)
+        groupOrders(completedOrders).map((group, gi) =>
+          group.type === 'package' ? renderPackageGroup(group, gi) : renderOrderCard(group.order)
+        )
       )}
     </div>
   );
@@ -530,24 +639,26 @@ const LabTechDashboard = () => {
             </div>
           )}
 
-          <div className="flex justify-end mt-4">
-            <Button variant="outline" onClick={async () => {
-              try {
-                const res = await axios.get(`/api/lab/reports/${viewingReport.id}/download`, {
-                  responseType: 'blob'
-                });
-                const url = window.URL.createObjectURL(new Blob([res.data]));
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = `lab_report_${viewingReport.order_number}.pdf`;
-                a.click();
-                window.URL.revokeObjectURL(url);
-              } catch (err) {
-                console.error('Failed to download PDF:', err);
-              }
-            }}>
-              <FileText className="h-4 w-4 mr-2" /> Download PDF
-            </Button>
+          <div className="flex justify-end gap-2 mt-4">
+            {[true, false].map(withHeader => (
+              <Button key={String(withHeader)} variant="outline" onClick={async () => {
+                try {
+                  const res = await axios.get(`/api/lab/reports/${viewingReport.id}/download?include_header=${withHeader}`, {
+                    responseType: 'blob'
+                  });
+                  const url = window.URL.createObjectURL(new Blob([res.data]));
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = `lab_report_${viewingReport.order_number}.pdf`;
+                  a.click();
+                  window.URL.revokeObjectURL(url);
+                } catch (err) {
+                  console.error('Failed to download PDF:', err);
+                }
+              }}>
+                <FileText className="h-4 w-4 mr-2" /> {withHeader ? 'With Header' : 'Without Header'}
+              </Button>
+            ))}
           </div>
         </DialogContent>
       </Dialog>
@@ -559,7 +670,7 @@ const LabTechDashboard = () => {
       {renderFeedback()}
 
       <div className="flex items-center justify-between">
-        <h1 className="text-3xl font-bold text-gray-900">Lab Technician Dashboard</h1>
+        <h1 className="text-3xl font-bold text-gray-900">{isLabAdmin ? 'Lab Admin Dashboard' : 'Lab Technician Dashboard'}</h1>
         <Button variant="outline" onClick={() => { fetchOrders(); fetchStats(); }}>
           <RefreshCw className="h-4 w-4 mr-2" /> Refresh
         </Button>

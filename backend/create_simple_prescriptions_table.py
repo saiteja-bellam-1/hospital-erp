@@ -69,7 +69,7 @@ def verify_table():
         return False
 
 if __name__ == "__main__":
-    print("🏥 Hospital ERP - Simple Prescriptions Table Migration")
+    print("🏥 KT HEALTH ERP - Simple Prescriptions Table Migration")
     print("=" * 60)
     
     if create_simple_prescriptions_table():

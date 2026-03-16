@@ -12,6 +12,7 @@ from app.models.user import User
 from app.models.ehr import Consultation
 from app.models.lab import PatientLabOrder, LabTest, LabTestCategory
 from app.models.patient import Patient
+from app.models.prescriptions_simple import SimplePrescription
 from app.models.billing import Bill, BillItem, PaymentMethod, Payment
 from app.utils.dependencies import get_current_user, require_permission
 from app.utils.auth import Modules
@@ -83,7 +84,7 @@ def _build_consultation_response(consultation: Consultation, db: Session) -> dic
         "consultation_fee": consultation.consultation_fee or 0.0,
         "follow_up_date": consultation.follow_up_date,
         "notes": consultation.notes,
-        "appointment_id": None,
+        "appointment_id": getattr(consultation, 'appointment_id', None),
     }
 
 @router.post("/", response_model=ConsultationResponse)
@@ -106,6 +107,7 @@ async def create_consultation(
         consultation_number=consultation_number,
         patient_id=data.patient_id,
         doctor_id=current_user.id,
+        appointment_id=data.appointment_id,
         consultation_type=data.consultation_type,
         chief_complaint=data.chief_complaint,
         present_history=data.present_history,
@@ -143,6 +145,79 @@ async def get_my_consultations(
 
     consultations = query.order_by(Consultation.consultation_date.desc()).limit(50).all()
     return [_build_consultation_response(c, db) for c in consultations]
+
+@router.get("/patient/{patient_id}/history")
+async def get_patient_consultation_history(
+    patient_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get all consultations for a patient (excluding vitals_recording)"""
+    consultations = db.query(Consultation).filter(
+        Consultation.patient_id == patient_id,
+        Consultation.consultation_type != "vitals_recording"
+    ).order_by(Consultation.consultation_date.desc()).limit(50).all()
+
+    result = []
+    for c in consultations:
+        doctor = db.query(User).filter(User.id == c.doctor_id).first()
+        # Get prescriptions linked to this consultation
+        rx_list = db.query(SimplePrescription).filter(
+            SimplePrescription.consultation_id == c.id
+        ).all()
+        prescriptions = []
+        for rx in rx_list:
+            prescriptions.append({
+                "prescription_id": rx.prescription_id,
+                "medicines": rx.medicines or [],
+                "diagnosis": rx.diagnosis,
+                "notes": rx.notes,
+                "prescription_date": rx.prescription_date
+            })
+
+        # Parse vital signs
+        vital_signs = None
+        if c.vital_signs:
+            try:
+                import json
+                vital_signs = json.loads(c.vital_signs)
+            except Exception:
+                vital_signs = None
+
+        result.append({
+            "id": c.id,
+            "consultation_number": c.consultation_number,
+            "consultation_date": c.consultation_date,
+            "consultation_type": c.consultation_type,
+            "doctor_name": f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else "Unknown",
+            "doctor_specialization": doctor.specialization if doctor else None,
+            "chief_complaint": c.chief_complaint,
+            "present_history": c.present_history,
+            "examination_findings": c.examination_findings,
+            "vital_signs": vital_signs,
+            "status": c.status,
+            "notes": c.notes,
+            "follow_up_date": c.follow_up_date,
+            "prescriptions": prescriptions,
+            "appointment_id": getattr(c, 'appointment_id', None),
+        })
+
+    return result
+
+@router.get("/by-appointment/{appointment_id}", response_model=ConsultationResponse)
+async def get_consultation_by_appointment(
+    appointment_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get consultation for a specific appointment"""
+    consultation = db.query(Consultation).filter(
+        Consultation.appointment_id == appointment_id,
+        Consultation.consultation_type != "vitals_recording"
+    ).order_by(Consultation.created_at.desc()).first()
+    if not consultation:
+        raise HTTPException(status_code=404, detail="No consultation found for this appointment")
+    return _build_consultation_response(consultation, db)
 
 @router.get("/by-id/{consultation_id}", response_model=ConsultationResponse)
 async def get_consultation(
@@ -261,7 +336,7 @@ class ConsultationBillResponse(BaseModel):
 
 class PaymentCreate(BaseModel):
     amount_paid: float = Field(..., gt=0, description="Amount to be paid")
-    payment_method: str = Field(..., pattern="^(cash|card|upi|cheque|online)$")
+    payment_method: str = Field(..., pattern="^(cash|card|upi|cheque|online|insurance)$")
     transaction_reference: Optional[str] = None
     notes: Optional[str] = None
 
@@ -962,7 +1037,8 @@ async def process_bill_payment(
         payment_number=generate_payment_number(),
         bill_id=bill.id,
         amount_paid=payment_data.amount_paid,
-        payment_method_id=1,  # Default to cash for now
+        payment_method_id=1,
+        payment_method_name=payment_data.payment_method,
         transaction_reference=payment_data.transaction_reference,
         notes=payment_data.notes,
         received_by_id=current_user.id
@@ -1065,7 +1141,7 @@ async def get_bill_for_printing(
             payment_number=latest_payment.payment_number,
             bill_id=latest_payment.bill_id,
             amount_paid=latest_payment.amount_paid,
-            payment_method="cash",  # Default for now
+            payment_method=latest_payment.payment_method_name or "cash",
             payment_date=latest_payment.payment_date,
             transaction_reference=latest_payment.transaction_reference,
             notes=latest_payment.notes,
@@ -1081,6 +1157,7 @@ async def get_bill_for_printing(
 @router.get("/{consultation_id}/bill/download")
 async def download_bill_pdf(
     consultation_id: int,
+    include_header: bool = True,
     current_user: User = Depends(require_permission(Modules.OUTPATIENT, "read")),
     db: Session = Depends(get_db)
 ):
@@ -1125,6 +1202,7 @@ async def download_bill_pdf(
         "total_amount": bill.total_amount,
         "amount_paid": amount_paid,
         "balance_due": balance_due,
+        "payment_method": (latest_payment.payment_method_name or "cash").capitalize() if latest_payment else "Cash",
         "items": [
             {
                 "item_name": item.item_name,
@@ -1143,7 +1221,7 @@ async def download_bill_pdf(
             "receipt_number": f"RCP-{latest_payment.payment_number}",
             "payment_date": latest_payment.payment_date.isoformat(),
             "amount_paid": latest_payment.amount_paid,
-            "payment_method": "cash",  # Default for now
+            "payment_method": (latest_payment.payment_method_name or "cash").capitalize(),
             "transaction_reference": latest_payment.transaction_reference
         }
     
@@ -1156,8 +1234,8 @@ async def download_bill_pdf(
     }
     
     # Generate PDF
-    pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info)
-    
+    pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, include_header=include_header)
+
     # Create filename
     filename = f"bill_{bill.bill_number}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
     

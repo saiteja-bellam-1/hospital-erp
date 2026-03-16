@@ -10,7 +10,7 @@ backend_dir = os.path.dirname(os.path.abspath(__file__))
 os.chdir(backend_dir)
 sys.path.insert(0, backend_dir)
 
-print("🏥 Hospital ERP Backend Server")
+print("🏥 KT HEALTH ERP Backend Server")
 print("==============================")
 print(f"Directory: {backend_dir}")
 

@@ -112,20 +112,12 @@ const VitalsForm = ({
         onClose();
         resetForm();
       } else {
-        // If the API doesn't exist yet, show a success message for demo
-        console.log('Vitals would be saved:', vitalsData);
-        toast({ title: 'Success', description: 'Vitals recorded successfully! (Demo mode)' });
-        if (onSave) onSave(vitalsData);
-        onClose();
-        resetForm();
+        const err = await response.json().catch(() => ({}));
+        toast({ variant: 'destructive', title: 'Error', description: err.detail || 'Failed to save vitals' });
       }
     } catch (error) {
       console.error('Error saving vitals:', error);
-      // For demo purposes, still show success
-      toast({ title: 'Success', description: 'Vitals recorded successfully! (Demo mode)' });
-      if (onSave) onSave(vitalsForm);
-      onClose();
-      resetForm();
+      toast({ variant: 'destructive', title: 'Error', description: 'Failed to save vitals. Please try again.' });
     } finally {
       setLoading(false);
     }

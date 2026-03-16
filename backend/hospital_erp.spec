@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-PyInstaller spec file for Hospital ERP.
+PyInstaller spec file for KT HEALTH ERP.
 Build with: pyinstaller hospital_erp.spec --clean
 """
 
@@ -112,7 +112,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='HospitalERP',
+    name='KTHEALTHERP',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

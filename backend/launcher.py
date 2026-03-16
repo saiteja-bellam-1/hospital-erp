@@ -1,5 +1,5 @@
 """
-Entry point for the bundled Hospital ERP .exe.
+Entry point for the bundled KT HEALTH ERP .exe.
 Also works in dev mode for testing the bundled-like experience.
 
 The server binds to 0.0.0.0 so it is accessible from any device
@@ -58,13 +58,13 @@ def main():
         os.makedirs(data_dir, exist_ok=True)
         os.makedirs(os.path.join(data_dir, "uploads"), exist_ok=True)
 
-        print(f"Hospital ERP - Bundled Mode")
+        print(f"KT HEALTH ERP - Bundled Mode")
         print(f"Data directory: {data_dir}")
     else:
         # Dev mode: change to backend directory
         backend_dir = os.path.dirname(os.path.abspath(__file__))
         os.chdir(backend_dir)
-        print("Hospital ERP - Development Mode")
+        print("KT HEALTH ERP - Development Mode")
 
     # Find a free port
     port = find_free_port()
@@ -72,7 +72,7 @@ def main():
 
     print()
     print("=" * 50)
-    print("  Hospital ERP Server")
+    print("  KT HEALTH ERP Server")
     print("=" * 50)
     print(f"  Local:     http://localhost:{port}")
     print(f"  Network:   http://{local_ip}:{port}")
@@ -96,7 +96,7 @@ def main():
             log_level="info",
         )
     except KeyboardInterrupt:
-        print("\nShutting down Hospital ERP...")
+        print("\nShutting down KT HEALTH ERP...")
 
 
 if __name__ == "__main__":

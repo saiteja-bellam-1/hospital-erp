@@ -35,7 +35,7 @@ def main():
         print("❌ main.py not found in backend directory!")
         sys.exit(1)
     
-    print("🏥 Starting Hospital ERP Backend...")
+    print("🏥 Starting KT HEALTH ERP Backend...")
     print("==================================")
     print(f"Working directory: {backend_dir}")
     print("Starting FastAPI server on http://localhost:8000")

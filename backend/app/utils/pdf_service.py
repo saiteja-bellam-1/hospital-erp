@@ -44,7 +44,7 @@ class PDFService:
             textColor=colors.darkgrey
         ))
 
-    def generate_bill_pdf(self, bill_data, hospital_info):
+    def generate_bill_pdf(self, bill_data, hospital_info, include_header=True):
         """Generate PDF for bill/receipt in tabular format"""
         buffer = BytesIO()
 
@@ -105,22 +105,27 @@ class PDFService:
         # ============================================================
         # HEADER: Hospital Name + Address + Receipt Title
         # ============================================================
-        elements.append(Paragraph(hospital_info.get('name', 'HOSPITAL').upper(), title_style))
+        if include_header:
+            elements.append(Paragraph(hospital_info.get('name', 'HOSPITAL').upper(), title_style))
 
-        address = hospital_info.get('address', '')
-        if address:
-            elements.append(Paragraph(address, subtitle_style))
+            address = hospital_info.get('address', '')
+            if address:
+                elements.append(Paragraph(address, subtitle_style))
 
-        contact_parts = []
-        if hospital_info.get('email'):
-            contact_parts.append(f"Email: {hospital_info['email']}")
-        if hospital_info.get('phone'):
-            contact_parts.append(f"Phone: {hospital_info['phone']}")
-        if contact_parts:
-            elements.append(Paragraph("  |  ".join(contact_parts), subtitle_style))
+            contact_parts = []
+            if hospital_info.get('email'):
+                contact_parts.append(f"Email: {hospital_info['email']}")
+            if hospital_info.get('phone'):
+                contact_parts.append(f"Phone: {hospital_info['phone']}")
+            if contact_parts:
+                elements.append(Paragraph("  |  ".join(contact_parts), subtitle_style))
 
-        elements.append(Spacer(1, 6))
-        elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+            elements.append(Spacer(1, 6))
+            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+        else:
+            # Leave blank space for pre-printed letterhead (~100pt ≈ 3.5cm)
+            elements.append(Spacer(1, 100))
+
         elements.append(Spacer(1, 4))
         elements.append(Paragraph("RECEIPT CUM REQUISITION", receipt_title_style))
         elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
@@ -156,7 +161,6 @@ class PDFService:
 
         info_table = Table(patient_info_data, colWidths=[col_w, col_w])
         info_table.setStyle(TableStyle([
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('TOPPADDING', (0, 0), (-1, -1), 3),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
@@ -193,13 +197,11 @@ class PDFService:
 
         items_table = Table(items_data, colWidths=[sno_w, desc_w, code_w, rate_w])
         items_table.setStyle(TableStyle([
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('TOPPADDING', (0, 0), (-1, -1), 4),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
             ('LEFTPADDING', (0, 0), (-1, -1), 6),
             ('RIGHTPADDING', (0, 0), (-1, -1), 6),
-            # Header row bold
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
             ('LINEBELOW', (0, 0), (-1, 0), 1, colors.black),
         ]))
@@ -254,19 +256,19 @@ class PDFService:
             except Exception:
                 return str(amount)
 
-        label_w = page_width * 0.25
-        value_w = page_width * 0.25
+        # Summary right-aligned under Rate column
+        summary_label_w = page_width - code_w - rate_w
+        cell_value_right = ParagraphStyle('CellValueRight', parent=cell_value_sm, alignment=2)
 
         payment_data = [
-            [lv_sm('Paymode', pay_category), lv_sm('Total Amt', f"{total_amt:.2f}")],
-            [Paragraph('', cell_value_sm), lv_sm('Discount', f"{discount:.2f}")],
-            [Paragraph('', cell_value_sm), lv_sm('Paid Amt', f"{paid_amt:.2f}")],
-            [Paragraph('', cell_value_sm), lv_sm('Balance', f"{balance:.2f}")],
+            [lv_sm('Paymode', pay_category), Paragraph('<b>Total Amt</b>', cell_value_sm), Paragraph(f"{total_amt:.2f}", cell_value_right)],
+            [Paragraph('', cell_value_sm), Paragraph('<b>Discount</b>', cell_value_sm), Paragraph(f"{discount:.2f}", cell_value_right)],
+            [Paragraph('', cell_value_sm), Paragraph('<b>Paid Amt</b>', cell_value_sm), Paragraph(f"{paid_amt:.2f}", cell_value_right)],
+            [Paragraph('', cell_value_sm), Paragraph('<b>Balance</b>', cell_value_sm), Paragraph(f"{balance:.2f}", cell_value_right)],
         ]
 
-        payment_table = Table(payment_data, colWidths=[page_width / 2, page_width / 2])
+        payment_table = Table(payment_data, colWidths=[summary_label_w, code_w, rate_w])
         payment_table.setStyle(TableStyle([
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('TOPPADDING', (0, 0), (-1, -1), 3),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
@@ -281,7 +283,6 @@ class PDFService:
         words_data = [[lv('In words', words_text)]]
         words_table = Table(words_data, colWidths=[page_width])
         words_table.setStyle(TableStyle([
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('TOPPADDING', (0, 0), (-1, -1), 3),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
@@ -299,7 +300,6 @@ class PDFService:
         ]
         footer_table = Table(footer_data, colWidths=[page_width / 2, page_width / 2])
         footer_table.setStyle(TableStyle([
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('TOPPADDING', (0, 0), (-1, -1), 3),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
@@ -313,7 +313,9 @@ class PDFService:
         return buffer
 
     def generate_prescription_pdf(self, prescription_data, hospital_info, include_header=True):
-        """Generate PDF for prescription – clean tabular layout, no visible cell borders"""
+        """Generate PDF for prescription matching the reference layout:
+        Header → Doctor+Patient info box → Diagnosis → Vitals (left) + Medicines (right) → Instructions
+        """
         buffer = BytesIO()
 
         doc = SimpleDocTemplate(
@@ -324,49 +326,42 @@ class PDFService:
         elements = []
         page_width = A4[0] - 80  # usable width
 
+        # Colors — black & white only
+        accent = colors.black
+        border_color = colors.HexColor('#999999')
+        text_dark = colors.black
+        text_muted = colors.HexColor('#444444')
+
         # --- Styles ---
         title_style = ParagraphStyle('RxTitle', parent=self.styles['Title'],
-            fontSize=16, alignment=1, fontName='Helvetica-Bold',
-            textColor=colors.black, spaceAfter=2)
+            fontSize=18, alignment=1, fontName='Helvetica-Bold',
+            textColor=text_dark, spaceAfter=2)
 
         subtitle_style = ParagraphStyle('RxSubtitle', parent=self.styles['Normal'],
             fontSize=9, alignment=1, fontName='Helvetica',
-            textColor=colors.black, spaceAfter=2)
+            textColor=text_muted, spaceAfter=2)
 
-        section_title = ParagraphStyle('RxSection', parent=self.styles['Normal'],
-            fontSize=10, fontName='Helvetica-Bold', textColor=colors.black,
-            spaceBefore=8, spaceAfter=4)
+        section_hdr = ParagraphStyle('RxSectionHdr', parent=self.styles['Normal'],
+            fontSize=11, fontName='Helvetica-Bold', textColor=accent,
+            spaceBefore=0, spaceAfter=4)
 
         cell_lbl = ParagraphStyle('RxCellLbl', parent=self.styles['Normal'],
-            fontSize=9, fontName='Helvetica-Bold', textColor=colors.HexColor('#444444'))
+            fontSize=9, fontName='Helvetica-Bold', textColor=text_dark)
 
         cell_val = ParagraphStyle('RxCellVal', parent=self.styles['Normal'],
-            fontSize=9, fontName='Helvetica', textColor=colors.black)
+            fontSize=9, fontName='Helvetica', textColor=text_dark)
 
         cell_val_sm = ParagraphStyle('RxCellValSm', parent=self.styles['Normal'],
-            fontSize=8, fontName='Helvetica', textColor=colors.black)
+            fontSize=8, fontName='Helvetica', textColor=text_dark)
 
         footer_style = ParagraphStyle('RxFooter', parent=self.styles['Normal'],
             fontSize=7, alignment=1, fontName='Helvetica', textColor=colors.grey)
-
-        # No-border table style helper
-        def no_border_style(extra=None):
-            cmds = [
-                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-                ('TOPPADDING', (0, 0), (-1, -1), 2),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
-                ('LEFTPADDING', (0, 0), (-1, -1), 4),
-                ('RIGHTPADDING', (0, 0), (-1, -1), 4),
-            ]
-            if extra:
-                cmds.extend(extra)
-            return TableStyle(cmds)
 
         def lbl(text):
             return Paragraph(f"<b>{text}</b>", cell_lbl)
 
         def val(text):
-            return Paragraph(str(text) if text else '—', cell_val)
+            return Paragraph(str(text) if text else '', cell_val)
 
         # --- Parse dates ---
         try:
@@ -375,246 +370,383 @@ class PDFService:
             rx_date = datetime.now().strftime('%d/%m/%Y')
 
         # ============================================================
-        # HEADER
+        # HEADER — Logo (left) + Hospital Name + Address (center)
         # ============================================================
         if include_header:
-            elements.append(Paragraph(hospital_info.get('name', 'HOSPITAL').upper(), title_style))
+            hospital_name = hospital_info.get('name', 'HOSPITAL').upper()
             address = hospital_info.get('address', '')
-            if address:
-                elements.append(Paragraph(address, subtitle_style))
             contact_parts = []
             if hospital_info.get('phone'):
-                contact_parts.append(f"Phone: {hospital_info['phone']}")
+                contact_parts.append(f"Tel: {hospital_info['phone']}")
             if hospital_info.get('email'):
                 contact_parts.append(f"Email: {hospital_info['email']}")
-            if contact_parts:
-                elements.append(Paragraph("  |  ".join(contact_parts), subtitle_style))
-            elements.append(Spacer(1, 6))
-            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
-            elements.append(Spacer(1, 4))
+            contact_line = " | ".join(contact_parts)
 
-        elements.append(Paragraph("PRESCRIPTION", ParagraphStyle('RxMainTitle',
-            parent=self.styles['Normal'], fontSize=12, alignment=1,
-            fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)))
-        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.grey))
-        elements.append(Spacer(1, 6))
+            # Try to load hospital logo
+            logo_path = hospital_info.get('logo_url', '')
+            uploads_base = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
+            has_logo = False
+            full_logo_path = ''
+            if logo_path:
+                relative = logo_path.lstrip('/')
+                if relative.startswith('uploads/'):
+                    relative = relative[len('uploads/'):]
+                full_logo_path = os.path.join(uploads_base, relative)
+                has_logo = os.path.exists(full_logo_path)
+
+            header_text_elems = [Paragraph(hospital_name, title_style)]
+            if address:
+                header_text_elems.append(Paragraph(address, subtitle_style))
+            if contact_line:
+                header_text_elems.append(Paragraph(contact_line, subtitle_style))
+
+            if has_logo:
+                try:
+                    logo_img = Image(full_logo_path, width=65, height=65)
+                    logo_img.hAlign = 'CENTER'
+                    header_table = Table(
+                        [[logo_img, header_text_elems]],
+                        colWidths=[80, page_width - 80]
+                    )
+                    header_table.setStyle(TableStyle([
+                        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+                        ('TOPPADDING', (0, 0), (-1, -1), 0),
+                        ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+                    ]))
+                    elements.append(header_table)
+                except Exception:
+                    for el in header_text_elems:
+                        elements.append(el)
+            else:
+                for el in header_text_elems:
+                    elements.append(el)
+
+            elements.append(Spacer(1, 10))
+        else:
+            # Leave blank space for pre-printed letterhead (~100pt ≈ 3.5cm)
+            elements.append(Spacer(1, 100))
 
         # ============================================================
-        # PATIENT & DOCTOR INFO (2-column, no borders)
+        # DOCTOR INFO + PATIENT INFO — side by side in bordered box
         # ============================================================
+        doctor_name = prescription_data.get('doctor_name', '')
+        doctor_spec = prescription_data.get('doctor_specialization', '')
+        doctor_reg = prescription_data.get('doctor_registration_number', '')
         patient_name = prescription_data.get('patient_name', '')
         patient_age = prescription_data.get('patient_age', '')
         patient_gender = prescription_data.get('patient_gender', '')
-        age_sex = f"{patient_age} yrs / {patient_gender}" if patient_age else patient_gender
-        doctor_name = prescription_data.get('doctor_name', '')
-        doctor_spec = prescription_data.get('doctor_specialization', '')
-        rx_no = prescription_data.get('prescription_number', '')
+        patient_blood_group = prescription_data.get('patient_blood_group', '')
 
-        col_w = page_width / 2
-        info_rows = [
-            [lbl('Patient'), val(patient_name), lbl('Rx No'), val(rx_no)],
-            [lbl('Age / Gender'), val(age_sex), lbl('Date'), val(rx_date)],
-            [lbl('Doctor'), val(f"{doctor_name}" + (f" ({doctor_spec})" if doctor_spec else '')), lbl('Phone'), val(prescription_data.get('patient_phone', ''))],
+        # Format age display
+        age_display = ''
+        if patient_age:
+            try:
+                age_years = int(patient_age)
+                age_display = f"{age_years} years"
+            except ValueError:
+                age_display = str(patient_age)
+
+        half_w = page_width / 2
+
+        # Doctor info sub-table
+        doc_rows = [
+            [Paragraph('<b>Doctor Information</b>', ParagraphStyle('DocInfoHdr', parent=cell_lbl, fontSize=10, textColor=accent)), ''],
+            [lbl('Name'), val(doctor_name)],
+            [lbl('Specialization'), val(doctor_spec or '—')],
+            [lbl('Reg. No.'), val(doctor_reg or '—')],
         ]
-        info_table = Table(info_rows, colWidths=[page_width * 0.15, page_width * 0.35, page_width * 0.12, page_width * 0.38])
-        info_table.setStyle(no_border_style())
-        elements.append(info_table)
-        elements.append(Spacer(1, 4))
+        doc_table = Table(doc_rows, colWidths=[half_w * 0.38, half_w * 0.62])
+        doc_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING', (0, 0), (-1, -1), 3),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+            ('LEFTPADDING', (0, 0), (-1, -1), 6),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+            ('SPAN', (0, 0), (1, 0)),
+        ]))
+
+        # Patient info sub-table
+        pat_rows = [
+            [Paragraph('<b>Patient Information</b>', ParagraphStyle('PatInfoHdr', parent=cell_lbl, fontSize=10, textColor=accent)), ''],
+            [lbl('Name'), val(patient_name)],
+            [lbl('Age'), val(age_display)],
+            [lbl('Gender'), val(patient_gender.upper() if patient_gender else '—')],
+            [lbl('Blood Group'), val(patient_blood_group or '—')],
+        ]
+        pat_table = Table(pat_rows, colWidths=[half_w * 0.35, half_w * 0.65])
+        pat_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING', (0, 0), (-1, -1), 3),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+            ('LEFTPADDING', (0, 0), (-1, -1), 6),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+            ('SPAN', (0, 0), (1, 0)),
+        ]))
+
+        # Combine in outer table (no borders)
+        info_outer = Table([[doc_table, pat_table]], colWidths=[half_w, half_w])
+        info_outer.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('LEFTPADDING', (0, 0), (-1, -1), 2),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 2),
+        ]))
+        elements.append(info_outer)
+        elements.append(Spacer(1, 10))
 
         # ============================================================
-        # VITALS (if available)
+        # DIAGNOSIS — bordered section
+        # ============================================================
+        diagnosis_text = prescription_data.get('diagnosis', '')
+        consultation = prescription_data.get('consultation')
+        # Add appointment reason if available
+        appointment_reason = prescription_data.get('appointment_reason', '')
+
+        diag_content = []
+        if appointment_reason:
+            diag_content.append(Paragraph(f"Appointment Reason: {appointment_reason}", cell_val))
+        if diagnosis_text:
+            diag_content.append(Paragraph(diagnosis_text, cell_val))
+        if consultation:
+            if consultation.get('chief_complaint'):
+                diag_content.append(Paragraph(f"Chief Complaint: {consultation['chief_complaint']}", cell_val))
+            if consultation.get('examination_findings'):
+                diag_content.append(Paragraph(f"Examination: {consultation['examination_findings']}", cell_val))
+
+        if not diag_content:
+            diag_content.append(Paragraph('', cell_val))
+
+        diag_rows = [
+            [Paragraph('<b>Diagnosis</b>', section_hdr)],
+        ] + [[c] for c in diag_content]
+
+        diag_table = Table(diag_rows, colWidths=[page_width])
+        diag_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('LEFTPADDING', (0, 0), (-1, -1), 8),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+        ]))
+        elements.append(diag_table)
+        elements.append(Spacer(1, 10))
+
+        # ============================================================
+        # VITALS (left) + MEDICINES TABLE (right) — side by side
         # ============================================================
         vitals = prescription_data.get('vitals')
+        vitals_left_width = page_width * 0.25
+        meds_right_width = page_width * 0.73
+        gap = page_width * 0.02
+
+        # --- Build vitals sub-table ---
+        vitals_rows = [[Paragraph('<b><u>Vitals</u></b>', cell_lbl), '']]
         if vitals and vitals.get('vital_signs'):
-            elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.grey))
-            elements.append(Spacer(1, 4))
-            elements.append(Paragraph("VITALS", section_title))
             vs = vitals['vital_signs']
-            vitals_items = []
-            if vs.get('blood_pressure'):
-                vitals_items.append([lbl('BP'), val(f"{vs['blood_pressure']} mmHg")])
-            if vs.get('heart_rate'):
-                vitals_items.append([lbl('Heart Rate'), val(f"{vs['heart_rate']} bpm")])
-            if vs.get('temperature'):
-                vitals_items.append([lbl('Temp'), val(f"{vs['temperature']}°F")])
-            if vs.get('spo2'):
-                vitals_items.append([lbl('SpO2'), val(f"{vs['spo2']}%")])
-            if vs.get('respiratory_rate'):
-                vitals_items.append([lbl('Resp Rate'), val(f"{vs['respiratory_rate']} /min")])
-            if vs.get('weight'):
-                vitals_items.append([lbl('Weight'), val(f"{vs['weight']} kg")])
             if vs.get('height'):
-                vitals_items.append([lbl('Height'), val(f"{vs['height']} cm")])
+                vitals_rows.append([lbl('Height'), val(f"{vs['height']} cms")])
+            if vs.get('weight'):
+                vitals_rows.append([lbl('Weight'), val(f"{vs['weight']} Kg")])
+            if vs.get('blood_pressure'):
+                vitals_rows.append([lbl('Blood\nPressure'), val(vs['blood_pressure'])])
+            if vs.get('heart_rate'):
+                vitals_rows.append([lbl('Pulse'), val(str(vs['heart_rate']))])
+            if vs.get('temperature'):
+                vitals_rows.append([lbl('Temperature'), val(f"{vs['temperature']} F")])
+            if vs.get('respiratory_rate'):
+                vitals_rows.append([lbl('Resp. Rate'), val(str(vs['respiratory_rate']))])
+            if vs.get('spo2'):
+                vitals_rows.append([lbl('SpO2'), val(str(vs['spo2']))])
             if vs.get('bmi'):
-                vitals_items.append([lbl('BMI'), val(vs['bmi'])])
+                vitals_rows.append([lbl('BMI'), val(str(vs['bmi']))])
+        else:
+            vitals_rows.append([Paragraph('No vitals recorded', cell_val_sm), ''])
 
-            # Arrange vitals in rows of 4 (label+value pairs → 2 pairs per row)
-            vitals_rows = []
-            for i in range(0, len(vitals_items), 2):
-                row = vitals_items[i]
-                if i + 1 < len(vitals_items):
-                    row = row + vitals_items[i + 1]
-                else:
-                    row = row + [Paragraph('', cell_val), Paragraph('', cell_val)]
-                vitals_rows.append(row)
+        vitals_table = Table(vitals_rows, colWidths=[vitals_left_width * 0.55, vitals_left_width * 0.45])
+        vitals_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('TOPPADDING', (0, 0), (-1, -1), 3),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+            ('LEFTPADDING', (0, 0), (-1, -1), 2),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 2),
+            ('SPAN', (0, 0), (1, 0)),  # header spans
+        ]))
 
-            if vitals_rows:
-                vt = Table(vitals_rows, colWidths=[page_width * 0.15, page_width * 0.35, page_width * 0.15, page_width * 0.35])
-                vt.setStyle(no_border_style())
-                elements.append(vt)
+        # --- Lab tests ordered (below vitals) ---
+        lab_tests = prescription_data.get('lab_tests', [])
+        lab_rows = []
+        if lab_tests:
+            lab_rows.append([Paragraph('<b><u>Tests Done</u></b>', cell_lbl), ''])
+            for t in lab_tests:
+                status_text = (t.get('status', '') or '').capitalize()
+                lab_rows.append([
+                    Paragraph(f"&bull; {t.get('test_name', '')}", cell_val_sm),
+                    Paragraph(status_text, cell_val_sm),
+                ])
 
-        # Add separator before next section (after vitals or after patient info)
-        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.grey))
+        lab_tests_table = None
+        if lab_rows:
+            lab_tests_table = Table(lab_rows, colWidths=[vitals_left_width * 0.65, vitals_left_width * 0.35])
+            lab_tests_table.setStyle(TableStyle([
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('TOPPADDING', (0, 0), (-1, -1), 2),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+                ('LEFTPADDING', (0, 0), (-1, -1), 2),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 2),
+                ('SPAN', (0, 0), (1, 0)),
+            ]))
 
-        # ============================================================
-        # CONSULTATION FINDINGS
-        # ============================================================
-        consultation = prescription_data.get('consultation')
-        if consultation:
-            has_findings = consultation.get('chief_complaint') or consultation.get('present_history') or consultation.get('examination_findings')
-            if has_findings:
-                elements.append(Spacer(1, 4))
-                elements.append(Paragraph("FINDINGS", section_title))
-                findings_rows = []
-                if consultation.get('chief_complaint'):
-                    findings_rows.append([lbl('Chief Complaint'), Paragraph(consultation['chief_complaint'], cell_val)])
-                if consultation.get('present_history'):
-                    findings_rows.append([lbl('History'), Paragraph(consultation['present_history'], cell_val)])
-                if consultation.get('examination_findings'):
-                    findings_rows.append([lbl('Examination'), Paragraph(consultation['examination_findings'], cell_val)])
-                ft = Table(findings_rows, colWidths=[page_width * 0.22, page_width * 0.78])
-                ft.setStyle(no_border_style())
-                elements.append(ft)
-                elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.grey))
+        # Combine vitals + lab tests into left column
+        left_col_parts = [[vitals_table]]
+        if lab_tests_table:
+            left_col_parts.append([Spacer(1, 8)])
+            left_col_parts.append([lab_tests_table])
+        left_col_wrapper = Table(left_col_parts, colWidths=[vitals_left_width])
+        left_col_wrapper.setStyle(TableStyle([
+            ('LEFTPADDING', (0, 0), (-1, -1), 0),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+            ('TOPPADDING', (0, 0), (-1, -1), 0),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+        ]))
 
-        # ============================================================
-        # DIAGNOSIS
-        # ============================================================
-        if prescription_data.get('diagnosis'):
-            elements.append(Spacer(1, 4))
-            elements.append(Paragraph("DIAGNOSIS", section_title))
-            elements.append(Paragraph(prescription_data['diagnosis'], cell_val))
-            elements.append(Spacer(1, 4))
-            elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.grey))
-
-        # ============================================================
-        # MEDICINES TABLE (with subtle header underline only)
-        # ============================================================
-        elements.append(Spacer(1, 4))
-        elements.append(Paragraph("Rx  MEDICINES", section_title))
-
-        med_header = [
-            Paragraph('<b>#</b>', cell_lbl),
-            Paragraph('<b>Medicine</b>', cell_lbl),
-            Paragraph('<b>Dosage</b>', cell_lbl),
-            Paragraph('<b>Duration</b>', cell_lbl),
-            Paragraph('<b>Instructions</b>', cell_lbl),
-        ]
-
-        med_data = [med_header]
+        # --- Build medicines sub-table ---
         food_timing_map = {
             'before_food': 'Before food', 'after_food': 'After food',
             'with_food': 'With food', 'on_empty_stomach': 'Empty stomach', 'anytime': 'Anytime'
         }
 
+        sno_w = meds_right_width * 0.08
+        name_w = meds_right_width * 0.30
+        dosage_w = meds_right_width * 0.22
+        freq_w = meds_right_width * 0.22
+        dur_w = meds_right_width * 0.18
+
+        med_header = [
+            Paragraph('<b>S.No.</b>', cell_lbl),
+            Paragraph('<b>Medicine Name</b>', cell_lbl),
+            Paragraph('<b>Dosage</b>', cell_lbl),
+            Paragraph('<b>Frequency</b>', cell_lbl),
+            Paragraph('<b>Duration</b>', cell_lbl),
+        ]
+
+        med_data = [med_header]
         for idx, item in enumerate(prescription_data.get('items', []), 1):
-            dosage_val = item.get('dosage', 'As directed')
             freq = item.get('frequency_schedule', '1-0-0')
             food = food_timing_map.get(item.get('food_timing', 'after_food'), 'After food')
-            dosage_text = f"{dosage_val}<br/><i>{freq} | {food}</i>"
+            freq_text = f"{freq}\n{food}"
 
             med_data.append([
                 Paragraph(str(idx), cell_val),
                 Paragraph(f"<b>{item.get('medicine_name', '')}</b>", cell_val),
-                Paragraph(dosage_text, cell_val_sm),
+                Paragraph(item.get('dosage', 'As directed'), cell_val_sm),
+                Paragraph(freq_text, cell_val_sm),
                 Paragraph(item.get('duration', '—'), cell_val),
-                Paragraph(item.get('instructions', 'As directed'), cell_val_sm),
             ])
 
-        sno_w = page_width * 0.05
-        name_w = page_width * 0.25
-        dosage_w = page_width * 0.28
-        dur_w = page_width * 0.14
-        instr_w = page_width * 0.28
+        # Add empty rows to match reference style (min 6 rows)
+        while len(med_data) < 7:  # header + 6 data rows
+            med_data.append([
+                Paragraph(str(len(med_data)), cell_val),
+                Paragraph('', cell_val), Paragraph('', cell_val),
+                Paragraph('', cell_val), Paragraph('', cell_val),
+            ])
 
-        med_table = Table(med_data, colWidths=[sno_w, name_w, dosage_w, dur_w, instr_w])
-        med_table.setStyle(no_border_style([
-            ('LINEBELOW', (0, 0), (-1, 0), 0.8, colors.black),  # header underline
-            ('LINEBELOW', (0, -1), (-1, -1), 0.5, colors.grey),  # bottom line
+        meds_header_row = [[Paragraph('<b>Medicines</b>', section_hdr)]]
+        meds_title_table = Table(meds_header_row, colWidths=[meds_right_width])
+        meds_title_table.setStyle(TableStyle([
+            ('LEFTPADDING', (0, 0), (-1, -1), 0),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
         ]))
-        elements.append(med_table)
+
+        med_table = Table(med_data, colWidths=[sno_w, name_w, dosage_w, freq_w, dur_w])
+        med_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('LEFTPADDING', (0, 0), (-1, -1), 4),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#F0F0F0')),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('ALIGN', (0, 0), (0, -1), 'CENTER'),
+            ('LINEBELOW', (0, 0), (-1, 0), 1, border_color),
+        ]))
+
+        # Combine vitals + medicines into right column
+        meds_combined = [[meds_title_table], [med_table]]
+        meds_wrapper = Table(meds_combined, colWidths=[meds_right_width])
+        meds_wrapper.setStyle(TableStyle([
+            ('LEFTPADDING', (0, 0), (-1, -1), 0),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+            ('TOPPADDING', (0, 0), (-1, -1), 0),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+        ]))
+
+        # Side by side layout
+        layout_table = Table(
+            [[left_col_wrapper, meds_wrapper]],
+            colWidths=[vitals_left_width, meds_right_width + gap]
+        )
+        layout_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 0),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+            ('TOPPADDING', (0, 0), (-1, -1), 0),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+        ]))
+        elements.append(layout_table)
+        elements.append(Spacer(1, 10))
 
         # ============================================================
-        # LAB TESTS (if any)
+        # INSTRUCTIONS — bordered section
         # ============================================================
-        lab_tests = prescription_data.get('lab_tests', [])
-        if lab_tests:
-            elements.append(Spacer(1, 4))
-            elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.grey))
-            elements.append(Spacer(1, 4))
-            elements.append(Paragraph("INVESTIGATIONS", section_title))
-
-            lab_header = [
-                Paragraph('<b>#</b>', cell_lbl),
-                Paragraph('<b>Test</b>', cell_lbl),
-                Paragraph('<b>Code</b>', cell_lbl),
-                Paragraph('<b>Status</b>', cell_lbl),
-                Paragraph('<b>Date</b>', cell_lbl),
-            ]
-            lab_data = [lab_header]
-            for idx, t in enumerate(lab_tests, 1):
-                lab_data.append([
-                    Paragraph(str(idx), cell_val),
-                    Paragraph(t.get('test_name', ''), cell_val),
-                    Paragraph(t.get('test_code', '') or '—', cell_val),
-                    Paragraph((t.get('status', '') or '').capitalize(), cell_val),
-                    Paragraph(t.get('order_date', ''), cell_val),
-                ])
-
-            lab_table = Table(lab_data, colWidths=[
-                page_width * 0.05, page_width * 0.35, page_width * 0.18,
-                page_width * 0.20, page_width * 0.22
-            ])
-            lab_table.setStyle(no_border_style([
-                ('LINEBELOW', (0, 0), (-1, 0), 0.8, colors.black),
-                ('LINEBELOW', (0, -1), (-1, -1), 0.5, colors.grey),
-            ]))
-            elements.append(lab_table)
-
-        # ============================================================
-        # FOLLOW-UP & NOTES
-        # ============================================================
+        notes = prescription_data.get('notes', '')
         follow_up = None
         if consultation and consultation.get('follow_up_date'):
             follow_up = consultation['follow_up_date']
 
-        if follow_up or prescription_data.get('notes'):
-            elements.append(Spacer(1, 4))
-            elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.grey))
-            elements.append(Spacer(1, 4))
-            extra_rows = []
-            if follow_up:
-                extra_rows.append([lbl('Follow-up Date'), val(follow_up)])
-            if prescription_data.get('notes'):
-                extra_rows.append([lbl('Notes'), Paragraph(prescription_data['notes'], cell_val)])
-            et = Table(extra_rows, colWidths=[page_width * 0.20, page_width * 0.80])
-            et.setStyle(no_border_style())
-            elements.append(et)
+        instr_content = []
+        if notes:
+            instr_content.append(Paragraph(notes, cell_val))
+        if follow_up:
+            instr_content.append(Paragraph(f"<b>Follow-up:</b> {follow_up}", cell_val))
+        if not instr_content:
+            instr_content.append(Paragraph('', cell_val))
+
+        instr_rows = [
+            [Paragraph('<b>Instructions</b>', section_hdr)],
+        ] + [[c] for c in instr_content]
+
+        instr_table = Table(instr_rows, colWidths=[page_width])
+        instr_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('LEFTPADDING', (0, 0), (-1, -1), 8),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+        ]))
+        elements.append(instr_table)
 
         # ============================================================
         # SIGNATURE
         # ============================================================
         elements.append(Spacer(1, 30))
-        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.grey))
-        elements.append(Spacer(1, 8))
         sig_rows = [[
-            Paragraph('', cell_val),
-            Paragraph(f"<b>{prescription_data.get('doctor_name', '')}</b><br/>"
-                      f"{prescription_data.get('doctor_specialization', '')}<br/>"
-                      "Signature", cell_val_sm)
+            Paragraph(f"Date: {rx_date}", cell_val),
+            Paragraph(f"<b>{doctor_name}</b><br/>"
+                      f"{doctor_spec}<br/>"
+                      f"Reg. No: {doctor_reg}" if doctor_reg else
+                      f"<b>{doctor_name}</b><br/>{doctor_spec}",
+                      ParagraphStyle('SigStyle', parent=cell_val_sm, alignment=2))
         ]]
-        sig_table = Table(sig_rows, colWidths=[page_width * 0.60, page_width * 0.40])
-        sig_table.setStyle(no_border_style())
+        sig_table = Table(sig_rows, colWidths=[page_width * 0.50, page_width * 0.50])
+        sig_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'BOTTOM'),
+            ('TOPPADDING', (0, 0), (-1, -1), 0),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+        ]))
         elements.append(sig_table)
 
         # Footer
@@ -625,7 +757,7 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_lab_report_pdf(self, report_data, hospital_info, lab_config=None):
+    def generate_lab_report_pdf(self, report_data, hospital_info, lab_config=None, include_header=True):
         """Generate PDF for lab report"""
         if lab_config is None:
             lab_config = {}
@@ -694,79 +826,82 @@ class PDFService:
         # ============================================================
         # HEADER — Logo + Provider Name side by side
         # ============================================================
-        logo_path = lab_config.get('provider_logo', '')
-        uploads_base = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
+        if include_header:
+            logo_path = lab_config.get('provider_logo', '')
+            uploads_base = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
 
-        has_logo = False
-        full_logo_path = ''
-        if logo_path:
-            # logo_path is like /uploads/module-config/xyz.png — strip leading /uploads/
-            relative = logo_path.lstrip('/')
-            if relative.startswith('uploads/'):
-                relative = relative[len('uploads/'):]
-            full_logo_path = os.path.join(uploads_base, relative)
-            has_logo = os.path.exists(full_logo_path)
+            has_logo = False
+            full_logo_path = ''
+            if logo_path:
+                relative = logo_path.lstrip('/')
+                if relative.startswith('uploads/'):
+                    relative = relative[len('uploads/'):]
+                full_logo_path = os.path.join(uploads_base, relative)
+                has_logo = os.path.exists(full_logo_path)
 
-        if has_logo:
-            try:
-                logo_img = Image(full_logo_path, width=60, height=60)
-                logo_img.hAlign = 'CENTER'
+            if has_logo:
+                try:
+                    logo_img = Image(full_logo_path, width=60, height=60)
+                    logo_img.hAlign = 'CENTER'
 
-                header_text_parts = []
-                header_text_parts.append(Paragraph(provider_name.upper(), title_style))
+                    header_text_parts = []
+                    header_text_parts.append(Paragraph(provider_name.upper(), title_style))
+                    if provider_address:
+                        header_text_parts.append(Paragraph(provider_address, subtitle_style))
+                    contact_parts = []
+                    if provider_email:
+                        contact_parts.append(f"Email: {provider_email}")
+                    if provider_phone:
+                        contact_parts.append(f"Phone: {provider_phone}")
+                    if contact_parts:
+                        header_text_parts.append(Paragraph("  |  ".join(contact_parts), subtitle_style))
+
+                    from reportlab.platypus import KeepTogether
+                    header_table = Table(
+                        [[logo_img, header_text_parts]],
+                        colWidths=[80, page_width - 80]
+                    )
+                    header_table.setStyle(TableStyle([
+                        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+                        ('TOPPADDING', (0, 0), (-1, -1), 0),
+                        ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+                    ]))
+                    elements.append(header_table)
+                except Exception:
+                    elements.append(Paragraph(provider_name.upper(), title_style))
+                    if provider_address:
+                        elements.append(Paragraph(provider_address, subtitle_style))
+            else:
+                elements.append(Paragraph(provider_name.upper(), title_style))
                 if provider_address:
-                    header_text_parts.append(Paragraph(provider_address, subtitle_style))
+                    elements.append(Paragraph(provider_address, subtitle_style))
                 contact_parts = []
                 if provider_email:
                     contact_parts.append(f"Email: {provider_email}")
                 if provider_phone:
                     contact_parts.append(f"Phone: {provider_phone}")
                 if contact_parts:
-                    header_text_parts.append(Paragraph("  |  ".join(contact_parts), subtitle_style))
+                    elements.append(Paragraph("  |  ".join(contact_parts), subtitle_style))
 
-                from reportlab.platypus import KeepTogether
-                header_table = Table(
-                    [[logo_img, header_text_parts]],
-                    colWidths=[80, page_width - 80]
-                )
-                header_table.setStyle(TableStyle([
-                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-                    ('LEFTPADDING', (0, 0), (-1, -1), 0),
-                    ('RIGHTPADDING', (0, 0), (-1, -1), 0),
-                    ('TOPPADDING', (0, 0), (-1, -1), 0),
-                    ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
-                ]))
-                elements.append(header_table)
-            except Exception:
-                # Fallback if logo can't be loaded
-                elements.append(Paragraph(provider_name.upper(), title_style))
-                if provider_address:
-                    elements.append(Paragraph(provider_address, subtitle_style))
+            # Registration details line
+            reg_parts = []
+            if lab_config.get('registration_number'):
+                reg_parts.append(f"Reg No: {lab_config['registration_number']}")
+            if lab_config.get('nabl_number'):
+                reg_parts.append(f"NABL: {lab_config['nabl_number']}")
+            if lab_config.get('license_number'):
+                reg_parts.append(f"Lic No: {lab_config['license_number']}")
+            if reg_parts:
+                elements.append(Paragraph("  |  ".join(reg_parts), reg_style))
+
+            elements.append(Spacer(1, 6))
+            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
         else:
-            elements.append(Paragraph(provider_name.upper(), title_style))
-            if provider_address:
-                elements.append(Paragraph(provider_address, subtitle_style))
-            contact_parts = []
-            if provider_email:
-                contact_parts.append(f"Email: {provider_email}")
-            if provider_phone:
-                contact_parts.append(f"Phone: {provider_phone}")
-            if contact_parts:
-                elements.append(Paragraph("  |  ".join(contact_parts), subtitle_style))
+            # Leave blank space for pre-printed letterhead (~100pt ≈ 3.5cm)
+            elements.append(Spacer(1, 100))
 
-        # Registration details line
-        reg_parts = []
-        if lab_config.get('registration_number'):
-            reg_parts.append(f"Reg No: {lab_config['registration_number']}")
-        if lab_config.get('nabl_number'):
-            reg_parts.append(f"NABL: {lab_config['nabl_number']}")
-        if lab_config.get('license_number'):
-            reg_parts.append(f"Lic No: {lab_config['license_number']}")
-        if reg_parts:
-            elements.append(Paragraph("  |  ".join(reg_parts), reg_style))
-
-        elements.append(Spacer(1, 6))
-        elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
         elements.append(Spacer(1, 4))
         elements.append(Paragraph("LABORATORY REPORT", report_title_style))
         elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
@@ -799,7 +934,6 @@ class PDFService:
 
         info_table = Table(info_data, colWidths=[col_w, col_w])
         info_table.setStyle(TableStyle([
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('TOPPADDING', (0, 0), (-1, -1), 3),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
@@ -818,6 +952,10 @@ class PDFService:
         ref_w = page_width * 0.28
         flag_w = page_width * 0.15
 
+        # Section header style
+        section_label_style = ParagraphStyle('LabSectionLabel', parent=self.styles['Normal'],
+            fontSize=9, fontName='Helvetica-Bold', textColor=colors.Color(0.2, 0.2, 0.5))
+
         results_header = [
             Paragraph('<b>Parameter</b>', cell_label),
             Paragraph('<b>Result</b>', cell_label),
@@ -829,7 +967,26 @@ class PDFService:
         results_data = [results_header]
         results_list = report_data.get('results', [])
 
+        # Track section rows for styling
+        section_row_indices = []
+        current_section = None
+
         for r in results_list:
+            # Insert section header row if section changed
+            section = r.get('section', '')
+            if section and section != current_section:
+                current_section = section
+                section_row_indices.append(len(results_data))
+                results_data.append([
+                    Paragraph(f'<b>{section}</b>', section_label_style),
+                    Paragraph('', cell_value),
+                    Paragraph('', cell_value),
+                    Paragraph('', cell_value),
+                    Paragraph('', cell_value),
+                ])
+            elif not section and current_section is not None:
+                current_section = None
+
             is_abnormal = r.get('is_abnormal', False)
             value_style = cell_abnormal if is_abnormal else cell_value
 
@@ -858,7 +1015,6 @@ class PDFService:
         results_table = Table(results_data, colWidths=[param_w, result_w, unit_w, ref_w, flag_w])
 
         table_style_cmds = [
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('TOPPADDING', (0, 0), (-1, -1), 4),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
@@ -868,11 +1024,27 @@ class PDFService:
             ('LINEBELOW', (0, 0), (-1, 0), 1, colors.black),
         ]
 
-        # Highlight abnormal rows
-        for idx, r in enumerate(results_list):
+        # Style section header rows — span across all columns, light background
+        for sec_row in section_row_indices:
+            table_style_cmds.append(('SPAN', (0, sec_row), (-1, sec_row)))
+            table_style_cmds.append(('BACKGROUND', (0, sec_row), (-1, sec_row), colors.Color(0.92, 0.93, 0.97)))
+            table_style_cmds.append(('TOPPADDING', (0, sec_row), (-1, sec_row), 5))
+            table_style_cmds.append(('BOTTOMPADDING', (0, sec_row), (-1, sec_row), 5))
+
+        # Highlight abnormal rows (need to account for inserted section rows)
+        row_idx = 1  # start after header
+        current_section_2 = None
+        for r in results_list:
+            section = r.get('section', '')
+            if section and section != current_section_2:
+                current_section_2 = section
+                row_idx += 1  # skip section header row
+            elif not section and current_section_2 is not None:
+                current_section_2 = None
+
             if r.get('is_abnormal', False):
-                row = idx + 1  # +1 for header
-                table_style_cmds.append(('BACKGROUND', (0, row), (-1, row), colors.Color(1, 0.95, 0.95)))
+                table_style_cmds.append(('BACKGROUND', (0, row_idx), (-1, row_idx), colors.Color(1, 0.95, 0.95)))
+            row_idx += 1
 
         results_table.setStyle(TableStyle(table_style_cmds))
         elements.append(results_table)

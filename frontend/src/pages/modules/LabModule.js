@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { Routes, Route, useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
@@ -10,12 +11,14 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/ta
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../components/ui/dialog';
 import { ConfirmDialog } from '../../components/ui/confirm-dialog';
 import {
-  TestTube, Plus, Edit2, Trash2, Search, RefreshCw, ChevronDown, ChevronUp,
-  Activity, ClipboardList, CheckCircle, AlertCircle, Loader2, Database, X
+  TestTube, Plus, Edit2, Trash2, Search, RefreshCw,
+  Activity, ClipboardList, CheckCircle, Loader2, Database, Settings2, Package
 } from 'lucide-react';
 import axios from 'axios';
+import LabTestParametersPage from './LabTestParametersPage';
 
-const LabModule = () => {
+const LabModuleMain = () => {
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('dashboard');
   const [stats, setStats] = useState(null);
   const [categories, setCategories] = useState([]);
@@ -37,20 +40,6 @@ const LabModule = () => {
     cost: '', sample_type: '', method: '', preparation_instructions: ''
   });
 
-  // Parameter editor
-  const [expandedTestId, setExpandedTestId] = useState(null);
-  const [showParamDialog, setShowParamDialog] = useState(false);
-  const [editingParam, setEditingParam] = useState(null);
-  const [paramForm, setParamForm] = useState({
-    parameter_name: '', unit: '', field_type: 'numeric',
-    reference_min_male: '', reference_max_male: '',
-    reference_min_female: '', reference_max_female: '',
-    reference_min_default: '', reference_max_default: '',
-    possible_values: '', display_order: 0
-  });
-  const [paramTestId, setParamTestId] = useState(null);
-  const [genderSpecific, setGenderSpecific] = useState(false);
-
   // Confirm dialog
   const [confirmState, setConfirmState] = useState({ open: false });
   const confirm = (message, onConfirm, title) =>
@@ -58,6 +47,21 @@ const LabModule = () => {
 
   // Seed loading
   const [seeding, setSeeding] = useState(false);
+
+  // Package state
+  const [packageCategories, setPackageCategories] = useState([]);
+  const [packages, setPackages] = useState([]);
+  const [pkgCategoryFilter, setPkgCategoryFilter] = useState('all');
+  const [pkgSearch, setPkgSearch] = useState('');
+  const [showPkgCategoryDialog, setShowPkgCategoryDialog] = useState(false);
+  const [editingPkgCategory, setEditingPkgCategory] = useState(null);
+  const [pkgCategoryForm, setPkgCategoryForm] = useState({ name: '', description: '' });
+  const [showPackageDialog, setShowPackageDialog] = useState(false);
+  const [editingPackage, setEditingPackage] = useState(null);
+  const [packageForm, setPackageForm] = useState({
+    package_code: '', name: '', description: '', category_id: '',
+    package_price: '', test_ids: []
+  });
 
   // Feedback
   const [feedback, setFeedback] = useState({ message: '', type: '' });
@@ -213,86 +217,6 @@ const LabModule = () => {
     }, 'Delete Test');
   };
 
-  // ============ Parameter CRUD ============
-
-  const openParamDialog = (testId, param = null) => {
-    setParamTestId(testId);
-    if (param) {
-      setEditingParam(param);
-      const hasGenderRanges = param.reference_min_male != null || param.reference_max_male != null ||
-        param.reference_min_female != null || param.reference_max_female != null;
-      setGenderSpecific(hasGenderRanges);
-      setParamForm({
-        parameter_name: param.parameter_name,
-        unit: param.unit || '',
-        field_type: param.field_type || 'numeric',
-        reference_min_male: param.reference_min_male ?? '',
-        reference_max_male: param.reference_max_male ?? '',
-        reference_min_female: param.reference_min_female ?? '',
-        reference_max_female: param.reference_max_female ?? '',
-        reference_min_default: param.reference_min_default ?? '',
-        reference_max_default: param.reference_max_default ?? '',
-        possible_values: param.possible_values ? param.possible_values.join(', ') : '',
-        display_order: param.display_order || 0
-      });
-    } else {
-      setEditingParam(null);
-      setGenderSpecific(false);
-      setParamForm({
-        parameter_name: '', unit: '', field_type: 'numeric',
-        reference_min_male: '', reference_max_male: '',
-        reference_min_female: '', reference_max_female: '',
-        reference_min_default: '', reference_max_default: '',
-        possible_values: '', display_order: 0
-      });
-    }
-    setShowParamDialog(true);
-  };
-
-  const handleSaveParam = async () => {
-    if (!paramForm.parameter_name.trim()) return;
-    const payload = {
-      parameter_name: paramForm.parameter_name,
-      unit: paramForm.unit || null,
-      field_type: paramForm.field_type,
-      reference_min_male: genderSpecific && paramForm.reference_min_male !== '' ? parseFloat(paramForm.reference_min_male) : null,
-      reference_max_male: genderSpecific && paramForm.reference_max_male !== '' ? parseFloat(paramForm.reference_max_male) : null,
-      reference_min_female: genderSpecific && paramForm.reference_min_female !== '' ? parseFloat(paramForm.reference_min_female) : null,
-      reference_max_female: genderSpecific && paramForm.reference_max_female !== '' ? parseFloat(paramForm.reference_max_female) : null,
-      reference_min_default: paramForm.reference_min_default !== '' ? parseFloat(paramForm.reference_min_default) : null,
-      reference_max_default: paramForm.reference_max_default !== '' ? parseFloat(paramForm.reference_max_default) : null,
-      possible_values: paramForm.field_type === 'select' && paramForm.possible_values
-        ? paramForm.possible_values.split(',').map(v => v.trim()).filter(Boolean)
-        : null,
-      display_order: parseInt(paramForm.display_order) || 0
-    };
-    try {
-      if (editingParam) {
-        await axios.put(`/api/lab/tests/${paramTestId}/parameters/${editingParam.id}`, payload);
-        showFeedback('Parameter updated');
-      } else {
-        await axios.post(`/api/lab/tests/${paramTestId}/parameters`, payload);
-        showFeedback('Parameter added');
-      }
-      setShowParamDialog(false);
-      fetchTests();
-    } catch (err) {
-      showFeedback(err.response?.data?.detail || 'Failed to save parameter', 'error');
-    }
-  };
-
-  const handleDeleteParam = (testId, paramId) => {
-    confirm('Delete this parameter?', async () => {
-      try {
-        await axios.delete(`/api/lab/tests/${testId}/parameters/${paramId}`);
-        showFeedback('Parameter deleted');
-        fetchTests();
-      } catch (err) {
-        showFeedback(err.response?.data?.detail || 'Failed to delete parameter', 'error');
-      }
-    }, 'Delete Parameter');
-  };
-
   // ============ Seed defaults ============
 
   const handleSeedDefaults = () => {
@@ -315,6 +239,146 @@ const LabModule = () => {
       'Seed Default Tests'
     );
   };
+
+  // ============ Package Data Fetching ============
+
+  const fetchPackageCategories = useCallback(async () => {
+    try {
+      const res = await axios.get('/api/lab/packages/categories');
+      setPackageCategories(res.data);
+    } catch (err) {
+      console.error('Failed to fetch package categories:', err);
+    }
+  }, []);
+
+  const fetchPackages = useCallback(async () => {
+    try {
+      const params = { active_only: false };
+      if (pkgCategoryFilter !== 'all') params.category_id = pkgCategoryFilter;
+      if (pkgSearch) params.search = pkgSearch;
+      const res = await axios.get('/api/lab/packages', { params });
+      setPackages(res.data);
+    } catch (err) {
+      console.error('Failed to fetch packages:', err);
+    }
+  }, [pkgCategoryFilter, pkgSearch]);
+
+  useEffect(() => { fetchPackageCategories(); }, [fetchPackageCategories]);
+  useEffect(() => { fetchPackages(); }, [fetchPackages]);
+
+  // ============ Package Category CRUD ============
+
+  const openPkgCategoryDialog = (cat = null) => {
+    if (cat) {
+      setEditingPkgCategory(cat);
+      setPkgCategoryForm({ name: cat.name, description: cat.description || '' });
+    } else {
+      setEditingPkgCategory(null);
+      setPkgCategoryForm({ name: '', description: '' });
+    }
+    setShowPkgCategoryDialog(true);
+  };
+
+  const handleSavePkgCategory = async () => {
+    if (!pkgCategoryForm.name.trim()) return;
+    try {
+      if (editingPkgCategory) {
+        await axios.put(`/api/lab/packages/categories/${editingPkgCategory.id}`, pkgCategoryForm);
+        showFeedback('Package category updated');
+      } else {
+        await axios.post('/api/lab/packages/categories', pkgCategoryForm);
+        showFeedback('Package category created');
+      }
+      setShowPkgCategoryDialog(false);
+      fetchPackageCategories();
+    } catch (err) {
+      showFeedback(err.response?.data?.detail || 'Failed to save package category', 'error');
+    }
+  };
+
+  const handleDeletePkgCategory = (id) => {
+    confirm('Deactivate this package category?', async () => {
+      try {
+        await axios.delete(`/api/lab/packages/categories/${id}`);
+        showFeedback('Package category deactivated');
+        fetchPackageCategories();
+      } catch (err) {
+        showFeedback(err.response?.data?.detail || 'Failed', 'error');
+      }
+    }, 'Deactivate Category');
+  };
+
+  // ============ Package CRUD ============
+
+  const openPackageDialog = (pkg = null) => {
+    if (pkg) {
+      setEditingPackage(pkg);
+      setPackageForm({
+        package_code: pkg.package_code, name: pkg.name,
+        description: pkg.description || '', category_id: String(pkg.category_id),
+        package_price: String(pkg.package_price),
+        test_ids: pkg.tests.map(t => t.id)
+      });
+    } else {
+      setEditingPackage(null);
+      setPackageForm({
+        package_code: '', name: '', description: '', category_id: '',
+        package_price: '', test_ids: []
+      });
+    }
+    setShowPackageDialog(true);
+  };
+
+  const handleSavePackage = async () => {
+    if (!packageForm.name.trim() || !packageForm.package_code.trim() || !packageForm.category_id || !packageForm.package_price || packageForm.test_ids.length === 0) return;
+    const payload = {
+      package_code: packageForm.package_code,
+      name: packageForm.name,
+      description: packageForm.description,
+      category_id: parseInt(packageForm.category_id),
+      package_price: parseFloat(packageForm.package_price),
+      test_ids: packageForm.test_ids,
+    };
+    try {
+      if (editingPackage) {
+        await axios.put(`/api/lab/packages/${editingPackage.id}`, payload);
+        showFeedback('Package updated');
+      } else {
+        await axios.post('/api/lab/packages', payload);
+        showFeedback('Package created');
+      }
+      setShowPackageDialog(false);
+      fetchPackages();
+    } catch (err) {
+      showFeedback(err.response?.data?.detail || 'Failed to save package', 'error');
+    }
+  };
+
+  const handleDeletePackage = (id) => {
+    confirm('Deactivate this package?', async () => {
+      try {
+        await axios.delete(`/api/lab/packages/${id}`);
+        showFeedback('Package deactivated');
+        fetchPackages();
+      } catch (err) {
+        showFeedback(err.response?.data?.detail || 'Failed', 'error');
+      }
+    }, 'Deactivate Package');
+  };
+
+  const toggleTestInPackage = (testId) => {
+    setPackageForm(prev => {
+      const ids = prev.test_ids.includes(testId)
+        ? prev.test_ids.filter(id => id !== testId)
+        : [...prev.test_ids, testId];
+      return { ...prev, test_ids: ids };
+    });
+  };
+
+  const selectedTestsCost = packageForm.test_ids.reduce((sum, tid) => {
+    const t = tests.find(tt => tt.id === tid);
+    return sum + (t ? t.cost : 0);
+  }, 0);
 
   // ============ Render helpers ============
 
@@ -499,29 +563,27 @@ const LabModule = () => {
             <Card key={test.id} className={!test.is_active ? 'opacity-60' : ''}>
               <CardContent className="py-4">
                 <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-4 flex-1 cursor-pointer"
-                    onClick={() => setExpandedTestId(expandedTestId === test.id ? null : test.id)}>
+                  <div className="flex-1">
                     <div className="flex items-center gap-2">
-                      {expandedTestId === test.id ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="font-semibold">{test.name}</span>
-                          <Badge variant="outline" className="text-xs">{test.test_code}</Badge>
-                          {!test.is_active && <Badge variant="destructive" className="text-xs">Inactive</Badge>}
-                        </div>
-                        <div className="flex items-center gap-3 text-sm text-gray-500 mt-1 flex-wrap">
-                          <span>{test.category_name}</span>
-                          <span>|</span>
-                          <span>Rs. {test.cost}</span>
-                          {test.sample_type && <><span>|</span><span>{test.sample_type}</span></>}
-                          {test.method && <><span>|</span><span>{test.method}</span></>}
-                          <span>|</span>
-                          <span>{test.parameters?.length || 0} parameters</span>
-                        </div>
-                      </div>
+                      <span className="font-semibold">{test.name}</span>
+                      <Badge variant="outline" className="text-xs">{test.test_code}</Badge>
+                      {!test.is_active && <Badge variant="destructive" className="text-xs">Inactive</Badge>}
+                    </div>
+                    <div className="flex items-center gap-3 text-sm text-gray-500 mt-1 flex-wrap">
+                      <span>{test.category_name}</span>
+                      <span>|</span>
+                      <span>Rs. {test.cost}</span>
+                      {test.sample_type && <><span>|</span><span>{test.sample_type}</span></>}
+                      {test.method && <><span>|</span><span>{test.method}</span></>}
+                      <span>|</span>
+                      <span>{test.parameters?.length || 0} parameters</span>
                     </div>
                   </div>
                   <div className="flex gap-1">
+                    <Button variant="outline" size="sm" className="text-xs"
+                      onClick={() => navigate(`/dashboard/lab/tests/${test.id}/parameters`)}>
+                      <Settings2 className="h-3.5 w-3.5 mr-1.5" /> Parameters
+                    </Button>
                     <Button variant="ghost" size="sm" onClick={() => openTestDialog(test)}>
                       <Edit2 className="h-4 w-4" />
                     </Button>
@@ -530,82 +592,6 @@ const LabModule = () => {
                     </Button>
                   </div>
                 </div>
-
-                {/* Expanded parameters */}
-                {expandedTestId === test.id && (
-                  <div className="mt-4 border-t pt-4">
-                    <div className="flex items-center justify-between mb-3">
-                      <h4 className="font-medium text-sm">Parameters</h4>
-                      <Button size="sm" variant="outline" onClick={() => openParamDialog(test.id)}>
-                        <Plus className="h-3 w-3 mr-1" /> Add Parameter
-                      </Button>
-                    </div>
-                    {test.parameters && test.parameters.length > 0 ? (
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-sm">
-                          <thead>
-                            <tr className="border-b text-left text-gray-500">
-                              <th className="pb-2 pr-4">#</th>
-                              <th className="pb-2 pr-4">Parameter</th>
-                              <th className="pb-2 pr-4">Unit</th>
-                              <th className="pb-2 pr-4">Type</th>
-                              <th className="pb-2 pr-4">Male Range</th>
-                              <th className="pb-2 pr-4">Female Range</th>
-                              <th className="pb-2 pr-4">Default Range</th>
-                              <th className="pb-2">Actions</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {test.parameters.map((param, idx) => (
-                              <tr key={param.id} className="border-b last:border-0">
-                                <td className="py-2 pr-4 text-gray-400">{idx + 1}</td>
-                                <td className="py-2 pr-4 font-medium">{param.parameter_name}</td>
-                                <td className="py-2 pr-4">{param.unit || '-'}</td>
-                                <td className="py-2 pr-4">
-                                  <Badge variant="outline" className="text-xs">{param.field_type}</Badge>
-                                </td>
-                                <td className="py-2 pr-4">
-                                  {param.reference_min_male != null || param.reference_max_male != null
-                                    ? `${param.reference_min_male ?? '–'} - ${param.reference_max_male ?? '–'}`
-                                    : '-'}
-                                </td>
-                                <td className="py-2 pr-4">
-                                  {param.reference_min_female != null || param.reference_max_female != null
-                                    ? `${param.reference_min_female ?? '–'} - ${param.reference_max_female ?? '–'}`
-                                    : '-'}
-                                </td>
-                                <td className="py-2 pr-4">
-                                  {param.reference_min_default != null || param.reference_max_default != null
-                                    ? `${param.reference_min_default ?? '–'} - ${param.reference_max_default ?? '–'}`
-                                    : '-'}
-                                </td>
-                                <td className="py-2">
-                                  <div className="flex gap-1">
-                                    <Button variant="ghost" size="sm" onClick={() => openParamDialog(test.id, param)}>
-                                      <Edit2 className="h-3 w-3" />
-                                    </Button>
-                                    <Button variant="ghost" size="sm" className="text-red-500"
-                                      onClick={() => handleDeleteParam(test.id, param.id)}>
-                                      <Trash2 className="h-3 w-3" />
-                                    </Button>
-                                  </div>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    ) : (
-                      <p className="text-sm text-gray-400 italic">No parameters configured. Add parameters to define what values lab technicians will enter.</p>
-                    )}
-                    {test.description && (
-                      <p className="text-sm text-gray-500 mt-3"><strong>Description:</strong> {test.description}</p>
-                    )}
-                    {test.preparation_instructions && (
-                      <p className="text-sm text-gray-500 mt-1"><strong>Preparation:</strong> {test.preparation_instructions}</p>
-                    )}
-                  </div>
-                )}
               </CardContent>
             </Card>
           ))}
@@ -724,133 +710,265 @@ const LabModule = () => {
     </Dialog>
   );
 
-  const renderParamDialog = () => (
-    <Dialog open={showParamDialog} onOpenChange={setShowParamDialog}>
-      <DialogContent className="max-w-xl">
-        <DialogHeader>
-          <DialogTitle>{editingParam ? 'Edit Parameter' : 'Add Parameter'}</DialogTitle>
-        </DialogHeader>
-        <div className="space-y-4 max-h-[70vh] overflow-y-auto">
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <Label>Parameter Name *</Label>
-              <Input value={paramForm.parameter_name}
-                onChange={(e) => setParamForm({ ...paramForm, parameter_name: e.target.value })}
-                placeholder="e.g. Hemoglobin" />
-            </div>
-            <div>
-              <Label>Unit</Label>
-              <Input value={paramForm.unit}
-                onChange={(e) => setParamForm({ ...paramForm, unit: e.target.value })}
-                placeholder="e.g. g/dL, mg/dL" />
-            </div>
-          </div>
+  // ============ Packages Tab ============
 
+  const renderPackages = () => (
+    <div className="space-y-6">
+      {/* Package Categories */}
+      <div>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-lg font-semibold">Package Categories</h2>
+          <Button size="sm" onClick={() => openPkgCategoryDialog()}>
+            <Plus className="h-4 w-4 mr-2" /> Add Category
+          </Button>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+          {packageCategories.filter(c => c.is_active).map(cat => (
+            <Card key={cat.id}>
+              <CardContent className="pt-4 pb-3">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <h3 className="font-semibold">{cat.name}</h3>
+                    {cat.description && <p className="text-xs text-gray-500 mt-0.5">{cat.description}</p>}
+                    <Badge variant="secondary" className="mt-1 text-xs">{cat.package_count || 0} packages</Badge>
+                  </div>
+                  <div className="flex gap-0.5">
+                    <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => openPkgCategoryDialog(cat)}>
+                      <Edit2 className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-red-500" onClick={() => handleDeletePkgCategory(cat.id)}>
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+          {packageCategories.filter(c => c.is_active).length === 0 && (
+            <div className="col-span-full text-center py-6 text-gray-500 text-sm">
+              No package categories yet. Create one to get started.
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Package List */}
+      <div>
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3 mb-3">
+          <div className="flex flex-col md:flex-row gap-3 flex-1">
+            <div className="relative flex-1 max-w-sm">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+              <Input placeholder="Search packages..." value={pkgSearch}
+                onChange={(e) => setPkgSearch(e.target.value)} className="pl-10" />
+            </div>
+            <Select value={pkgCategoryFilter} onValueChange={setPkgCategoryFilter}>
+              <SelectTrigger className="w-[200px]">
+                <SelectValue placeholder="All Categories" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Categories</SelectItem>
+                {packageCategories.filter(c => c.is_active).map(cat => (
+                  <SelectItem key={cat.id} value={String(cat.id)}>{cat.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={fetchPackages}>
+              <RefreshCw className="h-4 w-4" />
+            </Button>
+            <Button onClick={() => openPackageDialog()}>
+              <Plus className="h-4 w-4 mr-2" /> Add Package
+            </Button>
+          </div>
+        </div>
+
+        {packages.length === 0 ? (
+          <Card>
+            <CardContent className="py-12 text-center text-gray-500">
+              No packages found. Create a package to bundle tests together.
+            </CardContent>
+          </Card>
+        ) : (
+          <div className="space-y-3">
+            {packages.map(pkg => (
+              <Card key={pkg.id} className={!pkg.is_active ? 'opacity-60' : ''}>
+                <CardContent className="py-4">
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-semibold">{pkg.name}</span>
+                        <Badge variant="outline" className="text-xs">{pkg.package_code}</Badge>
+                        {!pkg.is_active && <Badge variant="destructive" className="text-xs">Inactive</Badge>}
+                        {pkg.discount_percentage > 0 && (
+                          <Badge className="bg-green-100 text-green-700 text-xs">
+                            {pkg.discount_percentage}% off
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-3 text-sm text-gray-500 mt-1 flex-wrap">
+                        <span>{pkg.category_name}</span>
+                        <span>|</span>
+                        <span className="line-through text-gray-400">Rs. {pkg.actual_price}</span>
+                        <span className="font-semibold text-gray-700">Rs. {pkg.package_price}</span>
+                        <span>|</span>
+                        <span>{pkg.tests.length} tests</span>
+                      </div>
+                      {pkg.description && <p className="text-xs text-gray-400 mt-1">{pkg.description}</p>}
+                      <div className="flex flex-wrap gap-1.5 mt-2">
+                        {pkg.tests.map(t => (
+                          <Badge key={t.id} variant="secondary" className="text-xs font-normal">
+                            {t.name} (Rs.{t.cost})
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex gap-1 ml-4">
+                      <Button variant="ghost" size="sm" onClick={() => openPackageDialog(pkg)}>
+                        <Edit2 className="h-4 w-4" />
+                      </Button>
+                      <Button variant="ghost" size="sm" className="text-red-500" onClick={() => handleDeletePackage(pkg.id)}>
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  // ============ Package Dialogs ============
+
+  const renderPkgCategoryDialog = () => (
+    <Dialog open={showPkgCategoryDialog} onOpenChange={setShowPkgCategoryDialog}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>{editingPkgCategory ? 'Edit Package Category' : 'New Package Category'}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div>
+            <Label>Category Name *</Label>
+            <Input value={pkgCategoryForm.name}
+              onChange={(e) => setPkgCategoryForm({ ...pkgCategoryForm, name: e.target.value })}
+              placeholder="e.g. Health Checkup, Wellness" />
+          </div>
+          <div>
+            <Label>Description</Label>
+            <Textarea value={pkgCategoryForm.description}
+              onChange={(e) => setPkgCategoryForm({ ...pkgCategoryForm, description: e.target.value })}
+              placeholder="Optional description" rows={3} />
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setShowPkgCategoryDialog(false)}>Cancel</Button>
+            <Button onClick={handleSavePkgCategory} disabled={!pkgCategoryForm.name.trim()}>
+              {editingPkgCategory ? 'Update' : 'Create'}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+
+  const renderPackageDialog = () => (
+    <Dialog open={showPackageDialog} onOpenChange={setShowPackageDialog}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>{editingPackage ? 'Edit Package' : 'New Package'}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4 max-h-[75vh] overflow-y-auto">
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <Label>Field Type</Label>
-              <Select value={paramForm.field_type}
-                onValueChange={(v) => setParamForm({ ...paramForm, field_type: v })}>
+              <Label>Package Code *</Label>
+              <Input value={packageForm.package_code}
+                onChange={(e) => setPackageForm({ ...packageForm, package_code: e.target.value })}
+                placeholder="e.g. FBC-01" />
+            </div>
+            <div>
+              <Label>Category *</Label>
+              <Select value={packageForm.category_id} onValueChange={(v) => setPackageForm({ ...packageForm, category_id: v })}>
                 <SelectTrigger>
-                  <SelectValue />
+                  <SelectValue placeholder="Select category" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="numeric">Numeric</SelectItem>
-                  <SelectItem value="text">Text</SelectItem>
-                  <SelectItem value="select">Select (Dropdown)</SelectItem>
+                  {packageCategories.filter(c => c.is_active).map(cat => (
+                    <SelectItem key={cat.id} value={String(cat.id)}>{cat.name}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
-            <div>
-              <Label>Order (sequence in report)</Label>
-              <Input type="number" value={paramForm.display_order}
-                onChange={(e) => setParamForm({ ...paramForm, display_order: e.target.value })}
-                placeholder="e.g. 1, 2, 3..." />
+          </div>
+          <div>
+            <Label>Package Name *</Label>
+            <Input value={packageForm.name}
+              onChange={(e) => setPackageForm({ ...packageForm, name: e.target.value })}
+              placeholder="e.g. Full Body Checkup" />
+          </div>
+          <div>
+            <Label>Description</Label>
+            <Textarea value={packageForm.description}
+              onChange={(e) => setPackageForm({ ...packageForm, description: e.target.value })}
+              placeholder="Optional description" rows={2} />
+          </div>
+
+          {/* Test Selection */}
+          <div>
+            <Label className="mb-2 block">Select Tests * ({packageForm.test_ids.length} selected)</Label>
+            <div className="border rounded-lg max-h-52 overflow-y-auto p-3 space-y-1">
+              {categories.map(cat => {
+                const catTests = tests.filter(t => t.category_id === cat.id && t.is_active);
+                if (catTests.length === 0) return null;
+                return (
+                  <div key={cat.id} className="mb-2">
+                    <p className="text-xs font-semibold text-gray-500 uppercase mb-1">{cat.name}</p>
+                    {catTests.map(t => (
+                      <label key={t.id} className="flex items-center gap-2 py-1 px-2 rounded hover:bg-gray-50 cursor-pointer">
+                        <input type="checkbox"
+                          checked={packageForm.test_ids.includes(t.id)}
+                          onChange={() => toggleTestInPackage(t.id)}
+                          className="rounded border-gray-300"
+                        />
+                        <span className="text-sm flex-1">{t.name}</span>
+                        <span className="text-xs text-gray-400">{t.test_code}</span>
+                        <span className="text-xs font-medium">Rs. {t.cost}</span>
+                      </label>
+                    ))}
+                  </div>
+                );
+              })}
             </div>
           </div>
 
-          {paramForm.field_type === 'select' && (
+          {/* Pricing */}
+          <div className="grid grid-cols-3 gap-4 bg-gray-50 p-3 rounded-lg">
             <div>
-              <Label>Possible Values (comma-separated)</Label>
-              <Input value={paramForm.possible_values}
-                onChange={(e) => setParamForm({ ...paramForm, possible_values: e.target.value })}
-                placeholder="e.g. Positive, Negative, Trace" />
+              <Label className="text-xs text-gray-500">Actual Price (sum)</Label>
+              <p className="text-lg font-bold">Rs. {selectedTestsCost.toFixed(2)}</p>
             </div>
-          )}
-
-          {paramForm.field_type === 'numeric' && (
-            <>
-              <div className="border rounded-lg p-3 space-y-3">
-                <h4 className="text-sm font-medium text-gray-700">Reference Range</h4>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <Label className="text-xs">Min</Label>
-                    <Input type="number" step="any" value={paramForm.reference_min_default}
-                      onChange={(e) => setParamForm({ ...paramForm, reference_min_default: e.target.value })} />
-                  </div>
-                  <div>
-                    <Label className="text-xs">Max</Label>
-                    <Input type="number" step="any" value={paramForm.reference_max_default}
-                      onChange={(e) => setParamForm({ ...paramForm, reference_max_default: e.target.value })} />
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <input type="checkbox" id="genderToggle" checked={genderSpecific}
-                  onChange={(e) => setGenderSpecific(e.target.checked)}
-                  className="rounded" />
-                <Label htmlFor="genderToggle" className="text-sm cursor-pointer">
-                  Enable gender-specific reference ranges
-                </Label>
-              </div>
-
-              {genderSpecific && (
-                <div className="space-y-3 pl-2 border-l-2 border-blue-200">
-                  <div className="border rounded-lg p-3 space-y-3">
-                    <h4 className="text-sm font-medium text-blue-700">Male Reference Range</h4>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <Label className="text-xs">Min</Label>
-                        <Input type="number" step="any" value={paramForm.reference_min_male}
-                          onChange={(e) => setParamForm({ ...paramForm, reference_min_male: e.target.value })} />
-                      </div>
-                      <div>
-                        <Label className="text-xs">Max</Label>
-                        <Input type="number" step="any" value={paramForm.reference_max_male}
-                          onChange={(e) => setParamForm({ ...paramForm, reference_max_male: e.target.value })} />
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="border rounded-lg p-3 space-y-3">
-                    <h4 className="text-sm font-medium text-pink-700">Female Reference Range</h4>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <Label className="text-xs">Min</Label>
-                        <Input type="number" step="any" value={paramForm.reference_min_female}
-                          onChange={(e) => setParamForm({ ...paramForm, reference_min_female: e.target.value })} />
-                      </div>
-                      <div>
-                        <Label className="text-xs">Max</Label>
-                        <Input type="number" step="any" value={paramForm.reference_max_female}
-                          onChange={(e) => setParamForm({ ...paramForm, reference_max_female: e.target.value })} />
-                      </div>
-                    </div>
-                  </div>
-
-                  <p className="text-xs text-gray-400">
-                    When gender-specific ranges are set, they take priority over the default range for that gender.
-                  </p>
-                </div>
-              )}
-            </>
-          )}
+            <div>
+              <Label>Package Price (Rs.) *</Label>
+              <Input type="number" value={packageForm.package_price}
+                onChange={(e) => setPackageForm({ ...packageForm, package_price: e.target.value })}
+                placeholder="0" />
+            </div>
+            <div>
+              <Label className="text-xs text-gray-500">Discount</Label>
+              <p className="text-lg font-bold text-green-600">
+                {selectedTestsCost > 0 && packageForm.package_price
+                  ? `${((1 - parseFloat(packageForm.package_price || 0) / selectedTestsCost) * 100).toFixed(1)}%`
+                  : '0%'}
+              </p>
+            </div>
+          </div>
 
           <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={() => setShowParamDialog(false)}>Cancel</Button>
-            <Button onClick={handleSaveParam} disabled={!paramForm.parameter_name.trim()}>
-              {editingParam ? 'Update' : 'Add'}
+            <Button variant="outline" onClick={() => setShowPackageDialog(false)}>Cancel</Button>
+            <Button onClick={handleSavePackage}
+              disabled={!packageForm.name.trim() || !packageForm.package_code.trim() || !packageForm.category_id || !packageForm.package_price || packageForm.test_ids.length === 0}>
+              {editingPackage ? 'Update' : 'Create'}
             </Button>
           </div>
         </div>
@@ -877,16 +995,21 @@ const LabModule = () => {
           <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
           <TabsTrigger value="tests">Test Catalog</TabsTrigger>
           <TabsTrigger value="categories">Categories</TabsTrigger>
+          <TabsTrigger value="packages">
+            <Package className="h-4 w-4 mr-1.5" /> Packages
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="dashboard">{renderDashboard()}</TabsContent>
         <TabsContent value="tests">{renderTests()}</TabsContent>
         <TabsContent value="categories">{renderCategories()}</TabsContent>
+        <TabsContent value="packages">{renderPackages()}</TabsContent>
       </Tabs>
 
       {renderCategoryDialog()}
       {renderTestDialog()}
-      {renderParamDialog()}
+      {renderPkgCategoryDialog()}
+      {renderPackageDialog()}
 
       <ConfirmDialog
         open={confirmState.open}
@@ -896,6 +1019,16 @@ const LabModule = () => {
         onCancel={() => setConfirmState({ open: false })}
       />
     </div>
+  );
+};
+
+// Routing wrapper
+const LabModule = () => {
+  return (
+    <Routes>
+      <Route path="/" element={<LabModuleMain />} />
+      <Route path="/tests/:testId/parameters" element={<LabTestParametersPage />} />
+    </Routes>
   );
 };
 

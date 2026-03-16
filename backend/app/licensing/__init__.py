@@ -1,1 +1,1 @@
-# Licensing module for Hospital ERP
+# Licensing module for KT HEALTH ERP

@@ -1,5 +1,5 @@
 {
-  "name": "hospital-erp-frontend",
+  "name": "kthealth-erp-frontend",
   "version": "1.0.0",
   "private": true,
   "proxy": "http://localhost:8000",

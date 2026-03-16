@@ -1021,9 +1021,10 @@ const OutpatientModule = () => {
                       <SelectContent>
                         <SelectItem value="cash">Cash</SelectItem>
                         <SelectItem value="card">Card</SelectItem>
-                        <SelectItem value="insurance">Insurance</SelectItem>
+                        <SelectItem value="upi">UPI</SelectItem>
                         <SelectItem value="online">Online</SelectItem>
-                        <SelectItem value="bank_transfer">Bank Transfer</SelectItem>
+                        <SelectItem value="insurance">Insurance</SelectItem>
+                        <SelectItem value="cheque">Cheque</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>

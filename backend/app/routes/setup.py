@@ -87,32 +87,66 @@ async def debug_permissions():
 @router.get("/browse-folder")
 async def browse_folder():
     """Open a native OS folder picker dialog and return the selected path."""
-    import threading
+    import subprocess
+    import sys
+    import platform
 
-    result = {"path": ""}
+    folder = ""
 
-    def _pick():
-        try:
-            import tkinter as tk
-            from tkinter import filedialog
-            root = tk.Tk()
-            root.withdraw()
-            root.attributes("-topmost", True)
-            folder = filedialog.askdirectory(title="Select Folder")
-            root.destroy()
-            if folder:
-                result["path"] = folder
-        except Exception:
-            pass
+    try:
+        if platform.system() == "Darwin":
+            # macOS: use AppleScript for a native folder picker
+            script = (
+                'tell application "System Events"\n'
+                '  activate\n'
+                '  set theFolder to choose folder with prompt "Select Folder"\n'
+                '  return POSIX path of theFolder\n'
+                'end tell'
+            )
+            proc = subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True, text=True, timeout=120,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                folder = proc.stdout.strip().rstrip("/")
 
-    # Run in a thread to avoid blocking the event loop
-    t = threading.Thread(target=_pick)
-    t.start()
-    t.join(timeout=120)  # 2 min timeout
+        elif platform.system() == "Windows":
+            # Windows: use PowerShell folder browser dialog
+            ps_script = (
+                'Add-Type -AssemblyName System.Windows.Forms; '
+                '$f = New-Object System.Windows.Forms.FolderBrowserDialog; '
+                '$f.Description = "Select Folder"; '
+                '$f.ShowNewFolderButton = $true; '
+                '$null = $f.ShowDialog(); '
+                '$f.SelectedPath'
+            )
+            proc = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps_script],
+                capture_output=True, text=True, timeout=120,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                folder = proc.stdout.strip()
 
-    if result["path"]:
-        return {"path": result["path"]}
-    return {"path": ""}
+        else:
+            # Linux: try zenity, then kdialog, then tkinter as fallback
+            for cmd in [
+                ["zenity", "--file-selection", "--directory", "--title=Select Folder"],
+                ["kdialog", "--getexistingdirectory", "."],
+            ]:
+                try:
+                    proc = subprocess.run(
+                        cmd, capture_output=True, text=True, timeout=120,
+                    )
+                    if proc.returncode == 0 and proc.stdout.strip():
+                        folder = proc.stdout.strip()
+                        break
+                except FileNotFoundError:
+                    continue
+
+    except (subprocess.TimeoutExpired, Exception):
+        pass
+
+    return {"path": folder}
 
 
 @router.post("/validate-path")
@@ -166,9 +200,9 @@ async def complete_setup(setup_data: SetupRequest):
             os.makedirs(db_dir, exist_ok=True)
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Cannot create database directory: {e}")
-        db_path = os.path.join(db_dir, "hospital_erp.db")
+        db_path = os.path.join(db_dir, "kthealth_erp.db")
     else:
-        db_path = os.path.join(get_data_dir(), "hospital_erp.db")
+        db_path = os.path.join(get_data_dir(), "kthealth_erp.db")
 
     # Validate backup locations
     valid_backup_locations = []

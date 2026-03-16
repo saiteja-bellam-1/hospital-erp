@@ -48,6 +48,16 @@ def require_permission(module: str, action: str):
         if current_user.role.name == UserRoles.SUPER_ADMIN:
             return current_user
 
+        # Hospital admin and module-specific roles get implicit access
+        if current_user.role.name == UserRoles.HOSPITAL_ADMIN:
+            return current_user
+
+        # Lab roles always have access to lab module
+        if module == Modules.LAB and current_user.role.name in (
+            UserRoles.LAB_ADMIN, UserRoles.LAB_TECHNICIAN
+        ):
+            return current_user
+
         # Check if module is enabled in system settings
         from app.models.system import SystemModule
         sys_module = db.query(SystemModule).filter(

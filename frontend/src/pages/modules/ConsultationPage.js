@@ -10,7 +10,8 @@ import { Badge } from '../../components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/tabs';
 import {
   ArrowLeft, Stethoscope, Activity, Pill, TestTube, FileText, CheckCircle,
-  Clock, User, AlertCircle, Eye, Plus, Trash2, Save, Printer, Search
+  Clock, User, AlertCircle, Eye, Plus, Trash2, Save, Printer, Search,
+  ChevronRight, ChevronDown, History
 } from 'lucide-react';
 import { format } from 'date-fns';
 import axios from 'axios';
@@ -20,7 +21,7 @@ const ConsultationPage = () => {
   const navigate = useNavigate();
   const appointmentId = searchParams.get('appointmentId');
   const patientId = searchParams.get('patientId');
-  const patientUuid = searchParams.get('patientUuid') || '';
+  const patientUuidParam = searchParams.get('patientUuid') || '';
   const patientName = searchParams.get('patientName') || '';
 
   const [loading, setLoading] = useState(false);
@@ -48,6 +49,12 @@ const ConsultationPage = () => {
     diagnosis: '', notes: '', follow_up_date: ''
   });
   const [prescriptions, setPrescriptions] = useState([]);
+  const [currentPrescriptionId, setCurrentPrescriptionId] = useState(null);
+  const [consultationHistory, setConsultationHistory] = useState([]);
+  const [expandedHistoryItems, setExpandedHistoryItems] = useState({});
+  const [savedPrescription, setSavedPrescription] = useState(null);
+  const [rxPdfUrl, setRxPdfUrl] = useState(null);
+  const [rxIncludeHeader, setRxIncludeHeader] = useState(true);
 
   // Lab Order
   const [availableLabTests, setAvailableLabTests] = useState([]);
@@ -63,9 +70,14 @@ const ConsultationPage = () => {
   // Lab Results
   const [labOrders, setLabOrders] = useState([]);
   const [expandedReport, setExpandedReport] = useState(null);
+  const [expandedLabGroups, setExpandedLabGroups] = useState({});
+  const [expandedRxGroups, setExpandedRxGroups] = useState({});
 
   // Appointment info
   const [appointment, setAppointment] = useState(null);
+
+  // Use URL param first, fallback to fetched appointment data
+  const patientUuid = patientUuidParam || appointment?.patient_uuid || '';
 
   const showFeedback = (message, type = 'success') => {
     setFeedback({ message, type });
@@ -88,6 +100,20 @@ const ConsultationPage = () => {
     fetchLabTests();
   }, [appointmentId, patientId]);
 
+  // Fetch existing vitals when patientUuid is available
+  useEffect(() => {
+    if (patientUuid) {
+      fetchExistingVitals();
+    }
+  }, [patientUuid]);
+
+  // Load existing prescription for this consultation
+  useEffect(() => {
+    if (activeConsultation?.id) {
+      fetchConsultationPrescription(activeConsultation.id);
+    }
+  }, [activeConsultation?.id]);
+
   // BMI auto-calc
   useEffect(() => {
     if (vitalsForm.weight && vitalsForm.height) {
@@ -106,6 +132,19 @@ const ConsultationPage = () => {
         const data = await res.json();
         setAppointment(data);
         setConsultationForm(prev => ({ ...prev, chief_complaint: data.reason || '' }));
+      }
+      // Try to load existing consultation for this appointment
+      const consultRes = await fetch(`/api/consultations/by-appointment/${appointmentId}`, { headers });
+      if (consultRes.ok) {
+        const consultData = await consultRes.json();
+        setActiveConsultation(consultData);
+        setConsultationForm({
+          chief_complaint: consultData.chief_complaint || '',
+          present_history: consultData.present_history || '',
+          examination_findings: consultData.examination_findings || '',
+          notes: consultData.notes || '',
+          follow_up_date: consultData.follow_up_date ? consultData.follow_up_date.split('T')[0] : ''
+        });
       }
     } catch (err) {
       console.error('Failed to fetch appointment:', err);
@@ -143,6 +182,101 @@ const ConsultationPage = () => {
       if (catsRes.ok) setLabCategories(await catsRes.json());
     } catch (err) {
       console.error('Failed to fetch lab tests:', err);
+    }
+  };
+
+  const fetchExistingVitals = async () => {
+    try {
+      const res = await fetch(`/api/patients/${patientUuid}/vitals`, { headers });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.length > 0) {
+          // Pre-fill with the most recent vitals
+          const latest = data[0].vital_signs;
+          if (latest) {
+            const bp = latest.blood_pressure?.split('/') || ['', ''];
+            setVitalsForm(prev => ({
+              ...prev,
+              blood_pressure_systolic: bp[0] || prev.blood_pressure_systolic,
+              blood_pressure_diastolic: bp[1] || prev.blood_pressure_diastolic,
+              heart_rate: latest.heart_rate || prev.heart_rate,
+              temperature: latest.temperature || prev.temperature,
+              weight: latest.weight || prev.weight,
+              height: latest.height || prev.height,
+              respiratory_rate: latest.respiratory_rate || prev.respiratory_rate,
+              oxygen_saturation: latest.oxygen_saturation || prev.oxygen_saturation,
+              bmi: latest.bmi || prev.bmi
+            }));
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch existing vitals:', err);
+    }
+  };
+
+  const fetchConsultationPrescription = async (consultationId) => {
+    try {
+      const res = await fetch(`/api/prescriptions-simple/?consultation_id=${consultationId}`, { headers });
+      if (res.ok) {
+        const data = await res.json();
+        const prescriptions = Array.isArray(data) ? data : data.prescriptions || [];
+        if (prescriptions.length > 0) {
+          const existing = prescriptions[0];
+          setCurrentPrescriptionId(existing.prescription_id);
+          setSavedPrescription(existing);
+          // Load medicines into the form
+          const meds = (existing.medicines || []).map(m => ({
+            medicine_name: m.name || '',
+            quantity_prescribed: m.quantity ? parseInt(m.quantity) || 1 : 1,
+            dosage: m.dosage || '',
+            frequency_schedule: m.frequency_schedule || '1-0-0',
+            food_timing: m.food_timing || 'after_food',
+            duration: m.duration || '',
+            instructions: m.instructions || ''
+          }));
+          setPrescriptionForm(prev => ({
+            ...prev,
+            medications: meds.length > 0 ? meds : prev.medications,
+            diagnosis: existing.diagnosis || prev.diagnosis,
+            notes: existing.notes || prev.notes
+          }));
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch consultation prescription:', err);
+    }
+  };
+
+  const fetchConsultationHistory = async () => {
+    if (!patientId) return;
+    try {
+      const res = await fetch(`/api/consultations/patient/${patientId}/history`, { headers });
+      if (res.ok) {
+        const data = await res.json();
+        // Exclude current consultation/appointment from history
+        const currentConsultId = activeConsultation?.id;
+        const currentAptId = appointmentId ? parseInt(appointmentId) : null;
+        const filtered = data.filter(c =>
+          c.id !== currentConsultId && c.appointment_id !== currentAptId
+        );
+        setConsultationHistory(filtered);
+      }
+    } catch (err) {
+      console.error('Failed to fetch consultation history:', err);
+    }
+  };
+
+  const fetchRxPdf = async (prescriptionId, includeHeader) => {
+    try {
+      const res = await fetch(`/api/prescriptions-simple/${prescriptionId}/download?include_header=${includeHeader}`, { headers });
+      if (res.ok) {
+        const blob = await res.blob();
+        if (rxPdfUrl) window.URL.revokeObjectURL(rxPdfUrl);
+        setRxPdfUrl(window.URL.createObjectURL(blob));
+      }
+    } catch (err) {
+      console.error('Failed to fetch prescription PDF:', err);
     }
   };
 
@@ -219,13 +353,18 @@ const ConsultationPage = () => {
         respiratory_rate: vitalsForm.respiratory_rate, oxygen_saturation: vitalsForm.oxygen_saturation,
         bmi: vitalsForm.bmi
       };
-      await fetch('/api/patients/vitals', {
+      const res = await fetch('/api/patients/vitals', {
         method: 'POST', headers,
         body: JSON.stringify({ patient_id: patientUuid, vital_signs: JSON.stringify(vitalsData), notes: vitalsForm.notes })
       });
-      showFeedback('Vitals recorded');
+      if (res.ok) {
+        showFeedback('Vitals recorded');
+      } else {
+        const err = await res.json().catch(() => ({}));
+        showFeedback(err.detail || 'Failed to save vitals', 'error');
+      }
     } catch (err) {
-      showFeedback('Vitals recorded (demo)');
+      showFeedback('Failed to save vitals', 'error');
     } finally {
       setSaving(false);
     }
@@ -259,38 +398,56 @@ const ConsultationPage = () => {
     if (validMeds.length === 0) return;
     setSaving(true);
     try {
-      const res = await fetch('/api/prescriptions-simple/', {
-        method: 'POST', headers,
-        body: JSON.stringify({
-          patient_id: patientUuid,
-          consultation_id: null,
-          medicines: validMeds.map(m => ({
-            name: m.medicine_name,
-            dosage: m.dosage || 'As directed',
-            duration: m.duration || 'As directed',
-            instructions: m.instructions || null,
-            quantity: m.quantity_prescribed ? String(m.quantity_prescribed) : null,
-            frequency_schedule: m.frequency_schedule || '1-0-0',
-            food_timing: m.food_timing || 'after_food'
-          })),
-          diagnosis: prescriptionForm.diagnosis || null,
-          notes: prescriptionForm.notes || null
-        })
-      });
-      if (res.ok) {
-        showFeedback('Prescription created');
-        fetchPatientPrescriptions();
-        setPrescriptionForm({
-          medications: [{ medicine_name: '', quantity_prescribed: 1, dosage: '', frequency_schedule: '1-0-0', food_timing: 'after_food', duration: '', instructions: '' }],
-          diagnosis: '', notes: '', follow_up_date: ''
+      const medicinesPayload = validMeds.map(m => ({
+        name: m.medicine_name,
+        dosage: m.dosage || 'As directed',
+        duration: m.duration || 'As directed',
+        instructions: m.instructions || null,
+        quantity: m.quantity_prescribed ? String(m.quantity_prescribed) : null,
+        frequency_schedule: m.frequency_schedule || '1-0-0',
+        food_timing: m.food_timing || 'after_food'
+      }));
+
+      let res;
+      if (currentPrescriptionId) {
+        // Update existing prescription
+        res = await fetch(`/api/prescriptions-simple/${currentPrescriptionId}`, {
+          method: 'PUT', headers,
+          body: JSON.stringify({
+            medicines: medicinesPayload,
+            diagnosis: prescriptionForm.diagnosis || null,
+            notes: prescriptionForm.notes || null
+          })
         });
       } else {
+        // Create new prescription
+        res = await fetch('/api/prescriptions-simple/', {
+          method: 'POST', headers,
+          body: JSON.stringify({
+            patient_id: patientUuid,
+            consultation_id: activeConsultation?.id || null,
+            medicines: medicinesPayload,
+            diagnosis: prescriptionForm.diagnosis || null,
+            notes: prescriptionForm.notes || null
+          })
+        });
+      }
+
+      if (res.ok) {
+        const data = await res.json();
+        setCurrentPrescriptionId(data.prescription_id);
+        setSavedPrescription(data);
+        showFeedback(currentPrescriptionId ? 'Prescription updated' : 'Prescription created');
+        fetchPatientPrescriptions();
+        // Load PDF preview
+        fetchRxPdf(data.prescription_id, rxIncludeHeader);
+      } else {
         const err = await res.json();
-        const detail = typeof err.detail === 'string' ? err.detail : 'Failed to create prescription';
+        const detail = typeof err.detail === 'string' ? err.detail : 'Failed to save prescription';
         showFeedback(detail, 'error');
       }
     } catch (err) {
-      showFeedback('Error creating prescription', 'error');
+      showFeedback('Error saving prescription', 'error');
     } finally {
       setSaving(false);
     }
@@ -366,9 +523,9 @@ const ConsultationPage = () => {
     }
   };
 
-  const downloadReport = async (reportId, orderNumber) => {
+  const downloadReport = async (reportId, orderNumber, includeHeader = true) => {
     try {
-      const res = await fetch(`/api/lab/reports/${reportId}/download`, { headers });
+      const res = await fetch(`/api/lab/reports/${reportId}/download?include_header=${includeHeader}`, { headers });
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -457,7 +614,7 @@ const ConsultationPage = () => {
 
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={handleTabChange}>
-        <TabsList className="grid w-full grid-cols-5">
+        <TabsList className="grid w-full grid-cols-6">
           <TabsTrigger value="vitals"><Activity className="h-4 w-4 mr-1" /> Vitals</TabsTrigger>
           <TabsTrigger value="consultation"><Stethoscope className="h-4 w-4 mr-1" /> Findings</TabsTrigger>
           <TabsTrigger value="prescription"><Pill className="h-4 w-4 mr-1" /> Prescription</TabsTrigger>
@@ -467,6 +624,9 @@ const ConsultationPage = () => {
             {labOrders.filter(o => o.status === 'completed' && o.has_report).length > 0 && (
               <Badge className="ml-1 bg-green-500 text-white text-xs px-1.5">{labOrders.filter(o => o.status === 'completed' && o.has_report).length}</Badge>
             )}
+          </TabsTrigger>
+          <TabsTrigger value="history" onClick={() => fetchConsultationHistory()}>
+            <History className="h-4 w-4 mr-1" /> History
           </TabsTrigger>
         </TabsList>
 
@@ -666,28 +826,65 @@ const ConsultationPage = () => {
                 </div>
               </div>
 
-              <Button onClick={handleSavePrescription} disabled={saving}>
-                <Save className="h-4 w-4 mr-1" /> Save Prescription
-              </Button>
+              <div className="flex items-center gap-3">
+                <Button onClick={handleSavePrescription} disabled={saving}>
+                  <Save className="h-4 w-4 mr-1" /> {currentPrescriptionId ? 'Update' : 'Save'} Prescription
+                </Button>
+                {savedPrescription && (
+                  <Badge className="bg-green-100 text-green-700">
+                    <CheckCircle className="h-3 w-3 mr-1" /> Saved — {savedPrescription.prescription_id}
+                  </Badge>
+                )}
+              </div>
 
-              {/* Previous prescriptions */}
-              {prescriptions.length > 0 && (
-                <div className="mt-6 pt-4 border-t">
-                  <h3 className="font-semibold text-sm text-gray-600 mb-3">Previous Prescriptions</h3>
-                  {prescriptions.slice(0, 5).map((rx, idx) => (
-                    <div key={idx} className="text-sm border rounded p-2 mb-2">
-                      <div className="flex items-center justify-between">
-                        <span className="font-medium">{rx.prescription_number}</span>
-                        <span className="text-xs text-gray-500">{rx.prescription_date && format(new Date(rx.prescription_date), 'dd MMM yyyy')}</span>
-                      </div>
-                      {rx.diagnosis && <p className="text-xs text-gray-600 mt-1">Dx: {rx.diagnosis}</p>}
-                      <div className="text-xs text-gray-500 mt-1">
-                        {rx.medicines?.map((m, i) => m.name || m.medicine_name).join(', ')}
-                      </div>
+              {/* Saved Prescription Preview */}
+              {savedPrescription && (
+                <div className="mt-6 pt-4 border-t space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h3 className="font-semibold text-sm flex items-center gap-2">
+                      <FileText className="h-4 w-4" /> Prescription Preview
+                    </h3>
+                    <div className="flex items-center gap-3">
+                      <label className="flex items-center gap-2 text-xs text-gray-600">
+                        <input
+                          type="checkbox"
+                          checked={rxIncludeHeader}
+                          onChange={(e) => {
+                            setRxIncludeHeader(e.target.checked);
+                            fetchRxPdf(savedPrescription.prescription_id, e.target.checked);
+                          }}
+                          className="rounded"
+                        />
+                        Include hospital letterhead
+                      </label>
+                      {rxPdfUrl && (
+                        <>
+                          <Button size="sm" variant="outline" onClick={() => window.open(rxPdfUrl, '_blank')}>
+                            <Eye className="h-3 w-3 mr-1" /> View
+                          </Button>
+                          <Button size="sm" variant="outline" onClick={() => {
+                            const a = document.createElement('a');
+                            a.href = rxPdfUrl;
+                            a.download = `prescription_${savedPrescription.prescription_id}.pdf`;
+                            a.click();
+                          }}>
+                            <Printer className="h-3 w-3 mr-1" /> Download
+                          </Button>
+                        </>
+                      )}
                     </div>
-                  ))}
+                  </div>
+
+                  {rxPdfUrl ? (
+                    <iframe src={rxPdfUrl} className="w-full h-[500px] border rounded-lg" title="Prescription PDF" />
+                  ) : (
+                    <div className="text-center py-8 text-gray-400">
+                      <p className="text-sm">Loading prescription preview...</p>
+                    </div>
+                  )}
                 </div>
               )}
+
             </CardContent>
           </Card>
         </TabsContent>
@@ -811,81 +1008,349 @@ const ConsultationPage = () => {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              {labOrders.filter(o => o.status === 'completed' && o.has_report).length === 0 ? (
-                <div className="text-center py-8 text-gray-500">
-                  <TestTube className="h-10 w-10 mx-auto mb-3 text-gray-300" />
-                  <p>No lab results available for this patient yet.</p>
+              {(() => {
+                const completedOrders = labOrders.filter(o => o.status === 'completed' && o.has_report);
+                const pendingOrders = labOrders.filter(o => o.status !== 'completed' && o.status !== 'cancelled');
+
+                if (completedOrders.length === 0 && pendingOrders.length === 0) {
+                  return (
+                    <div className="text-center py-8 text-gray-500">
+                      <TestTube className="h-10 w-10 mx-auto mb-3 text-gray-300" />
+                      <p>No lab results available for this patient yet.</p>
+                    </div>
+                  );
+                }
+
+                // Group completed orders by date
+                const groupedByDate = {};
+                completedOrders.forEach(order => {
+                  const dateKey = order.order_date
+                    ? format(new Date(order.order_date), 'yyyy-MM-dd')
+                    : 'unknown';
+                  if (!groupedByDate[dateKey]) groupedByDate[dateKey] = [];
+                  groupedByDate[dateKey].push(order);
+                });
+
+                // Sort dates descending (most recent first)
+                const sortedDates = Object.keys(groupedByDate).sort((a, b) => b.localeCompare(a));
+
+                return (
+                  <div className="space-y-4">
+                    {/* Current pending orders */}
+                    {pendingOrders.length > 0 && (
+                      <div>
+                        <h3 className="text-sm font-semibold text-gray-600 mb-2 flex items-center gap-2">
+                          <Clock className="h-4 w-4" /> Pending Orders
+                        </h3>
+                        <div className="space-y-1">
+                          {pendingOrders.map(order => (
+                            <div key={order.id} className="flex items-center justify-between p-2.5 border rounded-lg text-sm bg-amber-50/50">
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium">{order.test_name}</span>
+                                <Badge variant="outline" className="text-xs">{order.test_code}</Badge>
+                              </div>
+                              <Badge className={
+                                order.status === 'processing' ? 'bg-purple-100 text-purple-700' :
+                                order.status === 'collected' ? 'bg-yellow-100 text-yellow-700' :
+                                'bg-blue-100 text-blue-700'
+                              }>{order.status}</Badge>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Completed results grouped by date */}
+                    {completedOrders.length > 0 && (
+                      <div>
+                        {pendingOrders.length > 0 && (
+                          <h3 className="text-sm font-semibold text-gray-600 mb-2 flex items-center gap-2">
+                            <History className="h-4 w-4" /> Completed Results
+                          </h3>
+                        )}
+                        <div className="space-y-1.5">
+                          {sortedDates.map(dateKey => {
+                            const orders = groupedByDate[dateKey];
+                            const isExpanded = expandedLabGroups[dateKey];
+                            const displayDate = dateKey !== 'unknown'
+                              ? format(new Date(dateKey), 'dd MMM yyyy')
+                              : 'Unknown date';
+                            const abnormalCount = orders.reduce((sum, o) => {
+                              // We'll show abnormal count if we have expanded data
+                              return sum;
+                            }, 0);
+
+                            return (
+                              <div key={dateKey} className="border rounded-lg overflow-hidden">
+                                {/* Group header row */}
+                                <div
+                                  className="flex items-center gap-3 px-3 py-2.5 cursor-pointer hover:bg-gray-50 transition-colors"
+                                  onClick={() => setExpandedLabGroups(prev => ({ ...prev, [dateKey]: !prev[dateKey] }))}
+                                >
+                                  {isExpanded
+                                    ? <ChevronDown className="h-4 w-4 text-gray-400 flex-shrink-0" />
+                                    : <ChevronRight className="h-4 w-4 text-gray-400 flex-shrink-0" />
+                                  }
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-sm font-medium text-gray-800">Consultation on {displayDate}</span>
+                                      <Badge variant="outline" className="text-xs">{orders.length} test{orders.length !== 1 ? 's' : ''}</Badge>
+                                      <Badge className="bg-green-100 text-green-700 text-xs">Completed</Badge>
+                                    </div>
+                                    {!isExpanded && (
+                                      <p className="text-xs text-gray-500 mt-0.5 truncate">
+                                        {orders.map(o => o.test_name).join(', ')}
+                                      </p>
+                                    )}
+                                  </div>
+                                </div>
+
+                                {/* Expanded: show each test with results */}
+                                {isExpanded && (
+                                  <div className="border-t bg-gray-50">
+                                    {orders.map((order, oIdx) => (
+                                      <div key={order.id} className={oIdx > 0 ? 'border-t border-gray-200' : ''}>
+                                        {/* Individual test header */}
+                                        <div
+                                          className="flex items-center justify-between px-4 py-2.5 cursor-pointer hover:bg-gray-100 transition-colors"
+                                          onClick={() => openReport(order.report_id)}
+                                        >
+                                          <div className="flex items-center gap-2">
+                                            <TestTube className="h-3.5 w-3.5 text-gray-400" />
+                                            <span className="text-sm font-medium">{order.test_name}</span>
+                                            <Badge variant="outline" className="text-[10px]">{order.test_code}</Badge>
+                                          </div>
+                                          <div className="flex items-center gap-2">
+                                            <Button size="sm" variant="ghost" className="h-7 px-2" title="Download with header"
+                                              onClick={(e) => { e.stopPropagation(); downloadReport(order.report_id, order.order_number, true); }}>
+                                              <Printer className="h-3.5 w-3.5" />
+                                            </Button>
+                                            <Button size="sm" variant="ghost" className="h-7 px-2 text-gray-400" title="Download without header"
+                                              onClick={(e) => { e.stopPropagation(); downloadReport(order.report_id, order.order_number, false); }}>
+                                              <FileText className="h-3.5 w-3.5" />
+                                            </Button>
+                                            <Button size="sm" variant={expandedReport?.id === order.report_id ? 'default' : 'ghost'} className="h-7 px-2"
+                                              onClick={(e) => { e.stopPropagation(); openReport(order.report_id); }}>
+                                              {expandedReport?.id === order.report_id
+                                                ? <ChevronDown className="h-3.5 w-3.5" />
+                                                : <Eye className="h-3.5 w-3.5" />
+                                              }
+                                            </Button>
+                                          </div>
+                                        </div>
+
+                                        {/* Inline results table */}
+                                        {expandedReport && expandedReport.order_id === order.id && (
+                                          <div className="px-4 pb-3">
+                                            <table className="w-full text-sm">
+                                              <thead>
+                                                <tr className="border-b text-left text-gray-500">
+                                                  <th className="pb-2 pr-3 text-xs font-medium">Parameter</th>
+                                                  <th className="pb-2 pr-3 text-xs font-medium">Result</th>
+                                                  <th className="pb-2 pr-3 text-xs font-medium">Unit</th>
+                                                  <th className="pb-2 pr-3 text-xs font-medium">Reference</th>
+                                                  <th className="pb-2 text-xs font-medium">Status</th>
+                                                </tr>
+                                              </thead>
+                                              <tbody>
+                                                {expandedReport.results?.map((r, idx) => (
+                                                  <tr key={idx} className={`border-b last:border-0 ${r.is_abnormal ? 'bg-red-50' : ''}`}>
+                                                    <td className="py-1.5 pr-3 font-medium">{r.parameter_name}</td>
+                                                    <td className={`py-1.5 pr-3 ${r.is_abnormal ? 'text-red-600 font-bold' : ''}`}>{r.value}</td>
+                                                    <td className="py-1.5 pr-3 text-gray-500">{r.unit || '-'}</td>
+                                                    <td className="py-1.5 pr-3 text-gray-500 text-xs">
+                                                      {r.reference_min != null || r.reference_max != null
+                                                        ? `${r.reference_min ?? '–'} - ${r.reference_max ?? '–'}` : '-'}
+                                                    </td>
+                                                    <td className="py-1.5">
+                                                      {r.is_abnormal ? (
+                                                        <Badge variant="destructive" className="text-xs"><AlertCircle className="h-3 w-3 mr-0.5" />Abnormal</Badge>
+                                                      ) : r.field_type === 'numeric' && (r.reference_min != null || r.reference_max != null) ? (
+                                                        <Badge variant="secondary" className="text-xs">Normal</Badge>
+                                                      ) : null}
+                                                    </td>
+                                                  </tr>
+                                                ))}
+                                              </tbody>
+                                            </table>
+                                            {expandedReport.interpretation && (
+                                              <div className="mt-2 p-2 bg-white rounded border">
+                                                <p className="text-xs font-medium text-gray-600">Interpretation</p>
+                                                <p className="text-sm">{expandedReport.interpretation}</p>
+                                              </div>
+                                            )}
+                                          </div>
+                                        )}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+            </CardContent>
+          </Card>
+        </TabsContent>
+        {/* ====== History Tab ====== */}
+        <TabsContent value="history">
+          <Card>
+            <CardContent className="pt-6">
+              {consultationHistory.length === 0 ? (
+                <div className="text-center py-12 text-gray-400">
+                  <History className="h-10 w-10 mx-auto mb-3 opacity-50" />
+                  <p className="text-sm">No previous consultations found</p>
                 </div>
               ) : (
                 <div className="space-y-3">
-                  {labOrders.filter(o => o.status === 'completed' && o.has_report).map(order => (
-                    <div key={order.id} className="border rounded-lg">
-                      <div className="flex items-center justify-between p-3 cursor-pointer hover:bg-gray-50"
-                        onClick={() => openReport(order.report_id)}>
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="font-medium">{order.test_name}</span>
-                            <Badge variant="outline" className="text-xs">{order.test_code}</Badge>
-                            <Badge className="bg-green-100 text-green-700 text-xs">Completed</Badge>
-                          </div>
-                          <p className="text-xs text-gray-500 mt-0.5">
-                            {order.order_date && format(new Date(order.order_date), 'dd MMM yyyy, hh:mm a')} | #{order.order_number}
-                          </p>
-                        </div>
-                        <div className="flex gap-2">
-                          <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); downloadReport(order.report_id, order.order_number); }}>
-                            <Printer className="h-4 w-4" />
-                          </Button>
-                          <Button size="sm" variant={expandedReport?.id === order.report_id ? 'default' : 'outline'}
-                            onClick={(e) => { e.stopPropagation(); openReport(order.report_id); }}>
-                            <Eye className="h-4 w-4 mr-1" /> {expandedReport?.id === order.report_id ? 'Hide' : 'View'}
-                          </Button>
-                        </div>
-                      </div>
+                  {consultationHistory.map((consult) => {
+                    const isExpanded = expandedHistoryItems[consult.id];
+                    const consultDate = consult.consultation_date
+                      ? format(new Date(consult.consultation_date), 'dd MMM yyyy, hh:mm a')
+                      : 'Unknown date';
 
-                      {expandedReport && expandedReport.order_id === order.id && (
-                        <div className="border-t p-3 bg-gray-50">
-                          <table className="w-full text-sm">
-                            <thead>
-                              <tr className="border-b text-left text-gray-500">
-                                <th className="pb-2 pr-3">Parameter</th>
-                                <th className="pb-2 pr-3">Result</th>
-                                <th className="pb-2 pr-3">Unit</th>
-                                <th className="pb-2 pr-3">Reference</th>
-                                <th className="pb-2">Status</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {expandedReport.results?.map((r, idx) => (
-                                <tr key={idx} className={`border-b last:border-0 ${r.is_abnormal ? 'bg-red-50' : ''}`}>
-                                  <td className="py-1.5 pr-3 font-medium">{r.parameter_name}</td>
-                                  <td className={`py-1.5 pr-3 ${r.is_abnormal ? 'text-red-600 font-bold' : ''}`}>{r.value}</td>
-                                  <td className="py-1.5 pr-3 text-gray-500">{r.unit || '-'}</td>
-                                  <td className="py-1.5 pr-3 text-gray-500 text-xs">
-                                    {r.reference_min != null || r.reference_max != null
-                                      ? `${r.reference_min ?? '–'} - ${r.reference_max ?? '–'}` : '-'}
-                                  </td>
-                                  <td className="py-1.5">
-                                    {r.is_abnormal ? (
-                                      <Badge variant="destructive" className="text-xs"><AlertCircle className="h-3 w-3 mr-0.5" />Abnormal</Badge>
-                                    ) : r.field_type === 'numeric' && (r.reference_min != null || r.reference_max != null) ? (
-                                      <Badge variant="secondary" className="text-xs">Normal</Badge>
-                                    ) : null}
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                          {expandedReport.interpretation && (
-                            <div className="mt-3 p-2 bg-white rounded border">
-                              <p className="text-xs font-medium text-gray-600">Interpretation</p>
-                              <p className="text-sm">{expandedReport.interpretation}</p>
+                    return (
+                      <div key={consult.id} className="border rounded-lg overflow-hidden">
+                        {/* Header row */}
+                        <div
+                          className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-gray-50 transition-colors"
+                          onClick={() => setExpandedHistoryItems(prev => ({ ...prev, [consult.id]: !prev[consult.id] }))}
+                        >
+                          {isExpanded
+                            ? <ChevronDown className="h-4 w-4 text-gray-400 flex-shrink-0" />
+                            : <ChevronRight className="h-4 w-4 text-gray-400 flex-shrink-0" />
+                          }
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-sm font-medium text-gray-800">{consultDate}</span>
+                              <Badge variant="outline" className="text-xs">{consult.consultation_type}</Badge>
+                              <Badge className={
+                                consult.status === 'completed' ? 'bg-green-100 text-green-700 text-xs' :
+                                consult.status === 'ongoing' ? 'bg-blue-100 text-blue-700 text-xs' :
+                                'bg-gray-100 text-gray-600 text-xs'
+                              }>{consult.status}</Badge>
                             </div>
-                          )}
+                            {consult.chief_complaint && (
+                              <p className="text-xs text-gray-500 mt-0.5 truncate">
+                                Chief Complaint: {consult.chief_complaint}
+                              </p>
+                            )}
+                          </div>
+                          <span className="text-xs text-gray-400 flex-shrink-0">{consult.doctor_name}</span>
                         </div>
-                      )}
-                    </div>
-                  ))}
+
+                        {/* Expanded content */}
+                        {isExpanded && (
+                          <div className="border-t bg-gray-50 px-4 py-4 space-y-4">
+                            {/* Consultation details */}
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                              {consult.chief_complaint && (
+                                <div>
+                                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Chief Complaint</p>
+                                  <p className="text-sm text-gray-800 mt-1">{consult.chief_complaint}</p>
+                                </div>
+                              )}
+                              {consult.present_history && (
+                                <div>
+                                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">History</p>
+                                  <p className="text-sm text-gray-800 mt-1">{consult.present_history}</p>
+                                </div>
+                              )}
+                              {consult.examination_findings && (
+                                <div>
+                                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Examination Findings</p>
+                                  <p className="text-sm text-gray-800 mt-1">{consult.examination_findings}</p>
+                                </div>
+                              )}
+                              {consult.notes && (
+                                <div>
+                                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Notes</p>
+                                  <p className="text-sm text-gray-800 mt-1">{consult.notes}</p>
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Vitals */}
+                            {consult.vital_signs && Object.keys(consult.vital_signs).length > 0 && (
+                              <div>
+                                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Vital Signs</p>
+                                <div className="flex flex-wrap gap-3">
+                                  {consult.vital_signs.blood_pressure && (
+                                    <span className="text-xs bg-white border rounded px-2 py-1">BP: {consult.vital_signs.blood_pressure}</span>
+                                  )}
+                                  {consult.vital_signs.heart_rate && (
+                                    <span className="text-xs bg-white border rounded px-2 py-1">HR: {consult.vital_signs.heart_rate} bpm</span>
+                                  )}
+                                  {consult.vital_signs.temperature && (
+                                    <span className="text-xs bg-white border rounded px-2 py-1">Temp: {consult.vital_signs.temperature}°F</span>
+                                  )}
+                                  {consult.vital_signs.weight && (
+                                    <span className="text-xs bg-white border rounded px-2 py-1">Wt: {consult.vital_signs.weight} kg</span>
+                                  )}
+                                  {consult.vital_signs.oxygen_saturation && (
+                                    <span className="text-xs bg-white border rounded px-2 py-1">SpO2: {consult.vital_signs.oxygen_saturation}%</span>
+                                  )}
+                                  {consult.vital_signs.respiratory_rate && (
+                                    <span className="text-xs bg-white border rounded px-2 py-1">RR: {consult.vital_signs.respiratory_rate}/min</span>
+                                  )}
+                                  {consult.vital_signs.bmi && (
+                                    <span className="text-xs bg-white border rounded px-2 py-1">BMI: {consult.vital_signs.bmi}</span>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Prescriptions */}
+                            {consult.prescriptions && consult.prescriptions.length > 0 && (
+                              <div>
+                                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Prescriptions</p>
+                                {consult.prescriptions.map((rx, rxIdx) => (
+                                  <div key={rxIdx} className="bg-white border rounded-lg p-3 mb-2">
+                                    {rx.diagnosis && (
+                                      <p className="text-xs text-gray-600 mb-2">Diagnosis: <span className="font-medium">{rx.diagnosis}</span></p>
+                                    )}
+                                    <div className="space-y-1.5">
+                                      {rx.medicines?.map((m, mIdx) => (
+                                        <div key={mIdx} className="flex items-start gap-2 text-sm">
+                                          <span className="text-gray-400 mt-0.5 flex-shrink-0">{mIdx + 1}.</span>
+                                          <div className="flex-1">
+                                            <span className="font-medium text-gray-800">{m.name || m.medicine_name}</span>
+                                            <div className="text-xs text-gray-500 mt-0.5 flex flex-wrap gap-x-3">
+                                              {m.dosage && <span>Dosage: {m.dosage}</span>}
+                                              {m.frequency_schedule && <span>Schedule: {m.frequency_schedule}</span>}
+                                              {m.duration && <span>Duration: {m.duration}</span>}
+                                              {m.food_timing && <span>{m.food_timing.replace(/_/g, ' ')}</span>}
+                                              {m.quantity && <span>Qty: {m.quantity}</span>}
+                                            </div>
+                                            {m.instructions && <p className="text-xs text-gray-400 mt-0.5">{m.instructions}</p>}
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                    {rx.notes && (
+                                      <p className="text-xs text-gray-500 mt-2 pt-2 border-t">Notes: {rx.notes}</p>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+
+                            {/* Follow-up */}
+                            {consult.follow_up_date && (
+                              <p className="text-xs text-gray-500">
+                                Follow-up: {format(new Date(consult.follow_up_date), 'dd MMM yyyy')}
+                              </p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </CardContent>

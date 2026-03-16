@@ -35,7 +35,7 @@ def main():
             print(f"❌ Failed to install dependencies: {e}")
             sys.exit(1)
     
-    print("🌐 Starting Hospital ERP Frontend...")
+    print("🌐 Starting KT HEALTH ERP Frontend...")
     print("====================================")
     print(f"Working directory: {frontend_dir}")
     print("Starting React development server on http://localhost:3000")

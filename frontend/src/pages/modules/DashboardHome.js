@@ -44,7 +44,7 @@ const DashboardHome = () => {
       case 'billing_admin':
         return 'Billing Management';
       default:
-        return 'Hospital ERP Dashboard';
+        return 'KT HEALTH ERP Dashboard';
     }
   };
 

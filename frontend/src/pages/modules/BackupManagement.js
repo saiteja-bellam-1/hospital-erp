@@ -5,7 +5,7 @@ import { Input } from '../../components/ui/input';
 import { useToast } from '../../hooks/use-toast';
 import axios from 'axios';
 import {
-  FolderSync, Plus, X, Play, CheckCircle2, AlertCircle, Loader2
+  FolderSync, FolderOpen, Plus, X, Play, CheckCircle2, AlertCircle, Loader2
 } from 'lucide-react';
 
 const BackupManagement = () => {
@@ -13,8 +13,24 @@ const BackupManagement = () => {
   const [newPath, setNewPath] = useState('');
   const [loading, setLoading] = useState(true);
   const [backing, setBacking] = useState(false);
+  const [browsing, setBrowsing] = useState(false);
   const [backupResult, setBackupResult] = useState(null);
   const { toast } = useToast();
+
+  const browseFolder = async () => {
+    setBrowsing(true);
+    try {
+      const res = await fetch('/api/setup/browse-folder');
+      const data = await res.json();
+      if (data.path) {
+        setNewPath(data.path);
+      }
+    } catch {
+      toast({ variant: 'destructive', title: 'Browse unavailable', description: 'Could not open folder picker' });
+    } finally {
+      setBrowsing(false);
+    }
+  };
 
   useEffect(() => {
     fetchLocations();
@@ -115,9 +131,13 @@ const BackupManagement = () => {
             <Input
               value={newPath}
               onChange={(e) => setNewPath(e.target.value)}
-              placeholder="E:\Backups\HospitalERP or network path"
+              placeholder="E:\Backups\KTHEALTHERP or network path"
               onKeyDown={(e) => e.key === 'Enter' && addLocation()}
             />
+            <Button variant="outline" onClick={browseFolder} disabled={browsing}>
+              <FolderOpen className="w-4 h-4 mr-1" />
+              {browsing ? 'Opening...' : 'Browse'}
+            </Button>
             <Button onClick={addLocation} disabled={!newPath.trim()}>
               <Plus className="w-4 h-4 mr-1" /> Add
             </Button>

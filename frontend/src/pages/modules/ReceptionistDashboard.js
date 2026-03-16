@@ -53,6 +53,8 @@ const ReceptionistDashboard = () => {
   const [showBillPreviewDialog, setShowBillPreviewDialog] = useState(false);
   const [currentBill, setCurrentBill] = useState(null);
   const [billPdfUrl, setBillPdfUrl] = useState(null);
+  const [billIncludeHeader, setBillIncludeHeader] = useState(true);
+  const [currentBillAppointmentId, setCurrentBillAppointmentId] = useState(null);
 
   // Filter states
   const [filterGender, setFilterGender] = useState('all');
@@ -302,10 +304,12 @@ const ReceptionistDashboard = () => {
   };
 
   // Bill preview functions
-  const showBillPreview = async (appointmentId) => {
+  const showBillPreview = async (appointmentId, includeHeader = true) => {
     try {
       const token = localStorage.getItem('token');
-      
+      setCurrentBillAppointmentId(appointmentId);
+      setBillIncludeHeader(includeHeader);
+
       // Fetch bill data
       const billResponse = await fetch(`/api/appointments/${appointmentId}/bill`, {
         headers: { Authorization: `Bearer ${token}` }
@@ -316,7 +320,7 @@ const ReceptionistDashboard = () => {
         setCurrentBill(billData);
         
         // Fetch PDF for preview
-        const pdfResponse = await fetch(`/api/appointments/${appointmentId}/bill/download`, {
+        const pdfResponse = await fetch(`/api/appointments/${appointmentId}/bill/download?include_header=${includeHeader}`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         
@@ -395,10 +399,10 @@ const ReceptionistDashboard = () => {
     }
   };
 
-  const printPrescription = async (prescriptionId) => {
+  const printPrescription = async (prescriptionId, includeHeader = true) => {
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch(`/api/prescriptions-simple/${prescriptionId}/download`, {
+      const response = await fetch(`/api/prescriptions-simple/${prescriptionId}/download?include_header=${includeHeader}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
 
@@ -929,6 +933,9 @@ const ReceptionistDashboard = () => {
                     <SelectItem value="cash">Cash</SelectItem>
                     <SelectItem value="card">Card</SelectItem>
                     <SelectItem value="upi">UPI</SelectItem>
+                    <SelectItem value="online">Online</SelectItem>
+                    <SelectItem value="insurance">Insurance</SelectItem>
+                    <SelectItem value="cheque">Cheque</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -1041,15 +1048,16 @@ const ReceptionistDashboard = () => {
                             </p>
                           )}
                         </div>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => printPrescription(prescription.prescription_id)}
-                          className="flex items-center gap-2"
-                        >
-                          <Printer className="h-4 w-4" />
-                          Print
-                        </Button>
+                        <div className="flex gap-1">
+                          <Button size="sm" variant="outline" className="flex items-center gap-1"
+                            onClick={() => printPrescription(prescription.prescription_id, true)}>
+                            <Printer className="h-3.5 w-3.5" /> With Header
+                          </Button>
+                          <Button size="sm" variant="ghost"
+                            onClick={() => printPrescription(prescription.prescription_id, false)}>
+                            Without Header
+                          </Button>
+                        </div>
                       </div>
                       
                       {/* Medicines */}
@@ -1146,7 +1154,20 @@ const ReceptionistDashboard = () => {
             </div>
             
             {/* Action Buttons */}
-            <div className="flex gap-2 pt-4">
+            <div className="flex items-center gap-3 pt-4">
+              <div className="flex items-center space-x-2">
+                <input type="checkbox" id="bill-header-rcpt" checked={billIncludeHeader}
+                  onChange={async (e) => {
+                    const newVal = e.target.checked;
+                    setBillIncludeHeader(newVal);
+                    if (currentBillAppointmentId) {
+                      if (billPdfUrl) { window.URL.revokeObjectURL(billPdfUrl); setBillPdfUrl(null); }
+                      await showBillPreview(currentBillAppointmentId, newVal);
+                    }
+                  }}
+                  className="w-4 h-4" />
+                <Label htmlFor="bill-header-rcpt" className="text-sm">Include header</Label>
+              </div>
               <Button variant="outline" onClick={closeBillPreview} className="flex-1">
                 Close
               </Button>

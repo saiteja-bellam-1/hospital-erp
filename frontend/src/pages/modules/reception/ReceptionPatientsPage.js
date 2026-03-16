@@ -47,7 +47,7 @@ const ReceptionPatientsPage = () => {
 
   // Edit patient form
   const [editPatientForm, setEditPatientForm] = useState({
-    first_name: '', last_name: '', date_of_birth: '', gender: '',
+    first_name: '', last_name: '', date_of_birth: '', age: '', gender: '',
     blood_group: '', marital_status: '', abha_id: '', email: '',
     emergency_contact_name: '', emergency_contact_phone: '', emergency_contact_relation: '',
     address_line1: '', address_line2: '', village: '', mandal: '', district: ''
@@ -69,6 +69,7 @@ const ReceptionPatientsPage = () => {
     first_name: '',
     last_name: '',
     date_of_birth: '',
+    age: '',
     gender: '',
     blood_group: '',
     marital_status: '',
@@ -83,6 +84,7 @@ const ReceptionPatientsPage = () => {
     village: '',
     mandal: '',
     district: '',
+    referred_by: '',
   });
 
   // Load initial data
@@ -185,7 +187,12 @@ const ReceptionPatientsPage = () => {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify(patientForm)
+        body: JSON.stringify({
+          ...patientForm,
+          age: patientForm.age ? parseInt(patientForm.age) : null,
+          date_of_birth: patientForm.date_of_birth || null,
+          email: patientForm.email || null
+        })
       });
       if (response.ok) {
         const newPatient = await response.json();
@@ -196,6 +203,7 @@ const ReceptionPatientsPage = () => {
           first_name: '',
           last_name: '',
           date_of_birth: '',
+          age: '',
           gender: '',
           blood_group: '',
           marital_status: '',
@@ -250,10 +258,10 @@ const ReceptionPatientsPage = () => {
     }
   };
 
-  const printPrescription = async (prescriptionId) => {
+  const printPrescription = async (prescriptionId, includeHeader = true) => {
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch(`/api/prescriptions-simple/${prescriptionId}/download`, {
+      const response = await fetch(`/api/prescriptions-simple/${prescriptionId}/download?include_header=${includeHeader}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (response.ok) {
@@ -294,6 +302,7 @@ const ReceptionPatientsPage = () => {
       first_name: patient.first_name || '',
       last_name: patient.last_name || '',
       date_of_birth: patient.date_of_birth || '',
+      age: patient.age != null ? String(patient.age) : '',
       gender: patient.gender || '',
       blood_group: patient.blood_group || '',
       marital_status: patient.marital_status || '',
@@ -320,7 +329,7 @@ const ReceptionPatientsPage = () => {
       const updateData = {};
       Object.entries(editPatientForm).forEach(([key, value]) => {
         if (value !== '' && value !== null && value !== undefined) {
-          updateData[key] = value;
+          updateData[key] = key === 'age' ? parseInt(value) : value;
         }
       });
 
@@ -556,9 +565,9 @@ const ReceptionPatientsPage = () => {
                             </span>
                           </div>
                           <p className="text-sm text-gray-600 mt-1">ID: {patient.patient_id?.slice(0, 8)}...</p>
-                          {patient.date_of_birth && (
+                          {(patient.date_of_birth || patient.age) && (
                             <p className="text-sm text-gray-600">
-                              Age: {formatAge(patient.date_of_birth)} years
+                              Age: {patient.date_of_birth ? formatAge(patient.date_of_birth) : patient.age} years
                             </p>
                           )}
                         </div>
@@ -683,7 +692,30 @@ const ReceptionPatientsPage = () => {
                 id="date_of_birth"
                 type="date"
                 value={patientForm.date_of_birth}
-                onChange={(e) => setPatientForm({...patientForm, date_of_birth: e.target.value})}
+                onChange={(e) => {
+                  const dob = e.target.value;
+                  const updates = { date_of_birth: dob };
+                  if (dob) {
+                    const today = new Date();
+                    const birth = new Date(dob);
+                    let calcAge = today.getFullYear() - birth.getFullYear();
+                    if (today.getMonth() < birth.getMonth() || (today.getMonth() === birth.getMonth() && today.getDate() < birth.getDate())) calcAge--;
+                    updates.age = calcAge >= 0 ? String(calcAge) : '';
+                  }
+                  setPatientForm(prev => ({...prev, ...updates}));
+                }}
+              />
+            </div>
+            <div>
+              <Label htmlFor="age">Age (years)</Label>
+              <Input
+                id="age"
+                type="number"
+                min="0"
+                max="150"
+                placeholder="Enter age"
+                value={patientForm.age}
+                onChange={(e) => setPatientForm({...patientForm, age: e.target.value, date_of_birth: ''})}
               />
             </div>
             <div>
@@ -744,6 +776,15 @@ const ReceptionPatientsPage = () => {
                 value={patientForm.primary_phone}
                 onChange={(e) => setPatientForm({...patientForm, primary_phone: e.target.value})}
                 required
+              />
+            </div>
+            <div>
+              <Label htmlFor="referred_by">Referred By</Label>
+              <Input
+                id="referred_by"
+                value={patientForm.referred_by}
+                onChange={(e) => setPatientForm({...patientForm, referred_by: e.target.value})}
+                placeholder="Referring doctor / person name"
               />
             </div>
 
@@ -840,7 +881,29 @@ const ReceptionPatientsPage = () => {
               <Input
                 type="date"
                 value={editPatientForm.date_of_birth}
-                onChange={(e) => setEditPatientForm({...editPatientForm, date_of_birth: e.target.value})}
+                onChange={(e) => {
+                  const dob = e.target.value;
+                  const updates = { date_of_birth: dob };
+                  if (dob) {
+                    const today = new Date();
+                    const birth = new Date(dob);
+                    let calcAge = today.getFullYear() - birth.getFullYear();
+                    if (today.getMonth() < birth.getMonth() || (today.getMonth() === birth.getMonth() && today.getDate() < birth.getDate())) calcAge--;
+                    updates.age = calcAge >= 0 ? String(calcAge) : '';
+                  }
+                  setEditPatientForm(prev => ({...prev, ...updates}));
+                }}
+              />
+            </div>
+            <div>
+              <Label>Age (years)</Label>
+              <Input
+                type="number"
+                min="0"
+                max="150"
+                placeholder="Enter age"
+                value={editPatientForm.age}
+                onChange={(e) => setEditPatientForm({...editPatientForm, age: e.target.value, date_of_birth: ''})}
               />
             </div>
             <div>
@@ -896,6 +959,10 @@ const ReceptionPatientsPage = () => {
             <div>
               <Label>Email</Label>
               <Input type="email" value={editPatientForm.email} onChange={(e) => setEditPatientForm({...editPatientForm, email: e.target.value})} placeholder="patient@email.com" />
+            </div>
+            <div>
+              <Label>Referred By</Label>
+              <Input value={editPatientForm.referred_by || ''} onChange={(e) => setEditPatientForm({...editPatientForm, referred_by: e.target.value})} placeholder="Referring doctor / person name" />
             </div>
 
             {/* Emergency Contact Section */}
@@ -1074,13 +1141,16 @@ const ReceptionPatientsPage = () => {
                             )}
                           </div>
                         </div>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => printPrescription(prescription.prescription_id)}
-                        >
-                          Print
-                        </Button>
+                        <div className="flex gap-1">
+                          <Button size="sm" variant="outline"
+                            onClick={() => printPrescription(prescription.prescription_id, true)}>
+                            With Header
+                          </Button>
+                          <Button size="sm" variant="ghost"
+                            onClick={() => printPrescription(prescription.prescription_id, false)}>
+                            Without Header
+                          </Button>
+                        </div>
                       </div>
                     </CardHeader>
                     <CardContent>

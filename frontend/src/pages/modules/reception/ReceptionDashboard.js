@@ -25,7 +25,8 @@ import {
   RefreshCw,
   Eye,
   Download,
-  ArrowRight
+  ArrowRight,
+  Package
 } from 'lucide-react';
 
 const ReceptionDashboard = () => {
@@ -59,6 +60,7 @@ const ReceptionDashboard = () => {
   const [showPrescriptionDialog, setShowPrescriptionDialog] = useState(false);
   const [prescriptionPdfUrl, setPrescriptionPdfUrl] = useState(null);
   const [prescriptionData, setPrescriptionData] = useState(null);
+  const [rxIncludeHeader, setRxIncludeHeader] = useState(true);
 
   useEffect(() => {
     fetchDashboardData();
@@ -184,7 +186,10 @@ const ReceptionDashboard = () => {
   const [pendingLabOrders, setPendingLabOrders] = useState([]);
   const [labPaymentLoading, setLabPaymentLoading] = useState(false);
   const [labPaymentMethod, setLabPaymentMethod] = useState('cash');
+  const [labDiscount, setLabDiscount] = useState(0);
+  const [labBillHeader, setLabBillHeader] = useState(true);
   const [allLabOrdersForPatient, setAllLabOrdersForPatient] = useState([]);
+
 
   const openLabPaymentDialog = async (patientId) => {
     setLabPaymentLoading(true);
@@ -219,7 +224,7 @@ const ReceptionDashboard = () => {
       const res = await fetch(`/api/lab/orders/patient/${patientId}/bill`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ payment_method: labPaymentMethod })
+        body: JSON.stringify({ payment_method: labPaymentMethod, discount_amount: labDiscount, include_header: labBillHeader })
       });
       if (res.ok) {
         const blob = await res.blob();
@@ -232,6 +237,7 @@ const ReceptionDashboard = () => {
         document.body.removeChild(a);
         window.URL.revokeObjectURL(url);
         setPendingLabOrders([]);
+        setLabDiscount(0);
         toast({ title: 'Success', description: 'Lab bill generated and payment collected' });
         fetchDashboardData();
       } else {
@@ -245,10 +251,10 @@ const ReceptionDashboard = () => {
     }
   };
 
-  const downloadLabReport = async (reportId, orderNumber) => {
+  const downloadLabReport = async (reportId, orderNumber, includeHeader = true) => {
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch(`/api/lab/reports/${reportId}/download`, {
+      const res = await fetch(`/api/lab/reports/${reportId}/download?include_header=${includeHeader}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (res.ok) {
@@ -270,15 +276,15 @@ const ReceptionDashboard = () => {
   };
 
   // Prescription preview
-  const showPrescriptionPreview = async (prescription) => {
+  const fetchRxPdf = async (prescriptionId, includeHeader) => {
     try {
       const token = localStorage.getItem('token');
-      setPrescriptionData(prescription);
-      const pdfResponse = await fetch(`/api/prescriptions-simple/${prescription.prescription_id}/download?include_header=true`, {
+      const pdfResponse = await fetch(`/api/prescriptions-simple/${prescriptionId}/download?include_header=${includeHeader}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (pdfResponse.ok) {
         const blob = await pdfResponse.blob();
+        if (prescriptionPdfUrl) window.URL.revokeObjectURL(prescriptionPdfUrl);
         setPrescriptionPdfUrl(window.URL.createObjectURL(blob));
         setShowPrescriptionDialog(true);
       } else {
@@ -288,6 +294,11 @@ const ReceptionDashboard = () => {
       console.error('Error fetching prescription:', error);
       toast({ title: 'Error', description: 'Error loading prescription', variant: 'destructive' });
     }
+  };
+
+  const showPrescriptionPreview = async (prescription) => {
+    setPrescriptionData(prescription);
+    await fetchRxPdf(prescription.prescription_id, rxIncludeHeader);
   };
 
   const printPrescription = () => {
@@ -537,11 +548,18 @@ const ReceptionDashboard = () => {
                 <span>Today's Lab Orders</span>
                 <Badge variant="outline" className="ml-2">{labOrders.length}</Badge>
               </CardTitle>
-              <Link to="/dashboard/reception/appointments">
-                <Button variant="ghost" size="sm" className="text-xs text-gray-500">
-                  View All <ArrowRight className="h-3 w-3 ml-1" />
-                </Button>
-              </Link>
+              <div className="flex gap-2">
+                <Link to="/dashboard/reception/packages">
+                  <Button size="sm" variant="outline" className="text-xs">
+                    <Package className="h-3.5 w-3.5 mr-1" /> Book Package
+                  </Button>
+                </Link>
+                <Link to="/dashboard/reception/appointments">
+                  <Button variant="ghost" size="sm" className="text-xs text-gray-500">
+                    View All <ArrowRight className="h-3 w-3 ml-1" />
+                  </Button>
+                </Link>
+              </div>
             </div>
           </CardHeader>
           <CardContent>
@@ -552,37 +570,111 @@ const ReceptionDashboard = () => {
               </div>
             ) : (
               <div className="space-y-3 max-h-[400px] overflow-y-auto">
-                {labOrders.map((order) => (
-                  <div key={order.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center space-x-2">
-                        <p className="font-medium text-gray-900 truncate">{order.patient_name}</p>
-                        <Badge className={`text-xs ${getLabStatusColor(order.status)}`}>
-                          {order.status}
-                        </Badge>
-                        <Badge className={`text-xs ${order.payment_status === 'paid' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
-                          {order.payment_status === 'paid' ? 'Paid' : 'Unpaid'}
-                        </Badge>
+                {(() => {
+                  const groups = [];
+                  const pkgMap = {};
+                  for (const order of labOrders) {
+                    if (order.package_booking_id) {
+                      if (!pkgMap[order.package_booking_id]) {
+                        pkgMap[order.package_booking_id] = { name: order.package_name || 'Package', orders: [] };
+                        groups.push({ type: 'package', key: order.package_booking_id, data: pkgMap[order.package_booking_id] });
+                      }
+                      pkgMap[order.package_booking_id].orders.push(order);
+                    } else {
+                      groups.push({ type: 'single', key: order.id, data: order });
+                    }
+                  }
+                  return groups.map(g => {
+                    if (g.type === 'package') {
+                      const pkg = g.data;
+                      const first = pkg.orders[0];
+                      return (
+                        <div key={g.key} className="border-2 border-indigo-200 bg-indigo-50/30 rounded-lg p-3">
+                          <div className="flex items-center gap-2 mb-2 pb-2 border-b border-indigo-200">
+                            <Package className="h-4 w-4 text-indigo-600" />
+                            <span className="font-semibold text-indigo-700 text-sm">{pkg.name}</span>
+                            <Badge className="bg-indigo-100 text-indigo-700 text-xs">{pkg.orders.length} tests</Badge>
+                            <span className="text-xs text-gray-500 ml-auto">{first.patient_name} • {first.doctor_name}</span>
+                          </div>
+                          <div className="space-y-1.5">
+                            {pkg.orders.map(order => (
+                              <div key={order.id} className="flex items-center justify-between bg-white rounded p-2 border border-indigo-100">
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-sm font-medium truncate">{order.test_name}</span>
+                                    <Badge className={`text-xs ${getLabStatusColor(order.status)}`}>{order.status}</Badge>
+                                    <Badge className={`text-xs ${order.payment_status === 'paid' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+                                      {order.payment_status === 'paid' ? 'Paid' : 'Unpaid'}
+                                    </Badge>
+                                  </div>
+                                  <p className="text-xs text-gray-400">#{order.order_number}</p>
+                                </div>
+                                <div className="flex items-center gap-1 ml-2">
+                                  {order.has_report && (
+                                    <>
+                                      <Button size="sm" variant="outline" className="h-6 px-2 text-xs"
+                                        onClick={() => downloadLabReport(order.report_id, order.order_number, true)}>
+                                        <Download className="h-3 w-3 mr-1" />With Header
+                                      </Button>
+                                      <Button size="sm" variant="ghost" className="h-6 px-2 text-xs"
+                                        onClick={() => downloadLabReport(order.report_id, order.order_number, false)}>
+                                        Without Header
+                                      </Button>
+                                    </>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                          {pkg.orders.some(o => o.payment_status !== 'paid') && (
+                            <div className="mt-2 pt-2 border-t border-indigo-200">
+                              <Button size="sm" className="h-7 px-3 text-xs"
+                                onClick={() => openLabPaymentDialog(first.patient_id)}>
+                                Collect Payment
+                              </Button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    }
+                    const order = g.data;
+                    return (
+                      <div key={order.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center space-x-2">
+                            <p className="font-medium text-gray-900 truncate">{order.patient_name}</p>
+                            <Badge className={`text-xs ${getLabStatusColor(order.status)}`}>{order.status}</Badge>
+                            <Badge className={`text-xs ${order.payment_status === 'paid' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+                              {order.payment_status === 'paid' ? 'Paid' : 'Unpaid'}
+                            </Badge>
+                          </div>
+                          <p className="text-sm text-gray-600 truncate">{order.test_name} — ₹{(order.amount || 0).toFixed(0)}</p>
+                          <p className="text-xs text-gray-400">#{order.order_number} • {order.doctor_name}</p>
+                        </div>
+                        <div className="flex items-center gap-1 ml-2">
+                          {order.payment_status !== 'paid' && (
+                            <Button size="sm" className="h-7 px-2 text-xs"
+                              onClick={() => openLabPaymentDialog(order.patient_id)}>
+                              Collect Payment
+                            </Button>
+                          )}
+                          {order.has_report && (
+                            <>
+                              <Button size="sm" variant="outline" className="h-7 px-2 text-xs"
+                                onClick={() => downloadLabReport(order.report_id, order.order_number, true)}>
+                                <Download className="h-3 w-3 mr-1" />With Header
+                              </Button>
+                              <Button size="sm" variant="ghost" className="h-7 px-2 text-xs"
+                                onClick={() => downloadLabReport(order.report_id, order.order_number, false)}>
+                                Without Header
+                              </Button>
+                            </>
+                          )}
+                        </div>
                       </div>
-                      <p className="text-sm text-gray-600 truncate">{order.test_name} — ₹{(order.amount || 0).toFixed(0)}</p>
-                      <p className="text-xs text-gray-400">#{order.order_number} • {order.doctor_name}</p>
-                    </div>
-                    <div className="flex items-center gap-1 ml-2">
-                      {order.payment_status !== 'paid' && (
-                        <Button size="sm" className="h-7 px-2 text-xs"
-                          onClick={() => openLabPaymentDialog(order.patient_id)}>
-                          Collect Payment
-                        </Button>
-                      )}
-                      {order.has_report && (
-                        <Button size="sm" variant="outline" className="h-7 px-2 text-xs"
-                          onClick={() => downloadLabReport(order.report_id, order.order_number)}>
-                          <Download className="h-3 w-3 mr-1" />Report
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-                ))}
+                    );
+                  });
+                })()}
               </div>
             )}
           </CardContent>
@@ -676,6 +768,32 @@ const ReceptionDashboard = () => {
                         </div>
                       ))}
                     </div>
+                    <div className="bg-gray-50 rounded-lg p-3 space-y-2">
+                      <div className="flex items-center justify-between text-sm">
+                        <span>Subtotal</span>
+                        <span>₹{pendingLabOrders.reduce((sum, o) => sum + (o.amount || 0), 0).toFixed(2)}</span>
+                      </div>
+                      <div className="flex items-center justify-between text-sm">
+                        <span>Discount</span>
+                        <div className="flex items-center gap-1">
+                          <span className="text-gray-400">₹</span>
+                          <Input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={labDiscount || ''}
+                            onChange={(e) => setLabDiscount(parseFloat(e.target.value) || 0)}
+                            placeholder="0"
+                            className="w-24 h-7 text-right text-sm"
+                          />
+                        </div>
+                      </div>
+                      <hr />
+                      <div className="flex items-center justify-between font-semibold">
+                        <span>Total</span>
+                        <span>₹{(pendingLabOrders.reduce((sum, o) => sum + (o.amount || 0), 0) - labDiscount).toFixed(2)}</span>
+                      </div>
+                    </div>
                     <div className="flex items-center gap-3">
                       <div className="flex-1">
                         <Label className="text-xs">Payment Method</Label>
@@ -686,15 +804,22 @@ const ReceptionDashboard = () => {
                           <SelectContent>
                             <SelectItem value="cash">Cash</SelectItem>
                             <SelectItem value="card">Card</SelectItem>
+                            <SelectItem value="upi">UPI</SelectItem>
                             <SelectItem value="online">Online</SelectItem>
                             <SelectItem value="insurance">Insurance</SelectItem>
+                            <SelectItem value="cheque">Cheque</SelectItem>
                           </SelectContent>
                         </Select>
                       </div>
-                      <Button className="mt-4" onClick={collectAllLabPayments} disabled={labPaymentLoading}>
-                        {labPaymentLoading ? 'Generating Bill...' : `Pay & Download Bill (₹${pendingLabOrders.reduce((sum, o) => sum + (o.amount || 0), 0).toFixed(2)})`}
-                      </Button>
+                      <div className="flex items-center space-x-2 mt-4">
+                        <input type="checkbox" id="lab-bill-header" checked={labBillHeader}
+                          onChange={(e) => setLabBillHeader(e.target.checked)} className="w-4 h-4" />
+                        <Label htmlFor="lab-bill-header" className="text-xs">Include header</Label>
+                      </div>
                     </div>
+                    <Button className="w-full" onClick={collectAllLabPayments} disabled={labPaymentLoading}>
+                      {labPaymentLoading ? 'Generating Bill...' : `Pay & Download Bill (₹${(pendingLabOrders.reduce((sum, o) => sum + (o.amount || 0), 0) - labDiscount).toFixed(2)})`}
+                    </Button>
                   </>
                 )}
 
@@ -709,9 +834,14 @@ const ReceptionDashboard = () => {
                             <p className="font-medium text-sm">{order.test_name}</p>
                             <p className="text-xs text-gray-500">{order.order_number} | {order.test_code}</p>
                           </div>
-                          <Button size="sm" variant="outline" className="h-7 px-3 text-xs" onClick={() => downloadLabReport(order.report_id, order.order_number)}>
-                            <Download className="h-3 w-3 mr-1" />Download Report
-                          </Button>
+                          <div className="flex gap-1">
+                            <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => downloadLabReport(order.report_id, order.order_number, true)}>
+                              <Download className="h-3 w-3 mr-1" />With Header
+                            </Button>
+                            <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => downloadLabReport(order.report_id, order.order_number, false)}>
+                              Without Header
+                            </Button>
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -758,11 +888,28 @@ const ReceptionDashboard = () => {
                 <iframe src={prescriptionPdfUrl} className="w-full h-full border-0" title="Prescription Preview" />
               )}
             </div>
-            <div className="flex gap-2 pt-4">
-              <Button variant="outline" onClick={closePrescriptionDialog} className="flex-1">Close</Button>
-              <Button onClick={printPrescription} className="flex-1 bg-purple-600 hover:bg-purple-700">
-                <Printer className="h-4 w-4 mr-2" />Print Prescription
-              </Button>
+            <div className="flex items-center justify-between pt-4">
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={rxIncludeHeader}
+                  onChange={async (e) => {
+                    const val = e.target.checked;
+                    setRxIncludeHeader(val);
+                    if (prescriptionData) {
+                      await fetchRxPdf(prescriptionData.prescription_id, val);
+                    }
+                  }}
+                  className="rounded border-gray-300"
+                />
+                <span className="text-sm text-gray-600">Include hospital letterhead</span>
+              </label>
+              <div className="flex gap-2">
+                <Button variant="outline" onClick={closePrescriptionDialog}>Close</Button>
+                <Button onClick={printPrescription} className="bg-purple-600 hover:bg-purple-700">
+                  <Printer className="h-4 w-4 mr-2" />Print
+                </Button>
+              </div>
             </div>
           </div>
         </DialogContent>
@@ -897,6 +1044,7 @@ const ReceptionDashboard = () => {
           </div>
         </DialogContent>
       </Dialog>
+
     </div>
   );
 };

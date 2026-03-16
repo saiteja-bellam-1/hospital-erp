@@ -43,7 +43,7 @@ def create_super_admin(db: Session):
         admin_user = User(
             user_id=str(uuid.uuid4()),
             username="superadmin",
-            email="admin@hospital-erp.local",
+            email="admin@kthealth-erp.local",
             password_hash=get_password_hash("admin123"),
             first_name="Super",
             last_name="Admin",

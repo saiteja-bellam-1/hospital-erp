@@ -1,15 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, useLocation, Link } from 'react-router-dom';
-import { Button } from '../components/ui/button';
-import { Avatar, AvatarFallback } from '../components/ui/avatar';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '../components/ui/dropdown-menu';
 import {
   Menu,
   Home,
@@ -22,7 +12,6 @@ import {
   Bed,
   Settings,
   LogOut,
-  User,
   Building2,
   Calendar,
   TrendingUp,
@@ -30,13 +19,15 @@ import {
   Database,
   X,
   ChevronRight,
-  Bell,
+  BookOpen,
+  Package,
 } from 'lucide-react';
 import axios from 'axios';
 
 import { useAuth } from '../contexts/AuthContext';
 import hospitalLogo from '../assets/Final Logo KT (1).jpg';
 import DashboardHome from './modules/DashboardHome';
+import HospitalAdminDashboard from './modules/HospitalAdminDashboard';
 import PatientsModule from './modules/PatientsModule';
 import LabModule from './modules/LabModule';
 import PharmacyModule from './modules/PharmacyModule';
@@ -53,6 +44,7 @@ import ReceptionPatientsPage from './modules/reception/ReceptionPatientsPage';
 import ReceptionAppointmentsPage from './modules/reception/ReceptionAppointmentsPage';
 import DoctorAvailabilityPage from './modules/reception/DoctorAvailabilityPage';
 import ReceptionReportsPage from './modules/reception/ReceptionReportsPage';
+import ReceptionPackagesPage from './modules/reception/ReceptionPackagesPage';
 import NurseDashboard from './modules/NurseDashboard';
 import AvailabilityModule from './modules/AvailabilityModule';
 import LabTechDashboard from './modules/LabTechDashboard';
@@ -106,42 +98,10 @@ const Dashboard = () => {
       doctor: 'Doctor',
       receptionist: 'Receptionist',
       lab_technician: 'Lab Technician',
+      lab_admin: 'Lab Admin',
       nurse: 'Nurse',
     };
     return labels[user.role] || 'Staff';
-  };
-
-  const getPageTitle = () => {
-    const path = location.pathname;
-    if (path === '/dashboard') {
-      const titles = {
-        doctor: 'Doctor Portal',
-        receptionist: 'Reception Desk',
-        lab_technician: 'Lab Dashboard',
-        nurse: 'Nurse Station',
-      };
-      return titles[user.role] || 'Dashboard';
-    }
-    const routeTitles = {
-      '/dashboard/reception/patients': 'Patients',
-      '/dashboard/reception/appointments': 'Appointments',
-      '/dashboard/reception/doctor-availability': 'Doctor Schedule',
-      '/dashboard/reception/reports': 'Reports',
-      '/dashboard/patients': 'Patients',
-      '/dashboard/lab': 'Laboratory',
-      '/dashboard/pharmacy': 'Pharmacy',
-      '/dashboard/billing': 'Billing',
-      '/dashboard/ehr': 'Health Records',
-      '/dashboard/availability': 'Availability',
-      '/dashboard/outpatient': 'Outpatient',
-      '/dashboard/inpatient': 'Inpatient',
-      '/dashboard/admin': 'Administration',
-      '/dashboard/hospital-admin': 'Hospital Config',
-      '/dashboard/license': 'License',
-      '/dashboard/backup': 'Backup',
-      '/dashboard/consultation': 'Consultation',
-    };
-    return routeTitles[path] || 'Dashboard';
   };
 
   // Build navigation with sections
@@ -154,6 +114,7 @@ const Dashboard = () => {
             { text: 'Reception Desk', icon: <Home className="h-[18px] w-[18px]" />, path: '/dashboard' },
             { text: 'Patients', icon: <Users className="h-[18px] w-[18px]" />, path: '/dashboard/reception/patients' },
             { text: 'Appointments', icon: <Calendar className="h-[18px] w-[18px]" />, path: '/dashboard/reception/appointments' },
+            { text: 'Lab Packages', icon: <Package className="h-[18px] w-[18px]" />, path: '/dashboard/reception/packages' },
           ]
         },
         {
@@ -176,6 +137,16 @@ const Dashboard = () => {
       }];
     }
 
+    if (user.role === 'lab_admin') {
+      return [{
+        label: 'Main',
+        items: [
+          { text: 'Lab Dashboard', icon: <Home className="h-[18px] w-[18px]" />, path: '/dashboard' },
+          { text: 'Lab Configuration', icon: <Settings className="h-[18px] w-[18px]" />, path: '/dashboard/lab' },
+        ]
+      }];
+    }
+
     if (user.role === 'nurse') {
       return [{
         label: 'Main',
@@ -189,7 +160,7 @@ const Dashboard = () => {
     const mainItems = [
       { text: 'Dashboard', icon: <Home className="h-[18px] w-[18px]" />, path: '/dashboard' },
     ];
-    if (user.role !== 'doctor') {
+    if (user.role !== 'doctor' && user.role !== 'hospital_admin') {
       mainItems.push({ text: 'Patients', icon: <Users className="h-[18px] w-[18px]" />, path: '/dashboard/patients' });
     }
 
@@ -330,6 +301,46 @@ const Dashboard = () => {
           ))}
         </nav>
 
+        {/* Help link */}
+        <div className="px-3 pb-1">
+          <Link
+            to="/help/docs"
+            className="flex items-center gap-3 px-3 py-2 rounded-lg text-[13px] font-medium transition-all duration-150"
+            style={{ color: 'hsl(var(--sidebar-fg))' }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = 'hsl(var(--sidebar-hover))';
+              e.currentTarget.style.color = '#fff';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = 'transparent';
+              e.currentTarget.style.color = 'hsl(var(--sidebar-fg))';
+            }}
+          >
+            <BookOpen className="h-[18px] w-[18px] opacity-80" />
+            <span>Help & Docs</span>
+          </Link>
+        </div>
+
+        {/* Logout button */}
+        <div className="px-3 pb-1">
+          <button
+            onClick={logout}
+            className="flex items-center gap-3 px-3 py-2 rounded-lg text-[13px] font-medium transition-all duration-150 w-full"
+            style={{ color: 'hsl(var(--sidebar-fg))' }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = 'hsla(0, 70%, 50%, 0.25)';
+              e.currentTarget.style.color = '#fca5a5';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = 'transparent';
+              e.currentTarget.style.color = 'hsl(var(--sidebar-fg))';
+            }}
+          >
+            <LogOut className="h-[18px] w-[18px] opacity-80" />
+            <span>Log out</span>
+          </button>
+        </div>
+
         {/* User info at bottom of sidebar */}
         <div className="flex-shrink-0 p-3" style={{ borderTop: '1px solid hsl(var(--sidebar-border))' }}>
           <div className="flex items-center gap-3 px-2 py-2 rounded-lg"
@@ -361,74 +372,15 @@ const Dashboard = () => {
         {/* License Banner */}
         <LicenseBanner licenseStatus={licenseStatus} />
 
-        {/* Top header */}
-        <header className="flex items-center justify-between h-14 px-4 lg:px-6 flex-shrink-0 bg-white border-b border-border">
-          <div className="flex items-center gap-3">
-            <button
-              className="lg:hidden p-2 -ml-2 rounded-lg hover:bg-gray-100 transition-colors"
-              onClick={() => setSidebarOpen(true)}
-            >
-              <Menu className="h-5 w-5 text-gray-600" />
-            </button>
-            <div>
-              <h1 className="text-lg font-semibold text-gray-900 leading-tight">
-                {getPageTitle()}
-              </h1>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            {/* Notification bell placeholder */}
-            <button className="p-2 rounded-lg hover:bg-gray-100 transition-colors relative">
-              <Bell className="h-5 w-5 text-gray-500" />
-            </button>
-
-            {/* User dropdown */}
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button className="flex items-center gap-2 p-1.5 pr-3 rounded-lg hover:bg-gray-100 transition-colors">
-                  <Avatar className="h-8 w-8 border-2 border-gray-200">
-                    <AvatarFallback
-                      className="text-xs font-semibold"
-                      style={{
-                        background: 'hsl(var(--primary))',
-                        color: '#fff',
-                      }}
-                    >
-                      {userInitials}
-                    </AvatarFallback>
-                  </Avatar>
-                  <span className="hidden sm:block text-sm font-medium text-gray-700">
-                    {user.full_name?.split(' ')[0]}
-                  </span>
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent className="w-56" align="end" forceMount>
-                <DropdownMenuLabel className="font-normal">
-                  <div className="flex flex-col space-y-1">
-                    <p className="text-sm font-semibold leading-none">{user.full_name}</p>
-                    <p className="text-xs leading-none text-muted-foreground">{user.email}</p>
-                    <p className="text-[11px] leading-none font-medium mt-1"
-                      style={{ color: 'hsl(var(--primary))' }}
-                    >
-                      {getRoleLabel()}
-                    </p>
-                  </div>
-                </DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem>
-                  <User className="mr-2 h-4 w-4" />
-                  <span>Profile</span>
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={logout} className="text-red-600 focus:text-red-600">
-                  <LogOut className="mr-2 h-4 w-4" />
-                  <span>Log out</span>
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        </header>
+        {/* Mobile menu button */}
+        <div className="lg:hidden flex items-center h-12 px-4 flex-shrink-0 bg-white border-b border-border">
+          <button
+            className="p-2 -ml-2 rounded-lg hover:bg-gray-100 transition-colors"
+            onClick={() => setSidebarOpen(true)}
+          >
+            <Menu className="h-5 w-5 text-gray-600" />
+          </button>
+        </div>
 
         {/* Page content */}
         <main className="flex-1 overflow-y-auto p-4 lg:p-6">
@@ -439,7 +391,9 @@ const Dashboard = () => {
                 user.role === 'doctor' ? <DoctorDashboard /> :
                 user.role === 'receptionist' ? <ReceptionDashboard /> :
                 user.role === 'lab_technician' ? <LabTechDashboard /> :
+                user.role === 'lab_admin' ? <LabTechDashboard /> :
                 user.role === 'nurse' ? <NurseDashboard /> :
+                user.role === 'hospital_admin' ? <HospitalAdminDashboard /> :
                 <DashboardHome />
               }
             />
@@ -447,6 +401,7 @@ const Dashboard = () => {
             <Route path="/reception/appointments" element={<ReceptionAppointmentsPage />} />
             <Route path="/reception/doctor-availability" element={<DoctorAvailabilityPage />} />
             <Route path="/reception/reports" element={<ReceptionReportsPage />} />
+            <Route path="/reception/packages" element={<ReceptionPackagesPage />} />
             <Route path="/patients/*" element={<PatientsModule />} />
             <Route path="/lab/*" element={<LabModule />} />
             <Route path="/pharmacy/*" element={<PharmacyModule />} />
@@ -462,6 +417,11 @@ const Dashboard = () => {
             <Route path="/backup" element={<BackupManagement />} />
           </Routes>
         </main>
+
+        {/* Footer — pinned to bottom of content area */}
+        <footer className="flex-shrink-0 py-2 text-center text-xs text-gray-400 bg-white border-t border-gray-100">
+          Powered by <span className="font-medium text-gray-500">KT HEALTH ERP</span> &mdash; Developed by KT Health Soft
+        </footer>
       </div>
 
       {/* Mobile overlay */}

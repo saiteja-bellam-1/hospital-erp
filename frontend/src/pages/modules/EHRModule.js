@@ -102,9 +102,9 @@ const EHRModule = () => {
     try { return format(new Date(dateStr), 'dd MMM yyyy, hh:mm a'); } catch { return dateStr; }
   };
 
-  const downloadPrescription = async (prescriptionId) => {
+  const downloadPrescription = async (prescriptionId, includeHeader = true) => {
     try {
-      const res = await fetch(`/api/prescriptions-simple/${prescriptionId}/download`, { headers });
+      const res = await fetch(`/api/prescriptions-simple/${prescriptionId}/download?include_header=${includeHeader}`, { headers });
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -117,9 +117,9 @@ const EHRModule = () => {
     }
   };
 
-  const downloadLabReport = async (reportId, orderNumber) => {
+  const downloadLabReport = async (reportId, orderNumber, includeHeader = true) => {
     try {
-      const res = await fetch(`/api/lab/reports/${reportId}/download`, { headers });
+      const res = await fetch(`/api/lab/reports/${reportId}/download?include_header=${includeHeader}`, { headers });
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -287,8 +287,11 @@ const EHRModule = () => {
             </p>
           </div>
           <div className="flex items-center gap-1">
-            <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={(e) => { e.stopPropagation(); downloadPrescription(rx.prescription_id); }}>
+            <Button size="sm" variant="ghost" className="h-7 w-7 p-0" title="With header" onClick={(e) => { e.stopPropagation(); downloadPrescription(rx.prescription_id, true); }}>
               <Printer className="h-3.5 w-3.5" />
+            </Button>
+            <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-gray-400" title="Without header" onClick={(e) => { e.stopPropagation(); downloadPrescription(rx.prescription_id, false); }}>
+              <FileText className="h-3.5 w-3.5" />
             </Button>
             {isExpanded ? <ChevronUp className="h-4 w-4 text-gray-400" /> : <ChevronDown className="h-4 w-4 text-gray-400" />}
           </div>
@@ -342,9 +345,14 @@ const EHRModule = () => {
           </div>
           <div className="flex items-center gap-1">
             {lo.report && (
-              <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={(e) => { e.stopPropagation(); downloadLabReport(lo.report.id, lo.order_number); }}>
-                <Printer className="h-3.5 w-3.5" />
-              </Button>
+              <>
+                <Button size="sm" variant="ghost" className="h-7 w-7 p-0" title="With header" onClick={(e) => { e.stopPropagation(); downloadLabReport(lo.report.id, lo.order_number, true); }}>
+                  <Printer className="h-3.5 w-3.5" />
+                </Button>
+                <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-gray-400" title="Without header" onClick={(e) => { e.stopPropagation(); downloadLabReport(lo.report.id, lo.order_number, false); }}>
+                  <FileText className="h-3.5 w-3.5" />
+                </Button>
+              </>
             )}
             {isExpanded ? <ChevronUp className="h-4 w-4 text-gray-400" /> : <ChevronDown className="h-4 w-4 text-gray-400" />}
           </div>

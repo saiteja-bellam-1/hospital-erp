@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Complete installation and setup script for Hospital ERP
+Complete installation and setup script for KT HEALTH ERP
 Handles virtual environment creation, dependency installation, and database setup
 """
 
@@ -26,7 +26,7 @@ def run_command(command, cwd=None, check=True):
         return e
 
 def main():
-    print("🏥 Hospital ERP Installation Script")
+    print("🏥 KT HEALTH ERP Installation Script")
     print("=" * 50)
     
     # Get current directory
@@ -146,7 +146,7 @@ def create_super_admin(db: Session):
         admin_user = User(
             user_id=str(uuid.uuid4()),
             username="superadmin",
-            email="admin@hospital-erp.local",
+            email="admin@kthealth-erp.local",
             password_hash=get_password_hash("admin123"),
             first_name="Super",
             last_name="Admin",
@@ -251,7 +251,7 @@ if __name__ == "__main__":
     
     # Final instructions
     print("\n" + "=" * 60)
-    print("🎉 Hospital ERP Setup Complete!")
+    print("🎉 KT HEALTH ERP Setup Complete!")
     print("=" * 60)
     print("Default Login Credentials:")
     print("-" * 30)

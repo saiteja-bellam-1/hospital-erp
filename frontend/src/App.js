@@ -6,6 +6,7 @@ import { useAuth } from './contexts/AuthContext';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import SetupWizard from './pages/SetupWizard';
+import HelpDocs from './pages/HelpDocs';
 import ProtectedRoute from './components/ProtectedRoute';
 
 function App() {
@@ -53,6 +54,15 @@ function App() {
           element={
             <ProtectedRoute>
               <Dashboard />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/help/docs"
+          element={
+            <ProtectedRoute>
+              <HelpDocs />
             </ProtectedRoute>
           }
         />

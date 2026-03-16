@@ -12,7 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../componen
 import {
   Calendar, Clock, User, FileText, TestTube, Pill, CheckCircle, XCircle,
   Activity, Info, Printer, RefreshCw, Eye, Hash,
-  History, Stethoscope, AlertCircle
+  History, Stethoscope, AlertCircle, ChevronRight, ChevronDown
 } from 'lucide-react';
 import { format } from 'date-fns';
 import VitalsForm from '../../components/vitals/VitalsForm';
@@ -105,6 +105,8 @@ const DoctorDashboard = () => {
   const [labReports, setLabReports] = useState([]);
   const [showLabReportDialog, setShowLabReportDialog] = useState(false);
   const [viewingLabReport, setViewingLabReport] = useState(null);
+  const [expandedRxGroups, setExpandedRxGroups] = useState({});
+  const [expandedLabGroups, setExpandedLabGroups] = useState({});
 
   // --- Time formatting helper ---
   const formatTime = (timeStr) => {
@@ -307,7 +309,7 @@ const DoctorDashboard = () => {
   };
 
   // --- Consultation ---
-  const openConsultationDialog = (appointment) => {
+  const openConsultationDialog = async (appointment) => {
     setSelectedAppointment(appointment);
     setConsultationForm({
       chief_complaint: appointment.reason || '',
@@ -317,7 +319,39 @@ const DoctorDashboard = () => {
       follow_up_date: ''
     });
     setActiveConsultation(null);
+    setCreatedPrescription(null);
     setShowConsultationDialog(true);
+
+    // Try to load existing consultation for this appointment
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`/api/consultations/by-appointment/${appointment.id}`, {
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setActiveConsultation(data);
+        setConsultationForm({
+          chief_complaint: data.chief_complaint || appointment.reason || '',
+          present_history: data.present_history || '',
+          examination_findings: data.examination_findings || '',
+          notes: data.notes || '',
+          follow_up_date: data.follow_up_date ? data.follow_up_date.split('T')[0] : ''
+        });
+        // Load existing prescription for this consultation
+        const rxRes = await fetch(`/api/prescriptions-simple/?consultation_id=${data.id}`, {
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
+        });
+        if (rxRes.ok) {
+          const rxData = await rxRes.json();
+          if (rxData.length > 0) {
+            setCreatedPrescription(rxData[0]);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load existing consultation:', err);
+    }
   };
 
   const handleSaveConsultation = async () => {
@@ -467,26 +501,8 @@ const DoctorDashboard = () => {
       setLoading(true);
       const token = localStorage.getItem('token');
 
-      // Get patient UUID
-      let patient_uuid = null;
-      try {
-        const patientResponse = await fetch('/api/patients/search', {
-          method: 'POST',
-          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            search_term: selectedAppointment.patient_name.split(' ')[0],
-            sort_by: 'name', sort_order: 'asc'
-          })
-        });
-        if (patientResponse.ok) {
-          const patientData = await patientResponse.json();
-          const patient = patientData.patients?.find(p =>
-            `${p.first_name} ${p.last_name}` === selectedAppointment.patient_name
-          );
-          if (patient) patient_uuid = patient.patient_id;
-        }
-      } catch (e) { console.error('Error fetching patient:', e); }
-
+      // Get patient UUID from appointment data directly
+      const patient_uuid = selectedAppointment.patient_uuid;
       if (!patient_uuid) {
         toast({ variant: 'destructive', title: 'Error', description: 'Could not find patient information. Please try again.' });
         return;
@@ -524,16 +540,32 @@ const DoctorDashboard = () => {
         notes: prescriptionForm.notes || ''
       };
 
-      const response = await fetch('/api/prescriptions-simple/', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify(prescriptionData)
-      });
+      let response;
+      if (createdPrescription?.prescription_id) {
+        // Update existing prescription for this consultation
+        response = await fetch(`/api/prescriptions-simple/${createdPrescription.prescription_id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            medicines: prescriptionData.medicines,
+            diagnosis: prescriptionData.diagnosis,
+            notes: prescriptionData.notes
+          })
+        });
+      } else {
+        // Create new prescription
+        response = await fetch('/api/prescriptions-simple/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify(prescriptionData)
+        });
+      }
 
       if (response.ok) {
         const result = await response.json();
         setCreatedPrescription(result);
-        setSuccessMessage(`Prescription created successfully! Prescription ID: ${result.prescription_id}`);
+        const action = createdPrescription?.prescription_id ? 'updated' : 'created';
+        setSuccessMessage(`Prescription ${action} successfully! Prescription ID: ${result.prescription_id}`);
         setShowSuccessDialog(true);
         setShowPrescriptionDialog(false);
 
@@ -1110,59 +1142,80 @@ const DoctorDashboard = () => {
                   <p className="text-gray-500">No prescriptions created yet</p>
                 </div>
               ) : (
-                <div className="space-y-4">
-                  {prescriptions.map((prescription) => (
-                    <Card key={prescription.id} className="border-l-4 border-l-green-500">
-                      <CardContent className="pt-4">
-                        <div className="flex justify-between items-start mb-4">
-                          <div className="space-y-2">
-                            <div className="flex items-center gap-2">
-                              <h4 className="font-semibold">{prescription.prescription_id}</h4>
+                <div className="space-y-1.5">
+                  {prescriptions.map((rx) => {
+                    const rxKey = rx.id;
+                    const isExpanded = expandedRxGroups[rxKey];
+                    const rxDate = rx.prescription_date
+                      ? format(new Date(rx.prescription_date), 'dd MMM yyyy')
+                      : 'Unknown date';
+                    const medCount = rx.medicines?.length || 0;
+                    return (
+                      <div key={rxKey} className="border rounded-lg overflow-hidden">
+                        <div
+                          className="flex items-center gap-3 px-3 py-2.5 cursor-pointer hover:bg-gray-50 transition-colors"
+                          onClick={() => setExpandedRxGroups(prev => ({ ...prev, [rxKey]: !prev[rxKey] }))}
+                        >
+                          {isExpanded
+                            ? <ChevronDown className="h-4 w-4 text-gray-400 flex-shrink-0" />
+                            : <ChevronRight className="h-4 w-4 text-gray-400 flex-shrink-0" />
+                          }
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-sm font-medium text-gray-800">Prescription on {rxDate}</span>
+                              <span className="text-xs text-gray-500">— {rx.patient_name}</span>
+                              <Badge variant="outline" className="text-xs">{medCount} medicine{medCount !== 1 ? 's' : ''}</Badge>
                               <Badge className={
-                                prescription.status === 'active' ? 'bg-green-100 text-green-800' :
-                                prescription.status === 'cancelled' ? 'bg-red-100 text-red-800' :
-                                'bg-gray-100 text-gray-800'
-                              }>
-                                {prescription.status.toUpperCase()}
-                              </Badge>
+                                rx.status === 'active' ? 'bg-green-100 text-green-700 text-xs' :
+                                rx.status === 'cancelled' ? 'bg-red-100 text-red-700 text-xs' :
+                                'bg-gray-100 text-gray-600 text-xs'
+                              }>{rx.status}</Badge>
                             </div>
-                            <p className="text-sm text-gray-600">
-                              <User className="h-3 w-3 inline mr-1" />
-                              {prescription.patient_name}
-                            </p>
-                            <p className="text-xs text-gray-500">
-                              {new Date(prescription.prescription_date).toLocaleDateString()} at{' '}
-                              {new Date(prescription.prescription_date).toLocaleTimeString()}
-                            </p>
+                            {rx.diagnosis && !isExpanded && (
+                              <p className="text-xs text-gray-500 mt-0.5 truncate">Dx: {rx.diagnosis}</p>
+                            )}
                           </div>
-                          <Button size="sm" variant="outline" onClick={() => showPrintPreview(prescription)}>
-                            <Eye className="h-4 w-4 mr-2" /> Preview & Print
+                          <Button size="sm" variant="ghost" className="h-7 px-2 flex-shrink-0"
+                            onClick={(e) => { e.stopPropagation(); showPrintPreview(rx); }}>
+                            <Printer className="h-3.5 w-3.5" />
                           </Button>
                         </div>
-                        <div className="space-y-2">
-                          <h5 className="text-sm font-medium text-gray-700">Prescribed Medicines:</h5>
-                          <div className="bg-gray-50 rounded p-3">
-                            {prescription.medicines.map((medicine, idx) => (
-                              <div key={idx} className="text-sm mb-2 last:mb-0">
-                                <span className="font-medium">{medicine.name}</span>
-                                <div className="text-xs text-gray-600 ml-2">
-                                  • {medicine.dosage} • {medicine.duration}
-                                  {medicine.instructions && ` • ${medicine.instructions}`}
-                                  {medicine.quantity && ` • Qty: ${medicine.quantity}`}
+                        {isExpanded && (
+                          <div className="border-t bg-gray-50 px-4 py-3">
+                            <div className="space-y-2">
+                              {rx.medicines?.map((medicine, idx) => (
+                                <div key={idx} className="flex items-start gap-2 text-sm">
+                                  <span className="text-gray-400 mt-0.5 flex-shrink-0">{idx + 1}.</span>
+                                  <div className="flex-1">
+                                    <span className="font-medium text-gray-800">{medicine.name}</span>
+                                    <div className="text-xs text-gray-500 mt-0.5 flex flex-wrap gap-x-3">
+                                      {medicine.dosage && <span>Dosage: {medicine.dosage}</span>}
+                                      {medicine.frequency_schedule && <span>Schedule: {medicine.frequency_schedule}</span>}
+                                      {medicine.duration && <span>Duration: {medicine.duration}</span>}
+                                      {medicine.food_timing && <span>{medicine.food_timing.replace(/_/g, ' ')}</span>}
+                                      {medicine.quantity && <span>Qty: {medicine.quantity}</span>}
+                                    </div>
+                                    {medicine.instructions && <p className="text-xs text-gray-400 mt-0.5">{medicine.instructions}</p>}
+                                  </div>
                                 </div>
+                              ))}
+                            </div>
+                            {(rx.diagnosis || rx.notes) && (
+                              <div className="mt-3 pt-2 border-t border-gray-200 text-sm">
+                                {rx.diagnosis && <p><strong className="text-gray-700">Diagnosis:</strong> <span className="text-gray-600">{rx.diagnosis}</span></p>}
+                                {rx.notes && <p className="mt-1"><strong className="text-gray-700">Notes:</strong> <span className="text-gray-600">{rx.notes}</span></p>}
                               </div>
-                            ))}
-                          </div>
-                        </div>
-                        {(prescription.diagnosis || prescription.notes) && (
-                          <div className="mt-3 pt-3 border-t">
-                            {prescription.diagnosis && <p className="text-sm"><strong>Diagnosis:</strong> {prescription.diagnosis}</p>}
-                            {prescription.notes && <p className="text-sm mt-1"><strong>Notes:</strong> {prescription.notes}</p>}
+                            )}
+                            <div className="mt-3 flex justify-end">
+                              <Button size="sm" variant="outline" onClick={() => showPrintPreview(rx)}>
+                                <Eye className="h-3.5 w-3.5 mr-1" /> Preview & Print
+                              </Button>
+                            </div>
                           </div>
                         )}
-                      </CardContent>
-                    </Card>
-                  ))}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </CardContent>
@@ -1171,50 +1224,12 @@ const DoctorDashboard = () => {
 
         {/* Lab Orders Tab */}
         <TabsContent value="lab-orders" className="space-y-4">
-          {/* Completed Results Section */}
-          {labOrders.filter(o => o.status === 'completed' && o.has_report).length > 0 && (
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center justify-between">
-                  <span className="flex items-center gap-2">
-                    <CheckCircle className="h-5 w-5 text-green-600" />
-                    Lab Results Ready
-                  </span>
-                  <Badge className="bg-green-100 text-green-700">
-                    {labOrders.filter(o => o.status === 'completed' && o.has_report).length} report(s)
-                  </Badge>
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-2">
-                  {labOrders.filter(o => o.status === 'completed' && o.has_report).map(order => (
-                    <div key={order.id} className="flex items-center justify-between p-3 border rounded-lg bg-green-50 hover:bg-green-100">
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className="font-medium">{order.patient_name}</span>
-                          <Badge variant="outline" className="text-xs">{order.test_code}</Badge>
-                        </div>
-                        <div className="text-sm text-gray-600 mt-0.5">
-                          {order.test_name} | {order.order_date && format(new Date(order.order_date), 'dd MMM yyyy')}
-                        </div>
-                      </div>
-                      <Button size="sm" onClick={() => openLabReport(order.report_id)}>
-                        <Eye className="h-4 w-4 mr-1" /> View Report
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Pending Orders Section */}
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center justify-between">
                 <span className="flex items-center gap-2">
                   <TestTube className="h-5 w-5" />
-                  All Lab Orders
+                  Lab Orders
                 </span>
                 <Button variant="outline" size="sm" onClick={fetchLabOrders}>
                   <RefreshCw className="h-4 w-4" />
@@ -1229,42 +1244,117 @@ const DoctorDashboard = () => {
                   <p className="text-sm text-gray-400 mt-1">Order lab tests from the appointment card during consultation.</p>
                 </div>
               ) : (
-                <div className="space-y-2">
-                  {labOrders.map(order => (
-                    <div key={order.id} className={`flex items-center justify-between p-3 border rounded-lg hover:bg-gray-50 ${
-                      order.status === 'completed' ? 'opacity-60' : ''
-                    }`}>
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className="font-medium">{order.patient_name}</span>
-                          <Badge className={
-                            order.status === 'completed' ? 'bg-green-100 text-green-700' :
-                            order.status === 'processing' ? 'bg-purple-100 text-purple-700' :
-                            order.status === 'collected' ? 'bg-yellow-100 text-yellow-700' :
-                            order.status === 'cancelled' ? 'bg-red-100 text-red-700' :
-                            'bg-blue-100 text-blue-700'
-                          }>{order.status}</Badge>
-                          {order.priority !== 'normal' && (
-                            <Badge variant="destructive">{order.priority.toUpperCase()}</Badge>
-                          )}
-                        </div>
-                        <div className="text-sm text-gray-500 mt-0.5">
-                          {order.test_name} ({order.test_code}) | #{order.order_number}
-                          {order.order_date && ` | ${format(new Date(order.order_date), 'dd MMM yyyy, hh:mm a')}`}
-                        </div>
-                      </div>
-                      <div className="flex gap-2">
-                        {order.status === 'completed' && order.has_report && (
-                          <Button size="sm" variant="outline" onClick={() => openLabReport(order.report_id)}>
-                            <Eye className="h-4 w-4 mr-1" /> View
-                          </Button>
-                        )}
-                        {['ordered', 'collected', 'processing'].includes(order.status) && (
-                          <Badge variant="outline" className="text-xs">Pending</Badge>
-                        )}
+                <div className="space-y-4">
+                  {/* Pending orders — flat list */}
+                  {labOrders.filter(o => !['completed', 'cancelled'].includes(o.status)).length > 0 && (
+                    <div>
+                      <h3 className="text-sm font-semibold text-gray-600 mb-2 flex items-center gap-2">
+                        <Clock className="h-4 w-4" /> Pending Orders
+                      </h3>
+                      <div className="space-y-1">
+                        {labOrders.filter(o => !['completed', 'cancelled'].includes(o.status)).map(order => (
+                          <div key={order.id} className="flex items-center justify-between p-2.5 border rounded-lg text-sm bg-amber-50/50">
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium">{order.patient_name}</span>
+                                <span className="text-gray-500">—</span>
+                                <span>{order.test_name}</span>
+                                <Badge variant="outline" className="text-xs">{order.test_code}</Badge>
+                                {order.priority !== 'normal' && (
+                                  <Badge variant="destructive" className="text-xs">{order.priority.toUpperCase()}</Badge>
+                                )}
+                              </div>
+                              <p className="text-xs text-gray-500 mt-0.5">
+                                #{order.order_number}
+                                {order.order_date && ` | ${format(new Date(order.order_date), 'dd MMM yyyy, hh:mm a')}`}
+                              </p>
+                            </div>
+                            <Badge className={
+                              order.status === 'processing' ? 'bg-purple-100 text-purple-700' :
+                              order.status === 'collected' ? 'bg-yellow-100 text-yellow-700' :
+                              'bg-blue-100 text-blue-700'
+                            }>{order.status}</Badge>
+                          </div>
+                        ))}
                       </div>
                     </div>
-                  ))}
+                  )}
+
+                  {/* Completed results — grouped by date, collapsible */}
+                  {labOrders.filter(o => o.status === 'completed' && o.has_report).length > 0 && (
+                    <div>
+                      <h3 className="text-sm font-semibold text-gray-600 mb-2 flex items-center gap-2">
+                        <History className="h-4 w-4" /> Completed Results
+                      </h3>
+                      <div className="space-y-1.5">
+                        {(() => {
+                          const completedOrders = labOrders.filter(o => o.status === 'completed' && o.has_report);
+                          // Group by date + patient
+                          const grouped = {};
+                          completedOrders.forEach(order => {
+                            const dateKey = order.order_date
+                              ? format(new Date(order.order_date), 'yyyy-MM-dd')
+                              : 'unknown';
+                            const groupKey = `${dateKey}_${order.patient_name}`;
+                            if (!grouped[groupKey]) grouped[groupKey] = { date: dateKey, patientName: order.patient_name, orders: [] };
+                            grouped[groupKey].orders.push(order);
+                          });
+                          const sortedKeys = Object.keys(grouped).sort((a, b) => b.localeCompare(a));
+
+                          return sortedKeys.map(groupKey => {
+                            const group = grouped[groupKey];
+                            const isExpanded = expandedLabGroups[groupKey];
+                            const displayDate = group.date !== 'unknown'
+                              ? format(new Date(group.date), 'dd MMM yyyy')
+                              : 'Unknown date';
+
+                            return (
+                              <div key={groupKey} className="border rounded-lg overflow-hidden">
+                                <div
+                                  className="flex items-center gap-3 px-3 py-2.5 cursor-pointer hover:bg-gray-50 transition-colors"
+                                  onClick={() => setExpandedLabGroups(prev => ({ ...prev, [groupKey]: !prev[groupKey] }))}
+                                >
+                                  {isExpanded
+                                    ? <ChevronDown className="h-4 w-4 text-gray-400 flex-shrink-0" />
+                                    : <ChevronRight className="h-4 w-4 text-gray-400 flex-shrink-0" />
+                                  }
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <span className="text-sm font-medium text-gray-800">Consultation on {displayDate}</span>
+                                      <span className="text-xs text-gray-500">— {group.patientName}</span>
+                                      <Badge variant="outline" className="text-xs">{group.orders.length} test{group.orders.length !== 1 ? 's' : ''}</Badge>
+                                      <Badge className="bg-green-100 text-green-700 text-xs">Completed</Badge>
+                                    </div>
+                                    {!isExpanded && (
+                                      <p className="text-xs text-gray-500 mt-0.5 truncate">
+                                        {group.orders.map(o => o.test_name).join(', ')}
+                                      </p>
+                                    )}
+                                  </div>
+                                </div>
+                                {isExpanded && (
+                                  <div className="border-t bg-gray-50">
+                                    {group.orders.map((order, oIdx) => (
+                                      <div key={order.id} className={`flex items-center justify-between px-4 py-2.5 ${oIdx > 0 ? 'border-t border-gray-200' : ''} hover:bg-gray-100 transition-colors`}>
+                                        <div className="flex items-center gap-2">
+                                          <TestTube className="h-3.5 w-3.5 text-gray-400" />
+                                          <span className="text-sm font-medium">{order.test_name}</span>
+                                          <Badge variant="outline" className="text-[10px]">{order.test_code}</Badge>
+                                        </div>
+                                        <Button size="sm" variant="outline" className="h-7" onClick={() => openLabReport(order.report_id)}>
+                                          <Eye className="h-3.5 w-3.5 mr-1" /> View Report
+                                        </Button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          });
+                        })()}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </CardContent>
@@ -1341,7 +1431,27 @@ const DoctorDashboard = () => {
                 <Activity className="h-4 w-4 mr-1" /> Vitals
               </Button>
               <Button variant="outline" size="sm"
-                onClick={() => { setShowConsultationDialog(false); setShowPrescriptionDialog(true); }}>
+                onClick={() => {
+                  setShowConsultationDialog(false);
+                  // Pre-fill prescription form with existing prescription if available
+                  if (createdPrescription?.medicines?.length > 0) {
+                    setPrescriptionForm(prev => ({
+                      ...prev,
+                      diagnosis: createdPrescription.diagnosis || prev.diagnosis,
+                      notes: createdPrescription.notes || prev.notes,
+                      medications: createdPrescription.medicines.map(m => ({
+                        medicine_name: m.name || '',
+                        quantity_prescribed: m.quantity ? parseInt(m.quantity) || 1 : 1,
+                        dosage: m.dosage || '',
+                        frequency_schedule: m.frequency_schedule || '1-0-0',
+                        food_timing: m.food_timing || 'after_food',
+                        duration: m.duration || '',
+                        instructions: m.instructions || ''
+                      }))
+                    }));
+                  }
+                  setShowPrescriptionDialog(true);
+                }}>
                 <Pill className="h-4 w-4 mr-1" /> Prescribe
               </Button>
               <Button variant="outline" size="sm"
@@ -1778,26 +1888,28 @@ const DoctorDashboard = () => {
                 </div>
               )}
 
-              <div className="flex justify-end mt-4">
-                <Button variant="outline" onClick={async () => {
-                  try {
-                    const token = localStorage.getItem('token');
-                    const res = await fetch(`/api/lab/reports/${viewingLabReport.id}/download`, {
-                      headers: { Authorization: `Bearer ${token}` }
-                    });
-                    const blob = await res.blob();
-                    const url = window.URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = `lab_report_${viewingLabReport.order_number}.pdf`;
-                    a.click();
-                    window.URL.revokeObjectURL(url);
-                  } catch (err) {
-                    console.error('Failed to download PDF:', err);
-                  }
-                }}>
-                  <Printer className="h-4 w-4 mr-2" /> Download PDF
-                </Button>
+              <div className="flex justify-end gap-2 mt-4">
+                {[true, false].map(withHeader => (
+                  <Button key={String(withHeader)} variant="outline" onClick={async () => {
+                    try {
+                      const token = localStorage.getItem('token');
+                      const res = await fetch(`/api/lab/reports/${viewingLabReport.id}/download?include_header=${withHeader}`, {
+                        headers: { Authorization: `Bearer ${token}` }
+                      });
+                      const blob = await res.blob();
+                      const url = window.URL.createObjectURL(blob);
+                      const a = document.createElement('a');
+                      a.href = url;
+                      a.download = `lab_report_${viewingLabReport.order_number}.pdf`;
+                      a.click();
+                      window.URL.revokeObjectURL(url);
+                    } catch (err) {
+                      console.error('Failed to download PDF:', err);
+                    }
+                  }}>
+                    <Printer className="h-4 w-4 mr-2" /> {withHeader ? 'With Header' : 'Without Header'}
+                  </Button>
+                ))}
               </div>
             </div>
           )}
@@ -1856,7 +1968,7 @@ const DoctorDashboard = () => {
         isOpen={showVitalsDialog}
         onClose={() => setShowVitalsDialog(false)}
         selectedPatient={selectedAppointment ? {
-          id: selectedAppointment.patient_id,
+          id: selectedAppointment.patient_uuid || selectedAppointment.patient_id,
           first_name: selectedAppointment.patient_name?.split(' ')[0] || '',
           last_name: selectedAppointment.patient_name?.split(' ').slice(1).join(' ') || ''
         } : null}
