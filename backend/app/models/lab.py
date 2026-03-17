@@ -54,7 +54,12 @@ class LabTestParameter(Base):
     reference_max_female = Column(Float, nullable=True)
     reference_min_default = Column(Float, nullable=True)
     reference_max_default = Column(Float, nullable=True)
+    reference_min_child = Column(Float, nullable=True)
+    reference_max_child = Column(Float, nullable=True)
     possible_values = Column(JSON, nullable=True)  # For select-type: ["Positive","Negative"]
+    abnormal_values = Column(JSON, nullable=True)  # Values considered abnormal: ["Positive","Reactive","++","+++"]
+    normal_value = Column(String(100), nullable=True)  # Normal/expected value for reference display: "Negative"
+    notes = Column(String(500), nullable=True)
     display_order = Column(Integer, default=0)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -139,6 +144,8 @@ class PatientLabOrder(Base):
     payment_status = Column(String(20), default="pending")  # pending, paid
     payment_method = Column(String(50), nullable=True)  # cash, card, online
     payment_date = Column(DateTime, nullable=True)
+    sample_id = Column(String(50), nullable=True, unique=True)
+    referred_by = Column(String(100), nullable=True)
     package_id = Column(Integer, ForeignKey("lab_test_packages.id"), nullable=True)
     package_booking_id = Column(String(50), nullable=True)  # Groups orders from same package booking
     created_at = Column(DateTime(timezone=True), server_default=func.now())

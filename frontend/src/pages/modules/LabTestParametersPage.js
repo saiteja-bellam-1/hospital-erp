@@ -31,7 +31,8 @@ const LabTestParametersPage = () => {
     reference_min_male: '', reference_max_male: '',
     reference_min_female: '', reference_max_female: '',
     reference_min_default: '', reference_max_default: '',
-    possible_values: '', display_order: 0
+    reference_min_child: '', reference_max_child: '',
+    possible_values: '', abnormal_values: '', normal_value: '', notes: '', display_order: 0
   });
 
   // Section rename / create
@@ -119,6 +120,11 @@ const LabTestParametersPage = () => {
         reference_min_default: param.reference_min_default ?? '',
         reference_max_default: param.reference_max_default ?? '',
         possible_values: param.possible_values ? param.possible_values.join(', ') : '',
+        abnormal_values: param.abnormal_values ? param.abnormal_values.join(', ') : '',
+        normal_value: param.normal_value || '',
+        reference_min_child: param.reference_min_child ?? '',
+        reference_max_child: param.reference_max_child ?? '',
+        notes: param.notes || '',
         display_order: param.display_order || 0
       });
     } else {
@@ -129,7 +135,8 @@ const LabTestParametersPage = () => {
         reference_min_male: '', reference_max_male: '',
         reference_min_female: '', reference_max_female: '',
         reference_min_default: '', reference_max_default: '',
-        possible_values: '', display_order: 0
+        reference_min_child: '', reference_max_child: '',
+        possible_values: '', abnormal_values: '', normal_value: '', notes: '', display_order: 0
       });
     }
     setShowParamDialog(true);
@@ -149,9 +156,18 @@ const LabTestParametersPage = () => {
       reference_max_female: genderSpecific && paramForm.reference_max_female !== '' ? parseFloat(paramForm.reference_max_female) : null,
       reference_min_default: paramForm.reference_min_default !== '' ? parseFloat(paramForm.reference_min_default) : null,
       reference_max_default: paramForm.reference_max_default !== '' ? parseFloat(paramForm.reference_max_default) : null,
+      reference_min_child: paramForm.reference_min_child !== '' ? parseFloat(paramForm.reference_min_child) : null,
+      reference_max_child: paramForm.reference_max_child !== '' ? parseFloat(paramForm.reference_max_child) : null,
       possible_values: paramForm.field_type === 'select' && paramForm.possible_values
         ? paramForm.possible_values.split(',').map(v => v.trim()).filter(Boolean)
         : null,
+      abnormal_values: (paramForm.field_type === 'select' || paramForm.field_type === 'text') && paramForm.abnormal_values
+        ? paramForm.abnormal_values.split(',').map(v => v.trim()).filter(Boolean)
+        : null,
+      normal_value: (paramForm.field_type === 'select' || paramForm.field_type === 'text') && paramForm.normal_value
+        ? paramForm.normal_value.trim()
+        : null,
+      notes: paramForm.notes || null,
       display_order: parseInt(paramForm.display_order) || 0
     };
     setSaving(true);
@@ -741,9 +757,16 @@ const LabTestParametersPage = () => {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="numeric">Numeric</SelectItem>
-                    <SelectItem value="text">Text</SelectItem>
-                    <SelectItem value="select">Select (Dropdown)</SelectItem>
+                    <SelectItem value="numeric">Range (Min - Max)</SelectItem>
+                    <SelectItem value="greater_than">Greater Than (&gt;)</SelectItem>
+                    <SelectItem value="less_than">Less Than (&lt;)</SelectItem>
+                    <SelectItem value="positive_negative">Positive / Negative</SelectItem>
+                    <SelectItem value="reactive">Reactive / Non-Reactive</SelectItem>
+                    <SelectItem value="presence_absence">Presence / Absence</SelectItem>
+                    <SelectItem value="cloudy_clear">Cloudy / Clear / Inflamed</SelectItem>
+                    <SelectItem value="colour">Colour</SelectItem>
+                    <SelectItem value="manual">Manual Input</SelectItem>
+                    <SelectItem value="select">Select (Custom Dropdown)</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -759,24 +782,81 @@ const LabTestParametersPage = () => {
               </div>
             )}
 
-            {paramForm.field_type === 'numeric' && (
+            {['positive_negative', 'reactive', 'presence_absence', 'cloudy_clear'].includes(paramForm.field_type) && (
+              <div className="text-xs text-slate-500 bg-slate-50 rounded-lg p-3">
+                <span className="font-medium">Preset values: </span>
+                {paramForm.field_type === 'positive_negative' && 'Positive, Negative'}
+                {paramForm.field_type === 'reactive' && 'Reactive, Non-Reactive'}
+                {paramForm.field_type === 'presence_absence' && 'Present, Absent'}
+                {paramForm.field_type === 'cloudy_clear' && 'Clear, Cloudy, Slightly Cloudy, Inflamed'}
+              </div>
+            )}
+
+            {(paramForm.field_type === 'select' || paramForm.field_type === 'text' || paramForm.field_type === 'manual' ||
+              ['positive_negative', 'reactive', 'presence_absence', 'cloudy_clear', 'colour'].includes(paramForm.field_type)) && (
+              <div className="border border-amber-100 rounded-lg p-3 space-y-3 bg-amber-50/30">
+                <h4 className="text-xs font-semibold text-amber-700 uppercase tracking-wider">Abnormal Detection</h4>
+                <div>
+                  <Label className="text-xs text-slate-600">Normal / Expected Value</Label>
+                  <Input value={paramForm.normal_value}
+                    onChange={(e) => setParamForm({ ...paramForm, normal_value: e.target.value })}
+                    placeholder="e.g. Negative, Non-Reactive, Nil"
+                    className="mt-0.5" />
+                  <p className="text-[10px] text-slate-400 mt-0.5">Shown in the reference range column of reports</p>
+                </div>
+                <div>
+                  <Label className="text-xs text-slate-600">Abnormal Values (comma-separated)</Label>
+                  <Input value={paramForm.abnormal_values}
+                    onChange={(e) => setParamForm({ ...paramForm, abnormal_values: e.target.value })}
+                    placeholder="e.g. Positive, Reactive, ++, +++"
+                    className="mt-0.5" />
+                  <p className="text-[10px] text-slate-400 mt-0.5">Results matching these values will be flagged as abnormal</p>
+                </div>
+              </div>
+            )}
+
+            {(paramForm.field_type === 'numeric' || paramForm.field_type === 'less_than' || paramForm.field_type === 'greater_than') && (
               <>
                 <div className="border border-slate-200 rounded-lg p-3 space-y-3 bg-slate-50/50">
-                  <h4 className="text-xs font-semibold text-slate-600 uppercase tracking-wider">Default Reference Range</h4>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <Label className="text-[11px] text-slate-500">Min</Label>
-                      <Input type="number" step="any" value={paramForm.reference_min_default}
-                        onChange={(e) => setParamForm({ ...paramForm, reference_min_default: e.target.value })}
-                        className="mt-0.5" />
+                  <h4 className="text-xs font-semibold text-slate-600 uppercase tracking-wider">
+                    {paramForm.field_type === 'less_than' ? 'Less Than (<) Threshold — Adult' : paramForm.field_type === 'greater_than' ? 'Greater Than (>) Threshold — Adult' : 'Adult Reference Range'}
+                  </h4>
+                  {paramForm.field_type === 'numeric' && (
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <Label className="text-[11px] text-slate-500">Min</Label>
+                        <Input type="number" step="any" value={paramForm.reference_min_default}
+                          onChange={(e) => setParamForm({ ...paramForm, reference_min_default: e.target.value })}
+                          className="mt-0.5" />
+                      </div>
+                      <div>
+                        <Label className="text-[11px] text-slate-500">Max</Label>
+                        <Input type="number" step="any" value={paramForm.reference_max_default}
+                          onChange={(e) => setParamForm({ ...paramForm, reference_max_default: e.target.value })}
+                          className="mt-0.5" />
+                      </div>
                     </div>
-                    <div>
-                      <Label className="text-[11px] text-slate-500">Max</Label>
+                  )}
+                  {paramForm.field_type === 'less_than' && (
+                    <div className="max-w-[200px]">
+                      <Label className="text-[11px] text-slate-500">Value should be less than</Label>
                       <Input type="number" step="any" value={paramForm.reference_max_default}
                         onChange={(e) => setParamForm({ ...paramForm, reference_max_default: e.target.value })}
+                        placeholder="e.g. 5.0"
                         className="mt-0.5" />
+                      <p className="text-[10px] text-slate-400 mt-0.5">Abnormal if value &ge; this threshold</p>
                     </div>
-                  </div>
+                  )}
+                  {paramForm.field_type === 'greater_than' && (
+                    <div className="max-w-[200px]">
+                      <Label className="text-[11px] text-slate-500">Value should be greater than</Label>
+                      <Input type="number" step="any" value={paramForm.reference_min_default}
+                        onChange={(e) => setParamForm({ ...paramForm, reference_min_default: e.target.value })}
+                        placeholder="e.g. 40"
+                        className="mt-0.5" />
+                      <p className="text-[10px] text-slate-400 mt-0.5">Abnormal if value &le; this threshold</p>
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-2">
@@ -791,44 +871,128 @@ const LabTestParametersPage = () => {
                 {genderSpecific && (
                   <div className="grid grid-cols-2 gap-3">
                     <div className="border border-blue-100 rounded-lg p-3 space-y-2 bg-blue-50/30">
-                      <h4 className="text-xs font-semibold text-blue-600 uppercase tracking-wider">Male Range</h4>
-                      <div className="grid grid-cols-2 gap-2">
-                        <div>
-                          <Label className="text-[11px] text-slate-500">Min</Label>
-                          <Input type="number" step="any" value={paramForm.reference_min_male}
-                            onChange={(e) => setParamForm({ ...paramForm, reference_min_male: e.target.value })}
-                            className="mt-0.5" />
+                      <h4 className="text-xs font-semibold text-blue-600 uppercase tracking-wider">Male</h4>
+                      {paramForm.field_type === 'numeric' && (
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <Label className="text-[11px] text-slate-500">Min</Label>
+                            <Input type="number" step="any" value={paramForm.reference_min_male}
+                              onChange={(e) => setParamForm({ ...paramForm, reference_min_male: e.target.value })}
+                              className="mt-0.5" />
+                          </div>
+                          <div>
+                            <Label className="text-[11px] text-slate-500">Max</Label>
+                            <Input type="number" step="any" value={paramForm.reference_max_male}
+                              onChange={(e) => setParamForm({ ...paramForm, reference_max_male: e.target.value })}
+                              className="mt-0.5" />
+                          </div>
                         </div>
+                      )}
+                      {paramForm.field_type === 'less_than' && (
                         <div>
-                          <Label className="text-[11px] text-slate-500">Max</Label>
+                          <Label className="text-[11px] text-slate-500">Less than</Label>
                           <Input type="number" step="any" value={paramForm.reference_max_male}
                             onChange={(e) => setParamForm({ ...paramForm, reference_max_male: e.target.value })}
                             className="mt-0.5" />
                         </div>
-                      </div>
+                      )}
+                      {paramForm.field_type === 'greater_than' && (
+                        <div>
+                          <Label className="text-[11px] text-slate-500">Greater than</Label>
+                          <Input type="number" step="any" value={paramForm.reference_min_male}
+                            onChange={(e) => setParamForm({ ...paramForm, reference_min_male: e.target.value })}
+                            className="mt-0.5" />
+                        </div>
+                      )}
                     </div>
 
                     <div className="border border-pink-100 rounded-lg p-3 space-y-2 bg-pink-50/30">
-                      <h4 className="text-xs font-semibold text-pink-600 uppercase tracking-wider">Female Range</h4>
-                      <div className="grid grid-cols-2 gap-2">
-                        <div>
-                          <Label className="text-[11px] text-slate-500">Min</Label>
-                          <Input type="number" step="any" value={paramForm.reference_min_female}
-                            onChange={(e) => setParamForm({ ...paramForm, reference_min_female: e.target.value })}
-                            className="mt-0.5" />
+                      <h4 className="text-xs font-semibold text-pink-600 uppercase tracking-wider">Female</h4>
+                      {paramForm.field_type === 'numeric' && (
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <Label className="text-[11px] text-slate-500">Min</Label>
+                            <Input type="number" step="any" value={paramForm.reference_min_female}
+                              onChange={(e) => setParamForm({ ...paramForm, reference_min_female: e.target.value })}
+                              className="mt-0.5" />
+                          </div>
+                          <div>
+                            <Label className="text-[11px] text-slate-500">Max</Label>
+                            <Input type="number" step="any" value={paramForm.reference_max_female}
+                              onChange={(e) => setParamForm({ ...paramForm, reference_max_female: e.target.value })}
+                              className="mt-0.5" />
+                          </div>
                         </div>
+                      )}
+                      {paramForm.field_type === 'less_than' && (
                         <div>
-                          <Label className="text-[11px] text-slate-500">Max</Label>
+                          <Label className="text-[11px] text-slate-500">Less than</Label>
                           <Input type="number" step="any" value={paramForm.reference_max_female}
                             onChange={(e) => setParamForm({ ...paramForm, reference_max_female: e.target.value })}
                             className="mt-0.5" />
                         </div>
-                      </div>
+                      )}
+                      {paramForm.field_type === 'greater_than' && (
+                        <div>
+                          <Label className="text-[11px] text-slate-500">Greater than</Label>
+                          <Input type="number" step="any" value={paramForm.reference_min_female}
+                            onChange={(e) => setParamForm({ ...paramForm, reference_min_female: e.target.value })}
+                            className="mt-0.5" />
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
+
+                {/* Child Reference Range */}
+                <div className="border border-green-100 rounded-lg p-3 space-y-2 bg-green-50/30">
+                  <h4 className="text-xs font-semibold text-green-700 uppercase tracking-wider">
+                    {paramForm.field_type === 'less_than' ? 'Child — Less Than (<)' : paramForm.field_type === 'greater_than' ? 'Child — Greater Than (>)' : 'Child Reference Range'}
+                  </h4>
+                  {paramForm.field_type === 'numeric' && (
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <Label className="text-[11px] text-slate-500">Min</Label>
+                        <Input type="number" step="any" value={paramForm.reference_min_child}
+                          onChange={(e) => setParamForm({ ...paramForm, reference_min_child: e.target.value })}
+                          className="mt-0.5" />
+                      </div>
+                      <div>
+                        <Label className="text-[11px] text-slate-500">Max</Label>
+                        <Input type="number" step="any" value={paramForm.reference_max_child}
+                          onChange={(e) => setParamForm({ ...paramForm, reference_max_child: e.target.value })}
+                          className="mt-0.5" />
+                      </div>
+                    </div>
+                  )}
+                  {paramForm.field_type === 'less_than' && (
+                    <div className="max-w-[200px]">
+                      <Label className="text-[11px] text-slate-500">Value should be less than</Label>
+                      <Input type="number" step="any" value={paramForm.reference_max_child}
+                        onChange={(e) => setParamForm({ ...paramForm, reference_max_child: e.target.value })}
+                        className="mt-0.5" />
+                    </div>
+                  )}
+                  {paramForm.field_type === 'greater_than' && (
+                    <div className="max-w-[200px]">
+                      <Label className="text-[11px] text-slate-500">Value should be greater than</Label>
+                      <Input type="number" step="any" value={paramForm.reference_min_child}
+                        onChange={(e) => setParamForm({ ...paramForm, reference_min_child: e.target.value })}
+                        className="mt-0.5" />
+                    </div>
+                  )}
+                </div>
               </>
             )}
+
+            {/* Notes */}
+            <div>
+              <Label className="text-xs font-medium text-slate-600">Notes</Label>
+              <Input value={paramForm.notes}
+                onChange={(e) => setParamForm({ ...paramForm, notes: e.target.value })}
+                placeholder="Optional notes for this parameter"
+                className="mt-1" />
+            </div>
 
             <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
               <Button variant="outline" onClick={() => setShowParamDialog(false)} className="text-xs">Cancel</Button>

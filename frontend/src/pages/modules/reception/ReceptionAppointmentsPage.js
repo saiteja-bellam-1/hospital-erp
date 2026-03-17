@@ -425,22 +425,25 @@ const ReceptionAppointmentsPage = () => {
     }
   };
 
-  const downloadLabReport = async (reportId, orderNumber, includeHeader = true) => {
+  const downloadLabReport = async (reportId, orderNumber, includeHeader = true, packageBookingId = null) => {
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch(`/api/lab/reports/${reportId}/download?include_header=${includeHeader}`, {
+      const url = packageBookingId
+        ? `/api/lab/reports/package/${packageBookingId}/download?include_header=${includeHeader}`
+        : `/api/lab/reports/${reportId}/download?include_header=${includeHeader}`;
+      const res = await fetch(url, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (res.ok) {
         const blob = await res.blob();
-        const url = window.URL.createObjectURL(blob);
+        const blobUrl = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
-        a.href = url;
-        a.download = `lab_report_${orderNumber}.pdf`;
+        a.href = blobUrl;
+        a.download = packageBookingId ? `${orderNumber}_report.pdf` : `lab_report_${orderNumber}.pdf`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
-        window.URL.revokeObjectURL(url);
+        window.URL.revokeObjectURL(blobUrl);
       } else {
         toast({ variant: 'destructive', title: 'Error', description: 'Failed to download report' });
       }
@@ -1736,6 +1739,16 @@ const ReceptionAppointmentsPage = () => {
                                     </div>
                                   </div>
                                 ))}
+                                <div className="px-3 py-2 flex gap-1 border-t border-indigo-200">
+                                  <Button size="sm" variant="outline" className="h-6 px-2 text-xs border-indigo-300 text-indigo-700"
+                                    onClick={() => downloadLabReport(null, pkg.name, true, g.key)}>
+                                    <Printer className="h-3 w-3 mr-1" />All Reports (With Header)
+                                  </Button>
+                                  <Button size="sm" variant="ghost" className="h-6 px-2 text-xs text-indigo-600"
+                                    onClick={() => downloadLabReport(null, pkg.name, false, g.key)}>
+                                    Without Header
+                                  </Button>
+                                </div>
                               </div>
                             );
                           }

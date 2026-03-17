@@ -86,6 +86,7 @@ a = Analysis(
         'reportlab',
         'reportlab.lib.pagesizes',
         'reportlab.platypus',
+        'PyPDF2',
         'multipart',
         'jose',
         'pydantic_settings',

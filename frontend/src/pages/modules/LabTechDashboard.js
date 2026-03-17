@@ -10,10 +10,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/ta
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../components/ui/dialog';
 import {
   TestTube, Clock, CheckCircle, AlertCircle, RefreshCw, Loader2,
-  User, FileText, Activity, Search, Beaker, Package
+  User, FileText, Activity, Search, Beaker, Package, Printer
 } from 'lucide-react';
 import axios from 'axios';
 import { format } from 'date-fns';
+import JsBarcode from 'jsbarcode';
 
 const LabTechDashboard = () => {
   const [orders, setOrders] = useState([]);
@@ -40,6 +41,31 @@ const LabTechDashboard = () => {
 
   // Stats
   const [stats, setStats] = useState(null);
+
+  // Sample barcode dialog
+  const [showBarcodeDialog, setShowBarcodeDialog] = useState(false);
+  const [barcodeData, setBarcodeData] = useState(null);
+
+  // Generate barcode as data URL when dialog opens
+  const [barcodeImgSrc, setBarcodeImgSrc] = useState('');
+  useEffect(() => {
+    if (showBarcodeDialog && barcodeData?.sample_id) {
+      try {
+        const canvas = document.createElement('canvas');
+        JsBarcode(canvas, barcodeData.sample_id, {
+          format: 'CODE128',
+          width: 1.5,
+          height: 35,
+          displayValue: false,
+          margin: 0,
+        });
+        setBarcodeImgSrc(canvas.toDataURL('image/png'));
+      } catch (e) {
+        console.error('Barcode generation error:', e);
+        setBarcodeImgSrc('');
+      }
+    }
+  }, [showBarcodeDialog, barcodeData]);
 
   // Feedback
   const [feedback, setFeedback] = useState({ message: '', type: '' });
@@ -95,9 +121,19 @@ const LabTechDashboard = () => {
 
   const handleUpdateStatus = async (orderId, newStatus) => {
     try {
-      await axios.put(`/api/lab/orders/${orderId}/status?status=${newStatus}`);
+      const res = await axios.put(`/api/lab/orders/${orderId}/status?status=${newStatus}`);
       showFeedback(`Order marked as ${newStatus}`);
       fetchOrders();
+      // Show barcode popup when sample is collected
+      if (newStatus === 'collected' && res.data.sample_id) {
+        setBarcodeData({
+          sample_id: res.data.sample_id,
+          order_number: res.data.order_number,
+          patient_name: res.data.patient_name,
+          test_name: res.data.test_name,
+        });
+        setShowBarcodeDialog(true);
+      }
     } catch (err) {
       showFeedback(err.response?.data?.detail || 'Failed to update status', 'error');
     }
@@ -162,12 +198,58 @@ const LabTechDashboard = () => {
   // ============ Helpers ============
 
   const isValueAbnormal = (param, value) => {
-    if (param.field_type !== 'numeric' || !value) return false;
-    const numVal = parseFloat(value);
-    if (isNaN(numVal)) return false;
-    if (param.reference_min != null && numVal < param.reference_min) return true;
-    if (param.reference_max != null && numVal > param.reference_max) return true;
+    if (!value) return false;
+    if (param.field_type === 'numeric' || param.field_type === 'less_than' || param.field_type === 'greater_than') {
+      let clean = value.toString().trim().replace(/^[<>]\s*/, '');
+      const numVal = parseFloat(clean);
+      if (isNaN(numVal)) return false;
+      if (param.field_type === 'less_than') {
+        return param.reference_max != null && numVal >= param.reference_max;
+      }
+      if (param.field_type === 'greater_than') {
+        return param.reference_min != null && numVal <= param.reference_min;
+      }
+      // Range type — also handle < > prefixed values
+      if (value.toString().trim().startsWith('<')) {
+        return param.reference_min != null && numVal <= param.reference_min;
+      }
+      if (value.toString().trim().startsWith('>')) {
+        return param.reference_max != null && numVal >= param.reference_max;
+      }
+      if (param.reference_min != null && numVal < param.reference_min) return true;
+      if (param.reference_max != null && numVal > param.reference_max) return true;
+      return false;
+    }
+    // Select, preset types, text, manual, colour — check abnormal_values list
+    const abnormalList = param.abnormal_values || [];
+    if (abnormalList.length > 0) {
+      return abnormalList.includes(value.trim());
+    }
     return false;
+  };
+
+  const downloadPackageReport = async (packageBookingId, packageName, includeHeader = true) => {
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`/api/lab/reports/package/${packageBookingId}/download?include_header=${includeHeader}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const blob = await res.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${packageName}_report.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+      } else {
+        showFeedback('Failed to download package report', 'error');
+      }
+    } catch {
+      showFeedback('Failed to download package report', 'error');
+    }
   };
 
   const getStatusColor = (status) => {
@@ -324,6 +406,11 @@ const LabTechDashboard = () => {
               <p><User className="inline h-3 w-3 mr-1" />{order.doctor_name || 'N/A'}</p>
               <p><Clock className="inline h-3 w-3 mr-1" />{formatDate(order.order_date)}</p>
               <p className="text-xs text-gray-400">#{order.order_number}</p>
+              {order.sample_id && (
+                <p className="text-xs font-mono font-semibold text-indigo-600">
+                  Sample: {order.sample_id}
+                </p>
+              )}
             </div>
           </div>
           <div className="flex flex-col gap-2 ml-4">
@@ -390,7 +477,10 @@ const LabTechDashboard = () => {
                     <span className="font-medium text-sm">{order.test_name} ({order.test_code})</span>
                     <Badge className={`text-xs ${getStatusColor(order.status)}`}>{order.status}</Badge>
                   </div>
-                  <p className="text-xs text-gray-400 ml-5">#{order.order_number}</p>
+                  <div className="flex items-center gap-3 ml-5">
+                    <span className="text-xs text-gray-400">#{order.order_number}</span>
+                    {order.sample_id && <span className="text-xs font-mono font-semibold text-indigo-600">Sample: {order.sample_id}</span>}
+                  </div>
                 </div>
                 <div className="flex gap-2 ml-4">
                   {order.status === 'ordered' && (
@@ -417,6 +507,19 @@ const LabTechDashboard = () => {
               </div>
             ))}
           </div>
+          {/* Download All Reports button */}
+          {completedCount > 0 && (
+            <div className="mt-3 pt-2 border-t border-indigo-200 flex gap-2">
+              <Button size="sm" variant="outline" className="h-7 text-xs border-indigo-300 text-indigo-700"
+                onClick={() => downloadPackageReport(group.package_booking_id, group.package_name, true)}>
+                <FileText className="h-3 w-3 mr-1" /> Download All Reports (With Header)
+              </Button>
+              <Button size="sm" variant="ghost" className="h-7 text-xs text-indigo-600"
+                onClick={() => downloadPackageReport(group.package_booking_id, group.package_name, false)}>
+                Without Header
+              </Button>
+            </div>
+          )}
         </CardContent>
       </Card>
     );
@@ -516,34 +619,96 @@ const LabTechDashboard = () => {
                     <tr key={param.id} className={`border-b ${abnormal ? 'bg-red-50' : ''}`}>
                       <td className="py-2 pr-3 font-medium">{param.parameter_name}</td>
                       <td className="py-2 pr-3">
-                        {param.field_type === 'select' && param.possible_values ? (
-                          <Select value={value}
-                            onValueChange={(v) => setEntryValues({ ...entryValues, [param.id]: v })}>
-                            <SelectTrigger className="w-[150px] h-8">
-                              <SelectValue placeholder="Select..." />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {param.possible_values.map(pv => (
-                                <SelectItem key={pv} value={pv}>{pv}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        ) : (
-                          <Input
-                            type={param.field_type === 'numeric' ? 'number' : 'text'}
-                            step="any"
-                            value={value}
-                            onChange={(e) => setEntryValues({ ...entryValues, [param.id]: e.target.value })}
-                            className={`w-[150px] h-8 ${abnormal ? 'border-red-500 text-red-600 font-bold' : ''}`}
-                            placeholder="Enter value"
-                          />
-                        )}
+                        {(() => {
+                          const presetOptions = {
+                            positive_negative: ['Positive', 'Negative'],
+                            reactive: ['Reactive', 'Non-Reactive'],
+                            presence_absence: ['Present', 'Absent'],
+                            cloudy_clear: ['Clear', 'Cloudy', 'Slightly Cloudy', 'Inflamed'],
+                          };
+                          const opts = param.possible_values || presetOptions[param.field_type];
+                          if (opts) {
+                            return (
+                              <Select value={value}
+                                onValueChange={(v) => setEntryValues({ ...entryValues, [param.id]: v })}>
+                                <SelectTrigger className={`w-[170px] h-8 ${abnormal ? 'border-red-500 text-red-600 font-bold' : ''}`}>
+                                  <SelectValue placeholder="Select..." />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {opts.map(pv => (
+                                    <SelectItem key={pv} value={pv}>{pv}</SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            );
+                          }
+                          if (param.field_type === 'less_than') {
+                            return (
+                              <div className="flex items-center gap-1">
+                                <span className="text-sm font-bold text-gray-500">&lt;</span>
+                                <Input type="number" step="any" value={value}
+                                  onChange={(e) => setEntryValues({ ...entryValues, [param.id]: e.target.value })}
+                                  className={`w-[130px] h-8 ${abnormal ? 'border-red-500 text-red-600 font-bold' : ''}`}
+                                  placeholder="Value" />
+                              </div>
+                            );
+                          }
+                          if (param.field_type === 'greater_than') {
+                            return (
+                              <div className="flex items-center gap-1">
+                                <span className="text-sm font-bold text-gray-500">&gt;</span>
+                                <Input type="number" step="any" value={value}
+                                  onChange={(e) => setEntryValues({ ...entryValues, [param.id]: e.target.value })}
+                                  className={`w-[130px] h-8 ${abnormal ? 'border-red-500 text-red-600 font-bold' : ''}`}
+                                  placeholder="Value" />
+                              </div>
+                            );
+                          }
+                          if (param.field_type === 'numeric') {
+                            return (
+                              <div className="flex items-center gap-1">
+                                <div className="flex border rounded-md overflow-hidden h-8">
+                                  <button type="button"
+                                    className={`px-1.5 text-xs font-bold border-r ${value.toString().startsWith('<') ? 'bg-blue-100 text-blue-700' : 'bg-gray-50 text-gray-400 hover:bg-gray-100'}`}
+                                    onClick={() => { const c = value.toString().replace(/^[<>]/, ''); setEntryValues({ ...entryValues, [param.id]: value.toString().startsWith('<') ? c : `<${c}` }); }}
+                                  >&lt;</button>
+                                  <input type="text" inputMode="decimal"
+                                    value={value.toString().replace(/^[<>]/, '')}
+                                    onChange={(e) => { const p = value.toString().startsWith('<') ? '<' : value.toString().startsWith('>') ? '>' : ''; setEntryValues({ ...entryValues, [param.id]: p + e.target.value }); }}
+                                    className={`w-[100px] h-full px-2 text-sm outline-none ${abnormal ? 'text-red-600 font-bold' : ''}`}
+                                    placeholder="Value" />
+                                  <button type="button"
+                                    className={`px-1.5 text-xs font-bold border-l ${value.toString().startsWith('>') ? 'bg-blue-100 text-blue-700' : 'bg-gray-50 text-gray-400 hover:bg-gray-100'}`}
+                                    onClick={() => { const c = value.toString().replace(/^[<>]/, ''); setEntryValues({ ...entryValues, [param.id]: value.toString().startsWith('>') ? c : `>${c}` }); }}
+                                  >&gt;</button>
+                                </div>
+                              </div>
+                            );
+                          }
+                          // text, manual, colour — free text input
+                          return (
+                            <Input type="text" value={value}
+                              onChange={(e) => setEntryValues({ ...entryValues, [param.id]: e.target.value })}
+                              className={`w-[150px] h-8 ${abnormal ? 'border-red-500 text-red-600 font-bold' : ''}`}
+                              placeholder={param.field_type === 'colour' ? 'e.g. Pale Yellow' : 'Enter value'} />
+                          );
+                        })()}
                       </td>
                       <td className="py-2 pr-3 text-gray-500">{param.unit || '-'}</td>
                       <td className="py-2 text-gray-500 text-xs">
-                        {param.reference_min != null || param.reference_max != null
-                          ? `${param.reference_min ?? '–'} - ${param.reference_max ?? '–'}`
-                          : '-'}
+                        {param.field_type === 'less_than' && param.reference_max != null
+                          ? `< ${param.reference_max}`
+                          : param.field_type === 'greater_than' && param.reference_min != null
+                            ? `> ${param.reference_min}`
+                            : param.reference_min != null && param.reference_max != null
+                              ? `${param.reference_min} - ${param.reference_max}`
+                              : param.reference_min != null
+                                ? `> ${param.reference_min}`
+                                : param.reference_max != null
+                                  ? `< ${param.reference_max}`
+                                  : param.normal_value
+                                    ? param.normal_value
+                                    : '-'}
                         {abnormal && (
                           <span className="ml-2 text-red-600 font-bold">
                             <AlertCircle className="inline h-3 w-3" /> Abnormal
@@ -694,6 +859,60 @@ const LabTechDashboard = () => {
 
       {renderEntryDialog()}
       {renderReportDialog()}
+
+      {/* Sample Barcode Dialog */}
+      <Dialog open={showBarcodeDialog} onOpenChange={setShowBarcodeDialog}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <TestTube className="h-5 w-5" /> Sample Label
+            </DialogTitle>
+          </DialogHeader>
+          {barcodeData && (
+            <div className="space-y-4">
+              {/* Label preview */}
+              <div className="border-2 border-dashed border-gray-300 rounded-lg p-4 bg-white text-center">
+                <p className="text-sm font-semibold">{barcodeData.patient_name}</p>
+                <p className="text-xs text-gray-500">{barcodeData.test_name}</p>
+                <div className="mt-2 mb-1">
+                  {barcodeImgSrc && <img src={barcodeImgSrc} alt="barcode" className="mx-auto" style={{ height: 45, maxWidth: '80%' }} />}
+                </div>
+                <p className="text-sm font-bold font-mono tracking-widest">{barcodeData.sample_id}</p>
+                <p className="text-[10px] text-gray-400 mt-0.5">#{barcodeData.order_number}</p>
+              </div>
+              <div className="flex gap-2 justify-center">
+                <Button onClick={() => {
+                  const printWin = window.open('', '_blank', 'width=400,height=300');
+                  printWin.document.write(`<html><head><title>Sample Label</title>
+                    <style>
+                      @page { size: 50mm 30mm; margin: 0; }
+                      * { box-sizing: border-box; margin: 0; padding: 0; }
+                      body { width: 50mm; height: 30mm; font-family: Arial, sans-serif; text-align: center; padding: 1.5mm 2mm; overflow: hidden; }
+                      .name { font-size: 7pt; font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+                      .test { font-size: 5.5pt; color: #555; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 0.5mm; }
+                      .barcode { margin: 1mm auto; }
+                      .barcode img { height: 10mm; max-width: 44mm; }
+                      .sid { font-size: 8pt; font-weight: bold; font-family: monospace; letter-spacing: 0.8px; margin-top: 0.5mm; }
+                      .order { font-size: 4.5pt; color: #888; margin-top: 0.3mm; }
+                    </style></head><body>
+                    <div class="name">${barcodeData.patient_name}</div>
+                    <div class="test">${barcodeData.test_name}</div>
+                    <div class="barcode"><img src="${barcodeImgSrc}" /></div>
+                    <div class="sid">${barcodeData.sample_id}</div>
+                    <div class="order">#${barcodeData.order_number}</div>
+                    </body></html>`);
+                  printWin.document.close();
+                  printWin.focus();
+                  setTimeout(() => { printWin.print(); printWin.close(); }, 400);
+                }} className="gap-1">
+                  <Printer className="h-4 w-4" /> Print Label
+                </Button>
+                <Button variant="outline" onClick={() => setShowBarcodeDialog(false)}>Close</Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

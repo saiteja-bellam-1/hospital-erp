@@ -908,28 +908,41 @@ class PDFService:
         elements.append(Spacer(1, 6))
 
         # ============================================================
-        # PATIENT + TEST INFO
+        # PATIENT INFO — bordered box matching reference layout
         # ============================================================
-        report_date_str = ""
-        try:
-            rd = datetime.fromisoformat(str(report_data.get('report_date', '')).replace('Z', '+00:00'))
-            report_date_str = rd.strftime('%d/%m/%Y %I:%M %p')
-        except Exception:
-            report_date_str = datetime.now().strftime('%d/%m/%Y')
+        def _fmt_dt(val):
+            """Format a date/datetime value for display."""
+            if not val:
+                return '-'
+            try:
+                if isinstance(val, str):
+                    val = datetime.fromisoformat(val.replace('Z', '+00:00'))
+                return val.strftime('%d/%m/%Y %I:%M %p')
+            except Exception:
+                return str(val)
 
         patient_name = report_data.get('patient_name', '')
         patient_gender = report_data.get('patient_gender', '')
         patient_age = report_data.get('patient_age', '')
-        age_sex = f"{patient_age} yrs" if patient_age else ''
+        age_sex = f"{patient_age} Year" if patient_age else ''
         if patient_gender:
-            age_sex = f"{age_sex} / {patient_gender}" if age_sex else patient_gender
+            age_sex = f"{age_sex} / {patient_gender.capitalize()}" if age_sex else patient_gender.capitalize()
+
+        order_date_str = _fmt_dt(report_data.get('order_date'))
+        collection_date_str = _fmt_dt(report_data.get('collection_date'))
+        report_date_str = _fmt_dt(report_data.get('report_date'))
+
+        referral_label = report_data.get('referral_label', 'Referred By')
+        referral_name = report_data.get('referral_name', 'Self')
+        patient_phone = report_data.get('patient_phone', '')
 
         col_w = page_width / 2
         info_data = [
-            [lv('Patient Name', patient_name), lv('Report Date', report_date_str)],
-            [lv('Age / Gender', age_sex), lv('Order No', report_data.get('order_number', ''))],
-            [lv('Referred By', report_data.get('doctor_name', 'N/A')), lv('Test', f"{report_data.get('test_name', '')} ({report_data.get('test_code', '')})")],
-            *([[ lv('Method', report_data.get('method', '')), Paragraph('', cell_value) ]] if report_data.get('method') else []),
+            [lv('Name', patient_name), lv('Booked Date', order_date_str)],
+            [lv('Age / Gender', age_sex), lv('Collection Date', collection_date_str)],
+            [lv('Phone', patient_phone), lv('Report Date', report_date_str)],
+            [lv(referral_label, referral_name), lv('Report Status', report_data.get('report_status', 'Final'))],
+            [lv('Patient ID', report_data.get('patient_uuid', '')), lv('Report ID', report_data.get('order_number', ''))],
         ]
 
         info_table = Table(info_data, colWidths=[col_w, col_w])
@@ -937,11 +950,28 @@ class PDFService:
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('TOPPADDING', (0, 0), (-1, -1), 3),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
-            ('LEFTPADDING', (0, 0), (-1, -1), 6),
+            ('LEFTPADDING', (0, 0), (-1, -1), 8),
             ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+            ('BOX', (0, 0), (-1, -1), 1, colors.black),
         ]))
         elements.append(info_table)
         elements.append(Spacer(1, 10))
+
+        # ============================================================
+        # TEST NAME — centered bold heading
+        # ============================================================
+        test_name_style = ParagraphStyle('LabTestName', parent=self.styles['Normal'],
+            fontSize=11, alignment=1, fontName='Helvetica-Bold',
+            textColor=colors.black, spaceAfter=2)
+
+        test_name = report_data.get('test_name', '')
+        test_code = report_data.get('test_code', '')
+        test_display = test_name.upper()
+        if test_code:
+            test_display = f"{test_display} ({test_code})"
+
+        elements.append(Paragraph(test_display, test_name_style))
+        elements.append(Spacer(1, 6))
 
         # ============================================================
         # RESULTS TABLE
@@ -957,11 +987,11 @@ class PDFService:
             fontSize=9, fontName='Helvetica-Bold', textColor=colors.Color(0.2, 0.2, 0.5))
 
         results_header = [
-            Paragraph('<b>Parameter</b>', cell_label),
-            Paragraph('<b>Result</b>', cell_label),
-            Paragraph('<b>Unit</b>', cell_label),
-            Paragraph('<b>Reference Range</b>', cell_label),
-            Paragraph('<b>Status</b>', cell_label),
+            Paragraph('<b>TEST DESCRIPTION</b>', cell_label),
+            Paragraph('<b>RESULT ENTRY</b>', cell_label),
+            Paragraph('<b>FLAG</b>', cell_label),
+            Paragraph('<b>BIO. REF. RANGE</b>', cell_label),
+            Paragraph('<b>UNIT</b>', cell_label),
         ]
 
         results_data = [results_header]
@@ -993,26 +1023,35 @@ class PDFService:
             ref_range = '-'
             ref_min = r.get('reference_min')
             ref_max = r.get('reference_max')
-            if ref_min is not None or ref_max is not None:
-                ref_range = f"{ref_min if ref_min is not None else '–'} - {ref_max if ref_max is not None else '–'}"
+            normal_val = r.get('normal_value')
+            if ref_min is not None and ref_max is not None:
+                ref_range = f"{ref_min} - {ref_max}"
+            elif ref_min is not None:
+                ref_range = f"&gt; {ref_min}"
+            elif ref_max is not None:
+                ref_range = f"&lt; {ref_max}"
+            elif normal_val:
+                ref_range = normal_val
 
             flag_text = ''
             if is_abnormal:
                 flag_text = 'ABNORMAL'
-            elif r.get('field_type') == 'numeric' and (ref_min is not None or ref_max is not None):
+            elif r.get('field_type') in ('numeric', 'less_than', 'greater_than') and (ref_min is not None or ref_max is not None):
                 flag_text = 'Normal'
+            elif r.get('field_type') in ('select', 'text') and normal_val and r.get('value'):
+                flag_text = 'Normal' if not is_abnormal else ''
 
             flag_style = cell_abnormal if is_abnormal else cell_value
 
             results_data.append([
                 Paragraph(r.get('parameter_name', ''), cell_value),
                 Paragraph(str(r.get('value', '')), value_style),
-                Paragraph(r.get('unit', '') or '-', cell_value),
-                Paragraph(ref_range, cell_value),
                 Paragraph(flag_text, flag_style),
+                Paragraph(ref_range, cell_value),
+                Paragraph(r.get('unit', '') or '-', cell_value),
             ])
 
-        results_table = Table(results_data, colWidths=[param_w, result_w, unit_w, ref_w, flag_w])
+        results_table = Table(results_data, colWidths=[param_w, result_w, flag_w, ref_w, unit_w])
 
         table_style_cmds = [
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
@@ -1115,6 +1154,360 @@ class PDFService:
         elements.append(Paragraph(f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M:%S')}", footer_style))
 
         doc.build(elements)
+        buffer.seek(0)
+        return buffer
+
+    def generate_combined_lab_report_pdf(self, reports_list, hospital_info, lab_config=None, include_header=True):
+        """Generate a single continuous PDF with all tests flowing together.
+        Header repeats on every page (or blank space for pre-printed letterhead).
+        Patient info on first page only, tests flow continuously, signatures at the end."""
+        if lab_config is None:
+            lab_config = {}
+
+        buffer = BytesIO()
+        # Reserve top margin for the header drawn via onPage callback
+        header_height = 100 if include_header else 100  # ~3.5cm
+        doc = SimpleDocTemplate(buffer, pagesize=A4,
+            rightMargin=30, leftMargin=30, topMargin=30 + header_height, bottomMargin=20)
+
+        elements = []
+        page_width = A4[0] - 60
+
+        first_report = reports_list[0]
+
+        # --- Build header drawing info for onPage ---
+        provider_name = lab_config.get('provider_name') or hospital_info.get('name', 'HOSPITAL')
+        provider_address_parts = []
+        if lab_config.get('provider_address'):
+            provider_address_parts.append(lab_config['provider_address'])
+        if lab_config.get('provider_city'):
+            provider_address_parts.append(lab_config['provider_city'])
+        if lab_config.get('provider_state'):
+            provider_address_parts.append(lab_config['provider_state'])
+        if lab_config.get('provider_pincode'):
+            provider_address_parts.append(f"- {lab_config['provider_pincode']}")
+        provider_address = ", ".join(provider_address_parts) if provider_address_parts else hospital_info.get('address', '')
+        provider_phone = lab_config.get('provider_phone') or hospital_info.get('phone', '')
+        provider_email = lab_config.get('provider_email') or hospital_info.get('email', '')
+
+        logo_path = lab_config.get('provider_logo', '')
+        uploads_base = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
+        full_logo_path = ''
+        has_logo = False
+        if logo_path:
+            relative = logo_path.lstrip('/')
+            if relative.startswith('uploads/'):
+                relative = relative[len('uploads/'):]
+            full_logo_path = os.path.join(uploads_base, relative)
+            has_logo = os.path.exists(full_logo_path)
+
+        reg_parts = []
+        if lab_config.get('registration_number'):
+            reg_parts.append(f"Reg No: {lab_config['registration_number']}")
+        if lab_config.get('nabl_number'):
+            reg_parts.append(f"NABL: {lab_config['nabl_number']}")
+        if lab_config.get('license_number'):
+            reg_parts.append(f"Lic No: {lab_config['license_number']}")
+        reg_line = "  |  ".join(reg_parts)
+
+        contact_parts = []
+        if provider_email:
+            contact_parts.append(f"Email: {provider_email}")
+        if provider_phone:
+            contact_parts.append(f"Phone: {provider_phone}")
+        contact_line = "  |  ".join(contact_parts)
+
+        def _draw_header(c, doc_obj):
+            """Draw hospital header or blank space on every page."""
+            c.saveState()
+            pg_w, pg_h = A4
+            top_y = pg_h - 25  # start drawing from near top
+
+            if include_header:
+                # Draw logo if available
+                text_x = 35
+                if has_logo:
+                    try:
+                        c.drawImage(full_logo_path, 35, top_y - 55, width=55, height=55, preserveAspectRatio=True, mask='auto')
+                        text_x = 100
+                    except Exception:
+                        pass
+
+                # Hospital name
+                c.setFont('Helvetica-Bold', 14)
+                c.drawCentredString(pg_w / 2, top_y - 15, provider_name.upper())
+
+                # Address
+                if provider_address:
+                    c.setFont('Helvetica', 8)
+                    c.drawCentredString(pg_w / 2, top_y - 28, provider_address)
+
+                # Contact
+                if contact_line:
+                    c.setFont('Helvetica', 7)
+                    c.drawCentredString(pg_w / 2, top_y - 40, contact_line)
+
+                # Registration
+                if reg_line:
+                    c.setFont('Helvetica', 6)
+                    c.setFillColor(colors.grey)
+                    c.drawCentredString(pg_w / 2, top_y - 52, reg_line)
+                    c.setFillColor(colors.black)
+
+                # Divider line
+                line_y = top_y - 60
+                c.setStrokeColor(colors.black)
+                c.setLineWidth(1)
+                c.line(30, line_y, pg_w - 30, line_y)
+
+            c.restoreState()
+
+        # --- Styles ---
+        report_title_style = ParagraphStyle('CLabReportTitle', parent=self.styles['Normal'],
+            fontSize=12, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)
+        test_name_style = ParagraphStyle('CLabTestName', parent=self.styles['Normal'],
+            fontSize=11, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=2)
+        cell_label = ParagraphStyle('CLabCellLabel', parent=self.styles['Normal'],
+            fontSize=9, fontName='Helvetica-Bold', textColor=colors.black)
+        cell_value = ParagraphStyle('CLabCellValue', parent=self.styles['Normal'],
+            fontSize=9, fontName='Helvetica', textColor=colors.black)
+        cell_abnormal = ParagraphStyle('CLabCellAbnormal', parent=self.styles['Normal'],
+            fontSize=9, fontName='Helvetica-Bold', textColor=colors.red)
+        normal_text = ParagraphStyle('CLabNormalText', parent=self.styles['Normal'],
+            fontSize=10, spaceAfter=6, fontName='Helvetica', textColor=colors.black)
+        footer_style = ParagraphStyle('CLabFooter', parent=self.styles['Normal'],
+            fontSize=8, alignment=1, fontName='Helvetica', textColor=colors.grey)
+        section_label_style = ParagraphStyle('CLabSectionLabel', parent=self.styles['Normal'],
+            fontSize=9, fontName='Helvetica-Bold', textColor=colors.Color(0.2, 0.2, 0.5))
+
+        def lv(label, value):
+            return Paragraph(f"<b>{label}</b> :  {value}", cell_value)
+
+        def _fmt_dt(val):
+            if not val:
+                return '-'
+            try:
+                if isinstance(val, str):
+                    val = datetime.fromisoformat(val.replace('Z', '+00:00'))
+                return val.strftime('%d/%m/%Y %I:%M %p')
+            except Exception:
+                return str(val)
+
+        # ============================================================
+        # REPORT TITLE (in flowable area, below header)
+        # ============================================================
+        elements.append(Paragraph("LABORATORY REPORT", report_title_style))
+        elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+        elements.append(Spacer(1, 6))
+
+        # ============================================================
+        # PATIENT INFO (once, from first report)
+        # ============================================================
+        patient_name = first_report.get('patient_name', '')
+        patient_gender = first_report.get('patient_gender', '')
+        patient_age = first_report.get('patient_age', '')
+        age_sex = f"{patient_age} Year" if patient_age else ''
+        if patient_gender:
+            age_sex = f"{age_sex} / {patient_gender.capitalize()}" if age_sex else patient_gender.capitalize()
+
+        referral_label = first_report.get('referral_label', 'Referred By')
+        referral_name = first_report.get('referral_name', 'Self')
+        patient_phone = first_report.get('patient_phone', '')
+
+        col_w = page_width / 2
+        info_data = [
+            [lv('Name', patient_name), lv('Booked Date', _fmt_dt(first_report.get('order_date')))],
+            [lv('Age / Gender', age_sex), lv('Collection Date', _fmt_dt(first_report.get('collection_date')))],
+            [lv('Phone', patient_phone), lv('Report Date', _fmt_dt(first_report.get('report_date')))],
+            [lv(referral_label, referral_name), lv('Report Status', first_report.get('report_status', 'Final'))],
+            [lv('Patient ID', first_report.get('patient_uuid', '')), Paragraph('', cell_value)],
+        ]
+
+        info_table = Table(info_data, colWidths=[col_w, col_w])
+        info_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING', (0, 0), (-1, -1), 3), ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+            ('LEFTPADDING', (0, 0), (-1, -1), 8), ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+            ('BOX', (0, 0), (-1, -1), 1, colors.black),
+        ]))
+        elements.append(info_table)
+        elements.append(Spacer(1, 10))
+
+        # ============================================================
+        # RESULTS TABLE COLUMN WIDTHS
+        # ============================================================
+        param_w = page_width * 0.30
+        result_w = page_width * 0.15
+        flag_w = page_width * 0.15
+        ref_w = page_width * 0.28
+        unit_w = page_width * 0.12
+
+        # ============================================================
+        # LOOP THROUGH EACH TEST — continuous flow
+        # ============================================================
+        for idx, report_data in enumerate(reports_list):
+            test_name = report_data.get('test_name', '')
+            test_code = report_data.get('test_code', '')
+            test_display = test_name.upper()
+            if test_code:
+                test_display = f"{test_display} ({test_code})"
+
+            # Test name heading
+            if idx > 0:
+                elements.append(Spacer(1, 8))
+            elements.append(Paragraph(test_display, test_name_style))
+            elements.append(Spacer(1, 4))
+
+            # Results table
+            results_header = [
+                Paragraph('<b>TEST DESCRIPTION</b>', cell_label),
+                Paragraph('<b>RESULT ENTRY</b>', cell_label),
+                Paragraph('<b>FLAG</b>', cell_label),
+                Paragraph('<b>BIO. REF. RANGE</b>', cell_label),
+                Paragraph('<b>UNIT</b>', cell_label),
+            ]
+            results_data = [results_header]
+            results_list_inner = report_data.get('results', [])
+
+            section_row_indices = []
+            current_section = None
+
+            for r in results_list_inner:
+                section = r.get('section', '')
+                if section and section != current_section:
+                    current_section = section
+                    section_row_indices.append(len(results_data))
+                    results_data.append([
+                        Paragraph(f'<b>{section}</b>', section_label_style),
+                        Paragraph('', cell_value), Paragraph('', cell_value),
+                        Paragraph('', cell_value), Paragraph('', cell_value),
+                    ])
+                elif not section and current_section is not None:
+                    current_section = None
+
+                is_abnormal = r.get('is_abnormal', False)
+                value_style = cell_abnormal if is_abnormal else cell_value
+
+                ref_range = '-'
+                ref_min = r.get('reference_min')
+                ref_max = r.get('reference_max')
+                normal_val = r.get('normal_value')
+                if ref_min is not None and ref_max is not None:
+                    ref_range = f"{ref_min} - {ref_max}"
+                elif ref_min is not None:
+                    ref_range = f"&gt; {ref_min}"
+                elif ref_max is not None:
+                    ref_range = f"&lt; {ref_max}"
+                elif normal_val:
+                    ref_range = normal_val
+
+                flag_text = ''
+                if is_abnormal:
+                    flag_text = 'ABNORMAL'
+                elif r.get('field_type') in ('numeric', 'less_than', 'greater_than') and (ref_min is not None or ref_max is not None):
+                    flag_text = 'Normal'
+                elif r.get('field_type') in ('select', 'text') and normal_val and r.get('value'):
+                    flag_text = 'Normal' if not is_abnormal else ''
+
+                flag_style = cell_abnormal if is_abnormal else cell_value
+
+                results_data.append([
+                    Paragraph(r.get('parameter_name', ''), cell_value),
+                    Paragraph(str(r.get('value', '')), value_style),
+                    Paragraph(flag_text, flag_style),
+                    Paragraph(ref_range, cell_value),
+                    Paragraph(r.get('unit', '') or '-', cell_value),
+                ])
+
+            results_table = Table(results_data, colWidths=[param_w, result_w, flag_w, ref_w, unit_w])
+
+            table_style_cmds = [
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('TOPPADDING', (0, 0), (-1, -1), 4), ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                ('LEFTPADDING', (0, 0), (-1, -1), 6), ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('LINEBELOW', (0, 0), (-1, 0), 1, colors.black),
+            ]
+
+            for sec_row in section_row_indices:
+                table_style_cmds.append(('SPAN', (0, sec_row), (-1, sec_row)))
+                table_style_cmds.append(('BACKGROUND', (0, sec_row), (-1, sec_row), colors.Color(0.92, 0.93, 0.97)))
+                table_style_cmds.append(('TOPPADDING', (0, sec_row), (-1, sec_row), 5))
+                table_style_cmds.append(('BOTTOMPADDING', (0, sec_row), (-1, sec_row), 5))
+
+            row_idx = 1
+            current_section_2 = None
+            for r in results_list_inner:
+                section = r.get('section', '')
+                if section and section != current_section_2:
+                    current_section_2 = section
+                    row_idx += 1
+                elif not section and current_section_2 is not None:
+                    current_section_2 = None
+                if r.get('is_abnormal', False):
+                    table_style_cmds.append(('BACKGROUND', (0, row_idx), (-1, row_idx), colors.Color(1, 0.95, 0.95)))
+                row_idx += 1
+
+            results_table.setStyle(TableStyle(table_style_cmds))
+            elements.append(results_table)
+
+            # Interpretation (per test, if any)
+            interpretation = report_data.get('interpretation')
+            if interpretation:
+                elements.append(Spacer(1, 4))
+                elements.append(Paragraph(f"<b>Interpretation ({test_name}):</b>", cell_label))
+                elements.append(Spacer(1, 2))
+                elements.append(Paragraph(interpretation, normal_text))
+
+        # ============================================================
+        # SIGNATURES (once at the end)
+        # ============================================================
+        elements.append(Spacer(1, 30))
+        uploads_base = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
+
+        # Collect unique technician names from all reports
+        tech_names = list(dict.fromkeys(r.get('technician_name', '') for r in reports_list if r.get('technician_name')))
+        tech_text = ", ".join(tech_names) if tech_names else ""
+        left_col = Paragraph(f"<b>Lab Technician:</b> {tech_text}", cell_value)
+
+        pathologist_name = lab_config.get('pathologist_name', '')
+        pathologist_qual = lab_config.get('pathologist_qualification', '')
+        sig_image_path = lab_config.get('signature_image', '')
+
+        right_col_parts = []
+        if sig_image_path:
+            relative = sig_image_path.lstrip('/')
+            if relative.startswith('uploads/'):
+                relative = relative[len('uploads/'):]
+            full_sig_path = os.path.join(uploads_base, relative)
+            if os.path.exists(full_sig_path):
+                try:
+                    sig_img = Image(full_sig_path, width=80, height=35)
+                    sig_img.hAlign = 'LEFT'
+                    right_col_parts.append(sig_img)
+                except Exception:
+                    pass
+
+        if pathologist_name:
+            right_col_parts.append(Paragraph(f"<b>{pathologist_name}</b>", cell_value))
+        if pathologist_qual:
+            qual_style = ParagraphStyle('CLabQual', parent=self.styles['Normal'],
+                fontSize=8, fontName='Helvetica', textColor=colors.grey)
+            right_col_parts.append(Paragraph(pathologist_qual, qual_style))
+        if not pathologist_name:
+            right_col_parts.append(Paragraph("<b>Authorized Signatory</b>", cell_value))
+
+        sig_table = Table([[left_col, right_col_parts]], colWidths=[page_width / 2, page_width / 2])
+        sig_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'BOTTOM'),
+            ('TOPPADDING', (0, 0), (-1, -1), 3),
+        ]))
+        elements.append(sig_table)
+
+        elements.append(Spacer(1, 20))
+        elements.append(Paragraph(f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M:%S')}", footer_style))
+
+        doc.build(elements, onFirstPage=_draw_header, onLaterPages=_draw_header)
         buffer.seek(0)
         return buffer
 

@@ -29,6 +29,7 @@ const ReceptionPackagesPage = () => {
   const [paymentMethod, setPaymentMethod] = useState('cash');
   const [priority, setPriority] = useState('normal');
   const [notes, setNotes] = useState('');
+  const [referredBy, setReferredBy] = useState('');
   const [bookingLoading, setBookingLoading] = useState(false);
   const [pkgIncludeHeader, setPkgIncludeHeader] = useState(true);
 
@@ -87,6 +88,7 @@ const ReceptionPackagesPage = () => {
     setPaymentMethod('cash');
     setPriority('normal');
     setNotes('');
+    setReferredBy('');
     setShowBookingDialog(true);
   };
 
@@ -98,6 +100,7 @@ const ReceptionPackagesPage = () => {
         patient_id: selectedPatient.id,
         priority,
         notes: notes || null,
+        referred_by: referredBy || null,
         payment_method: paymentMethod,
         include_header: pkgIncludeHeader,
       }, { responseType: 'blob' });
@@ -319,10 +322,17 @@ const ReceptionPackagesPage = () => {
                   </Select>
                 </div>
               </div>
-              <div>
-                <Label>Notes</Label>
-                <Input value={notes} onChange={(e) => setNotes(e.target.value)}
-                  placeholder="Optional notes" />
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label>Referred By</Label>
+                  <Input value={referredBy} onChange={(e) => setReferredBy(e.target.value)}
+                    placeholder="Referral name (optional)" />
+                </div>
+                <div>
+                  <Label>Notes</Label>
+                  <Input value={notes} onChange={(e) => setNotes(e.target.value)}
+                    placeholder="Optional notes" />
+                </div>
               </div>
 
               {/* Total */}

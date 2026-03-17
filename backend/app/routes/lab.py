@@ -46,14 +46,19 @@ class ParameterCreate(BaseModel):
     unit: Optional[str] = None
     method: Optional[str] = None
     section: Optional[str] = None
-    field_type: str = Field(default="numeric", pattern="^(numeric|text|select)$")
+    field_type: str = Field(default="numeric", pattern="^(numeric|less_than|greater_than|positive_negative|reactive|presence_absence|cloudy_clear|colour|manual|text|select)$")
     reference_min_male: Optional[float] = None
     reference_max_male: Optional[float] = None
     reference_min_female: Optional[float] = None
     reference_max_female: Optional[float] = None
     reference_min_default: Optional[float] = None
     reference_max_default: Optional[float] = None
+    reference_min_child: Optional[float] = None
+    reference_max_child: Optional[float] = None
     possible_values: Optional[list] = None
+    abnormal_values: Optional[list] = None
+    normal_value: Optional[str] = None
+    notes: Optional[str] = None
     display_order: int = 0
 
 class ParameterResponse(BaseModel):
@@ -69,7 +74,12 @@ class ParameterResponse(BaseModel):
     reference_max_female: Optional[float]
     reference_min_default: Optional[float]
     reference_max_default: Optional[float]
+    reference_min_child: Optional[float] = None
+    reference_max_child: Optional[float] = None
     possible_values: Optional[list]
+    abnormal_values: Optional[list] = None
+    normal_value: Optional[str] = None
+    notes: Optional[str] = None
     display_order: int
     is_active: bool
     class Config:
@@ -145,6 +155,7 @@ class OrderResponse(BaseModel):
     package_id: Optional[int] = None
     package_name: Optional[str] = None
     package_booking_id: Optional[str] = None
+    sample_id: Optional[str] = None
     class Config:
         from_attributes = True
 
@@ -249,6 +260,7 @@ class PackageBooking(BaseModel):
     patient_id: int
     priority: str = Field(default="normal", pattern="^(normal|urgent|stat)$")
     notes: Optional[str] = None
+    referred_by: Optional[str] = Field(None, max_length=100)
     payment_method: str = Field(..., pattern="^(cash|card|upi|cheque|online|insurance)$")
     include_header: bool = True
 
@@ -340,6 +352,7 @@ def _build_order_response(order: PatientLabOrder, db: Session) -> dict:
         "package_id": order.package_id,
         "package_name": order.package.name if order.package_id and order.package else None,
         "package_booking_id": order.package_booking_id,
+        "sample_id": order.sample_id,
     }
 
 def _build_report_response(report: LabReport, db: Session) -> dict:
@@ -375,35 +388,74 @@ def _build_report_response(report: LabReport, db: Session) -> dict:
 
         # Check abnormal
         is_abnormal = False
-        if param.field_type == "numeric" and rv.get("value"):
+        raw_value = rv.get("value", "")
+        if param.field_type in ("numeric", "less_than", "greater_than") and raw_value:
             try:
-                val = float(rv["value"])
-                if ref_min is not None and val < ref_min:
-                    is_abnormal = True
-                if ref_max is not None and val > ref_max:
-                    is_abnormal = True
+                clean_val = raw_value.strip().lstrip('<>').strip()
+                val = float(clean_val)
+                if param.field_type == "less_than":
+                    # Value should be < ref_max to be normal
+                    if ref_max is not None and val >= ref_max:
+                        is_abnormal = True
+                elif param.field_type == "greater_than":
+                    # Value should be > ref_min to be normal
+                    if ref_min is not None and val <= ref_min:
+                        is_abnormal = True
+                else:
+                    # Range: check both bounds, also handle < > prefixed values
+                    if raw_value.strip().startswith('<'):
+                        if ref_min is not None and val <= ref_min:
+                            is_abnormal = True
+                    elif raw_value.strip().startswith('>'):
+                        if ref_max is not None and val >= ref_max:
+                            is_abnormal = True
+                    else:
+                        if ref_min is not None and val < ref_min:
+                            is_abnormal = True
+                        if ref_max is not None and val > ref_max:
+                            is_abnormal = True
             except (ValueError, TypeError):
                 pass
+        elif param.field_type in ("select", "text", "manual", "colour",
+                                   "positive_negative", "reactive", "presence_absence", "cloudy_clear") and raw_value:
+            # Check against abnormal_values list
+            abnormal_list = param.abnormal_values or []
+            if abnormal_list and raw_value.strip() in abnormal_list:
+                is_abnormal = True
 
         results.append({
             "parameter_id": param.id,
             "parameter_name": param.parameter_name,
-            "value": rv.get("value", ""),
+            "value": raw_value,
             "unit": param.unit,
             "method": param.method or "",
             "section": param.section or "",
             "reference_min": ref_min,
             "reference_max": ref_max,
+            "normal_value": param.normal_value,
             "is_abnormal": is_abnormal,
             "field_type": param.field_type
         })
+
+    # Determine referral label: doctor = "Prescribed By", referral/self = "Referred By"
+    referral_label = "Referred By"
+    referral_name = "Self"
+    if doctor:
+        referral_label = "Prescribed By"
+        referral_name = f"Dr. {doctor.first_name} {doctor.last_name}"
+    elif order.referred_by:
+        referral_name = order.referred_by
+    elif patient and patient.referred_by:
+        referral_name = patient.referred_by
 
     return {
         "id": report.id,
         "order_id": order.id,
         "order_number": order.order_number,
         "patient_id": patient.id if patient else 0,
+        "patient_uuid": patient.patient_id if patient else "",
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "Unknown",
+        "patient_phone": patient.primary_phone if patient else "",
         "patient_gender": patient.gender if patient else None,
         "patient_age": age,
         "test_id": test.id if test else 0,
@@ -411,8 +463,13 @@ def _build_report_response(report: LabReport, db: Session) -> dict:
         "test_code": test.test_code if test else "",
         "method": test.method if test else None,
         "doctor_name": f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else None,
+        "referral_label": referral_label,
+        "referral_name": referral_name,
         "technician_name": f"{tech.first_name} {tech.last_name}" if tech else None,
+        "order_date": order.order_date,
+        "collection_date": order.collection_date,
         "report_date": report.report_date,
+        "report_status": "Final",
         "interpretation": report.interpretation,
         "results": results
     }
@@ -850,13 +907,36 @@ async def update_order_status(
         raise HTTPException(status_code=404, detail="Order not found")
 
     order.status = status
+    sample_id = None
     if status == "collected":
         order.collection_date = datetime.now()
+        # Auto-generate sample ID: S-YYMMDD-NNNN
+        if not order.sample_id:
+            from sqlalchemy import func as sql_func
+            today_prefix = f"S-{datetime.now().strftime('%y%m%d')}-"
+            last = db.query(PatientLabOrder).filter(
+                PatientLabOrder.sample_id.like(f"{today_prefix}%")
+            ).order_by(PatientLabOrder.sample_id.desc()).first()
+            if last and last.sample_id:
+                try:
+                    seq = int(last.sample_id.split('-')[-1]) + 1
+                except ValueError:
+                    seq = 1
+            else:
+                seq = 1
+            order.sample_id = f"{today_prefix}{seq:04d}"
+        sample_id = order.sample_id
     elif status == "completed":
         order.completion_date = datetime.now()
 
     db.commit()
-    return {"message": f"Order status updated to {status}"}
+    return {
+        "message": f"Order status updated to {status}",
+        "sample_id": sample_id,
+        "order_number": order.order_number,
+        "patient_name": f"{order.patient.first_name} {order.patient.last_name}" if order.patient else "",
+        "test_name": order.test.name if order.test else "",
+    }
 
 
 class LabPaymentUpdate(BaseModel):
@@ -1079,6 +1159,11 @@ async def get_entry_form(
                     else (p.reference_max_female if gender == "female" and p.reference_max_female is not None
                     else p.reference_max_default),
                 "possible_values": p.possible_values,
+                "abnormal_values": p.abnormal_values,
+                "normal_value": p.normal_value,
+                "reference_min_child": p.reference_min_child,
+                "reference_max_child": p.reference_max_child,
+                "notes": p.notes,
                 "display_order": p.display_order
             } for p in params
         ]
@@ -1216,6 +1301,61 @@ async def download_report_pdf(
             headers={"Content-Disposition": f"attachment; filename={filename}"}
         )
     except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PDF generation error: {str(e)}")
+
+@router.get("/reports/package/{package_booking_id}/download")
+async def download_package_report_pdf(
+    package_booking_id: str,
+    include_header: bool = True,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Download combined PDF for all completed tests in a package booking."""
+    orders = db.query(PatientLabOrder).filter(
+        PatientLabOrder.package_booking_id == package_booking_id
+    ).all()
+    if not orders:
+        raise HTTPException(status_code=404, detail="No orders found for this package")
+
+    # Collect all completed reports
+    reports_data = []
+    for order in orders:
+        report = db.query(LabReport).filter(LabReport.order_id == order.id).first()
+        if report:
+            reports_data.append(_build_report_response(report, db))
+
+    if not reports_data:
+        raise HTTPException(status_code=404, detail="No completed reports found for this package")
+
+    hospital = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
+    hospital_info = {
+        "name": hospital.name if hospital else "Hospital",
+        "address": hospital.address if hospital else "",
+        "phone": hospital.phone if hospital else "",
+        "email": hospital.email if hospital else ""
+    }
+
+    lab_settings = db.query(HospitalSettings).filter(
+        HospitalSettings.setting_category == "lab_config"
+    ).all()
+    lab_config = {s.setting_key: s.setting_value for s in lab_settings}
+
+    try:
+        pdf_buffer = pdf_service.generate_combined_lab_report_pdf(
+            reports_data, hospital_info, lab_config, include_header=include_header
+        )
+        pkg_name = orders[0].package.name if orders[0].package else "package"
+        patient = db.query(Patient).filter(Patient.id == orders[0].patient_id).first()
+        patient_name = f"{patient.first_name}_{patient.last_name}" if patient else "patient"
+        filename = f"{patient_name}_{pkg_name}_{datetime.now().strftime('%Y%m%d')}.pdf"
+        return StreamingResponse(
+            pdf_buffer,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"PDF generation error: {str(e)}")
 
 # ============================================================
@@ -1673,6 +1813,7 @@ async def book_package(
             doctor_id=None,
             package_id=pkg.id,
             package_booking_id=booking_id,
+            referred_by=data.referred_by,
             priority=data.priority,
             notes=data.notes,
             status="ordered",

@@ -111,17 +111,20 @@ async def browse_folder():
                 folder = proc.stdout.strip().rstrip("/")
 
         elif platform.system() == "Windows":
-            # Windows: use PowerShell folder browser dialog
+            # Windows: use PowerShell with STA thread for folder browser dialog
             ps_script = (
                 'Add-Type -AssemblyName System.Windows.Forms; '
+                '[System.Windows.Forms.Application]::EnableVisualStyles(); '
                 '$f = New-Object System.Windows.Forms.FolderBrowserDialog; '
                 '$f.Description = "Select Folder"; '
                 '$f.ShowNewFolderButton = $true; '
-                '$null = $f.ShowDialog(); '
-                '$f.SelectedPath'
+                '$result = $f.ShowDialog(); '
+                'if ($result -eq [System.Windows.Forms.DialogResult]::OK) { '
+                '  $f.SelectedPath '
+                '}'
             )
             proc = subprocess.run(
-                ["powershell", "-NoProfile", "-Command", ps_script],
+                ["powershell", "-NoProfile", "-STA", "-Command", ps_script],
                 capture_output=True, text=True, timeout=120,
             )
             if proc.returncode == 0 and proc.stdout.strip():
