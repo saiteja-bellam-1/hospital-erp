@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime, timedelta
 
 from config.database import get_db
@@ -25,7 +25,8 @@ class UserResponse(BaseModel):
     username: str
     email: str
     full_name: str
-    role: str
+    role: str  # Primary role (backward compat)
+    roles: List[str] = []  # All assigned roles
     hospital_id: Optional[int]
     is_active: bool
 
@@ -78,6 +79,7 @@ async def login(user_credentials: UserLogin, db: Session = Depends(get_db)):
         email=user.email,
         full_name=f"{user.first_name} {user.last_name}",
         role=user.role.name,
+        roles=user.role_names,
         hospital_id=user.hospital_id,
         is_active=user.is_active
     )
@@ -111,6 +113,7 @@ async def get_current_user_profile(current_user: User = Depends(get_current_user
         email=current_user.email,
         full_name=f"{current_user.first_name} {current_user.last_name}",
         role=current_user.role.name,
+        roles=current_user.role_names,
         hospital_id=current_user.hospital_id,
         is_active=current_user.is_active
     )

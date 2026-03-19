@@ -27,7 +27,8 @@ const SetupWizard = ({ onComplete }) => {
 
   const [formData, setFormData] = useState({
     hospital_name: '',
-    hospital_address: '',
+    hospital_address1: '',
+    hospital_address2: '',
     hospital_phone: '',
     hospital_email: '',
     db_location: '',
@@ -119,7 +120,7 @@ const SetupWizard = ({ onComplete }) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           hospital_name: formData.hospital_name,
-          hospital_address: formData.hospital_address,
+          hospital_address: [formData.hospital_address1, formData.hospital_address2].filter(Boolean).join(', '),
           hospital_phone: formData.hospital_phone,
           hospital_email: formData.hospital_email,
           db_location: formData.db_location,
@@ -178,14 +179,25 @@ const SetupWizard = ({ onComplete }) => {
                 autoFocus
               />
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="hospital_address">Address</Label>
-              <Input
-                id="hospital_address"
-                value={formData.hospital_address}
-                onChange={(e) => updateField('hospital_address', e.target.value)}
-                placeholder="123 Main Street, City"
-              />
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="hospital_address1">Address Line 1</Label>
+                <Input
+                  id="hospital_address1"
+                  value={formData.hospital_address1}
+                  onChange={(e) => updateField('hospital_address1', e.target.value)}
+                  placeholder="Building / Street"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="hospital_address2">Address Line 2</Label>
+                <Input
+                  id="hospital_address2"
+                  value={formData.hospital_address2}
+                  onChange={(e) => updateField('hospital_address2', e.target.value)}
+                  placeholder="City, State, PIN"
+                />
+              </div>
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
@@ -402,7 +414,7 @@ const SetupWizard = ({ onComplete }) => {
           <div className="space-y-4">
             <div className="divide-y rounded-lg border">
               <ReviewRow label="Hospital Name" value={formData.hospital_name} />
-              <ReviewRow label="Address" value={formData.hospital_address || 'Not provided'} />
+              <ReviewRow label="Address" value={[formData.hospital_address1, formData.hospital_address2].filter(Boolean).join(', ') || 'Not provided'} />
               <ReviewRow label="Phone" value={formData.hospital_phone || 'Not provided'} />
               <ReviewRow label="Database Location" value={formData.db_location || 'Default (data/ folder)'} />
               <ReviewRow label="Admin Username" value={formData.admin_username} />

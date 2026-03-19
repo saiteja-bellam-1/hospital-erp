@@ -104,7 +104,7 @@ async def get_availability_settings(
     db: Session = Depends(get_db)
 ):
     """Get doctor's availability settings"""
-    if current_user.role.name != 'doctor':
+    if not current_user.has_role('doctor'):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only doctors can access availability settings"
@@ -143,7 +143,7 @@ async def update_availability_settings(
     db: Session = Depends(get_db)
 ):
     """Update doctor's availability settings"""
-    if current_user.role.name != 'doctor':
+    if not current_user.has_role('doctor'):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only doctors can update availability settings"
@@ -177,7 +177,7 @@ async def create_special_schedule(
     db: Session = Depends(get_db)
 ):
     """Create a special schedule (holiday, leave, modified hours)"""
-    if current_user.role.name != 'doctor':
+    if not current_user.has_role('doctor'):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only doctors can create special schedules"
@@ -226,7 +226,7 @@ async def get_special_schedules(
     db: Session = Depends(get_db)
 ):
     """Get doctor's special schedules"""
-    if current_user.role.name != 'doctor':
+    if not current_user.has_role('doctor'):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only doctors can access special schedules"
@@ -250,7 +250,7 @@ async def delete_special_schedule(
     db: Session = Depends(get_db)
 ):
     """Delete a special schedule"""
-    if current_user.role.name != 'doctor':
+    if not current_user.has_role('doctor'):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only doctors can delete special schedules"
@@ -279,7 +279,7 @@ async def update_availability_status(
     db: Session = Depends(get_db)
 ):
     """Update doctor's current availability status"""
-    if current_user.role.name != 'doctor':
+    if not current_user.has_role('doctor'):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only doctors can update availability status"
@@ -310,7 +310,7 @@ async def get_day_availability(
 ):
     """Get available slots for a specific date (for receptionists)"""
     # If doctor_id not provided, use current user (for doctors checking their own schedule)
-    if not doctor_id and current_user.role.name == 'doctor':
+    if not doctor_id and current_user.has_role('doctor'):
         doctor_id = current_user.id
     elif not doctor_id:
         raise HTTPException(

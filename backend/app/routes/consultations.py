@@ -13,6 +13,7 @@ from app.models.ehr import Consultation
 from app.models.lab import PatientLabOrder, LabTest, LabTestCategory
 from app.models.patient import Patient
 from app.models.prescriptions_simple import SimplePrescription
+from app.models.hospital import Hospital
 from app.models.billing import Bill, BillItem, PaymentMethod, Payment
 from app.utils.dependencies import get_current_user, require_permission
 from app.utils.auth import Modules
@@ -94,7 +95,7 @@ async def create_consultation(
     db: Session = Depends(get_db)
 ):
     """Create a new consultation record"""
-    if current_user.role.name not in ['doctor', 'super_admin']:
+    if not any(r in current_user.role_names for r in ['doctor', 'super_admin']):
         raise HTTPException(status_code=403, detail="Only doctors can create consultations")
 
     patient = db.query(Patient).filter(Patient.id == data.patient_id).first()
@@ -132,7 +133,7 @@ async def get_my_consultations(
     db: Session = Depends(get_db)
 ):
     """Get consultations for current doctor"""
-    if current_user.role.name not in ['doctor', 'super_admin']:
+    if not any(r in current_user.role_names for r in ['doctor', 'super_admin']):
         raise HTTPException(status_code=403, detail="Only doctors can access this")
 
     query = db.query(Consultation).filter(Consultation.doctor_id == current_user.id)
@@ -242,7 +243,7 @@ async def update_consultation(
     consultation = db.query(Consultation).filter(Consultation.id == consultation_id).first()
     if not consultation:
         raise HTTPException(status_code=404, detail="Consultation not found")
-    if consultation.doctor_id != current_user.id and current_user.role.name != 'super_admin':
+    if consultation.doctor_id != current_user.id and not current_user.has_role('super_admin'):
         raise HTTPException(status_code=403, detail="Not authorized")
 
     if data.chief_complaint is not None:
@@ -1126,12 +1127,13 @@ async def get_bill_for_printing(
         items=items_response
     )
     
+    hospital = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
     hospital_info = {
-        "name": "General Hospital",
-        "address": "123 Medical Center Drive, New York, NY 10001",
-        "phone": "+1-212-555-0123",
-        "email": "info@generalhospital.com",
-        "website": "https://www.generalhospital.com"
+        "name": hospital.name if hospital else "Hospital",
+        "address": hospital.address if hospital else "",
+        "phone": hospital.phone if hospital else "",
+        "email": hospital.email if hospital else "",
+        "logo_url": hospital.logo_url if hospital else ""
     }
     
     payment_receipt = None
@@ -1225,12 +1227,13 @@ async def download_bill_pdf(
             "transaction_reference": latest_payment.transaction_reference
         }
     
+    hospital = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
     hospital_info = {
-        "name": "General Hospital",
-        "address": "123 Medical Center Drive, New York, NY 10001",
-        "phone": "+1-212-555-0123",
-        "email": "info@generalhospital.com",
-        "website": "https://www.generalhospital.com"
+        "name": hospital.name if hospital else "Hospital",
+        "address": hospital.address if hospital else "",
+        "phone": hospital.phone if hospital else "",
+        "email": hospital.email if hospital else "",
+        "logo_url": hospital.logo_url if hospital else ""
     }
     
     # Generate PDF

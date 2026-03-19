@@ -334,7 +334,7 @@ async def get_user_module_permissions(
     db: Session = Depends(get_db)
 ):
     """Get current user's permissions for a specific module"""
-    if current_user.role.name == 'super_admin':
+    if current_user.has_role('super_admin'):
         return {"permissions": ["all"], "role": "super_admin"}
     
     role_permissions = db.query(RoleModulePermission).filter(

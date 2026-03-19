@@ -18,7 +18,7 @@ router = APIRouter()
 def _require_ehr_access(current_user: User):
     """Only doctor, hospital_admin, super_admin can access EHR"""
     allowed = ['doctor', 'hospital_admin', 'super_admin']
-    if current_user.role.name not in allowed:
+    if not any(r in current_user.role_names for r in allowed):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You do not have access to EHR records"

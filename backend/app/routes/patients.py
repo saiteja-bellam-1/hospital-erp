@@ -306,7 +306,7 @@ async def record_patient_vitals(
     
     # Check if user role is allowed to record vitals
     allowed_roles = ['nurse', 'doctor', 'receptionist', 'super_admin', 'hospital_admin']
-    if current_user.role.name not in allowed_roles:
+    if not any(r in current_user.role_names for r in allowed_roles):
         raise HTTPException(status_code=403, detail="Not authorized to record vitals")
     
     # Verify patient exists and belongs to same hospital
@@ -368,7 +368,7 @@ async def get_patient_vitals(
     
     # Check if user role is allowed to view vitals
     allowed_roles = ['nurse', 'doctor', 'receptionist', 'super_admin', 'hospital_admin']
-    if current_user.role.name not in allowed_roles:
+    if not any(r in current_user.role_names for r in allowed_roles):
         raise HTTPException(status_code=403, detail="Not authorized to view vitals")
     
     # Verify patient exists and belongs to same hospital

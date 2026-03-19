@@ -1163,7 +1163,8 @@ async def download_appointment_bill(
         "address": hospital.address if hospital else "",
         "phone": hospital.phone if hospital else "",
         "email": hospital.email if hospital else "",
-        "website": hospital.website if hospital else ""
+        "website": hospital.website if hospital else "",
+        "logo_url": hospital.logo_url if hospital else ""
     }
     
     # Generate bill number
@@ -1183,6 +1184,7 @@ async def download_appointment_bill(
         "print_date": datetime.now().isoformat(),
         "patient_name": f"{appointment.patient.first_name} {appointment.patient.last_name}",
         "patient_phone": appointment.patient.primary_phone or "",
+        "patient_id": appointment.patient.patient_id or "",
         "patient_age": "",
         "patient_gender": appointment.patient.gender or "",
         "reg_no": appointment.appointment_number,

@@ -47,6 +47,13 @@ class ParameterCreate(BaseModel):
     method: Optional[str] = None
     section: Optional[str] = None
     field_type: str = Field(default="numeric", pattern="^(numeric|less_than|greater_than|positive_negative|reactive|presence_absence|cloudy_clear|colour|manual|text|select)$")
+    reference_ranges: Optional[list] = None  # [{min, max, gender, age_min, age_max, description}]
+    possible_values: Optional[list] = None
+    abnormal_values: Optional[list] = None
+    normal_value: Optional[str] = None
+    notes: Optional[str] = None
+    display_order: int = 0
+    # Legacy fields — kept for backward compat
     reference_min_male: Optional[float] = None
     reference_max_male: Optional[float] = None
     reference_min_female: Optional[float] = None
@@ -55,11 +62,6 @@ class ParameterCreate(BaseModel):
     reference_max_default: Optional[float] = None
     reference_min_child: Optional[float] = None
     reference_max_child: Optional[float] = None
-    possible_values: Optional[list] = None
-    abnormal_values: Optional[list] = None
-    normal_value: Optional[str] = None
-    notes: Optional[str] = None
-    display_order: int = 0
 
 class ParameterResponse(BaseModel):
     id: int
@@ -68,20 +70,22 @@ class ParameterResponse(BaseModel):
     method: Optional[str] = None
     section: Optional[str] = None
     field_type: str
-    reference_min_male: Optional[float]
-    reference_max_male: Optional[float]
-    reference_min_female: Optional[float]
-    reference_max_female: Optional[float]
-    reference_min_default: Optional[float]
-    reference_max_default: Optional[float]
-    reference_min_child: Optional[float] = None
-    reference_max_child: Optional[float] = None
+    reference_ranges: Optional[list] = None
     possible_values: Optional[list]
     abnormal_values: Optional[list] = None
     normal_value: Optional[str] = None
     notes: Optional[str] = None
     display_order: int
     is_active: bool
+    # Legacy
+    reference_min_male: Optional[float] = None
+    reference_max_male: Optional[float] = None
+    reference_min_female: Optional[float] = None
+    reference_max_female: Optional[float] = None
+    reference_min_default: Optional[float] = None
+    reference_max_default: Optional[float] = None
+    reference_min_child: Optional[float] = None
+    reference_max_child: Optional[float] = None
     class Config:
         from_attributes = True
 
@@ -126,6 +130,7 @@ class TestResponse(BaseModel):
 class OrderCreate(BaseModel):
     patient_id: int
     test_ids: List[int] = Field(..., min_length=1)
+    appointment_id: Optional[int] = None
     priority: str = Field(default="normal", pattern="^(normal|urgent|stat)$")
     notes: Optional[str] = None
 
@@ -146,6 +151,8 @@ class OrderResponse(BaseModel):
     completion_date: Optional[datetime]
     notes: Optional[str]
     consultation_id: Optional[int] = None
+    appointment_id: Optional[int] = None
+    order_source: Optional[str] = None  # "appointment", "package", "direct"
     has_report: bool = False
     report_id: Optional[int] = None
     amount: float = 0.0
@@ -162,6 +169,7 @@ class OrderResponse(BaseModel):
 class ResultEntry(BaseModel):
     parameter_id: int
     value: str
+    remarks: Optional[str] = None
 
 class ResultSubmit(BaseModel):
     results: List[ResultEntry]
@@ -269,11 +277,11 @@ class PackageBooking(BaseModel):
 # ============================================================
 
 def _require_lab_admin(current_user: User):
-    if current_user.role.name not in ['super_admin', 'hospital_admin', 'lab_admin']:
+    if not any(r in current_user.role_names for r in ['super_admin', 'hospital_admin', 'lab_admin', 'lab_technician']):
         raise HTTPException(status_code=403, detail="Lab admin access required")
 
 def _require_lab_access(current_user: User):
-    if current_user.role.name not in ['super_admin', 'hospital_admin', 'lab_admin', 'lab_technician', 'doctor']:
+    if not any(r in current_user.role_names for r in ['super_admin', 'hospital_admin', 'lab_admin', 'lab_technician', 'doctor']):
         raise HTTPException(status_code=403, detail="Lab access required")
 
 def _calculate_age(dob):
@@ -281,6 +289,59 @@ def _calculate_age(dob):
         return None
     today = date.today()
     return today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+
+def _match_reference_range(ranges, gender, age):
+    """Find the best matching reference range entry for a patient's gender and age.
+    Returns (ref_min, ref_max, description).
+    Priority: exact gender+age match > gender match > common+age match > common."""
+    if not ranges:
+        return None, None, ""
+    best = None
+    best_score = -1
+    for r in ranges:
+        score = 0
+        r_gender = (r.get('gender') or 'common').lower()
+        r_age_min = r.get('age_min')
+        r_age_max = r.get('age_max')
+
+        # Gender match
+        if gender and r_gender == gender:
+            score += 2
+        elif r_gender == 'common':
+            score += 1
+        else:
+            continue  # wrong gender, skip
+
+        # Age match
+        if age is not None and r_age_min is not None and r_age_max is not None:
+            try:
+                if float(r_age_min) <= age <= float(r_age_max):
+                    score += 2
+                else:
+                    continue  # outside age range, skip
+            except (ValueError, TypeError):
+                pass
+        elif r_age_min is None and r_age_max is None:
+            score += 1  # no age restriction, broad match
+
+        if score > best_score:
+            best_score = score
+            best = r
+
+    if best:
+        ref_min = best.get('min')
+        ref_max = best.get('max')
+        try:
+            ref_min = float(ref_min) if ref_min is not None and ref_min != '' else None
+        except (ValueError, TypeError):
+            ref_min = None
+        try:
+            ref_max = float(ref_max) if ref_max is not None and ref_max != '' else None
+        except (ValueError, TypeError):
+            ref_max = None
+        return ref_min, ref_max, best.get('description', '')
+    return None, None, ""
+
 
 def _build_test_response(test: LabTest, db: Session) -> dict:
     category = db.query(LabTestCategory).filter(LabTestCategory.id == test.category_id).first()
@@ -343,6 +404,8 @@ def _build_order_response(order: PatientLabOrder, db: Session) -> dict:
         "completion_date": order.completion_date,
         "notes": order.notes,
         "consultation_id": order.consultation_id,
+        "appointment_id": order.appointment_id,
+        "order_source": "package" if order.package_id else ("appointment" if order.appointment_id else "direct"),
         "has_report": report is not None,
         "report_id": report.id if report else None,
         "amount": order.amount or (test.cost if test else 0.0),
@@ -373,18 +436,23 @@ def _build_report_response(report: LabReport, db: Session) -> dict:
         if not param:
             continue
 
-        # Determine reference range based on gender
+        # Determine reference range — use new reference_ranges if available, else legacy columns
         ref_min = None
         ref_max = None
-        if gender == "male" and param.reference_min_male is not None:
-            ref_min = param.reference_min_male
-            ref_max = param.reference_max_male
-        elif gender == "female" and param.reference_min_female is not None:
-            ref_min = param.reference_min_female
-            ref_max = param.reference_max_female
+        matched_desc = ""
+        if param.reference_ranges:
+            ref_min, ref_max, matched_desc = _match_reference_range(param.reference_ranges, gender, age)
         else:
-            ref_min = param.reference_min_default
-            ref_max = param.reference_max_default
+            # Legacy fallback
+            if gender == "male" and param.reference_min_male is not None:
+                ref_min = param.reference_min_male
+                ref_max = param.reference_max_male
+            elif gender == "female" and param.reference_min_female is not None:
+                ref_min = param.reference_min_female
+                ref_max = param.reference_max_female
+            else:
+                ref_min = param.reference_min_default
+                ref_max = param.reference_max_default
 
         # Check abnormal
         is_abnormal = False
@@ -434,7 +502,8 @@ def _build_report_response(report: LabReport, db: Session) -> dict:
             "reference_max": ref_max,
             "normal_value": param.normal_value,
             "is_abnormal": is_abnormal,
-            "field_type": param.field_type
+            "field_type": param.field_type,
+            "remarks": rv.get("remarks", "")
         })
 
     # Determine referral label: doctor = "Prescribed By", referral/self = "Referred By"
@@ -694,15 +763,7 @@ async def add_parameter(
     if not test:
         raise HTTPException(status_code=404, detail="Test not found")
 
-    param = LabTestParameter(
-        test_id=test_id, parameter_name=data.parameter_name, unit=data.unit,
-        method=data.method, section=data.section,
-        field_type=data.field_type,
-        reference_min_male=data.reference_min_male, reference_max_male=data.reference_max_male,
-        reference_min_female=data.reference_min_female, reference_max_female=data.reference_max_female,
-        reference_min_default=data.reference_min_default, reference_max_default=data.reference_max_default,
-        possible_values=data.possible_values, display_order=data.display_order
-    )
+    param = LabTestParameter(test_id=test_id, **data.dict())
     db.add(param)
     db.commit()
     db.refresh(param)
@@ -830,6 +891,7 @@ async def create_orders(
             patient_id=data.patient_id,
             test_id=test_id,
             doctor_id=current_user.id,
+            appointment_id=data.appointment_id,
             priority=data.priority,
             notes=data.notes,
             status="ordered",
@@ -848,6 +910,7 @@ async def list_orders(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     patient_id: Optional[int] = None,
+    appointment_id: Optional[int] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -859,17 +922,19 @@ async def list_orders(
         query = query.filter(PatientLabOrder.status == status)
     if patient_id:
         query = query.filter(PatientLabOrder.patient_id == patient_id)
+    if appointment_id:
+        query = query.filter(PatientLabOrder.appointment_id == appointment_id)
     if date_from:
         query = query.filter(PatientLabOrder.order_date >= date_from)
     if date_to:
         query = query.filter(PatientLabOrder.order_date <= date_to + " 23:59:59")
 
     # For doctors, only show their orders
-    if current_user.role.name == 'doctor':
+    if current_user.has_role('doctor'):
         query = query.filter(PatientLabOrder.doctor_id == current_user.id)
 
     # Lab technicians only see paid orders (payment gate)
-    if current_user.role.name == 'lab_technician':
+    if current_user.has_role('lab_technician'):
         query = query.filter(PatientLabOrder.payment_status == 'paid')
 
     orders = query.order_by(PatientLabOrder.order_date.desc()).limit(200).all()
@@ -954,7 +1019,7 @@ async def update_order_payment(
 ):
     """Mark a lab order as paid. Accessible by receptionist, hospital_admin, super_admin."""
     allowed = ['receptionist', 'hospital_admin', 'super_admin']
-    if current_user.role.name not in allowed:
+    if not any(r in current_user.role_names for r in allowed):
         raise HTTPException(status_code=403, detail="Only reception or admin can collect lab payments")
 
     order = db.query(PatientLabOrder).join(Patient).filter(
@@ -985,7 +1050,7 @@ async def generate_lab_bill(
     """Pay all pending lab orders for a patient and generate a combined PDF bill.
     Uses lab config provider details if available, falls back to hospital info."""
     allowed = ['receptionist', 'hospital_admin', 'super_admin']
-    if current_user.role.name not in allowed:
+    if not any(r in current_user.role_names for r in allowed):
         raise HTTPException(status_code=403, detail="Only reception or admin can generate lab bills")
 
     # Get pending orders
@@ -1138,6 +1203,18 @@ async def get_entry_form(
     ).order_by(LabTestParameter.display_order).all()
 
     gender = patient.gender.lower() if patient and patient.gender else None
+    age = _calculate_age(patient.date_of_birth) if patient else None
+
+    def _resolve_range(p):
+        if p.reference_ranges:
+            rmin, rmax, _ = _match_reference_range(p.reference_ranges, gender, age)
+            return rmin, rmax
+        # Legacy fallback
+        if gender == "male" and p.reference_min_male is not None:
+            return p.reference_min_male, p.reference_max_male
+        if gender == "female" and p.reference_min_female is not None:
+            return p.reference_min_female, p.reference_max_female
+        return p.reference_min_default, p.reference_max_default
 
     return {
         "order_id": order.id,
@@ -1152,17 +1229,11 @@ async def get_entry_form(
                 "parameter_name": p.parameter_name,
                 "unit": p.unit,
                 "field_type": p.field_type,
-                "reference_min": p.reference_min_male if gender == "male" and p.reference_min_male is not None
-                    else (p.reference_min_female if gender == "female" and p.reference_min_female is not None
-                    else p.reference_min_default),
-                "reference_max": p.reference_max_male if gender == "male" and p.reference_max_male is not None
-                    else (p.reference_max_female if gender == "female" and p.reference_max_female is not None
-                    else p.reference_max_default),
+                "reference_min": _resolve_range(p)[0],
+                "reference_max": _resolve_range(p)[1],
                 "possible_values": p.possible_values,
                 "abnormal_values": p.abnormal_values,
                 "normal_value": p.normal_value,
-                "reference_min_child": p.reference_min_child,
-                "reference_max_child": p.reference_max_child,
                 "notes": p.notes,
                 "display_order": p.display_order
             } for p in params
@@ -1191,7 +1262,7 @@ async def submit_results(
     if existing:
         raise HTTPException(status_code=400, detail="Report already exists for this order")
 
-    result_values = [{"parameter_id": r.parameter_id, "value": r.value} for r in data.results]
+    result_values = [{"parameter_id": r.parameter_id, "value": r.value, "remarks": r.remarks or ""} for r in data.results]
 
     report = LabReport(
         order_id=order_id,
@@ -1283,7 +1354,8 @@ async def download_report_pdf(
         "name": hospital.name if hospital else "Hospital",
         "address": hospital.address if hospital else "",
         "phone": hospital.phone if hospital else "",
-        "email": hospital.email if hospital else ""
+        "email": hospital.email if hospital else "",
+        "logo_url": hospital.logo_url if hospital else ""
     }
 
     # Get lab-specific config from HospitalSettings
@@ -1332,7 +1404,8 @@ async def download_package_report_pdf(
         "name": hospital.name if hospital else "Hospital",
         "address": hospital.address if hospital else "",
         "phone": hospital.phone if hospital else "",
-        "email": hospital.email if hospital else ""
+        "email": hospital.email if hospital else "",
+        "logo_url": hospital.logo_url if hospital else ""
     }
 
     lab_settings = db.query(HospitalSettings).filter(
@@ -1758,7 +1831,7 @@ async def book_package(
 ):
     """Book a test package for a patient. Creates individual lab orders, marks as paid, returns bill PDF."""
     allowed = ['receptionist', 'hospital_admin', 'super_admin']
-    if current_user.role.name not in allowed:
+    if not any(r in current_user.role_names for r in allowed):
         raise HTTPException(status_code=403, detail="Only reception or admin can book packages")
 
     # Validate package

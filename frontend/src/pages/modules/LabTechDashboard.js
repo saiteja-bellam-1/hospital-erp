@@ -32,6 +32,7 @@ const LabTechDashboard = () => {
   const [showEntryDialog, setShowEntryDialog] = useState(false);
   const [entryForm, setEntryForm] = useState(null);
   const [entryValues, setEntryValues] = useState({});
+  const [remarkValues, setRemarkValues] = useState({});
   const [interpretation, setInterpretation] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
@@ -150,6 +151,7 @@ const LabTechDashboard = () => {
         initialValues[p.id] = '';
       });
       setEntryValues(initialValues);
+      setRemarkValues({});
       setInterpretation('');
       setShowEntryDialog(true);
     } catch (err) {
@@ -165,7 +167,8 @@ const LabTechDashboard = () => {
         .filter(([_, value]) => value !== '')
         .map(([paramId, value]) => ({
           parameter_id: parseInt(paramId),
-          value: String(value)
+          value: String(value),
+          remarks: remarkValues[paramId] || null
         }));
 
       await axios.post(`/api/lab/orders/${entryForm.order_id}/results`, {
@@ -395,6 +398,9 @@ const LabTechDashboard = () => {
             <div className="flex items-center gap-2 mb-1">
               <span className="font-semibold">{order.patient_name}</span>
               <Badge className={getStatusColor(order.status)}>{order.status}</Badge>
+              {order.order_source && (
+                <Badge variant="outline" className="text-[10px] capitalize">{order.order_source}</Badge>
+              )}
               {order.priority !== 'normal' && (
                 <Badge variant={getPriorityColor(order.priority)}>
                   {order.priority.toUpperCase()}
@@ -608,7 +614,8 @@ const LabTechDashboard = () => {
                   <th className="pb-2 pr-3">Parameter</th>
                   <th className="pb-2 pr-3">Value</th>
                   <th className="pb-2 pr-3">Unit</th>
-                  <th className="pb-2">Reference Range</th>
+                  <th className="pb-2 pr-3">Reference Range</th>
+                  <th className="pb-2">Remarks</th>
                 </tr>
               </thead>
               <tbody>
@@ -714,6 +721,15 @@ const LabTechDashboard = () => {
                             <AlertCircle className="inline h-3 w-3" /> Abnormal
                           </span>
                         )}
+                      </td>
+                      <td className="py-2">
+                        <Input
+                          type="text"
+                          value={remarkValues[param.id] || ''}
+                          onChange={(e) => setRemarkValues({ ...remarkValues, [param.id]: e.target.value })}
+                          className="w-[140px] h-8 text-xs"
+                          placeholder="Remarks"
+                        />
                       </td>
                     </tr>
                   );

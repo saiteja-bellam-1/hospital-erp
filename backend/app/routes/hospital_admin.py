@@ -92,7 +92,7 @@ class DoctorProfileResponse(BaseModel):
 
 def require_hospital_admin(current_user: User = Depends(get_current_user)):
     """Dependency to ensure only hospital admin or super admin can access these endpoints"""
-    if current_user.role.name not in ['super_admin', 'hospital_admin']:
+    if not any(r in current_user.role_names for r in ['super_admin', 'hospital_admin']):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Hospital admin access required"
@@ -206,7 +206,7 @@ async def get_all_doctors(
 ):
     """Get all doctors in the hospital"""
     # Super admin can see all doctors, hospital admin sees only their hospital's doctors
-    if current_user.role.name == 'super_admin':
+    if current_user.has_role('super_admin'):
         doctors = db.query(User).join(User.role).filter(
             User.role.has(name='doctor')
         ).all()
@@ -535,7 +535,7 @@ async def get_dashboard_overview(
 ):
     """Aggregated dashboard data for hospital admin."""
     import traceback
-    if current_user.role.name not in ("super_admin", "hospital_admin"):
+    if not any(r in current_user.role_names for r in ("super_admin", "hospital_admin")):
         raise HTTPException(status_code=403, detail="Not authorized")
 
     try:
@@ -726,4 +726,123 @@ def _get_dashboard_data(current_user, db):
         "recent_activity": recent_activity,
         "pending_labs": pending_lab_list,
         "weekly_trend": weekly_trend,
+    }
+
+
+@router.get("/billing")
+async def get_all_bills(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    patient_search: Optional[str] = None,
+    bill_type: Optional[str] = None,
+    payment_status: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Centralised billing view — all appointment + lab bills with filters."""
+    if not any(r in current_user.role_names for r in ['super_admin', 'hospital_admin']):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    hospital_id = current_user.hospital_id
+    today = date.today()
+    d_from = date_from or today.isoformat()
+    d_to = date_to or today.isoformat()
+
+    bills = []
+
+    # --- Appointment bills ---
+    apt_query = db.query(Appointment).join(Patient).filter(
+        Patient.hospital_id == hospital_id,
+        sql_func.date(Appointment.created_at) >= d_from,
+        sql_func.date(Appointment.created_at) <= d_to,
+    )
+    if payment_status:
+        apt_query = apt_query.filter(Appointment.payment_status == payment_status)
+    if patient_search:
+        q = f"%{patient_search}%"
+        apt_query = apt_query.filter(
+            (Patient.first_name.ilike(q)) | (Patient.last_name.ilike(q)) | (Patient.primary_phone.ilike(q))
+        )
+    if bill_type and bill_type not in ('appointment', 'consultation'):
+        apt_query = apt_query.filter(False)  # skip
+
+    for apt in apt_query.order_by(Appointment.created_at.desc()).all():
+        p = apt.patient
+        doctor = db.query(User).filter(User.id == apt.doctor_id).first() if apt.doctor_id else None
+        bills.append({
+            "id": f"APT-{apt.id}",
+            "type": "consultation",
+            "date": apt.created_at.isoformat() if apt.created_at else "",
+            "patient_name": f"{p.first_name} {p.last_name}" if p else "Unknown",
+            "patient_phone": p.primary_phone if p else "",
+            "patient_id": p.patient_id if p else "",
+            "doctor_name": f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else "",
+            "reference": apt.appointment_number,
+            "items": f"Consultation{' + Registration' if apt.registration_fee else ''}",
+            "subtotal": (apt.consultation_fee or 0) + (apt.registration_fee or 0),
+            "discount": apt.discount_amount or 0,
+            "amount": apt.final_amount or 0,
+            "payment_status": apt.payment_status or "pending",
+            "payment_method": apt.payment_method or "",
+            "referred_by": apt.referred_by or "",
+        })
+
+    # --- Lab order bills ---
+    lab_query = db.query(PatientLabOrder).join(Patient).filter(
+        Patient.hospital_id == hospital_id,
+        sql_func.date(PatientLabOrder.order_date) >= d_from,
+        sql_func.date(PatientLabOrder.order_date) <= d_to,
+    )
+    if payment_status:
+        lab_query = lab_query.filter(PatientLabOrder.payment_status == payment_status)
+    if patient_search:
+        q = f"%{patient_search}%"
+        lab_query = lab_query.filter(
+            (Patient.first_name.ilike(q)) | (Patient.last_name.ilike(q)) | (Patient.primary_phone.ilike(q))
+        )
+    if bill_type and bill_type != 'lab':
+        lab_query = lab_query.filter(False)
+
+    for lo in lab_query.order_by(PatientLabOrder.order_date.desc()).all():
+        p = db.query(Patient).filter(Patient.id == lo.patient_id).first()
+        test = db.query(LabTest).filter(LabTest.id == lo.test_id).first()
+        source = "Package" if lo.package_id else "Appointment" if lo.appointment_id else "Direct"
+        bills.append({
+            "id": f"LAB-{lo.id}",
+            "type": "lab",
+            "date": lo.order_date.isoformat() if lo.order_date else "",
+            "patient_name": f"{p.first_name} {p.last_name}" if p else "Unknown",
+            "patient_phone": p.primary_phone if p else "",
+            "patient_id": p.patient_id if p else "",
+            "doctor_name": "",
+            "reference": lo.order_number,
+            "items": f"{test.name if test else 'Lab Test'} ({source})",
+            "subtotal": lo.amount or 0,
+            "discount": 0,
+            "amount": lo.amount or 0,
+            "payment_status": lo.payment_status or "pending",
+            "payment_method": lo.payment_method or "",
+            "referred_by": lo.referred_by or "",
+        })
+
+    # Sort all by date descending
+    bills.sort(key=lambda b: b["date"], reverse=True)
+
+    # Summary
+    total_billed = sum(b["amount"] for b in bills)
+    total_paid = sum(b["amount"] for b in bills if b["payment_status"] == "paid")
+    total_pending = sum(b["amount"] for b in bills if b["payment_status"] != "paid")
+    apt_count = sum(1 for b in bills if b["type"] == "consultation")
+    lab_count = sum(1 for b in bills if b["type"] == "lab")
+
+    return {
+        "bills": bills,
+        "summary": {
+            "total_bills": len(bills),
+            "total_billed": total_billed,
+            "total_paid": total_paid,
+            "total_pending": total_pending,
+            "appointment_count": apt_count,
+            "lab_count": lab_count,
+        }
     }

@@ -75,11 +75,17 @@ def get_backup_locations():
 
 def run_backup():
     """
-    Copy the SQLite database file to all configured backup locations.
+    Safely backup the SQLite database + uploads folder to all configured backup locations.
+    Uses SQLite's built-in backup API to avoid corruption from active connections.
     Returns a dict with results for each location.
     """
+    import sqlite3
+    import shutil
+    from app.utils.paths import get_uploads_dir
+
     config = load_config()
     db_path = get_configured_db_path()
+    uploads_dir = get_uploads_dir()
     backup_locations = config.get("backup_locations", [])
     results = []
 
@@ -87,16 +93,31 @@ def run_backup():
         return {"success": False, "error": "Database file not found", "results": []}
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_filename = f"kthealth_erp_backup_{timestamp}.db"
+    backup_folder_name = f"kthealth_erp_backup_{timestamp}"
+    backup_db_name = f"kthealth_erp.db"
 
     for location in backup_locations:
         entry = {"path": location, "success": False, "message": ""}
         try:
-            os.makedirs(location, exist_ok=True)
-            dest = os.path.join(location, backup_filename)
-            shutil.copy2(db_path, dest)
+            # Create a timestamped backup folder
+            backup_dir = os.path.join(location, backup_folder_name)
+            os.makedirs(backup_dir, exist_ok=True)
+
+            # 1. Backup database using SQLite backup API (safe while in use)
+            dest_db = os.path.join(backup_dir, backup_db_name)
+            source_conn = sqlite3.connect(db_path)
+            dest_conn = sqlite3.connect(dest_db)
+            source_conn.backup(dest_conn)
+            dest_conn.close()
+            source_conn.close()
+
+            # 2. Backup uploads folder (logos, signatures, etc.)
+            if os.path.isdir(uploads_dir):
+                dest_uploads = os.path.join(backup_dir, "uploads")
+                shutil.copytree(uploads_dir, dest_uploads, dirs_exist_ok=True)
+
             entry["success"] = True
-            entry["message"] = f"Backed up to {dest}"
+            entry["message"] = f"Backed up to {backup_dir}"
         except Exception as e:
             entry["message"] = str(e)
         results.append(entry)
@@ -104,7 +125,7 @@ def run_backup():
     all_ok = all(r["success"] for r in results) if results else False
     return {
         "success": all_ok,
-        "backup_file": backup_filename,
+        "backup_file": backup_folder_name,
         "db_source": db_path,
         "results": results,
     }

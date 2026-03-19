@@ -65,6 +65,19 @@ const ReceptionAppointmentsPage = () => {
   const [labPaymentLoading, setLabPaymentLoading] = useState(false);
   const [labPaymentMethod, setLabPaymentMethod] = useState('cash');
 
+  // Referrals
+  const [referralList, setReferralList] = useState([]);
+  useEffect(() => {
+    const fetchRefs = async () => {
+      try {
+        const t = localStorage.getItem('token');
+        const res = await fetch('/api/referrals', { headers: { Authorization: `Bearer ${t}` } });
+        if (res.ok) setReferralList(await res.json());
+      } catch {}
+    };
+    fetchRefs();
+  }, []);
+
   // Dialogs
   const [showAppointmentDialog, setShowAppointmentDialog] = useState(false);
   const [showBillPreviewDialog, setShowBillPreviewDialog] = useState(false);
@@ -342,26 +355,22 @@ const ReceptionAppointmentsPage = () => {
   // Lab Payment functions
   const [allLabOrders, setAllLabOrders] = useState([]);
 
-  const openLabPaymentDialog = async (patientId) => {
+  const openLabPaymentDialog = async (patientId, appointmentId = null) => {
     setLabPaymentLoading(true);
     setShowLabPaymentDialog(true);
     setPendingLabOrders([]);
     setAllLabOrders([]);
     try {
       const token = localStorage.getItem('token');
-      // Fetch pending payment orders
-      const res = await fetch(`/api/lab/orders/patient/${patientId}/pending-payment`, {
+      const aptFilter = appointmentId ? `&appointment_id=${appointmentId}` : '';
+      // Fetch pending payment orders for this appointment
+      const res = await fetch(`/api/lab/orders?patient_id=${patientId}${aptFilter}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (res.ok) {
-        setPendingLabOrders(await res.json());
-      }
-      // Fetch all orders (for report downloads)
-      const allRes = await fetch(`/api/lab/orders/patient/${patientId}`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (allRes.ok) {
-        setAllLabOrders(await allRes.json());
+        const orders = await res.json();
+        setPendingLabOrders(orders.filter(o => o.payment_status === 'pending' && o.status !== 'cancelled'));
+        setAllLabOrders(orders);
       }
     } catch (err) {
       console.error('Failed to fetch lab orders:', err);
@@ -1112,7 +1121,7 @@ const ReceptionAppointmentsPage = () => {
                         Prescription
                       </Button>
                     )}
-                    <Button size="sm" variant="ghost" className="h-7 px-3 text-xs text-teal-600 hover:text-teal-800" onClick={() => openLabPaymentDialog(appointment.patient_id)}>
+                    <Button size="sm" variant="ghost" className="h-7 px-3 text-xs text-teal-600 hover:text-teal-800" onClick={() => openLabPaymentDialog(appointment.patient_id, appointment.id)}>
                       Lab Orders
                     </Button>
                   </div>
@@ -1385,13 +1394,18 @@ const ReceptionAppointmentsPage = () => {
             </div>
 
             <div>
-              <Label htmlFor="apt_referred_by">Referred By</Label>
-              <Input
-                id="apt_referred_by"
-                value={appointmentForm.referred_by}
-                onChange={(e) => setAppointmentForm({...appointmentForm, referred_by: e.target.value})}
-                placeholder="Referring doctor / person name"
-              />
+              <Label>Referred By</Label>
+              <Select value={appointmentForm.referred_by || '_none'} onValueChange={(v) => setAppointmentForm({...appointmentForm, referred_by: v === '_none' ? '' : v})}>
+                <SelectTrigger><SelectValue placeholder="Select referral" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="_none">Self / None</SelectItem>
+                  {referralList.map(r => (
+                    <SelectItem key={r.id} value={r.name}>
+                      {r.name}{r.village ? ` — ${r.village}` : ''}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
 
             <div className="flex gap-2">

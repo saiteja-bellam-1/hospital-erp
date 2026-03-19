@@ -106,19 +106,50 @@ class PDFService:
         # HEADER: Hospital Name + Address + Receipt Title
         # ============================================================
         if include_header:
-            elements.append(Paragraph(hospital_info.get('name', 'HOSPITAL').upper(), title_style))
+            logo_path = hospital_info.get('logo_url', '')
+            uploads_base = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
+            has_logo = False
+            full_logo_path = ''
+            if logo_path:
+                relative = logo_path.lstrip('/')
+                if relative.startswith('uploads/'):
+                    relative = relative[len('uploads/'):]
+                full_logo_path = os.path.join(uploads_base, relative)
+                has_logo = os.path.exists(full_logo_path)
 
+            hospital_name = hospital_info.get('name', 'HOSPITAL').upper()
             address = hospital_info.get('address', '')
-            if address:
-                elements.append(Paragraph(address, subtitle_style))
-
             contact_parts = []
             if hospital_info.get('email'):
                 contact_parts.append(f"Email: {hospital_info['email']}")
             if hospital_info.get('phone'):
                 contact_parts.append(f"Phone: {hospital_info['phone']}")
+
+            header_text_elems = [Paragraph(hospital_name, title_style)]
+            if address:
+                header_text_elems.append(Paragraph(address, subtitle_style))
             if contact_parts:
-                elements.append(Paragraph("  |  ".join(contact_parts), subtitle_style))
+                header_text_elems.append(Paragraph("  |  ".join(contact_parts), subtitle_style))
+
+            if has_logo:
+                try:
+                    logo_img = Image(full_logo_path, width=60, height=60)
+                    logo_img.hAlign = 'CENTER'
+                    header_table = Table([[logo_img, header_text_elems]], colWidths=[75, page_width - 75])
+                    header_table.setStyle(TableStyle([
+                        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+                        ('TOPPADDING', (0, 0), (-1, -1), 0),
+                        ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+                    ]))
+                    elements.append(header_table)
+                except Exception:
+                    for el in header_text_elems:
+                        elements.append(el)
+            else:
+                for el in header_text_elems:
+                    elements.append(el)
 
             elements.append(Spacer(1, 6))
             elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
@@ -132,7 +163,7 @@ class PDFService:
         elements.append(Spacer(1, 6))
 
         # ============================================================
-        # PATIENT INFO + BILL INFO (two-column layout in one table)
+        # PATIENT INFO + BILL INFO (bordered box, like lab report)
         # ============================================================
         patient_name = bill_data.get('patient_name', '')
         age_sex = bill_data.get('patient_age', '')
@@ -144,19 +175,19 @@ class PDFService:
                 age_sex = gender
 
         phone = bill_data.get('patient_phone', '')
+        patient_id = bill_data.get('patient_id', bill_data.get('reg_no', ''))
         doctor = bill_data.get('doctor_name', '')
         pay_category = bill_data.get('payment_method', 'Cash')
-        reg_no = bill_data.get('reg_no', '')
         bill_no = bill_data.get('bill_number', '')
 
         col_w = page_width / 2
 
         patient_info_data = [
-            [lv('Name', patient_name), lv('Print date', print_date_str)],
-            [lv('Age & Sex', age_sex), lv('Bill date', bill_date_str)],
-            [lv('Mobile no', phone), lv('Reg no', reg_no)],
-            [lv('Doctor Name', doctor), lv('Bill no', bill_no)],
-            [lv('PayCategory', pay_category), Paragraph('', cell_value)],
+            [lv('Name', patient_name), lv('Bill No', bill_no)],
+            [lv('Age / Gender', age_sex), lv('Bill Date', bill_date_str)],
+            [lv('Phone', phone), lv('Print Date', print_date_str)],
+            [lv('Patient ID', patient_id), lv('Pay Mode', pay_category)],
+            [lv('Doctor', doctor), Paragraph('', cell_value)],
         ]
 
         info_table = Table(patient_info_data, colWidths=[col_w, col_w])
@@ -164,8 +195,9 @@ class PDFService:
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('TOPPADDING', (0, 0), (-1, -1), 3),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
-            ('LEFTPADDING', (0, 0), (-1, -1), 6),
+            ('LEFTPADDING', (0, 0), (-1, -1), 8),
             ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+            ('BOX', (0, 0), (-1, -1), 1, colors.black),
         ]))
         elements.append(info_table)
         elements.append(Spacer(1, 6))
@@ -558,8 +590,8 @@ class PDFService:
                 vitals_rows.append([lbl('Temperature'), val(f"{vs['temperature']} F")])
             if vs.get('respiratory_rate'):
                 vitals_rows.append([lbl('Resp. Rate'), val(str(vs['respiratory_rate']))])
-            if vs.get('spo2'):
-                vitals_rows.append([lbl('SpO2'), val(str(vs['spo2']))])
+            if vs.get('spo2') or vs.get('oxygen_saturation'):
+                vitals_rows.append([lbl('SpO2'), val(f"{vs.get('spo2') or vs.get('oxygen_saturation')}%")])
             if vs.get('bmi'):
                 vitals_rows.append([lbl('BMI'), val(str(vs['bmi']))])
         else:
@@ -1043,8 +1075,13 @@ class PDFService:
 
             flag_style = cell_abnormal if is_abnormal else cell_value
 
+            param_text = r.get('parameter_name', '')
+            remarks = r.get('remarks', '')
+            if remarks:
+                param_text = f"{param_text}<br/><i><font size='7' color='grey'>{remarks}</font></i>"
+
             results_data.append([
-                Paragraph(r.get('parameter_name', ''), cell_value),
+                Paragraph(param_text, cell_value),
                 Paragraph(str(r.get('value', '')), value_style),
                 Paragraph(flag_text, flag_style),
                 Paragraph(ref_range, cell_value),
@@ -1411,8 +1448,13 @@ class PDFService:
 
                 flag_style = cell_abnormal if is_abnormal else cell_value
 
+                param_text = r.get('parameter_name', '')
+                remarks = r.get('remarks', '')
+                if remarks:
+                    param_text = f"{param_text}<br/><i><font size='7' color='grey'>{remarks}</font></i>"
+
                 results_data.append([
-                    Paragraph(r.get('parameter_name', ''), cell_value),
+                    Paragraph(param_text, cell_value),
                     Paragraph(str(r.get('value', '')), value_style),
                     Paragraph(flag_text, flag_style),
                     Paragraph(ref_range, cell_value),

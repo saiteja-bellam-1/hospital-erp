@@ -31,6 +31,7 @@ NEW_COLUMNS = [
     ("appointments", "referred_by", "VARCHAR(100)"),
     ("payments", "payment_method_name", "VARCHAR(50) DEFAULT 'cash'"),
     ("patient_lab_orders", "sample_id", "VARCHAR(50)"),
+    ("lab_test_parameters", "reference_ranges", "JSON"),
     ("lab_test_parameters", "abnormal_values", "JSON"),
     ("lab_test_parameters", "normal_value", "VARCHAR(100)"),
     ("patient_lab_orders", "referred_by", "VARCHAR(100)"),

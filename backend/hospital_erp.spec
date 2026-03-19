@@ -75,6 +75,8 @@ a = Analysis(
         'app.utils.config',
         'app.routes.setup',
         'app.routes.backup',
+        'app.routes.referrals',
+        'app.models.referral',
         'setup_system_data',
         'app.services.super_admin_service',
         'app.utils.auth',

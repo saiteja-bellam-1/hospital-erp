@@ -70,7 +70,7 @@ class PrescriptionResponse(BaseModel):
 
 def require_doctor_access(current_user: User = Depends(get_current_user)):
     """Dependency to ensure only doctors can create prescriptions"""
-    if current_user.role.name not in ['doctor', 'super_admin']:
+    if not any(r in current_user.role_names for r in ['doctor', 'super_admin']):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Doctor access required"
@@ -79,7 +79,7 @@ def require_doctor_access(current_user: User = Depends(get_current_user)):
 
 def require_pharmacy_access(current_user: User = Depends(get_current_user)):
     """Dependency for pharmacy staff to dispense medications"""
-    if current_user.role.name not in ['pharmacist', 'pharmacy_admin', 'super_admin', 'hospital_admin']:
+    if not any(r in current_user.role_names for r in ['pharmacist', 'pharmacy_admin', 'super_admin', 'hospital_admin']):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Pharmacy access required"
@@ -262,7 +262,7 @@ async def get_prescriptions(
         query = query.filter(Prescription.status == status)
     
     # For doctors, only show their own prescriptions
-    if current_user.role.name == 'doctor':
+    if current_user.has_role('doctor'):
         query = query.filter(Prescription.doctor_id == current_user.id)
     
     prescriptions = query.offset(offset).limit(limit).all()
@@ -284,7 +284,7 @@ async def get_prescription(
         )
     
     # Check access permissions
-    if (current_user.role.name == 'doctor' and prescription.doctor_id != current_user.id):
+    if (current_user.has_role('doctor') and prescription.doctor_id != current_user.id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied to this prescription"
@@ -308,7 +308,7 @@ async def update_prescription(
         )
     
     # Only the prescribing doctor can update
-    if prescription.doctor_id != current_user.id and current_user.role.name != 'super_admin':
+    if prescription.doctor_id != current_user.id and not current_user.has_role('super_admin'):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only the prescribing doctor can update this prescription"

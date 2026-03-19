@@ -708,6 +708,7 @@ const DoctorDashboard = () => {
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
           body: JSON.stringify({
             patient_id: selectedAppointment.patient_id,
+            appointment_id: selectedAppointment.id,
             test_ids: selectedLabTests,
             priority: labOrderPriority,
             notes: combinedNotes || null

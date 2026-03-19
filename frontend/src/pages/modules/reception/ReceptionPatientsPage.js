@@ -92,6 +92,19 @@ const ReceptionPatientsPage = () => {
     fetchPatients();
   }, []);
 
+  // Referral list
+  const [referralList, setReferralList] = useState([]);
+  useEffect(() => {
+    const fetchRefs = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        const res = await fetch('/api/referrals', { headers: { Authorization: `Bearer ${token}` } });
+        if (res.ok) setReferralList(await res.json());
+      } catch {}
+    };
+    fetchRefs();
+  }, []);
+
   // Filter and sort patients: matches come first, rest follow
   useEffect(() => {
     let filtered = patients;
@@ -780,12 +793,17 @@ const ReceptionPatientsPage = () => {
             </div>
             <div>
               <Label htmlFor="referred_by">Referred By</Label>
-              <Input
+              <select
                 id="referred_by"
-                value={patientForm.referred_by}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+                value={patientForm.referred_by || ''}
                 onChange={(e) => setPatientForm({...patientForm, referred_by: e.target.value})}
-                placeholder="Referring doctor / person name"
-              />
+              >
+                <option value="">Self / None</option>
+                {referralList.map(r => (
+                  <option key={r.id} value={r.name}>{r.name}{r.village ? ` — ${r.village}` : ''}</option>
+                ))}
+              </select>
             </div>
 
             {/* Emergency Contact Section */}
@@ -962,7 +980,16 @@ const ReceptionPatientsPage = () => {
             </div>
             <div>
               <Label>Referred By</Label>
-              <Input value={editPatientForm.referred_by || ''} onChange={(e) => setEditPatientForm({...editPatientForm, referred_by: e.target.value})} placeholder="Referring doctor / person name" />
+              <select
+                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+                value={editPatientForm.referred_by || ''}
+                onChange={(e) => setEditPatientForm({...editPatientForm, referred_by: e.target.value})}
+              >
+                <option value="">Self / None</option>
+                {referralList.map(r => (
+                  <option key={r.id} value={r.name}>{r.name}{r.village ? ` — ${r.village}` : ''}</option>
+                ))}
+              </select>
             </div>
 
             {/* Emergency Contact Section */}

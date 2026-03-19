@@ -47,7 +47,9 @@ class LabTestParameter(Base):
     unit = Column(String(50))
     method = Column(String(200), nullable=True)
     section = Column(String(200), nullable=True)  # For grouping parameters within a test
-    field_type = Column(String(20), default="numeric")  # numeric, text, select
+    field_type = Column(String(20), default="numeric")  # numeric, less_than, greater_than, positive_negative, reactive, presence_absence, cloudy_clear, colour, manual, select
+    reference_ranges = Column(JSON, nullable=True)  # [{min, max, gender, age_min, age_max, description}]
+    # Legacy columns kept for backward compatibility
     reference_min_male = Column(Float, nullable=True)
     reference_max_male = Column(Float, nullable=True)
     reference_min_female = Column(Float, nullable=True)
@@ -57,8 +59,8 @@ class LabTestParameter(Base):
     reference_min_child = Column(Float, nullable=True)
     reference_max_child = Column(Float, nullable=True)
     possible_values = Column(JSON, nullable=True)  # For select-type: ["Positive","Negative"]
-    abnormal_values = Column(JSON, nullable=True)  # Values considered abnormal: ["Positive","Reactive","++","+++"]
-    normal_value = Column(String(100), nullable=True)  # Normal/expected value for reference display: "Negative"
+    abnormal_values = Column(JSON, nullable=True)  # Values considered abnormal
+    normal_value = Column(String(100), nullable=True)
     notes = Column(String(500), nullable=True)
     display_order = Column(Integer, default=0)
     is_active = Column(Boolean, default=True)

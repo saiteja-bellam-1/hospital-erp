@@ -450,13 +450,50 @@ const HospitalAdminModule = () => {
               </div>
 
               <div>
-                <Label htmlFor="logo_url">Logo URL</Label>
-                <Input
-                  id="logo_url"
-                  value={hospitalInfo.logo_url}
-                  onChange={(e) => setHospitalInfo({ ...hospitalInfo, logo_url: e.target.value })}
-                  placeholder="https://example.com/logo.png"
-                />
+                <Label>Hospital Logo</Label>
+                <div className="mt-1 flex items-center gap-4">
+                  {hospitalInfo.logo_url && (
+                    <img src={hospitalInfo.logo_url} alt="Logo" className="h-16 w-16 object-contain border rounded" />
+                  )}
+                  <div>
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      id="logo-upload"
+                      className="hidden"
+                      onChange={async (e) => {
+                        const file = e.target.files[0];
+                        if (!file) return;
+                        if (file.size > 2 * 1024 * 1024) {
+                          toast({ variant: 'destructive', title: 'Error', description: 'File size must be under 2MB' });
+                          return;
+                        }
+                        const formData = new FormData();
+                        formData.append('file', file);
+                        try {
+                          const res = await axios.post('/api/hospital/upload-file', formData, {
+                            headers: { 'Content-Type': 'multipart/form-data' }
+                          });
+                          setHospitalInfo({ ...hospitalInfo, logo_url: res.data.url });
+                          toast({ title: 'Logo uploaded' });
+                        } catch {
+                          toast({ variant: 'destructive', title: 'Error', description: 'Failed to upload logo' });
+                        }
+                        e.target.value = '';
+                      }}
+                    />
+                    <Button type="button" variant="outline" size="sm" onClick={() => document.getElementById('logo-upload').click()}>
+                      {hospitalInfo.logo_url ? 'Change Logo' : 'Upload Logo'}
+                    </Button>
+                    {hospitalInfo.logo_url && (
+                      <Button type="button" variant="ghost" size="sm" className="text-red-500 ml-1"
+                        onClick={() => setHospitalInfo({ ...hospitalInfo, logo_url: '' })}>
+                        Remove
+                      </Button>
+                    )}
+                    <p className="text-[10px] text-gray-400 mt-1">PNG, JPEG, or WebP. Max 2MB.</p>
+                  </div>
+                </div>
               </div>
 
               <div>

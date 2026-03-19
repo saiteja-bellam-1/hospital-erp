@@ -1,0 +1,251 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
+import { Button } from '../../components/ui/button';
+import { Input } from '../../components/ui/input';
+import { Label } from '../../components/ui/label';
+import { Badge } from '../../components/ui/badge';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select';
+import axios from 'axios';
+import {
+  Receipt, Search, Download, Filter, DollarSign, TrendingUp, Clock,
+  CheckCircle2, AlertCircle, Loader2, CalendarDays
+} from 'lucide-react';
+
+const BillingDashboard = () => {
+  const [bills, setBills] = useState([]);
+  const [summary, setSummary] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  // Filters — default to last 7 days
+  const today = new Date().toISOString().split('T')[0];
+  const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0];
+  const [dateFrom, setDateFrom] = useState(weekAgo);
+  const [dateTo, setDateTo] = useState(today);
+  const [patientSearch, setPatientSearch] = useState('');
+  const [billType, setBillType] = useState('all');
+  const [paymentStatus, setPaymentStatus] = useState('all');
+
+  const fetchBills = useCallback(async () => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams();
+      params.set('date_from', dateFrom);
+      params.set('date_to', dateTo);
+      if (patientSearch) params.set('patient_search', patientSearch);
+      if (billType !== 'all') params.set('bill_type', billType);
+      if (paymentStatus !== 'all') params.set('payment_status', paymentStatus);
+
+      const res = await axios.get(`/api/hospital/billing?${params.toString()}`);
+      setBills(res.data.bills || []);
+      setSummary(res.data.summary || null);
+    } catch (err) {
+      console.error('Failed to fetch bills:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [dateFrom, dateTo, patientSearch, billType, paymentStatus]);
+
+  useEffect(() => { fetchBills(); }, [fetchBills]);
+
+  const formatCurrency = (val) => `₹${Number(val || 0).toLocaleString('en-IN', { minimumFractionDigits: 0 })}`;
+  const formatDate = (d) => {
+    if (!d) return '-';
+    try { return new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }); }
+    catch { return d; }
+  };
+
+  const downloadCSV = () => {
+    const headers = ['Date', 'Type', 'Reference', 'Patient', 'Phone', 'Items', 'Amount', 'Discount', 'Final', 'Status', 'Payment Method', 'Referred By'];
+    const rows = bills.map(b => [
+      formatDate(b.date), b.type, b.reference, b.patient_name, b.patient_phone,
+      b.items, b.subtotal, b.discount, b.amount, b.payment_status, b.payment_method, b.referred_by
+    ]);
+    const csv = [headers.join(','), ...rows.map(r => r.map(v => `"${v}"`).join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `billing_${dateFrom}_to_${dateTo}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold">Billing Dashboard</h1>
+          <p className="text-muted-foreground text-sm">Centralised view of all bills and payments</p>
+        </div>
+        <Button onClick={downloadCSV} disabled={bills.length === 0} variant="outline">
+          <Download className="h-4 w-4 mr-1" /> Export CSV
+        </Button>
+      </div>
+
+      {/* Summary Cards */}
+      {summary && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <Card>
+            <CardContent className="pt-5 pb-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs text-gray-500">Total Billed</p>
+                  <p className="text-xl font-bold">{formatCurrency(summary.total_billed)}</p>
+                </div>
+                <DollarSign className="h-8 w-8 text-blue-500" />
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="pt-5 pb-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs text-gray-500">Collected</p>
+                  <p className="text-xl font-bold text-green-600">{formatCurrency(summary.total_paid)}</p>
+                </div>
+                <CheckCircle2 className="h-8 w-8 text-green-500" />
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="pt-5 pb-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs text-gray-500">Pending</p>
+                  <p className="text-xl font-bold text-orange-600">{formatCurrency(summary.total_pending)}</p>
+                </div>
+                <Clock className="h-8 w-8 text-orange-500" />
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="pt-5 pb-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs text-gray-500">Total Bills</p>
+                  <p className="text-xl font-bold">{summary.total_bills}</p>
+                  <p className="text-[10px] text-gray-400">{summary.appointment_count} consult + {summary.lab_count} lab</p>
+                </div>
+                <Receipt className="h-8 w-8 text-purple-500" />
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Filters */}
+      <Card>
+        <CardContent className="pt-4 pb-3">
+          <div className="flex flex-wrap gap-3 items-end">
+            <div>
+              <Label className="text-xs">From</Label>
+              <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="w-[150px] h-9" />
+            </div>
+            <div>
+              <Label className="text-xs">To</Label>
+              <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="w-[150px] h-9" />
+            </div>
+            <div>
+              <Label className="text-xs">Patient</Label>
+              <div className="relative">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-400" />
+                <Input placeholder="Name or phone" value={patientSearch}
+                  onChange={(e) => setPatientSearch(e.target.value)} className="pl-8 w-[180px] h-9" />
+              </div>
+            </div>
+            <div>
+              <Label className="text-xs">Type</Label>
+              <Select value={billType} onValueChange={setBillType}>
+                <SelectTrigger className="w-[130px] h-9"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All</SelectItem>
+                  <SelectItem value="consultation">Consultation</SelectItem>
+                  <SelectItem value="lab">Lab Orders</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-xs">Status</Label>
+              <Select value={paymentStatus} onValueChange={setPaymentStatus}>
+                <SelectTrigger className="w-[120px] h-9"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All</SelectItem>
+                  <SelectItem value="paid">Paid</SelectItem>
+                  <SelectItem value="pending">Pending</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <Button size="sm" variant="outline" className="h-9" onClick={() => {
+              setDateFrom(weekAgo); setDateTo(today); setPatientSearch(''); setBillType('all'); setPaymentStatus('all');
+            }}>
+              Reset
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Bills Table */}
+      <Card>
+        <CardContent className="pt-4">
+          {loading ? (
+            <div className="flex justify-center py-12"><Loader2 className="h-6 w-6 animate-spin text-gray-400" /></div>
+          ) : bills.length === 0 ? (
+            <div className="text-center py-12 text-gray-500">
+              <Receipt className="h-10 w-10 mx-auto mb-2 text-gray-300" />
+              <p>No bills found for the selected filters.</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-left text-gray-500">
+                    <th className="pb-2 pr-3">Date</th>
+                    <th className="pb-2 pr-3">Type</th>
+                    <th className="pb-2 pr-3">Reference</th>
+                    <th className="pb-2 pr-3">Patient</th>
+                    <th className="pb-2 pr-3">Items</th>
+                    <th className="pb-2 pr-3 text-right">Amount</th>
+                    <th className="pb-2 pr-3">Status</th>
+                    <th className="pb-2">Method</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {bills.map((bill) => (
+                    <tr key={bill.id} className="border-b hover:bg-gray-50">
+                      <td className="py-2.5 pr-3 text-xs">{formatDate(bill.date)}</td>
+                      <td className="py-2.5 pr-3">
+                        <Badge variant="outline" className={`text-[10px] capitalize ${bill.type === 'consultation' ? 'border-blue-200 text-blue-700' : 'border-purple-200 text-purple-700'}`}>
+                          {bill.type}
+                        </Badge>
+                      </td>
+                      <td className="py-2.5 pr-3 text-xs font-mono text-gray-500">{bill.reference}</td>
+                      <td className="py-2.5 pr-3">
+                        <div>
+                          <p className="font-medium text-sm">{bill.patient_name}</p>
+                          <p className="text-[10px] text-gray-400">{bill.patient_phone}</p>
+                        </div>
+                      </td>
+                      <td className="py-2.5 pr-3 text-xs text-gray-600 max-w-[200px] truncate">{bill.items}</td>
+                      <td className="py-2.5 pr-3 text-right">
+                        <p className="font-semibold">{formatCurrency(bill.amount)}</p>
+                        {bill.discount > 0 && <p className="text-[10px] text-green-600">-{formatCurrency(bill.discount)} disc.</p>}
+                      </td>
+                      <td className="py-2.5 pr-3">
+                        <Badge className={`text-[10px] ${bill.payment_status === 'paid' ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'}`}>
+                          {bill.payment_status}
+                        </Badge>
+                      </td>
+                      <td className="py-2.5 text-xs text-gray-500 capitalize">{bill.payment_method || '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+};
+
+export default BillingDashboard;

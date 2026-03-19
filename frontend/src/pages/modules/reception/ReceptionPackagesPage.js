@@ -32,6 +32,19 @@ const ReceptionPackagesPage = () => {
   const [referredBy, setReferredBy] = useState('');
   const [bookingLoading, setBookingLoading] = useState(false);
   const [pkgIncludeHeader, setPkgIncludeHeader] = useState(true);
+  const [referralList, setReferralList] = useState([]);
+
+  useEffect(() => {
+    const fetchRefs = async () => {
+      try {
+        const res = await axios.get('/api/referrals', {
+          headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+        });
+        setReferralList(res.data);
+      } catch {}
+    };
+    fetchRefs();
+  }, []);
 
   const fetchPackages = useCallback(async () => {
     setLoading(true);
@@ -325,8 +338,17 @@ const ReceptionPackagesPage = () => {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <Label>Referred By</Label>
-                  <Input value={referredBy} onChange={(e) => setReferredBy(e.target.value)}
-                    placeholder="Referral name (optional)" />
+                  <Select value={referredBy || '_none'} onValueChange={(v) => setReferredBy(v === '_none' ? '' : v)}>
+                    <SelectTrigger><SelectValue placeholder="Select referral" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="_none">Self / None</SelectItem>
+                      {referralList.map(r => (
+                        <SelectItem key={r.id} value={r.name}>
+                          {r.name}{r.village ? ` — ${r.village}` : ''}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
                 <div>
                   <Label>Notes</Label>

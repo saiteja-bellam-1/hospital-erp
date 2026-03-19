@@ -167,7 +167,7 @@ async def get_prescriptions(
         query = query.filter(SimplePrescription.status == status)
     
     # For doctors, only show their own prescriptions unless they're admin
-    if current_user.role.name == 'doctor':
+    if current_user.has_role('doctor'):
         query = query.filter(SimplePrescription.doctor_id == current_user.id)
     
     prescriptions = query.order_by(
@@ -195,9 +195,9 @@ async def get_prescription(
         )
     
     # Check access permissions
-    if (current_user.role.name == 'doctor' and 
-        prescription.doctor_id != current_user.id and 
-        current_user.role.name not in ['super_admin', 'hospital_admin']):
+    if (current_user.has_role('doctor') and
+        prescription.doctor_id != current_user.id and
+        not any(r in current_user.role_names for r in ['super_admin', 'hospital_admin'])):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied to this prescription"
@@ -225,8 +225,8 @@ async def update_prescription(
         )
     
     # Only the prescribing doctor or admin can update
-    if (prescription.doctor_id != current_user.id and 
-        current_user.role.name not in ['super_admin', 'hospital_admin']):
+    if (prescription.doctor_id != current_user.id and
+        not any(r in current_user.role_names for r in ['super_admin', 'hospital_admin'])):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only the prescribing doctor can update this prescription"
@@ -460,8 +460,8 @@ async def cancel_prescription(
         )
     
     # Only the prescribing doctor or admin can cancel
-    if (prescription.doctor_id != current_user.id and 
-        current_user.role.name not in ['super_admin', 'hospital_admin']):
+    if (prescription.doctor_id != current_user.id and
+        not any(r in current_user.role_names for r in ['super_admin', 'hospital_admin'])):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only the prescribing doctor can cancel this prescription"

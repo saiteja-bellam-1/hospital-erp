@@ -42,6 +42,7 @@ const AdminModule = () => {
     last_name: '',
     phone: '',
     role_id: '',
+    role_ids: [],
     is_active: true,
     license_number: '',
     consultation_fee_inr: '',
@@ -132,10 +133,14 @@ const AdminModule = () => {
     setLoading(true);
 
     try {
-      // Clean up form data - convert empty strings to null for numeric fields and remove empty strings
+      const roleIds = userForm.role_ids.length > 0 ? userForm.role_ids : [];
+      if (roleIds.length === 0) {
+        throw new Error('Please select at least one role');
+      }
+
       const cleanedData = {
         ...userForm,
-        role_id: userForm.role_id ? parseInt(userForm.role_id) : null,
+        role_id: roleIds[0],  // Primary role = first selected
         experience_years: userForm.experience_years ? parseInt(userForm.experience_years) : null,
         phone: userForm.phone || null,
         license_number: userForm.license_number || null,
@@ -145,28 +150,21 @@ const AdminModule = () => {
         specialization: userForm.specialization || null,
         qualification: userForm.qualification || null,
       };
-      
-      // Remove null role_id - it's required
-      if (!cleanedData.role_id) {
-        throw new Error('Please select a role');
-      }
-      
-      console.log('Submitting user form:', cleanedData);
-      
+      delete cleanedData.role_ids;
+
+      let userId;
       if (editingUser) {
         await axios.put(`/api/admin/users/${editingUser.id}`, cleanedData);
-        toast({
-          title: "Success",
-          description: "User updated successfully"
-        });
+        userId = editingUser.id;
       } else {
         const response = await axios.post('/api/admin/users', cleanedData);
-        console.log('User creation response:', response.data);
-        toast({
-          title: "Success", 
-          description: "User created successfully"
-        });
+        userId = response.data.id;
       }
+
+      // Assign multiple roles
+      await axios.put(`/api/admin/users/${userId}/roles`, { role_ids: roleIds });
+
+      toast({ title: "Success", description: editingUser ? "User updated successfully" : "User created successfully" });
 
       setShowUserForm(false);
       setEditingUser(null);
@@ -178,6 +176,7 @@ const AdminModule = () => {
         last_name: '',
         phone: '',
         role_id: '',
+        role_ids: [],
         is_active: true,
         license_number: '',
         consultation_fee_inr: '',
@@ -301,6 +300,7 @@ const AdminModule = () => {
 
   const editUser = (user) => {
     setEditingUser(user);
+    const userRoleIds = (user.user_roles || []).map(r => r.id);
     setUserForm({
       username: user.username,
       email: user.email,
@@ -309,6 +309,7 @@ const AdminModule = () => {
       last_name: user.last_name,
       phone: user.phone || '',
       role_id: user.user_role.id,
+      role_ids: userRoleIds.length > 0 ? userRoleIds : [user.user_role.id],
       is_active: user.is_active,
       license_number: user.license_number || '',
       consultation_fee_inr: user.consultation_fee_inr || '',
@@ -330,20 +331,14 @@ const AdminModule = () => {
     setShowRoleForm(true);
   };
 
-  // Helper function to check if selected role is doctor
   const isDoctorRole = () => {
-    const selectedRole = roles.find(role => role.id === parseInt(userForm.role_id));
-    console.log('isDoctorRole check:', {
-      roleId: userForm.role_id,
-      parsedId: parseInt(userForm.role_id),
-      roles: roles.map(r => ({id: r.id, name: r.name})),
-      selectedRole,
-      isDoctorRole: selectedRole?.name === 'doctor'
+    return (userForm.role_ids || []).some(rid => {
+      const r = roles.find(role => role.id === rid);
+      return r?.name === 'doctor';
     });
-    return selectedRole?.name === 'doctor';
   };
 
-  if (user?.role !== 'super_admin' && user?.role !== 'hospital_admin') {
+  if (!(user?.roles || [user?.role]).includes('super_admin') && !(user?.roles || [user?.role]).includes('hospital_admin')) {
     return (
       <div className="space-y-6">
         <h1 className="text-3xl font-bold text-gray-900">Access Denied</h1>
@@ -538,21 +533,28 @@ const AdminModule = () => {
                       />
                     </div>
                     <div>
-                      <Label htmlFor="role">Role</Label>
-                      <select
-                        id="role"
-                        value={userForm.role_id}
-                        onChange={(e) => setUserForm({ ...userForm, role_id: e.target.value })}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-md"
-                        required
-                      >
-                        <option value="">Select Role</option>
+                      <Label>Roles *</Label>
+                      <div className="border border-gray-300 rounded-md p-2 mt-1 max-h-40 overflow-y-auto space-y-1">
                         {roles.map((role) => (
-                          <option key={role.id} value={role.id}>
-                            {role.name}
-                          </option>
+                          <label key={role.id} className="flex items-center gap-2 px-2 py-1 rounded hover:bg-gray-50 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={userForm.role_ids.includes(role.id)}
+                              onChange={(e) => {
+                                const ids = e.target.checked
+                                  ? [...userForm.role_ids, role.id]
+                                  : userForm.role_ids.filter(id => id !== role.id);
+                                setUserForm({ ...userForm, role_ids: ids, role_id: ids[0] || '' });
+                              }}
+                              className="w-4 h-4 rounded border-gray-300"
+                            />
+                            <span className="text-sm capitalize">{role.name.replace(/_/g, ' ')}</span>
+                          </label>
                         ))}
-                      </select>
+                      </div>
+                      {userForm.role_ids.length === 0 && (
+                        <p className="text-xs text-red-500 mt-1">Select at least one role</p>
+                      )}
                     </div>
                   </div>
 
@@ -705,16 +707,20 @@ const AdminModule = () => {
                           <div>
                             <div className="font-medium">{user.first_name} {user.last_name}</div>
                             <div className="text-sm text-gray-600">@{user.username}</div>
-                            {user.user_role.name === 'doctor' && user.specialization && (
+                            {(user.user_roles || [user.user_role]).some(r => r.name === 'doctor') && user.specialization && (
                               <div className="text-xs text-blue-600">{user.specialization}</div>
                             )}
                           </div>
                         </td>
                         <td className="py-2">{user.email}</td>
                         <td className="py-2">
-                          <span className="px-2 py-1 bg-blue-100 text-blue-800 rounded-full text-xs">
-                            {user.user_role.name}
-                          </span>
+                          <div className="flex flex-wrap gap-1">
+                            {(user.user_roles && user.user_roles.length > 0 ? user.user_roles : [user.user_role]).map((r, i) => (
+                              <span key={i} className="px-2 py-0.5 bg-blue-100 text-blue-800 rounded-full text-xs capitalize">
+                                {r.name.replace(/_/g, ' ')}
+                              </span>
+                            ))}
+                          </div>
                         </td>
                         <td className="py-2">
                           <span className={`px-2 py-1 rounded-full text-xs ${
@@ -734,7 +740,7 @@ const AdminModule = () => {
                             >
                               <Edit className="h-4 w-4" />
                             </Button>
-                            {user.user_role.name !== 'super_admin' && (
+                            {!(user.user_roles || [user.user_role]).some(r => r.name === 'super_admin') && (
                               user.is_active ? (
                                 <Button
                                   size="sm"

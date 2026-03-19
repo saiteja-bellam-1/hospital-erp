@@ -14,7 +14,7 @@ router = APIRouter()
 
 def _require_admin(current_user: User):
     allowed = ["super_admin", "hospital_admin"]
-    if current_user.role.name not in allowed:
+    if not any(r in current_user.role_names for r in allowed):
         raise HTTPException(status_code=403, detail="Admin access required")
 
 

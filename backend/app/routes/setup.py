@@ -95,13 +95,13 @@ async def browse_folder():
 
     try:
         if platform.system() == "Darwin":
-            # macOS: use AppleScript for a native folder picker
+            # macOS: use AppleScript — activate Finder to bring dialog to front
             script = (
-                'tell application "System Events"\n'
+                'tell application "Finder"\n'
                 '  activate\n'
-                '  set theFolder to choose folder with prompt "Select Folder"\n'
-                '  return POSIX path of theFolder\n'
-                'end tell'
+                'end tell\n'
+                'set theFolder to choose folder with prompt "Select Folder"\n'
+                'return POSIX path of theFolder'
             )
             proc = subprocess.run(
                 ["osascript", "-e", script],
@@ -209,6 +209,7 @@ async def complete_setup(setup_data: SetupRequest):
 
     # Validate backup locations
     valid_backup_locations = []
+    failed_backup_locations = []
     for loc in setup_data.backup_locations:
         loc = loc.strip()
         if loc:
@@ -216,8 +217,8 @@ async def complete_setup(setup_data: SetupRequest):
             try:
                 os.makedirs(expanded, exist_ok=True)
                 valid_backup_locations.append(expanded)
-            except Exception:
-                pass  # Skip invalid locations silently
+            except Exception as e:
+                failed_backup_locations.append({"path": loc, "error": str(e)})
 
     # Save config FIRST (so DB path is available for database.py)
     config = {
@@ -237,6 +238,10 @@ async def complete_setup(setup_data: SetupRequest):
         save_config(config)
         raise HTTPException(status_code=500, detail=f"Database initialization failed: {e}")
 
+    # Reinitialize the global DB engine to point at the new path
+    from config.database import reinitialize_engine
+    reinitialize_engine()
+
     # Handle license file if provided
     if setup_data.license_file_content:
         try:
@@ -249,6 +254,7 @@ async def complete_setup(setup_data: SetupRequest):
         "message": "Setup completed successfully",
         "db_path": db_path,
         "backup_locations": valid_backup_locations,
+        "failed_backup_locations": failed_backup_locations,
     }
 
 
@@ -258,7 +264,7 @@ def _init_database_and_seed(setup_data: SetupRequest, db_path: str):
     from sqlalchemy.orm import sessionmaker
     from config.database import Base
 
-    # Import all models so Base.metadata knows about them
+    # Import ALL models so Base.metadata knows about them
     from app.models.user import User, UserRole, UserPermission  # noqa
     from app.models.permissions import ModulePermission, RoleModulePermission, HospitalSettings, ModuleTemplate, ModuleRates  # noqa
     from app.models.system import SystemModule, SystemSettings  # noqa
@@ -266,9 +272,34 @@ def _init_database_and_seed(setup_data: SetupRequest, db_path: str):
     from app.models.prescriptions_simple import SimplePrescription  # noqa
     from app.models.doctor_availability import DoctorAvailability, DoctorSpecialSchedule, DoctorAvailabilityStatus  # noqa
     from app.models.license import License  # noqa
+    from app.models.lab import LabTestCategory, LabTest, LabTestParameter, LabReport, PatientLabOrder  # noqa
+    from app.models.lab import LabTestPackageCategory, LabTestPackage  # noqa
+    from app.models.billing import PaymentMethod, Bill, BillItem, Payment  # noqa
+    from app.models.ehr import Consultation  # noqa
+    from app.models.outpatient import Appointment  # noqa
+    from app.models.patient import Patient  # noqa
+    from app.models.referral import Referral  # noqa
 
     engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)
+
+    # Run column migrations for any new columns added after initial table creation
+    try:
+        from sqlalchemy import text
+        from migrate_patient_fields import NEW_COLUMNS
+        with engine.connect() as conn:
+            for table, col, col_type in NEW_COLUMNS:
+                result = conn.execute(text(f"PRAGMA table_info({table})"))
+                existing = {row[1] for row in result.fetchall()}
+                if col not in existing:
+                    try:
+                        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"))
+                    except Exception:
+                        pass
+            conn.commit()
+    except Exception:
+        pass  # Migrations are best-effort during setup
+
     Session = sessionmaker(bind=engine)
     db = Session()
 

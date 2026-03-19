@@ -76,6 +76,7 @@ class UserResponse(BaseModel):
     experience_years: Optional[int] = None  # For doctors
     is_active: bool
     user_role: dict
+    user_roles: Optional[list] = None
 
 class RoleCreateRequest(BaseModel):
     name: str
@@ -91,7 +92,7 @@ class RoleResponse(BaseModel):
 
 def require_super_admin(current_user: User = Depends(get_current_user)):
     """Dependency to ensure only super admin can access these endpoints"""
-    if current_user.role.name != 'super_admin':
+    if not current_user.has_role('super_admin'):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Super admin access required"
@@ -100,7 +101,7 @@ def require_super_admin(current_user: User = Depends(get_current_user)):
 
 def require_admin_access(current_user: User = Depends(get_current_user)):
     """Dependency for super admin or hospital admin access"""
-    if current_user.role.name not in ['super_admin', 'hospital_admin']:
+    if not any(r in current_user.role_names for r in ['super_admin', 'hospital_admin']):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required"
@@ -169,7 +170,8 @@ async def get_all_users(
             qualification=user.qualification,
             experience_years=user.experience_years,
             is_active=user.is_active,
-            user_role={"id": user.role.id, "name": user.role.name, "description": user.role.description}
+            user_role={"id": user.role.id, "name": user.role.name, "description": user.role.description},
+        user_roles=[{"id": r.id, "name": r.name} for r in user.roles] if user.roles else [{"id": user.role.id, "name": user.role.name}]
         )
         for user in users
     ]
@@ -242,7 +244,8 @@ async def create_user(
         qualification=user.qualification,
         experience_years=user.experience_years,
         is_active=user.is_active,
-        user_role={"id": user.role.id, "name": user.role.name, "description": user.role.description}
+        user_role={"id": user.role.id, "name": user.role.name, "description": user.role.description},
+        user_roles=[{"id": r.id, "name": r.name} for r in user.roles] if user.roles else [{"id": user.role.id, "name": user.role.name}]
     )
 
 @router.put("/users/{user_id}", response_model=UserResponse)
@@ -338,8 +341,60 @@ async def update_user(
         qualification=user.qualification,
         experience_years=user.experience_years,
         is_active=user.is_active,
-        user_role={"id": user.role.id, "name": user.role.name, "description": user.role.description}
+        user_role={"id": user.role.id, "name": user.role.name, "description": user.role.description},
+        user_roles=[{"id": r.id, "name": r.name} for r in user.roles] if user.roles else [{"id": user.role.id, "name": user.role.name}]
     )
+
+@router.put("/users/{user_id}/roles")
+async def update_user_roles(
+    user_id: int, data: dict,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Assign multiple roles to a user."""
+    require_admin_access(current_user)
+    from app.models.user import user_role_association
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    role_ids = data.get('role_ids', [])
+    if not role_ids:
+        raise HTTPException(status_code=400, detail="At least one role is required")
+
+    # Verify all roles exist
+    roles = db.query(UserRole).filter(UserRole.id.in_(role_ids)).all()
+    if len(roles) != len(role_ids):
+        raise HTTPException(status_code=400, detail="One or more roles not found")
+
+    # Update primary role_id to the first role
+    user.role_id = role_ids[0]
+    # Update many-to-many
+    user.roles = roles
+
+    db.commit()
+    db.refresh(user)
+    return {
+        "message": "Roles updated",
+        "roles": [{"id": r.id, "name": r.name} for r in user.roles],
+    }
+
+@router.get("/users/{user_id}/roles")
+async def get_user_roles(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get all roles assigned to a user."""
+    require_admin_access(current_user)
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {
+        "user_id": user.id,
+        "primary_role": {"id": user.role.id, "name": user.role.name},
+        "roles": [{"id": r.id, "name": r.name} for r in user.roles] if user.roles else [{"id": user.role.id, "name": user.role.name}],
+    }
 
 @router.delete("/users/{user_id}")
 async def archive_user(

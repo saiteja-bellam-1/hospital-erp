@@ -1,19 +1,28 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Table
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from config.database import Base
 import uuid
 
+# Many-to-many association table for User <-> UserRole
+user_role_association = Table(
+    'user_role_associations',
+    Base.metadata,
+    Column('user_id', Integer, ForeignKey('users.id'), primary_key=True),
+    Column('role_id', Integer, ForeignKey('user_roles.id'), primary_key=True),
+)
+
 class UserRole(Base):
     __tablename__ = "user_roles"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(50), unique=True, nullable=False)
     description = Column(Text)
     is_system_role = Column(Boolean, default=False)  # Predefined system roles
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    
+
     users = relationship("User", back_populates="role")
+    assigned_users = relationship("User", secondary=user_role_association, back_populates="roles")
 
 class User(Base):
     __tablename__ = "users"
@@ -40,9 +49,22 @@ class User(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     
     role = relationship("UserRole", back_populates="users")
+    roles = relationship("UserRole", secondary=user_role_association, back_populates="assigned_users", lazy="joined")
     hospital = relationship("Hospital", back_populates="users")
     permissions = relationship("UserPermission", back_populates="user")
     availability_settings = relationship("DoctorAvailability", back_populates="doctor", uselist=False)
+
+    @property
+    def role_names(self):
+        """Get list of all role names (from many-to-many + primary role)."""
+        names = {r.name for r in self.roles} if self.roles else set()
+        if self.role:
+            names.add(self.role.name)
+        return list(names)
+
+    def has_role(self, role_name):
+        """Check if user has a specific role."""
+        return role_name in self.role_names
 
 class UserPermission(Base):
     __tablename__ = "user_permissions"

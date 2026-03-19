@@ -23,7 +23,7 @@ from app.models.doctor_availability import DoctorAvailability, DoctorSpecialSche
 from app.models.license import License
 
 # Import route modules
-from app.routes import auth, patients, admin, system, module_admin, hospital_admin, appointments, prescriptions, medicines, consultations, prescriptions_simple, doctor_availability, lab, ehr, license, setup, backup
+from app.routes import auth, patients, admin, system, module_admin, hospital_admin, appointments, prescriptions, medicines, consultations, prescriptions_simple, doctor_availability, lab, ehr, license, setup, backup, referrals
 from app.middleware.license_middleware import LicenseMiddleware
 
 app = FastAPI(
@@ -112,6 +112,7 @@ async def get_user_profile(current_user: User = Depends(get_current_user)):
         "email": current_user.email,
         "full_name": f"{current_user.first_name} {current_user.last_name}",
         "role": current_user.role.name,
+        "roles": current_user.role_names,
         "hospital_id": current_user.hospital_id,
         "is_active": current_user.is_active
     }
@@ -137,6 +138,7 @@ app.include_router(ehr.router, prefix="/api/ehr", tags=["EHR"])
 app.include_router(license.router, prefix="/api/license", tags=["License"])
 app.include_router(setup.router, prefix="/api/setup", tags=["Setup Wizard"])
 app.include_router(backup.router, prefix="/api/backup", tags=["Backup"])
+app.include_router(referrals.router, prefix="/api/referrals", tags=["Referrals"])
 # app.include_router(outpatient.router, prefix="/api/outpatient", tags=["Outpatient"])
 # app.include_router(inpatient.router, prefix="/api/inpatient", tags=["Inpatient"])
 
