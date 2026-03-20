@@ -18,6 +18,9 @@ a = Analysis(
     datas=[
         # Bundle the React frontend build
         (frontend_build, 'frontend_build'),
+        # Bundle the app icon
+        ('assets/icon.ico', 'assets'),
+        ('assets/icon.png', 'assets'),
     ],
     hiddenimports=[
         # Uvicorn internals
@@ -128,5 +131,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,  # Add icon path here: icon='assets/icon.ico'
+    icon='assets/icon.ico',
 )
