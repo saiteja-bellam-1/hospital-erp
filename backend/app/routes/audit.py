@@ -77,6 +77,7 @@ async def get_audit_logs(
                 "resource_id": log.resource_id,
                 "description": log.description,
                 "ip_address": log.ip_address,
+                "details": log.details,
             }
             for log in logs
         ],
@@ -92,6 +93,8 @@ async def export_audit_logs(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     category: Optional[str] = None,
+    user_id: Optional[int] = None,
+    search: Optional[str] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -104,6 +107,15 @@ async def export_audit_logs(
         query = query.filter(sql_func.date(AuditLog.timestamp) <= date_to)
     if category and category != 'all':
         query = query.filter(AuditLog.category == category)
+    if user_id:
+        query = query.filter(AuditLog.user_id == user_id)
+    if search:
+        q = f"%{search}%"
+        query = query.filter(
+            AuditLog.description.ilike(q) |
+            AuditLog.user_name.ilike(q) |
+            AuditLog.resource_type.ilike(q)
+        )
 
     logs = query.order_by(desc(AuditLog.timestamp)).all()
 

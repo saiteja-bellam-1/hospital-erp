@@ -17,6 +17,7 @@ a = Analysis(
         'uvicorn.protocols.websockets', 'uvicorn.protocols.websockets.auto',
         'uvicorn.lifespan', 'uvicorn.lifespan.on', 'uvicorn.lifespan.off',
         'cryptography', 'cryptography.hazmat.primitives.asymmetric.ed25519',
+        'multipart', 'python_multipart',
         'app',
     ],
     hookspath=[],

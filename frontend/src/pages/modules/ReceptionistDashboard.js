@@ -66,6 +66,7 @@ const ReceptionistDashboard = () => {
     first_name: '',
     last_name: '',
     date_of_birth: '',
+    age: '',
     gender: '',
     blood_group: '',
     primary_phone: '',
@@ -223,7 +224,13 @@ const ReceptionistDashboard = () => {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify(patientForm)
+        body: JSON.stringify(Object.fromEntries(
+          Object.entries({
+            ...patientForm,
+            age: patientForm.age ? parseInt(patientForm.age) : null,
+            date_of_birth: patientForm.date_of_birth || null,
+          }).map(([k, v]) => [k, v === '' ? null : v])
+        ))
       });
 
       if (response.ok) {
@@ -235,6 +242,7 @@ const ReceptionistDashboard = () => {
           first_name: '',
           last_name: '',
           date_of_birth: '',
+          age: '',
           gender: '',
           blood_group: '',
           primary_phone: '',
@@ -499,7 +507,16 @@ const ReceptionistDashboard = () => {
                     <Input
                       type="date"
                       value={patientForm.date_of_birth}
-                      onChange={(e) => setPatientForm({...patientForm, date_of_birth: e.target.value})}
+                      onChange={(e) => setPatientForm({...patientForm, date_of_birth: e.target.value, age: ''})}
+                    />
+                  </div>
+                  <div>
+                    <Label>Age (if DOB unknown)</Label>
+                    <Input
+                      type="number"
+                      value={patientForm.age}
+                      onChange={(e) => setPatientForm({...patientForm, age: e.target.value, date_of_birth: ''})}
+                      placeholder="Age in years"
                     />
                   </div>
                   <div>

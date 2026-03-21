@@ -6,6 +6,7 @@ import { Label } from '../../components/ui/label';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../hooks/use-toast';
 import { ConfirmDialog } from '../../components/ui/confirm-dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../components/ui/dialog';
 import {
   Settings,
   Users,
@@ -133,7 +134,7 @@ const AdminModule = () => {
     setLoading(true);
 
     try {
-      const roleIds = userForm.role_ids.length > 0 ? userForm.role_ids : [];
+      const roleIds = (userForm.role_ids || []).length > 0 ? userForm.role_ids : [];
       if (roleIds.length === 0) {
         throw new Error('Please select at least one role');
       }
@@ -332,7 +333,7 @@ const AdminModule = () => {
   };
 
   const isDoctorRole = () => {
-    return (userForm.role_ids || []).some(rid => {
+    return (userForm?.role_ids || []).some(rid => {
       const r = roles.find(role => role.id === rid);
       return r?.name === 'doctor';
     });
@@ -473,219 +474,134 @@ const AdminModule = () => {
             </Button>
           </div>
 
-          {showUserForm && (
-            <Card>
-              <CardHeader>
-                <CardTitle>{editingUser ? 'Edit User' : 'Add New User'}</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <form onSubmit={handleUserSubmit} className="space-y-4">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <Label htmlFor="username">Username</Label>
-                      <Input
-                        id="username"
-                        value={userForm.username}
-                        onChange={(e) => setUserForm({ ...userForm, username: e.target.value })}
-                        required
-                      />
-                    </div>
-                    <div>
-                      <Label htmlFor="email">Email</Label>
-                      <Input
-                        id="email"
-                        type="email"
-                        value={userForm.email}
-                        onChange={(e) => setUserForm({ ...userForm, email: e.target.value })}
-                        required
-                      />
-                    </div>
+          {/* User Create/Edit Dialog */}
+          <Dialog open={showUserForm} onOpenChange={(open) => { if (!open) { setShowUserForm(false); setEditingUser(null); } }}>
+            <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+              <DialogHeader>
+                <DialogTitle>{editingUser ? 'Edit User' : 'Add New User'}</DialogTitle>
+              </DialogHeader>
+              <form onSubmit={handleUserSubmit} className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label>Username *</Label>
+                    <Input value={userForm.username} onChange={(e) => setUserForm({ ...userForm, username: e.target.value })} required />
                   </div>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <Label htmlFor="first_name">First Name</Label>
-                      <Input
-                        id="first_name"
-                        value={userForm.first_name}
-                        onChange={(e) => setUserForm({ ...userForm, first_name: e.target.value })}
-                        required
-                      />
-                    </div>
-                    <div>
-                      <Label htmlFor="last_name">Last Name</Label>
-                      <Input
-                        id="last_name"
-                        value={userForm.last_name}
-                        onChange={(e) => setUserForm({ ...userForm, last_name: e.target.value })}
-                        required
-                      />
-                    </div>
+                  <div>
+                    <Label>Email *</Label>
+                    <Input type="email" value={userForm.email} onChange={(e) => setUserForm({ ...userForm, email: e.target.value })} required />
                   </div>
+                </div>
 
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <Label htmlFor="phone">Phone</Label>
-                      <Input
-                        id="phone"
-                        value={userForm.phone}
-                        onChange={(e) => setUserForm({ ...userForm, phone: e.target.value })}
-                      />
-                    </div>
-                    <div>
-                      <Label>Roles *</Label>
-                      <div className="border border-gray-300 rounded-md p-2 mt-1 max-h-40 overflow-y-auto space-y-1">
-                        {roles.map((role) => (
-                          <label key={role.id} className="flex items-center gap-2 px-2 py-1 rounded hover:bg-gray-50 cursor-pointer">
-                            <input
-                              type="checkbox"
-                              checked={userForm.role_ids.includes(role.id)}
-                              onChange={(e) => {
-                                const ids = e.target.checked
-                                  ? [...userForm.role_ids, role.id]
-                                  : userForm.role_ids.filter(id => id !== role.id);
-                                setUserForm({ ...userForm, role_ids: ids, role_id: ids[0] || '' });
-                              }}
-                              className="w-4 h-4 rounded border-gray-300"
-                            />
-                            <span className="text-sm capitalize">{role.name.replace(/_/g, ' ')}</span>
-                          </label>
-                        ))}
-                      </div>
-                      {userForm.role_ids.length === 0 && (
-                        <p className="text-xs text-red-500 mt-1">Select at least one role</p>
-                      )}
-                    </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label>First Name *</Label>
+                    <Input value={userForm.first_name} onChange={(e) => setUserForm({ ...userForm, first_name: e.target.value })} required />
                   </div>
+                  <div>
+                    <Label>Last Name *</Label>
+                    <Input value={userForm.last_name} onChange={(e) => setUserForm({ ...userForm, last_name: e.target.value })} required />
+                  </div>
+                </div>
 
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label>Phone</Label>
+                    <Input value={userForm.phone} onChange={(e) => setUserForm({ ...userForm, phone: e.target.value })} />
+                  </div>
                   {!editingUser && (
                     <div>
-                      <Label htmlFor="password">Password</Label>
-                      <Input
-                        id="password"
-                        type="password"
-                        value={userForm.password}
-                        onChange={(e) => setUserForm({ ...userForm, password: e.target.value })}
-                        required={!editingUser}
-                      />
+                      <Label>Password *</Label>
+                      <Input type="password" value={userForm.password} onChange={(e) => setUserForm({ ...userForm, password: e.target.value })} required />
                     </div>
                   )}
+                </div>
 
-                  {/* Doctor-specific fields */}
-                  {isDoctorRole() && (
-                    <div className="space-y-4 border-t pt-4">
-                      <h3 className="text-lg font-medium text-gray-900">Doctor Profile Information</h3>
-                      
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <Label htmlFor="license_number">License Number</Label>
-                          <Input
-                            id="license_number"
-                            value={userForm.license_number}
-                            onChange={(e) => setUserForm({ ...userForm, license_number: e.target.value })}
-                            placeholder="e.g., MH/MED/2020/12345"
-                          />
-                        </div>
-                        <div>
-                          <Label htmlFor="specialization">Specialization</Label>
-                          <Input
-                            id="specialization"
-                            value={userForm.specialization}
-                            onChange={(e) => setUserForm({ ...userForm, specialization: e.target.value })}
-                            placeholder="e.g., Cardiology"
-                          />
-                        </div>
+                {/* Roles */}
+                <div>
+                  <Label>Roles *</Label>
+                  <div className="flex flex-wrap gap-2 mt-1">
+                    {roles.map((role) => {
+                      const checked = (userForm.role_ids || []).includes(role.id);
+                      return (
+                        <label key={role.id}
+                          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm cursor-pointer border transition-colors ${
+                            checked ? 'bg-blue-50 border-blue-300 text-blue-700' : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100'
+                          }`}>
+                          <input type="checkbox" checked={checked}
+                            onChange={(e) => {
+                              const cur = userForm.role_ids || [];
+                              const ids = e.target.checked ? [...cur, role.id] : cur.filter(id => id !== role.id);
+                              setUserForm({ ...userForm, role_ids: ids, role_id: ids[0] || '' });
+                            }}
+                            className="w-3.5 h-3.5 rounded" />
+                          <span className="capitalize">{role.name.replace(/_/g, ' ')}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  {(userForm.role_ids || []).length === 0 && (
+                    <p className="text-xs text-red-500 mt-1">Select at least one role</p>
+                  )}
+                </div>
+
+                {/* Doctor-specific fields */}
+                {isDoctorRole() && (
+                  <div className="space-y-3 border-t pt-3">
+                    <p className="text-sm font-semibold text-gray-700">Doctor Profile</p>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <Label>License Number</Label>
+                        <Input value={userForm.license_number} onChange={(e) => setUserForm({ ...userForm, license_number: e.target.value })} placeholder="MH/MED/2020/12345" />
                       </div>
-
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <Label htmlFor="qualification">Qualifications</Label>
-                          <Input
-                            id="qualification"
-                            value={userForm.qualification}
-                            onChange={(e) => setUserForm({ ...userForm, qualification: e.target.value })}
-                            placeholder="e.g., MD, FACC"
-                          />
-                        </div>
-                        <div>
-                          <Label htmlFor="experience_years">Years of Experience</Label>
-                          <Input
-                            id="experience_years"
-                            type="number"
-                            value={userForm.experience_years}
-                            onChange={(e) => setUserForm({ ...userForm, experience_years: e.target.value })}
-                            placeholder="e.g., 15"
-                            min="0"
-                          />
-                        </div>
-                      </div>
-
-                      <div className="space-y-2">
-                        <h4 className="text-md font-medium text-gray-700">Fee Structure (INR)</h4>
-                        <div className="grid grid-cols-3 gap-4">
-                          <div>
-                            <Label htmlFor="consultation_fee_inr">Consultation Fee</Label>
-                            <Input
-                              id="consultation_fee_inr"
-                              value={userForm.consultation_fee_inr}
-                              onChange={(e) => setUserForm({ ...userForm, consultation_fee_inr: e.target.value })}
-                              placeholder="e.g., ₹1500"
-                            />
-                          </div>
-                          <div>
-                            <Label htmlFor="inpatient_fee_inr">Inpatient Fee</Label>
-                            <Input
-                              id="inpatient_fee_inr"
-                              value={userForm.inpatient_fee_inr}
-                              onChange={(e) => setUserForm({ ...userForm, inpatient_fee_inr: e.target.value })}
-                              placeholder="e.g., ₹3000"
-                            />
-                          </div>
-                          <div>
-                            <Label htmlFor="emergency_fee_inr">Emergency Fee</Label>
-                            <Input
-                              id="emergency_fee_inr"
-                              value={userForm.emergency_fee_inr}
-                              onChange={(e) => setUserForm({ ...userForm, emergency_fee_inr: e.target.value })}
-                              placeholder="e.g., ₹5000"
-                            />
-                          </div>
-                        </div>
+                      <div>
+                        <Label>Specialization</Label>
+                        <Input value={userForm.specialization} onChange={(e) => setUserForm({ ...userForm, specialization: e.target.value })} placeholder="Cardiology" />
                       </div>
                     </div>
-                  )}
-
-                  <div className="flex items-center space-x-2">
-                    <input
-                      type="checkbox"
-                      id="is_active"
-                      checked={userForm.is_active}
-                      onChange={(e) => setUserForm({ ...userForm, is_active: e.target.checked })}
-                    />
-                    <Label htmlFor="is_active">Active User</Label>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <Label>Qualifications</Label>
+                        <Input value={userForm.qualification} onChange={(e) => setUserForm({ ...userForm, qualification: e.target.value })} placeholder="MD, FACC" />
+                      </div>
+                      <div>
+                        <Label>Years of Experience</Label>
+                        <Input type="number" value={userForm.experience_years} onChange={(e) => setUserForm({ ...userForm, experience_years: e.target.value })} placeholder="15" min="0" />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-3 gap-3">
+                      <div>
+                        <Label>Consultation Fee</Label>
+                        <Input value={userForm.consultation_fee_inr} onChange={(e) => setUserForm({ ...userForm, consultation_fee_inr: e.target.value })} placeholder="₹1500" />
+                      </div>
+                      <div>
+                        <Label>Inpatient Fee</Label>
+                        <Input value={userForm.inpatient_fee_inr} onChange={(e) => setUserForm({ ...userForm, inpatient_fee_inr: e.target.value })} placeholder="₹3000" />
+                      </div>
+                      <div>
+                        <Label>Emergency Fee</Label>
+                        <Input value={userForm.emergency_fee_inr} onChange={(e) => setUserForm({ ...userForm, emergency_fee_inr: e.target.value })} placeholder="₹5000" />
+                      </div>
+                    </div>
                   </div>
+                )}
 
-                  <div className="flex space-x-2">
-                    <Button type="submit" disabled={loading}>
-                      <Save className="h-4 w-4 mr-2" />
-                      {loading ? 'Saving...' : 'Save User'}
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={() => {
-                        setShowUserForm(false);
-                        setEditingUser(null);
-                      }}
-                    >
-                      <X className="h-4 w-4 mr-2" />
-                      Cancel
-                    </Button>
-                  </div>
-                </form>
-              </CardContent>
-            </Card>
-          )}
+                <div className="flex items-center gap-2">
+                  <input type="checkbox" id="is_active" checked={userForm.is_active}
+                    onChange={(e) => setUserForm({ ...userForm, is_active: e.target.checked })} className="rounded" />
+                  <Label htmlFor="is_active">Active User</Label>
+                </div>
+
+                <div className="flex justify-end gap-2 pt-2 border-t">
+                  <Button type="button" variant="outline" onClick={() => { setShowUserForm(false); setEditingUser(null); }}>
+                    Cancel
+                  </Button>
+                  <Button type="submit" disabled={loading}>
+                    {loading ? 'Saving...' : editingUser ? 'Update User' : 'Create User'}
+                  </Button>
+                </div>
+              </form>
+            </DialogContent>
+          </Dialog>
 
           <Card>
             <CardContent>

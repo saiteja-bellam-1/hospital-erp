@@ -71,4 +71,17 @@ async def run_backup_now(current_user: User = Depends(get_current_user)):
             detail="No backup locations configured. Add locations first.",
         )
 
+    # Audit log
+    try:
+        from config.database import get_db
+        from app.services.audit_service import log_action
+        db = next(get_db())
+        success_count = sum(1 for r in result["results"] if r["success"])
+        log_action(db, current_user, "run_backup", "admin", "Backup", None,
+            f"Ran database backup — {success_count}/{len(result['results'])} locations successful",
+            details={"results": result["results"]})
+        db.close()
+    except Exception:
+        pass
+
     return result

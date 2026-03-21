@@ -200,12 +200,13 @@ const ReceptionPatientsPage = () => {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({
-          ...patientForm,
-          age: patientForm.age ? parseInt(patientForm.age) : null,
-          date_of_birth: patientForm.date_of_birth || null,
-          email: patientForm.email || null
-        })
+        body: JSON.stringify(Object.fromEntries(
+          Object.entries({
+            ...patientForm,
+            age: patientForm.age ? parseInt(patientForm.age) : null,
+            date_of_birth: patientForm.date_of_birth || null,
+          }).map(([k, v]) => [k, v === '' ? null : v])
+        ))
       });
       if (response.ok) {
         const newPatient = await response.json();

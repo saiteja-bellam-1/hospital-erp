@@ -20,12 +20,13 @@ def log_action(
     ip_address: str = "",
     details: dict = None,
 ):
-    """Log an audit event. Safe to call — never raises."""
+    """Log an audit event with local system time. Safe to call — never raises."""
     try:
         entry = AuditLog(
+            timestamp=datetime.now(),  # Local system time
             user_id=user.id if user else None,
             user_name=f"{user.first_name} {user.last_name}" if user else "System",
-            user_role=user.role.name if user and user.role else "",
+            user_role=", ".join(user.role_names) if user and hasattr(user, 'role_names') else (user.role.name if user and user.role else ""),
             action=action,
             category=category,
             resource_type=resource_type,
@@ -46,7 +47,7 @@ def log_action(
 def cleanup_old_logs(db: Session, retention_days: int = 90):
     """Delete audit logs older than retention_days."""
     try:
-        cutoff = datetime.utcnow() - timedelta(days=retention_days)
+        cutoff = datetime.now() - timedelta(days=retention_days)
         deleted = db.query(AuditLog).filter(AuditLog.timestamp < cutoff).delete()
         db.commit()
         return deleted

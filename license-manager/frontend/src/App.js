@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 
-const API = 'http://localhost:9000/api';
+const API = '/api';
 
 /* ─── Icons (inline SVGs) ─── */
 const Icon = ({ d, className = "w-5 h-5" }) => (
@@ -19,7 +19,66 @@ const Icons = {
   check: "M5 13l4 4L19 7",
   x: "M6 18L18 6M6 6l12 12",
   shield: "M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z",
+  key: "M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z",
+  upload: "M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12",
 };
+
+/* ─── Reusable Components (defined outside App to prevent re-mount on re-render) ─── */
+
+const StatusBadge = ({ status }) => {
+  const statusConfig = {
+    active: { bg: 'bg-emerald-500/10', text: 'text-emerald-400', dot: 'bg-emerald-400', label: 'Active' },
+    expiring_soon: { bg: 'bg-amber-500/10', text: 'text-amber-400', dot: 'bg-amber-400', label: 'Expiring' },
+    expired: { bg: 'bg-red-500/10', text: 'text-red-400', dot: 'bg-red-400', label: 'Expired' },
+    renewed: { bg: 'bg-slate-500/10', text: 'text-slate-400', dot: 'bg-slate-500', label: 'Renewed' },
+  };
+  const c = statusConfig[status] || statusConfig.expired;
+  return (
+    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold tracking-wide uppercase ${c.bg} ${c.text}`}>
+      <span className={`w-1.5 h-1.5 rounded-full ${c.dot}`} />
+      {c.label}
+    </span>
+  );
+};
+
+const DaysLeft = ({ days }) => {
+  const color = days <= 0 ? 'text-red-400' : days <= 30 ? 'text-amber-400' : 'text-emerald-400';
+  const bg = days <= 0 ? 'bg-red-500/10' : days <= 30 ? 'bg-amber-500/10' : 'bg-emerald-500/10';
+  return (
+    <span className={`font-mono font-bold text-sm ${color} ${bg} px-2 py-0.5 rounded`}>
+      {days <= 0 ? 'EXP' : days}
+    </span>
+  );
+};
+
+const FeatureTag = ({ name }) => (
+  <span className="px-1.5 py-0.5 bg-slate-700/50 text-slate-300 rounded text-[10px] font-medium capitalize tracking-wide">
+    {name}
+  </span>
+);
+
+const Modal = ({ open, onClose, children, wide }) => {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+      <div className={`relative ${wide ? 'max-w-2xl' : 'max-w-md'} w-full mx-4 bg-slate-850 border border-slate-700/50 rounded-2xl shadow-2xl animate-slideIn max-h-[90vh] overflow-y-auto scrollbar-thin`}
+        onClick={e => e.stopPropagation()}>
+        {children}
+      </div>
+    </div>
+  );
+};
+
+const Input = ({ label, required, ...props }) => (
+  <div>
+    <label className="block text-xs font-medium text-slate-400 mb-1.5">
+      {label} {required && <span className="text-amber-400">*</span>}
+    </label>
+    <input {...props}
+      className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/20 transition-colors" />
+  </div>
+);
 
 function App() {
   const [page, setPage] = useState('dashboard');
@@ -50,6 +109,11 @@ function App() {
   const [showPayForm, setShowPayForm] = useState(false);
   const [payForm, setPayForm] = useState({ payment_type: 'license', payment_mode: 'cash', amount: '', invoice_number: '', description: '' });
 
+  // Key management state
+  const [keyStatus, setKeyStatus] = useState(null);
+  const [keyUploading, setKeyUploading] = useState(false);
+  const [keyGenerating, setKeyGenerating] = useState(false);
+
   const fetchDash = useCallback(async () => {
     try { const r = await fetch(`${API}/dashboard`); setDash(await r.json()); } catch {}
   }, []);
@@ -79,9 +143,14 @@ function App() {
     } catch {}
   };
 
+  const fetchKeyStatus = useCallback(async () => {
+    try { const r = await fetch(`${API}/keys/status`); setKeyStatus(await r.json()); } catch {}
+  }, []);
+
   useEffect(() => { fetchDash(); }, [fetchDash]);
   useEffect(() => { fetchLicenses(); }, [fetchLicenses]);
   useEffect(() => { fetchCustomers(); }, [fetchCustomers]);
+  useEffect(() => { fetchKeyStatus(); }, [fetchKeyStatus]);
 
   const showMessage = (text, type = 'success') => {
     setMsg({ text, type });
@@ -193,6 +262,40 @@ function App() {
     fetchCustDetail(selectedCust);
   };
 
+  const handleKeyUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setKeyUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const r = await fetch(`${API}/keys/upload`, { method: 'POST', body: formData });
+      const data = await r.json();
+      if (r.ok) {
+        showMessage('Private key uploaded successfully');
+        fetchKeyStatus();
+      } else {
+        showMessage(data.detail || 'Upload failed', 'error');
+      }
+    } catch { showMessage('Failed to upload key', 'error'); }
+    finally { setKeyUploading(false); e.target.value = ''; }
+  };
+
+  const handleGenerateKeys = async () => {
+    if (!window.confirm('Generate a new keypair? This will overwrite any existing keys.')) return;
+    setKeyGenerating(true);
+    try {
+      const r = await fetch(`${API}/keys/generate`, { method: 'POST' });
+      if (r.ok) {
+        showMessage('New keypair generated');
+        fetchKeyStatus();
+      } else {
+        showMessage('Failed to generate keys', 'error');
+      }
+    } catch { showMessage('Failed to generate keys', 'error'); }
+    finally { setKeyGenerating(false); }
+  };
+
   const formatDate = (d) => {
     if (!d) return '—';
     try { return new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }); }
@@ -205,66 +308,8 @@ function App() {
     { id: 'dashboard', label: 'Dashboard', icon: Icons.dashboard },
     { id: 'licenses', label: 'Licenses', icon: Icons.license },
     { id: 'customers', label: 'Customers', icon: "M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" },
+    { id: 'settings', label: 'Key Settings', icon: Icons.key },
   ];
-
-  /* ─── Status helpers ─── */
-  const statusConfig = {
-    active: { bg: 'bg-emerald-500/10', text: 'text-emerald-400', dot: 'bg-emerald-400', label: 'Active' },
-    expiring_soon: { bg: 'bg-amber-500/10', text: 'text-amber-400', dot: 'bg-amber-400', label: 'Expiring' },
-    expired: { bg: 'bg-red-500/10', text: 'text-red-400', dot: 'bg-red-400', label: 'Expired' },
-    renewed: { bg: 'bg-slate-500/10', text: 'text-slate-400', dot: 'bg-slate-500', label: 'Renewed' },
-  };
-
-  const StatusBadge = ({ status }) => {
-    const c = statusConfig[status] || statusConfig.expired;
-    return (
-      <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold tracking-wide uppercase ${c.bg} ${c.text}`}>
-        <span className={`w-1.5 h-1.5 rounded-full ${c.dot}`} />
-        {c.label}
-      </span>
-    );
-  };
-
-  const DaysLeft = ({ days }) => {
-    const color = days <= 0 ? 'text-red-400' : days <= 30 ? 'text-amber-400' : 'text-emerald-400';
-    const bg = days <= 0 ? 'bg-red-500/10' : days <= 30 ? 'bg-amber-500/10' : 'bg-emerald-500/10';
-    return (
-      <span className={`font-mono font-bold text-sm ${color} ${bg} px-2 py-0.5 rounded`}>
-        {days <= 0 ? 'EXP' : days}
-      </span>
-    );
-  };
-
-  const FeatureTag = ({ name }) => (
-    <span className="px-1.5 py-0.5 bg-slate-700/50 text-slate-300 rounded text-[10px] font-medium capitalize tracking-wide">
-      {name}
-    </span>
-  );
-
-  /* ─── Modal wrapper ─── */
-  const Modal = ({ open, onClose, children, wide }) => {
-    if (!open) return null;
-    return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={onClose}>
-        <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
-        <div className={`relative ${wide ? 'max-w-2xl' : 'max-w-md'} w-full mx-4 bg-slate-850 border border-slate-700/50 rounded-2xl shadow-2xl animate-slideIn max-h-[90vh] overflow-y-auto scrollbar-thin`}
-          onClick={e => e.stopPropagation()}>
-          {children}
-        </div>
-      </div>
-    );
-  };
-
-  /* ─── Form input ─── */
-  const Input = ({ label, required, ...props }) => (
-    <div>
-      <label className="block text-xs font-medium text-slate-400 mb-1.5">
-        {label} {required && <span className="text-amber-400">*</span>}
-      </label>
-      <input {...props}
-        className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/20 transition-colors" />
-    </div>
-  );
 
   return (
     <div className="flex h-screen bg-slate-950">
@@ -296,7 +341,18 @@ function App() {
           ))}
         </nav>
 
-        <div className="p-4 border-t border-slate-800/50">
+        {/* Key status indicator in sidebar */}
+        <div className="p-4 border-t border-slate-800/50 space-y-2">
+          {keyStatus && (
+            <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs ${
+              keyStatus.private_key_exists
+                ? 'bg-emerald-500/10 text-emerald-400'
+                : 'bg-red-500/10 text-red-400'
+            }`}>
+              <span className={`w-2 h-2 rounded-full ${keyStatus.private_key_exists ? 'bg-emerald-400' : 'bg-red-400'}`} />
+              {keyStatus.private_key_exists ? 'Keys configured' : 'No keys — setup required'}
+            </div>
+          )}
           <p className="text-[10px] text-slate-600 text-center">KT Health Soft v1.0</p>
         </div>
       </aside>
@@ -326,6 +382,23 @@ function App() {
                 <h2 className="text-2xl font-bold text-white">Dashboard</h2>
                 <p className="text-sm text-slate-500 mt-1">License overview and recent activity</p>
               </div>
+
+              {/* Key warning banner */}
+              {keyStatus && !keyStatus.private_key_exists && (
+                <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <Icon d={Icons.key} className="w-5 h-5 text-red-400" />
+                    <div>
+                      <p className="text-sm font-semibold text-red-300">Private key not configured</p>
+                      <p className="text-xs text-red-400/70 mt-0.5">You need to upload or generate a private key before you can create licenses.</p>
+                    </div>
+                  </div>
+                  <button onClick={() => setPage('settings')}
+                    className="px-3 py-1.5 bg-red-500/20 text-red-300 text-xs font-semibold rounded-lg hover:bg-red-500/30 transition-colors whitespace-nowrap">
+                    Setup Keys
+                  </button>
+                </div>
+              )}
 
               {/* Stats */}
               {dash && (
@@ -637,6 +710,100 @@ function App() {
                   </div>
                 ))}
               </div>
+            </div>
+          )}
+
+          {/* ═══════ KEY SETTINGS ═══════ */}
+          {page === 'settings' && (
+            <div className="space-y-6 animate-fadeIn max-w-2xl">
+              <div>
+                <h2 className="text-2xl font-bold text-white">Key Settings</h2>
+                <p className="text-sm text-slate-500 mt-1">Manage signing keys for license generation</p>
+              </div>
+
+              {/* Current Status */}
+              <div className="bg-slate-925 border border-slate-800/50 rounded-xl p-6 space-y-4">
+                <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">Key Status</h3>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className={`flex items-center gap-3 p-4 rounded-xl border ${
+                    keyStatus?.private_key_exists
+                      ? 'bg-emerald-500/5 border-emerald-500/20'
+                      : 'bg-red-500/5 border-red-500/20'
+                  }`}>
+                    <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
+                      keyStatus?.private_key_exists ? 'bg-emerald-500/15' : 'bg-red-500/15'
+                    }`}>
+                      <Icon d={Icons.key} className={`w-5 h-5 ${keyStatus?.private_key_exists ? 'text-emerald-400' : 'text-red-400'}`} />
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold text-white">Private Key</p>
+                      <p className={`text-xs ${keyStatus?.private_key_exists ? 'text-emerald-400' : 'text-red-400'}`}>
+                        {keyStatus?.private_key_exists ? 'Configured' : 'Not found'}
+                      </p>
+                    </div>
+                  </div>
+                  <div className={`flex items-center gap-3 p-4 rounded-xl border ${
+                    keyStatus?.public_key_exists
+                      ? 'bg-emerald-500/5 border-emerald-500/20'
+                      : 'bg-slate-500/5 border-slate-500/20'
+                  }`}>
+                    <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
+                      keyStatus?.public_key_exists ? 'bg-emerald-500/15' : 'bg-slate-500/15'
+                    }`}>
+                      <Icon d={Icons.shield} className={`w-5 h-5 ${keyStatus?.public_key_exists ? 'text-emerald-400' : 'text-slate-400'}`} />
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold text-white">Public Key</p>
+                      <p className={`text-xs ${keyStatus?.public_key_exists ? 'text-emerald-400' : 'text-slate-400'}`}>
+                        {keyStatus?.public_key_exists ? 'Available' : 'Not generated'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Upload Private Key */}
+              <div className="bg-slate-925 border border-slate-800/50 rounded-xl p-6 space-y-4">
+                <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">Upload Private Key</h3>
+                <p className="text-xs text-slate-500">Upload an existing Ed25519 private key file (.pem). The public key will be automatically derived.</p>
+                <div className="flex items-center gap-3">
+                  <label className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-colors cursor-pointer shadow-lg ${
+                    keyUploading
+                      ? 'bg-slate-700 text-slate-400'
+                      : 'bg-blue-600 hover:bg-blue-500 text-white shadow-blue-600/20'
+                  }`}>
+                    <Icon d={Icons.upload} className="w-4 h-4" />
+                    {keyUploading ? 'Uploading...' : 'Choose .pem File'}
+                    <input type="file" accept=".pem" onChange={handleKeyUpload} className="hidden" disabled={keyUploading} />
+                  </label>
+                </div>
+              </div>
+
+              {/* Generate New Keypair */}
+              <div className="bg-slate-925 border border-slate-800/50 rounded-xl p-6 space-y-4">
+                <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">Generate New Keypair</h3>
+                <p className="text-xs text-slate-500">Generate a fresh Ed25519 keypair. If you already have keys, this will overwrite them.</p>
+                <button onClick={handleGenerateKeys} disabled={keyGenerating}
+                  className="flex items-center gap-2 px-4 py-2.5 bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-white rounded-xl text-sm font-semibold transition-colors shadow-lg shadow-amber-600/20">
+                  <Icon d={Icons.refresh} className="w-4 h-4" />
+                  {keyGenerating ? 'Generating...' : 'Generate New Keypair'}
+                </button>
+              </div>
+
+              {/* Public Key Display */}
+              {keyStatus?.public_key && (
+                <div className="bg-slate-925 border border-slate-800/50 rounded-xl p-6 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">Public Key</h3>
+                    <button onClick={() => { navigator.clipboard.writeText(keyStatus.public_key); showMessage('Public key copied'); }}
+                      className="text-xs text-blue-400 hover:text-blue-300 font-medium">Copy</button>
+                  </div>
+                  <p className="text-xs text-slate-500">Copy this and paste into the main app's <code className="text-amber-400">app/licensing/crypto.py</code> PUBLIC_KEY_PEM</p>
+                  <pre className="bg-slate-950 border border-slate-800/50 rounded-lg p-4 text-xs text-emerald-400 font-mono overflow-x-auto whitespace-pre">
+                    {keyStatus.public_key}
+                  </pre>
+                </div>
+              )}
             </div>
           )}
         </main>

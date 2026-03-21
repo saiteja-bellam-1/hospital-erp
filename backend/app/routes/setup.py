@@ -368,7 +368,9 @@ def _init_database_and_seed(setup_data: SetupRequest, db_path: str):
         # 4. Create super admin user
         from app.utils.auth import get_password_hash
         admin_role = db.query(UserRole).filter(UserRole.name == "super_admin").first()
-        if not db.query(User).filter(User.username == setup_data.admin_username).first():
+        existing_by_name = db.query(User).filter(User.username == setup_data.admin_username).first()
+        existing_by_email = db.query(User).filter(User.email == setup_data.admin_email).first()
+        if not existing_by_name and not existing_by_email:
             admin = User(
                 user_id=str(uuid.uuid4()),
                 username=setup_data.admin_username,
@@ -381,9 +383,11 @@ def _init_database_and_seed(setup_data: SetupRequest, db_path: str):
                 is_active=True,
             )
             db.add(admin)
+            db.flush()  # Flush now before seeding permissions to avoid autoflush issues
 
         # 5. Create role-module permissions for all roles
-        _seed_role_permissions(db, UserRole, RoleModulePermission)
+        with db.no_autoflush:
+            _seed_role_permissions(db, UserRole, RoleModulePermission)
 
         db.commit()
     except Exception as e:

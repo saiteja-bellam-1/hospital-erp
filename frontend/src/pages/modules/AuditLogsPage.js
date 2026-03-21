@@ -84,12 +84,26 @@ const AuditLogsPage = () => {
   useEffect(() => { fetchLogs(); }, [fetchLogs]);
   useEffect(() => { fetchStats(); fetchUsers(); }, []);
 
-  const exportCSV = () => {
-    const params = new URLSearchParams();
-    params.set('date_from', dateFrom);
-    params.set('date_to', dateTo);
-    if (category !== 'all') params.set('category', category);
-    window.open(`/api/audit/logs/export?${params}`, '_blank');
+  const exportCSV = async () => {
+    try {
+      const params = new URLSearchParams();
+      params.set('date_from', dateFrom);
+      params.set('date_to', dateTo);
+      if (category !== 'all') params.set('category', category);
+      if (userFilter !== 'all') params.set('user_id', userFilter);
+      if (search) params.set('search', search);
+      const res = await axios.get(`/api/audit/logs/export?${params}`, { responseType: 'blob' });
+      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `audit_logs_${dateFrom}_to_${dateTo}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    } catch {
+      // fallback
+    }
   };
 
   const saveRetention = async () => {
@@ -124,14 +138,9 @@ const AuditLogsPage = () => {
           <h1 className="text-2xl font-bold">Audit Logs</h1>
           <p className="text-muted-foreground text-sm">Track all user activity across the system</p>
         </div>
-        <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={() => setShowRetention(!showRetention)}>
-            <Settings className="h-4 w-4 mr-1" /> Retention: {retention} days
-          </Button>
-          <Button variant="outline" size="sm" onClick={exportCSV}>
-            <Download className="h-4 w-4 mr-1" /> Export CSV
-          </Button>
-        </div>
+        <Button variant="outline" size="sm" onClick={() => setShowRetention(!showRetention)}>
+          <Settings className="h-4 w-4 mr-1" /> Retention: {retention} days
+        </Button>
       </div>
 
       {/* Retention config */}
@@ -254,6 +263,9 @@ const AuditLogsPage = () => {
               </div>
             </div>
             <p className="text-xs text-gray-400">{total} result{total !== 1 ? 's' : ''}</p>
+            <Button variant="outline" size="sm" className="h-9" onClick={exportCSV} disabled={total === 0}>
+              <Download className="h-4 w-4 mr-1" /> Export CSV
+            </Button>
           </div>
         </CardContent>
       </Card>

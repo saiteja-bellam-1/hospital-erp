@@ -902,6 +902,18 @@ async def create_orders(
         orders.append(order)
 
     db.commit()
+
+    # Audit log
+    try:
+        from app.services.audit_service import log_action
+        test_names = ", ".join(o.test.name for o in orders if o.test)
+        patient_name = f"{patient.first_name} {patient.last_name}"
+        log_action(db, current_user, "order_lab_tests", "lab", "LabOrder", orders[0].id if orders else None,
+            f"Ordered {len(orders)} lab test(s) for {patient_name}: {test_names}",
+            details={"patient": patient_name, "tests": test_names, "count": len(orders)})
+    except Exception:
+        pass
+
     return [_build_order_response(o, db) for o in orders]
 
 @router.get("/orders", response_model=List[OrderResponse])
@@ -1037,6 +1049,19 @@ async def update_order_payment(
     order.payment_date = datetime.now()
 
     db.commit()
+
+    # Audit log
+    try:
+        from app.services.audit_service import log_action
+        patient = db.query(Patient).filter(Patient.id == order.patient_id).first()
+        test = db.query(LabTest).filter(LabTest.id == order.test_id).first()
+        patient_name = f"{patient.first_name} {patient.last_name}" if patient else "Unknown"
+        log_action(db, current_user, "collect_lab_payment", "billing", "LabOrder", order.id,
+            f"Collected lab payment ₹{order.amount} for {patient_name} — {test.name if test else 'test'}, Method: {data.payment_method}",
+            details={"patient": patient_name, "test": test.name if test else "", "amount": order.amount, "method": data.payment_method})
+    except Exception:
+        pass
+
     return _build_order_response(order, db)
 
 

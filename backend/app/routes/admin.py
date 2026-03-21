@@ -227,7 +227,16 @@ async def create_user(
     db.add(user)
     db.commit()
     db.refresh(user)
-    
+
+    # Audit log
+    try:
+        from app.services.audit_service import log_action
+        log_action(db, current_user, "create_user", "admin", "User", user.id,
+            f"Created user: {user.first_name} {user.last_name} (@{user.username}), Role: {user.role.name}",
+            details={"username": user.username, "email": user.email, "role": user.role.name})
+    except Exception:
+        pass
+
     return UserResponse(
         id=user.id,
         user_id=user.user_id,

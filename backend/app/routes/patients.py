@@ -159,6 +159,18 @@ async def create_patient(
         patient_dict["age"] = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
 
     patient = patient_service.create_patient(patient_dict)
+
+    # Audit log
+    try:
+        from app.services.audit_service import log_action
+        age_info = f", {patient_dict.get('age')} yrs" if patient_dict.get('age') else ""
+        gender_info = f", {patient_dict.get('gender', '').upper()}" if patient_dict.get('gender') else ""
+        log_action(db, current_user, "create_patient", "patient", "Patient", patient.id,
+            f"Registered new patient: {patient_data.first_name} {patient_data.last_name}{gender_info}{age_info}, Phone: {patient_data.primary_phone}",
+            details={"patient_name": f"{patient_data.first_name} {patient_data.last_name}", "phone": patient_data.primary_phone, "gender": patient_data.gender})
+    except Exception:
+        pass
+
     return patient
 
 @router.get("/", response_model=List[PatientResponse])

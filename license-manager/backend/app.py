@@ -2,7 +2,7 @@
 KT HEALTH ERP — License Manager
 Standalone internal tool for generating and managing license files.
 """
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response
@@ -26,8 +26,15 @@ app.add_middleware(
 )
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "licenses.db")
-KEYS_DIR = BASE_DIR
+
+# When running as frozen .exe, store data (DB + keys) next to the .exe, not in temp dir
+if getattr(sys, 'frozen', False):
+    DATA_DIR = os.path.dirname(sys.executable)
+else:
+    DATA_DIR = BASE_DIR
+
+DB_PATH = os.path.join(DATA_DIR, "licenses.db")
+KEYS_DIR = DATA_DIR
 
 
 # ============================================================
@@ -424,6 +431,39 @@ def generate_keys():
         f.write(public_pem)
     return {
         "message": "Keypair generated",
+        "public_key": public_pem,
+        "note": "Copy the public key to the main app's app/licensing/crypto.py PUBLIC_KEY_PEM"
+    }
+
+
+@app.post("/api/keys/upload")
+async def upload_private_key(file: UploadFile = File(...)):
+    content = (await file.read()).decode("utf-8").strip()
+    if "PRIVATE KEY" not in content:
+        raise HTTPException(status_code=400, detail="Invalid file — must be a PEM private key")
+    # Validate it's a usable Ed25519 key
+    try:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        key = serialization.load_pem_private_key(content.encode(), password=None)
+        if not isinstance(key, Ed25519PrivateKey):
+            raise HTTPException(status_code=400, detail="Key must be an Ed25519 private key")
+        # Also derive and save the public key
+        public_pem = key.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        ).decode("utf-8")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=400, detail="Failed to parse key — ensure it's a valid Ed25519 PEM file")
+
+    with open(os.path.join(KEYS_DIR, "private_key.pem"), "w") as f:
+        f.write(content)
+    with open(os.path.join(KEYS_DIR, "public_key.pem"), "w") as f:
+        f.write(public_pem)
+    return {
+        "message": "Private key uploaded successfully",
         "public_key": public_pem,
         "note": "Copy the public key to the main app's app/licensing/crypto.py PUBLIC_KEY_PEM"
     }

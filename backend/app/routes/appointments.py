@@ -325,7 +325,18 @@ async def create_appointment(
     db.add(appointment)
     db.commit()
     db.refresh(appointment)
-    
+
+    # Audit log
+    try:
+        from app.services.audit_service import log_action
+        doctor_name = f"Dr. {appointment.doctor.first_name} {appointment.doctor.last_name}" if appointment.doctor else "N/A"
+        patient_name = f"{patient.first_name} {patient.last_name}"
+        log_action(db, current_user, "book_appointment", "appointment", "Appointment", appointment.id,
+            f"Booked appointment for {patient_name} with {doctor_name} on {appointment_data.appointment_date} at {appointment_data.appointment_time}, Fee: ₹{appointment.final_amount or 0}",
+            details={"patient": patient_name, "doctor": doctor_name, "date": str(appointment_data.appointment_date), "amount": appointment.final_amount})
+    except Exception:
+        pass
+
     return appointment
 
 @router.get("/", response_model=List[AppointmentResponse])
