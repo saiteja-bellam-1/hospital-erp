@@ -111,8 +111,6 @@ function App() {
 
   // Key management state
   const [keyStatus, setKeyStatus] = useState(null);
-  const [keyUploading, setKeyUploading] = useState(false);
-  const [keyGenerating, setKeyGenerating] = useState(false);
 
   const fetchDash = useCallback(async () => {
     try { const r = await fetch(`${API}/dashboard`); setDash(await r.json()); } catch {}
@@ -262,40 +260,6 @@ function App() {
     fetchCustDetail(selectedCust);
   };
 
-  const handleKeyUpload = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    setKeyUploading(true);
-    try {
-      const formData = new FormData();
-      formData.append('file', file);
-      const r = await fetch(`${API}/keys/upload`, { method: 'POST', body: formData });
-      const data = await r.json();
-      if (r.ok) {
-        showMessage('Private key uploaded successfully');
-        fetchKeyStatus();
-      } else {
-        showMessage(data.detail || 'Upload failed', 'error');
-      }
-    } catch { showMessage('Failed to upload key', 'error'); }
-    finally { setKeyUploading(false); e.target.value = ''; }
-  };
-
-  const handleGenerateKeys = async () => {
-    if (!window.confirm('Generate a new keypair? This will overwrite any existing keys.')) return;
-    setKeyGenerating(true);
-    try {
-      const r = await fetch(`${API}/keys/generate`, { method: 'POST' });
-      if (r.ok) {
-        showMessage('New keypair generated');
-        fetchKeyStatus();
-      } else {
-        showMessage('Failed to generate keys', 'error');
-      }
-    } catch { showMessage('Failed to generate keys', 'error'); }
-    finally { setKeyGenerating(false); }
-  };
-
   const formatDate = (d) => {
     if (!d) return '—';
     try { return new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }); }
@@ -341,18 +305,7 @@ function App() {
           ))}
         </nav>
 
-        {/* Key status indicator in sidebar */}
-        <div className="p-4 border-t border-slate-800/50 space-y-2">
-          {keyStatus && (
-            <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs ${
-              keyStatus.private_key_exists
-                ? 'bg-emerald-500/10 text-emerald-400'
-                : 'bg-red-500/10 text-red-400'
-            }`}>
-              <span className={`w-2 h-2 rounded-full ${keyStatus.private_key_exists ? 'bg-emerald-400' : 'bg-red-400'}`} />
-              {keyStatus.private_key_exists ? 'Keys configured' : 'No keys — setup required'}
-            </div>
-          )}
+        <div className="p-4 border-t border-slate-800/50">
           <p className="text-[10px] text-slate-600 text-center">KT Health Soft v1.0</p>
         </div>
       </aside>
@@ -382,23 +335,6 @@ function App() {
                 <h2 className="text-2xl font-bold text-white">Dashboard</h2>
                 <p className="text-sm text-slate-500 mt-1">License overview and recent activity</p>
               </div>
-
-              {/* Key warning banner */}
-              {keyStatus && !keyStatus.private_key_exists && (
-                <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <Icon d={Icons.key} className="w-5 h-5 text-red-400" />
-                    <div>
-                      <p className="text-sm font-semibold text-red-300">Private key not configured</p>
-                      <p className="text-xs text-red-400/70 mt-0.5">You need to upload or generate a private key before you can create licenses.</p>
-                    </div>
-                  </div>
-                  <button onClick={() => setPage('settings')}
-                    className="px-3 py-1.5 bg-red-500/20 text-red-300 text-xs font-semibold rounded-lg hover:bg-red-500/30 transition-colors whitespace-nowrap">
-                    Setup Keys
-                  </button>
-                </div>
-              )}
 
               {/* Stats */}
               {dash && (
@@ -718,76 +654,32 @@ function App() {
             <div className="space-y-6 animate-fadeIn max-w-2xl">
               <div>
                 <h2 className="text-2xl font-bold text-white">Key Settings</h2>
-                <p className="text-sm text-slate-500 mt-1">Manage signing keys for license generation</p>
+                <p className="text-sm text-slate-500 mt-1">Signing keys are embedded in the application</p>
               </div>
 
-              {/* Current Status */}
+              {/* Status */}
               <div className="bg-slate-925 border border-slate-800/50 rounded-xl p-6 space-y-4">
                 <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">Key Status</h3>
                 <div className="grid grid-cols-2 gap-4">
-                  <div className={`flex items-center gap-3 p-4 rounded-xl border ${
-                    keyStatus?.private_key_exists
-                      ? 'bg-emerald-500/5 border-emerald-500/20'
-                      : 'bg-red-500/5 border-red-500/20'
-                  }`}>
-                    <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
-                      keyStatus?.private_key_exists ? 'bg-emerald-500/15' : 'bg-red-500/15'
-                    }`}>
-                      <Icon d={Icons.key} className={`w-5 h-5 ${keyStatus?.private_key_exists ? 'text-emerald-400' : 'text-red-400'}`} />
+                  <div className="flex items-center gap-3 p-4 rounded-xl border bg-emerald-500/5 border-emerald-500/20">
+                    <div className="w-10 h-10 rounded-lg flex items-center justify-center bg-emerald-500/15">
+                      <Icon d={Icons.key} className="w-5 h-5 text-emerald-400" />
                     </div>
                     <div>
                       <p className="text-sm font-semibold text-white">Private Key</p>
-                      <p className={`text-xs ${keyStatus?.private_key_exists ? 'text-emerald-400' : 'text-red-400'}`}>
-                        {keyStatus?.private_key_exists ? 'Configured' : 'Not found'}
-                      </p>
+                      <p className="text-xs text-emerald-400">Embedded</p>
                     </div>
                   </div>
-                  <div className={`flex items-center gap-3 p-4 rounded-xl border ${
-                    keyStatus?.public_key_exists
-                      ? 'bg-emerald-500/5 border-emerald-500/20'
-                      : 'bg-slate-500/5 border-slate-500/20'
-                  }`}>
-                    <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
-                      keyStatus?.public_key_exists ? 'bg-emerald-500/15' : 'bg-slate-500/15'
-                    }`}>
-                      <Icon d={Icons.shield} className={`w-5 h-5 ${keyStatus?.public_key_exists ? 'text-emerald-400' : 'text-slate-400'}`} />
+                  <div className="flex items-center gap-3 p-4 rounded-xl border bg-emerald-500/5 border-emerald-500/20">
+                    <div className="w-10 h-10 rounded-lg flex items-center justify-center bg-emerald-500/15">
+                      <Icon d={Icons.shield} className="w-5 h-5 text-emerald-400" />
                     </div>
                     <div>
                       <p className="text-sm font-semibold text-white">Public Key</p>
-                      <p className={`text-xs ${keyStatus?.public_key_exists ? 'text-emerald-400' : 'text-slate-400'}`}>
-                        {keyStatus?.public_key_exists ? 'Available' : 'Not generated'}
-                      </p>
+                      <p className="text-xs text-emerald-400">Embedded</p>
                     </div>
                   </div>
                 </div>
-              </div>
-
-              {/* Upload Private Key */}
-              <div className="bg-slate-925 border border-slate-800/50 rounded-xl p-6 space-y-4">
-                <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">Upload Private Key</h3>
-                <p className="text-xs text-slate-500">Upload an existing Ed25519 private key file (.pem). The public key will be automatically derived.</p>
-                <div className="flex items-center gap-3">
-                  <label className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-colors cursor-pointer shadow-lg ${
-                    keyUploading
-                      ? 'bg-slate-700 text-slate-400'
-                      : 'bg-blue-600 hover:bg-blue-500 text-white shadow-blue-600/20'
-                  }`}>
-                    <Icon d={Icons.upload} className="w-4 h-4" />
-                    {keyUploading ? 'Uploading...' : 'Choose .pem File'}
-                    <input type="file" accept=".pem" onChange={handleKeyUpload} className="hidden" disabled={keyUploading} />
-                  </label>
-                </div>
-              </div>
-
-              {/* Generate New Keypair */}
-              <div className="bg-slate-925 border border-slate-800/50 rounded-xl p-6 space-y-4">
-                <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">Generate New Keypair</h3>
-                <p className="text-xs text-slate-500">Generate a fresh Ed25519 keypair. If you already have keys, this will overwrite them.</p>
-                <button onClick={handleGenerateKeys} disabled={keyGenerating}
-                  className="flex items-center gap-2 px-4 py-2.5 bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-white rounded-xl text-sm font-semibold transition-colors shadow-lg shadow-amber-600/20">
-                  <Icon d={Icons.refresh} className="w-4 h-4" />
-                  {keyGenerating ? 'Generating...' : 'Generate New Keypair'}
-                </button>
               </div>
 
               {/* Public Key Display */}
@@ -798,7 +690,7 @@ function App() {
                     <button onClick={() => { navigator.clipboard.writeText(keyStatus.public_key); showMessage('Public key copied'); }}
                       className="text-xs text-blue-400 hover:text-blue-300 font-medium">Copy</button>
                   </div>
-                  <p className="text-xs text-slate-500">Copy this and paste into the main app's <code className="text-amber-400">app/licensing/crypto.py</code> PUBLIC_KEY_PEM</p>
+                  <p className="text-xs text-slate-500">This public key is embedded in the main hospital app at <code className="text-amber-400">app/licensing/crypto.py</code> for license verification.</p>
                   <pre className="bg-slate-950 border border-slate-800/50 rounded-lg p-4 text-xs text-emerald-400 font-mono overflow-x-auto whitespace-pre">
                     {keyStatus.public_key}
                   </pre>

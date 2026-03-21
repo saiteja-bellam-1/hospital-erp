@@ -2,7 +2,7 @@
 KT HEALTH ERP — License Manager
 Standalone internal tool for generating and managing license files.
 """
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response
@@ -34,7 +34,6 @@ else:
     DATA_DIR = BASE_DIR
 
 DB_PATH = os.path.join(DATA_DIR, "licenses.db")
-KEYS_DIR = DATA_DIR
 
 
 # ============================================================
@@ -114,31 +113,24 @@ init_db()
 
 
 # ============================================================
-# Crypto (self-contained, mirrors main app)
+# Crypto — Keys embedded directly (single source of truth)
 # ============================================================
 
-def load_private_key():
-    key_path = os.path.join(KEYS_DIR, "private_key.pem")
-    if not os.path.exists(key_path):
-        raise HTTPException(status_code=500, detail="Private key not found. Place private_key.pem in the backend directory.")
-    with open(key_path) as f:
-        return f.read()
+PRIVATE_KEY_PEM = """-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIDYWgUAsDV5wahp2+aCkZ0wAnkS9A/jNKDqVJTfsVYw+
+-----END PRIVATE KEY-----"""
+
+PUBLIC_KEY_PEM = """-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAxtFBGBmkF6F6hdfnaC4KSVD1wbJoO5G3dP6U0juNzfs=
+-----END PUBLIC KEY-----"""
 
 
-def load_public_key_pem():
-    key_path = os.path.join(KEYS_DIR, "public_key.pem")
-    if not os.path.exists(key_path):
-        return None
-    with open(key_path) as f:
-        return f.read()
-
-
-def sign_license_data(license_data: dict, private_key_pem: str) -> str:
+def sign_license_data(license_data: dict) -> str:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     from cryptography.hazmat.primitives import serialization
 
     private_key = serialization.load_pem_private_key(
-        private_key_pem.strip().encode(), password=None
+        PRIVATE_KEY_PEM.strip().encode(), password=None
     )
     if not isinstance(private_key, Ed25519PrivateKey):
         raise ValueError("Invalid key type: expected Ed25519 private key")
@@ -150,27 +142,6 @@ def sign_license_data(license_data: dict, private_key_pem: str) -> str:
     license_b64 = base64.b64encode(license_bytes).decode("utf-8")
     signature_b64 = base64.b64encode(signature).decode("utf-8")
     return f"{license_b64}\n{signature_b64}"
-
-
-def generate_keypair():
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-    from cryptography.hazmat.primitives import serialization
-
-    private_key = Ed25519PrivateKey.generate()
-    public_key = private_key.public_key()
-
-    private_pem = private_key.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption(),
-    ).decode("utf-8")
-
-    public_pem = public_key.public_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo,
-    ).decode("utf-8")
-
-    return private_pem, public_pem
 
 
 # ============================================================
@@ -298,8 +269,6 @@ def list_licenses(search: Optional[str] = None, status: Optional[str] = None):
 
 @app.post("/api/licenses")
 def create_license(data: LicenseCreate):
-    private_key_pem = load_private_key()
-
     now = datetime.now(timezone.utc)
     license_id = str(uuid.uuid4())
 
@@ -315,7 +284,7 @@ def create_license(data: LicenseCreate):
         "expires_at": (now + timedelta(days=data.days)).isoformat(),
     }
 
-    lic_content = sign_license_data(license_data, private_key_pem)
+    lic_content = sign_license_data(license_data)
 
     conn = get_db()
     conn.execute("""
@@ -337,7 +306,6 @@ def create_license(data: LicenseCreate):
 
 @app.post("/api/licenses/{license_id}/renew")
 def renew_license(license_id: str, data: LicenseRenew):
-    private_key_pem = load_private_key()
     conn = get_db()
     row = conn.execute("SELECT * FROM licenses WHERE license_id = ?", (license_id,)).fetchone()
     if not row:
@@ -359,7 +327,7 @@ def renew_license(license_id: str, data: LicenseRenew):
         "expires_at": (now + timedelta(days=data.days)).isoformat(),
     }
 
-    lic_content = sign_license_data(license_data, private_key_pem)
+    lic_content = sign_license_data(license_data)
 
     # Mark old as expired
     conn.execute("UPDATE licenses SET status = 'renewed' WHERE license_id = ?", (license_id,))
@@ -409,63 +377,10 @@ def delete_license(license_id: str):
 
 @app.get("/api/keys/status")
 def keys_status():
-    private_exists = os.path.exists(os.path.join(KEYS_DIR, "private_key.pem"))
-    public_exists = os.path.exists(os.path.join(KEYS_DIR, "public_key.pem"))
-    public_key = ""
-    if public_exists:
-        with open(os.path.join(KEYS_DIR, "public_key.pem")) as f:
-            public_key = f.read()
     return {
-        "private_key_exists": private_exists,
-        "public_key_exists": public_exists,
-        "public_key": public_key,
-    }
-
-
-@app.post("/api/keys/generate")
-def generate_keys():
-    private_pem, public_pem = generate_keypair()
-    with open(os.path.join(KEYS_DIR, "private_key.pem"), "w") as f:
-        f.write(private_pem)
-    with open(os.path.join(KEYS_DIR, "public_key.pem"), "w") as f:
-        f.write(public_pem)
-    return {
-        "message": "Keypair generated",
-        "public_key": public_pem,
-        "note": "Copy the public key to the main app's app/licensing/crypto.py PUBLIC_KEY_PEM"
-    }
-
-
-@app.post("/api/keys/upload")
-async def upload_private_key(file: UploadFile = File(...)):
-    content = (await file.read()).decode("utf-8").strip()
-    if "PRIVATE KEY" not in content:
-        raise HTTPException(status_code=400, detail="Invalid file — must be a PEM private key")
-    # Validate it's a usable Ed25519 key
-    try:
-        from cryptography.hazmat.primitives import serialization
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-        key = serialization.load_pem_private_key(content.encode(), password=None)
-        if not isinstance(key, Ed25519PrivateKey):
-            raise HTTPException(status_code=400, detail="Key must be an Ed25519 private key")
-        # Also derive and save the public key
-        public_pem = key.public_key().public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
-        ).decode("utf-8")
-    except HTTPException:
-        raise
-    except Exception:
-        raise HTTPException(status_code=400, detail="Failed to parse key — ensure it's a valid Ed25519 PEM file")
-
-    with open(os.path.join(KEYS_DIR, "private_key.pem"), "w") as f:
-        f.write(content)
-    with open(os.path.join(KEYS_DIR, "public_key.pem"), "w") as f:
-        f.write(public_pem)
-    return {
-        "message": "Private key uploaded successfully",
-        "public_key": public_pem,
-        "note": "Copy the public key to the main app's app/licensing/crypto.py PUBLIC_KEY_PEM"
+        "private_key_exists": True,
+        "public_key_exists": True,
+        "public_key": PUBLIC_KEY_PEM.strip(),
     }
 
 
