@@ -111,14 +111,23 @@ async def browse_folder():
                 folder = proc.stdout.strip().rstrip("/")
 
         elif platform.system() == "Windows":
-            # Windows: use PowerShell with STA thread for folder browser dialog
+            # Windows: create a hidden topmost form as dialog owner so it appears in front
             ps_script = (
                 'Add-Type -AssemblyName System.Windows.Forms; '
                 '[System.Windows.Forms.Application]::EnableVisualStyles(); '
+                '$top = New-Object System.Windows.Forms.Form; '
+                '$top.TopMost = $true; '
+                '$top.MinimizeBox = $false; '
+                '$top.MaximizeBox = $false; '
+                '$top.Width = 0; $top.Height = 0; '
+                '$top.StartPosition = "Manual"; '
+                '$top.Location = New-Object System.Drawing.Point(-1000,-1000); '
+                '$top.Show(); $top.BringToFront(); '
                 '$f = New-Object System.Windows.Forms.FolderBrowserDialog; '
                 '$f.Description = "Select Folder"; '
                 '$f.ShowNewFolderButton = $true; '
-                '$result = $f.ShowDialog(); '
+                '$result = $f.ShowDialog($top); '
+                '$top.Close(); '
                 'if ($result -eq [System.Windows.Forms.DialogResult]::OK) { '
                 '  $f.SelectedPath '
                 '}'

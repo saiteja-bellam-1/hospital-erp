@@ -12,6 +12,13 @@ from app.middleware.license_middleware import invalidate_license_cache
 router = APIRouter()
 
 
+@router.get("/machine-id")
+async def get_machine_id_info():
+    """Get this machine's unique ID for license binding. No auth required (needed before license upload)."""
+    from app.utils.machine_id import get_machine_id_full
+    return get_machine_id_full()
+
+
 def _require_admin(current_user: User):
     allowed = ["super_admin", "hospital_admin"]
     if not any(r in current_user.role_names for r in allowed):

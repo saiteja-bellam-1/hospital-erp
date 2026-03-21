@@ -8,7 +8,7 @@ from cryptography.hazmat.primitives import serialization
 # This gets replaced with the actual public key during initial setup
 # Generate a keypair with: python tools/generate_license.py --generate-keys
 PUBLIC_KEY_PEM = """-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEA43CPkhMnlA2B5o+pXe+R6H947Zos4Ji6fyCV/u45Zsg=
+MCowBQYDK2VwAyEAxtFBGBmkF6F6hdfnaC4KSVD1wbJoO5G3dP6U0juNzfs=
 -----END PUBLIC KEY-----"""
 
 

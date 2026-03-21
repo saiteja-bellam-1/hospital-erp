@@ -71,8 +71,21 @@ def get_license_status(db: Session) -> dict:
 
 def upload_license(db: Session, file_content: str, uploaded_by: int = None) -> dict:
     """Verify and store a new license file."""
+    from app.utils.machine_id import get_machine_id
+
     # Verify signature and parse
     license_data = verify_license_file(file_content)
+
+    # Validate machine_id if present in license
+    license_machine_id = license_data.get("machine_id")
+    if license_machine_id:
+        current_machine_id = get_machine_id()
+        if license_machine_id != current_machine_id:
+            raise ValueError(
+                f"This license is not valid for this machine. "
+                f"License is for machine '{license_machine_id}', "
+                f"but this machine is '{current_machine_id}'."
+            )
 
     # Parse dates (strip timezone to keep everything as naive UTC)
     issued_at = datetime.fromisoformat(license_data["issued_at"]).replace(tzinfo=None)

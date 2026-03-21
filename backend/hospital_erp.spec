@@ -85,6 +85,7 @@ a = Analysis(
         'app.utils.auth',
         'app.utils.dependencies',
         'app.utils.pdf_service',
+        'app.utils.machine_id',
         'app.middleware.license_middleware',
 
         # Other dependencies

@@ -10,6 +10,7 @@ const LicenseManagement = () => {
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [message, setMessage] = useState(null);
+  const [machineInfo, setMachineInfo] = useState(null);
 
   const fetchLicenseStatus = async () => {
     try {
@@ -23,8 +24,16 @@ const LicenseManagement = () => {
     }
   };
 
+  const fetchMachineId = async () => {
+    try {
+      const res = await axios.get('/api/license/machine-id');
+      setMachineInfo(res.data);
+    } catch {}
+  };
+
   useEffect(() => {
     fetchLicenseStatus();
+    fetchMachineId();
   }, []);
 
   const handleFileUpload = async (e) => {
@@ -90,6 +99,33 @@ const LicenseManagement = () => {
         <div className={`p-4 rounded-lg ${message.type === 'success' ? 'bg-green-50 text-green-800 border border-green-200' : 'bg-red-50 text-red-800 border border-red-200'}`}>
           {message.text}
         </div>
+      )}
+
+      {/* Machine ID Card */}
+      {machineInfo && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Machine ID</CardTitle>
+            <CardDescription>Share this ID with KT Health Soft to get your license file</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center gap-4">
+              <code className="text-2xl font-bold tracking-widest bg-gray-100 px-4 py-2 rounded-lg select-all">
+                {machineInfo.machine_id}
+              </code>
+              <Button variant="outline" size="sm" onClick={() => {
+                navigator.clipboard.writeText(machineInfo.machine_id);
+                setMessage({ type: 'success', text: 'Machine ID copied to clipboard' });
+                setTimeout(() => setMessage(null), 2000);
+              }}>
+                Copy
+              </Button>
+            </div>
+            <p className="text-xs text-gray-400 mt-2">
+              {machineInfo.hostname} | {machineInfo.os}
+            </p>
+          </CardContent>
+        </Card>
       )}
 
       {/* License Status Card */}
