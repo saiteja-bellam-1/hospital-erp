@@ -29,6 +29,7 @@ import hospitalLogo from '../assets/Final Logo KT (1).jpg';
 import DashboardHome from './modules/DashboardHome';
 import HospitalAdminDashboard from './modules/HospitalAdminDashboard';
 import BillingDashboard from './modules/BillingDashboard';
+import AuditLogsPage from './modules/AuditLogsPage';
 import PatientsModule from './modules/PatientsModule';
 import LabModule from './modules/LabModule';
 import PharmacyModule from './modules/PharmacyModule';
@@ -180,6 +181,7 @@ const Dashboard = () => {
       adminItems.push({ text: 'Hospital Config', icon: <Building2 className="h-[18px] w-[18px]" />, path: '/dashboard/hospital-admin' });
       adminItems.push({ text: 'License', icon: <Shield className="h-[18px] w-[18px]" />, path: '/dashboard/license' });
       adminItems.push({ text: 'Backup', icon: <Database className="h-[18px] w-[18px]" />, path: '/dashboard/backup' });
+      adminItems.push({ text: 'Audit Logs', icon: <Shield className="h-[18px] w-[18px]" />, path: '/dashboard/audit' });
     }
 
     const sections = [{ label: 'Overview', items: mainItems }];
@@ -405,6 +407,7 @@ const Dashboard = () => {
             <Route path="/license" element={<LicenseManagement />} />
             <Route path="/backup" element={<BackupManagement />} />
             <Route path="/billing-dashboard" element={<BillingDashboard />} />
+            <Route path="/audit" element={<AuditLogsPage />} />
           </Routes>
         </main>
 

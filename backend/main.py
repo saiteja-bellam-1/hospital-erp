@@ -23,8 +23,9 @@ from app.models.doctor_availability import DoctorAvailability, DoctorSpecialSche
 from app.models.license import License
 
 # Import route modules
-from app.routes import auth, patients, admin, system, module_admin, hospital_admin, appointments, prescriptions, medicines, consultations, prescriptions_simple, doctor_availability, lab, ehr, license, setup, backup, referrals
+from app.routes import auth, patients, admin, system, module_admin, hospital_admin, appointments, prescriptions, medicines, consultations, prescriptions_simple, doctor_availability, lab, ehr, license, setup, backup, referrals, audit
 from app.middleware.license_middleware import LicenseMiddleware
+from app.middleware.audit_middleware import AuditMiddleware
 
 app = FastAPI(
     title=settings.app_name,
@@ -44,6 +45,7 @@ app.add_middleware(
 
 # License middleware
 app.add_middleware(LicenseMiddleware)
+app.add_middleware(AuditMiddleware)
 
 security = HTTPBearer()
 
@@ -61,6 +63,18 @@ async def startup_event():
             print(f"Migration note: {e}")
         # Ensure role permissions exist (for installations that pre-date the wizard)
         _ensure_role_permissions()
+        # Cleanup old audit logs based on retention config
+        try:
+            from app.services.audit_service import cleanup_old_logs, get_retention_days
+            from config.database import get_db as _get_db
+            _db = next(_get_db())
+            retention = get_retention_days(_db)
+            deleted = cleanup_old_logs(_db, retention)
+            if deleted > 0:
+                print(f"Cleaned up {deleted} old audit log entries (>{retention} days)")
+            _db.close()
+        except Exception:
+            pass
     else:
         print("Setup not complete — waiting for setup wizard")
 
@@ -139,6 +153,7 @@ app.include_router(license.router, prefix="/api/license", tags=["License"])
 app.include_router(setup.router, prefix="/api/setup", tags=["Setup Wizard"])
 app.include_router(backup.router, prefix="/api/backup", tags=["Backup"])
 app.include_router(referrals.router, prefix="/api/referrals", tags=["Referrals"])
+app.include_router(audit.router, prefix="/api/audit", tags=["Audit Logs"])
 # app.include_router(outpatient.router, prefix="/api/outpatient", tags=["Outpatient"])
 # app.include_router(inpatient.router, prefix="/api/inpatient", tags=["Inpatient"])
 

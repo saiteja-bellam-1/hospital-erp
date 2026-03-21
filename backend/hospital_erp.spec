@@ -87,6 +87,10 @@ a = Analysis(
         'app.utils.pdf_service',
         'app.utils.machine_id',
         'app.middleware.license_middleware',
+        'app.middleware.audit_middleware',
+        'app.models.audit',
+        'app.services.audit_service',
+        'app.routes.audit',
 
         # Other dependencies
         'reportlab',

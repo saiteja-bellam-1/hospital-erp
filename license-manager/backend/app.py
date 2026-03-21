@@ -13,6 +13,7 @@ import sqlite3
 import uuid
 import json
 import os
+import sys
 import base64
 
 app = FastAPI(title="KT HEALTH ERP — License Manager", version="1.0.0")
@@ -560,7 +561,10 @@ def delete_payment(payment_id: int):
 
 
 # Serve frontend
-frontend_dir = os.path.join(os.path.dirname(BASE_DIR), "frontend", "build")
+if getattr(sys, 'frozen', False):
+    frontend_dir = os.path.join(sys._MEIPASS, 'frontend_build')
+else:
+    frontend_dir = os.path.join(os.path.dirname(BASE_DIR), "frontend", "build")
 if os.path.isdir(frontend_dir):
     app.mount("/static", StaticFiles(directory=os.path.join(frontend_dir, "static")), name="static")
 

@@ -68,6 +68,14 @@ async def login(user_credentials: UserLogin, db: Session = Depends(get_db)):
             detail=license_reason
         )
 
+    # Log successful login
+    try:
+        from app.services.audit_service import log_action
+        log_action(db, user, "login", "auth", "User", user.id,
+                   f"{user.first_name} {user.last_name} logged in")
+    except Exception:
+        pass
+
     # Create access token
     access_token = create_access_token(data={"sub": user.username})
     
