@@ -21,7 +21,8 @@ def main():
     threading.Thread(target=open_browser, daemon=True).start()
 
     import uvicorn
-    uvicorn.run("app:app", host="127.0.0.1", port=port, reload=False, log_level="info")
+    from app import app  # direct import instead of string — works in frozen .exe
+    uvicorn.run(app, host="127.0.0.1", port=port, reload=False, log_level="info")
 
 
 if __name__ == "__main__":
