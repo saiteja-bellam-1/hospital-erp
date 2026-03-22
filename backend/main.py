@@ -143,6 +143,11 @@ def _ensure_modules():
                     is_enabled=default_enabled, is_always_enabled=always_on,
                 ))
                 print(f"  Added module: {mod_name}")
+            else:
+                # Sync is_always_enabled flag for existing modules (handles upgrades)
+                if existing.is_always_enabled != always_on:
+                    existing.is_always_enabled = always_on
+                    print(f"  Updated module {mod_name}: is_always_enabled={always_on}")
         db.commit()
     except Exception as e:
         print(f"Warning: Module sync: {e}")
