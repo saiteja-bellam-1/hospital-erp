@@ -108,6 +108,142 @@ def require_admin_access(current_user: User = Depends(get_current_user)):
         )
     return current_user
 
+@router.get("/super-dashboard")
+async def get_super_admin_dashboard(
+    current_user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+):
+    """System-level dashboard for super admin."""
+    from sqlalchemy import func as sql_func, distinct
+    from datetime import date, timedelta, datetime
+    from app.models.audit import AuditLog
+    from app.models.system import SystemModule
+    from app.models.license import License
+
+    today = date.today()
+    now = datetime.now()
+    week_ago = today - timedelta(days=7)
+
+    # --- Users ---
+    total_users = db.query(sql_func.count(User.id)).scalar() or 0
+    active_users = db.query(sql_func.count(User.id)).filter(User.is_active == True).scalar() or 0
+    inactive_users = total_users - active_users
+
+    # Users by role
+    role_breakdown = {}
+    all_users = db.query(User).filter(User.is_active == True).all()
+    for u in all_users:
+        rname = u.role.name if u.role else "unknown"
+        role_breakdown[rname] = role_breakdown.get(rname, 0) + 1
+
+    # --- Active sessions (users who logged in today via audit logs) ---
+    logged_in_today = 0
+    recent_logins = []
+    try:
+        logged_in_today = db.query(sql_func.count(distinct(AuditLog.user_id))).filter(
+            sql_func.date(AuditLog.timestamp) == today,
+            AuditLog.action == "login"
+        ).scalar() or 0
+
+        logins = db.query(AuditLog).filter(
+            AuditLog.action == "login",
+            sql_func.date(AuditLog.timestamp) == today
+        ).order_by(AuditLog.timestamp.desc()).limit(10).all()
+        recent_logins = [
+            {"user_name": l.user_name, "user_role": l.user_role or "", "time": l.timestamp.isoformat() if l.timestamp else "", "ip": l.ip_address or ""}
+            for l in logins
+        ]
+    except Exception:
+        pass
+
+    # --- Audit summary ---
+    total_audit_logs = 0
+    today_audit_logs = 0
+    audit_categories = {}
+    try:
+        total_audit_logs = db.query(sql_func.count(AuditLog.id)).scalar() or 0
+        today_audit_logs = db.query(sql_func.count(AuditLog.id)).filter(
+            sql_func.date(AuditLog.timestamp) == today
+        ).scalar() or 0
+        cats = db.query(AuditLog.category, sql_func.count(AuditLog.id)).filter(
+            sql_func.date(AuditLog.timestamp) >= week_ago
+        ).group_by(AuditLog.category).all()
+        audit_categories = {c: n for c, n in cats if c}
+    except Exception:
+        pass
+
+    # --- License ---
+    license_info = {"status": "no_license", "days_remaining": 0, "plan": None, "expires_at": None}
+    try:
+        lic = db.query(License).order_by(License.id.desc()).first()
+        if lic:
+            days_left = (lic.expires_at - now).days if lic.expires_at else 0
+            license_info = {
+                "status": "active" if days_left > 30 else ("expiring_soon" if days_left > 0 else "expired"),
+                "days_remaining": days_left,
+                "plan": lic.plan,
+                "expires_at": lic.expires_at.isoformat() if lic.expires_at else None,
+                "hospital_name": lic.hospital_name,
+                "max_users": lic.max_users,
+            }
+    except Exception:
+        pass
+
+    # --- Modules ---
+    modules = []
+    try:
+        mods = db.query(SystemModule).all()
+        modules = [{"name": m.module_name, "display_name": m.display_name, "enabled": m.is_enabled, "always_on": m.is_always_enabled} for m in mods]
+    except Exception:
+        pass
+
+    # --- Activity trend (last 7 days) ---
+    daily_activity = []
+    try:
+        for i in range(6, -1, -1):
+            d = today - timedelta(days=i)
+            count = db.query(sql_func.count(AuditLog.id)).filter(
+                sql_func.date(AuditLog.timestamp) == d
+            ).scalar() or 0
+            daily_activity.append({"date": d.isoformat(), "day": d.strftime("%a"), "count": count})
+    except Exception:
+        pass
+
+    # --- Recent system actions ---
+    recent_actions = []
+    try:
+        actions = db.query(AuditLog).filter(
+            AuditLog.category.in_(["admin", "auth", "billing"])
+        ).order_by(AuditLog.timestamp.desc()).limit(8).all()
+        recent_actions = [
+            {"user_name": a.user_name, "action": a.action, "category": a.category,
+             "description": a.description, "time": a.timestamp.isoformat() if a.timestamp else ""}
+            for a in actions
+        ]
+    except Exception:
+        pass
+
+    return {
+        "users": {
+            "total": total_users,
+            "active": active_users,
+            "inactive": inactive_users,
+            "logged_in_today": logged_in_today,
+            "by_role": role_breakdown,
+        },
+        "license": license_info,
+        "modules": modules,
+        "audit": {
+            "total_logs": total_audit_logs,
+            "today_logs": today_audit_logs,
+            "categories_this_week": audit_categories,
+            "daily_activity": daily_activity,
+        },
+        "recent_logins": recent_logins,
+        "recent_actions": recent_actions,
+    }
+
+
 # MODULE MANAGEMENT ENDPOINTS
 @router.get("/modules", response_model=List[ModuleResponse])
 async def get_system_modules(

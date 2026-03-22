@@ -91,7 +91,10 @@ const AvailabilityModule = () => {
         return true;
       } else {
         const error = await response.json();
-        toast({ title: 'Error updating settings', description: error.detail || 'Unknown error', variant: 'destructive' });
+        const errMsg = typeof error.detail === 'string' ? error.detail :
+          Array.isArray(error.detail) ? error.detail.map(e => e.msg || e.type).join(', ') : 'Unknown error';
+        console.error('Availability update error:', JSON.stringify(error.detail));
+        toast({ title: 'Error updating settings', description: errMsg, variant: 'destructive' });
         return false;
       }
     } catch (error) {

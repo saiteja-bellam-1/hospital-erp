@@ -20,6 +20,9 @@ class WeeklyScheduleDay(BaseModel):
     end_time: str = Field(..., pattern=r'^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$')
     enabled: bool = True
 
+    class Config:
+        extra = "ignore"
+
 class WeeklySchedule(BaseModel):
     monday: WeeklyScheduleDay
     tuesday: WeeklyScheduleDay
@@ -36,11 +39,14 @@ class BreakTime(BaseModel):
 
 class AvailabilitySettingsUpdate(BaseModel):
     weekly_schedule: WeeklySchedule
-    default_consultation_duration: int = Field(default=30, ge=15, le=120)
+    default_consultation_duration: int = Field(default=30, ge=5, le=120)
     break_times: List[BreakTime] = []
     buffer_minutes: int = Field(default=0, ge=0, le=30)
     emergency_slot_percentage: int = Field(default=20, ge=0, le=50)
     max_advance_booking_days: int = Field(default=30, ge=1, le=90)
+
+    class Config:
+        extra = "ignore"
 
 class SpecialScheduleCreate(BaseModel):
     date: date

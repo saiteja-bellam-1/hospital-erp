@@ -341,14 +341,22 @@ async def download_prescription_pdf(
             except Exception:
                 pass
 
-    # --- Fetch lab orders for this patient ---
+    # --- Fetch lab orders linked to this consultation/appointment only ---
     lab_tests_ordered = []
     if patient:
-        lab_orders = db.query(PatientLabOrder, LabTest).join(
+        lab_query = db.query(PatientLabOrder, LabTest).join(
             LabTest, PatientLabOrder.test_id == LabTest.id
-        ).filter(
-            PatientLabOrder.patient_id == patient.id
-        ).order_by(PatientLabOrder.order_date.desc()).limit(10).all()
+        ).filter(PatientLabOrder.patient_id == patient.id)
+
+        # Filter by consultation or appointment link
+        if consultation:
+            lab_query = lab_query.filter(
+                (PatientLabOrder.consultation_id == consultation.id) |
+                (PatientLabOrder.appointment_id == consultation.appointment_id) if consultation.appointment_id else
+                (PatientLabOrder.consultation_id == consultation.id)
+            )
+
+        lab_orders = lab_query.order_by(PatientLabOrder.order_date.desc()).limit(10).all()
 
         for order, test in lab_orders:
             lab_tests_ordered.append({

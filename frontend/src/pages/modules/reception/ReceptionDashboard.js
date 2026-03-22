@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import LabTestBookingDialog from '../../../components/LabTestBookingDialog';
 import { Card, CardContent, CardHeader, CardTitle } from '../../../components/ui/card';
 import { Button } from '../../../components/ui/button';
 import { Badge } from '../../../components/ui/badge';
@@ -55,6 +56,29 @@ const ReceptionDashboard = () => {
   };
   const [patientForm, setPatientForm] = useState(emptyPatientForm);
   const [loading, setLoading] = useState(true);
+
+  // Lab test booking dialog
+  const [showLabBooking, setShowLabBooking] = useState(false);
+
+  // Enabled modules
+  const [enabledModules, setEnabledModules] = useState({});
+  useEffect(() => {
+    const fetchModules = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        const res = await fetch('/api/system/enabled-modules', { headers: { Authorization: `Bearer ${token}` } });
+        if (res.ok) {
+          const mods = await res.json();
+          const map = {};
+          mods.forEach(m => { map[m.module_name] = m.is_enabled; });
+          setEnabledModules(map);
+        }
+      } catch {
+        setEnabledModules({ outpatient: true, lab: true });
+      }
+    };
+    fetchModules();
+  }, []);
 
   // Dialog states
   const [showPrescriptionDialog, setShowPrescriptionDialog] = useState(false);
@@ -380,52 +404,64 @@ const ReceptionDashboard = () => {
               <span>Manage Patients</span>
             </Button>
           </Link>
-          <Link to="/dashboard/reception/appointments">
-            <Button className="flex items-center space-x-2">
-              <CalendarPlus className="h-4 w-4" />
-              <span>Manage Appointments</span>
+          {enabledModules.outpatient && (
+            <Link to="/dashboard/reception/appointments">
+              <Button className="flex items-center space-x-2">
+                <CalendarPlus className="h-4 w-4" />
+                <span>Manage Appointments</span>
+              </Button>
+            </Link>
+          )}
+          {enabledModules.lab && (
+            <Button variant="outline" className="flex items-center space-x-2" onClick={() => setShowLabBooking(true)}>
+              <TestTube className="h-4 w-4" />
+              <span>Book Lab Test</span>
             </Button>
-          </Link>
+          )}
         </div>
       </div>
 
       {/* Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
-        <Card>
-          <CardContent className="p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-gray-600">Today's Appointments</p>
-                <p className="text-3xl font-bold text-blue-600">{stats.todayAppointments}</p>
-              </div>
-              <Calendar className="h-8 w-8 text-blue-600" />
-            </div>
-          </CardContent>
-        </Card>
+      <div className={`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-${enabledModules.outpatient ? '5' : '2'} gap-6`}>
+        {enabledModules.outpatient && (
+          <>
+            <Card>
+              <CardContent className="p-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-gray-600">Today's Appointments</p>
+                    <p className="text-3xl font-bold text-blue-600">{stats.todayAppointments}</p>
+                  </div>
+                  <Calendar className="h-8 w-8 text-blue-600" />
+                </div>
+              </CardContent>
+            </Card>
 
-        <Card>
-          <CardContent className="p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-gray-600">Pending Appointments</p>
-                <p className="text-3xl font-bold text-yellow-600">{stats.pendingAppointments}</p>
-              </div>
-              <Clock className="h-8 w-8 text-yellow-600" />
-            </div>
-          </CardContent>
-        </Card>
+            <Card>
+              <CardContent className="p-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-gray-600">Pending Appointments</p>
+                    <p className="text-3xl font-bold text-yellow-600">{stats.pendingAppointments}</p>
+                  </div>
+                  <Clock className="h-8 w-8 text-yellow-600" />
+                </div>
+              </CardContent>
+            </Card>
 
-        <Card>
-          <CardContent className="p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-gray-600">Completed Today</p>
-                <p className="text-3xl font-bold text-green-600">{stats.completedAppointments}</p>
-              </div>
-              <CheckCircle className="h-8 w-8 text-green-600" />
-            </div>
-          </CardContent>
-        </Card>
+            <Card>
+              <CardContent className="p-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-gray-600">Completed Today</p>
+                    <p className="text-3xl font-bold text-green-600">{stats.completedAppointments}</p>
+                  </div>
+                  <CheckCircle className="h-8 w-8 text-green-600" />
+                </div>
+              </CardContent>
+            </Card>
+          </>
+        )}
 
         <Card>
           <CardContent className="p-6">
@@ -452,7 +488,8 @@ const ReceptionDashboard = () => {
         </Card>
       </div>
 
-      {/* Today's Appointments Overview */}
+      {/* Today's Appointments Overview — only when outpatient enabled */}
+      {enabledModules.outpatient && (
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card>
           <CardHeader>
@@ -521,16 +558,26 @@ const ReceptionDashboard = () => {
                 <UserPlus className="h-4 w-4 mr-2" />
                 Register New Patient
               </Button>
-              <Button variant="outline" className="w-full justify-start" onClick={() => navigate('/dashboard/reception/appointments?action=schedule')}>
-                <CalendarPlus className="h-4 w-4 mr-2" />
-                Schedule Appointment
-              </Button>
-              <Link to="/dashboard/reception/appointments">
-                <Button variant="outline" className="w-full justify-start">
-                  <Calendar className="h-4 w-4 mr-2" />
-                  View Today's Schedule
+              {enabledModules.outpatient && (
+                <>
+                  <Button variant="outline" className="w-full justify-start" onClick={() => navigate('/dashboard/reception/appointments?action=schedule')}>
+                    <CalendarPlus className="h-4 w-4 mr-2" />
+                    Schedule Appointment
+                  </Button>
+                  <Link to="/dashboard/reception/appointments">
+                    <Button variant="outline" className="w-full justify-start">
+                      <Calendar className="h-4 w-4 mr-2" />
+                      View Today's Schedule
+                    </Button>
+                  </Link>
+                </>
+              )}
+              {enabledModules.lab && (
+                <Button variant="outline" className="w-full justify-start" onClick={() => setShowLabBooking(true)}>
+                  <TestTube className="h-4 w-4 mr-2" />
+                  Book Lab Test
                 </Button>
-              </Link>
+              )}
               <Button variant="outline" className="w-full justify-start" onClick={fetchDashboardData}>
                 <RefreshCw className="h-4 w-4 mr-2" />
                 Refresh Dashboard
@@ -540,8 +587,12 @@ const ReceptionDashboard = () => {
         </Card>
       </div>
 
+      )}
+
       {/* Lab Orders & Prescriptions */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Today's Lab Orders — only when lab enabled */}
+        {enabledModules.lab && (<>
         {/* Today's Lab Orders */}
         <Card>
           <CardHeader>
@@ -695,7 +746,10 @@ const ReceptionDashboard = () => {
           </CardContent>
         </Card>
 
-        {/* Recent Prescriptions */}
+        </>)}
+
+        {/* Recent Prescriptions — only when outpatient enabled */}
+        {enabledModules.outpatient && (
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
@@ -740,6 +794,7 @@ const ReceptionDashboard = () => {
             )}
           </CardContent>
         </Card>
+        )}
       </div>
 
       {/* Lab Payment Dialog */}
@@ -1060,6 +1115,11 @@ const ReceptionDashboard = () => {
         </DialogContent>
       </Dialog>
 
+      {/* Lab Test Booking Dialog */}
+      <LabTestBookingDialog
+        open={showLabBooking}
+        onClose={(success) => { setShowLabBooking(false); if (success) fetchDashboardData(); }}
+      />
     </div>
   );
 };

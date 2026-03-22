@@ -85,3 +85,33 @@ async def run_backup_now(current_user: User = Depends(get_current_user)):
         pass
 
     return result
+
+
+@router.get("/mirror-status")
+async def get_mirror_backup_status(current_user: User = Depends(get_current_user)):
+    """Get real-time mirror backup status."""
+    if not any(r in current_user.role_names for r in ("super_admin", "hospital_admin")):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    from app.utils.config import get_mirror_status
+    return get_mirror_status()
+
+
+@router.post("/mirror/start")
+async def start_mirror(current_user: User = Depends(get_current_user)):
+    if not any(r in current_user.role_names for r in ("super_admin", "hospital_admin")):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    from app.utils.config import start_mirror_backup
+    start_mirror_backup(interval_seconds=60)
+    return {"message": "Mirror backup started"}
+
+
+@router.post("/mirror/stop")
+async def stop_mirror(current_user: User = Depends(get_current_user)):
+    if not any(r in current_user.role_names for r in ("super_admin", "hospital_admin")):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    from app.utils.config import stop_mirror_backup
+    stop_mirror_backup()
+    return {"message": "Mirror backup stopped"}

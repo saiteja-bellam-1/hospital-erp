@@ -916,6 +916,123 @@ async def create_orders(
 
     return [_build_order_response(o, db) for o in orders]
 
+class ReceptionLabBooking(BaseModel):
+    patient_id: int
+    test_ids: List[int] = Field(..., min_length=1)
+    payment_method: str = Field(..., pattern="^(cash|card|upi|cheque|online|insurance)$")
+    referred_by: Optional[str] = None
+    discount_amount: float = Field(default=0.0, ge=0)
+    include_header: bool = True
+    notes: Optional[str] = None
+
+
+@router.post("/orders/reception-book")
+async def reception_book_lab_tests(
+    data: ReceptionLabBooking,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Reception books individual lab tests directly for a patient with payment."""
+    allowed = ['receptionist', 'hospital_admin', 'super_admin']
+    if not any(r in current_user.role_names for r in allowed):
+        raise HTTPException(status_code=403, detail="Only reception or admin can book lab tests")
+
+    patient = db.query(Patient).filter(
+        Patient.id == data.patient_id,
+        Patient.hospital_id == current_user.hospital_id
+    ).first()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
+    now = datetime.now()
+    orders = []
+    total = 0.0
+
+    for test_id in data.test_ids:
+        test = db.query(LabTest).filter(
+            LabTest.id == test_id,
+            LabTest.hospital_id == current_user.hospital_id,
+            LabTest.is_active == True
+        ).first()
+        if not test:
+            raise HTTPException(status_code=404, detail=f"Test ID {test_id} not found")
+
+        order = PatientLabOrder(
+            order_number=f"LAB-{str(uuid.uuid4())[:8].upper()}",
+            patient_id=data.patient_id,
+            test_id=test_id,
+            doctor_id=None,
+            referred_by=data.referred_by,
+            priority="normal",
+            notes=data.notes,
+            status="ordered",
+            amount=test.cost or 0.0,
+            payment_status="paid",
+            payment_method=data.payment_method,
+            payment_date=now,
+        )
+        db.add(order)
+        orders.append(order)
+        total += test.cost or 0.0
+
+    db.commit()
+
+    # Audit log
+    try:
+        from app.services.audit_service import log_action
+        test_names = ", ".join(o.test.name for o in orders if o.test)
+        patient_name = f"{patient.first_name} {patient.last_name}"
+        log_action(db, current_user, "reception_book_lab", "lab", "LabOrder", orders[0].id if orders else None,
+            f"Reception booked {len(orders)} lab test(s) for {patient_name}: {test_names}, Total: ₹{total}",
+            details={"patient": patient_name, "tests": test_names, "total": total, "method": data.payment_method})
+    except Exception:
+        pass
+
+    # Generate bill PDF
+    from app.utils.pdf_service import pdf_service
+    from app.models.hospital import Hospital
+
+    hospital = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
+    hospital_info = {
+        "name": hospital.name if hospital else "Hospital",
+        "address": hospital.address if hospital else "",
+        "phone": hospital.phone if hospital else "",
+        "email": hospital.email if hospital else "",
+        "logo_url": hospital.logo_url if hospital else "",
+    }
+
+    age = None
+    if patient.date_of_birth:
+        from dateutil.relativedelta import relativedelta
+        age = relativedelta(now.date(), patient.date_of_birth).years
+
+    bill_data = {
+        "bill_number": f"LB-{now.strftime('%Y%m%d%H%M%S')}-{data.patient_id}",
+        "bill_date": now.isoformat(),
+        "patient_name": f"{patient.first_name} {patient.last_name}",
+        "patient_age": f"{age} Years" if age else "",
+        "patient_gender": patient.gender,
+        "patient_phone": patient.primary_phone or "",
+        "patient_id": patient.patient_id,
+        "reg_no": patient.patient_id,
+        "doctor_name": "",
+        "referred_by": data.referred_by or "",
+        "payment_method": data.payment_method.capitalize(),
+        "items": [{"item_name": o.test.name, "item_code": o.test.test_code, "total_price": o.amount} for o in orders if o.test],
+        "subtotal": total,
+        "discount_amount": data.discount_amount,
+        "amount_paid": round(total - data.discount_amount, 2),
+        "balance_due": 0,
+        "prepared_by": f"{current_user.first_name} {current_user.last_name}",
+    }
+
+    from fastapi.responses import StreamingResponse
+    pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, include_header=data.include_header)
+    filename = f"lab_bill_{bill_data['bill_number']}.pdf"
+    return StreamingResponse(pdf_buffer, media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={filename}"})
+
+
 @router.get("/orders", response_model=List[OrderResponse])
 async def list_orders(
     status: Optional[str] = None,
@@ -1145,6 +1262,18 @@ async def generate_lab_bill(
 
     bill_number = f"LB-{datetime.now().strftime('%Y%m%d%H%M%S')}-{patient_id}"
 
+    # Determine referral info from orders
+    referral_name = ""
+    doctor_name = ""
+    for order in orders:
+        if order.doctor_id:
+            doc = db.query(User).filter(User.id == order.doctor_id).first()
+            if doc:
+                doctor_name = f"Dr. {doc.first_name} {doc.last_name}"
+                break
+        if order.referred_by and not referral_name:
+            referral_name = order.referred_by
+
     bill_data = {
         "bill_number": bill_number,
         "bill_date": datetime.now().isoformat(),
@@ -1152,8 +1281,10 @@ async def generate_lab_bill(
         "patient_age": age,
         "patient_gender": patient.gender,
         "patient_phone": patient.primary_phone or "",
+        "patient_id": patient.patient_id,
         "reg_no": patient.patient_id,
-        "doctor_name": "",
+        "doctor_name": doctor_name,
+        "referred_by": referral_name,
         "payment_method": data.payment_method.capitalize(),
         "items": items,
         "subtotal": total,

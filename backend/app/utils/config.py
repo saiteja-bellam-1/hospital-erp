@@ -129,3 +129,94 @@ def run_backup():
         "db_source": db_path,
         "results": results,
     }
+
+
+# ============================================================
+# Real-time Mirror Backup
+# ============================================================
+
+_mirror_thread = None
+_mirror_running = False
+_last_mirror_sync = None
+_last_mirror_error = None
+
+
+def run_mirror_sync():
+    """
+    Sync database + uploads to all backup locations as a live mirror.
+    Overwrites the same files each time — no timestamped copies.
+    Uses SQLite backup API for safe, consistent copies.
+    """
+    import sqlite3
+    import shutil
+    from app.utils.paths import get_uploads_dir
+    global _last_mirror_sync, _last_mirror_error
+
+    config = load_config()
+    db_path = get_configured_db_path()
+    uploads_dir = get_uploads_dir()
+    backup_locations = config.get("backup_locations", [])
+
+    if not os.path.isfile(db_path) or not backup_locations:
+        return
+
+    mirror_db_name = "kthealth_erp.db"
+
+    for location in backup_locations:
+        try:
+            mirror_dir = os.path.join(location, "kthealth_erp_mirror")
+            os.makedirs(mirror_dir, exist_ok=True)
+
+            # Mirror database
+            dest_db = os.path.join(mirror_dir, mirror_db_name)
+            source_conn = sqlite3.connect(db_path)
+            dest_conn = sqlite3.connect(dest_db)
+            source_conn.backup(dest_conn)
+            dest_conn.close()
+            source_conn.close()
+
+            # Mirror uploads
+            if os.path.isdir(uploads_dir):
+                dest_uploads = os.path.join(mirror_dir, "uploads")
+                shutil.copytree(uploads_dir, dest_uploads, dirs_exist_ok=True)
+
+            _last_mirror_sync = datetime.datetime.now().isoformat()
+            _last_mirror_error = None
+        except Exception as e:
+            _last_mirror_error = str(e)
+
+
+def start_mirror_backup(interval_seconds=60):
+    """Start background thread that mirrors the DB every N seconds."""
+    import threading
+    global _mirror_thread, _mirror_running
+
+    if _mirror_running:
+        return
+
+    _mirror_running = True
+
+    def _loop():
+        import time
+        while _mirror_running:
+            try:
+                run_mirror_sync()
+            except Exception:
+                pass
+            time.sleep(interval_seconds)
+
+    _mirror_thread = threading.Thread(target=_loop, daemon=True, name="mirror-backup")
+    _mirror_thread.start()
+
+
+def stop_mirror_backup():
+    global _mirror_running
+    _mirror_running = False
+
+
+def get_mirror_status():
+    return {
+        "running": _mirror_running,
+        "last_sync": _last_mirror_sync,
+        "last_error": _last_mirror_error,
+    }

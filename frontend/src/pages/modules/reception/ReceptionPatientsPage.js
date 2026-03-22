@@ -25,6 +25,7 @@ import {
   ChevronRight
 } from 'lucide-react';
 import VitalsForm from '../../../components/vitals/VitalsForm';
+import LabTestBookingDialog from '../../../components/LabTestBookingDialog';
 import { useToast } from '../../../hooks/use-toast';
 
 const ReceptionPatientsPage = () => {
@@ -103,6 +104,28 @@ const ReceptionPatientsPage = () => {
       } catch {}
     };
     fetchRefs();
+  }, []);
+
+  // Lab test booking
+  const [showLabBooking, setShowLabBooking] = useState(false);
+  const [labBookingPatient, setLabBookingPatient] = useState(null);
+
+  // Enabled modules
+  const [enabledModules, setEnabledModules] = useState({});
+  useEffect(() => {
+    const fetchMods = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        const res = await fetch('/api/system/enabled-modules', { headers: { Authorization: `Bearer ${token}` } });
+        if (res.ok) {
+          const mods = await res.json();
+          const map = {};
+          mods.forEach(m => { map[m.module_name] = m.is_enabled; });
+          setEnabledModules(map);
+        }
+      } catch {}
+    };
+    fetchMods();
   }, []);
 
   // Filter and sort patients: matches come first, rest follow
@@ -622,11 +645,16 @@ const ReceptionPatientsPage = () => {
                         <Button size="sm" variant="outline" onClick={() => openEditPatient(patient)}>
                           Edit
                         </Button>
-                        <Button size="sm" onClick={() => {
-                          navigate('/dashboard/reception/appointments');
-                        }}>
-                          Create Appointment
-                        </Button>
+                        {enabledModules.outpatient && (
+                          <Button size="sm" onClick={() => navigate('/dashboard/reception/appointments')}>
+                            Book Appointment
+                          </Button>
+                        )}
+                        {enabledModules.lab && (
+                          <Button size="sm" variant="outline" onClick={() => { setLabBookingPatient(patient); setShowLabBooking(true); }}>
+                            Book Lab Test
+                          </Button>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -1223,6 +1251,14 @@ const ReceptionPatientsPage = () => {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Lab Test Booking Dialog */}
+      <LabTestBookingDialog
+        open={showLabBooking}
+        patient={labBookingPatient}
+        onClose={(success) => { setShowLabBooking(false); setLabBookingPatient(null); }}
+        referralList={referralList}
+      />
     </div>
   );
 };

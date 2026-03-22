@@ -749,68 +749,79 @@ const ConsultationPage = () => {
 
               <div className="flex items-center justify-between">
                 <Label className="text-base font-semibold">Medications</Label>
-                <Button size="sm" variant="outline" onClick={addMedication}>
-                  <Plus className="h-3 w-3 mr-1" /> Add Medicine
-                </Button>
               </div>
 
-              {prescriptionForm.medications.map((med, idx) => (
-                <div key={idx} className="border rounded-lg p-3 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium text-gray-500">Medicine #{idx + 1}</span>
-                    {prescriptionForm.medications.length > 1 && (
-                      <Button size="sm" variant="ghost" className="text-red-500 h-6" onClick={() => removeMedication(idx)}>
-                        <Trash2 className="h-3 w-3" />
-                      </Button>
-                    )}
-                  </div>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                    <div className="col-span-2">
-                      <Label className="text-xs">Medicine Name *</Label>
-                      <Input value={med.medicine_name} onChange={(e) => updateMedication(idx, 'medicine_name', e.target.value)}
-                        placeholder="Medicine name" />
-                    </div>
-                    <div>
-                      <Label className="text-xs">Dosage</Label>
-                      <Input value={med.dosage} onChange={(e) => updateMedication(idx, 'dosage', e.target.value)}
-                        placeholder="e.g. 500mg" />
-                    </div>
-                    <div>
-                      <Label className="text-xs">Duration</Label>
-                      <Input value={med.duration} onChange={(e) => updateMedication(idx, 'duration', e.target.value)}
-                        placeholder="e.g. 5 days" />
-                    </div>
-                    <div>
-                      <Label className="text-xs">Schedule</Label>
-                      <Select value={med.frequency_schedule} onValueChange={(v) => updateMedication(idx, 'frequency_schedule', v)}>
-                        <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          {frequencyOptions.map(opt => (
-                            <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div>
-                      <Label className="text-xs">Food Timing</Label>
-                      <Select value={med.food_timing} onValueChange={(v) => updateMedication(idx, 'food_timing', v)}>
-                        <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="before_food">Before food</SelectItem>
-                          <SelectItem value="after_food">After food</SelectItem>
-                          <SelectItem value="with_food">With food</SelectItem>
-                          <SelectItem value="on_empty_stomach">Empty stomach</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="col-span-2">
-                      <Label className="text-xs">Instructions</Label>
-                      <Input value={med.instructions} onChange={(e) => updateMedication(idx, 'instructions', e.target.value)}
-                        placeholder="Special instructions..." />
-                    </div>
-                  </div>
+              <div className="border rounded-lg overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-gray-50 border-b text-left">
+                      <th className="px-2 py-2 font-medium text-gray-500 w-8">#</th>
+                      <th className="px-2 py-2 font-medium text-gray-500">Medicine Name</th>
+                      <th className="px-2 py-2 font-medium text-gray-500 w-20">Dosage</th>
+                      <th className="px-2 py-2 font-medium text-gray-500 w-36">Schedule</th>
+                      <th className="px-2 py-2 font-medium text-gray-500 w-24">Food</th>
+                      <th className="px-2 py-2 font-medium text-gray-500 w-20">Duration</th>
+                      <th className="px-2 py-2 font-medium text-gray-500 w-48">Instructions</th>
+                      <th className="px-2 py-2 w-8"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {prescriptionForm.medications.map((med, idx) => (
+                        <tr key={idx} className="border-b last:border-0 hover:bg-gray-50/50">
+                          <td className="px-2 py-2 text-gray-400 text-center">{idx + 1}</td>
+                          <td className="px-2 py-2">
+                            <Input value={med.medicine_name || ''} onChange={(e) => updateMedication(idx, 'medicine_name', e.target.value)}
+                              placeholder="Medicine name" className="h-8 text-sm" />
+                          </td>
+                          <td className="px-2 py-2">
+                            <Input value={med.dosage} onChange={(e) => updateMedication(idx, 'dosage', e.target.value)}
+                              placeholder="1 tab" className="h-8 text-sm" />
+                          </td>
+                          <td className="px-2 py-2">
+                            <select value={med.frequency_schedule || '1-0-0'}
+                              onChange={(e) => updateMedication(idx, 'frequency_schedule', e.target.value)}
+                              className="w-full h-8 text-xs border border-gray-200 rounded px-1">
+                              {frequencyOptions.map(opt => (
+                                <option key={opt.value} value={opt.value}>{opt.label}</option>
+                              ))}
+                            </select>
+                          </td>
+                          <td className="px-2 py-2">
+                            <select value={med.food_timing || 'after_food'}
+                              onChange={(e) => updateMedication(idx, 'food_timing', e.target.value)}
+                              className="w-full h-8 text-xs border border-gray-200 rounded px-1">
+                              <option value="before_food">Before food</option>
+                              <option value="after_food">After food</option>
+                              <option value="with_food">With food</option>
+                              <option value="on_empty_stomach">Empty stomach</option>
+                              <option value="anytime">Anytime</option>
+                            </select>
+                          </td>
+                          <td className="px-2 py-2">
+                            <Input value={med.duration} onChange={(e) => updateMedication(idx, 'duration', e.target.value)}
+                              placeholder="7 days" className="h-8 text-sm" />
+                          </td>
+                          <td className="px-2 py-2">
+                            <Input value={med.instructions} onChange={(e) => updateMedication(idx, 'instructions', e.target.value)}
+                              placeholder="Notes..." className="h-8 text-sm" />
+                          </td>
+                          <td className="px-2 py-2">
+                            {prescriptionForm.medications.length > 1 && (
+                              <button type="button" onClick={() => removeMedication(idx)}
+                                className="text-red-400 hover:text-red-600 text-lg leading-none">×</button>
+                            )}
+                          </td>
+                        </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <div className="px-3 py-2 bg-gray-50 border-t">
+                  <button type="button" onClick={addMedication}
+                    className="text-xs text-blue-600 hover:text-blue-800 font-medium">
+                    + Add Medicine
+                  </button>
                 </div>
-              ))}
+              </div>
 
               <div className="grid grid-cols-2 gap-4">
                 <div>

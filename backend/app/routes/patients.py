@@ -138,7 +138,7 @@ class PatientUpdate(BaseModel):
 @router.post("/", response_model=PatientResponse)
 async def create_patient(
     patient_data: PatientCreate,
-    current_user: User = Depends(require_permission(Modules.OUTPATIENT, "write")),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Create a new patient"""
@@ -178,7 +178,7 @@ async def get_patients(
     search: Optional[str] = None,
     skip: int = 0,
     limit: int = 100,
-    current_user: User = Depends(require_permission(Modules.OUTPATIENT, "read")),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Get list of patients with optional search"""
@@ -201,7 +201,7 @@ async def search_patients_advanced(
     filters: PatientSearchFilters,
     page: int = 1,
     per_page: int = 20,
-    current_user: User = Depends(require_permission(Modules.OUTPATIENT, "read")),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Advanced patient search with filters and metadata"""
@@ -223,7 +223,7 @@ async def search_patients_advanced(
 @router.get("/{patient_id}", response_model=PatientResponse)
 async def get_patient(
     patient_id: str,
-    current_user: User = Depends(require_permission(Modules.OUTPATIENT, "read")),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Get patient by ID"""
@@ -245,7 +245,7 @@ async def get_patient(
 async def update_patient(
     patient_id: str,
     patient_update: PatientUpdate,
-    current_user: User = Depends(require_permission(Modules.OUTPATIENT, "write")),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Update patient information"""
@@ -269,7 +269,7 @@ async def update_patient(
 @router.get("/phone/{phone}", response_model=Optional[PatientResponse])
 async def get_patient_by_phone(
     phone: str,
-    current_user: User = Depends(require_permission(Modules.OUTPATIENT, "read")),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Get patient by phone number"""

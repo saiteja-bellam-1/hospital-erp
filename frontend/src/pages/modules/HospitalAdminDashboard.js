@@ -65,6 +65,19 @@ const HospitalAdminDashboard = () => {
   const [error, setError] = useState(null);
   const [lastRefresh, setLastRefresh] = useState(new Date());
 
+  const [enabledModules, setEnabledModules] = useState({});
+  useEffect(() => {
+    const fetchMods = async () => {
+      try {
+        const res = await axios.get('/api/system/enabled-modules');
+        const map = {};
+        res.data.forEach(m => { map[m.module_name] = m.is_enabled; });
+        setEnabledModules(map);
+      } catch { setEnabledModules({ outpatient: true, lab: true }); }
+    };
+    fetchMods();
+  }, []);
+
   const fetchDashboard = useCallback(async () => {
     try {
       setLoading(true);
@@ -145,26 +158,28 @@ const HospitalAdminDashboard = () => {
 
       {/* KPI Cards Row */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Today's Appointments */}
-        <Card className="border-0 shadow-sm bg-gradient-to-br from-blue-50 to-white">
-          <CardContent className="p-5">
-            <div className="flex items-start justify-between">
-              <div>
-                <p className="text-xs font-medium text-blue-600 uppercase tracking-wide">Today's Appointments</p>
-                <p className="text-3xl font-bold text-gray-900 mt-1">{appointments.total_today || 0}</p>
-                <div className="flex items-center gap-1.5 mt-1.5">
-                  <CheckCircle2 className="h-3 w-3 text-green-500" />
-                  <span className="text-xs text-gray-500">
-                    {appointments.by_status?.completed || 0} completed
-                  </span>
+        {/* Today's Appointments — only when outpatient enabled */}
+        {enabledModules.outpatient && (
+          <Card className="border-0 shadow-sm bg-gradient-to-br from-blue-50 to-white">
+            <CardContent className="p-5">
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="text-xs font-medium text-blue-600 uppercase tracking-wide">Today's Appointments</p>
+                  <p className="text-3xl font-bold text-gray-900 mt-1">{appointments.total_today || 0}</p>
+                  <div className="flex items-center gap-1.5 mt-1.5">
+                    <CheckCircle2 className="h-3 w-3 text-green-500" />
+                    <span className="text-xs text-gray-500">
+                      {appointments.by_status?.completed || 0} completed
+                    </span>
+                  </div>
+                </div>
+                <div className="h-10 w-10 rounded-xl bg-blue-100 flex items-center justify-center">
+                  <Calendar className="h-5 w-5 text-blue-600" />
                 </div>
               </div>
-              <div className="h-10 w-10 rounded-xl bg-blue-100 flex items-center justify-center">
-                <Calendar className="h-5 w-5 text-blue-600" />
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Total Patients */}
         <Card className="border-0 shadow-sm bg-gradient-to-br from-emerald-50 to-white">
@@ -208,26 +223,28 @@ const HospitalAdminDashboard = () => {
           </CardContent>
         </Card>
 
-        {/* Lab Orders */}
-        <Card className="border-0 shadow-sm bg-gradient-to-br from-purple-50 to-white">
-          <CardContent className="p-5">
-            <div className="flex items-start justify-between">
-              <div>
-                <p className="text-xs font-medium text-purple-600 uppercase tracking-wide">Lab Orders Today</p>
-                <p className="text-3xl font-bold text-gray-900 mt-1">{lab.orders_today || 0}</p>
-                <div className="flex items-center gap-1.5 mt-1.5">
-                  <Activity className="h-3 w-3 text-purple-500" />
-                  <span className="text-xs text-gray-500">
-                    {lab.pending || 0} pending
-                  </span>
+        {/* Lab Orders — only when lab enabled */}
+        {enabledModules.lab && (
+          <Card className="border-0 shadow-sm bg-gradient-to-br from-purple-50 to-white">
+            <CardContent className="p-5">
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="text-xs font-medium text-purple-600 uppercase tracking-wide">Lab Orders Today</p>
+                  <p className="text-3xl font-bold text-gray-900 mt-1">{lab.orders_today || 0}</p>
+                  <div className="flex items-center gap-1.5 mt-1.5">
+                    <Activity className="h-3 w-3 text-purple-500" />
+                    <span className="text-xs text-gray-500">
+                      {lab.pending || 0} pending
+                    </span>
+                  </div>
+                </div>
+                <div className="h-10 w-10 rounded-xl bg-purple-100 flex items-center justify-center">
+                  <FlaskConical className="h-5 w-5 text-purple-600" />
                 </div>
               </div>
-              <div className="h-10 w-10 rounded-xl bg-purple-100 flex items-center justify-center">
-                <FlaskConical className="h-5 w-5 text-purple-600" />
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+        )}
       </div>
 
       {/* Second Row: Revenue Summary + Appointment Status */}

@@ -4,8 +4,9 @@ import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { useToast } from '../../hooks/use-toast';
 import axios from 'axios';
+import { Badge } from '../../components/ui/badge';
 import {
-  FolderSync, FolderOpen, Plus, X, Play, CheckCircle2, AlertCircle, Loader2
+  FolderSync, FolderOpen, Plus, X, Play, CheckCircle2, AlertCircle, Loader2, RefreshCw
 } from 'lucide-react';
 
 const BackupManagement = () => {
@@ -15,7 +16,15 @@ const BackupManagement = () => {
   const [backing, setBacking] = useState(false);
   const [browsing, setBrowsing] = useState(false);
   const [backupResult, setBackupResult] = useState(null);
+  const [mirrorStatus, setMirrorStatus] = useState(null);
   const { toast } = useToast();
+
+  const fetchMirrorStatus = async () => {
+    try {
+      const res = await axios.get('/api/backup/mirror-status');
+      setMirrorStatus(res.data);
+    } catch {}
+  };
 
   const browseFolder = async () => {
     setBrowsing(true);
@@ -34,6 +43,9 @@ const BackupManagement = () => {
 
   useEffect(() => {
     fetchLocations();
+    fetchMirrorStatus();
+    const interval = setInterval(fetchMirrorStatus, 15000);
+    return () => clearInterval(interval);
   }, []);
 
   const fetchLocations = async () => {
@@ -117,6 +129,57 @@ const BackupManagement = () => {
           Configure backup locations and run manual backups of your database.
         </p>
       </div>
+
+      {/* Real-time Mirror Status */}
+      {mirrorStatus && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <CardTitle className="flex items-center gap-2">
+                <RefreshCw className={`w-5 h-5 ${mirrorStatus.running ? 'animate-spin text-green-500' : 'text-gray-400'}`} />
+                Real-time Mirror Backup
+              </CardTitle>
+              <Badge className={mirrorStatus.running ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}>
+                {mirrorStatus.running ? 'Active' : 'Stopped'}
+              </Badge>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center justify-between">
+              <div className="space-y-1">
+                <p className="text-sm text-gray-600">
+                  {mirrorStatus.running
+                    ? 'Database is being mirrored to backup locations every 60 seconds.'
+                    : 'Mirror backup is not running. Add backup locations to enable.'}
+                </p>
+                {mirrorStatus.last_sync && (
+                  <p className="text-xs text-gray-400">
+                    Last sync: {new Date(mirrorStatus.last_sync).toLocaleString('en-IN')}
+                  </p>
+                )}
+                {mirrorStatus.last_error && (
+                  <p className="text-xs text-red-500">Last error: {mirrorStatus.last_error}</p>
+                )}
+              </div>
+              <div className="flex gap-2">
+                {mirrorStatus.running ? (
+                  <Button size="sm" variant="outline" onClick={async () => {
+                    await axios.post('/api/backup/mirror/stop');
+                    fetchMirrorStatus();
+                    toast({ title: 'Mirror backup stopped' });
+                  }}>Stop</Button>
+                ) : (
+                  <Button size="sm" onClick={async () => {
+                    await axios.post('/api/backup/mirror/start');
+                    fetchMirrorStatus();
+                    toast({ title: 'Mirror backup started' });
+                  }}>Start</Button>
+                )}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Backup Locations */}
       <Card>

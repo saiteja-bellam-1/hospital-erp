@@ -63,6 +63,8 @@ async def startup_event():
             print(f"Migration note: {e}")
         # Ensure role permissions exist (for installations that pre-date the wizard)
         _ensure_role_permissions()
+        # Ensure all modules exist (add missing ones for upgrades)
+        _ensure_modules()
         # Cleanup old audit logs based on retention config
         try:
             from app.services.audit_service import cleanup_old_logs, get_retention_days
@@ -75,6 +77,17 @@ async def startup_event():
             _db.close()
         except Exception:
             pass
+        # Start real-time mirror backup
+        try:
+            from app.utils.config import start_mirror_backup, get_backup_locations
+            locations = get_backup_locations()
+            if locations:
+                start_mirror_backup(interval_seconds=60)
+                print(f"Mirror backup started — syncing every 60s to {len(locations)} location(s)")
+            else:
+                print("No backup locations configured — mirror backup not started")
+        except Exception as e:
+            print(f"Mirror backup note: {e}")
     else:
         print("Setup not complete — waiting for setup wizard")
 
@@ -92,19 +105,51 @@ def _ensure_role_permissions():
         db.commit()
         print("Role permissions synced")
 
-        # Ensure outpatient module is enabled (core module)
+        # Fix outpatient: make it toggleable (not always-on) for existing installs
         from app.models.system import SystemModule
         outpatient = db.query(SystemModule).filter(SystemModule.module_name == "outpatient").first()
-        if outpatient and not outpatient.is_enabled:
-            outpatient.is_enabled = True
-            outpatient.is_always_enabled = True
+        if outpatient and outpatient.is_always_enabled:
+            outpatient.is_always_enabled = False
             db.commit()
-            print("Enabled outpatient module")
+            print("Updated outpatient module: now toggleable")
     except Exception as e:
         print(f"Warning: Could not seed role permissions: {e}")
         db.rollback()
     finally:
         db.close()
+
+
+def _ensure_modules():
+    """Ensure all required modules exist in the DB (for upgrades)."""
+    from config.database import SessionLocal
+    from app.models.system import SystemModule
+    db = SessionLocal()
+    try:
+        required_modules = [
+            ("outpatient", "Outpatient", True, False),
+            ("inpatient", "Inpatient", False, False),
+            ("lab", "Laboratory", False, False),
+            ("pharmacy", "Pharmacy", False, False),
+            ("ehr", "Electronic Health Records", True, False),
+            ("billing", "Billing", True, True),
+            ("admin", "Administration", True, True),
+        ]
+        for mod_name, display, default_enabled, always_on in required_modules:
+            existing = db.query(SystemModule).filter(SystemModule.module_name == mod_name).first()
+            if not existing:
+                db.add(SystemModule(
+                    module_name=mod_name, display_name=display,
+                    description=f"{display} management",
+                    is_enabled=default_enabled, is_always_enabled=always_on,
+                ))
+                print(f"  Added module: {mod_name}")
+        db.commit()
+    except Exception as e:
+        print(f"Warning: Module sync: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
 
 @app.get("/")
 async def root():

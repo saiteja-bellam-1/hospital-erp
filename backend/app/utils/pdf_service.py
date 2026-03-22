@@ -177,8 +177,20 @@ class PDFService:
         phone = bill_data.get('patient_phone', '')
         patient_id = bill_data.get('patient_id', bill_data.get('reg_no', ''))
         doctor = bill_data.get('doctor_name', '')
+        referred_by = bill_data.get('referred_by', '')
         pay_category = bill_data.get('payment_method', 'Cash')
         bill_no = bill_data.get('bill_number', '')
+
+        # Determine referral label
+        if doctor:
+            ref_label = 'Doctor'
+            ref_value = doctor
+        elif referred_by:
+            ref_label = 'Referred By'
+            ref_value = referred_by
+        else:
+            ref_label = 'Referred By'
+            ref_value = 'Self'
 
         col_w = page_width / 2
 
@@ -187,7 +199,7 @@ class PDFService:
             [lv('Age / Gender', age_sex), lv('Bill Date', bill_date_str)],
             [lv('Phone', phone), lv('Print Date', print_date_str)],
             [lv('Patient ID', patient_id), lv('Pay Mode', pay_category)],
-            [lv('Doctor', doctor), Paragraph('', cell_value)],
+            [lv(ref_label, ref_value), Paragraph('', cell_value)],
         ]
 
         info_table = Table(patient_info_data, colWidths=[col_w, col_w])
@@ -461,7 +473,7 @@ class PDFService:
             elements.append(Spacer(1, 100))
 
         # ============================================================
-        # DOCTOR INFO + PATIENT INFO — side by side in bordered box
+        # PATIENT + DOCTOR INFO — bordered box (like lab report)
         # ============================================================
         doctor_name = prescription_data.get('doctor_name', '')
         doctor_spec = prescription_data.get('doctor_specialization', '')
@@ -470,63 +482,40 @@ class PDFService:
         patient_age = prescription_data.get('patient_age', '')
         patient_gender = prescription_data.get('patient_gender', '')
         patient_blood_group = prescription_data.get('patient_blood_group', '')
+        patient_phone = prescription_data.get('patient_phone', '')
+        patient_id = prescription_data.get('patient_id_display', prescription_data.get('patient_id', ''))
 
-        # Format age display
-        age_display = ''
+        age_sex = ''
         if patient_age:
             try:
-                age_years = int(patient_age)
-                age_display = f"{age_years} years"
+                age_sex = f"{int(patient_age)} Year"
             except ValueError:
-                age_display = str(patient_age)
+                age_sex = str(patient_age)
+        if patient_gender:
+            age_sex = f"{age_sex} / {patient_gender.capitalize()}" if age_sex else patient_gender.capitalize()
 
-        half_w = page_width / 2
+        doctor_display = doctor_name
+        if doctor_spec:
+            doctor_display = f"{doctor_name} ({doctor_spec})"
 
-        # Doctor info sub-table
-        doc_rows = [
-            [Paragraph('<b>Doctor Information</b>', ParagraphStyle('DocInfoHdr', parent=cell_lbl, fontSize=10, textColor=accent)), ''],
-            [lbl('Name'), val(doctor_name)],
-            [lbl('Specialization'), val(doctor_spec or '—')],
-            [lbl('Reg. No.'), val(doctor_reg or '—')],
+        col_w = page_width / 2
+        info_data = [
+            [Paragraph(f"<b>Name</b> :  {patient_name}", cell_val), Paragraph(f"<b>Prescribed By</b> :  {doctor_display}", cell_val)],
+            [Paragraph(f"<b>Age / Gender</b> :  {age_sex}", cell_val), Paragraph(f"<b>Reg. No.</b> :  {doctor_reg or '—'}", cell_val)],
+            [Paragraph(f"<b>Phone</b> :  {patient_phone}", cell_val), Paragraph(f"<b>Date</b> :  {rx_date}", cell_val)],
+            [Paragraph(f"<b>Patient ID</b> :  {patient_id}", cell_val), Paragraph(f"<b>Blood Group</b> :  {patient_blood_group or '—'}", cell_val)],
         ]
-        doc_table = Table(doc_rows, colWidths=[half_w * 0.38, half_w * 0.62])
-        doc_table.setStyle(TableStyle([
+
+        info_table = Table(info_data, colWidths=[col_w, col_w])
+        info_table.setStyle(TableStyle([
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('TOPPADDING', (0, 0), (-1, -1), 3),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
-            ('LEFTPADDING', (0, 0), (-1, -1), 6),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 4),
-            ('SPAN', (0, 0), (1, 0)),
+            ('LEFTPADDING', (0, 0), (-1, -1), 8),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+            ('BOX', (0, 0), (-1, -1), 1, colors.black),
         ]))
-
-        # Patient info sub-table
-        pat_rows = [
-            [Paragraph('<b>Patient Information</b>', ParagraphStyle('PatInfoHdr', parent=cell_lbl, fontSize=10, textColor=accent)), ''],
-            [lbl('Name'), val(patient_name)],
-            [lbl('Age'), val(age_display)],
-            [lbl('Gender'), val(patient_gender.upper() if patient_gender else '—')],
-            [lbl('Blood Group'), val(patient_blood_group or '—')],
-        ]
-        pat_table = Table(pat_rows, colWidths=[half_w * 0.35, half_w * 0.65])
-        pat_table.setStyle(TableStyle([
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ('TOPPADDING', (0, 0), (-1, -1), 3),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
-            ('LEFTPADDING', (0, 0), (-1, -1), 6),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 4),
-            ('SPAN', (0, 0), (1, 0)),
-        ]))
-
-        # Combine in outer table (no borders)
-        info_outer = Table([[doc_table, pat_table]], colWidths=[half_w, half_w])
-        info_outer.setStyle(TableStyle([
-            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-            ('TOPPADDING', (0, 0), (-1, -1), 4),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-            ('LEFTPADDING', (0, 0), (-1, -1), 2),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 2),
-        ]))
-        elements.append(info_outer)
+        elements.append(info_table)
         elements.append(Spacer(1, 10))
 
         # ============================================================
@@ -650,14 +639,14 @@ class PDFService:
             'with_food': 'With food', 'on_empty_stomach': 'Empty stomach', 'anytime': 'Anytime'
         }
 
-        sno_w = meds_right_width * 0.08
-        name_w = meds_right_width * 0.30
+        sno_w = meds_right_width * 0.07
+        name_w = meds_right_width * 0.31
         dosage_w = meds_right_width * 0.22
         freq_w = meds_right_width * 0.22
         dur_w = meds_right_width * 0.18
 
         med_header = [
-            Paragraph('<b>S.No.</b>', cell_lbl),
+            Paragraph('<b>No</b>', cell_lbl),
             Paragraph('<b>Medicine Name</b>', cell_lbl),
             Paragraph('<b>Dosage</b>', cell_lbl),
             Paragraph('<b>Frequency</b>', cell_lbl),
@@ -678,18 +667,12 @@ class PDFService:
                 Paragraph(item.get('duration', '—'), cell_val),
             ])
 
-        # Add empty rows to match reference style (min 6 rows)
-        while len(med_data) < 7:  # header + 6 data rows
-            med_data.append([
-                Paragraph(str(len(med_data)), cell_val),
-                Paragraph('', cell_val), Paragraph('', cell_val),
-                Paragraph('', cell_val), Paragraph('', cell_val),
-            ])
+        # No empty padding rows — only show actual medicines
 
         meds_header_row = [[Paragraph('<b>Medicines</b>', section_hdr)]]
         meds_title_table = Table(meds_header_row, colWidths=[meds_right_width])
         meds_title_table.setStyle(TableStyle([
-            ('LEFTPADDING', (0, 0), (-1, -1), 0),
+            ('LEFTPADDING', (0, 0), (-1, -1), 8),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
         ]))
 
@@ -698,7 +681,7 @@ class PDFService:
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('TOPPADDING', (0, 0), (-1, -1), 4),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-            ('LEFTPADDING', (0, 0), (-1, -1), 4),
+            ('LEFTPADDING', (0, 0), (-1, -1), 8),
             ('RIGHTPADDING', (0, 0), (-1, -1), 4),
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#F0F0F0')),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
@@ -716,7 +699,7 @@ class PDFService:
             ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
         ]))
 
-        # Side by side layout
+        # Side by side layout with vertical divider
         layout_table = Table(
             [[left_col_wrapper, meds_wrapper]],
             colWidths=[vitals_left_width, meds_right_width + gap]
@@ -727,6 +710,7 @@ class PDFService:
             ('RIGHTPADDING', (0, 0), (-1, -1), 0),
             ('TOPPADDING', (0, 0), (-1, -1), 0),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+            ('LINEAFTER', (0, 0), (0, -1), 0.5, colors.Color(0.7, 0.7, 0.7)),  # Vertical divider line
         ]))
         elements.append(layout_table)
         elements.append(Spacer(1, 10))

@@ -329,14 +329,15 @@ def _init_database_and_seed(setup_data: SetupRequest, db_path: str):
                 db.add(UserRole(name=name, description=desc))
         db.flush()
 
-        # 2. Create system modules (outpatient enabled by default — core module)
+        # 2. Create system modules
         modules = [
-            ("outpatient", "Outpatient", True, True),
-            ("inpatient", "Inpatient", False, False),
-            ("lab", "Laboratory", False, False),
-            ("pharmacy", "Pharmacy", False, False),
-            ("ehr", "Electronic Health Records", True, True),
-            ("admin", "Administration", True, True),
+            ("outpatient", "Outpatient", True, False),       # Enabled by default, toggleable
+            ("inpatient", "Inpatient", False, False),         # Disabled by default, toggleable
+            ("lab", "Laboratory", False, False),              # Disabled by default, toggleable
+            ("pharmacy", "Pharmacy", False, False),           # Disabled by default, toggleable
+            ("ehr", "Electronic Health Records", True, False),# Enabled by default, toggleable
+            ("billing", "Billing", True, True),               # Always enabled
+            ("admin", "Administration", True, True),          # Always enabled
         ]
         for mod_name, display, enabled, always in modules:
             if not db.query(SystemModule).filter(SystemModule.module_name == mod_name).first():
