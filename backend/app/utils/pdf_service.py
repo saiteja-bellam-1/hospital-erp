@@ -843,7 +843,7 @@ class PDFService:
         # HEADER — Logo + Provider Name side by side
         # ============================================================
         if include_header:
-            logo_path = lab_config.get('provider_logo', '')
+            logo_path = lab_config.get('provider_logo', '') or hospital_info.get('logo_url', '')
             uploads_base = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
 
             has_logo = False
@@ -957,7 +957,7 @@ class PDFService:
             [lv('Name', patient_name), lv('Booked Date', order_date_str)],
             [lv('Age / Gender', age_sex), lv('Collection Date', collection_date_str)],
             [lv('Phone', patient_phone), lv('Report Date', report_date_str)],
-            [lv(referral_label, referral_name), lv('Report Status', report_data.get('report_status', 'Final'))],
+            [lv(referral_label, referral_name), lv('Sample ID', report_data.get('sample_id', ''))],
             [lv('Patient ID', report_data.get('patient_uuid', '')), lv('Report ID', report_data.get('order_number', ''))],
         ]
 

@@ -27,11 +27,13 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
   const [referredBy, setReferredBy] = useState('');
   const [includeHeader, setIncludeHeader] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [duplicateWarning, setDuplicateWarning] = useState(null);
 
   useEffect(() => {
     if (open) {
       setSelectedPatient(patient);
       setSelectedTests([]);
+      setDuplicateWarning(null);
       setDiscount(0);
       setPaymentMethod('cash');
       setReferredBy('');
@@ -66,8 +68,32 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
   const subtotal = selectedTests.reduce((sum, t) => sum + (t.cost || 0), 0);
   const total = Math.max(subtotal - discount, 0);
 
-  const handleSubmit = async () => {
+  const handleSubmit = async (force = false) => {
     if (!selectedPatient || selectedTests.length === 0) return;
+
+    // Check for duplicate orders today (skip if user already confirmed)
+    if (!force) {
+      try {
+        const checkRes = await fetch('/api/lab/orders/check-duplicates', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ patient_id: selectedPatient.id, test_ids: selectedTests.map(t => t.id) }),
+        });
+        if (checkRes.ok) {
+          const { duplicates } = await checkRes.json();
+          if (duplicates.length > 0) {
+            setDuplicateWarning(duplicates);
+            return; // Stop — show warning, user must click "Proceed Anyway"
+          }
+        } else {
+          console.warn('Duplicate check failed:', checkRes.status, await checkRes.text());
+        }
+      } catch (err) {
+        console.warn('Duplicate check error:', err);
+      }
+    }
+
+    setDuplicateWarning(null);
     setSubmitting(true);
     try {
       const res = await fetch('/api/lab/orders/reception-book', {
@@ -84,14 +110,13 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
       });
       if (res.ok) {
         const blob = await res.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `lab_bill.pdf`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        window.URL.revokeObjectURL(url);
+        const url = window.URL.createObjectURL(new Blob([blob], { type: 'application/pdf' }));
+        const printWin = window.open(url, '_blank');
+        if (printWin) {
+          printWin.addEventListener('load', () => {
+            setTimeout(() => printWin.print(), 500);
+          });
+        }
         onClose(true); // true = success
       } else {
         const err = await res.json();
@@ -256,8 +281,34 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
             </div>
           )}
 
+          {/* Duplicate Warning */}
+          {duplicateWarning && (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-2">
+              <p className="text-sm font-semibold text-amber-800 flex items-center gap-1.5">
+                <span className="text-amber-500 text-lg">&#9888;</span>
+                These tests were already booked and paid for this patient today:
+              </p>
+              <ul className="space-y-1 ml-6">
+                {duplicateWarning.map((d, i) => (
+                  <li key={i} className="text-sm text-amber-700">
+                    <span className="font-medium">{d.test_name}</span>
+                    <span className="text-amber-500 text-xs ml-1">(booked at {d.order_time})</span>
+                  </li>
+                ))}
+              </ul>
+              <div className="flex gap-2 pt-1">
+                <Button size="sm" variant="outline" onClick={() => setDuplicateWarning(null)}>
+                  Go Back & Edit
+                </Button>
+                <Button size="sm" className="bg-amber-600 hover:bg-amber-700 text-white" onClick={() => handleSubmit(true)}>
+                  Proceed Anyway
+                </Button>
+              </div>
+            </div>
+          )}
+
           {/* Header toggle + Submit */}
-          <div className="flex items-center justify-between pt-2 border-t">
+          <div className={`flex items-center justify-between pt-2 border-t ${duplicateWarning ? 'hidden' : ''}`}>
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={includeHeader} onChange={e => setIncludeHeader(e.target.checked)} className="rounded" />
               Include header in bill
@@ -266,7 +317,7 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
               <Button variant="outline" onClick={() => onClose(false)}>Cancel</Button>
               <Button onClick={handleSubmit}
                 disabled={submitting || !selectedPatient || selectedTests.length === 0}>
-                {submitting ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" /> Booking...</> : `Book & Generate Bill (₹${total.toFixed(2)})`}
+                {submitting ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" /> Booking...</> : `Book & Print Bill (₹${total.toFixed(2)})`}
               </Button>
             </div>
           </div>

@@ -252,13 +252,13 @@ const ReceptionDashboard = () => {
       });
       if (res.ok) {
         const blob = await res.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `lab_bill_${patientId}_${Date.now()}.pdf`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
+        const url = window.URL.createObjectURL(new Blob([blob], { type: 'application/pdf' }));
+        const printWin = window.open(url, '_blank');
+        if (printWin) {
+          printWin.addEventListener('load', () => {
+            setTimeout(() => printWin.print(), 500);
+          });
+        }
         window.URL.revokeObjectURL(url);
         setPendingLabOrders([]);
         setLabDiscount(0);

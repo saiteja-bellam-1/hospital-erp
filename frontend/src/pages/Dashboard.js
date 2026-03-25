@@ -149,7 +149,7 @@ const Dashboard = () => {
       addItem(mainItems, { text: 'Availability', icon: <Calendar className="h-[18px] w-[18px]" />, path: '/dashboard/availability' });
     }
 
-    if (!hasRole('doctor') && !hasRole('hospital_admin') && !hasRole('receptionist') && !hasRole('super_admin')) {
+    if (!hasRole('doctor') && !hasRole('hospital_admin') && !hasRole('receptionist') && !hasRole('super_admin') && !hasRole('lab_technician') && !hasRole('lab_admin')) {
       addItem(mainItems, { text: 'Patients', icon: <Users className="h-[18px] w-[18px]" />, path: '/dashboard/patients' });
     }
 

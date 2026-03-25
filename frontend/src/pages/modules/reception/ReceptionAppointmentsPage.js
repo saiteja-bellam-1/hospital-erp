@@ -411,16 +411,15 @@ const ReceptionAppointmentsPage = () => {
       });
       if (res.ok) {
         const blob = await res.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `lab_bill_${patientId}_${Date.now()}.pdf`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        window.URL.revokeObjectURL(url);
+        const url = window.URL.createObjectURL(new Blob([blob], { type: 'application/pdf' }));
+        const printWin = window.open(url, '_blank');
+        if (printWin) {
+          printWin.addEventListener('load', () => {
+            setTimeout(() => printWin.print(), 500);
+          });
+        }
         setPendingLabOrders([]);
-        toast({ title: 'Success', description: 'Lab bill generated and payment collected' });
+        toast({ title: 'Success', description: 'Lab bill generated — print dialog opened' });
         fetchTodayAppointments();
       } else {
         const err = await res.json();

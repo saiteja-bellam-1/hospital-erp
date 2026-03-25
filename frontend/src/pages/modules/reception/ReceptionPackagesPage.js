@@ -33,6 +33,7 @@ const ReceptionPackagesPage = () => {
   const [bookingLoading, setBookingLoading] = useState(false);
   const [pkgIncludeHeader, setPkgIncludeHeader] = useState(true);
   const [referralList, setReferralList] = useState([]);
+  const [pkgDuplicateWarning, setPkgDuplicateWarning] = useState(null);
 
   useEffect(() => {
     const fetchRefs = async () => {
@@ -105,8 +106,29 @@ const ReceptionPackagesPage = () => {
     setShowBookingDialog(true);
   };
 
-  const bookPackage = async () => {
+  const bookPackage = async (force = false) => {
     if (!selectedPatient || !selectedPackage) return;
+
+    // Check for duplicate orders today
+    if (!force) {
+      try {
+        const testIds = (selectedPackage.tests || []).map(t => t.id);
+        const checkRes = await fetch('/api/lab/orders/check-duplicates', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${localStorage.getItem('token')}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ patient_id: selectedPatient.id, test_ids: testIds }),
+        });
+        if (checkRes.ok) {
+          const { duplicates } = await checkRes.json();
+          if (duplicates.length > 0) {
+            setPkgDuplicateWarning(duplicates);
+            return;
+          }
+        }
+      } catch {}
+    }
+
+    setPkgDuplicateWarning(null);
     setBookingLoading(true);
     try {
       const res = await axios.post(`/api/lab/packages/${selectedPackage.id}/book`, {
@@ -373,18 +395,44 @@ const ReceptionPackagesPage = () => {
                 </div>
               </div>
 
-              <div className="flex items-center gap-3">
-                <div className="flex items-center space-x-2">
-                  <input type="checkbox" id="pkg-include-header" checked={pkgIncludeHeader}
-                    onChange={(e) => setPkgIncludeHeader(e.target.checked)} className="w-4 h-4" />
-                  <Label htmlFor="pkg-include-header" className="text-sm">Include header</Label>
+              {/* Duplicate Warning */}
+              {pkgDuplicateWarning && (
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-2">
+                  <p className="text-sm font-semibold text-amber-800 flex items-center gap-1.5">
+                    <span className="text-amber-500 text-lg">&#9888;</span>
+                    These tests were already booked and paid today:
+                  </p>
+                  <ul className="space-y-1 ml-6">
+                    {pkgDuplicateWarning.map((d, i) => (
+                      <li key={i} className="text-sm text-amber-700">
+                        <span className="font-medium">{d.test_name}</span>
+                        <span className="text-amber-500 text-xs ml-1">(at {d.order_time})</span>
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="flex gap-2 pt-1">
+                    <Button size="sm" variant="outline" onClick={() => setPkgDuplicateWarning(null)}>Go Back</Button>
+                    <Button size="sm" className="bg-amber-600 hover:bg-amber-700 text-white" onClick={() => bookPackage(true)}>
+                      Proceed Anyway
+                    </Button>
+                  </div>
                 </div>
-                <Button variant="outline" onClick={() => setShowBookingDialog(false)} className="flex-1">Cancel</Button>
-                <Button onClick={bookPackage} className="flex-1"
-                  disabled={bookingLoading || !selectedPatient}>
-                  {bookingLoading ? 'Booking...' : 'Book & Pay'}
-                </Button>
-              </div>
+              )}
+
+              {!pkgDuplicateWarning && (
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center space-x-2">
+                    <input type="checkbox" id="pkg-include-header" checked={pkgIncludeHeader}
+                      onChange={(e) => setPkgIncludeHeader(e.target.checked)} className="w-4 h-4" />
+                    <Label htmlFor="pkg-include-header" className="text-sm">Include header</Label>
+                  </div>
+                  <Button variant="outline" onClick={() => setShowBookingDialog(false)} className="flex-1">Cancel</Button>
+                  <Button onClick={() => bookPackage()} className="flex-1"
+                    disabled={bookingLoading || !selectedPatient}>
+                    {bookingLoading ? 'Booking...' : 'Book & Pay'}
+                  </Button>
+                </div>
+              )}
             </div>
           )}
         </DialogContent>

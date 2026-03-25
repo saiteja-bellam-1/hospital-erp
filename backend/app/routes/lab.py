@@ -170,6 +170,7 @@ class ResultEntry(BaseModel):
     parameter_id: int
     value: str
     remarks: Optional[str] = None
+    manual_abnormal: bool = False
 
 class ResultSubmit(BaseModel):
     results: List[ResultEntry]
@@ -484,7 +485,11 @@ def _build_report_response(report: LabReport, db: Session) -> dict:
                             is_abnormal = True
             except (ValueError, TypeError):
                 pass
-        elif param.field_type in ("select", "text", "manual", "colour",
+        elif param.field_type == "manual" and raw_value:
+            # Manual input: use the manual_abnormal flag set by the technician
+            if rv.get("manual_abnormal", False):
+                is_abnormal = True
+        elif param.field_type in ("select", "text", "colour",
                                    "positive_negative", "reactive", "presence_absence", "cloudy_clear") and raw_value:
             # Check against abnormal_values list
             abnormal_list = param.abnormal_values or []
@@ -538,7 +543,7 @@ def _build_report_response(report: LabReport, db: Session) -> dict:
         "order_date": order.order_date,
         "collection_date": order.collection_date,
         "report_date": report.report_date,
-        "report_status": "Final",
+        "sample_id": order.sample_id or "",
         "interpretation": report.interpretation,
         "results": results
     }
@@ -858,9 +863,63 @@ async def delete_parameter(
     db.commit()
     return {"message": "Parameter deleted"}
 
+
+def _get_lab_hospital_info(db, hospital):
+    """Build hospital_info dict using lab config as primary, hospital as fallback."""
+    lab_settings = db.query(HospitalSettings).filter(
+        HospitalSettings.setting_category == "lab_config"
+    ).all()
+    lab_config = {s.setting_key: s.setting_value for s in lab_settings}
+
+    return {
+        "name": lab_config.get('provider_name') or (hospital.name if hospital else 'Hospital'),
+        "address": lab_config.get('provider_address') or (hospital.address if hospital else ''),
+        "phone": lab_config.get('provider_phone') or (hospital.phone if hospital else ''),
+        "email": lab_config.get('provider_email') or (hospital.email if hospital else ''),
+        "logo_url": lab_config.get('provider_logo') or (hospital.logo_url if hospital else ''),
+    }
+
+
 # ============================================================
 # Lab Order Endpoints
 # ============================================================
+
+@router.post("/orders/check-duplicates")
+async def check_duplicate_orders(
+    data: dict,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Check if any of the given tests were already booked today for this patient.
+    Accessible by any authenticated user (no module gate)."""
+    from sqlalchemy import func as sql_func
+    import traceback
+    patient_id = data.get("patient_id")
+    test_ids = data.get("test_ids", [])
+
+    if not patient_id or not test_ids:
+        return {"duplicates": []}
+
+    today = date.today()
+    duplicates = []
+
+    for test_id in test_ids:
+        existing = db.query(PatientLabOrder).filter(
+            PatientLabOrder.patient_id == patient_id,
+            PatientLabOrder.test_id == test_id,
+            PatientLabOrder.payment_status == "paid",
+            sql_func.date(PatientLabOrder.order_date) == today,
+        ).first()
+        if existing:
+            test = db.query(LabTest).filter(LabTest.id == test_id).first()
+            duplicates.append({
+                "test_id": test_id,
+                "test_name": test.name if test else "Unknown",
+                "order_number": existing.order_number,
+                "order_time": existing.order_date.strftime('%I:%M %p') if existing.order_date else "",
+            })
+
+    return {"duplicates": duplicates}
 
 @router.post("/orders", response_model=List[OrderResponse])
 async def create_orders(
@@ -993,13 +1052,7 @@ async def reception_book_lab_tests(
     from app.models.hospital import Hospital
 
     hospital = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
-    hospital_info = {
-        "name": hospital.name if hospital else "Hospital",
-        "address": hospital.address if hospital else "",
-        "phone": hospital.phone if hospital else "",
-        "email": hospital.email if hospital else "",
-        "logo_url": hospital.logo_url if hospital else "",
-    }
+    hospital_info = _get_lab_hospital_info(db, hospital)
 
     age = None
     if patient.date_of_birth:
@@ -1235,24 +1288,7 @@ async def generate_lab_bill(
     # Get hospital info
     hospital = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
 
-    # Get lab config
-    lab_settings = db.query(HospitalSettings).filter(
-        HospitalSettings.setting_category == "lab_config"
-    ).all()
-    lab_config = {s.setting_key: s.setting_value for s in lab_settings}
-
-    # Use lab provider info if available, fallback to hospital
-    provider_name = lab_config.get('provider_name') or (hospital.name if hospital else 'Hospital')
-    provider_address = lab_config.get('provider_address') or (hospital.address if hospital else '')
-    provider_phone = lab_config.get('provider_phone') or (hospital.phone if hospital else '')
-    provider_email = lab_config.get('provider_email') or (hospital.email if hospital else '')
-
-    hospital_info = {
-        "name": provider_name,
-        "address": provider_address,
-        "phone": provider_phone,
-        "email": provider_email,
-    }
+    hospital_info = _get_lab_hospital_info(db, hospital)
 
     # Calculate patient age
     age = ""
@@ -1418,7 +1454,7 @@ async def submit_results(
     if existing:
         raise HTTPException(status_code=400, detail="Report already exists for this order")
 
-    result_values = [{"parameter_id": r.parameter_id, "value": r.value, "remarks": r.remarks or ""} for r in data.results]
+    result_values = [{"parameter_id": r.parameter_id, "value": r.value, "remarks": r.remarks or "", "manual_abnormal": r.manual_abnormal} for r in data.results]
 
     report = LabReport(
         order_id=order_id,
@@ -1689,6 +1725,7 @@ async def generate_sample_report(
         "address": hospital.address if hospital else "",
         "phone": hospital.phone if hospital else "",
         "email": hospital.email if hospital else "",
+        "logo_url": hospital.logo_url if hospital else "",
     }
 
     # Get lab config
@@ -2064,17 +2101,7 @@ async def book_package(
     }]
 
     hospital = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
-    lab_settings = db.query(HospitalSettings).filter(
-        HospitalSettings.setting_category == "lab_config"
-    ).all()
-    lab_config = {s.setting_key: s.setting_value for s in lab_settings}
-
-    hospital_info = {
-        "name": lab_config.get('provider_name') or (hospital.name if hospital else 'Hospital'),
-        "address": lab_config.get('provider_address') or (hospital.address if hospital else ''),
-        "phone": lab_config.get('provider_phone') or (hospital.phone if hospital else ''),
-        "email": lab_config.get('provider_email') or (hospital.email if hospital else ''),
-    }
+    hospital_info = _get_lab_hospital_info(db, hospital)
 
     age = ""
     if patient.date_of_birth:

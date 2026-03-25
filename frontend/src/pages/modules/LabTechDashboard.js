@@ -33,6 +33,7 @@ const LabTechDashboard = () => {
   const [entryForm, setEntryForm] = useState(null);
   const [entryValues, setEntryValues] = useState({});
   const [remarkValues, setRemarkValues] = useState({});
+  const [manualAbnormal, setManualAbnormal] = useState({});
   const [interpretation, setInterpretation] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
@@ -152,6 +153,7 @@ const LabTechDashboard = () => {
       });
       setEntryValues(initialValues);
       setRemarkValues({});
+      setManualAbnormal({});
       setInterpretation('');
       setShowEntryDialog(true);
     } catch (err) {
@@ -168,7 +170,8 @@ const LabTechDashboard = () => {
         .map(([paramId, value]) => ({
           parameter_id: parseInt(paramId),
           value: String(value),
-          remarks: remarkValues[paramId] || null
+          remarks: remarkValues[paramId] || null,
+          manual_abnormal: manualAbnormal[paramId] || false
         }));
 
       await axios.post(`/api/lab/orders/${entryForm.order_id}/results`, {
@@ -595,7 +598,7 @@ const LabTechDashboard = () => {
     if (!entryForm) return null;
     return (
       <Dialog open={showEntryDialog} onOpenChange={setShowEntryDialog}>
-        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Enter Results - {entryForm.test_name}</DialogTitle>
           </DialogHeader>
@@ -621,7 +624,7 @@ const LabTechDashboard = () => {
               <tbody>
                 {entryForm.parameters.map(param => {
                   const value = entryValues[param.id] || '';
-                  const abnormal = isValueAbnormal(param, value);
+                  const abnormal = param.field_type === 'manual' ? (manualAbnormal[param.id] || false) : isValueAbnormal(param, value);
                   return (
                     <tr key={param.id} className={`border-b ${abnormal ? 'bg-red-50' : ''}`}>
                       <td className="py-2 pr-3 font-medium">{param.parameter_name}</td>
@@ -723,13 +726,23 @@ const LabTechDashboard = () => {
                         )}
                       </td>
                       <td className="py-2">
-                        <Input
-                          type="text"
-                          value={remarkValues[param.id] || ''}
-                          onChange={(e) => setRemarkValues({ ...remarkValues, [param.id]: e.target.value })}
-                          className="w-[140px] h-8 text-xs"
-                          placeholder="Remarks"
-                        />
+                        <div className="flex items-center gap-2">
+                          {param.field_type === 'manual' && (
+                            <label className="flex items-center gap-1 cursor-pointer whitespace-nowrap" title="Mark as abnormal">
+                              <input type="checkbox" checked={manualAbnormal[param.id] || false}
+                                onChange={(e) => setManualAbnormal({ ...manualAbnormal, [param.id]: e.target.checked })}
+                                className="w-3.5 h-3.5 rounded border-red-300 text-red-500" />
+                              <span className="text-[10px] text-red-500 font-medium">Abnormal</span>
+                            </label>
+                          )}
+                          <Input
+                            type="text"
+                            value={remarkValues[param.id] || ''}
+                            onChange={(e) => setRemarkValues({ ...remarkValues, [param.id]: e.target.value })}
+                            className="w-[120px] h-8 text-xs"
+                            placeholder="Remarks"
+                          />
+                        </div>
                       </td>
                     </tr>
                   );
@@ -760,7 +773,7 @@ const LabTechDashboard = () => {
     if (!viewingReport) return null;
     return (
       <Dialog open={showReportDialog} onOpenChange={setShowReportDialog}>
-        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Lab Report - {viewingReport.test_name}</DialogTitle>
           </DialogHeader>
@@ -827,17 +840,18 @@ const LabTechDashboard = () => {
                   const res = await axios.get(`/api/lab/reports/${viewingReport.id}/download?include_header=${withHeader}`, {
                     responseType: 'blob'
                   });
-                  const url = window.URL.createObjectURL(new Blob([res.data]));
-                  const a = document.createElement('a');
-                  a.href = url;
-                  a.download = `lab_report_${viewingReport.order_number}.pdf`;
-                  a.click();
-                  window.URL.revokeObjectURL(url);
+                  const url = window.URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+                  const printWin = window.open(url, '_blank');
+                  if (printWin) {
+                    printWin.addEventListener('load', () => {
+                      setTimeout(() => printWin.print(), 500);
+                    });
+                  }
                 } catch (err) {
-                  console.error('Failed to download PDF:', err);
+                  console.error('Failed to print PDF:', err);
                 }
               }}>
-                <FileText className="h-4 w-4 mr-2" /> {withHeader ? 'With Header' : 'Without Header'}
+                <Printer className="h-4 w-4 mr-2" /> Print {withHeader ? 'With Header' : 'Without Header'}
               </Button>
             ))}
           </div>
