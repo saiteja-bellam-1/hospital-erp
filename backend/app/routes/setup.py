@@ -357,7 +357,7 @@ def _init_database_and_seed(setup_data: SetupRequest, db_path: str):
             hospital = Hospital(
                 hospital_id=generate_hospital_code(),
                 name=setup_data.hospital_name,
-                address=setup_data.hospital_address or "Not provided",
+                address=setup_data.hospital_address or "",
                 phone=setup_data.hospital_phone or "",
                 email=setup_data.hospital_email or "",
                 license_number="SETUP001",

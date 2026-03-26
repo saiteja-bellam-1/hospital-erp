@@ -132,6 +132,7 @@ class OrderCreate(BaseModel):
     test_ids: List[int] = Field(..., min_length=1)
     appointment_id: Optional[int] = None
     priority: str = Field(default="normal", pattern="^(normal|urgent|stat)$")
+    force: bool = False
     notes: Optional[str] = None
 
 class OrderResponse(BaseModel):
@@ -272,6 +273,7 @@ class PackageBooking(BaseModel):
     referred_by: Optional[str] = Field(None, max_length=100)
     payment_method: str = Field(..., pattern="^(cash|card|upi|cheque|online|insurance)$")
     include_header: bool = True
+    force: bool = False
 
 # ============================================================
 # Helper
@@ -864,15 +866,47 @@ async def delete_parameter(
     return {"message": "Parameter deleted"}
 
 
+def _check_duplicate_orders(db, patient_id: int, test_ids: list) -> list:
+    """Check if any tests were already ordered today for this patient (paid or pending)."""
+    from sqlalchemy import func as sql_func
+    today = date.today()
+    duplicates = []
+    for test_id in test_ids:
+        existing = db.query(PatientLabOrder).filter(
+            PatientLabOrder.patient_id == patient_id,
+            PatientLabOrder.test_id == test_id,
+            PatientLabOrder.status != "cancelled",
+            sql_func.date(PatientLabOrder.order_date) == today,
+        ).first()
+        if existing:
+            test = db.query(LabTest).filter(LabTest.id == test_id).first()
+            duplicates.append({
+                "test_id": test_id,
+                "test_name": test.name if test else "Unknown",
+                "order_number": existing.order_number,
+                "order_time": existing.order_date.strftime('%I:%M %p') if existing.order_date else "",
+                "status": existing.status,
+                "payment_status": existing.payment_status,
+            })
+    return duplicates
+
+
 def _get_lab_hospital_info(db, hospital):
-    """Build hospital_info dict using lab config as primary, hospital as fallback."""
+    """Build hospital_info dict using lab config as primary, hospital as fallback.
+    Includes hospital_subname for showing hospital name below lab name in PDFs."""
     lab_settings = db.query(HospitalSettings).filter(
         HospitalSettings.setting_category == "lab_config"
     ).all()
     lab_config = {s.setting_key: s.setting_value for s in lab_settings}
 
+    lab_name = lab_config.get('provider_name', '')
+    hosp_name = hospital.name if hospital else 'Hospital'
+    # If lab has its own name different from hospital, include hospital as subname
+    hospital_subname = hosp_name if lab_name and lab_name.strip().upper() != hosp_name.strip().upper() else ''
+
     return {
-        "name": lab_config.get('provider_name') or (hospital.name if hospital else 'Hospital'),
+        "name": lab_name or hosp_name,
+        "hospital_subname": hospital_subname,
         "address": lab_config.get('provider_address') or (hospital.address if hospital else ''),
         "phone": lab_config.get('provider_phone') or (hospital.phone if hospital else ''),
         "email": lab_config.get('provider_email') or (hospital.email if hospital else ''),
@@ -891,34 +925,14 @@ async def check_duplicate_orders(
     db: Session = Depends(get_db)
 ):
     """Check if any of the given tests were already booked today for this patient.
-    Accessible by any authenticated user (no module gate)."""
-    from sqlalchemy import func as sql_func
-    import traceback
+    Accessible by any authenticated user (no module gate). Uses the same helper as backend enforcement."""
     patient_id = data.get("patient_id")
     test_ids = data.get("test_ids", [])
 
     if not patient_id or not test_ids:
         return {"duplicates": []}
 
-    today = date.today()
-    duplicates = []
-
-    for test_id in test_ids:
-        existing = db.query(PatientLabOrder).filter(
-            PatientLabOrder.patient_id == patient_id,
-            PatientLabOrder.test_id == test_id,
-            PatientLabOrder.payment_status == "paid",
-            sql_func.date(PatientLabOrder.order_date) == today,
-        ).first()
-        if existing:
-            test = db.query(LabTest).filter(LabTest.id == test_id).first()
-            duplicates.append({
-                "test_id": test_id,
-                "test_name": test.name if test else "Unknown",
-                "order_number": existing.order_number,
-                "order_time": existing.order_date.strftime('%I:%M %p') if existing.order_date else "",
-            })
-
+    duplicates = _check_duplicate_orders(db, patient_id, test_ids)
     return {"duplicates": duplicates}
 
 @router.post("/orders", response_model=List[OrderResponse])
@@ -934,6 +948,12 @@ async def create_orders(
     ).first()
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
+
+    # Duplicate check
+    if not data.force:
+        duplicates = _check_duplicate_orders(db, data.patient_id, data.test_ids)
+        if duplicates:
+            raise HTTPException(status_code=409, detail={"message": "Duplicate orders found", "duplicates": duplicates})
 
     orders = []
     for test_id in data.test_ids:
@@ -982,6 +1002,7 @@ class ReceptionLabBooking(BaseModel):
     referred_by: Optional[str] = None
     discount_amount: float = Field(default=0.0, ge=0)
     include_header: bool = True
+    force: bool = False
     notes: Optional[str] = None
 
 
@@ -1002,6 +1023,12 @@ async def reception_book_lab_tests(
     ).first()
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
+
+    # Duplicate check
+    if not data.force:
+        duplicates = _check_duplicate_orders(db, data.patient_id, data.test_ids)
+        if duplicates:
+            raise HTTPException(status_code=409, detail={"message": "Duplicate orders found", "duplicates": duplicates})
 
     now = datetime.now()
     orders = []
@@ -1184,6 +1211,62 @@ async def update_order_status(
         "patient_name": f"{order.patient.first_name} {order.patient.last_name}" if order.patient else "",
         "test_name": order.test.name if order.test else "",
     }
+
+
+@router.get("/orders/{order_id}/bill")
+async def download_order_bill(
+    order_id: int,
+    include_header: bool = True,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Download/regenerate bill PDF for a single lab order."""
+    order = db.query(PatientLabOrder).join(Patient).filter(
+        PatientLabOrder.id == order_id,
+        Patient.hospital_id == current_user.hospital_id
+    ).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    patient = db.query(Patient).filter(Patient.id == order.patient_id).first()
+    test = db.query(LabTest).filter(LabTest.id == order.test_id).first()
+    hospital = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
+    hospital_info = _get_lab_hospital_info(db, hospital)
+
+    age = ""
+    if patient and patient.date_of_birth:
+        today = date.today()
+        age = str(today.year - patient.date_of_birth.year - ((today.month, today.day) < (patient.date_of_birth.month, patient.date_of_birth.day)))
+
+    doctor = db.query(User).filter(User.id == order.doctor_id).first() if order.doctor_id else None
+    doctor_name = f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else ""
+    referred_by = order.referred_by or ""
+
+    bill_data = {
+        "bill_number": f"LB-{order.order_number}",
+        "bill_date": order.order_date.isoformat() if order.order_date else datetime.now().isoformat(),
+        "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "Unknown",
+        "patient_age": age,
+        "patient_gender": patient.gender if patient else "",
+        "patient_phone": patient.primary_phone if patient else "",
+        "patient_id": patient.patient_id if patient else "",
+        "doctor_name": doctor_name,
+        "referred_by": referred_by,
+        "payment_method": (order.payment_method or "cash").capitalize(),
+        "items": [{"item_name": test.name if test else "Lab Test", "item_code": test.test_code if test else "", "total_price": order.amount or 0}],
+        "subtotal": order.amount or 0,
+        "discount_amount": 0,
+        "amount_paid": order.amount or 0,
+        "balance_due": 0,
+        "prepared_by": "",
+    }
+
+    from app.utils.pdf_service import pdf_service
+    from fastapi.responses import StreamingResponse
+    pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, include_header=include_header)
+    filename = f"lab_bill_{order.order_number}.pdf"
+    return StreamingResponse(pdf_buffer, media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={filename}"})
 
 
 class LabPaymentUpdate(BaseModel):
@@ -2057,6 +2140,12 @@ async def book_package(
 
     if not tests:
         raise HTTPException(status_code=400, detail="No valid tests in package")
+
+    # Duplicate check
+    if not data.force:
+        duplicates = _check_duplicate_orders(db, data.patient_id, [t.id for t in tests])
+        if duplicates:
+            raise HTTPException(status_code=409, detail={"message": "Duplicate orders found", "duplicates": duplicates})
 
     # Proportional discount distribution
     booking_id = f"PKG-{str(uuid.uuid4())[:8].upper()}"

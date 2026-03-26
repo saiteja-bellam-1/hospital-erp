@@ -415,7 +415,7 @@ const AdminModule = () => {
               {modules.map((module) => (
                 <div
                   key={module.id}
-                  className="flex items-center justify-between p-4 border rounded-lg"
+                  className={`flex items-center justify-between p-4 border rounded-lg ${!module.is_licensed ? 'bg-gray-50 opacity-75' : ''}`}
                 >
                   <div>
                     <h3 className="font-medium">{module.display_name}</h3>
@@ -423,13 +423,16 @@ const AdminModule = () => {
                     {module.is_always_enabled && (
                       <p className="text-xs text-blue-600 mt-1">Always enabled</p>
                     )}
+                    {!module.is_licensed && (
+                      <p className="text-xs text-red-600 mt-1">Not included in license</p>
+                    )}
                   </div>
                   <div className="flex items-center space-x-2">
                     <Button
                       variant={module.is_enabled ? "default" : "outline"}
                       size="sm"
                       onClick={() => toggleModule(module.id, module.is_enabled)}
-                      disabled={module.is_always_enabled}
+                      disabled={module.is_always_enabled || !module.is_licensed}
                       className="flex items-center"
                     >
                       <ToggleLeft className="h-4 w-4 mr-1" />

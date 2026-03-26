@@ -270,6 +270,7 @@ async def update_consultation(
 class LabOrderCreate(BaseModel):
     test_ids: List[int] = Field(..., description="List of lab test IDs to order")
     priority: str = Field(default="normal", pattern="^(normal|urgent|stat)$")
+    force: bool = False
     notes: Optional[str] = None
 
 class LabOrderResponse(BaseModel):
@@ -587,9 +588,16 @@ async def create_consultation_lab_orders(
     patient = db.query(Patient).filter(Patient.id == consultation.patient_id).first()
     if not patient or patient.hospital_id != current_user.hospital_id:
         raise HTTPException(status_code=403, detail="Access denied")
-    
+
+    # Duplicate check
+    if not lab_order_data.force:
+        from app.routes.lab import _check_duplicate_orders
+        duplicates = _check_duplicate_orders(db, consultation.patient_id, lab_order_data.test_ids)
+        if duplicates:
+            raise HTTPException(status_code=409, detail={"message": "Duplicate orders found", "duplicates": duplicates})
+
     created_orders = []
-    
+
     for test_id in lab_order_data.test_ids:
         # Verify test exists and is active
         lab_test = db.query(LabTest).filter(

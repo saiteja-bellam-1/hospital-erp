@@ -106,6 +106,7 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
           referred_by: referredBy || null,
           discount_amount: discount,
           include_header: includeHeader,
+          force: force,
         }),
       });
       if (res.ok) {
@@ -118,9 +119,12 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
           });
         }
         onClose(true); // true = success
+      } else if (res.status === 409) {
+        const err = await res.json();
+        setDuplicateWarning(err.detail?.duplicates || []);
       } else {
         const err = await res.json();
-        alert(err.detail || 'Failed to book lab tests');
+        alert(typeof err.detail === 'string' ? err.detail : 'Failed to book lab tests');
       }
     } catch {
       alert('Failed to book lab tests');
@@ -315,7 +319,7 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
             </label>
             <div className="flex gap-2">
               <Button variant="outline" onClick={() => onClose(false)}>Cancel</Button>
-              <Button onClick={handleSubmit}
+              <Button onClick={() => handleSubmit(false)}
                 disabled={submitting || !selectedPatient || selectedTests.length === 0}>
                 {submitting ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" /> Booking...</> : `Book & Print Bill (₹${total.toFixed(2)})`}
               </Button>

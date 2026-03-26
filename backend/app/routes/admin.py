@@ -19,7 +19,8 @@ class ModuleResponse(BaseModel):
     description: Optional[str]
     is_enabled: bool
     is_always_enabled: bool
-    
+    is_licensed: bool = True
+
     class Config:
         from_attributes = True
 
@@ -250,9 +251,30 @@ async def get_system_modules(
     current_user: User = Depends(require_super_admin),
     db: Session = Depends(get_db)
 ):
-    """Get all system modules with their enable/disable status"""
+    """Get all system modules with their enable/disable status and license info"""
+    from app.services.license_service import get_current_license
     modules = db.query(SystemModule).all()
-    return modules
+
+    license_record = get_current_license(db)
+    licensed_features = set()
+    if license_record and license_record.features:
+        licensed_features = set(license_record.features)
+
+    result = []
+    for module in modules:
+        resp = ModuleResponse.model_validate(module)
+        # Always-enabled modules are always considered licensed
+        # If license exists, check if module is in licensed features
+        # If no license yet, treat all as licensed (first-time setup grace)
+        if module.is_always_enabled:
+            resp.is_licensed = True
+        elif licensed_features:
+            resp.is_licensed = module.module_name in licensed_features
+        else:
+            resp.is_licensed = True
+        result.append(resp)
+
+    return result
 
 @router.put("/modules/{module_id}", response_model=ModuleResponse)
 async def update_module_status(
@@ -275,7 +297,18 @@ async def update_module_status(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Module '{module.display_name}' cannot be disabled"
         )
-    
+
+    # Prevent enabling unlicensed modules
+    if module_update.is_enabled:
+        from app.services.license_service import get_current_license
+        license_record = get_current_license(db)
+        if license_record and license_record.features:
+            if module.module_name not in license_record.features:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Module '{module.display_name}' is not included in your license"
+                )
+
     module.is_enabled = module_update.is_enabled
     db.commit()
     db.refresh(module)

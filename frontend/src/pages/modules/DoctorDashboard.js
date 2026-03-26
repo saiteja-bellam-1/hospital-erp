@@ -29,6 +29,7 @@ const DoctorDashboard = () => {
   const [prescriptions, setPrescriptions] = useState([]);
   const [showPrescriptionDialog, setShowPrescriptionDialog] = useState(false);
   const [showLabOrderDialog, setShowLabOrderDialog] = useState(false);
+  const [labDuplicateWarning, setLabDuplicateWarning] = useState(null);
   const [showVitalsDialog, setShowVitalsDialog] = useState(false);
   const [showPrintPreviewDialog, setShowPrintPreviewDialog] = useState(false);
   const [activeTab, setActiveTab] = useState('appointments');
@@ -689,7 +690,7 @@ const DoctorDashboard = () => {
     }
   };
 
-  const handleSubmitLabOrder = async () => {
+  const handleSubmitLabOrder = async (force = false) => {
     if (!selectedAppointment || (selectedLabTests.length === 0 && customLabTests.length === 0)) return;
     setLabOrderSubmitting(true);
     try {
@@ -711,12 +712,19 @@ const DoctorDashboard = () => {
             appointment_id: selectedAppointment.id,
             test_ids: selectedLabTests,
             priority: labOrderPriority,
+            force: force,
             notes: combinedNotes || null
           })
         });
+        if (res.status === 409) {
+          const err = await res.json();
+          setLabDuplicateWarning(err.detail?.duplicates || []);
+          setLabOrderSubmitting(false);
+          return;
+        }
         if (!res.ok) {
           const err = await res.json();
-          toast({ variant: 'destructive', title: 'Error', description: err.detail || 'Failed to create lab orders' });
+          toast({ variant: 'destructive', title: 'Error', description: typeof err.detail === 'string' ? err.detail : 'Failed to create lab orders' });
           setLabOrderSubmitting(false);
           return;
         }
@@ -1689,6 +1697,7 @@ const DoctorDashboard = () => {
           setCustomLabTestInput('');
           setLabSearchQuery('');
           setLabCategoryFilter('all');
+          setLabDuplicateWarning(null);
         }
       }}>
         <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
@@ -1802,9 +1811,32 @@ const DoctorDashboard = () => {
               </div>
             </div>
 
-            <div className="flex justify-end gap-2">
+            {/* Duplicate Warning */}
+            {labDuplicateWarning && labDuplicateWarning.length > 0 && (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-2">
+                <p className="text-sm font-semibold text-amber-800">
+                  ⚠ These tests were already ordered for this patient today:
+                </p>
+                <ul className="space-y-1 ml-6">
+                  {labDuplicateWarning.map((d, i) => (
+                    <li key={i} className="text-sm text-amber-700">
+                      <span className="font-medium">{d.test_name}</span>
+                      <span className="text-amber-500 text-xs ml-1">(ordered at {d.order_time}, {d.status})</span>
+                    </li>
+                  ))}
+                </ul>
+                <div className="flex gap-2 pt-1">
+                  <Button size="sm" variant="outline" onClick={() => setLabDuplicateWarning(null)}>Go Back & Edit</Button>
+                  <Button size="sm" className="bg-amber-600 hover:bg-amber-700 text-white" onClick={() => { setLabDuplicateWarning(null); handleSubmitLabOrder(true); }}>
+                    Proceed Anyway
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            <div className={`flex justify-end gap-2 ${labDuplicateWarning ? 'hidden' : ''}`}>
               <Button variant="outline" onClick={() => setShowLabOrderDialog(false)}>Cancel</Button>
-              <Button onClick={handleSubmitLabOrder}
+              <Button onClick={() => handleSubmitLabOrder(false)}
                 disabled={(selectedLabTests.length === 0 && customLabTests.length === 0) || labOrderSubmitting}>
                 {labOrderSubmitting ? 'Ordering...' : `Order ${selectedLabTests.length + customLabTests.length} Test(s)`}
               </Button>

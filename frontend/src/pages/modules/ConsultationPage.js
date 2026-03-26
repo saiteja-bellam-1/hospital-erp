@@ -477,7 +477,7 @@ const ConsultationPage = () => {
     return true;
   });
 
-  const handleSubmitLabOrder = async () => {
+  const handleSubmitLabOrder = async (force = false) => {
     if (selectedLabTests.length === 0 && customLabTests.length === 0) return;
     setSaving(true);
     try {
@@ -489,8 +489,20 @@ const ConsultationPage = () => {
       if (selectedLabTests.length > 0) {
         const res = await fetch('/api/lab/orders', {
           method: 'POST', headers,
-          body: JSON.stringify({ patient_id: parseInt(patientId), test_ids: selectedLabTests, priority: labOrderPriority, notes: combinedNotes || null })
+          body: JSON.stringify({ patient_id: parseInt(patientId), test_ids: selectedLabTests, priority: labOrderPriority, force: force, notes: combinedNotes || null })
         });
+        if (res.status === 409) {
+          const err = await res.json();
+          const dupes = err.detail?.duplicates || [];
+          const names = dupes.map(d => d.test_name).join(', ');
+          if (window.confirm(`These tests were already ordered today: ${names}\n\nProceed anyway?`)) {
+            setSaving(false);
+            handleSubmitLabOrder(true);
+            return;
+          }
+          setSaving(false);
+          return;
+        }
         if (!res.ok) {
           const err = await res.json();
           showFeedback(typeof err.detail === 'string' ? err.detail : 'Failed to create lab orders', 'error');
@@ -981,7 +993,7 @@ const ConsultationPage = () => {
                   <Label className="text-xs">Notes</Label>
                   <Input value={labOrderNotes} onChange={(e) => setLabOrderNotes(e.target.value)} placeholder="Clinical notes..." />
                 </div>
-                <Button onClick={handleSubmitLabOrder}
+                <Button onClick={() => handleSubmitLabOrder(false)}
                   disabled={(selectedLabTests.length === 0 && customLabTests.length === 0) || saving}>
                   <TestTube className="h-4 w-4 mr-1" /> Order {selectedLabTests.length + customLabTests.length} Test(s)
                 </Button>

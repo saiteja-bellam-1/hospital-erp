@@ -10,7 +10,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/ta
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../components/ui/dialog';
 import {
   TestTube, Clock, CheckCircle, AlertCircle, RefreshCw, Loader2,
-  User, FileText, Activity, Search, Beaker, Package, Printer
+  User, FileText, Activity, Search, Beaker, Package, Printer, Download, Eye
 } from 'lucide-react';
 import axios from 'axios';
 import { format } from 'date-fns';
@@ -258,6 +258,35 @@ const LabTechDashboard = () => {
     }
   };
 
+  const downloadOrderBill = async (orderId, orderNumber) => {
+    try {
+      const res = await axios.get(`/api/lab/orders/${orderId}/bill?include_header=true`, { responseType: 'blob' });
+      const url = window.URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `lab_bill_${orderNumber}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    } catch {
+      showFeedback('Failed to download bill', 'error');
+    }
+  };
+
+  const printReport = async (reportId, withHeader = true) => {
+    try {
+      const res = await axios.get(`/api/lab/reports/${reportId}/download?include_header=${withHeader}`, { responseType: 'blob' });
+      const url = window.URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+      const printWin = window.open(url, '_blank');
+      if (printWin) {
+        printWin.addEventListener('load', () => setTimeout(() => printWin.print(), 500));
+      }
+    } catch {
+      showFeedback('Failed to load report', 'error');
+    }
+  };
+
   const getStatusColor = (status) => {
     switch (status) {
       case 'ordered': return 'bg-blue-100 text-blue-700';
@@ -422,7 +451,12 @@ const LabTechDashboard = () => {
               )}
             </div>
           </div>
-          <div className="flex flex-col gap-2 ml-4">
+          <div className="flex flex-wrap gap-1.5 ml-4 items-center">
+            {order.payment_status === 'paid' && (
+              <Button size="sm" variant="ghost" className="h-7 text-xs text-gray-500" onClick={() => downloadOrderBill(order.id, order.order_number)}>
+                <Download className="h-3 w-3 mr-1" /> Bill
+              </Button>
+            )}
             {order.status === 'ordered' && (
               <Button size="sm" variant="outline" onClick={() => handleUpdateStatus(order.id, 'collected')}>
                 Mark Collected
@@ -439,9 +473,14 @@ const LabTechDashboard = () => {
               </Button>
             )}
             {order.status === 'completed' && order.has_report && (
-              <Button size="sm" variant="outline" onClick={() => openReport(order.report_id)}>
-                View Report
-              </Button>
+              <>
+                <Button size="sm" variant="outline" onClick={() => openReport(order.report_id)}>
+                  <Eye className="h-3 w-3 mr-1" /> View Report
+                </Button>
+                <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => printReport(order.report_id, true)}>
+                  <Printer className="h-3 w-3 mr-1" /> Print Report
+                </Button>
+              </>
             )}
           </div>
         </div>
@@ -492,6 +531,11 @@ const LabTechDashboard = () => {
                   </div>
                 </div>
                 <div className="flex gap-2 ml-4">
+                  {order.payment_status === 'paid' && (
+                    <Button size="sm" variant="ghost" className="h-7 text-xs text-gray-500" onClick={() => downloadOrderBill(order.id, order.order_number)}>
+                      <Download className="h-3 w-3 mr-1" /> Bill
+                    </Button>
+                  )}
                   {order.status === 'ordered' && (
                     <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => handleUpdateStatus(order.id, 'collected')}>
                       Mark Collected
@@ -508,9 +552,14 @@ const LabTechDashboard = () => {
                     </Button>
                   )}
                   {order.status === 'completed' && order.has_report && (
-                    <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => openReport(order.report_id)}>
-                      View Report
-                    </Button>
+                    <>
+                      <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => openReport(order.report_id)}>
+                        <Eye className="h-3 w-3 mr-1" /> Report
+                      </Button>
+                      <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => printReport(order.report_id)}>
+                        <Printer className="h-3 w-3 mr-1" /> Print
+                      </Button>
+                    </>
                   )}
                 </div>
               </div>

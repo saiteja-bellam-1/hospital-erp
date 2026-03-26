@@ -118,6 +118,7 @@ class PDFService:
                 has_logo = os.path.exists(full_logo_path)
 
             hospital_name = hospital_info.get('name', 'HOSPITAL').upper()
+            hospital_subname = hospital_info.get('hospital_subname', '')
             address = hospital_info.get('address', '')
             contact_parts = []
             if hospital_info.get('email'):
@@ -126,6 +127,8 @@ class PDFService:
                 contact_parts.append(f"Phone: {hospital_info['phone']}")
 
             header_text_elems = [Paragraph(hospital_name, title_style)]
+            if hospital_subname:
+                header_text_elems.append(Paragraph(hospital_subname, subtitle_style))
             if address:
                 header_text_elems.append(Paragraph(address, subtitle_style))
             if contact_parts:
@@ -824,7 +827,10 @@ class PDFService:
             return Paragraph(f"<b>{label}</b> :  {value}", cell_value)
 
         # Use lab config provider details if available, fall back to hospital info
-        provider_name = lab_config.get('provider_name') or hospital_info.get('name', 'HOSPITAL')
+        hospital_name = hospital_info.get('name', 'HOSPITAL')
+        provider_name = lab_config.get('provider_name') or hospital_name
+        # Show hospital name as secondary line if lab has its own name
+        show_hospital_subline = lab_config.get('provider_name') and lab_config['provider_name'].strip().upper() != hospital_name.strip().upper()
         provider_address_parts = []
         if lab_config.get('provider_address'):
             provider_address_parts.append(lab_config['provider_address'])
@@ -862,6 +868,8 @@ class PDFService:
 
                     header_text_parts = []
                     header_text_parts.append(Paragraph(provider_name.upper(), title_style))
+                    if show_hospital_subline:
+                        header_text_parts.append(Paragraph(hospital_name, subtitle_style))
                     if provider_address:
                         header_text_parts.append(Paragraph(provider_address, subtitle_style))
                     contact_parts = []
@@ -891,6 +899,8 @@ class PDFService:
                         elements.append(Paragraph(provider_address, subtitle_style))
             else:
                 elements.append(Paragraph(provider_name.upper(), title_style))
+                if show_hospital_subline:
+                    elements.append(Paragraph(hospital_name, subtitle_style))
                 if provider_address:
                     elements.append(Paragraph(provider_address, subtitle_style))
                 contact_parts = []
@@ -1197,7 +1207,9 @@ class PDFService:
         first_report = reports_list[0]
 
         # --- Build header drawing info for onPage ---
-        provider_name = lab_config.get('provider_name') or hospital_info.get('name', 'HOSPITAL')
+        hospital_name_combined = hospital_info.get('name', 'HOSPITAL')
+        provider_name = lab_config.get('provider_name') or hospital_name_combined
+        show_hospital_subline = lab_config.get('provider_name') and lab_config['provider_name'].strip().upper() != hospital_name_combined.strip().upper()
         provider_address_parts = []
         if lab_config.get('provider_address'):
             provider_address_parts.append(lab_config['provider_address'])
@@ -1254,29 +1266,39 @@ class PDFService:
                     except Exception:
                         pass
 
-                # Hospital name
+                # Lab / Hospital name
                 c.setFont('Helvetica-Bold', 14)
                 c.drawCentredString(pg_w / 2, top_y - 15, provider_name.upper())
+
+                y_offset = 28
+                # Hospital name subline (when lab has its own name)
+                if show_hospital_subline:
+                    c.setFont('Helvetica', 9)
+                    c.drawCentredString(pg_w / 2, top_y - y_offset, hospital_name_combined)
+                    y_offset += 12
 
                 # Address
                 if provider_address:
                     c.setFont('Helvetica', 8)
-                    c.drawCentredString(pg_w / 2, top_y - 28, provider_address)
+                    c.drawCentredString(pg_w / 2, top_y - y_offset, provider_address)
+                    y_offset += 12
 
                 # Contact
                 if contact_line:
                     c.setFont('Helvetica', 7)
-                    c.drawCentredString(pg_w / 2, top_y - 40, contact_line)
+                    c.drawCentredString(pg_w / 2, top_y - y_offset, contact_line)
+                    y_offset += 12
 
                 # Registration
                 if reg_line:
                     c.setFont('Helvetica', 6)
                     c.setFillColor(colors.grey)
-                    c.drawCentredString(pg_w / 2, top_y - 52, reg_line)
+                    c.drawCentredString(pg_w / 2, top_y - y_offset, reg_line)
                     c.setFillColor(colors.black)
+                    y_offset += 10
 
                 # Divider line
-                line_y = top_y - 60
+                line_y = top_y - y_offset - 2
                 c.setStrokeColor(colors.black)
                 c.setLineWidth(1)
                 c.line(30, line_y, pg_w - 30, line_y)

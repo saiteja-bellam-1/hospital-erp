@@ -133,7 +133,25 @@ def upload_license(db: Session, file_content: str, uploaded_by: int = None) -> d
         db.add(new_license)
         db.commit()
 
+    # Auto-disable modules not included in the new license
+    _sync_modules_with_license(db, license_data.get("features", []))
+
     return get_license_status(db)
+
+
+def _sync_modules_with_license(db: Session, licensed_features: list):
+    """Disable modules that are not in the license. Enable licensed ones if they were disabled due to licensing."""
+    from app.models.system import SystemModule
+    if not licensed_features:
+        return
+    licensed_set = set(licensed_features)
+    modules = db.query(SystemModule).all()
+    for module in modules:
+        if module.is_always_enabled:
+            continue
+        if module.module_name not in licensed_set and module.is_enabled:
+            module.is_enabled = False
+    db.commit()
 
 
 def is_license_valid_for_login(db: Session, role_name: str) -> tuple[bool, str]:

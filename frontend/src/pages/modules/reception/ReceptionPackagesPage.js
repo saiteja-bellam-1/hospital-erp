@@ -138,6 +138,7 @@ const ReceptionPackagesPage = () => {
         referred_by: referredBy || null,
         payment_method: paymentMethod,
         include_header: pkgIncludeHeader,
+        force: force,
       }, { responseType: 'blob' });
 
       const url = window.URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
@@ -151,7 +152,21 @@ const ReceptionPackagesPage = () => {
       setShowBookingDialog(false);
     } catch (err) {
       console.error('Package booking failed:', err);
-      toast({ title: 'Error', description: err.response?.data?.detail || 'Failed to book package', variant: 'destructive' });
+      if (err.response?.status === 409) {
+        // 409 comes as blob due to responseType — parse it
+        try {
+          const text = await err.response.data.text();
+          const parsed = JSON.parse(text);
+          setPkgDuplicateWarning(parsed.detail?.duplicates || []);
+        } catch {
+          toast({ title: 'Error', description: 'Duplicate orders detected. Please try again.', variant: 'destructive' });
+        }
+      } else {
+        const detail = err.response?.data instanceof Blob
+          ? 'Failed to book package'
+          : (err.response?.data?.detail || 'Failed to book package');
+        toast({ title: 'Error', description: typeof detail === 'string' ? detail : 'Failed to book package', variant: 'destructive' });
+      }
     } finally {
       setBookingLoading(false);
     }

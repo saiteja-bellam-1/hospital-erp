@@ -115,7 +115,7 @@ const DoctorConsultation = ({ consultation, onUpdate }) => {
     }
   };
 
-  const handleOrderLabTests = async () => {
+  const handleOrderLabTests = async (force = false) => {
     if (selectedTests.length === 0) return;
 
     setLoading(true);
@@ -130,14 +130,23 @@ const DoctorConsultation = ({ consultation, onUpdate }) => {
         body: JSON.stringify({
           test_ids: selectedTests,
           priority: 'normal',
+          force: force,
           notes: 'Ordered during consultation'
         })
       });
 
-      if (response.ok) {
+      if (response.status === 409) {
+        const err = await response.json();
+        const dupes = err.detail?.duplicates || [];
+        const names = dupes.map(d => d.test_name).join(', ');
+        if (window.confirm(`These tests were already ordered today: ${names}\n\nProceed anyway?`)) {
+          setLoading(false);
+          handleOrderLabTests(true);
+          return;
+        }
+      } else if (response.ok) {
         setSelectedTests([]);
         fetchExistingLabOrders();
-        // Auto-generate updated bill
         generateBill();
       }
     } catch (error) {
@@ -303,7 +312,7 @@ const DoctorConsultation = ({ consultation, onUpdate }) => {
                           {selectedTests.length} test(s) selected
                         </p>
                         <Button
-                          onClick={handleOrderLabTests}
+                          onClick={() => handleOrderLabTests(false)}
                           disabled={loading}
                           className="flex items-center gap-2"
                         >
