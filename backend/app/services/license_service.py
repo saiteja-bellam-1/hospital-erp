@@ -66,6 +66,7 @@ def get_license_status(db: Session) -> dict:
         "hospital_name": license_record.hospital_name,
         "license_id": license_record.license_id,
         "issued_at": license_record.issued_at.isoformat(),
+        "seller_info": license_record.seller_info,
     }
 
 
@@ -109,6 +110,7 @@ def upload_license(db: Session, file_content: str, uploaded_by: int = None) -> d
         existing.plan = license_data.get("plan", existing.plan)
         existing.max_users = license_data.get("max_users", existing.max_users)
         existing.features = license_data.get("features", existing.features)
+        existing.seller_info = license_data.get("seller", existing.seller_info)
         existing.issued_at = issued_at
         existing.expires_at = expires_at
         existing.status = status
@@ -124,6 +126,7 @@ def upload_license(db: Session, file_content: str, uploaded_by: int = None) -> d
             plan=license_data.get("plan", "standard"),
             max_users=license_data.get("max_users", 50),
             features=license_data.get("features", []),
+            seller_info=license_data.get("seller", None),
             issued_at=issued_at,
             expires_at=expires_at,
             status=status,

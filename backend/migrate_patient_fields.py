@@ -38,6 +38,7 @@ NEW_COLUMNS = [
     ("lab_test_parameters", "reference_min_child", "FLOAT"),
     ("lab_test_parameters", "reference_max_child", "FLOAT"),
     ("lab_test_parameters", "notes", "VARCHAR(500)"),
+    ("licenses", "seller_info", "JSON"),
 ]
 
 def migrate():

@@ -168,27 +168,27 @@ class AvailabilityService:
             start_time = datetime.strptime(start_time_str, '%H:%M').time()
             end_time = datetime.strptime(end_time_str, '%H:%M').time()
             
-            # Create time slots
+            # Create time slots — use doctor's configured duration as the single source of truth
             slot_duration = availability.default_consultation_duration or duration_minutes
             buffer_minutes = availability.buffer_minutes or 0
-            
+
             current_time = datetime.combine(appointment_date, start_time)
             end_datetime = datetime.combine(appointment_date, end_time)
-            
+
             while current_time + timedelta(minutes=slot_duration) <= end_datetime:
                 slot_start = current_time.time()
                 is_available, _ = self.is_doctor_available(
-                    doctor_id, appointment_date, slot_start, duration_minutes
+                    doctor_id, appointment_date, slot_start, slot_duration
                 )
-                
+
                 if is_available:
-                    slot_end = (current_time + timedelta(minutes=duration_minutes)).time()
+                    slot_end = (current_time + timedelta(minutes=slot_duration)).time()
                     available_slots.append({
                         'start_time': slot_start.strftime('%H:%M'),
                         'end_time': slot_end.strftime('%H:%M'),
-                        'duration': duration_minutes
+                        'duration': slot_duration
                     })
-                
+
                 current_time += timedelta(minutes=slot_duration + buffer_minutes)
             
             return available_slots

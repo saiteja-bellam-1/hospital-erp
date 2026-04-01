@@ -5,29 +5,33 @@ import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Badge } from './ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
-import { Search, X, TestTube, Loader2, Plus } from 'lucide-react';
+import { Search, X, TestTube, Loader2, Plus, Printer } from 'lucide-react';
+import { printPdfFromUrl } from '../utils/printPdf';
 
 const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = [] }) => {
   const token = localStorage.getItem('token');
   const [loading, setLoading] = useState(false);
 
-  // Patient search (if not pre-selected)
   const [patientSearch, setPatientSearch] = useState('');
   const [patientResults, setPatientResults] = useState([]);
   const [selectedPatient, setSelectedPatient] = useState(patient);
 
-  // Tests
   const [tests, setTests] = useState([]);
   const [testSearch, setTestSearch] = useState('');
   const [selectedTests, setSelectedTests] = useState([]);
 
-  // Payment
   const [paymentMethod, setPaymentMethod] = useState('cash');
   const [discount, setDiscount] = useState(0);
   const [referredBy, setReferredBy] = useState('');
   const [includeHeader, setIncludeHeader] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [duplicateWarning, setDuplicateWarning] = useState(null);
+
+  // Bill preview state
+  const [billPdfUrl, setBillPdfUrl] = useState(null);
+  const [showBillPreview, setShowBillPreview] = useState(false);
+  const [billOrderIds, setBillOrderIds] = useState([]);
+  const [previewHeader, setPreviewHeader] = useState(true);
 
   useEffect(() => {
     if (open) {
@@ -37,6 +41,10 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
       setDiscount(0);
       setPaymentMethod('cash');
       setReferredBy('');
+      setBillPdfUrl(null);
+      setShowBillPreview(false);
+      setBillOrderIds([]);
+      setPreviewHeader(true);
       fetchTests();
     }
   }, [open, patient]);
@@ -71,7 +79,6 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
   const handleSubmit = async (force = false) => {
     if (!selectedPatient || selectedTests.length === 0) return;
 
-    // Check for duplicate orders today (skip if user already confirmed)
     if (!force) {
       try {
         const checkRes = await fetch('/api/lab/orders/check-duplicates', {
@@ -83,7 +90,7 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
           const { duplicates } = await checkRes.json();
           if (duplicates.length > 0) {
             setDuplicateWarning(duplicates);
-            return; // Stop — show warning, user must click "Proceed Anyway"
+            return;
           }
         } else {
           console.warn('Duplicate check failed:', checkRes.status, await checkRes.text());
@@ -110,15 +117,16 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
         }),
       });
       if (res.ok) {
+        const orderIdsHeader = res.headers.get('X-Order-Ids');
+        const ids = orderIdsHeader ? orderIdsHeader.split(',').map(Number) : [];
+        setBillOrderIds(ids);
+        setPreviewHeader(includeHeader);
+
         const blob = await res.blob();
+        if (billPdfUrl) window.URL.revokeObjectURL(billPdfUrl);
         const url = window.URL.createObjectURL(new Blob([blob], { type: 'application/pdf' }));
-        const printWin = window.open(url, '_blank');
-        if (printWin) {
-          printWin.addEventListener('load', () => {
-            setTimeout(() => printWin.print(), 500);
-          });
-        }
-        onClose(true); // true = success
+        setBillPdfUrl(url);
+        setShowBillPreview(true);
       } else if (res.status === 409) {
         const err = await res.json();
         setDuplicateWarning(err.detail?.duplicates || []);
@@ -133,11 +141,89 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
     }
   };
 
+  const refetchBillPdf = async (withHeader) => {
+    if (billOrderIds.length === 0) return;
+    try {
+      const res = await fetch('/api/lab/orders/regenerate-bill', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order_ids: billOrderIds, include_header: withHeader }),
+      });
+      if (res.ok) {
+        if (billPdfUrl) window.URL.revokeObjectURL(billPdfUrl);
+        const blob = await res.blob();
+        setBillPdfUrl(window.URL.createObjectURL(new Blob([blob], { type: 'application/pdf' })));
+      }
+    } catch (err) {
+      console.error('Failed to regenerate bill:', err);
+    }
+  };
+
+  const handlePrintBill = () => {
+    printPdfFromUrl(billPdfUrl);
+  };
+
+  const closeBillPreview = () => {
+    if (billPdfUrl) {
+      window.URL.revokeObjectURL(billPdfUrl);
+      setBillPdfUrl(null);
+    }
+    setShowBillPreview(false);
+    onClose(true);
+  };
+
   const filteredTests = tests.filter(t => {
     if (!testSearch) return true;
     const q = testSearch.toLowerCase();
     return t.name.toLowerCase().includes(q) || (t.test_code || '').toLowerCase().includes(q);
   });
+
+  if (showBillPreview) {
+    return (
+      <Dialog open={true} onOpenChange={closeBillPreview}>
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-hidden">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <TestTube className="h-5 w-5" /> Lab Bill Preview
+            </DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col space-y-4">
+            <div className="grid grid-cols-2 gap-4 p-4 bg-gray-50 rounded-lg">
+              <div>
+                <p className="text-sm text-gray-600">Patient</p>
+                <p className="font-semibold">{selectedPatient?.first_name} {selectedPatient?.last_name}</p>
+              </div>
+              <div>
+                <p className="text-sm text-gray-600">Total Amount</p>
+                <p className="font-semibold text-green-600">₹{total.toFixed(2)}</p>
+              </div>
+            </div>
+            <div className="flex-1 min-h-[400px] border rounded-lg overflow-hidden">
+              {billPdfUrl && (
+                <iframe src={billPdfUrl} className="w-full h-full min-h-[400px] border-0" title="Bill Preview" />
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center space-x-2">
+                <input type="checkbox" id="lab-bill-header" checked={previewHeader}
+                  onChange={async (e) => {
+                    const newVal = e.target.checked;
+                    setPreviewHeader(newVal);
+                    await refetchBillPdf(newVal);
+                  }}
+                  className="w-4 h-4" />
+                <Label htmlFor="lab-bill-header" className="text-sm">Include header</Label>
+              </div>
+              <Button variant="outline" onClick={closeBillPreview} className="flex-1">Close</Button>
+              <Button onClick={handlePrintBill} className="flex-1 bg-blue-600 hover:bg-blue-700">
+                <Printer className="h-4 w-4 mr-2" /> Print Bill
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    );
+  }
 
   return (
     <Dialog open={open} onOpenChange={() => onClose(false)}>
@@ -149,7 +235,6 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
         </DialogHeader>
 
         <div className="space-y-4">
-          {/* Patient Selection */}
           {!selectedPatient ? (
             <div>
               <Label>Search Patient *</Label>
@@ -187,7 +272,6 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
             </div>
           )}
 
-          {/* Test Selection */}
           <div>
             <Label>Select Tests *</Label>
             <div className="relative mt-1">
@@ -216,8 +300,6 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
                 );
               })}
             </div>
-
-            {/* Selected tests tags */}
             {selectedTests.length > 0 && (
               <div className="flex flex-wrap gap-1.5 mt-2">
                 {selectedTests.map(t => (
@@ -231,7 +313,6 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
             )}
           </div>
 
-          {/* Payment + Referral */}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label>Payment Method *</Label>
@@ -265,7 +346,6 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
             </div>
           </div>
 
-          {/* Bill Summary */}
           {selectedTests.length > 0 && (
             <div className="bg-gray-50 rounded-lg p-3 space-y-1.5">
               <div className="flex justify-between text-sm">
@@ -285,7 +365,6 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
             </div>
           )}
 
-          {/* Duplicate Warning */}
           {duplicateWarning && (
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-2">
               <p className="text-sm font-semibold text-amber-800 flex items-center gap-1.5">
@@ -301,17 +380,12 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
                 ))}
               </ul>
               <div className="flex gap-2 pt-1">
-                <Button size="sm" variant="outline" onClick={() => setDuplicateWarning(null)}>
-                  Go Back & Edit
-                </Button>
-                <Button size="sm" className="bg-amber-600 hover:bg-amber-700 text-white" onClick={() => handleSubmit(true)}>
-                  Proceed Anyway
-                </Button>
+                <Button size="sm" variant="outline" onClick={() => setDuplicateWarning(null)}>Go Back & Edit</Button>
+                <Button size="sm" className="bg-amber-600 hover:bg-amber-700 text-white" onClick={() => handleSubmit(true)}>Proceed Anyway</Button>
               </div>
             </div>
           )}
 
-          {/* Header toggle + Submit */}
           <div className={`flex items-center justify-between pt-2 border-t ${duplicateWarning ? 'hidden' : ''}`}>
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={includeHeader} onChange={e => setIncludeHeader(e.target.checked)} className="rounded" />

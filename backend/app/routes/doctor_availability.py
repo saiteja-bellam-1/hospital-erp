@@ -39,7 +39,7 @@ class BreakTime(BaseModel):
 
 class AvailabilitySettingsUpdate(BaseModel):
     weekly_schedule: WeeklySchedule
-    default_consultation_duration: int = Field(default=30, ge=5, le=120)
+    default_consultation_duration: int = Field(default=10, ge=2, le=120)
     break_times: List[BreakTime] = []
     buffer_minutes: int = Field(default=0, ge=0, le=30)
     emergency_slot_percentage: int = Field(default=20, ge=0, le=50)

@@ -21,6 +21,7 @@ import {
   ChevronRight,
   BookOpen,
   Package,
+  Phone,
 } from 'lucide-react';
 import axios from 'axios';
 
@@ -31,6 +32,7 @@ import HospitalAdminDashboard from './modules/HospitalAdminDashboard';
 import SuperAdminDashboard from './modules/SuperAdminDashboard';
 import BillingDashboard from './modules/BillingDashboard';
 import AuditLogsPage from './modules/AuditLogsPage';
+import SupportContactPage from './modules/SupportContactPage';
 import PatientsModule from './modules/PatientsModule';
 import LabModule from './modules/LabModule';
 import PharmacyModule from './modules/PharmacyModule';
@@ -178,6 +180,11 @@ const Dashboard = () => {
     }
     if (hasAnyRole('super_admin', 'hospital_admin', 'inpatient_admin') && enabledModules.inpatient) {
       addItem(moduleItems, { text: 'Inpatient', icon: <Bed className="h-[18px] w-[18px]" />, path: '/dashboard/inpatient' });
+    }
+
+    // Support contact — show for hospital_admin and receptionist when seller info exists
+    if (licenseStatus?.seller_info?.name && hasAnyRole('hospital_admin', 'receptionist')) {
+      addItem(infoItems, { text: 'Support Contact', icon: <Phone className="h-[18px] w-[18px]" />, path: '/dashboard/support-contact' });
     }
 
     const adminItems = [];
@@ -380,6 +387,29 @@ const Dashboard = () => {
 
         {/* Page content */}
         <main className="flex-1 overflow-y-auto p-4 lg:p-6">
+          {hasAnyRole('hospital_admin', 'receptionist') && licenseStatus?.days_remaining != null && (
+            <div className="flex items-center justify-end gap-1.5 text-xs mb-4">
+              <Shield className="h-3.5 w-3.5 text-gray-400" />
+              <span className="text-gray-400">License:</span>
+              <span className={`font-semibold ${
+                licenseStatus.days_remaining > 30 ? 'text-green-600' :
+                licenseStatus.days_remaining > 0 ? 'text-amber-600' :
+                'text-red-600'
+              }`}>
+                {licenseStatus.days_remaining > 0
+                  ? `${licenseStatus.days_remaining} days remaining`
+                  : licenseStatus.status === 'grace_period'
+                    ? `Grace period — ${Math.abs(licenseStatus.days_remaining)} days overdue`
+                    : 'Expired'
+                }
+              </span>
+              {licenseStatus.expires_at && (
+                <span className="text-gray-400">
+                  (expires {new Date(licenseStatus.expires_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })})
+                </span>
+              )}
+            </div>
+          )}
           <Routes>
             <Route
               path="/"
@@ -416,12 +446,19 @@ const Dashboard = () => {
             <Route path="/backup" element={<BackupManagement />} />
             <Route path="/billing-dashboard" element={<BillingDashboard />} />
             <Route path="/audit" element={<AuditLogsPage />} />
+            <Route path="/support-contact" element={
+              <SupportContactPage sellerInfo={licenseStatus?.seller_info} />
+            } />
           </Routes>
         </main>
 
         {/* Footer — pinned to bottom of content area */}
         <footer className="flex-shrink-0 py-2 text-center text-xs text-gray-400 bg-white border-t border-gray-100">
-          Powered by <span className="font-medium text-gray-500">KT HEALTH ERP</span> &mdash; Developed by KT Health Soft
+          Powered by <span className="font-medium text-gray-500">KT HEALTH ERP</span>
+          {licenseStatus?.seller_info?.name
+            ? <> &mdash; Sold by <span className="font-medium text-gray-500">{licenseStatus.seller_info.name}</span></>
+            : <> &mdash; Developed by KT Health Soft</>
+          }
         </footer>
       </div>
 

@@ -41,6 +41,18 @@ const LabTechDashboard = () => {
   const [showReportDialog, setShowReportDialog] = useState(false);
   const [viewingReport, setViewingReport] = useState(null);
 
+  // Report print preview
+  const [showReportPrintPreview, setShowReportPrintPreview] = useState(false);
+  const [reportPdfUrl, setReportPdfUrl] = useState(null);
+  const [reportPreviewHeader, setReportPreviewHeader] = useState(true);
+  const [reportPreviewId, setReportPreviewId] = useState(null);
+
+  // Bill print preview
+  const [showBillPrintPreview, setShowBillPrintPreview] = useState(false);
+  const [billPdfUrl, setBillPdfUrl] = useState(null);
+  const [billPreviewHeader, setBillPreviewHeader] = useState(true);
+  const [billPreviewOrderId, setBillPreviewOrderId] = useState(null);
+
   // Stats
   const [stats, setStats] = useState(null);
 
@@ -258,33 +270,67 @@ const LabTechDashboard = () => {
     }
   };
 
-  const downloadOrderBill = async (orderId, orderNumber) => {
+  const downloadOrderBill = async (orderId) => {
     try {
+      setBillPreviewOrderId(orderId);
+      setBillPreviewHeader(true);
       const res = await axios.get(`/api/lab/orders/${orderId}/bill?include_header=true`, { responseType: 'blob' });
+      if (billPdfUrl) window.URL.revokeObjectURL(billPdfUrl);
       const url = window.URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `lab_bill_${orderNumber}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      window.URL.revokeObjectURL(url);
+      setBillPdfUrl(url);
+      setShowBillPrintPreview(true);
     } catch {
-      showFeedback('Failed to download bill', 'error');
+      showFeedback('Failed to load bill', 'error');
     }
+  };
+
+  const refetchBillPdf = async (withHeader) => {
+    if (!billPreviewOrderId) return;
+    try {
+      const res = await axios.get(`/api/lab/orders/${billPreviewOrderId}/bill?include_header=${withHeader}`, { responseType: 'blob' });
+      if (billPdfUrl) window.URL.revokeObjectURL(billPdfUrl);
+      setBillPdfUrl(window.URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' })));
+    } catch {
+      showFeedback('Failed to reload bill', 'error');
+    }
+  };
+
+  const closeBillPreview = () => {
+    if (billPdfUrl) { window.URL.revokeObjectURL(billPdfUrl); setBillPdfUrl(null); }
+    setShowBillPrintPreview(false);
+    setBillPreviewOrderId(null);
   };
 
   const printReport = async (reportId, withHeader = true) => {
     try {
+      setReportPreviewId(reportId);
+      setReportPreviewHeader(withHeader);
       const res = await axios.get(`/api/lab/reports/${reportId}/download?include_header=${withHeader}`, { responseType: 'blob' });
+      if (reportPdfUrl) window.URL.revokeObjectURL(reportPdfUrl);
       const url = window.URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
-      const printWin = window.open(url, '_blank');
-      if (printWin) {
-        printWin.addEventListener('load', () => setTimeout(() => printWin.print(), 500));
-      }
+      setReportPdfUrl(url);
+      setShowReportPrintPreview(true);
     } catch {
       showFeedback('Failed to load report', 'error');
     }
+  };
+
+  const refetchReportPdf = async (withHeader) => {
+    if (!reportPreviewId) return;
+    try {
+      const res = await axios.get(`/api/lab/reports/${reportPreviewId}/download?include_header=${withHeader}`, { responseType: 'blob' });
+      if (reportPdfUrl) window.URL.revokeObjectURL(reportPdfUrl);
+      const url = window.URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+      setReportPdfUrl(url);
+    } catch {
+      showFeedback('Failed to reload report', 'error');
+    }
+  };
+
+  const closeReportPreview = () => {
+    if (reportPdfUrl) { window.URL.revokeObjectURL(reportPdfUrl); setReportPdfUrl(null); }
+    setShowReportPrintPreview(false);
+    setReportPreviewId(null);
   };
 
   const getStatusColor = (status) => {
@@ -453,7 +499,7 @@ const LabTechDashboard = () => {
           </div>
           <div className="flex flex-wrap gap-1.5 ml-4 items-center">
             {order.payment_status === 'paid' && (
-              <Button size="sm" variant="ghost" className="h-7 text-xs text-gray-500" onClick={() => downloadOrderBill(order.id, order.order_number)}>
+              <Button size="sm" variant="ghost" className="h-7 text-xs text-gray-500" onClick={() => downloadOrderBill(order.id)}>
                 <Download className="h-3 w-3 mr-1" /> Bill
               </Button>
             )}
@@ -532,7 +578,7 @@ const LabTechDashboard = () => {
                 </div>
                 <div className="flex gap-2 ml-4">
                   {order.payment_status === 'paid' && (
-                    <Button size="sm" variant="ghost" className="h-7 text-xs text-gray-500" onClick={() => downloadOrderBill(order.id, order.order_number)}>
+                    <Button size="sm" variant="ghost" className="h-7 text-xs text-gray-500" onClick={() => downloadOrderBill(order.id)}>
                       <Download className="h-3 w-3 mr-1" /> Bill
                     </Button>
                   )}
@@ -647,7 +693,7 @@ const LabTechDashboard = () => {
     if (!entryForm) return null;
     return (
       <Dialog open={showEntryDialog} onOpenChange={setShowEntryDialog}>
-        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-w-6xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Enter Results - {entryForm.test_name}</DialogTitle>
           </DialogHeader>
@@ -673,7 +719,7 @@ const LabTechDashboard = () => {
               <tbody>
                 {entryForm.parameters.map(param => {
                   const value = entryValues[param.id] || '';
-                  const abnormal = param.field_type === 'manual' ? (manualAbnormal[param.id] || false) : isValueAbnormal(param, value);
+                  const abnormal = isValueAbnormal(param, value) || (manualAbnormal[param.id] || false);
                   return (
                     <tr key={param.id} className={`border-b ${abnormal ? 'bg-red-50' : ''}`}>
                       <td className="py-2 pr-3 font-medium">{param.parameter_name}</td>
@@ -776,14 +822,12 @@ const LabTechDashboard = () => {
                       </td>
                       <td className="py-2">
                         <div className="flex items-center gap-2">
-                          {param.field_type === 'manual' && (
-                            <label className="flex items-center gap-1 cursor-pointer whitespace-nowrap" title="Mark as abnormal">
-                              <input type="checkbox" checked={manualAbnormal[param.id] || false}
-                                onChange={(e) => setManualAbnormal({ ...manualAbnormal, [param.id]: e.target.checked })}
-                                className="w-3.5 h-3.5 rounded border-red-300 text-red-500" />
-                              <span className="text-[10px] text-red-500 font-medium">Abnormal</span>
-                            </label>
-                          )}
+                          <label className="flex items-center gap-1 cursor-pointer whitespace-nowrap" title="Mark as abnormal">
+                            <input type="checkbox" checked={manualAbnormal[param.id] || false}
+                              onChange={(e) => setManualAbnormal({ ...manualAbnormal, [param.id]: e.target.checked })}
+                              className="w-3.5 h-3.5 rounded border-red-300 text-red-500" />
+                            <span className="text-[10px] text-red-500 font-medium">Abnormal</span>
+                          </label>
                           <Input
                             type="text"
                             value={remarkValues[param.id] || ''}
@@ -883,26 +927,9 @@ const LabTechDashboard = () => {
           )}
 
           <div className="flex justify-end gap-2 mt-4">
-            {[true, false].map(withHeader => (
-              <Button key={String(withHeader)} variant="outline" onClick={async () => {
-                try {
-                  const res = await axios.get(`/api/lab/reports/${viewingReport.id}/download?include_header=${withHeader}`, {
-                    responseType: 'blob'
-                  });
-                  const url = window.URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
-                  const printWin = window.open(url, '_blank');
-                  if (printWin) {
-                    printWin.addEventListener('load', () => {
-                      setTimeout(() => printWin.print(), 500);
-                    });
-                  }
-                } catch (err) {
-                  console.error('Failed to print PDF:', err);
-                }
-              }}>
-                <Printer className="h-4 w-4 mr-2" /> Print {withHeader ? 'With Header' : 'Without Header'}
-              </Button>
-            ))}
+            <Button variant="outline" onClick={() => printReport(viewingReport.id, true)}>
+              <Printer className="h-4 w-4 mr-2" /> Print Report
+            </Button>
           </div>
         </DialogContent>
       </Dialog>
@@ -990,6 +1017,96 @@ const LabTechDashboard = () => {
               </div>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Report Print Preview Dialog */}
+      <Dialog open={showReportPrintPreview} onOpenChange={closeReportPreview}>
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-hidden">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileText className="h-5 w-5" /> Lab Report Preview
+            </DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col space-y-4">
+            <div className="flex-1 min-h-[400px] border rounded-lg overflow-hidden">
+              {reportPdfUrl && (
+                <iframe src={reportPdfUrl} className="w-full h-full min-h-[400px] border-0" title="Report Preview" />
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center space-x-2">
+                <input type="checkbox" id="report-preview-header" checked={reportPreviewHeader}
+                  onChange={async (e) => {
+                    const newVal = e.target.checked;
+                    setReportPreviewHeader(newVal);
+                    await refetchReportPdf(newVal);
+                  }}
+                  className="w-4 h-4" />
+                <Label htmlFor="report-preview-header" className="text-sm">Include header</Label>
+              </div>
+              <Button variant="outline" onClick={closeReportPreview} className="flex-1">Close</Button>
+              <Button onClick={() => {
+                if (reportPdfUrl) {
+                  const iframe = document.createElement('iframe');
+                  iframe.style.display = 'none';
+                  document.body.appendChild(iframe);
+                  iframe.src = reportPdfUrl;
+                  iframe.onload = () => {
+                    iframe.contentWindow.print();
+                    setTimeout(() => document.body.removeChild(iframe), 1000);
+                  };
+                }
+              }} className="flex-1 bg-blue-600 hover:bg-blue-700">
+                <Printer className="h-4 w-4 mr-2" /> Print Report
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bill Print Preview Dialog */}
+      <Dialog open={showBillPrintPreview} onOpenChange={closeBillPreview}>
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-hidden">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileText className="h-5 w-5" /> Lab Bill Preview
+            </DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col space-y-4">
+            <div className="flex-1 min-h-[400px] border rounded-lg overflow-hidden">
+              {billPdfUrl && (
+                <iframe src={billPdfUrl} className="w-full h-full min-h-[400px] border-0" title="Bill Preview" />
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center space-x-2">
+                <input type="checkbox" id="bill-preview-header" checked={billPreviewHeader}
+                  onChange={async (e) => {
+                    const newVal = e.target.checked;
+                    setBillPreviewHeader(newVal);
+                    await refetchBillPdf(newVal);
+                  }}
+                  className="w-4 h-4" />
+                <Label htmlFor="bill-preview-header" className="text-sm">Include header</Label>
+              </div>
+              <Button variant="outline" onClick={closeBillPreview} className="flex-1">Close</Button>
+              <Button onClick={() => {
+                if (billPdfUrl) {
+                  const iframe = document.createElement('iframe');
+                  iframe.style.display = 'none';
+                  document.body.appendChild(iframe);
+                  iframe.src = billPdfUrl;
+                  iframe.onload = () => {
+                    iframe.contentWindow.print();
+                    setTimeout(() => document.body.removeChild(iframe), 1000);
+                  };
+                }
+              }} className="flex-1 bg-blue-600 hover:bg-blue-700">
+                <Printer className="h-4 w-4 mr-2" /> Print Bill
+              </Button>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
     </div>

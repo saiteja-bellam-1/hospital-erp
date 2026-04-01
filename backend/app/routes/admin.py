@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional
 
 from config.database import get_db
@@ -522,6 +522,41 @@ async def update_user(
         user_role={"id": user.role.id, "name": user.role.name, "description": user.role.description},
         user_roles=[{"id": r.id, "name": r.name} for r in user.roles] if user.roles else [{"id": user.role.id, "name": user.role.name}]
     )
+
+class ResetPasswordRequest(BaseModel):
+    new_password: str = Field(..., min_length=4)
+
+
+@router.put("/users/{user_id}/reset-password")
+async def reset_user_password(
+    user_id: int,
+    data: ResetPasswordRequest,
+    current_user: User = Depends(require_admin_access),
+    db: Session = Depends(get_db)
+):
+    """Reset a user's password. Admin only."""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Only super_admin can reset another super_admin's password
+    user_roles = [r.name for r in user.roles] if user.roles else [user.role.name]
+    if 'super_admin' in user_roles and not any(r in current_user.role_names for r in ['super_admin']):
+        raise HTTPException(status_code=403, detail="Only super admin can reset another super admin's password")
+
+    user.hashed_password = get_password_hash(data.new_password)
+    db.commit()
+
+    try:
+        from app.services.audit_service import log_action
+        log_action(db, current_user, "reset_password", "admin", "User", user.id,
+            f"Reset password for user {user.username}",
+            details={"target_user": user.username})
+    except Exception:
+        pass
+
+    return {"message": f"Password reset successfully for {user.username}"}
+
 
 @router.put("/users/{user_id}/roles")
 async def update_user_roles(

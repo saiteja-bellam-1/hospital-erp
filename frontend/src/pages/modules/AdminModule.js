@@ -17,7 +17,8 @@ import {
   Trash2,
   Save,
   X,
-  RefreshCw
+  RefreshCw,
+  KeyRound
 } from 'lucide-react';
 import axios from 'axios';
 
@@ -34,6 +35,8 @@ const AdminModule = () => {
   const [editingRole, setEditingRole] = useState(null);
   const [loading, setLoading] = useState(false);
   const [confirmState, setConfirmState] = useState({ open: false });
+  const [passwordResetUser, setPasswordResetUser] = useState(null);
+  const [newPassword, setNewPassword] = useState('');
 
   const [userForm, setUserForm] = useState({
     username: '',
@@ -272,6 +275,21 @@ const AdminModule = () => {
         title: "Error",
         description: error.response?.data?.detail || "Failed to restore user"
       });
+    }
+  };
+
+  const handleResetPassword = async () => {
+    if (!passwordResetUser || !newPassword || newPassword.length < 4) {
+      toast({ variant: 'destructive', title: 'Error', description: 'Password must be at least 4 characters' });
+      return;
+    }
+    try {
+      await axios.put(`/api/admin/users/${passwordResetUser.id}/reset-password`, { new_password: newPassword });
+      toast({ title: 'Success', description: `Password reset for ${passwordResetUser.username}` });
+      setPasswordResetUser(null);
+      setNewPassword('');
+    } catch (error) {
+      toast({ variant: 'destructive', title: 'Error', description: error.response?.data?.detail || 'Failed to reset password' });
     }
   };
 
@@ -659,6 +677,14 @@ const AdminModule = () => {
                             >
                               <Edit className="h-4 w-4" />
                             </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => { setPasswordResetUser(user); setNewPassword(''); }}
+                              title="Reset Password"
+                            >
+                              <KeyRound className="h-4 w-4" />
+                            </Button>
                             {!(user.user_roles || [user.user_role]).some(r => r.name === 'super_admin') && (
                               user.is_active ? (
                                 <Button
@@ -803,6 +829,37 @@ const AdminModule = () => {
         onConfirm={() => { confirmState.onConfirm?.(); }}
         onCancel={() => setConfirmState({ open: false })}
       />
+
+      {/* Reset Password Dialog */}
+      <Dialog open={!!passwordResetUser} onOpenChange={(open) => { if (!open) { setPasswordResetUser(null); setNewPassword(''); } }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <KeyRound className="h-5 w-5" /> Reset Password
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="bg-gray-50 rounded-lg p-3">
+              <p className="text-sm font-semibold">{passwordResetUser?.first_name} {passwordResetUser?.last_name}</p>
+              <p className="text-xs text-gray-500">@{passwordResetUser?.username}</p>
+            </div>
+            <div>
+              <Label>New Password *</Label>
+              <Input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)}
+                placeholder="Enter new password" autoFocus />
+              {newPassword && newPassword.length < 4 && (
+                <p className="text-xs text-red-500 mt-1">Minimum 4 characters</p>
+              )}
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => { setPasswordResetUser(null); setNewPassword(''); }}>Cancel</Button>
+              <Button onClick={handleResetPassword} disabled={!newPassword || newPassword.length < 4}>
+                Reset Password
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

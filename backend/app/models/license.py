@@ -16,6 +16,7 @@ class License(Base):
     issued_at = Column(DateTime, nullable=False)
     expires_at = Column(DateTime, nullable=False)
     status = Column(String(20), default="active")  # active, expiring_soon, grace_period, expired
+    seller_info = Column(JSON, nullable=True)  # 3rd party vendor details: {name, address, phone}
     raw_license_data = Column(Text, nullable=False)  # The full .lic file content
     uploaded_at = Column(DateTime(timezone=True), server_default=func.now())
     uploaded_by = Column(Integer, nullable=True)

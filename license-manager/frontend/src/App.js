@@ -93,7 +93,8 @@ function App() {
     hospital_id: '', hospital_name: '', machine_id: '', plan: 'standard',
     max_users: 50, days: 365,
     features: ['outpatient', 'lab', 'ehr', 'admin'],
-    modules: [], notes: ''
+    modules: [], notes: '',
+    seller_id: '', seller_name: '', seller_address: '', seller_phone: ''
   });
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState(null);
@@ -104,6 +105,12 @@ function App() {
   const [showCustForm, setShowCustForm] = useState(false);
   const [editingCust, setEditingCust] = useState(null);
   const [custForm, setCustForm] = useState({ hospital_name: '', hospital_id: '', contact_person: '', phone: '', email: '', address: '', machine_id: '', notes: '' });
+
+  // Seller state
+  const [sellers, setSellers] = useState([]);
+  const [showSellerForm, setShowSellerForm] = useState(false);
+  const [editingSeller, setEditingSeller] = useState(null);
+  const [sellerForm, setSellerForm] = useState({ name: '', address: '', phone: '' });
   const [selectedCust, setSelectedCust] = useState(null);
   const [custDetail, setCustDetail] = useState(null);
   const [showPayForm, setShowPayForm] = useState(false);
@@ -145,10 +152,15 @@ function App() {
     try { const r = await fetch(`${API}/keys/status`); setKeyStatus(await r.json()); } catch {}
   }, []);
 
+  const fetchSellers = useCallback(async () => {
+    try { const r = await fetch(`${API}/sellers`); setSellers(await r.json()); } catch {}
+  }, []);
+
   useEffect(() => { fetchDash(); }, [fetchDash]);
   useEffect(() => { fetchLicenses(); }, [fetchLicenses]);
   useEffect(() => { fetchCustomers(); }, [fetchCustomers]);
   useEffect(() => { fetchKeyStatus(); }, [fetchKeyStatus]);
+  useEffect(() => { fetchSellers(); }, [fetchSellers]);
 
   const showMessage = (text, type = 'success') => {
     setMsg({ text, type });
@@ -159,14 +171,20 @@ function App() {
     if (!form.hospital_id || !form.hospital_name || !form.machine_id) return;
     setSaving(true);
     try {
+      const payload = { ...form };
+      // Build seller object if name is provided
+      if (payload.seller_name) {
+        payload.seller = { name: payload.seller_name, address: payload.seller_address || null, phone: payload.seller_phone || null };
+      }
+      delete payload.seller_name; delete payload.seller_address; delete payload.seller_phone; delete payload.seller_id;
       const r = await fetch(`${API}/licenses`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form)
+        body: JSON.stringify(payload)
       });
       if (r.ok) {
         showMessage('License generated successfully');
         setShowForm(false);
-        setForm({ hospital_id: '', hospital_name: '', machine_id: '', plan: 'standard', max_users: 50, days: 365, features: ['outpatient', 'lab', 'ehr', 'admin'], modules: [], notes: '' });
+        setForm({ hospital_id: '', hospital_name: '', machine_id: '', plan: 'standard', max_users: 50, days: 365, features: ['outpatient', 'lab', 'ehr', 'admin'], modules: [], notes: '', seller_name: '', seller_address: '', seller_phone: '' });
         fetchLicenses(); fetchDash();
       } else {
         const e = await r.json();
@@ -266,12 +284,37 @@ function App() {
     catch { return d; }
   };
 
+  const saveSeller = async () => {
+    if (!sellerForm.name) return;
+    try {
+      const url = editingSeller ? `${API}/sellers/${editingSeller.id}` : `${API}/sellers`;
+      const method = editingSeller ? 'PUT' : 'POST';
+      const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sellerForm) });
+      if (r.ok) {
+        showMessage(editingSeller ? 'Seller updated' : 'Seller created');
+        setShowSellerForm(false); setEditingSeller(null);
+        setSellerForm({ name: '', address: '', phone: '' });
+        fetchSellers();
+      } else { const e = await r.json(); showMessage(e.detail || 'Failed', 'error'); }
+    } catch { showMessage('Failed to save seller', 'error'); }
+  };
+
+  const deleteSeller = async (id) => {
+    if (!window.confirm('Deactivate this seller?')) return;
+    try {
+      await fetch(`${API}/sellers/${id}`, { method: 'DELETE' });
+      showMessage('Seller deactivated');
+      fetchSellers();
+    } catch { showMessage('Failed', 'error'); }
+  };
+
   const allFeatures = ['outpatient', 'inpatient', 'lab', 'pharmacy', 'ehr', 'admin', 'billing'];
 
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: Icons.dashboard },
     { id: 'licenses', label: 'Licenses', icon: Icons.license },
     { id: 'customers', label: 'Customers', icon: "M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" },
+    { id: 'sellers', label: 'Sellers', icon: "M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" },
     { id: 'settings', label: 'Key Settings', icon: Icons.key },
   ];
 
@@ -649,6 +692,86 @@ function App() {
             </div>
           )}
 
+          {/* ═══════ SELLERS ═══════ */}
+          {page === 'sellers' && (
+            <div className="space-y-6 animate-fadeIn">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-2xl font-bold text-white">Sellers / Vendors</h2>
+                  <p className="text-sm text-slate-500 mt-1">Manage 3rd party vendors who resell licenses</p>
+                </div>
+                <button onClick={() => { setEditingSeller(null); setSellerForm({ name: '', address: '', phone: '' }); setShowSellerForm(true); }}
+                  className="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold rounded-xl transition-colors shadow-lg shadow-blue-600/20">
+                  + Add Seller
+                </button>
+              </div>
+
+              {sellers.length === 0 ? (
+                <div className="text-center py-16 text-slate-500">
+                  <p className="text-lg">No sellers added yet</p>
+                  <p className="text-sm mt-1">Add a vendor to embed their details in licenses</p>
+                </div>
+              ) : (
+                <div className="grid gap-3">
+                  {sellers.map(s => (
+                    <div key={s.id} className="bg-slate-900/50 border border-slate-800/50 rounded-xl p-4 flex items-center justify-between">
+                      <div>
+                        <p className="text-white font-semibold">{s.name}</p>
+                        {s.address && <p className="text-xs text-slate-400 mt-0.5">{s.address}</p>}
+                        {s.phone && <p className="text-xs text-slate-400">{s.phone}</p>}
+                      </div>
+                      <div className="flex gap-2">
+                        <button onClick={() => { setEditingSeller(s); setSellerForm({ name: s.name, address: s.address || '', phone: s.phone || '' }); setShowSellerForm(true); }}
+                          className="px-3 py-1.5 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition-colors">
+                          Edit
+                        </button>
+                        <button onClick={() => deleteSeller(s.id)}
+                          className="px-3 py-1.5 text-xs bg-red-900/30 hover:bg-red-900/50 text-red-400 rounded-lg transition-colors">
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Seller Form Modal */}
+              {showSellerForm && (
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                  <div className="bg-slate-900 border border-slate-700/50 rounded-2xl w-full max-w-md p-6 space-y-4">
+                    <h3 className="text-lg font-bold text-white">{editingSeller ? 'Edit Seller' : 'Add Seller'}</h3>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-400 mb-1.5">Company Name *</label>
+                      <input value={sellerForm.name} onChange={e => setSellerForm({...sellerForm, name: e.target.value})}
+                        placeholder="ABC Health Solutions"
+                        className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/50" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-400 mb-1.5">Address</label>
+                      <input value={sellerForm.address} onChange={e => setSellerForm({...sellerForm, address: e.target.value})}
+                        placeholder="Full address"
+                        className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/50" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-400 mb-1.5">Contact Number</label>
+                      <input value={sellerForm.phone} onChange={e => setSellerForm({...sellerForm, phone: e.target.value})}
+                        placeholder="9876543210"
+                        className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/50" />
+                    </div>
+                    <div className="flex justify-end gap-3 pt-2">
+                      <button onClick={() => { setShowSellerForm(false); setEditingSeller(null); }}
+                        className="px-4 py-2.5 text-sm text-slate-400 hover:text-white rounded-lg transition-colors">Cancel</button>
+                      <button onClick={saveSeller} disabled={!sellerForm.name}
+                        className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-sm font-semibold rounded-xl transition-colors">
+                        {editingSeller ? 'Update' : 'Add Seller'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* ═══════ KEY SETTINGS ═══════ */}
           {page === 'settings' && (
             <div className="space-y-6 animate-fadeIn max-w-2xl">
@@ -780,6 +903,33 @@ function App() {
             <textarea value={form.notes} onChange={e => setForm({...form, notes: e.target.value})} rows={2}
               placeholder="Optional notes about this license..."
               className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/50 resize-none" />
+          </div>
+
+          {/* Seller / 3rd Party Vendor (Optional) */}
+          <div className="border-t border-slate-700/30 pt-4">
+            <label className="block text-xs font-medium text-slate-400 mb-2">Sold via 3rd Party Vendor (Optional)</label>
+            <select value={form.seller_id || ''} onChange={e => {
+              const id = e.target.value;
+              if (!id) {
+                setForm({...form, seller_id: '', seller_name: '', seller_address: '', seller_phone: ''});
+              } else {
+                const s = sellers.find(s => String(s.id) === id);
+                if (s) setForm({...form, seller_id: id, seller_name: s.name, seller_address: s.address || '', seller_phone: s.phone || ''});
+              }
+            }}
+              className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500/50">
+              <option value="">No vendor (direct sale)</option>
+              {sellers.map(s => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+            {form.seller_name && (
+              <div className="mt-2 p-2.5 bg-slate-800/50 rounded-lg text-xs text-slate-400 space-y-0.5">
+                <p className="text-white font-medium">{form.seller_name}</p>
+                {form.seller_address && <p>{form.seller_address}</p>}
+                {form.seller_phone && <p>{form.seller_phone}</p>}
+              </div>
+            )}
           </div>
 
           <div className="flex justify-end gap-3 pt-3 border-t border-slate-700/30">

@@ -100,6 +100,16 @@ def init_db():
             FOREIGN KEY (customer_id) REFERENCES customers(id)
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sellers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            address TEXT,
+            phone TEXT,
+            is_active INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     # Add customer_id column to licenses if missing (migration for existing DBs)
     try:
         conn.execute("ALTER TABLE licenses ADD COLUMN customer_id INTEGER REFERENCES customers(id)")
@@ -181,6 +191,12 @@ class PaymentCreate(BaseModel):
     description: Optional[str] = None
 
 
+class SellerInfo(BaseModel):
+    name: str = Field(..., max_length=200)
+    address: Optional[str] = Field(None, max_length=500)
+    phone: Optional[str] = Field(None, max_length=20)
+
+
 class LicenseCreate(BaseModel):
     customer_id: Optional[int] = None
     hospital_id: str = Field(..., max_length=20)
@@ -192,6 +208,7 @@ class LicenseCreate(BaseModel):
     features: List[str] = ["outpatient", "lab", "ehr", "admin"]
     modules: List[str] = []
     notes: Optional[str] = None
+    seller: Optional[SellerInfo] = None
 
 
 class LicenseRenew(BaseModel):
@@ -283,6 +300,8 @@ def create_license(data: LicenseCreate):
         "issued_at": now.isoformat(),
         "expires_at": (now + timedelta(days=data.days)).isoformat(),
     }
+    if data.seller:
+        license_data["seller"] = data.seller.model_dump()
 
     lic_content = sign_license_data(license_data)
 
@@ -483,6 +502,53 @@ def delete_customer(customer_id: int):
     conn.commit()
     conn.close()
     return {"message": "Customer and related records deleted"}
+
+
+# ============================================================
+# Seller Endpoints
+# ============================================================
+
+class SellerCreate(BaseModel):
+    name: str = Field(..., max_length=200)
+    address: Optional[str] = Field(None, max_length=500)
+    phone: Optional[str] = Field(None, max_length=20)
+
+
+@app.get("/api/sellers")
+def list_sellers():
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM sellers WHERE is_active=1 ORDER BY name").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/sellers")
+def create_seller(data: SellerCreate):
+    conn = get_db()
+    conn.execute("INSERT INTO sellers (name, address, phone) VALUES (?, ?, ?)",
+                 (data.name, data.address, data.phone))
+    conn.commit()
+    conn.close()
+    return {"message": "Seller created"}
+
+
+@app.put("/api/sellers/{seller_id}")
+def update_seller(seller_id: int, data: SellerCreate):
+    conn = get_db()
+    conn.execute("UPDATE sellers SET name=?, address=?, phone=? WHERE id=?",
+                 (data.name, data.address, data.phone, seller_id))
+    conn.commit()
+    conn.close()
+    return {"message": "Seller updated"}
+
+
+@app.delete("/api/sellers/{seller_id}")
+def delete_seller(seller_id: int):
+    conn = get_db()
+    conn.execute("UPDATE sellers SET is_active=0 WHERE id=?", (seller_id,))
+    conn.commit()
+    conn.close()
+    return {"message": "Seller deactivated"}
 
 
 # ============================================================

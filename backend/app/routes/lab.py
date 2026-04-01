@@ -487,16 +487,16 @@ def _build_report_response(report: LabReport, db: Session) -> dict:
                             is_abnormal = True
             except (ValueError, TypeError):
                 pass
-        elif param.field_type == "manual" and raw_value:
-            # Manual input: use the manual_abnormal flag set by the technician
-            if rv.get("manual_abnormal", False):
-                is_abnormal = True
-        elif param.field_type in ("select", "text", "colour",
+        elif param.field_type in ("select", "text", "colour", "manual",
                                    "positive_negative", "reactive", "presence_absence", "cloudy_clear") and raw_value:
             # Check against abnormal_values list
             abnormal_list = param.abnormal_values or []
             if abnormal_list and raw_value.strip() in abnormal_list:
                 is_abnormal = True
+
+        # Additive: technician can force-mark any parameter as abnormal via checkbox
+        if rv.get("manual_abnormal", False):
+            is_abnormal = True
 
         results.append({
             "parameter_id": param.id,
@@ -1107,10 +1107,15 @@ async def reception_book_lab_tests(
     }
 
     from fastapi.responses import StreamingResponse
+    order_ids = ",".join(str(o.id) for o in orders)
     pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, include_header=data.include_header)
     filename = f"lab_bill_{bill_data['bill_number']}.pdf"
     return StreamingResponse(pdf_buffer, media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename={filename}"})
+        headers={
+            "Content-Disposition": f"attachment; filename={filename}",
+            "X-Order-Ids": order_ids,
+            "Access-Control-Expose-Headers": "X-Order-Ids",
+        })
 
 
 @router.get("/orders", response_model=List[OrderResponse])
@@ -1269,6 +1274,87 @@ async def download_order_bill(
         headers={"Content-Disposition": f"attachment; filename={filename}"})
 
 
+class RegenerateBillRequest(BaseModel):
+    order_ids: List[int] = Field(..., min_length=1)
+    include_header: bool = True
+
+
+@router.post("/orders/regenerate-bill")
+async def regenerate_lab_bill(
+    data: RegenerateBillRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Regenerate bill PDF for given order IDs (no payment side effects). Used for preview with header toggle."""
+    orders = db.query(PatientLabOrder).join(Patient).filter(
+        PatientLabOrder.id.in_(data.order_ids),
+        Patient.hospital_id == current_user.hospital_id
+    ).all()
+    if not orders:
+        raise HTTPException(status_code=404, detail="Orders not found")
+
+    patient = db.query(Patient).filter(Patient.id == orders[0].patient_id).first()
+    hospital = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
+    hospital_info = _get_lab_hospital_info(db, hospital)
+
+    age = ""
+    if patient and patient.date_of_birth:
+        today = date.today()
+        age = str(today.year - patient.date_of_birth.year - ((today.month, today.day) < (patient.date_of_birth.month, patient.date_of_birth.day)))
+
+    doctor = db.query(User).filter(User.id == orders[0].doctor_id).first() if orders[0].doctor_id else None
+    doctor_name = f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else ""
+    referred_by = orders[0].referred_by or ""
+
+    items = []
+    total = 0.0
+    for order in orders:
+        test = db.query(LabTest).filter(LabTest.id == order.test_id).first()
+        items.append({
+            "item_name": test.name if test else "Lab Test",
+            "item_code": test.test_code if test else "",
+            "total_price": order.amount or 0,
+        })
+        total += order.amount or 0
+
+    # Calculate discount: if all orders share same package_booking_id, use package pricing
+    discount = 0.0
+    pkg = None
+    if orders[0].package_id:
+        pkg = db.query(LabTestPackage).filter(LabTestPackage.id == orders[0].package_id).first()
+        if pkg:
+            items = [{"item_name": pkg.name, "item_code": pkg.package_code, "total_price": pkg.actual_price}]
+            total = pkg.actual_price
+            discount = pkg.actual_price - pkg.package_price
+
+    now = orders[0].order_date or datetime.now()
+    bill_data = {
+        "bill_number": f"LB-{now.strftime('%Y%m%d%H%M%S')}-{patient.id}" if patient else "LB-UNKNOWN",
+        "bill_date": now.isoformat(),
+        "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "Unknown",
+        "patient_age": f"{age} Years" if age else "",
+        "patient_gender": patient.gender if patient else "",
+        "patient_phone": patient.primary_phone if patient else "",
+        "patient_id": patient.patient_id if patient else "",
+        "reg_no": patient.patient_id if patient else "",
+        "doctor_name": doctor_name,
+        "referred_by": referred_by,
+        "payment_method": (orders[0].payment_method or "cash").capitalize(),
+        "items": items,
+        "subtotal": total,
+        "discount_amount": discount,
+        "amount_paid": round(total - discount, 2),
+        "balance_due": 0,
+        "prepared_by": "",
+    }
+
+    from app.utils.pdf_service import pdf_service
+    from fastapi.responses import StreamingResponse
+    pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, include_header=data.include_header)
+    return StreamingResponse(pdf_buffer, media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=lab_bill.pdf"})
+
+
 class LabPaymentUpdate(BaseModel):
     payment_method: str = Field(..., pattern="^(cash|card|upi|cheque|online|insurance)$")
     discount_amount: float = Field(default=0.0, ge=0)
@@ -1414,12 +1500,17 @@ async def generate_lab_bill(
     }
 
     try:
+        order_ids_str = ",".join(str(o.id) for o in orders)
         pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, include_header=data.include_header)
         filename = f"lab_bill_{bill_number}.pdf"
         return StreamingResponse(
             pdf_buffer,
             media_type="application/pdf",
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+                "X-Order-Ids": order_ids_str,
+                "Access-Control-Expose-Headers": "X-Order-Ids",
+            }
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"PDF generation error: {str(e)}")
@@ -2220,12 +2311,17 @@ async def book_package(
     }
 
     try:
+        order_ids = ",".join(str(o.id) for o in orders)
         pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, include_header=data.include_header)
         filename = f"lab_package_bill_{bill_number}.pdf"
         return StreamingResponse(
             pdf_buffer,
             media_type="application/pdf",
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+                "X-Order-Ids": order_ids,
+                "Access-Control-Expose-Headers": "X-Order-Ids",
+            }
         )
     except Exception as e:
         import traceback

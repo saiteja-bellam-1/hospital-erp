@@ -1,6 +1,8 @@
 {
   "setup_complete": true,
   "db_path": "/Users/saiteja/Documents/GitHub/hospital-ERP/backend/kthealth_erp.db",
-  "backup_locations": [],
+  "backup_locations": [
+    "/Users/saiteja/Documents/GitHub/claude-skills-marketing"
+  ],
   "hospital_name": "Testing"
 }

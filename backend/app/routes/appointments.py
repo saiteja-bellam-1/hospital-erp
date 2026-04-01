@@ -34,7 +34,7 @@ class AppointmentCreate(BaseModel):
     doctor_id: int
     appointment_date: date
     appointment_time: time
-    duration_minutes: int = Field(default=10, ge=10, le=180)
+    duration_minutes: int = Field(default=10, ge=2, le=180)
     appointment_type: str = Field(default="consultation", pattern="^(consultation|followup|checkup)$")
     reason: Optional[str] = None
     priority: str = Field(default="normal", pattern="^(normal|urgent|emergency)$")
@@ -220,13 +220,19 @@ async def get_doctor_available_slots(
     availability_service = AvailabilityService(db)
     available_slots = availability_service.get_available_slots(doctor_id, appointment_date, duration_minutes)
     schedule_info = availability_service.get_doctor_schedule_for_date(doctor_id, appointment_date)
-    
+
+    # Include doctor's configured consultation duration
+    from app.models.doctor_availability import DoctorAvailability
+    avail = db.query(DoctorAvailability).filter(DoctorAvailability.doctor_id == doctor_id).first()
+    configured_duration = avail.default_consultation_duration if avail and avail.default_consultation_duration else 10
+
     return {
         "doctor_id": doctor_id,
         "doctor_name": f"Dr. {doctor.first_name} {doctor.last_name}",
         "appointment_date": appointment_date,
         "available_slots": available_slots,
-        "schedule_info": schedule_info
+        "schedule_info": schedule_info,
+        "default_consultation_duration": configured_duration,
     }
 
 def generate_appointment_number() -> str:

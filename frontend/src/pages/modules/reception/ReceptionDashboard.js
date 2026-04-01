@@ -212,6 +212,10 @@ const ReceptionDashboard = () => {
   const [labPaymentMethod, setLabPaymentMethod] = useState('cash');
   const [labDiscount, setLabDiscount] = useState(0);
   const [labBillHeader, setLabBillHeader] = useState(true);
+  const [labBillPdfUrl, setLabBillPdfUrl] = useState(null);
+  const [labBillOrderIds, setLabBillOrderIds] = useState([]);
+  const [showLabBillPreview, setShowLabBillPreview] = useState(false);
+  const [labPreviewHeader, setLabPreviewHeader] = useState(true);
   const [allLabOrdersForPatient, setAllLabOrdersForPatient] = useState([]);
 
 
@@ -251,15 +255,16 @@ const ReceptionDashboard = () => {
         body: JSON.stringify({ payment_method: labPaymentMethod, discount_amount: labDiscount, include_header: labBillHeader })
       });
       if (res.ok) {
+        const orderIdsHeader = res.headers.get('X-Order-Ids');
+        const ids = orderIdsHeader ? orderIdsHeader.split(',').map(Number) : [];
+        setLabBillOrderIds(ids);
+        setLabPreviewHeader(labBillHeader);
+
         const blob = await res.blob();
+        if (labBillPdfUrl) window.URL.revokeObjectURL(labBillPdfUrl);
         const url = window.URL.createObjectURL(new Blob([blob], { type: 'application/pdf' }));
-        const printWin = window.open(url, '_blank');
-        if (printWin) {
-          printWin.addEventListener('load', () => {
-            setTimeout(() => printWin.print(), 500);
-          });
-        }
-        window.URL.revokeObjectURL(url);
+        setLabBillPdfUrl(url);
+        setShowLabBillPreview(true);
         setPendingLabOrders([]);
         setLabDiscount(0);
         toast({ title: 'Success', description: 'Lab bill generated and payment collected' });
@@ -1120,6 +1125,71 @@ const ReceptionDashboard = () => {
         open={showLabBooking}
         onClose={(success) => { setShowLabBooking(false); if (success) fetchDashboardData(); }}
       />
+
+      {/* Lab Bill Preview Dialog */}
+      <Dialog open={showLabBillPreview} onOpenChange={() => {
+        if (labBillPdfUrl) { window.URL.revokeObjectURL(labBillPdfUrl); setLabBillPdfUrl(null); }
+        setShowLabBillPreview(false);
+      }}>
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-hidden">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Receipt className="h-5 w-5" /> Lab Bill Preview
+            </DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col space-y-4">
+            <div className="flex-1 min-h-[400px] border rounded-lg overflow-hidden">
+              {labBillPdfUrl && (
+                <iframe src={labBillPdfUrl} className="w-full h-full min-h-[400px] border-0" title="Lab Bill Preview" />
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center space-x-2">
+                <input type="checkbox" id="lab-preview-header" checked={labPreviewHeader}
+                  onChange={async (e) => {
+                    const newVal = e.target.checked;
+                    setLabPreviewHeader(newVal);
+                    if (labBillOrderIds.length > 0) {
+                      try {
+                        const token = localStorage.getItem('token');
+                        const res = await fetch('/api/lab/orders/regenerate-bill', {
+                          method: 'POST',
+                          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ order_ids: labBillOrderIds, include_header: newVal }),
+                        });
+                        if (res.ok) {
+                          if (labBillPdfUrl) window.URL.revokeObjectURL(labBillPdfUrl);
+                          const blob = await res.blob();
+                          setLabBillPdfUrl(window.URL.createObjectURL(new Blob([blob], { type: 'application/pdf' })));
+                        }
+                      } catch {}
+                    }
+                  }}
+                  className="w-4 h-4" />
+                <Label htmlFor="lab-preview-header" className="text-sm">Include header</Label>
+              </div>
+              <Button variant="outline" onClick={() => {
+                if (labBillPdfUrl) { window.URL.revokeObjectURL(labBillPdfUrl); setLabBillPdfUrl(null); }
+                setShowLabBillPreview(false);
+              }} className="flex-1">Close</Button>
+              <Button onClick={() => {
+                if (labBillPdfUrl) {
+                  const iframe = document.createElement('iframe');
+                  iframe.style.display = 'none';
+                  document.body.appendChild(iframe);
+                  iframe.src = labBillPdfUrl;
+                  iframe.onload = () => {
+                    iframe.contentWindow.print();
+                    setTimeout(() => document.body.removeChild(iframe), 1000);
+                  };
+                }
+              }} className="flex-1 bg-blue-600 hover:bg-blue-700">
+                <Printer className="h-4 w-4 mr-2" /> Print Bill
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

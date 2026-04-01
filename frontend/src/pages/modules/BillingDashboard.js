@@ -24,6 +24,10 @@ const BillingDashboard = () => {
   const [patientSearch, setPatientSearch] = useState('');
   const [billType, setBillType] = useState('all');
   const [paymentStatus, setPaymentStatus] = useState('all');
+  const [doctorFilter, setDoctorFilter] = useState('all');
+  const [referralFilter, setReferralFilter] = useState('all');
+  const [doctors, setDoctors] = useState([]);
+  const [referrals, setReferrals] = useState([]);
 
   const fetchBills = useCallback(async () => {
     setLoading(true);
@@ -34,16 +38,20 @@ const BillingDashboard = () => {
       if (patientSearch) params.set('patient_search', patientSearch);
       if (billType !== 'all') params.set('bill_type', billType);
       if (paymentStatus !== 'all') params.set('payment_status', paymentStatus);
+      if (doctorFilter !== 'all') params.set('doctor_id', doctorFilter);
+      if (referralFilter !== 'all') params.set('referred_by', referralFilter);
 
       const res = await axios.get(`/api/hospital/billing?${params.toString()}`);
       setBills(res.data.bills || []);
       setSummary(res.data.summary || null);
+      if (res.data.doctors) setDoctors(res.data.doctors);
+      if (res.data.referrals) setReferrals(res.data.referrals);
     } catch (err) {
       console.error('Failed to fetch bills:', err);
     } finally {
       setLoading(false);
     }
-  }, [dateFrom, dateTo, patientSearch, billType, paymentStatus]);
+  }, [dateFrom, dateTo, patientSearch, billType, paymentStatus, doctorFilter, referralFilter]);
 
   useEffect(() => { fetchBills(); }, [fetchBills]);
 
@@ -55,10 +63,10 @@ const BillingDashboard = () => {
   };
 
   const downloadCSV = () => {
-    const headers = ['Date', 'Type', 'Reference', 'Patient', 'Phone', 'Items', 'Amount', 'Discount', 'Final', 'Status', 'Payment Method', 'Referred By'];
+    const headers = ['Date', 'Type', 'Reference', 'Patient', 'Phone', 'Items', 'Amount', 'Discount', 'Final', 'Doctor', 'Referred By', 'Status', 'Payment Method'];
     const rows = bills.map(b => [
       formatDate(b.date), b.type, b.reference, b.patient_name, b.patient_phone,
-      b.items, b.subtotal, b.discount, b.amount, b.payment_status, b.payment_method, b.referred_by
+      b.items, b.subtotal, b.discount, b.amount, b.doctor_name, b.referred_by, b.payment_status, b.payment_method
     ]);
     const csv = [headers.join(','), ...rows.map(r => r.map(v => `"${v}"`).join(','))].join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
@@ -175,8 +183,32 @@ const BillingDashboard = () => {
                 </SelectContent>
               </Select>
             </div>
+            <div>
+              <Label className="text-xs">Doctor</Label>
+              <Select value={doctorFilter} onValueChange={setDoctorFilter}>
+                <SelectTrigger className="w-[160px] h-9"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Doctors</SelectItem>
+                  {doctors.map(d => (
+                    <SelectItem key={d.id} value={String(d.id)}>{d.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-xs">Referred By</Label>
+              <Select value={referralFilter} onValueChange={setReferralFilter}>
+                <SelectTrigger className="w-[160px] h-9"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Referrals</SelectItem>
+                  {referrals.map(r => (
+                    <SelectItem key={r.id} value={r.name}>{r.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
             <Button size="sm" variant="outline" className="h-9" onClick={() => {
-              setDateFrom(weekAgo); setDateTo(today); setPatientSearch(''); setBillType('all'); setPaymentStatus('all');
+              setDateFrom(weekAgo); setDateTo(today); setPatientSearch(''); setBillType('all'); setPaymentStatus('all'); setDoctorFilter('all'); setReferralFilter('all');
             }}>
               Reset
             </Button>
@@ -205,6 +237,8 @@ const BillingDashboard = () => {
                     <th className="pb-2 pr-3">Patient</th>
                     <th className="pb-2 pr-3">Items</th>
                     <th className="pb-2 pr-3 text-right">Amount</th>
+                    <th className="pb-2 pr-3">Doctor</th>
+                    <th className="pb-2 pr-3">Referred By</th>
                     <th className="pb-2 pr-3">Status</th>
                     <th className="pb-2">Method</th>
                   </tr>
@@ -230,6 +264,8 @@ const BillingDashboard = () => {
                         <p className="font-semibold">{formatCurrency(bill.amount)}</p>
                         {bill.discount > 0 && <p className="text-[10px] text-green-600">-{formatCurrency(bill.discount)} disc.</p>}
                       </td>
+                      <td className="py-2.5 pr-3 text-xs text-gray-600">{bill.doctor_name || '-'}</td>
+                      <td className="py-2.5 pr-3 text-xs text-gray-600">{bill.referred_by || '-'}</td>
                       <td className="py-2.5 pr-3">
                         <Badge className={`text-[10px] ${bill.payment_status === 'paid' ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'}`}>
                           {bill.payment_status}

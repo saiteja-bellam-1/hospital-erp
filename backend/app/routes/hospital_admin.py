@@ -736,6 +736,8 @@ async def get_all_bills(
     patient_search: Optional[str] = None,
     bill_type: Optional[str] = None,
     payment_status: Optional[str] = None,
+    doctor_id: Optional[int] = None,
+    referred_by: Optional[str] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -765,6 +767,10 @@ async def get_all_bills(
         )
     if bill_type and bill_type not in ('appointment', 'consultation'):
         apt_query = apt_query.filter(False)  # skip
+    if doctor_id:
+        apt_query = apt_query.filter(Appointment.doctor_id == doctor_id)
+    if referred_by:
+        apt_query = apt_query.filter(Appointment.referred_by.ilike(f"%{referred_by}%"))
 
     for apt in apt_query.order_by(Appointment.created_at.desc()).all():
         p = apt.patient
@@ -776,6 +782,7 @@ async def get_all_bills(
             "patient_name": f"{p.first_name} {p.last_name}" if p else "Unknown",
             "patient_phone": p.primary_phone if p else "",
             "patient_id": p.patient_id if p else "",
+            "_doctor_id": apt.doctor_id,
             "doctor_name": f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else "",
             "reference": apt.appointment_number,
             "items": f"Consultation{' + Registration' if apt.registration_fee else ''}",
@@ -802,10 +809,15 @@ async def get_all_bills(
         )
     if bill_type and bill_type != 'lab':
         lab_query = lab_query.filter(False)
+    if doctor_id:
+        lab_query = lab_query.filter(PatientLabOrder.doctor_id == doctor_id)
+    if referred_by:
+        lab_query = lab_query.filter(PatientLabOrder.referred_by.ilike(f"%{referred_by}%"))
 
     for lo in lab_query.order_by(PatientLabOrder.order_date.desc()).all():
         p = db.query(Patient).filter(Patient.id == lo.patient_id).first()
         test = db.query(LabTest).filter(LabTest.id == lo.test_id).first()
+        lab_doctor = db.query(User).filter(User.id == lo.doctor_id).first() if lo.doctor_id else None
         source = "Package" if lo.package_id else "Appointment" if lo.appointment_id else "Direct"
         bills.append({
             "id": f"LAB-{lo.id}",
@@ -814,7 +826,8 @@ async def get_all_bills(
             "patient_name": f"{p.first_name} {p.last_name}" if p else "Unknown",
             "patient_phone": p.primary_phone if p else "",
             "patient_id": p.patient_id if p else "",
-            "doctor_name": "",
+            "_doctor_id": lo.doctor_id,
+            "doctor_name": f"Dr. {lab_doctor.first_name} {lab_doctor.last_name}" if lab_doctor else "",
             "reference": lo.order_number,
             "items": f"{test.name if test else 'Lab Test'} ({source})",
             "subtotal": lo.amount or 0,
@@ -835,6 +848,39 @@ async def get_all_bills(
     apt_count = sum(1 for b in bills if b["type"] == "consultation")
     lab_count = sum(1 for b in bills if b["type"] == "lab")
 
+    # Extract unique doctors from bills for filter dropdown
+    doctor_ids_seen = set()
+    doctor_list = []
+    for b in bills:
+        if b.get("doctor_name") and b.get("_doctor_id") and b["_doctor_id"] not in doctor_ids_seen:
+            doctor_ids_seen.add(b["_doctor_id"])
+            doctor_list.append({"id": b["_doctor_id"], "name": b["doctor_name"]})
+    # Also fetch doctors with doctor role who may not have bills yet
+    from app.models.user import UserRole
+    doctor_role = db.query(UserRole).filter(UserRole.name == 'doctor').first()
+    if doctor_role:
+        doc_users = db.query(User).filter(
+            User.hospital_id == hospital_id,
+            User.is_active == True,
+            User.roles.any(id=doctor_role.id)
+        ).all()
+        for d in doc_users:
+            if d.id not in doctor_ids_seen:
+                doctor_ids_seen.add(d.id)
+                doctor_list.append({"id": d.id, "name": f"Dr. {d.first_name} {d.last_name}"})
+
+    # Fetch referrals for filter dropdown
+    from app.models.referral import Referral
+    try:
+        referral_list = [{"id": r.id, "name": r.name} for r in
+            db.query(Referral).filter(Referral.hospital_id == hospital_id, Referral.is_active == True).all()]
+    except Exception:
+        referral_list = []
+
+    # Remove internal _doctor_id from bill output
+    for b in bills:
+        b.pop("_doctor_id", None)
+
     return {
         "bills": bills,
         "summary": {
@@ -844,5 +890,7 @@ async def get_all_bills(
             "total_pending": total_pending,
             "appointment_count": apt_count,
             "lab_count": lab_count,
-        }
+        },
+        "doctors": doctor_list,
+        "referrals": referral_list,
     }

@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../../components/ui/dialog';
 import { useToast } from '../../../hooks/use-toast';
 import {
-  Package, Search, TestTube, RefreshCw, ShoppingCart, Loader2
+  Package, Search, TestTube, RefreshCw, ShoppingCart, Loader2, Printer, Receipt
 } from 'lucide-react';
 import axios from 'axios';
 
@@ -34,6 +34,10 @@ const ReceptionPackagesPage = () => {
   const [pkgIncludeHeader, setPkgIncludeHeader] = useState(true);
   const [referralList, setReferralList] = useState([]);
   const [pkgDuplicateWarning, setPkgDuplicateWarning] = useState(null);
+  const [pkgBillPdfUrl, setPkgBillPdfUrl] = useState(null);
+  const [pkgBillOrderIds, setPkgBillOrderIds] = useState([]);
+  const [showPkgBillPreview, setShowPkgBillPreview] = useState(false);
+  const [pkgPreviewHeader, setPkgPreviewHeader] = useState(true);
 
   useEffect(() => {
     const fetchRefs = async () => {
@@ -141,12 +145,15 @@ const ReceptionPackagesPage = () => {
         force: force,
       }, { responseType: 'blob' });
 
+      const orderIdsHeader = res.headers?.['x-order-ids'] || '';
+      const ids = orderIdsHeader ? orderIdsHeader.split(',').map(Number) : [];
+      setPkgBillOrderIds(ids);
+      setPkgPreviewHeader(pkgIncludeHeader);
+
       const url = window.URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `lab_package_bill_${selectedPackage.package_code}.pdf`;
-      a.click();
-      window.URL.revokeObjectURL(url);
+      if (pkgBillPdfUrl) window.URL.revokeObjectURL(pkgBillPdfUrl);
+      setPkgBillPdfUrl(url);
+      setShowPkgBillPreview(true);
 
       toast({ title: 'Success', description: `Package "${selectedPackage.name}" booked successfully!` });
       setShowBookingDialog(false);
@@ -450,6 +457,71 @@ const ReceptionPackagesPage = () => {
               )}
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Package Bill Preview Dialog */}
+      <Dialog open={showPkgBillPreview} onOpenChange={() => {
+        if (pkgBillPdfUrl) { window.URL.revokeObjectURL(pkgBillPdfUrl); setPkgBillPdfUrl(null); }
+        setShowPkgBillPreview(false);
+      }}>
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-hidden">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Receipt className="h-5 w-5" /> Package Bill Preview
+            </DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col space-y-4">
+            <div className="flex-1 min-h-[400px] border rounded-lg overflow-hidden">
+              {pkgBillPdfUrl && (
+                <iframe src={pkgBillPdfUrl} className="w-full h-full min-h-[400px] border-0" title="Package Bill Preview" />
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center space-x-2">
+                <input type="checkbox" id="pkg-preview-header" checked={pkgPreviewHeader}
+                  onChange={async (e) => {
+                    const newVal = e.target.checked;
+                    setPkgPreviewHeader(newVal);
+                    if (pkgBillOrderIds.length > 0) {
+                      try {
+                        const token = localStorage.getItem('token');
+                        const res = await fetch('/api/lab/orders/regenerate-bill', {
+                          method: 'POST',
+                          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ order_ids: pkgBillOrderIds, include_header: newVal }),
+                        });
+                        if (res.ok) {
+                          if (pkgBillPdfUrl) window.URL.revokeObjectURL(pkgBillPdfUrl);
+                          const blob = await res.blob();
+                          setPkgBillPdfUrl(window.URL.createObjectURL(new Blob([blob], { type: 'application/pdf' })));
+                        }
+                      } catch {}
+                    }
+                  }}
+                  className="w-4 h-4" />
+                <Label htmlFor="pkg-preview-header" className="text-sm">Include header</Label>
+              </div>
+              <Button variant="outline" onClick={() => {
+                if (pkgBillPdfUrl) { window.URL.revokeObjectURL(pkgBillPdfUrl); setPkgBillPdfUrl(null); }
+                setShowPkgBillPreview(false);
+              }} className="flex-1">Close</Button>
+              <Button onClick={() => {
+                if (pkgBillPdfUrl) {
+                  const iframe = document.createElement('iframe');
+                  iframe.style.display = 'none';
+                  document.body.appendChild(iframe);
+                  iframe.src = pkgBillPdfUrl;
+                  iframe.onload = () => {
+                    iframe.contentWindow.print();
+                    setTimeout(() => document.body.removeChild(iframe), 1000);
+                  };
+                }
+              }} className="flex-1 bg-blue-600 hover:bg-blue-700">
+                <Printer className="h-4 w-4 mr-2" /> Print Bill
+              </Button>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
     </div>
