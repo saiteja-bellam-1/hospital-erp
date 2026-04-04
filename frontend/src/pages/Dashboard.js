@@ -22,6 +22,11 @@ import {
   BookOpen,
   Package,
   Phone,
+  Monitor,
+  Headphones,
+  MapPin,
+  Mail,
+  X as XIcon,
 } from 'lucide-react';
 import axios from 'axios';
 
@@ -62,6 +67,18 @@ import LicenseBanner from '../components/LicenseBanner';
 const Dashboard = () => {
   const { user, logout, licenseStatus } = useAuth();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [showSupportPopup, setShowSupportPopup] = useState(false);
+  const [pwaInstallPrompt, setPwaInstallPrompt] = useState(null);
+
+  // Capture the PWA install prompt
+  useEffect(() => {
+    const handler = (e) => {
+      e.preventDefault();
+      setPwaInstallPrompt(e);
+    };
+    window.addEventListener('beforeinstallprompt', handler);
+    return () => window.removeEventListener('beforeinstallprompt', handler);
+  }, []);
   const [enabledModules, setEnabledModules] = useState({});
   const location = useLocation();
 
@@ -304,6 +321,9 @@ const Dashboard = () => {
           ))}
         </nav>
 
+        {/* Separator */}
+        <div className="mx-3 my-1" style={{ borderTop: '1px solid hsl(var(--sidebar-border))' }} />
+
         {/* Help link */}
         <div className="px-3 pb-1">
           <Link
@@ -322,6 +342,35 @@ const Dashboard = () => {
             <BookOpen className="h-[18px] w-[18px] opacity-80" />
             <span>Help & Docs</span>
           </Link>
+        </div>
+
+        {/* Add to Desktop */}
+        <div className="px-3 pb-1">
+          <button
+            onClick={async () => {
+              if (pwaInstallPrompt) {
+                pwaInstallPrompt.prompt();
+                const result = await pwaInstallPrompt.userChoice;
+                if (result.outcome === 'accepted') setPwaInstallPrompt(null);
+              } else {
+                const link = document.createElement('a');
+                link.href = '/api/system/desktop-shortcut';
+                link.download = 'KT HEALTH ERP.url';
+                link.click();
+              }
+            }}
+            className="flex items-center gap-3 px-3 py-2 rounded-lg text-[13px] font-medium transition-all duration-150 w-full"
+            style={{ color: 'hsl(var(--sidebar-fg))' }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = 'hsl(var(--sidebar-hover))';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = 'transparent';
+            }}
+          >
+            <Monitor className="h-[18px] w-[18px] opacity-80" />
+            <span>Add to Desktop</span>
+          </button>
         </div>
 
         {/* Logout button */}
@@ -469,6 +518,83 @@ const Dashboard = () => {
           onClick={() => setSidebarOpen(false)}
         />
       )}
+
+      {/* Floating Support Button */}
+      <div className="fixed bottom-6 right-6 z-50">
+        {/* Popup */}
+        {showSupportPopup && (
+          <>
+            <div className="fixed inset-0" onClick={() => setShowSupportPopup(false)} />
+            <div className="absolute bottom-16 right-0 w-80 bg-white rounded-2xl shadow-2xl border border-gray-200 overflow-hidden animate-in fade-in slide-in-from-bottom-4 duration-200">
+              <div className="bg-blue-600 px-5 py-4 flex items-center justify-between">
+                <div>
+                  <h3 className="text-white font-semibold text-sm">Support Contact</h3>
+                  <p className="text-blue-200 text-xs mt-0.5">We're here to help</p>
+                </div>
+                <button onClick={() => setShowSupportPopup(false)} className="text-white/70 hover:text-white">
+                  <XIcon className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="p-4 space-y-4 max-h-[60vh] overflow-y-auto">
+                {/* Vendor section */}
+                {licenseStatus?.seller_info?.name && (
+                  <div className="space-y-2.5">
+                    <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Your Vendor</p>
+                    <div className="bg-gray-50 rounded-xl p-3.5 space-y-2">
+                      <p className="font-semibold text-sm text-gray-900">{licenseStatus.seller_info.name}</p>
+                      {licenseStatus.seller_info.address && (
+                        <div className="flex items-start gap-2">
+                          <MapPin className="h-3.5 w-3.5 text-gray-400 mt-0.5 flex-shrink-0" />
+                          <p className="text-xs text-gray-600">{licenseStatus.seller_info.address}</p>
+                        </div>
+                      )}
+                      {licenseStatus.seller_info.phone && (
+                        <div className="flex items-center gap-2">
+                          <Phone className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />
+                          <a href={`tel:${licenseStatus.seller_info.phone}`} className="text-xs text-blue-600 font-medium hover:underline">{licenseStatus.seller_info.phone}</a>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* KT Health section */}
+                <div className="space-y-2.5">
+                  <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
+                    {licenseStatus?.seller_info?.name ? 'Product Support' : 'Support'}
+                  </p>
+                  <div className="bg-gray-50 rounded-xl p-3.5 space-y-2">
+                    <p className="font-semibold text-sm text-gray-900">KT Health Soft</p>
+                    <div className="flex items-center gap-2">
+                      <Phone className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />
+                      <a href="tel:+919876543210" className="text-xs text-blue-600 font-medium hover:underline">+91 98765 43210</a>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Mail className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />
+                      <a href="mailto:support@kthealthsoft.com" className="text-xs text-blue-600 font-medium hover:underline">support@kthealthsoft.com</a>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* Floating button */}
+        <button
+          onClick={() => setShowSupportPopup(!showSupportPopup)}
+          className={`h-14 w-14 rounded-full shadow-lg flex items-center justify-center transition-all duration-200 ${
+            showSupportPopup
+              ? 'bg-gray-600 hover:bg-gray-700 rotate-0'
+              : 'bg-blue-600 hover:bg-blue-700 hover:scale-105'
+          }`}
+        >
+          {showSupportPopup
+            ? <XIcon className="h-6 w-6 text-white" />
+            : <Headphones className="h-6 w-6 text-white" />
+          }
+        </button>
+      </div>
     </div>
   );
 };

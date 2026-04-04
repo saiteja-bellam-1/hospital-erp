@@ -28,3 +28,10 @@ root.render(
     </BrowserRouter>
   </React.StrictMode>
 );
+
+// Register service worker for PWA install support
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  });
+}

@@ -260,7 +260,12 @@ const ReceptionPatientsPage = () => {
       } else {
         const errorData = await response.json();
         console.error('Patient creation failed:', errorData);
-        toast({ title: 'Registration Failed', description: errorData.detail || 'Unknown error', variant: 'destructive' });
+        const errMsg = typeof errorData.detail === 'string'
+          ? errorData.detail
+          : Array.isArray(errorData.detail)
+            ? errorData.detail.map(e => e.msg || e.message || JSON.stringify(e)).join(', ')
+            : 'Registration failed';
+        toast({ title: 'Registration Failed', description: errMsg, variant: 'destructive' });
       }
     } catch (error) {
       console.error('Error creating patient:', error);

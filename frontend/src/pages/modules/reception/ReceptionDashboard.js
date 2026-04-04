@@ -196,7 +196,8 @@ const ReceptionDashboard = () => {
         fetchDashboardData();
       } else {
         const err = await response.json();
-        toast({ title: 'Registration Failed', description: err.detail || 'Unknown error', variant: 'destructive' });
+        const errMsg = typeof err.detail === 'string' ? err.detail : Array.isArray(err.detail) ? err.detail.map(e => e.msg || JSON.stringify(e)).join(', ') : 'Registration failed';
+        toast({ title: 'Registration Failed', description: errMsg, variant: 'destructive' });
       }
     } catch (error) {
       toast({ title: 'Error', description: 'Error registering patient', variant: 'destructive' });
