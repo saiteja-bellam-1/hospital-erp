@@ -22,6 +22,9 @@ SKIP_PATHS = [
     "/uploads",
     "/api/setup",
     "/static",
+    "/sw.js",
+    "/manifest.json",
+    "/favicon.ico",
 ]
 
 
@@ -40,16 +43,19 @@ class LicenseMiddleware(BaseHTTPMiddleware):
         # Check cached license status
         now = time.time()
         if now - _license_cache["checked_at"] > CACHE_TTL_SECONDS:
-            db = SessionLocal()
             try:
+                db = SessionLocal()
                 license_record = get_current_license(db)
                 if license_record:
                     _license_cache["status"] = compute_license_status(license_record.expires_at)
                 else:
                     _license_cache["status"] = "no_license"
                 _license_cache["checked_at"] = now
-            finally:
                 db.close()
+            except Exception:
+                # DB not ready (fresh install, no tables yet)
+                _license_cache["status"] = "no_license"
+                _license_cache["checked_at"] = now
 
         status = _license_cache["status"]
 
