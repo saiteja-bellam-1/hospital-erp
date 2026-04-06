@@ -183,6 +183,9 @@ const SuperAdminDashboard = () => {
               {data.license.plan && (
                 <div className="flex justify-between"><span className="text-gray-500">Plan</span><span className="font-medium capitalize">{data.license.plan}</span></div>
               )}
+              {data.license.max_users && (
+                <div className="flex justify-between"><span className="text-gray-500">Max Users</span><span className="font-medium">{data.license.max_users}</span></div>
+              )}
               {data.license.expires_at && (
                 <div className="flex justify-between"><span className="text-gray-500">Expires</span><span className="font-medium">{formatDate(data.license.expires_at)}</span></div>
               )}

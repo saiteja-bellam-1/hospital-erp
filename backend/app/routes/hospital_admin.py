@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from sqlalchemy.orm import Session
 from sqlalchemy import func as sql_func, cast, Date
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional
 from datetime import datetime, date, timedelta
 import os
@@ -729,6 +729,70 @@ def _get_dashboard_data(current_user, db):
     }
 
 
+class CancelBillRequest(BaseModel):
+    reason: str = Field(..., min_length=1, max_length=500)
+
+
+@router.post("/billing/cancel/{bill_type}/{bill_id}")
+async def cancel_bill(
+    bill_type: str,
+    bill_id: int,
+    data: CancelBillRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Cancel a bill (appointment or lab order). Sets payment_status to 'cancelled'."""
+    if not any(r in current_user.role_names for r in ['super_admin', 'hospital_admin']):
+        raise HTTPException(status_code=403, detail="Only admins can cancel bills")
+
+    from datetime import datetime
+
+    if bill_type == "consultation":
+        record = db.query(Appointment).join(Patient).filter(
+            Appointment.id == bill_id,
+            Patient.hospital_id == current_user.hospital_id
+        ).first()
+        if not record:
+            raise HTTPException(status_code=404, detail="Appointment not found")
+        if record.payment_status == "cancelled":
+            raise HTTPException(status_code=400, detail="Bill is already cancelled")
+        record.payment_status = "cancelled"
+        record.bill_cancelled_reason = data.reason
+        record.bill_cancelled_by = current_user.id
+        record.bill_cancelled_at = datetime.now()
+        label = f"Appointment {record.appointment_number}"
+
+    elif bill_type == "lab":
+        record = db.query(PatientLabOrder).join(Patient).filter(
+            PatientLabOrder.id == bill_id,
+            Patient.hospital_id == current_user.hospital_id
+        ).first()
+        if not record:
+            raise HTTPException(status_code=404, detail="Lab order not found")
+        if record.payment_status == "cancelled":
+            raise HTTPException(status_code=400, detail="Bill is already cancelled")
+        record.payment_status = "cancelled"
+        record.bill_cancelled_reason = data.reason
+        record.bill_cancelled_by = current_user.id
+        record.bill_cancelled_at = datetime.now()
+        label = f"Lab order {record.order_number}"
+    else:
+        raise HTTPException(status_code=400, detail="Invalid bill type. Use 'consultation' or 'lab'.")
+
+    db.commit()
+
+    # Audit log
+    try:
+        from app.services.audit_service import log_action
+        log_action(db, current_user, "cancel_bill", "billing", bill_type, bill_id,
+            f"Cancelled bill for {label}: {data.reason}",
+            details={"bill_type": bill_type, "bill_id": bill_id, "reason": data.reason})
+    except Exception:
+        pass
+
+    return {"message": f"Bill cancelled: {label}"}
+
+
 @router.get("/billing")
 async def get_all_bills(
     date_from: Optional[str] = None,
@@ -775,8 +839,10 @@ async def get_all_bills(
     for apt in apt_query.order_by(Appointment.created_at.desc()).all():
         p = apt.patient
         doctor = db.query(User).filter(User.id == apt.doctor_id).first() if apt.doctor_id else None
+        cancelled_by_user = db.query(User).filter(User.id == apt.bill_cancelled_by).first() if getattr(apt, 'bill_cancelled_by', None) else None
         bills.append({
             "id": f"APT-{apt.id}",
+            "bill_id": apt.id,
             "type": "consultation",
             "date": apt.created_at.isoformat() if apt.created_at else "",
             "patient_name": f"{p.first_name} {p.last_name}" if p else "Unknown",
@@ -792,6 +858,9 @@ async def get_all_bills(
             "payment_status": apt.payment_status or "pending",
             "payment_method": apt.payment_method or "",
             "referred_by": apt.referred_by or "",
+            "cancel_reason": getattr(apt, 'bill_cancelled_reason', None) or "",
+            "cancelled_by": f"{cancelled_by_user.first_name} {cancelled_by_user.last_name}" if cancelled_by_user else "",
+            "cancelled_at": apt.bill_cancelled_at.isoformat() if getattr(apt, 'bill_cancelled_at', None) else "",
         })
 
     # --- Lab order bills ---
@@ -818,9 +887,11 @@ async def get_all_bills(
         p = db.query(Patient).filter(Patient.id == lo.patient_id).first()
         test = db.query(LabTest).filter(LabTest.id == lo.test_id).first()
         lab_doctor = db.query(User).filter(User.id == lo.doctor_id).first() if lo.doctor_id else None
+        lab_cancelled_by = db.query(User).filter(User.id == lo.bill_cancelled_by).first() if getattr(lo, 'bill_cancelled_by', None) else None
         source = "Package" if lo.package_id else "Appointment" if lo.appointment_id else "Direct"
         bills.append({
             "id": f"LAB-{lo.id}",
+            "bill_id": lo.id,
             "type": "lab",
             "date": lo.order_date.isoformat() if lo.order_date else "",
             "patient_name": f"{p.first_name} {p.last_name}" if p else "Unknown",
@@ -836,15 +907,20 @@ async def get_all_bills(
             "payment_status": lo.payment_status or "pending",
             "payment_method": lo.payment_method or "",
             "referred_by": lo.referred_by or "",
+            "cancel_reason": getattr(lo, 'bill_cancelled_reason', None) or "",
+            "cancelled_by": f"{lab_cancelled_by.first_name} {lab_cancelled_by.last_name}" if lab_cancelled_by else "",
+            "cancelled_at": lo.bill_cancelled_at.isoformat() if getattr(lo, 'bill_cancelled_at', None) else "",
         })
 
     # Sort all by date descending
     bills.sort(key=lambda b: b["date"], reverse=True)
 
-    # Summary
-    total_billed = sum(b["amount"] for b in bills)
-    total_paid = sum(b["amount"] for b in bills if b["payment_status"] == "paid")
-    total_pending = sum(b["amount"] for b in bills if b["payment_status"] != "paid")
+    # Summary — exclude cancelled from totals
+    active_bills = [b for b in bills if b["payment_status"] != "cancelled"]
+    total_billed = sum(b["amount"] for b in active_bills)
+    total_paid = sum(b["amount"] for b in active_bills if b["payment_status"] == "paid")
+    total_pending = sum(b["amount"] for b in active_bills if b["payment_status"] == "pending")
+    cancelled_count = sum(1 for b in bills if b["payment_status"] == "cancelled")
     apt_count = sum(1 for b in bills if b["type"] == "consultation")
     lab_count = sum(1 for b in bills if b["type"] == "lab")
 
@@ -890,6 +966,7 @@ async def get_all_bills(
             "total_pending": total_pending,
             "appointment_count": apt_count,
             "lab_count": lab_count,
+            "cancelled_count": cancelled_count,
         },
         "doctors": doctor_list,
         "referrals": referral_list,

@@ -155,6 +155,10 @@ const LicenseManagement = () => {
                 <p className="font-medium capitalize">{license?.plan}</p>
               </div>
               <div>
+                <p className="text-sm text-gray-500">Max Users</p>
+                <p className="font-medium">{license?.max_users || 'Unlimited'}</p>
+              </div>
+              <div>
                 <p className="text-sm text-gray-500">Issued</p>
                 <p className="font-medium">{license?.issued_at ? new Date(license.issued_at).toLocaleDateString() : '-'}</p>
               </div>

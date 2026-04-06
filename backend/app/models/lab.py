@@ -150,6 +150,9 @@ class PatientLabOrder(Base):
     referred_by = Column(String(100), nullable=True)
     package_id = Column(Integer, ForeignKey("lab_test_packages.id"), nullable=True)
     package_booking_id = Column(String(50), nullable=True)  # Groups orders from same package booking
+    bill_cancelled_reason = Column(Text, nullable=True)
+    bill_cancelled_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    bill_cancelled_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     patient = relationship("Patient", back_populates="lab_orders")

@@ -27,6 +27,13 @@ import {
   MapPin,
   Mail,
   X as XIcon,
+  TestTube,
+  FlaskConical,
+  CalendarClock,
+  Share2,
+  BarChart3,
+  ScrollText,
+  ClipboardList,
 } from 'lucide-react';
 import axios from 'axios';
 
@@ -64,8 +71,20 @@ import LicenseManagement from './modules/LicenseManagement';
 import BackupManagement from './modules/BackupManagement';
 import LicenseBanner from '../components/LicenseBanner';
 
+const HomeDashboard = ({ hasRole, enabledModules }) => {
+  // Priority-based: show the most relevant dashboard for the user
+  if (hasRole('super_admin')) return <SuperAdminDashboard />;
+  if (hasRole('hospital_admin')) return <HospitalAdminDashboard />;
+  if (hasRole('doctor') && enabledModules.outpatient) return <DoctorDashboard />;
+  if (hasRole('lab_admin') || hasRole('lab_technician')) return <LabTechDashboard />;
+  if (hasRole('receptionist') && enabledModules.outpatient) return <ReceptionDashboard />;
+  if (hasRole('receptionist') && enabledModules.lab) return <LabTechDashboard />;
+  if (hasRole('nurse')) return <NurseDashboard />;
+  return <DashboardHome />;
+};
+
 const Dashboard = () => {
-  const { user, logout, licenseStatus } = useAuth();
+  const { user, logout, licenseStatus, setLicenseStatus } = useAuth();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showSupportPopup, setShowSupportPopup] = useState(false);
   const [pwaInstallPrompt, setPwaInstallPrompt] = useState(null);
@@ -105,8 +124,17 @@ const Dashboard = () => {
       }
     };
 
+    const refreshLicenseStatus = async () => {
+      try {
+        const res = await axios.get('/api/license/status');
+        setLicenseStatus(res.data);
+        localStorage.setItem('licenseStatus', JSON.stringify(res.data));
+      } catch {}
+    };
+
     if (user) {
       fetchEnabledModules();
+      refreshLicenseStatus();
     }
   }, [user]);
 
@@ -135,89 +163,79 @@ const Dashboard = () => {
 
   // Build navigation with sections — merge navs for all roles
   const getNavigationSections = () => {
-    const mainItems = [
-      { text: 'Dashboard', icon: <Home className="h-[18px] w-[18px]" />, path: '/dashboard' },
-    ];
-    const addedPaths = new Set(['/dashboard']);
-    const addItem = (items, item) => {
+    const addedPaths = new Set();
+    const add = (items, item) => {
       if (!addedPaths.has(item.path)) { items.push(item); addedPaths.add(item.path); }
     };
+    const I = (Icon) => <Icon className="h-[18px] w-[18px]" />;
+    const sections = [];
 
-    // Reception items — patients and referrals always available, others depend on modules
+    // ── HOME ──
+    const homeItems = [{ text: 'Dashboard', icon: I(Home), path: '/dashboard' }];
+    addedPaths.add('/dashboard');
+    sections.push({ label: '', items: homeItems }); // no label for home
+
+    // ── RECEPTION ──
     if (hasRole('receptionist')) {
-      addItem(mainItems, { text: 'Patients', icon: <Users className="h-[18px] w-[18px]" />, path: '/dashboard/reception/patients' });
+      const items = [];
+      add(items, { text: 'Patients', icon: I(Users), path: '/dashboard/reception/patients' });
       if (enabledModules.outpatient) {
-        addItem(mainItems, { text: 'Appointments', icon: <Calendar className="h-[18px] w-[18px]" />, path: '/dashboard/reception/appointments' });
+        add(items, { text: 'Appointments', icon: I(Calendar), path: '/dashboard/reception/appointments' });
+        add(items, { text: 'Doctor Schedule', icon: I(CalendarClock), path: '/dashboard/reception/doctor-availability' });
       }
       if (enabledModules.lab) {
-        addItem(mainItems, { text: 'Lab Packages', icon: <Package className="h-[18px] w-[18px]" />, path: '/dashboard/reception/packages' });
+        add(items, { text: 'Lab Packages', icon: I(Package), path: '/dashboard/reception/packages' });
       }
-      addItem(mainItems, { text: 'Referrals', icon: <Users className="h-[18px] w-[18px]" />, path: '/dashboard/reception/referrals' });
+      add(items, { text: 'Referrals', icon: I(Share2), path: '/dashboard/reception/referrals' });
+      if (enabledModules.outpatient) {
+        add(items, { text: 'Reports', icon: I(TrendingUp), path: '/dashboard/reception/reports' });
+      }
+      if (items.length > 0) sections.push({ label: 'Reception', items });
     }
 
-    // Lab items
-    if (hasRole('lab_technician') && enabledModules.lab) {
-      addItem(mainItems, { text: 'Lab Dashboard', icon: <Stethoscope className="h-[18px] w-[18px]" />, path: '/dashboard/lab' });
-    }
-    if (hasRole('lab_admin') && enabledModules.lab) {
-      addItem(mainItems, { text: 'Lab Configuration', icon: <Settings className="h-[18px] w-[18px]" />, path: '/dashboard/lab' });
-    }
-
-    // Doctor items — only when outpatient is enabled
+    // ── DOCTOR ──
     if (hasRole('doctor') && enabledModules.outpatient) {
-      addItem(mainItems, { text: 'Availability', icon: <Calendar className="h-[18px] w-[18px]" />, path: '/dashboard/availability' });
+      const items = [];
+      add(items, { text: 'Availability', icon: I(CalendarClock), path: '/dashboard/availability' });
+      if (enabledModules.ehr) {
+        add(items, { text: 'EHR', icon: I(FileText), path: '/dashboard/ehr' });
+      }
+      if (items.length > 0) sections.push({ label: 'Doctor', items });
     }
 
-    if (!hasRole('doctor') && !hasRole('hospital_admin') && !hasRole('receptionist') && !hasRole('super_admin') && !hasRole('lab_technician') && !hasRole('lab_admin')) {
-      addItem(mainItems, { text: 'Patients', icon: <Users className="h-[18px] w-[18px]" />, path: '/dashboard/patients' });
+    // ── LAB ──
+    if (hasAnyRole('lab_technician', 'lab_admin', 'hospital_admin', 'super_admin') && enabledModules.lab) {
+      const items = [];
+      add(items, { text: 'Lab Dashboard', icon: I(TestTube), path: '/dashboard/lab' });
+      if (items.length > 0) sections.push({ label: 'Laboratory', items });
     }
 
-    // Info items for reception — only outpatient-related items when outpatient is enabled
-    const infoItems = [];
-    if (hasRole('receptionist') && enabledModules.outpatient) {
-      addItem(infoItems, { text: 'Doctor Schedule', icon: <Stethoscope className="h-[18px] w-[18px]" />, path: '/dashboard/reception/doctor-availability' });
-      addItem(infoItems, { text: 'Reports', icon: <TrendingUp className="h-[18px] w-[18px]" />, path: '/dashboard/reception/reports' });
+    // ── EHR (for admin who isn't a doctor) ──
+    if (hasAnyRole('hospital_admin', 'super_admin') && !hasRole('doctor') && enabledModules.ehr) {
+      const items = [];
+      add(items, { text: 'EHR', icon: I(FileText), path: '/dashboard/ehr' });
+      if (items.length > 0) sections.push({ label: 'Health Records', items });
     }
 
-    const moduleItems = [];
-    if (hasAnyRole('super_admin', 'hospital_admin', 'lab_admin') && enabledModules.lab) {
-      addItem(moduleItems, { text: 'Laboratory', icon: <Stethoscope className="h-[18px] w-[18px]" />, path: '/dashboard/lab' });
-    }
-    if (hasAnyRole('super_admin', 'hospital_admin', 'pharmacy_admin', 'doctor') && enabledModules.pharmacy) {
-      addItem(moduleItems, { text: 'Pharmacy', icon: <Pill className="h-[18px] w-[18px]" />, path: '/dashboard/pharmacy' });
-    }
-    if (hasAnyRole('super_admin', 'hospital_admin', 'billing_admin') && enabledModules.billing) {
-      addItem(moduleItems, { text: 'Billing', icon: <Receipt className="h-[18px] w-[18px]" />, path: '/dashboard/billing' });
-    }
-    if (hasAnyRole('hospital_admin', 'doctor') && enabledModules.ehr) {
-      addItem(moduleItems, { text: 'EHR', icon: <FileText className="h-[18px] w-[18px]" />, path: '/dashboard/ehr' });
-    }
-    if (hasAnyRole('hospital_admin', 'outpatient_admin') && enabledModules.outpatient) {
-      addItem(moduleItems, { text: 'Outpatient', icon: <UserPlus className="h-[18px] w-[18px]" />, path: '/dashboard/outpatient' });
-    }
-    if (hasAnyRole('super_admin', 'hospital_admin', 'inpatient_admin') && enabledModules.inpatient) {
-      addItem(moduleItems, { text: 'Inpatient', icon: <Bed className="h-[18px] w-[18px]" />, path: '/dashboard/inpatient' });
+    // ── ADMIN ──
+    if (hasAnyRole('super_admin', 'hospital_admin')) {
+      const items = [];
+      add(items, { text: 'Billing', icon: I(BarChart3), path: '/dashboard/billing-dashboard' });
+      add(items, { text: 'Users & Roles', icon: I(ClipboardList), path: '/dashboard/admin' });
+      add(items, { text: 'Hospital Config', icon: I(Building2), path: '/dashboard/hospital-admin' });
+      add(items, { text: 'License', icon: I(Shield), path: '/dashboard/license' });
+      add(items, { text: 'Database', icon: I(Database), path: '/dashboard/backup' });
+      add(items, { text: 'Audit Logs', icon: I(ScrollText), path: '/dashboard/audit' });
+      sections.push({ label: 'Admin', items });
     }
 
-    // Support contact — show for hospital_admin and receptionist when seller info exists
-    if (licenseStatus?.seller_info?.name && hasAnyRole('hospital_admin', 'receptionist')) {
-      addItem(infoItems, { text: 'Support Contact', icon: <Phone className="h-[18px] w-[18px]" />, path: '/dashboard/support-contact' });
+    // ── NURSE ──
+    if (hasRole('nurse') && !hasAnyRole('receptionist', 'doctor', 'hospital_admin', 'super_admin')) {
+      const items = [];
+      add(items, { text: 'Patients', icon: I(Users), path: '/dashboard/patients' });
+      if (items.length > 0) sections.push({ label: 'Nursing', items });
     }
 
-    const adminItems = [];
-    if (hasRole('super_admin') || hasRole('hospital_admin')) {
-      adminItems.push({ text: 'Billing', icon: <Receipt className="h-[18px] w-[18px]" />, path: '/dashboard/billing-dashboard' });
-      adminItems.push({ text: 'Administration', icon: <Settings className="h-[18px] w-[18px]" />, path: '/dashboard/admin' });
-      adminItems.push({ text: 'Hospital Config', icon: <Building2 className="h-[18px] w-[18px]" />, path: '/dashboard/hospital-admin' });
-      adminItems.push({ text: 'License', icon: <Shield className="h-[18px] w-[18px]" />, path: '/dashboard/license' });
-      adminItems.push({ text: 'Backup', icon: <Database className="h-[18px] w-[18px]" />, path: '/dashboard/backup' });
-      adminItems.push({ text: 'Audit Logs', icon: <Shield className="h-[18px] w-[18px]" />, path: '/dashboard/audit' });
-    }
-
-    const sections = [{ label: 'Overview', items: mainItems }];
-    if (infoItems.length > 0) sections.push({ label: 'Info', items: infoItems });
-    if (moduleItems.length > 0) sections.push({ label: 'Modules', items: moduleItems });
-    if (adminItems.length > 0) sections.push({ label: 'Settings', items: adminItems });
     return sections;
   };
 
@@ -270,13 +288,15 @@ const Dashboard = () => {
         {/* Navigation */}
         <nav className="sidebar-nav flex-1 overflow-y-auto py-4 px-3">
           {navigationSections.map((section, sIdx) => (
-            <div key={section.label} className={sIdx > 0 ? 'mt-6' : ''}>
-              <p
-                className="px-3 mb-2 text-[11px] font-semibold tracking-wider uppercase"
-                style={{ color: 'hsl(var(--sidebar-muted))' }}
-              >
-                {section.label}
-              </p>
+            <div key={section.label || `section-${sIdx}`} className={sIdx > 0 ? 'mt-5' : ''}>
+              {section.label && (
+                <p
+                  className="px-3 mb-2 text-[11px] font-semibold tracking-wider uppercase"
+                  style={{ color: 'hsl(var(--sidebar-muted))' }}
+                >
+                  {section.label}
+                </p>
+              )}
               <div className="space-y-0.5">
                 {section.items.map((item) => {
                   const active = isActive(item.path);
@@ -463,15 +483,7 @@ const Dashboard = () => {
             <Route
               path="/"
               element={
-                hasRole('super_admin') ? <SuperAdminDashboard /> :
-                hasRole('doctor') && enabledModules.outpatient ? <DoctorDashboard /> :
-                hasRole('receptionist') && enabledModules.outpatient ? <ReceptionDashboard /> :
-                hasRole('lab_technician') ? <LabTechDashboard /> :
-                hasRole('lab_admin') ? <LabTechDashboard /> :
-                hasRole('receptionist') && enabledModules.lab ? <LabTechDashboard /> :
-                hasRole('nurse') ? <NurseDashboard /> :
-                hasRole('hospital_admin') ? <HospitalAdminDashboard /> :
-                <DashboardHome />
+                <HomeDashboard hasRole={hasRole} enabledModules={enabledModules} />
               }
             />
             <Route path="/reception/patients" element={<ReceptionPatientsPage />} />

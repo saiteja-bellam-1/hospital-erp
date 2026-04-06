@@ -315,6 +315,30 @@ async def update_module_status(
     return module
 
 # USER MANAGEMENT ENDPOINTS
+@router.get("/user-limit")
+async def get_user_limit(
+    current_user: User = Depends(require_admin_access),
+    db: Session = Depends(get_db)
+):
+    """Get current user count vs license limit."""
+    from app.services.license_service import get_current_license
+    license_record = get_current_license(db)
+    max_users = license_record.max_users if license_record and license_record.max_users else 0
+
+    super_admin_role = db.query(UserRole).filter(UserRole.name == 'super_admin').first()
+    active_count = db.query(User).filter(
+        User.is_active == True,
+        User.role_id != (super_admin_role.id if super_admin_role else -1)
+    ).count()
+
+    return {
+        "active_users": active_count,
+        "max_users": max_users,
+        "remaining": max(max_users - active_count, 0) if max_users else None,
+        "unlimited": max_users == 0,
+    }
+
+
 @router.get("/users", response_model=List[UserResponse])
 async def get_all_users(
     current_user: User = Depends(require_admin_access),
@@ -352,6 +376,21 @@ async def create_user(
     db: Session = Depends(get_db)
 ):
     """Create a new user"""
+    # Check user limit from license
+    from app.services.license_service import get_current_license
+    license_record = get_current_license(db)
+    if license_record and license_record.max_users:
+        super_admin_role = db.query(UserRole).filter(UserRole.name == 'super_admin').first()
+        active_count = db.query(User).filter(
+            User.is_active == True,
+            User.role_id != (super_admin_role.id if super_admin_role else -1)
+        ).count()
+        if active_count >= license_record.max_users:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"User limit reached ({active_count}/{license_record.max_users}). Upgrade your license to add more users."
+            )
+
     # Check if username or email already exists
     if db.query(User).filter(User.username == user_data.username).first():
         raise HTTPException(
@@ -629,7 +668,7 @@ async def archive_user(
             detail="User not found"
         )
 
-    if user.role.name == 'super_admin':
+    if user.has_role('super_admin'):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot archive a super admin account"

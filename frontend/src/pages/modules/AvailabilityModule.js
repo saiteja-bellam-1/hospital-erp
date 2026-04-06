@@ -246,7 +246,7 @@ const AvailabilityModule = () => {
     }
   };
 
-  if (!user || user.role !== 'doctor') {
+  if (!user || !(user.roles || [user.role]).includes('doctor')) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
         <Card className="w-96">

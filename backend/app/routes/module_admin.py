@@ -75,22 +75,26 @@ class SettingResponse(BaseModel):
 
 def check_module_permission(user: User, module_name: str, required_permission: str, db: Session):
     """Check if user has specific permission for a module"""
-    if user.role.name == 'super_admin':
+    if user.has_role('super_admin'):
         return True
-    
+
+    # Check permissions for all user roles
+    from app.models.user import UserRole
+    user_role_ids = [r.id for r in user.roles] if user.roles else [user.role_id]
     role_permissions = db.query(RoleModulePermission).filter(
-        RoleModulePermission.role_id == user.role.id,
+        RoleModulePermission.role_id.in_(user_role_ids),
         RoleModulePermission.module_name == module_name
-    ).first()
-    
+    ).all()
     if not role_permissions:
         return False
-        
-    try:
-        permissions = json.loads(role_permissions.permissions) if isinstance(role_permissions.permissions, str) else role_permissions.permissions
-        return required_permission in permissions
-    except:
-        return False
+    for rp in role_permissions:
+        try:
+            permissions = json.loads(rp.permissions) if isinstance(rp.permissions, str) else rp.permissions
+            if required_permission in permissions:
+                return True
+        except:
+            pass
+    return False
 
 def require_module_admin(module_name: str, permission: str):
     """Dependency factory for module-specific admin permissions"""

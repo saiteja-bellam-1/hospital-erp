@@ -25,10 +25,12 @@ import axios from 'axios';
 const AdminModule = () => {
   const { user } = useAuth();
   const { toast } = useToast();
+  const userRoles = user?.roles || [user?.role];
+  const hasRole = (r) => userRoles.includes(r);
   const [modules, setModules] = useState([]);
   const [users, setUsers] = useState([]);
   const [roles, setRoles] = useState([]);
-  const [activeTab, setActiveTab] = useState(user?.role === 'super_admin' ? 'modules' : 'users');
+  const [activeTab, setActiveTab] = useState(hasRole('super_admin') ? 'modules' : 'users');
   const [showUserForm, setShowUserForm] = useState(false);
   const [showRoleForm, setShowRoleForm] = useState(false);
   const [editingUser, setEditingUser] = useState(null);
@@ -37,6 +39,7 @@ const AdminModule = () => {
   const [confirmState, setConfirmState] = useState({ open: false });
   const [passwordResetUser, setPasswordResetUser] = useState(null);
   const [newPassword, setNewPassword] = useState('');
+  const [userLimit, setUserLimit] = useState(null);
 
   const [userForm, setUserForm] = useState({
     username: '',
@@ -63,14 +66,22 @@ const AdminModule = () => {
   });
 
   useEffect(() => {
-    if (user?.role === 'super_admin' || user?.role === 'hospital_admin') {
-      if (user?.role === 'super_admin') {
+    if (hasRole('super_admin') || hasRole('hospital_admin')) {
+      if (hasRole('super_admin')) {
         fetchModules();
       }
-      fetchUsers();
+      fetchUsers(); fetchUserLimit();
       fetchRoles();
+      fetchUserLimit();
     }
   }, [user]);
+
+  const fetchUserLimit = async () => {
+    try {
+      const res = await axios.get('/api/admin/user-limit');
+      setUserLimit(res.data);
+    } catch {}
+  };
 
   const fetchModules = async () => {
     try {
@@ -190,7 +201,7 @@ const AdminModule = () => {
         qualification: '',
         experience_years: ''
       });
-      fetchUsers();
+      fetchUsers(); fetchUserLimit();
     } catch (error) {
       console.error('Error creating/updating user:', error.response?.data || error);
       toast({
@@ -249,7 +260,7 @@ const AdminModule = () => {
             title: "Success",
             description: "User archived successfully"
           });
-          fetchUsers();
+          fetchUsers(); fetchUserLimit();
         } catch (error) {
           toast({
             variant: "destructive",
@@ -268,7 +279,7 @@ const AdminModule = () => {
         title: "Success",
         description: "User restored successfully"
       });
-      fetchUsers();
+      fetchUsers(); fetchUserLimit();
     } catch (error) {
       toast({
         variant: "destructive",
@@ -357,7 +368,7 @@ const AdminModule = () => {
     });
   };
 
-  if (!(user?.roles || [user?.role]).includes('super_admin') && !(user?.roles || [user?.role]).includes('hospital_admin')) {
+  if (!hasRole('super_admin') && !hasRole('hospital_admin')) {
     return (
       <div className="space-y-6">
         <h1 className="text-3xl font-bold text-gray-900">Access Denied</h1>
@@ -379,7 +390,7 @@ const AdminModule = () => {
       {/* Tab Navigation */}
       <div className="border-b border-gray-200">
         <nav className="-mb-px flex space-x-8">
-          {user?.role === 'super_admin' && (
+          {hasRole('super_admin') && (
             <button
               onClick={() => setActiveTab('modules')}
               className={`py-2 px-1 border-b-2 font-medium text-sm ${
@@ -403,7 +414,7 @@ const AdminModule = () => {
             <Users className="inline h-4 w-4 mr-2" />
             User Management
           </button>
-          {user?.role === 'super_admin' && (
+          {hasRole('super_admin') && (
             <button
               onClick={() => setActiveTab('roles')}
               className={`py-2 px-1 border-b-2 font-medium text-sm ${
@@ -420,7 +431,7 @@ const AdminModule = () => {
       </div>
 
       {/* Module Management Tab - Super Admin Only */}
-      {activeTab === 'modules' && user?.role === 'super_admin' && (
+      {activeTab === 'modules' && hasRole('super_admin') && (
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center">
@@ -468,31 +479,48 @@ const AdminModule = () => {
       {activeTab === 'users' && (
         <div className="space-y-6">
           <div className="flex justify-between items-center">
-            <h2 className="text-xl font-semibold">User Management</h2>
-            <Button
-              onClick={() => {
-                setShowUserForm(true);
-                setEditingUser(null);
-                setUserForm({
-                  username: '',
-                  email: '',
-                  password: '',
-                  first_name: '',
-                  last_name: '',
-                  phone: '',
-                  role_id: '',
-                  is_active: true,
-                  consultation_fee: '',
-                  specialization: '',
-                  qualification: '',
-                  experience_years: ''
-                });
-              }}
-              className="flex items-center"
-            >
-              <Plus className="h-4 w-4 mr-2" />
-              Add User
-            </Button>
+            <div className="flex items-center gap-3">
+              <h2 className="text-xl font-semibold">User Management</h2>
+              {userLimit && !userLimit.unlimited && (
+                <span className={`text-xs font-medium px-2 py-1 rounded-full ${
+                  userLimit.remaining === 0 ? 'bg-red-100 text-red-700' :
+                  userLimit.remaining <= 2 ? 'bg-amber-100 text-amber-700' :
+                  'bg-gray-100 text-gray-600'
+                }`}>
+                  {userLimit.active_users} / {userLimit.max_users} users
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              {userLimit && !userLimit.unlimited && userLimit.remaining === 0 && (
+                <p className="text-xs text-red-600">Limit reached. Upgrade license to add more.</p>
+              )}
+              <Button
+                onClick={() => {
+                  setShowUserForm(true);
+                  setEditingUser(null);
+                  setUserForm({
+                    username: '',
+                    email: '',
+                    password: '',
+                    first_name: '',
+                    last_name: '',
+                    phone: '',
+                    role_id: '',
+                    is_active: true,
+                    consultation_fee: '',
+                    specialization: '',
+                    qualification: '',
+                    experience_years: ''
+                  });
+                }}
+                className="flex items-center"
+                disabled={userLimit && !userLimit.unlimited && userLimit.remaining === 0}
+              >
+                <Plus className="h-4 w-4 mr-2" />
+                Add User
+              </Button>
+            </div>
           </div>
 
           {/* User Create/Edit Dialog */}
@@ -720,7 +748,7 @@ const AdminModule = () => {
       )}
 
       {/* Role Management Tab - Super Admin Only */}
-      {activeTab === 'roles' && user?.role === 'super_admin' && (
+      {activeTab === 'roles' && hasRole('super_admin') && (
         <div className="space-y-6">
           <div className="flex justify-between items-center">
             <h2 className="text-xl font-semibold">Role Management</h2>

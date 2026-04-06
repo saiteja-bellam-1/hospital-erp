@@ -6,9 +6,11 @@ import { Label } from '../../components/ui/label';
 import { Badge } from '../../components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select';
 import axios from 'axios';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../components/ui/dialog';
+import { Textarea } from '../../components/ui/textarea';
 import {
   Receipt, Search, Download, Filter, DollarSign, TrendingUp, Clock,
-  CheckCircle2, AlertCircle, Loader2, CalendarDays
+  CheckCircle2, AlertCircle, Loader2, CalendarDays, XCircle, Ban
 } from 'lucide-react';
 
 const BillingDashboard = () => {
@@ -26,6 +28,9 @@ const BillingDashboard = () => {
   const [paymentStatus, setPaymentStatus] = useState('all');
   const [doctorFilter, setDoctorFilter] = useState('all');
   const [referralFilter, setReferralFilter] = useState('all');
+  const [cancelBill, setCancelBill] = useState(null); // {bill_id, type, reference}
+  const [cancelReason, setCancelReason] = useState('');
+  const [cancelling, setCancelling] = useState(false);
   const [doctors, setDoctors] = useState([]);
   const [referrals, setReferrals] = useState([]);
 
@@ -180,6 +185,7 @@ const BillingDashboard = () => {
                   <SelectItem value="all">All</SelectItem>
                   <SelectItem value="paid">Paid</SelectItem>
                   <SelectItem value="pending">Pending</SelectItem>
+                  <SelectItem value="cancelled">Cancelled</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -240,12 +246,13 @@ const BillingDashboard = () => {
                     <th className="pb-2 pr-3">Doctor</th>
                     <th className="pb-2 pr-3">Referred By</th>
                     <th className="pb-2 pr-3">Status</th>
-                    <th className="pb-2">Method</th>
+                    <th className="pb-2 pr-3">Method</th>
+                    <th className="pb-2">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {bills.map((bill) => (
-                    <tr key={bill.id} className="border-b hover:bg-gray-50">
+                    <tr key={bill.id} className={`border-b hover:bg-gray-50 ${bill.payment_status === 'cancelled' ? 'opacity-60' : ''}`}>
                       <td className="py-2.5 pr-3 text-xs">{formatDate(bill.date)}</td>
                       <td className="py-2.5 pr-3">
                         <Badge variant="outline" className={`text-[10px] capitalize ${bill.type === 'consultation' ? 'border-blue-200 text-blue-700' : 'border-purple-200 text-purple-700'}`}>
@@ -267,11 +274,28 @@ const BillingDashboard = () => {
                       <td className="py-2.5 pr-3 text-xs text-gray-600">{bill.doctor_name || '-'}</td>
                       <td className="py-2.5 pr-3 text-xs text-gray-600">{bill.referred_by || '-'}</td>
                       <td className="py-2.5 pr-3">
-                        <Badge className={`text-[10px] ${bill.payment_status === 'paid' ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'}`}>
+                        <Badge className={`text-[10px] ${
+                          bill.payment_status === 'paid' ? 'bg-green-100 text-green-700' :
+                          bill.payment_status === 'cancelled' ? 'bg-red-100 text-red-700' :
+                          'bg-orange-100 text-orange-700'
+                        }`}>
                           {bill.payment_status}
                         </Badge>
+                        {bill.cancel_reason && (
+                          <p className="text-[9px] text-red-500 mt-0.5 max-w-[120px] truncate" title={`${bill.cancel_reason} — by ${bill.cancelled_by}`}>
+                            {bill.cancel_reason}
+                          </p>
+                        )}
                       </td>
-                      <td className="py-2.5 text-xs text-gray-500 capitalize">{bill.payment_method || '-'}</td>
+                      <td className="py-2.5 pr-3 text-xs text-gray-500 capitalize">{bill.payment_method || '-'}</td>
+                      <td className="py-2.5">
+                        {bill.payment_status !== 'cancelled' && bill.payment_status !== 'pending' && (
+                          <Button size="sm" variant="ghost" className="h-6 text-[10px] text-red-500 hover:text-red-700 hover:bg-red-50 px-2"
+                            onClick={() => { setCancelBill(bill); setCancelReason(''); }}>
+                            <Ban className="w-3 h-3 mr-0.5" /> Cancel
+                          </Button>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -280,6 +304,47 @@ const BillingDashboard = () => {
           )}
         </CardContent>
       </Card>
+
+      {/* Cancel Bill Dialog */}
+      <Dialog open={!!cancelBill} onOpenChange={(open) => { if (!open) setCancelBill(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Ban className="h-5 w-5 text-red-500" /> Cancel Bill
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            {cancelBill && (
+              <div className="bg-gray-50 rounded-lg p-3 space-y-1">
+                <p className="text-sm font-semibold">{cancelBill.patient_name}</p>
+                <p className="text-xs text-gray-500">{cancelBill.reference} — {cancelBill.items}</p>
+                <p className="text-sm font-semibold text-green-600">{formatCurrency(cancelBill.amount)}</p>
+              </div>
+            )}
+            <div>
+              <Label>Reason for cancellation *</Label>
+              <Textarea value={cancelReason} onChange={(e) => setCancelReason(e.target.value)}
+                placeholder="e.g. Duplicate bill, Patient refund, Wrong entry..." rows={3} />
+            </div>
+            <div className="flex justify-end gap-2 pt-2 border-t">
+              <Button variant="outline" onClick={() => setCancelBill(null)}>Close</Button>
+              <Button variant="destructive" disabled={cancelling || !cancelReason.trim()}
+                onClick={async () => {
+                  setCancelling(true);
+                  try {
+                    await axios.post(`/api/hospital/billing/cancel/${cancelBill.type}/${cancelBill.bill_id}`, { reason: cancelReason.trim() });
+                    setCancelBill(null);
+                    fetchBills();
+                  } catch (err) {
+                    alert(err.response?.data?.detail || 'Cancel failed');
+                  } finally { setCancelling(false); }
+                }}>
+                {cancelling ? 'Cancelling...' : 'Cancel Bill'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

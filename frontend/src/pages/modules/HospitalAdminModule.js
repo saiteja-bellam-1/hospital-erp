@@ -80,7 +80,8 @@ const HospitalAdminModule = () => {
   ];
 
   useEffect(() => {
-    if (user?.role === 'super_admin' || user?.role === 'hospital_admin') {
+    const userRoles = user?.roles || [user?.role];
+    if (userRoles.includes('super_admin') || userRoles.includes('hospital_admin')) {
       fetchHospitalInfo();
       fetchDoctors();
       fetchRegistrationFee();
@@ -245,7 +246,8 @@ const HospitalAdminModule = () => {
     setShowDoctorProfile(true);
   };
 
-  if (user?.role !== 'super_admin' && user?.role !== 'hospital_admin') {
+  const userRolesCheck = user?.roles || [user?.role];
+  if (!userRolesCheck.includes('super_admin') && !userRolesCheck.includes('hospital_admin')) {
     return (
       <div className="flex items-center justify-center h-64">
         <p className="text-gray-500">Access denied. Hospital admin privileges required.</p>

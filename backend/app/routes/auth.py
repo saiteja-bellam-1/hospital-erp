@@ -35,6 +35,9 @@ class LicenseInfo(BaseModel):
     message: str
     days_remaining: int
     features: list = []
+    expires_at: str = None
+    max_users: int = 0
+    seller_info: dict = None
 
 class TokenResponse(BaseModel):
     access_token: str
@@ -60,8 +63,15 @@ async def login(user_credentials: UserLogin, db: Session = Depends(get_db)):
             detail="Invalid credentials"
         )
 
-    # Check license validity
-    license_allowed, license_reason = is_license_valid_for_login(db, user.role.name)
+    # Check license validity — check all roles, allow if ANY role is permitted
+    license_allowed = False
+    license_reason = ""
+    for role_name in user.role_names:
+        allowed, reason = is_license_valid_for_login(db, role_name)
+        if allowed:
+            license_allowed = True
+            break
+        license_reason = reason
     if not license_allowed:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -99,6 +109,9 @@ async def login(user_credentials: UserLogin, db: Session = Depends(get_db)):
         message=lic_status["message"],
         days_remaining=lic_status["days_remaining"],
         features=lic_status.get("features", []),
+        expires_at=lic_status.get("expires_at"),
+        max_users=lic_status.get("max_users", 0),
+        seller_info=lic_status.get("seller_info"),
     )
 
     return TokenResponse(

@@ -8,6 +8,16 @@ from io import BytesIO
 from datetime import datetime
 import os
 
+
+def _get_uploads_base():
+    """Get the uploads directory path. Works in both dev and bundled (.exe) mode."""
+    try:
+        from app.utils.paths import get_uploads_dir
+        return get_uploads_dir()
+    except Exception:
+        return os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
+
+
 class PDFService:
     def __init__(self):
         self.styles = getSampleStyleSheet()
@@ -107,7 +117,7 @@ class PDFService:
         # ============================================================
         if include_header:
             logo_path = hospital_info.get('logo_url', '')
-            uploads_base = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
+            uploads_base = _get_uploads_base()
             has_logo = False
             full_logo_path = ''
             if logo_path:
@@ -431,7 +441,7 @@ class PDFService:
 
             # Try to load hospital logo
             logo_path = hospital_info.get('logo_url', '')
-            uploads_base = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
+            uploads_base = _get_uploads_base()
             has_logo = False
             full_logo_path = ''
             if logo_path:
@@ -850,7 +860,7 @@ class PDFService:
         # ============================================================
         if include_header:
             logo_path = lab_config.get('provider_logo', '') or hospital_info.get('logo_url', '')
-            uploads_base = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
+            uploads_base = _get_uploads_base()
 
             has_logo = False
             full_logo_path = ''
@@ -1224,7 +1234,7 @@ class PDFService:
         provider_email = lab_config.get('provider_email') or hospital_info.get('email', '')
 
         logo_path = lab_config.get('provider_logo', '')
-        uploads_base = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
+        uploads_base = _get_uploads_base()
         full_logo_path = ''
         has_logo = False
         if logo_path:
@@ -1511,7 +1521,7 @@ class PDFService:
         # SIGNATURES (once at the end)
         # ============================================================
         elements.append(Spacer(1, 30))
-        uploads_base = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
+        uploads_base = _get_uploads_base()
 
         # Collect unique technician names from all reports
         tech_names = list(dict.fromkeys(r.get('technician_name', '') for r in reports_list if r.get('technician_name')))
