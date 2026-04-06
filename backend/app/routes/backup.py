@@ -2,7 +2,7 @@
 Backup management API endpoints.
 """
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List
 import os
 from app.models.user import User
@@ -317,3 +317,289 @@ async def stop_mirror(current_user: User = Depends(get_current_user)):
     from app.utils.config import stop_mirror_backup
     stop_mirror_backup()
     return {"message": "Mirror backup stopped"}
+
+
+# ============================================================
+# Scheduled Snapshot Backup
+# ============================================================
+
+class SnapshotConfigUpdate(BaseModel):
+    interval_minutes: int = Field(default=30, ge=15, le=360)
+    retention_hours: int = Field(default=72, ge=1, le=720)
+
+
+@router.get("/snapshot-status")
+async def get_snapshot_status(current_user: User = Depends(get_current_user)):
+    _require_admin(current_user)
+    from app.utils.config import get_snapshot_status, get_snapshot_info, get_backup_locations
+    status = get_snapshot_status()
+    status["info"] = get_snapshot_info(get_backup_locations())
+    return status
+
+
+@router.post("/snapshot/start")
+async def start_snapshots(current_user: User = Depends(get_current_user)):
+    _require_admin(current_user)
+    from app.utils.config import start_snapshot_backup, load_config
+    config = load_config()
+    interval = config.get("snapshot_interval_minutes", 30)
+    start_snapshot_backup(interval_minutes=interval)
+    return {"message": f"Snapshot backup started (every {interval} min)"}
+
+
+@router.post("/snapshot/stop")
+async def stop_snapshots(current_user: User = Depends(get_current_user)):
+    _require_admin(current_user)
+    from app.utils.config import stop_snapshot_backup
+    stop_snapshot_backup()
+    return {"message": "Snapshot backup stopped"}
+
+
+@router.put("/snapshot-config")
+async def update_snapshot_config(
+    data: SnapshotConfigUpdate,
+    current_user: User = Depends(get_current_user)
+):
+    _require_admin(current_user)
+    from app.utils.config import load_config, save_config, stop_snapshot_backup, start_snapshot_backup, _snapshot_running
+
+    config = load_config()
+    config["snapshot_interval_minutes"] = data.interval_minutes
+    config["snapshot_retention_hours"] = data.retention_hours
+    save_config(config)
+
+    # Restart if running to apply new interval
+    if _snapshot_running:
+        stop_snapshot_backup()
+        import time
+        time.sleep(0.5)
+        start_snapshot_backup(interval_minutes=data.interval_minutes)
+
+    return {"message": f"Snapshot config updated: every {data.interval_minutes} min, retain {data.retention_hours}h"}
+
+
+# ============================================================
+# Restore from Backup
+# ============================================================
+
+_restore_in_progress = False
+
+
+class RestoreRequest(BaseModel):
+    backup_path: str
+    backup_type: str  # manual, snapshot, mirror
+
+
+@router.get("/restore/list")
+async def list_restore_points(current_user: User = Depends(get_current_user)):
+    """List all available backup files that can be restored."""
+    _require_admin(current_user)
+    import datetime as dt
+    from app.utils.config import get_backup_locations, get_configured_db_path, SNAPSHOT_FOLDER
+
+    backup_locations = get_backup_locations()
+    current_db = os.path.abspath(get_configured_db_path())
+    restore_points = []
+
+    for location in backup_locations:
+        # Manual backups: kthealth_erp_backup_{timestamp}/kthealth_erp.db
+        for entry in sorted(os.listdir(location), reverse=True) if os.path.isdir(location) else []:
+            if entry.startswith("kthealth_erp_backup_"):
+                db_file = os.path.join(location, entry, "kthealth_erp.db")
+                if os.path.isfile(db_file) and os.path.abspath(db_file) != current_db:
+                    has_uploads = os.path.isdir(os.path.join(location, entry, "uploads"))
+                    stat = os.stat(db_file)
+                    restore_points.append({
+                        "type": "manual",
+                        "path": db_file,
+                        "folder": os.path.join(location, entry),
+                        "filename": entry,
+                        "size_mb": round(stat.st_size / (1024 * 1024), 2),
+                        "created": dt.datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                        "has_uploads": has_uploads,
+                    })
+
+        # Snapshots: kthealth_erp_snapshots/snapshot_{timestamp}.db
+        snap_dir = os.path.join(location, SNAPSHOT_FOLDER)
+        if os.path.isdir(snap_dir):
+            for fname in sorted(os.listdir(snap_dir), reverse=True):
+                if fname.startswith("snapshot_") and fname.endswith(".db"):
+                    fpath = os.path.join(snap_dir, fname)
+                    if os.path.abspath(fpath) != current_db:
+                        stat = os.stat(fpath)
+                        restore_points.append({
+                            "type": "snapshot",
+                            "path": fpath,
+                            "folder": snap_dir,
+                            "filename": fname,
+                            "size_mb": round(stat.st_size / (1024 * 1024), 2),
+                            "created": dt.datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                            "has_uploads": False,
+                        })
+
+        # Mirror: kthealth_erp_mirror/kthealth_erp.db
+        mirror_db = os.path.join(location, "kthealth_erp_mirror", "kthealth_erp.db")
+        if os.path.isfile(mirror_db) and os.path.abspath(mirror_db) != current_db:
+            has_uploads = os.path.isdir(os.path.join(location, "kthealth_erp_mirror", "uploads"))
+            stat = os.stat(mirror_db)
+            restore_points.append({
+                "type": "mirror",
+                "path": mirror_db,
+                "folder": os.path.join(location, "kthealth_erp_mirror"),
+                "filename": "kthealth_erp.db (mirror)",
+                "size_mb": round(stat.st_size / (1024 * 1024), 2),
+                "created": dt.datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                "has_uploads": has_uploads,
+            })
+
+    # Sort by created date descending
+    restore_points.sort(key=lambda r: r["created"], reverse=True)
+    return {"restore_points": restore_points}
+
+
+@router.post("/restore")
+async def restore_database(
+    data: RestoreRequest,
+    current_user: User = Depends(get_current_user)
+):
+    """Restore database from a backup file."""
+    _require_admin(current_user)
+    import sqlite3
+    import shutil
+    import time
+    import datetime as dt
+    from app.utils.config import (
+        get_configured_db_path, get_backup_locations,
+        stop_mirror_backup, start_mirror_backup, get_mirror_status,
+        stop_snapshot_backup, start_snapshot_backup, get_snapshot_status,
+        load_config,
+    )
+    from app.utils.paths import get_uploads_dir
+
+    global _restore_in_progress
+    if _restore_in_progress:
+        raise HTTPException(status_code=409, detail="A restore is already in progress")
+
+    backup_path = data.backup_path
+    current_db = get_configured_db_path()
+
+    # --- Validations ---
+    if not os.path.isfile(backup_path):
+        raise HTTPException(status_code=400, detail="Backup file not found")
+
+    if os.path.abspath(backup_path) == os.path.abspath(current_db):
+        raise HTTPException(status_code=400, detail="Cannot restore from the active database file")
+
+    if os.path.getsize(backup_path) == 0:
+        raise HTTPException(status_code=400, detail="Backup file is empty")
+
+    # SQLite header check
+    with open(backup_path, "rb") as f:
+        header = f.read(16)
+    if not header.startswith(b"SQLite format 3"):
+        raise HTTPException(status_code=400, detail="File is not a valid SQLite database")
+
+    # Integrity check
+    try:
+        conn = sqlite3.connect(backup_path)
+        result = conn.execute("PRAGMA integrity_check").fetchone()
+        conn.close()
+        if result[0] != "ok":
+            raise HTTPException(status_code=400, detail=f"Backup file integrity check failed: {result[0]}")
+    except sqlite3.Error as e:
+        raise HTTPException(status_code=400, detail=f"Cannot read backup file: {e}")
+
+    _restore_in_progress = True
+    try:
+        # --- 1. Pause background threads ---
+        mirror_was_running = get_mirror_status()["running"]
+        snapshot_was_running = get_snapshot_status()["running"]
+        if mirror_was_running:
+            stop_mirror_backup()
+        if snapshot_was_running:
+            stop_snapshot_backup()
+        time.sleep(1)  # Let threads finish current cycle
+
+        # --- 2. Pre-restore safety backup ---
+        backup_locations = get_backup_locations()
+        pre_restore_name = f"pre_restore_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+        pre_restore_saved = False
+
+        if backup_locations and os.path.isfile(current_db):
+            pre_restore_dir = os.path.join(backup_locations[0], "kthealth_erp_pre_restore")
+            try:
+                os.makedirs(pre_restore_dir, exist_ok=True)
+                pre_restore_path = os.path.join(pre_restore_dir, pre_restore_name)
+                src = sqlite3.connect(current_db)
+                dst = sqlite3.connect(pre_restore_path)
+                src.backup(dst)
+                dst.close()
+                src.close()
+                pre_restore_saved = True
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to create pre-restore backup: {e}")
+
+        # --- 3. Restore DB using SQLite backup API ---
+        try:
+            src = sqlite3.connect(backup_path)
+            dst = sqlite3.connect(current_db)
+            src.backup(dst)
+            dst.close()
+            src.close()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Database restore failed: {e}")
+
+        # --- 4. Restore uploads if available ---
+        backup_folder = os.path.dirname(backup_path)
+        backup_uploads = os.path.join(backup_folder, "uploads")
+        uploads_restored = False
+        if os.path.isdir(backup_uploads):
+            try:
+                uploads_dir = get_uploads_dir()
+                shutil.copytree(backup_uploads, uploads_dir, dirs_exist_ok=True)
+                uploads_restored = True
+            except Exception:
+                pass  # Non-critical — DB is already restored
+
+        # --- 5. Reinitialize engine + run migrations ---
+        from config.database import reinitialize_engine
+        reinitialize_engine()
+
+        try:
+            from migrate_patient_fields import migrate
+            migrate()
+        except Exception:
+            pass
+
+        # --- 6. Restart background threads ---
+        config = load_config()
+        if mirror_was_running and backup_locations:
+            start_mirror_backup(interval_seconds=60)
+        if snapshot_was_running and backup_locations:
+            snap_interval = config.get("snapshot_interval_minutes", 30)
+            start_snapshot_backup(interval_minutes=snap_interval)
+
+        # --- 7. Audit log (to restored DB) ---
+        try:
+            from config.database import get_db
+            from app.services.audit_service import log_action
+            db = next(get_db())
+            log_action(db, current_user, "restore_database", "admin", "Database", None,
+                f"Restored database from {data.backup_type} backup: {os.path.basename(backup_path)}",
+                details={"backup_path": backup_path, "backup_type": data.backup_type,
+                         "pre_restore_backup": pre_restore_name if pre_restore_saved else None})
+            db.close()
+        except Exception:
+            pass
+
+        return {
+            "message": "Database restored successfully",
+            "backup_used": os.path.basename(backup_path),
+            "backup_type": data.backup_type,
+            "pre_restore_backup": pre_restore_name if pre_restore_saved else None,
+            "uploads_restored": uploads_restored,
+            "force_logout": True,
+        }
+
+    finally:
+        _restore_in_progress = False

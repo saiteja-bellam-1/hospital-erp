@@ -88,6 +88,7 @@ const Dashboard = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showSupportPopup, setShowSupportPopup] = useState(false);
   const [pwaInstallPrompt, setPwaInstallPrompt] = useState(null);
+  const [appVersion, setAppVersion] = useState('');
 
   // Capture the PWA install prompt
   useEffect(() => {
@@ -135,6 +136,7 @@ const Dashboard = () => {
     if (user) {
       fetchEnabledModules();
       refreshLicenseStatus();
+      axios.get('/api/system/version').then(r => setAppVersion(r.data.version)).catch(() => {});
     }
   }, [user]);
 
@@ -587,6 +589,13 @@ const Dashboard = () => {
                     </div>
                   </div>
                 </div>
+
+                {/* Version */}
+                {appVersion && (
+                  <p className="text-center text-[10px] text-gray-400 pt-2 border-t border-gray-100">
+                    KT HEALTH ERP v{appVersion}
+                  </p>
+                )}
               </div>
             </div>
           </>

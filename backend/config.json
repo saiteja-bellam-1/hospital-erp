@@ -4,5 +4,7 @@
   "backup_locations": [
     "/Users/saiteja/Documents/GitHub/claude-skills-marketing"
   ],
-  "hospital_name": "Testing"
+  "hospital_name": "Testing",
+  "snapshot_interval_minutes": 30,
+  "snapshot_retention_hours": 72
 }

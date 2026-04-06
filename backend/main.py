@@ -88,6 +88,16 @@ async def startup_event():
                 print("No backup locations configured — mirror backup not started")
         except Exception as e:
             print(f"Mirror backup note: {e}")
+        # Start scheduled snapshot backup
+        try:
+            from app.utils.config import start_snapshot_backup, load_config as _load_cfg
+            _cfg = _load_cfg()
+            snap_interval = _cfg.get("snapshot_interval_minutes", 30)
+            if locations:
+                start_snapshot_backup(interval_minutes=snap_interval)
+                print(f"Snapshot backup started — every {snap_interval} min")
+        except Exception as e:
+            print(f"Snapshot backup note: {e}")
     else:
         print("Setup not complete — waiting for setup wizard")
 

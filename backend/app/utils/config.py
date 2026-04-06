@@ -220,3 +220,138 @@ def get_mirror_status():
         "last_sync": _last_mirror_sync,
         "last_error": _last_mirror_error,
     }
+
+
+# ============================================================
+# Scheduled Snapshot Backup
+# ============================================================
+
+_snapshot_thread = None
+_snapshot_running = False
+_last_snapshot_time = None
+_last_snapshot_error = None
+
+SNAPSHOT_FOLDER = "kthealth_erp_snapshots"
+
+
+def run_snapshot():
+    """Take a timestamped snapshot of the DB to all backup locations, then cleanup old ones."""
+    import sqlite3
+    global _last_snapshot_time, _last_snapshot_error
+
+    db_path = get_configured_db_path()
+    config = load_config()
+    backup_locations = config.get("backup_locations", [])
+    retention_hours = config.get("snapshot_retention_hours", 72)
+
+    if not os.path.isfile(db_path) or not backup_locations:
+        return
+
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"snapshot_{timestamp}.db"
+
+    for location in backup_locations:
+        try:
+            snap_dir = os.path.join(location, SNAPSHOT_FOLDER)
+            os.makedirs(snap_dir, exist_ok=True)
+
+            dest_db = os.path.join(snap_dir, filename)
+            source_conn = sqlite3.connect(db_path)
+            dest_conn = sqlite3.connect(dest_db)
+            source_conn.backup(dest_conn)
+            dest_conn.close()
+            source_conn.close()
+
+            # Cleanup old snapshots
+            _cleanup_snapshots(snap_dir, retention_hours)
+
+            _last_snapshot_time = datetime.datetime.now().isoformat()
+            _last_snapshot_error = None
+        except Exception as e:
+            _last_snapshot_error = str(e)
+
+
+def _cleanup_snapshots(snap_dir, retention_hours):
+    """Delete snapshot files older than retention_hours."""
+    cutoff = datetime.datetime.now() - datetime.timedelta(hours=retention_hours)
+    for fname in os.listdir(snap_dir):
+        if not fname.startswith("snapshot_") or not fname.endswith(".db"):
+            continue
+        fpath = os.path.join(snap_dir, fname)
+        try:
+            mtime = datetime.datetime.fromtimestamp(os.path.getmtime(fpath))
+            if mtime < cutoff:
+                os.remove(fpath)
+        except Exception:
+            pass
+
+
+def get_snapshot_info(backup_locations):
+    """Get snapshot stats across all backup locations."""
+    total_count = 0
+    total_size_mb = 0.0
+    snapshots = []
+
+    for location in backup_locations:
+        snap_dir = os.path.join(location, SNAPSHOT_FOLDER)
+        if not os.path.isdir(snap_dir):
+            continue
+        for fname in sorted(os.listdir(snap_dir), reverse=True):
+            if not fname.startswith("snapshot_") or not fname.endswith(".db"):
+                continue
+            fpath = os.path.join(snap_dir, fname)
+            size = os.path.getsize(fpath)
+            total_count += 1
+            total_size_mb += size / (1024 * 1024)
+            if len(snapshots) < 10:  # Return last 10
+                snapshots.append({
+                    "filename": fname,
+                    "location": location,
+                    "size_mb": round(size / (1024 * 1024), 2),
+                    "created": datetime.datetime.fromtimestamp(os.path.getmtime(fpath)).isoformat(),
+                })
+
+    return {
+        "total_count": total_count,
+        "total_size_mb": round(total_size_mb, 2),
+        "recent": snapshots,
+    }
+
+
+def start_snapshot_backup(interval_minutes=30):
+    """Start background thread that takes DB snapshots every N minutes."""
+    import threading
+    global _snapshot_thread, _snapshot_running
+
+    if _snapshot_running:
+        return
+
+    _snapshot_running = True
+
+    def _loop():
+        import time
+        while _snapshot_running:
+            try:
+                run_snapshot()
+            except Exception:
+                pass
+            time.sleep(interval_minutes * 60)
+
+    _snapshot_thread = threading.Thread(target=_loop, daemon=True, name="snapshot-backup")
+    _snapshot_thread.start()
+
+
+def stop_snapshot_backup():
+    global _snapshot_running
+    _snapshot_running = False
+
+
+def get_snapshot_status():
+    config = load_config()
+    return {
+        "running": _snapshot_running,
+        "last_snapshot": _last_snapshot_time,
+        "last_error": _last_snapshot_error,
+        "interval_minutes": config.get("snapshot_interval_minutes", 30),
+        "retention_hours": config.get("snapshot_retention_hours", 72),
+    }

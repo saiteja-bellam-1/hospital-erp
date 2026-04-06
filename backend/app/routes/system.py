@@ -47,6 +47,13 @@ async def get_enabled_modules(
     return result
 
 
+@router.get("/version")
+async def get_app_version():
+    """Get application version. Public — no auth required."""
+    from main import app as _app
+    return {"version": _app.version}
+
+
 @router.get("/desktop-shortcut")
 async def download_desktop_shortcut(request: Request, current_user: User = Depends(get_current_user)):
     """Generate a .url shortcut file pointing to this server. Works for all users (server + LAN clients)."""
