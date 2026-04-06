@@ -35,9 +35,9 @@ class LicenseInfo(BaseModel):
     message: str
     days_remaining: int
     features: list = []
-    expires_at: str = None
+    expires_at: Optional[str] = None
     max_users: int = 0
-    seller_info: dict = None
+    seller_info: Optional[dict] = None
 
 class TokenResponse(BaseModel):
     access_token: str
