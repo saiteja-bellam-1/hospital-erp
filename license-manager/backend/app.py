@@ -2,7 +2,7 @@
 KT HEALTH ERP — License Manager
 Standalone internal tool for generating and managing license files.
 """
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response
@@ -110,6 +110,12 @@ def init_db():
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    """)
     # Add customer_id column to licenses if missing (migration for existing DBs)
     try:
         conn.execute("ALTER TABLE licenses ADD COLUMN customer_id INTEGER REFERENCES customers(id)")
@@ -209,10 +215,16 @@ class LicenseCreate(BaseModel):
     modules: List[str] = []
     notes: Optional[str] = None
     seller: Optional[SellerInfo] = None
+    gdrive_backup_enabled: bool = False
 
 
 class LicenseRenew(BaseModel):
     days: int = Field(default=365, ge=1)
+    plan: Optional[str] = None
+    max_users: Optional[int] = None
+    features: Optional[List[str]] = None
+    seller: Optional[SellerInfo] = None
+    gdrive_backup_enabled: Optional[bool] = None
 
 
 # ============================================================
@@ -303,6 +315,21 @@ def create_license(data: LicenseCreate):
     if data.seller:
         license_data["seller"] = data.seller.model_dump()
 
+    # Embed Google Drive backup config if enabled
+    if data.gdrive_backup_enabled:
+        conn2 = get_db()
+        folder_id = conn2.execute("SELECT value FROM settings WHERE key='gdrive_folder_id'").fetchone()
+        rt = conn2.execute("SELECT value FROM settings WHERE key='gdrive_refresh_token'").fetchone()
+        ci = conn2.execute("SELECT value FROM settings WHERE key='gdrive_client_id'").fetchone()
+        cs = conn2.execute("SELECT value FROM settings WHERE key='gdrive_client_secret'").fetchone()
+        conn2.close()
+        if folder_id and folder_id[0] and rt and rt[0] and ci and cs:
+            license_data["gdrive_backup_enabled"] = True
+            license_data["gdrive_folder_id"] = folder_id[0]
+            license_data["gdrive_refresh_token"] = rt[0]
+            license_data["gdrive_client_id"] = ci[0]
+            license_data["gdrive_client_secret"] = cs[0]
+
     lic_content = sign_license_data(license_data)
 
     conn = get_db()
@@ -334,17 +361,56 @@ def renew_license(license_id: str, data: LicenseRenew):
     now = datetime.now(timezone.utc)
     new_license_id = str(uuid.uuid4())
 
+    # Use provided values or fall back to old license values
+    new_plan = data.plan or row["plan"]
+    new_max_users = data.max_users if data.max_users is not None else row["max_users"]
+    old_features = json.loads(row["features"]) if row["features"] else []
+    new_features = data.features if data.features is not None else old_features
+
     license_data = {
         "license_id": new_license_id,
         "hospital_id": row["hospital_id"],
         "hospital_name": row["hospital_name"],
         "machine_id": row["machine_id"],
-        "plan": row["plan"],
-        "max_users": row["max_users"],
-        "features": json.loads(row["features"]) if row["features"] else [],
+        "plan": new_plan,
+        "max_users": new_max_users,
+        "features": new_features,
         "issued_at": now.isoformat(),
         "expires_at": (now + timedelta(days=data.days)).isoformat(),
     }
+
+    # Seller info
+    if data.seller:
+        license_data["seller"] = data.seller.model_dump()
+
+    # Google Drive backup config
+    gdrive_enabled = data.gdrive_backup_enabled
+    if gdrive_enabled is None:
+        # Check if old license had gdrive (look in lic_file_content)
+        try:
+            old_lic = row["lic_file_content"]
+            if old_lic:
+                import base64
+                old_data = json.loads(base64.b64decode(old_lic.split('\n')[0]).decode())
+                gdrive_enabled = old_data.get("gdrive_backup_enabled", False)
+        except Exception:
+            gdrive_enabled = False
+
+    if gdrive_enabled:
+        conn2 = get_db()
+        sa_json = conn2.execute("SELECT value FROM settings WHERE key='gdrive_service_account_json'").fetchone()
+        folder_id = conn2.execute("SELECT value FROM settings WHERE key='gdrive_folder_id'").fetchone()
+        conn2.close()
+        if sa_json and folder_id:
+            license_data["gdrive_backup_enabled"] = True
+            license_data["gdrive_folder_id"] = folder_id[0]
+            rt = conn2.execute("SELECT value FROM settings WHERE key='gdrive_refresh_token'").fetchone()
+            ci = conn2.execute("SELECT value FROM settings WHERE key='gdrive_client_id'").fetchone()
+            cs = conn2.execute("SELECT value FROM settings WHERE key='gdrive_client_secret'").fetchone()
+            if rt and rt[0] and ci and cs:
+                license_data["gdrive_refresh_token"] = rt[0]
+                license_data["gdrive_client_id"] = ci[0]
+                license_data["gdrive_client_secret"] = cs[0]
 
     lic_content = sign_license_data(license_data)
 
@@ -358,8 +424,8 @@ def renew_license(license_id: str, data: LicenseRenew):
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
     """, (
         new_license_id, row["hospital_id"], row["hospital_name"], row["machine_id"],
-        row["plan"], row["max_users"],
-        row["features"], row["modules"],
+        new_plan, new_max_users,
+        json.dumps(new_features), row["modules"],
         now.isoformat(), (now + timedelta(days=data.days)).isoformat(),
         data.days, lic_content, f"Renewed from {license_id}",
     ))
@@ -549,6 +615,161 @@ def delete_seller(seller_id: int):
     conn.commit()
     conn.close()
     return {"message": "Seller deactivated"}
+
+
+# ============================================================
+# Google Drive Settings Endpoints (OAuth only)
+# ============================================================
+
+@app.get("/api/settings/gdrive")
+def get_gdrive_settings():
+    conn = get_db()
+    folder_id = conn.execute("SELECT value FROM settings WHERE key='gdrive_folder_id'").fetchone()
+    refresh_token = conn.execute("SELECT value FROM settings WHERE key='gdrive_refresh_token'").fetchone()
+    client_id = conn.execute("SELECT value FROM settings WHERE key='gdrive_client_id'").fetchone()
+    conn.close()
+    connected = bool(refresh_token and refresh_token[0] and client_id)
+    return {
+        "configured": bool(folder_id and folder_id[0] and connected),
+        "connected": connected,
+        "has_credentials": bool(client_id),
+        "folder_id": folder_id[0] if folder_id else "",
+    }
+
+
+@app.post("/api/settings/gdrive")
+def update_gdrive_settings(data: dict):
+    conn = get_db()
+    if "folder_id" in data:
+        conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('gdrive_folder_id', ?)", (data["folder_id"],))
+    conn.commit()
+    conn.close()
+    return {"message": "Settings updated"}
+
+
+@app.post("/api/settings/gdrive/oauth-credentials")
+def save_oauth_credentials(data: dict):
+    """Save OAuth client ID and secret from Google Cloud Console."""
+    client_id = data.get("client_id", "").strip()
+    client_secret = data.get("client_secret", "").strip()
+    if not client_id or not client_secret:
+        raise HTTPException(status_code=400, detail="Both client_id and client_secret required")
+    conn = get_db()
+    conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('gdrive_client_id', ?)", (client_id,))
+    conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('gdrive_client_secret', ?)", (client_secret,))
+    conn.commit()
+    conn.close()
+    return {"message": "OAuth credentials saved"}
+
+
+@app.get("/api/settings/gdrive/auth-url")
+def get_gdrive_auth_url():
+    """Generate Google OAuth URL for admin to authorize Drive access."""
+    conn = get_db()
+    client_id = conn.execute("SELECT value FROM settings WHERE key='gdrive_client_id'").fetchone()
+    conn.close()
+    if not client_id:
+        raise HTTPException(status_code=400, detail="Set OAuth Client ID first")
+    redirect_uri = "http://localhost:9000/api/settings/gdrive/oauth-callback"
+    return {"auth_url": (
+        f"https://accounts.google.com/o/oauth2/v2/auth?client_id={client_id[0]}"
+        f"&redirect_uri={redirect_uri}&response_type=code"
+        f"&scope=https://www.googleapis.com/auth/drive&access_type=offline&prompt=consent"
+    )}
+
+
+@app.get("/api/settings/gdrive/oauth-callback")
+def gdrive_oauth_callback(code: str = ""):
+    """Handle Google OAuth callback — exchange code for refresh token."""
+    from starlette.responses import HTMLResponse
+    if not code:
+        return HTMLResponse("<h3>Error: No authorization code received</h3>")
+
+    conn = get_db()
+    client_id = conn.execute("SELECT value FROM settings WHERE key='gdrive_client_id'").fetchone()
+    client_secret = conn.execute("SELECT value FROM settings WHERE key='gdrive_client_secret'").fetchone()
+    conn.close()
+    if not client_id or not client_secret:
+        return HTMLResponse("<h3>Error: OAuth credentials not configured</h3>")
+
+    import requests as req
+    resp = req.post("https://oauth2.googleapis.com/token", data={
+        "code": code, "client_id": client_id[0], "client_secret": client_secret[0],
+        "redirect_uri": "http://localhost:9000/api/settings/gdrive/oauth-callback",
+        "grant_type": "authorization_code",
+    }, timeout=15)
+    if resp.status_code != 200:
+        return HTMLResponse(f"<h3>Authorization failed</h3><pre>{resp.text[:500]}</pre>")
+
+    tokens = resp.json()
+    refresh_token = tokens.get("refresh_token", "")
+    if not refresh_token:
+        return HTMLResponse("<h3>Error: No refresh token received. Try revoking access and reconnecting.</h3>")
+
+    conn = get_db()
+    conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('gdrive_refresh_token', ?)", (refresh_token,))
+    conn.commit()
+    conn.close()
+
+    return HTMLResponse(
+        "<html><body style='font-family:sans-serif;text-align:center;padding:60px'>"
+        "<h2 style='color:#10b981'>Google Drive Connected!</h2>"
+        "<p style='color:#666'>Refresh token saved. You can close this tab.</p>"
+        "<script>setTimeout(()=>window.close(),3000)</script></body></html>"
+    )
+
+
+@app.post("/api/settings/gdrive/disconnect")
+def disconnect_gdrive():
+    """Remove OAuth tokens."""
+    conn = get_db()
+    conn.execute("DELETE FROM settings WHERE key='gdrive_refresh_token'")
+    conn.commit()
+    conn.close()
+    return {"message": "Google Drive disconnected"}
+
+
+@app.get("/api/settings/gdrive/health")
+def check_gdrive_health():
+    """Test Google Drive connection using OAuth refresh token."""
+    conn = get_db()
+    folder_id_row = conn.execute("SELECT value FROM settings WHERE key='gdrive_folder_id'").fetchone()
+    refresh_token = conn.execute("SELECT value FROM settings WHERE key='gdrive_refresh_token'").fetchone()
+    client_id = conn.execute("SELECT value FROM settings WHERE key='gdrive_client_id'").fetchone()
+    client_secret = conn.execute("SELECT value FROM settings WHERE key='gdrive_client_secret'").fetchone()
+    conn.close()
+
+    if not folder_id_row or not folder_id_row[0]:
+        return {"healthy": False, "error": "No folder ID configured"}
+    if not refresh_token or not refresh_token[0]:
+        return {"healthy": False, "error": "Not connected. Click 'Connect Google Drive' first."}
+    if not client_id or not client_secret:
+        return {"healthy": False, "error": "OAuth credentials not configured"}
+
+    import requests as req
+    try:
+        resp = req.post("https://oauth2.googleapis.com/token", data={
+            "grant_type": "refresh_token", "refresh_token": refresh_token[0],
+            "client_id": client_id[0], "client_secret": client_secret[0],
+        }, timeout=10)
+        if resp.status_code != 200:
+            return {"healthy": False, "error": f"Token refresh failed ({resp.status_code}). Reconnect Google Drive."}
+
+        access_token = resp.json()["access_token"]
+        folder_resp = req.get(
+            f"https://www.googleapis.com/drive/v3/files/{folder_id_row[0]}",
+            params={"fields": "id,name,mimeType", "supportsAllDrives": "true"},
+            headers={"Authorization": f"Bearer {access_token}"}, timeout=10,
+        )
+        if folder_resp.status_code == 404:
+            return {"healthy": False, "error": "Folder not found. Check folder ID."}
+        if folder_resp.status_code != 200:
+            return {"healthy": False, "error": f"Folder access failed ({folder_resp.status_code})"}
+
+        fi = folder_resp.json()
+        return {"healthy": True, "folder_name": fi.get("name"), "folder_id": folder_id_row[0]}
+    except Exception as e:
+        return {"healthy": False, "error": str(e)}
 
 
 # ============================================================

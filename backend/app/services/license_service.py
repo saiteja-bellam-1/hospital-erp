@@ -8,6 +8,19 @@ STATUS_ACTIVE = "active"
 STATUS_EXPIRING_SOON = "expiring_soon"
 STATUS_GRACE_PERIOD = "grace_period"
 STATUS_EXPIRED = "expired"
+
+
+def _build_gdrive_config(license_data: dict):
+    """Extract Google Drive backup config from license data (OAuth only)."""
+    if license_data.get("gdrive_backup_enabled") and license_data.get("gdrive_refresh_token"):
+        return {
+            "enabled": True,
+            "folder_id": license_data.get("gdrive_folder_id"),
+            "refresh_token": license_data["gdrive_refresh_token"],
+            "client_id": license_data.get("gdrive_client_id"),
+            "client_secret": license_data.get("gdrive_client_secret"),
+        }
+    return None
 STATUS_NO_LICENSE = "no_license"
 
 EXPIRING_SOON_DAYS = 30
@@ -111,6 +124,7 @@ def upload_license(db: Session, file_content: str, uploaded_by: int = None) -> d
         existing.max_users = license_data.get("max_users", existing.max_users)
         existing.features = license_data.get("features", existing.features)
         existing.seller_info = license_data.get("seller", existing.seller_info)
+        existing.gdrive_config = _build_gdrive_config(license_data)
         existing.issued_at = issued_at
         existing.expires_at = expires_at
         existing.status = status
@@ -127,6 +141,7 @@ def upload_license(db: Session, file_content: str, uploaded_by: int = None) -> d
             max_users=license_data.get("max_users", 50),
             features=license_data.get("features", []),
             seller_info=license_data.get("seller", None),
+            gdrive_config=_build_gdrive_config(license_data),
             issued_at=issued_at,
             expires_at=expires_at,
             status=status,

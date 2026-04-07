@@ -88,16 +88,18 @@ function App() {
   const [statusFilter, setStatusFilter] = useState('all');
   const [showForm, setShowForm] = useState(false);
   const [showRenew, setShowRenew] = useState(null);
-  const [renewDays, setRenewDays] = useState(365);
+  const [renewForm, setRenewForm] = useState({ days: 365, plan: 'standard', max_users: 50, features: [], gdrive_backup_enabled: false, seller_id: '' });
   const [form, setForm] = useState({
     hospital_id: '', hospital_name: '', machine_id: '', plan: 'standard',
     max_users: 50, days: 365,
     features: ['outpatient', 'lab', 'ehr', 'admin'],
     modules: [], notes: '',
-    seller_id: '', seller_name: '', seller_address: '', seller_phone: ''
+    seller_id: '', seller_name: '', seller_address: '', seller_phone: '',
+    gdrive_backup_enabled: false
   });
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState(null);
+  const [gdriveSettings, setGdriveSettings] = useState(null);
 
   // Customer state
   const [customers, setCustomers] = useState([]);
@@ -156,7 +158,11 @@ function App() {
     try { const r = await fetch(`${API}/sellers`); setSellers(await r.json()); } catch {}
   }, []);
 
-  useEffect(() => { fetchDash(); }, [fetchDash]);
+  const fetchGdriveSettings = async () => {
+    try { const r = await fetch(`${API}/settings/gdrive`); setGdriveSettings(await r.json()); } catch {}
+  };
+
+  useEffect(() => { fetchDash(); fetchGdriveSettings(); }, [fetchDash]);
   useEffect(() => { fetchLicenses(); }, [fetchLicenses]);
   useEffect(() => { fetchCustomers(); }, [fetchCustomers]);
   useEffect(() => { fetchKeyStatus(); }, [fetchKeyStatus]);
@@ -184,8 +190,9 @@ function App() {
       if (r.ok) {
         showMessage('License generated successfully');
         setShowForm(false);
-        setForm({ hospital_id: '', hospital_name: '', machine_id: '', plan: 'standard', max_users: 50, days: 365, features: ['outpatient', 'lab', 'ehr', 'admin'], modules: [], notes: '', seller_name: '', seller_address: '', seller_phone: '' });
+        setForm({ hospital_id: '', hospital_name: '', machine_id: '', plan: 'standard', max_users: 50, days: 365, features: ['outpatient', 'lab', 'ehr', 'admin'], modules: [], notes: '', seller_id: '', seller_name: '', seller_address: '', seller_phone: '', gdrive_backup_enabled: false });
         fetchLicenses(); fetchDash();
+        if (selectedCust) fetchCustDetail(selectedCust);
       } else {
         const e = await r.json();
         showMessage(e.detail || 'Generation failed', 'error');
@@ -195,14 +202,22 @@ function App() {
   };
 
   const renewLicense = async (licenseId) => {
+    const payload = { ...renewForm };
+    // Build seller if selected
+    if (payload.seller_id) {
+      const s = sellers.find(s => String(s.id) === payload.seller_id);
+      if (s) payload.seller = { name: s.name, address: s.address || null, phone: s.phone || null };
+    }
+    delete payload.seller_id;
     const r = await fetch(`${API}/licenses/${licenseId}/renew`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ days: renewDays })
+      body: JSON.stringify(payload)
     });
     if (r.ok) {
       showMessage('License renewed — new file ready for download');
       setShowRenew(null);
       fetchLicenses(); fetchDash();
+      if (selectedCust) fetchCustDetail(selectedCust);
     } else {
       const e = await r.json();
       showMessage(e.detail || 'Renewal failed', 'error');
@@ -511,7 +526,7 @@ function App() {
                               className="p-1.5 rounded-lg bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 transition-colors">
                               <Icon d={Icons.download} className="w-3.5 h-3.5" />
                             </button>
-                            <button onClick={() => { setShowRenew(lic); setRenewDays(365); }} title="Renew"
+                            <button onClick={() => { setShowRenew(lic); setRenewForm({ days: 365, plan: lic.plan || 'standard', max_users: lic.max_users || 50, features: lic.features || [], gdrive_backup_enabled: false, seller_id: '' }); }} title="Renew"
                               className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition-colors">
                               <Icon d={Icons.refresh} className="w-3.5 h-3.5" />
                             </button>
@@ -591,35 +606,49 @@ function App() {
           {/* ═══════ CUSTOMER DETAIL ═══════ */}
           {page === 'customers' && selectedCust && custDetail && (
             <div className="space-y-5 animate-fadeIn">
-              <div className="flex items-center gap-3">
-                <button onClick={() => { setSelectedCust(null); setCustDetail(null); }}
-                  className="p-2 text-slate-400 hover:text-white bg-slate-800/50 rounded-lg">
-                  ←
-                </button>
-                <div>
-                  <h2 className="text-2xl font-bold text-white">{custDetail.customer.hospital_name}</h2>
-                  <div className="flex gap-3 text-xs text-slate-500 mt-1">
-                    {custDetail.customer.hospital_id && <span className="font-mono">{custDetail.customer.hospital_id}</span>}
-                    {custDetail.customer.contact_person && <span>{custDetail.customer.contact_person}</span>}
-                    {custDetail.customer.phone && <span>{custDetail.customer.phone}</span>}
-                    {custDetail.customer.email && <span>{custDetail.customer.email}</span>}
+              {/* Header */}
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <button onClick={() => { setSelectedCust(null); setCustDetail(null); }}
+                    className="p-2 text-slate-400 hover:text-white bg-slate-800/50 rounded-lg">←</button>
+                  <div>
+                    <h2 className="text-2xl font-bold text-white">{custDetail.customer.hospital_name}</h2>
+                    <div className="flex gap-3 text-xs text-slate-500 mt-1">
+                      {custDetail.customer.hospital_id && <span className="font-mono bg-slate-800/50 px-1.5 py-0.5 rounded">{custDetail.customer.hospital_id}</span>}
+                      {custDetail.customer.machine_id && <span className="font-mono bg-slate-800/50 px-1.5 py-0.5 rounded">{custDetail.customer.machine_id}</span>}
+                    </div>
                   </div>
                 </div>
+                <button onClick={() => openEditCust(custDetail.customer)}
+                  className="px-3 py-2 text-xs bg-slate-800 text-slate-300 rounded-lg hover:bg-slate-700">Edit Customer</button>
               </div>
 
-              {/* Summary cards */}
-              <div className="grid grid-cols-4 gap-4">
-                {[
-                  { label: 'Licenses', value: custDetail.summary.total_licenses, accent: 'text-blue-400' },
-                  { label: 'Active', value: custDetail.summary.active_licenses, accent: 'text-emerald-400' },
-                  { label: 'Payments', value: custDetail.summary.total_payments, accent: 'text-cyan-400' },
-                  { label: 'Total Paid', value: `₹${custDetail.summary.total_paid.toLocaleString('en-IN')}`, accent: 'text-amber-400' },
-                ].map((c, i) => (
-                  <div key={i} className="bg-slate-925 border border-slate-800/50 rounded-xl p-4 stat-glow">
-                    <p className="text-[11px] text-slate-500 uppercase tracking-wider">{c.label}</p>
-                    <p className={`text-2xl font-bold mt-1 font-mono ${c.accent}`}>{c.value}</p>
-                  </div>
-                ))}
+              {/* Customer Info + Summary */}
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                {/* Contact Info */}
+                <div className="bg-slate-925 border border-slate-800/50 rounded-xl p-4 space-y-2">
+                  <p className="text-[11px] text-slate-500 uppercase tracking-wider">Contact Details</p>
+                  {custDetail.customer.contact_person && <p className="text-sm text-white">{custDetail.customer.contact_person}</p>}
+                  {custDetail.customer.phone && <p className="text-xs text-slate-400">{custDetail.customer.phone}</p>}
+                  {custDetail.customer.email && <p className="text-xs text-slate-400">{custDetail.customer.email}</p>}
+                  {custDetail.customer.address && <p className="text-xs text-slate-500 mt-1">{custDetail.customer.address}</p>}
+                  {!custDetail.customer.contact_person && !custDetail.customer.phone && <p className="text-xs text-slate-600">No contact info</p>}
+                </div>
+
+                {/* Summary Stats */}
+                <div className="lg:col-span-2 grid grid-cols-4 gap-3">
+                  {[
+                    { label: 'Licenses', value: custDetail.summary.total_licenses, accent: 'text-blue-400' },
+                    { label: 'Active', value: custDetail.summary.active_licenses, accent: 'text-emerald-400' },
+                    { label: 'Payments', value: custDetail.summary.total_payments, accent: 'text-cyan-400' },
+                    { label: 'Total Paid', value: `₹${custDetail.summary.total_paid.toLocaleString('en-IN')}`, accent: 'text-amber-400' },
+                  ].map((c, i) => (
+                    <div key={i} className="bg-slate-925 border border-slate-800/50 rounded-xl p-4">
+                      <p className="text-[11px] text-slate-500 uppercase tracking-wider">{c.label}</p>
+                      <p className={`text-xl font-bold mt-1 font-mono ${c.accent}`}>{c.value}</p>
+                    </div>
+                  ))}
+                </div>
               </div>
 
               {/* Licenses */}
@@ -627,67 +656,88 @@ function App() {
                 <div className="flex items-center justify-between px-5 py-3 border-b border-slate-800/30">
                   <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">Licenses</h3>
                   <button onClick={() => {
-                    setForm({ ...form, customer_id: selectedCust, hospital_id: custDetail.customer.hospital_id || '', hospital_name: custDetail.customer.hospital_name, machine_id: custDetail.customer.machine_id || '' });
+                    setForm({ ...form, customer_id: selectedCust, hospital_id: custDetail.customer.hospital_id || '', hospital_name: custDetail.customer.hospital_name, machine_id: custDetail.customer.machine_id || '', gdrive_backup_enabled: false });
                     setShowForm(true);
-                  }} className="text-xs text-blue-400 hover:text-blue-300 font-medium">+ Generate</button>
+                  }} className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold rounded-lg transition-colors">
+                    + Generate License
+                  </button>
                 </div>
                 {custDetail.licenses.length === 0 ? (
-                  <p className="text-center py-8 text-slate-600 text-sm">No licenses</p>
-                ) : custDetail.licenses.map((lic, i) => (
-                  <div key={lic.license_id} className={`flex items-center justify-between px-5 py-3 ${i < custDetail.licenses.length - 1 ? 'border-b border-slate-800/20' : ''}`}>
-                    <div className="flex items-center gap-4">
-                      <div>
-                        <p className="text-sm text-white font-mono">{lic.machine_id}</p>
-                        <p className="text-[11px] text-slate-500">{lic.plan} &bull; {formatDate(lic.issued_at)} → {formatDate(lic.expires_at)}</p>
-                        {lic.notes?.startsWith('Renewed') && <p className="text-[10px] text-blue-400/60">{lic.notes}</p>}
+                  <p className="text-center py-8 text-slate-600 text-sm">No licenses yet. Generate the first one above.</p>
+                ) : (
+                  <div className="divide-y divide-slate-800/20">
+                    {custDetail.licenses.map(lic => (
+                      <div key={lic.license_id} className="px-5 py-4">
+                        <div className="flex items-start justify-between">
+                          <div className="space-y-1.5">
+                            <div className="flex items-center gap-2">
+                              <StatusBadge status={lic.computed_status} />
+                              <span className="text-sm font-semibold text-white capitalize">{lic.plan}</span>
+                              <span className="text-xs text-slate-500 font-mono">{lic.machine_id}</span>
+                              <DaysLeft days={lic.days_left} />
+                            </div>
+                            <div className="flex items-center gap-3 text-xs text-slate-500">
+                              <span>Issued: {formatDate(lic.issued_at)}</span>
+                              <span>→ Expires: {formatDate(lic.expires_at)}</span>
+                              <span>{lic.max_users} users</span>
+                            </div>
+                            <div className="flex flex-wrap gap-1 mt-1">
+                              {(lic.features || []).map(f => <FeatureTag key={f} name={f} />)}
+                            </div>
+                            {lic.notes && <p className="text-[10px] text-blue-400/60 mt-1">{lic.notes}</p>}
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0 ml-4">
+                            <button onClick={() => downloadLicense(lic.license_id)} title="Download .lic"
+                              className="px-2.5 py-1.5 rounded-lg bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 text-xs font-medium flex items-center gap-1">
+                              <Icon d={Icons.download} className="w-3 h-3" /> Download
+                            </button>
+                            {lic.computed_status !== 'renewed' && (
+                              <button onClick={() => { setShowRenew(lic); setRenewForm({ days: 365, plan: lic.plan || 'standard', max_users: lic.max_users || 50, features: lic.features || [], gdrive_backup_enabled: false, seller_id: '' }); }} title="Renew"
+                                className="px-2.5 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 text-xs font-medium flex items-center gap-1">
+                                <Icon d={Icons.refresh} className="w-3 h-3" /> Renew
+                              </button>
+                            )}
+                          </div>
+                        </div>
                       </div>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <div className="flex gap-1">
-                        {(lic.features || []).slice(0, 3).map(f => <FeatureTag key={f} name={f} />)}
-                      </div>
-                      <DaysLeft days={lic.days_left} />
-                      <StatusBadge status={lic.computed_status} />
-                      <button onClick={() => downloadLicense(lic.license_id)} title="Download"
-                        className="p-1.5 rounded-lg bg-blue-500/10 text-blue-400 hover:bg-blue-500/20">
-                        <Icon d={Icons.download} className="w-3.5 h-3.5" />
-                      </button>
-                      <button onClick={() => { setShowRenew(lic); setRenewDays(365); }} title="Renew"
-                        className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20">
-                        <Icon d={Icons.refresh} className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
+                    ))}
                   </div>
-                ))}
+                )}
               </div>
 
               {/* Payments */}
               <div className="bg-slate-925 border border-slate-800/50 rounded-xl overflow-hidden">
                 <div className="flex items-center justify-between px-5 py-3 border-b border-slate-800/30">
                   <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">Payment History</h3>
-                  <button onClick={() => setShowPayForm(true)} className="text-xs text-blue-400 hover:text-blue-300 font-medium">+ Record Payment</button>
+                  <button onClick={() => setShowPayForm(true)} className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold rounded-lg transition-colors">
+                    + Record Payment
+                  </button>
                 </div>
                 {custDetail.payments.length === 0 ? (
                   <p className="text-center py-8 text-slate-600 text-sm">No payments recorded</p>
-                ) : custDetail.payments.map((pay, i) => (
-                  <div key={pay.id} className={`flex items-center justify-between px-5 py-3 ${i < custDetail.payments.length - 1 ? 'border-b border-slate-800/20' : ''}`}>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-semibold text-emerald-400">₹{pay.amount.toLocaleString('en-IN')}</span>
-                        <span className="px-1.5 py-0.5 bg-slate-700/50 text-slate-400 rounded text-[10px] capitalize">{pay.payment_type}</span>
-                        <span className="px-1.5 py-0.5 bg-slate-700/50 text-slate-400 rounded text-[10px] capitalize">{pay.payment_mode}</span>
+                ) : (
+                  <div className="divide-y divide-slate-800/20">
+                    {custDetail.payments.map(pay => (
+                      <div key={pay.id} className="flex items-center justify-between px-5 py-3">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-semibold text-emerald-400">₹{pay.amount.toLocaleString('en-IN')}</span>
+                            <span className="px-1.5 py-0.5 bg-slate-700/50 text-slate-400 rounded text-[10px] capitalize">{pay.payment_type}</span>
+                            <span className="px-1.5 py-0.5 bg-slate-700/50 text-slate-400 rounded text-[10px] capitalize">{pay.payment_mode}</span>
+                          </div>
+                          <p className="text-xs text-slate-500 mt-0.5">
+                            {formatDate(pay.payment_date)}
+                            {pay.invoice_number && <span> &bull; Inv: {pay.invoice_number}</span>}
+                            {pay.description && <span> &bull; {pay.description}</span>}
+                          </p>
+                        </div>
+                        <button onClick={() => deletePayment(pay.id)} className="p-1.5 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20">
+                          <Icon d={Icons.trash} className="w-3.5 h-3.5" />
+                        </button>
                       </div>
-                      <p className="text-xs text-slate-500 mt-0.5">
-                        {formatDate(pay.payment_date)}
-                        {pay.invoice_number && <span> &bull; Inv: {pay.invoice_number}</span>}
-                        {pay.description && <span> &bull; {pay.description}</span>}
-                      </p>
-                    </div>
-                    <button onClick={() => deletePayment(pay.id)} className="p-1.5 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20">
-                      <Icon d={Icons.trash} className="w-3.5 h-3.5" />
-                    </button>
+                    ))}
                   </div>
-                ))}
+                )}
               </div>
             </div>
           )}
@@ -819,6 +869,122 @@ function App() {
                   </pre>
                 </div>
               )}
+
+              {/* Google Drive Configuration (OAuth) */}
+              <div className="bg-slate-925 border border-slate-800/50 rounded-xl p-6 space-y-4">
+                <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">Google Drive Backup</h3>
+                <p className="text-xs text-slate-500">Connect your Google Drive using OAuth. The refresh token will be embedded in licenses so hospital apps can upload backups to your Drive automatically.</p>
+
+                {/* Status */}
+                {gdriveSettings?.connected ? (
+                  <div className="flex items-center justify-between p-3 rounded-xl border bg-emerald-500/5 border-emerald-500/20">
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-emerald-500/15">
+                        <span className="text-emerald-400 text-sm">✓</span>
+                      </div>
+                      <div>
+                        <p className="text-sm font-semibold text-white">Google Drive Connected</p>
+                        <p className="text-xs text-emerald-400">OAuth refresh token saved</p>
+                      </div>
+                    </div>
+                    <button onClick={async () => {
+                      try { await fetch(`${API}/settings/gdrive/disconnect`, { method: 'POST' }); showMessage('Disconnected'); fetchGdriveSettings(); } catch {}
+                    }} className="text-xs text-red-400 hover:text-red-300">Disconnect</button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-3 p-3 rounded-xl border bg-amber-500/5 border-amber-500/20">
+                    <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-amber-500/15">
+                      <span className="text-amber-400 text-sm">!</span>
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold text-white">Not Connected</p>
+                      <p className="text-xs text-amber-400">Set up OAuth credentials and connect below</p>
+                    </div>
+                  </div>
+                )}
+
+                <div className="space-y-3">
+                  {/* Step 1: OAuth Credentials */}
+                  <div>
+                    <label className="block text-xs font-medium text-slate-400 mb-1.5">Step 1: OAuth Client ID</label>
+                    <input id="gdrive-client-id" placeholder="From Google Cloud Console → Credentials → OAuth 2.0 Client"
+                      className="w-full bg-slate-950 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/50 mb-2" />
+                    <label className="block text-xs font-medium text-slate-400 mb-1.5">OAuth Client Secret</label>
+                    <div className="flex gap-2">
+                      <input id="gdrive-client-secret" type="password" placeholder="Client secret"
+                        className="flex-1 bg-slate-950 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/50" />
+                      <button onClick={async () => {
+                        const cid = document.getElementById('gdrive-client-id').value;
+                        const cs = document.getElementById('gdrive-client-secret').value;
+                        if (!cid || !cs) { showMessage('Enter both Client ID and Secret', 'error'); return; }
+                        try {
+                          const r = await fetch(`${API}/settings/gdrive/oauth-credentials`, {
+                            method: 'POST', headers: {'Content-Type':'application/json'},
+                            body: JSON.stringify({ client_id: cid, client_secret: cs })
+                          });
+                          if (r.ok) { showMessage('OAuth credentials saved'); fetchGdriveSettings(); }
+                          else { const d = await r.json(); showMessage(d.detail || 'Failed', 'error'); }
+                        } catch { showMessage('Failed', 'error'); }
+                      }} className="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold rounded-xl transition-colors">Save</button>
+                    </div>
+                    <p className="text-[10px] text-slate-500 mt-1">Redirect URI: <code className="text-amber-400">http://localhost:9000/api/settings/gdrive/oauth-callback</code></p>
+                  </div>
+
+                  {/* Step 2: Connect */}
+                  {gdriveSettings?.has_credentials && !gdriveSettings?.connected && (
+                    <div>
+                      <label className="block text-xs font-medium text-slate-400 mb-1.5">Step 2: Connect Google Drive</label>
+                      <button onClick={async () => {
+                        try {
+                          const r = await fetch(`${API}/settings/gdrive/auth-url`);
+                          const d = await r.json();
+                          if (d.auth_url) window.open(d.auth_url, '_blank');
+                        } catch { showMessage('Failed to get auth URL', 'error'); }
+                      }} className="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold rounded-xl transition-colors">
+                        Connect Google Drive
+                      </button>
+                      <p className="text-[10px] text-slate-500 mt-1">Opens Google login. Authorize and return here.</p>
+                    </div>
+                  )}
+
+                  {/* Step 3: Folder ID */}
+                  <div>
+                    <label className="block text-xs font-medium text-slate-400 mb-1.5">{gdriveSettings?.connected ? 'Step 3' : 'Also set'}: Drive Folder ID</label>
+                    <div className="flex gap-2">
+                      <input value={gdriveSettings?.folder_id || ''} onChange={(e) => setGdriveSettings({...gdriveSettings, folder_id: e.target.value})}
+                        placeholder="Paste folder ID from Google Drive URL"
+                        className="flex-1 bg-slate-950 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/50" />
+                      <button onClick={async () => {
+                        if (!gdriveSettings?.folder_id) return;
+                        try {
+                          const r = await fetch(`${API}/settings/gdrive`, {
+                            method: 'POST', headers: {'Content-Type':'application/json'},
+                            body: JSON.stringify({ folder_id: gdriveSettings.folder_id })
+                          });
+                          if (r.ok) { showMessage('Folder ID saved'); fetchGdriveSettings(); }
+                        } catch {}
+                      }} className="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold rounded-xl transition-colors">Save</button>
+                    </div>
+                    <p className="text-[10px] text-slate-500 mt-1">Create a folder in Google Drive, copy the ID from the URL after /folders/</p>
+                  </div>
+
+                  {/* Test Connection */}
+                  <div>
+                    <button onClick={async () => {
+                      try {
+                        const r = await fetch(`${API}/settings/gdrive/health`);
+                        const d = await r.json();
+                        if (d.healthy) showMessage(`Connected! Folder: "${d.folder_name}"`);
+                        else showMessage(`Failed: ${d.error}`, 'error');
+                      } catch { showMessage('Health check failed', 'error'); }
+                    }}
+                      disabled={!gdriveSettings?.configured}
+                      className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-sm font-semibold rounded-xl transition-colors">
+                      Test Connection
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
           )}
         </main>
@@ -932,6 +1098,25 @@ function App() {
             )}
           </div>
 
+          {/* Google Drive Backup */}
+          <div className="border-t border-slate-700/30 pt-4">
+            <label className="flex items-center gap-2.5 cursor-pointer">
+              <input type="checkbox" checked={form.gdrive_backup_enabled}
+                onChange={(e) => setForm({...form, gdrive_backup_enabled: e.target.checked})}
+                disabled={!gdriveSettings?.configured}
+                className="w-4 h-4 rounded border-slate-600" />
+              <span className="text-sm text-slate-300">Enable Google Drive Backup</span>
+            </label>
+            {!gdriveSettings?.configured && (
+              <p className="text-[11px] text-amber-400/70 mt-1.5 ml-6">
+                {!gdriveSettings?.connected ? 'Connect Google Drive in Key Settings first' : 'Set folder ID in Key Settings first'}
+              </p>
+            )}
+            {form.gdrive_backup_enabled && gdriveSettings?.configured && (
+              <p className="text-[11px] text-green-400/70 mt-1.5 ml-6">Service account: {gdriveSettings.service_account_email}</p>
+            )}
+          </div>
+
           <div className="flex justify-end gap-3 pt-3 border-t border-slate-700/30">
             <button onClick={() => setShowForm(false)}
               className="px-4 py-2.5 text-sm text-slate-400 hover:text-white rounded-lg transition-colors">
@@ -947,7 +1132,7 @@ function App() {
       </Modal>
 
       {/* ═══════ RENEW MODAL ═══════ */}
-      <Modal open={!!showRenew} onClose={() => setShowRenew(null)}>
+      <Modal open={!!showRenew} onClose={() => setShowRenew(null)} wide>
         {showRenew && (
           <div className="p-6 space-y-5">
             <div className="flex items-center justify-between">
@@ -960,8 +1145,8 @@ function App() {
             <div className="bg-slate-800/30 border border-slate-700/30 rounded-xl p-4 space-y-2">
               <p className="text-sm font-semibold text-white">{showRenew.hospital_name}</p>
               <div className="flex gap-4 text-xs text-slate-400">
+                <span className="font-mono">{showRenew.hospital_id}</span>
                 <span className="font-mono">{showRenew.machine_id}</span>
-                <span>Plan: {showRenew.plan}</span>
               </div>
               <div className="flex items-center gap-2">
                 <StatusBadge status={showRenew.computed_status} />
@@ -969,18 +1154,77 @@ function App() {
               </div>
             </div>
 
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1.5">Validity</label>
+                <select value={renewForm.days} onChange={e => setRenewForm({...renewForm, days: parseInt(e.target.value)})}
+                  className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500/50">
+                  <option value={30}>1 Month</option>
+                  <option value={90}>3 Months</option>
+                  <option value={180}>6 Months</option>
+                  <option value={365}>1 Year</option>
+                  <option value={730}>2 Years</option>
+                  <option value={1095}>3 Years</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1.5">Plan</label>
+                <select value={renewForm.plan} onChange={e => setRenewForm({...renewForm, plan: e.target.value})}
+                  className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500/50">
+                  <option value="standard">Standard</option>
+                  <option value="premium">Premium</option>
+                  <option value="enterprise">Enterprise</option>
+                  <option value="basic">Basic</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1.5">Max Users</label>
+                <input type="number" min={1} value={renewForm.max_users} onChange={e => setRenewForm({...renewForm, max_users: parseInt(e.target.value) || 50})}
+                  className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500/50" />
+              </div>
+            </div>
+
+            {/* Modules */}
             <div>
-              <label className="block text-xs font-medium text-slate-400 mb-1.5">Extend by</label>
-              <select value={renewDays} onChange={e => setRenewDays(parseInt(e.target.value))}
+              <label className="block text-xs font-medium text-slate-400 mb-1.5">Modules</label>
+              <div className="flex flex-wrap gap-2">
+                {allFeatures.map(f => {
+                  const active = renewForm.features.includes(f);
+                  return (
+                    <button key={f} onClick={() => {
+                      const feats = active ? renewForm.features.filter(x => x !== f) : [...renewForm.features, f];
+                      setRenewForm({...renewForm, features: feats});
+                    }}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                        active ? 'bg-blue-600/20 border-blue-500/40 text-blue-400' : 'bg-slate-800/50 border-slate-700/30 text-slate-500 hover:text-slate-300'
+                      }`}>
+                      {active && <span className="mr-1">✓</span>}
+                      {f}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Seller */}
+            <div>
+              <label className="block text-xs font-medium text-slate-400 mb-1.5">Sold via Vendor</label>
+              <select value={renewForm.seller_id} onChange={e => setRenewForm({...renewForm, seller_id: e.target.value})}
                 className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500/50">
-                <option value={30}>1 Month</option>
-                <option value={90}>3 Months</option>
-                <option value={180}>6 Months</option>
-                <option value={365}>1 Year</option>
-                <option value={730}>2 Years</option>
-                <option value={1095}>3 Years</option>
+                <option value="">No vendor (direct sale)</option>
+                {sellers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
             </div>
+
+            {/* Google Drive */}
+            <label className="flex items-center gap-2.5 cursor-pointer">
+              <input type="checkbox" checked={renewForm.gdrive_backup_enabled}
+                onChange={e => setRenewForm({...renewForm, gdrive_backup_enabled: e.target.checked})}
+                disabled={!gdriveSettings?.configured}
+                className="w-4 h-4 rounded border-slate-600" />
+              <span className="text-sm text-slate-300">Enable Google Drive Backup</span>
+              {!gdriveSettings?.configured && <span className="text-[10px] text-amber-400/70">(not configured)</span>}
+            </label>
 
             <p className="text-xs text-slate-500">
               A new license file will be generated. The old license will be marked as renewed.

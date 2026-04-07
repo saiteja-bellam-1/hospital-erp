@@ -45,6 +45,7 @@ NEW_COLUMNS = [
     ("patient_lab_orders", "bill_cancelled_reason", "TEXT"),
     ("patient_lab_orders", "bill_cancelled_by", "INTEGER REFERENCES users(id)"),
     ("patient_lab_orders", "bill_cancelled_at", "DATETIME"),
+    ("licenses", "gdrive_config", "JSON"),
 ]
 
 def migrate():

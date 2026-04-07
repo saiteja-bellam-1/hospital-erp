@@ -30,7 +30,7 @@ from app.middleware.audit_middleware import AuditMiddleware
 app = FastAPI(
     title=settings.app_name,
     description="Complete KT HEALTH ERP System",
-    version="1.0.0"
+    version="1.1.0"
 )
 
 # CORS middleware
@@ -98,6 +98,13 @@ async def startup_event():
                 print(f"Snapshot backup started — every {snap_interval} min")
         except Exception as e:
             print(f"Snapshot backup note: {e}")
+        # Start Google Drive backup thread
+        try:
+            from app.utils.config import start_gdrive_backup
+            start_gdrive_backup(interval_minutes=10)
+            print("Google Drive backup thread started — checking every 10 min")
+        except Exception as e:
+            print(f"Google Drive backup note: {e}")
     else:
         print("Setup not complete — waiting for setup wizard")
 

@@ -379,6 +379,34 @@ async def update_snapshot_config(
 
 
 # ============================================================
+# Google Drive Backup
+# ============================================================
+
+@router.get("/gdrive-status")
+async def get_gdrive_backup_status(current_user: User = Depends(get_current_user)):
+    _require_admin(current_user)
+    from app.utils.config import get_gdrive_status
+    return get_gdrive_status()
+
+
+@router.post("/gdrive-backup-now")
+async def trigger_gdrive_backup(current_user: User = Depends(get_current_user)):
+    _require_admin(current_user)
+    from app.utils.config import run_gdrive_backup
+    try:
+        run_gdrive_backup()
+        from app.utils.config import get_gdrive_status
+        status = get_gdrive_status()
+        if status.get("last_error"):
+            raise HTTPException(status_code=500, detail=status["last_error"])
+        return {"message": "Google Drive backup completed"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================
 # Restore from Backup
 # ============================================================
 

@@ -355,3 +355,143 @@ def get_snapshot_status():
         "interval_minutes": config.get("snapshot_interval_minutes", 30),
         "retention_hours": config.get("snapshot_retention_hours", 72),
     }
+
+
+# ============================================================
+# Google Drive Backup
+# ============================================================
+
+_gdrive_thread = None
+_gdrive_running = False
+_gdrive_last_sent = None
+_gdrive_last_error = None
+
+
+def run_gdrive_backup():
+    """Compress DB and upload to Google Drive if not already sent today."""
+    import gzip
+    import sqlite3
+    global _gdrive_last_sent, _gdrive_last_error
+
+    config = load_config()
+    today = datetime.datetime.now().strftime("%Y-%m-%d")
+
+    # Already sent today?
+    if config.get("gdrive_last_sent") == today:
+        return
+
+    # Get gdrive config from license
+    try:
+        from config.database import SessionLocal
+        from app.models.license import License
+        db = SessionLocal()
+        license_record = db.query(License).order_by(License.id.desc()).first()
+        db.close()
+        if not license_record or not license_record.gdrive_config:
+            return
+        gdrive = license_record.gdrive_config
+        if not gdrive.get("enabled"):
+            return
+    except Exception:
+        return
+
+    if not gdrive.get("folder_id"):
+        return
+
+    # Get hospital_id from license
+    hospital_id = license_record.hospital_id or "UNKNOWN"
+
+    # Compress DB
+    db_path = get_configured_db_path()
+    if not os.path.isfile(db_path):
+        return
+
+    try:
+        # Use SQLite backup API to get a consistent copy, then gzip it
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        source_conn = sqlite3.connect(db_path)
+        dest_conn = sqlite3.connect(tmp_path)
+        source_conn.backup(dest_conn)
+        dest_conn.close()
+        source_conn.close()
+
+        with open(tmp_path, "rb") as f:
+            compressed = gzip.compress(f.read())
+        os.remove(tmp_path)
+
+        # Upload using the full gdrive config (supports both service account and OAuth)
+        from app.utils.gdrive import upload_backup, cleanup_old_backups
+        filename = f"backup_{today}.db.gz"
+        upload_backup(gdrive, hospital_id, compressed, filename)
+
+        # Cleanup old backups (30 day retention)
+        try:
+            cleanup_old_backups(gdrive, hospital_id, retention_days=30)
+        except Exception:
+            pass
+
+        # Mark as sent
+        config["gdrive_last_sent"] = today
+        config["gdrive_last_error"] = None
+        save_config(config)
+        _gdrive_last_sent = today
+        _gdrive_last_error = None
+
+    except Exception as e:
+        _gdrive_last_error = str(e)
+        config["gdrive_last_error"] = str(e)
+        save_config(config)
+
+
+def start_gdrive_backup(interval_minutes=10):
+    """Start background thread that checks and uploads to Google Drive."""
+    import threading
+    global _gdrive_thread, _gdrive_running
+
+    if _gdrive_running:
+        return
+
+    _gdrive_running = True
+
+    def _loop():
+        import time
+        while _gdrive_running:
+            try:
+                run_gdrive_backup()
+            except Exception:
+                pass
+            time.sleep(interval_minutes * 60)
+
+    _gdrive_thread = threading.Thread(target=_loop, daemon=True, name="gdrive-backup")
+    _gdrive_thread.start()
+
+
+def stop_gdrive_backup():
+    global _gdrive_running
+    _gdrive_running = False
+
+
+def get_gdrive_status():
+    config = load_config()
+    # Check if license has gdrive enabled
+    gdrive_enabled = False
+    try:
+        from config.database import SessionLocal
+        from app.models.license import License
+        db = SessionLocal()
+        lic = db.query(License).order_by(License.id.desc()).first()
+        db.close()
+        if lic and lic.gdrive_config and lic.gdrive_config.get("enabled"):
+            gdrive_enabled = True
+    except Exception:
+        pass
+
+    return {
+        "enabled": gdrive_enabled,
+        "running": _gdrive_running,
+        "last_sent": config.get("gdrive_last_sent"),
+        "last_error": config.get("gdrive_last_error"),
+    }

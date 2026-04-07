@@ -9,7 +9,7 @@ import axios from 'axios';
 import { Badge } from '../../components/ui/badge';
 import {
   FolderSync, FolderOpen, Plus, X, Play, CheckCircle2, AlertCircle, Loader2, RefreshCw,
-  Database, HardDrive, MapPin, ShieldCheck, Image, FileText, Settings, Clock, Timer, RotateCcw, AlertTriangle
+  Database, HardDrive, MapPin, ShieldCheck, Image, FileText, Settings, Clock, Timer, RotateCcw, AlertTriangle, Cloud
 } from 'lucide-react';
 
 const BackupManagement = () => {
@@ -26,6 +26,8 @@ const BackupManagement = () => {
   const [migrating, setMigrating] = useState(false);
   const [migrateBrowsing, setMigrateBrowsing] = useState(false);
   const [snapshotStatus, setSnapshotStatus] = useState(null);
+  const [gdriveStatus, setGdriveStatus] = useState(null);
+  const [gdriveBacking, setGdriveBacking] = useState(false);
   const [restorePoints, setRestorePoints] = useState([]);
   const [showRestoreDialog, setShowRestoreDialog] = useState(false);
   const [selectedRestore, setSelectedRestore] = useState(null);
@@ -34,6 +36,10 @@ const BackupManagement = () => {
 
   const fetchSnapshotStatus = async () => {
     try { const res = await axios.get('/api/backup/snapshot-status'); setSnapshotStatus(res.data); } catch {}
+  };
+
+  const fetchGdriveStatus = async () => {
+    try { const res = await axios.get('/api/backup/gdrive-status'); setGdriveStatus(res.data); } catch {}
   };
 
   const fetchRestorePoints = async () => {
@@ -66,7 +72,8 @@ const BackupManagement = () => {
     fetchAll();
     fetchSnapshotStatus();
     fetchRestorePoints();
-    const interval = setInterval(() => { fetchMirrorStatus(); fetchSnapshotStatus(); }, 15000);
+    fetchGdriveStatus();
+    const interval = setInterval(() => { fetchMirrorStatus(); fetchSnapshotStatus(); fetchGdriveStatus(); }, 15000);
     return () => clearInterval(interval);
   }, []);
 
@@ -374,6 +381,52 @@ const BackupManagement = () => {
                 ))}
               </div>
             )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Google Drive Backup */}
+      {gdriveStatus?.enabled && (
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Cloud className={`w-4 h-4 ${gdriveStatus.last_sent === new Date().toISOString().split('T')[0] ? 'text-green-500' : 'text-gray-400'}`} />
+                Google Drive Backup
+              </CardTitle>
+              <Badge className={`text-[10px] ${
+                gdriveStatus.last_sent === new Date().toISOString().split('T')[0]
+                  ? 'bg-green-100 text-green-700'
+                  : gdriveStatus.last_error
+                    ? 'bg-red-100 text-red-700'
+                    : 'bg-gray-100 text-gray-600'
+              }`}>
+                {gdriveStatus.last_sent === new Date().toISOString().split('T')[0]
+                  ? 'Sent today'
+                  : gdriveStatus.last_error ? 'Error' : 'Waiting'}
+              </Badge>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-sm text-gray-600">
+              Daily compressed backup uploaded to Google Drive automatically.
+            </p>
+            <div className="flex gap-4 text-xs text-gray-500">
+              {gdriveStatus.last_sent && <span>Last sent: {gdriveStatus.last_sent}</span>}
+              {gdriveStatus.last_error && <span className="text-red-500">Error: {gdriveStatus.last_error}</span>}
+            </div>
+            <Button size="sm" className="h-8" disabled={gdriveBacking} onClick={async () => {
+              setGdriveBacking(true);
+              try {
+                await axios.post('/api/backup/gdrive-backup-now');
+                toast({ title: 'Success', description: 'Backed up to Google Drive' });
+                fetchGdriveStatus();
+              } catch (err) {
+                toast({ variant: 'destructive', title: 'Failed', description: err.response?.data?.detail || 'Backup failed' });
+              } finally { setGdriveBacking(false); }
+            }}>
+              {gdriveBacking ? <><Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> Uploading...</> : <><Cloud className="w-3.5 h-3.5 mr-1.5" /> Backup Now</>}
+            </Button>
           </CardContent>
         </Card>
       )}

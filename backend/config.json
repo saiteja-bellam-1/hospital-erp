@@ -6,5 +6,7 @@
   ],
   "hospital_name": "Testing",
   "snapshot_interval_minutes": 30,
-  "snapshot_retention_hours": 72
+  "snapshot_retention_hours": 72,
+  "gdrive_last_error": null,
+  "gdrive_last_sent": "2026-04-07"
 }
