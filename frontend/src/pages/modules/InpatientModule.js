@@ -104,6 +104,8 @@ const InpatientModule = () => {
   const [admissionBeds, setAdmissionBeds] = useState([]);  // beds for selected room in admission form
   const [admissionDocs, setAdmissionDocs] = useState([]);
   const [docUploading, setDocUploading] = useState(false);
+  const [billDiscount, setBillDiscount] = useState({ type: 'flat', value: 0 });
+  const [billTaxPct, setBillTaxPct] = useState(0);
   const [nursingNotes, setNursingNotes] = useState([]);
   const [showNursingNoteDialog, setShowNursingNoteDialog] = useState(false);
   const [nursingNoteForm, setNursingNoteForm] = useState({ shift: 'morning', note_type: 'general', content: '' });
@@ -304,6 +306,8 @@ const InpatientModule = () => {
   const openActivity = (admission) => {
     setActivityAdmission(admission);
     setActivityTab('visits');
+    setBillDiscount({ type: 'flat', value: 0 });
+    setBillTaxPct(0);
     fetchVisits(admission.id);
     fetchBill(admission.id);
     fetchMedications(admission.id);
@@ -393,8 +397,16 @@ const InpatientModule = () => {
     if (!activityAdmission) return;
     setLoading(true);
     try {
-      const res = await axios.post(`/api/inpatient/admissions/${activityAdmission.id}/bill/finalize`);
-      toast({ title: 'Success', description: `Bill ${res.data.bill_number} finalized` });
+      const payload = {};
+      if (billDiscount.value > 0) {
+        payload.discount_type = billDiscount.type;
+        payload.discount_value = parseFloat(billDiscount.value);
+      }
+      if (billTaxPct > 0) {
+        payload.tax_percentage = parseFloat(billTaxPct);
+      }
+      const res = await axios.post(`/api/inpatient/admissions/${activityAdmission.id}/bill/finalize`, payload);
+      toast({ title: 'Success', description: `Bill ${res.data.bill_number} finalized — Total: ₹${res.data.total_amount}` });
       fetchBill(activityAdmission.id);
     } catch (err) {
       toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed to finalize bill' });
@@ -1221,9 +1233,52 @@ const InpatientModule = () => {
                                 </div>
                               )}
                               <div className="border-t pt-2 flex justify-between font-semibold">
-                                <span>Grand Total</span><span>₹{billData.grand_total?.toFixed(2)}</span>
+                                <span>Subtotal</span><span>₹{billData.grand_total?.toFixed(2)}</span>
                               </div>
                             </div>
+
+                            {/* Discount & Tax */}
+                            <div className="border rounded-lg p-3 text-sm space-y-3">
+                              <div className="flex items-center gap-2">
+                                <Label className="text-xs w-16">Discount</Label>
+                                <Select value={billDiscount.type} onValueChange={v => setBillDiscount(p => ({ ...p, type: v }))}>
+                                  <SelectTrigger className="w-[110px] h-8 text-xs"><SelectValue /></SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="flat">Flat (₹)</SelectItem>
+                                    <SelectItem value="percentage">Percent (%)</SelectItem>
+                                  </SelectContent>
+                                </Select>
+                                <Input type="number" min="0" step="0.01" className="w-24 h-8 text-xs"
+                                  value={billDiscount.value || ''} onChange={e => setBillDiscount(p => ({ ...p, value: parseFloat(e.target.value) || 0 }))} placeholder="0" />
+                                {billDiscount.value > 0 && (
+                                  <span className="text-xs text-green-600">
+                                    -₹{(billDiscount.type === 'percentage' ? (billData.grand_total * billDiscount.value / 100) : Math.min(billDiscount.value, billData.grand_total)).toFixed(2)}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <Label className="text-xs w-16">Tax %</Label>
+                                <Input type="number" min="0" max="100" step="0.01" className="w-24 h-8 text-xs"
+                                  value={billTaxPct || ''} onChange={e => setBillTaxPct(parseFloat(e.target.value) || 0)} placeholder="0" />
+                                {billTaxPct > 0 && (() => {
+                                  const disc = billDiscount.type === 'percentage' ? (billData.grand_total * billDiscount.value / 100) : Math.min(billDiscount.value || 0, billData.grand_total);
+                                  const afterDisc = billData.grand_total - disc;
+                                  return <span className="text-xs text-orange-600">+₹{(afterDisc * billTaxPct / 100).toFixed(2)}</span>;
+                                })()}
+                              </div>
+                              {(billDiscount.value > 0 || billTaxPct > 0) && (() => {
+                                const sub = billData.grand_total || 0;
+                                const disc = billDiscount.type === 'percentage' ? (sub * (billDiscount.value || 0) / 100) : Math.min(billDiscount.value || 0, sub);
+                                const afterDisc = sub - disc;
+                                const tax = afterDisc * (billTaxPct || 0) / 100;
+                                return (
+                                  <div className="border-t pt-2 flex justify-between font-semibold">
+                                    <span>Final Total</span><span>₹{(afterDisc + tax).toFixed(2)}</span>
+                                  </div>
+                                );
+                              })()}
+                            </div>
+
                             <div className="flex gap-2">
                               <Button size="sm" onClick={handleFinalizeBill} disabled={loading}>
                                 {loading ? 'Finalizing...' : 'Finalize Bill'}

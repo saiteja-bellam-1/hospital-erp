@@ -306,6 +306,11 @@ class DocumentResponse(BaseModel):
 
 
 # --- Nursing Notes ---
+class FinalizeBillRequest(BaseModel):
+    discount_type: Optional[str] = Field(default=None, pattern="^(flat|percentage)$")
+    discount_value: Optional[float] = Field(default=0, ge=0)
+    tax_percentage: Optional[float] = Field(default=0, ge=0, le=100)
+
 class NursingNoteCreate(BaseModel):
     shift: str = Field(..., pattern="^(morning|afternoon|night)$")
     note_type: str = Field(..., pattern="^(observation|medication|vitals|procedure|handover|general)$")
@@ -1366,6 +1371,7 @@ async def get_admission_bill(
 @router.post("/admissions/{admission_id}/bill/finalize")
 async def finalize_bill(
     admission_id: int,
+    data: Optional[FinalizeBillRequest] = None,
     current_user: User = Depends(require_permission(Modules.INPATIENT, "write")),
     db: Session = Depends(get_db),
 ):
@@ -1409,7 +1415,23 @@ async def finalize_bill(
     ).all()
     lab_total = sum(float(o.amount or 0) for o in lab_orders)
 
-    grand_total = room_total + visit_total + pharmacy_total + lab_total
+    subtotal = room_total + visit_total + pharmacy_total + lab_total
+
+    # Calculate discount
+    discount_amount = 0.0
+    if data and data.discount_value and data.discount_value > 0:
+        if data.discount_type == "percentage":
+            discount_amount = round(subtotal * data.discount_value / 100, 2)
+        else:
+            discount_amount = min(data.discount_value, subtotal)
+
+    # Calculate tax
+    tax_amount = 0.0
+    after_discount = subtotal - discount_amount
+    if data and data.tax_percentage and data.tax_percentage > 0:
+        tax_amount = round(after_discount * data.tax_percentage / 100, 2)
+
+    grand_total = round(after_discount + tax_amount, 2)
 
     # Generate bill number
     today = datetime.now().strftime("%Y%m%d")
@@ -1425,9 +1447,9 @@ async def finalize_bill(
         patient_id=admission.patient_id,
         bill_type="admission",
         reference_id=admission.id,
-        subtotal=grand_total,
-        tax_amount=0,
-        discount_amount=0,
+        subtotal=subtotal,
+        tax_amount=tax_amount,
+        discount_amount=discount_amount,
         total_amount=grand_total,
         status="pending",
         created_by_id=current_user.id,
@@ -1499,6 +1521,9 @@ async def finalize_bill(
     return {
         "bill_id": bill.id,
         "bill_number": bill_number,
+        "subtotal": subtotal,
+        "discount_amount": discount_amount,
+        "tax_amount": tax_amount,
         "total_amount": grand_total,
         "status": "pending",
         "message": "Bill finalized successfully",
