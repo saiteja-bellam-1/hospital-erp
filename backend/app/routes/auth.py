@@ -49,18 +49,40 @@ class TokenResponse(BaseModel):
 async def login(user_credentials: UserLogin, db: Session = Depends(get_db)):
     # Find user by username
     user = db.query(User).filter(User.username == user_credentials.username).first()
-    
-    if not user or not user.is_active:
+
+    # Check inactive separately so we can give a specific message,
+    # but keep "not found" and "wrong password" identical to prevent username enumeration.
+    if user and not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid credentials"
+            detail="Your account has been disabled. Please contact your administrator."
         )
-    
+
+    if not user:
+        # Log failed attempt for non-existent user
+        try:
+            from app.services.audit_service import log_action
+            log_action(db, None, "login_failed", "auth", "User", None,
+                       f"Failed login attempt for unknown username: {user_credentials.username}")
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid username or password"
+        )
+
     # Verify password
     if not verify_password(user_credentials.password, user.password_hash):
+        # Log failed attempt
+        try:
+            from app.services.audit_service import log_action
+            log_action(db, user, "login_failed", "auth", "User", user.id,
+                       f"Failed login attempt for user: {user.username} (wrong password)")
+        except Exception:
+            pass
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid credentials"
+            detail="Invalid username or password"
         )
 
     # Check license validity — check all roles, allow if ANY role is permitted

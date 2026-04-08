@@ -29,11 +29,14 @@ export const AuthProvider = ({ children }) => {
   }
 
   // Global 401 interceptor — auto-logout on expired/invalid token
+  // Skip the interceptor for the login endpoint itself to avoid clearing a
+  // non-existent session when login credentials are wrong.
   useEffect(() => {
     const interceptor = axios.interceptors.response.use(
       (response) => response,
       (error) => {
-        if (error.response?.status === 401 && token) {
+        const isLoginRequest = error.config?.url?.includes('/api/auth/login');
+        if (error.response?.status === 401 && token && !isLoginRequest) {
           // Token expired or invalid — clear session
           setToken(null);
           setUser(null);
@@ -74,10 +77,13 @@ export const AuthProvider = ({ children }) => {
       console.error('Login error:', error);
       let errorMessage = 'Login failed';
       
-      if (error.code === 'ECONNREFUSED' || error.message.includes('Network Error')) {
-        errorMessage = 'Cannot connect to server. Please make sure the backend is running on port 8000.';
+      if (error.code === 'ECONNREFUSED' || error.message?.includes('Network Error')) {
+        errorMessage = 'Cannot connect to server. Please make sure the backend is running.';
+      } else if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
+        errorMessage = 'Request timed out. The server took too long to respond. Please try again.';
       } else if (error.response?.data?.detail) {
-        errorMessage = error.response.data.detail;
+        const detail = error.response.data.detail;
+        errorMessage = typeof detail === 'string' ? detail : 'Login failed. Please try again.';
       }
       
       return { 
