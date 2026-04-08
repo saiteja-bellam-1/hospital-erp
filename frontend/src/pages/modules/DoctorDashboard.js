@@ -12,8 +12,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../componen
 import {
   Calendar, Clock, User, FileText, TestTube, Pill, CheckCircle, XCircle,
   Activity, Info, Printer, RefreshCw, Eye, Hash,
-  History, Stethoscope, AlertCircle, ChevronRight, ChevronDown
+  History, Stethoscope, AlertCircle, ChevronRight, ChevronDown, Bed, Plus, ClipboardList
 } from 'lucide-react';
+import axios from 'axios';
 import { format } from 'date-fns';
 import VitalsForm from '../../components/vitals/VitalsForm';
 import { useToast } from '../../hooks/use-toast';
@@ -34,6 +35,16 @@ const DoctorDashboard = () => {
   const [showPrintPreviewDialog, setShowPrintPreviewDialog] = useState(false);
   const [activeTab, setActiveTab] = useState('appointments');
   const [loading, setLoading] = useState(false);
+
+  // Inpatient state
+  const [inpatientEnabled, setInpatientEnabled] = useState(false);
+  const [doctorAdmissions, setDoctorAdmissions] = useState([]);
+  const [showDoctorVisitDialog, setShowDoctorVisitDialog] = useState(false);
+  const [doctorVisitAdmission, setDoctorVisitAdmission] = useState(null);
+  const [doctorVisitNotes, setDoctorVisitNotes] = useState('');
+  const [wardRoundAdmission, setWardRoundAdmission] = useState(null);
+  const [wardRoundVisits, setWardRoundVisits] = useState([]);
+  const [wardRoundNursingNotes, setWardRoundNursingNotes] = useState([]);
 
   // Preview state
   const [previewPrescription, setPreviewPrescription] = useState(null);
@@ -148,6 +159,20 @@ const DoctorDashboard = () => {
         fetchQueueData(userData.id);
         fetchAvailableLabTests();
         fetchLabOrders();
+        // Check inpatient module
+        axios.get('/api/system/enabled-modules').then(res => {
+          const mod = (res.data || []).find(m => m.module_name === 'inpatient');
+          if (mod?.is_enabled) {
+            setInpatientEnabled(true);
+            axios.get('/api/inpatient/admissions', { params: { status: 'admitted' } })
+              .then(r => {
+                const myAdmissions = (r.data || []).filter(a =>
+                  a.admitting_doctor_id === userData.id || a.attending_physician_id === userData.id
+                );
+                setDoctorAdmissions(myAdmissions);
+              }).catch(() => {});
+          }
+        }).catch(() => {});
       }
     } catch (error) {
       console.error('Error fetching user profile:', error);
@@ -984,7 +1009,7 @@ const DoctorDashboard = () => {
       </Card>
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-        <TabsList className="grid w-full grid-cols-3">
+        <TabsList className={`grid w-full ${inpatientEnabled ? 'grid-cols-4' : 'grid-cols-3'}`}>
           <TabsTrigger value="appointments">Today's Schedule</TabsTrigger>
           <TabsTrigger value="prescriptions">Prescriptions</TabsTrigger>
           <TabsTrigger value="lab-orders">
@@ -993,6 +1018,14 @@ const DoctorDashboard = () => {
               <Badge className="ml-1.5 bg-green-500 text-white text-xs px-1.5">{labStats.withReport}</Badge>
             )}
           </TabsTrigger>
+          {inpatientEnabled && (
+            <TabsTrigger value="inpatients">
+              Inpatient
+              {doctorAdmissions.length > 0 && (
+                <Badge className="ml-1.5 bg-blue-500 text-white text-xs px-1.5">{doctorAdmissions.length}</Badge>
+              )}
+            </TabsTrigger>
+          )}
         </TabsList>
 
         {/* Appointments Tab */}
@@ -1369,7 +1402,152 @@ const DoctorDashboard = () => {
             </CardContent>
           </Card>
         </TabsContent>
+
+        {/* Inpatient Patients Tab */}
+        {inpatientEnabled && (
+          <TabsContent value="inpatients" className="space-y-4">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Bed className="h-5 w-5" /> My Inpatient Patients — Ward Rounds
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {doctorAdmissions.length === 0 ? (
+                  <p className="text-gray-500 text-center py-4">No inpatient patients assigned to you.</p>
+                ) : (
+                  <div className="space-y-3">
+                    {doctorAdmissions.map(adm => {
+                      const isExpanded = wardRoundAdmission?.id === adm.id;
+                      const stayDays = adm.admission_date ? Math.max(1, Math.floor((Date.now() - new Date(adm.admission_date).getTime()) / 86400000)) : 0;
+                      return (
+                        <div key={adm.id} className={`border rounded-lg ${isExpanded ? 'ring-2 ring-blue-300' : ''}`}>
+                          <div className="flex items-center justify-between p-3 cursor-pointer hover:bg-gray-50" onClick={() => {
+                            if (isExpanded) { setWardRoundAdmission(null); } else {
+                              setWardRoundAdmission(adm);
+                              axios.get(`/api/inpatient/admissions/${adm.id}/visits`).then(r => setWardRoundVisits(r.data || [])).catch(() => setWardRoundVisits([]));
+                              axios.get(`/api/inpatient/admissions/${adm.id}/nursing-notes`).then(r => setWardRoundNursingNotes(r.data || [])).catch(() => setWardRoundNursingNotes([]));
+                            }
+                          }}>
+                            <div className="flex items-center gap-4">
+                              <div>
+                                <div className="font-medium text-sm">{adm.patient_name || 'N/A'}</div>
+                                <div className="text-xs text-gray-500">{adm.admission_number}</div>
+                              </div>
+                              <Badge variant="outline" className="text-xs">{adm.room_number}{adm.bed_label ? ` / ${adm.bed_label}` : adm.bed_number ? ` / ${adm.bed_number}` : ''}</Badge>
+                              <Badge variant="outline" className="text-xs">{adm.admission_type}</Badge>
+                              <span className="text-xs text-gray-500">Day {stayDays}</span>
+                              <span className="text-xs text-gray-500">{adm.condition_on_admission || ''}</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); setDoctorVisitAdmission(adm); setDoctorVisitNotes(''); setShowDoctorVisitDialog(true); }}>
+                                <Plus className="h-3 w-3 mr-1" /> Record Visit
+                              </Button>
+                              <span className="text-xs text-gray-400">{isExpanded ? '▲' : '▼'}</span>
+                            </div>
+                          </div>
+                          {isExpanded && (
+                            <div className="border-t p-3 bg-gray-50 space-y-4">
+                              <div className="grid grid-cols-2 gap-4">
+                                {/* Visit History */}
+                                <div>
+                                  <h4 className="text-sm font-semibold mb-2 flex items-center gap-1"><Activity className="h-4 w-4" /> Visit History</h4>
+                                  {wardRoundVisits.length === 0 ? (
+                                    <p className="text-xs text-gray-500">No visits recorded.</p>
+                                  ) : (
+                                    <div className="space-y-2 max-h-60 overflow-y-auto">
+                                      {wardRoundVisits.map(v => (
+                                        <div key={v.id} className="bg-white border rounded p-2 text-xs">
+                                          <div className="flex justify-between">
+                                            <span className="font-medium">{v.visit_type.replace('_', ' ').replace(/\b\w/g, c => c.toUpperCase())}</span>
+                                            <span className="text-gray-400">{v.visit_datetime ? new Date(v.visit_datetime).toLocaleString() : ''}</span>
+                                          </div>
+                                          <div className="text-gray-500">by {v.visitor_name || 'N/A'}</div>
+                                          {v.notes && <p className="mt-1 text-gray-700">{v.notes}</p>}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                                {/* Nursing Notes */}
+                                <div>
+                                  <h4 className="text-sm font-semibold mb-2 flex items-center gap-1"><ClipboardList className="h-4 w-4" /> Nursing Notes</h4>
+                                  {wardRoundNursingNotes.length === 0 ? (
+                                    <p className="text-xs text-gray-500">No nursing notes.</p>
+                                  ) : (
+                                    <div className="space-y-2 max-h-60 overflow-y-auto">
+                                      {wardRoundNursingNotes.map(n => (
+                                        <div key={n.id} className="bg-white border rounded p-2 text-xs">
+                                          <div className="flex items-center gap-1">
+                                            <Badge className={`text-[10px] px-1 ${n.shift === 'morning' ? 'bg-yellow-100 text-yellow-800' : n.shift === 'afternoon' ? 'bg-orange-100 text-orange-800' : 'bg-indigo-100 text-indigo-800'}`}>
+                                              {n.shift}
+                                            </Badge>
+                                            <Badge variant="outline" className="text-[10px] px-1">{n.note_type}</Badge>
+                                            <span className="text-gray-400 ml-auto">{n.created_at ? new Date(n.created_at).toLocaleString() : ''}</span>
+                                          </div>
+                                          <div className="text-gray-500 mt-0.5">by {n.nurse_name || 'N/A'}</div>
+                                          <p className="mt-1 text-gray-700 whitespace-pre-wrap">{n.content}</p>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                              {adm.admission_reason && (
+                                <div className="text-xs"><span className="font-medium">Admission Reason:</span> {adm.admission_reason}</div>
+                              )}
+                              {adm.admission_notes && (
+                                <div className="text-xs"><span className="font-medium">Notes:</span> {adm.admission_notes}</div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+        )}
       </Tabs>
+
+      {/* Doctor Visit Dialog for Inpatient */}
+      <Dialog open={showDoctorVisitDialog} onOpenChange={setShowDoctorVisitDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Record Doctor Visit - {doctorVisitAdmission?.patient_name}</DialogTitle>
+          </DialogHeader>
+          <form onSubmit={async (e) => {
+            e.preventDefault();
+            try {
+              await axios.post(`/api/inpatient/admissions/${doctorVisitAdmission.id}/visits`, {
+                visit_type: 'doctor_visit',
+                visitor_id: user?.id,
+                notes: doctorVisitNotes || null,
+              });
+              toast({ title: 'Success', description: 'Doctor visit recorded' });
+              setShowDoctorVisitDialog(false);
+              // Refresh
+              axios.get('/api/inpatient/admissions', { params: { status: 'admitted' } })
+                .then(r => {
+                  const myAdmissions = (r.data || []).filter(a =>
+                    a.admitting_doctor_id === user.id || a.attending_physician_id === user.id
+                  );
+                  setDoctorAdmissions(myAdmissions);
+                }).catch(() => {});
+            } catch (err) {
+              toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed to record visit' });
+            }
+          }} className="space-y-4">
+            <div>
+              <Label>Visit Notes</Label>
+              <Textarea value={doctorVisitNotes} onChange={e => setDoctorVisitNotes(e.target.value)} rows={4} placeholder="Clinical observations, treatment plan, progress notes..." />
+            </div>
+            <Button type="submit" className="w-full">Record Visit</Button>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       {/* === DIALOGS === */}
 
