@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Float
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Float, Numeric
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from config.database import Base
@@ -48,6 +48,8 @@ class Admission(Base):
     patient = relationship("Patient", back_populates="admissions")
     room = relationship("RoomManagement", back_populates="admissions")
     discharge = relationship("DischargeRecord", back_populates="admission", uselist=False)
+    visits = relationship("PatientVisit", back_populates="admission")
+    ot_schedules = relationship("OTSchedule", back_populates="admission")
 
 class DischargeRecord(Base):
     __tablename__ = "discharge_records"
@@ -71,3 +73,58 @@ class DischargeRecord(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     admission = relationship("Admission", back_populates="discharge")
+
+
+class InpatientRateConfig(Base):
+    __tablename__ = "inpatient_rate_configs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+    doctor_visit_rate = Column(Numeric(10, 2), default=0.00)
+    nurse_visit_rate = Column(Numeric(10, 2), default=0.00)
+    procedure_rate = Column(Numeric(10, 2), default=0.00)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class PatientVisit(Base):
+    __tablename__ = "patient_visits"
+
+    id = Column(Integer, primary_key=True, index=True)
+    admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=False)
+    patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
+    visitor_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    visit_type = Column(String(20), nullable=False)  # doctor_visit, nurse_visit, procedure
+    visit_datetime = Column(DateTime(timezone=True), server_default=func.now())
+    notes = Column(Text, nullable=True)
+    charge_amount = Column(Numeric(10, 2), default=0.00)
+    billed = Column(Boolean, default=False)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    admission = relationship("Admission", back_populates="visits")
+
+
+class OTSchedule(Base):
+    __tablename__ = "ot_schedules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=True)
+    patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
+    surgeon_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    anaesthetist_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    ot_room_number = Column(String(20), nullable=False)
+    procedure_name = Column(String(200), nullable=False)
+    scheduled_date = Column(DateTime(timezone=True), nullable=False)
+    estimated_duration_minutes = Column(Integer)
+    status = Column(String(20), default="scheduled")  # scheduled, in_progress, completed, cancelled, postponed
+    pre_op_notes = Column(Text, nullable=True)
+    post_op_notes = Column(Text, nullable=True)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    admission = relationship("Admission", back_populates="ot_schedules")
