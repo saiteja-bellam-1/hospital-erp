@@ -80,6 +80,7 @@ class Admission(Base):
     lab_orders = relationship("PatientLabOrder", back_populates="admission")
     documents = relationship("AdmissionDocument", back_populates="admission")
     nursing_notes = relationship("NursingNote", back_populates="admission")
+    diet_orders = relationship("DietOrder", back_populates="admission")
 
 class DischargeRecord(Base):
     __tablename__ = "discharge_records"
@@ -198,3 +199,23 @@ class NursingNote(Base):
 
     admission = relationship("Admission", back_populates="nursing_notes")
     nurse = relationship("User", foreign_keys=[nurse_id])
+
+
+class DietOrder(Base):
+    __tablename__ = "diet_orders"
+
+    id = Column(Integer, primary_key=True, index=True)
+    admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=False)
+    patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
+    diet_type = Column(String(30), nullable=False)  # regular, diabetic, liquid, soft, npo, low_salt, renal, cardiac
+    meal_instructions = Column(Text, nullable=True)  # specific meal-time instructions
+    allergies = Column(Text, nullable=True)
+    notes = Column(Text, nullable=True)
+    is_active = Column(Boolean, default=True)
+    ordered_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    admission = relationship("Admission", back_populates="diet_orders")
+    ordered_by = relationship("User", foreign_keys=[ordered_by_id])

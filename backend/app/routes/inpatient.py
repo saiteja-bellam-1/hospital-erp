@@ -16,7 +16,7 @@ from app.models.hospital import Hospital
 from app.models.billing import Bill, BillItem
 from app.models.inpatient import (
     RoomManagement, Admission, DischargeRecord,
-    PatientVisit, InpatientRateConfig, OTSchedule, Bed, AdmissionDocument, NursingNote
+    PatientVisit, InpatientRateConfig, OTSchedule, Bed, AdmissionDocument, NursingNote, DietOrder
 )
 from app.models.pharmacy import Prescription, PrescriptionItem, Medicine
 from app.models.prescriptions_simple import SimplePrescription
@@ -330,6 +330,36 @@ class NursingNoteResponse(BaseModel):
     note_type: str
     content: str
     nurse_name: Optional[str] = None
+    created_at: Optional[datetime]
+    updated_at: Optional[datetime]
+    class Config:
+        from_attributes = True
+
+
+# --- Diet Orders ---
+class DietOrderCreate(BaseModel):
+    diet_type: str = Field(..., pattern="^(regular|diabetic|liquid|soft|npo|low_salt|renal|cardiac)$")
+    meal_instructions: Optional[str] = None
+    allergies: Optional[str] = None
+    notes: Optional[str] = None
+
+class DietOrderUpdate(BaseModel):
+    diet_type: Optional[str] = Field(default=None, pattern="^(regular|diabetic|liquid|soft|npo|low_salt|renal|cardiac)$")
+    meal_instructions: Optional[str] = None
+    allergies: Optional[str] = None
+    notes: Optional[str] = None
+    is_active: Optional[bool] = None
+
+class DietOrderResponse(BaseModel):
+    id: int
+    admission_id: int
+    patient_id: int
+    diet_type: str
+    meal_instructions: Optional[str]
+    allergies: Optional[str]
+    notes: Optional[str]
+    is_active: bool
+    ordered_by_name: Optional[str] = None
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
     class Config:
@@ -2084,3 +2114,120 @@ async def delete_nursing_note(
         raise HTTPException(status_code=404, detail="Nursing note not found")
     db.delete(note)
     db.commit()
+
+
+# ============================================================
+# Diet Orders
+# ============================================================
+
+def _diet_to_response(d, db) -> dict:
+    ordered_by = db.query(User).filter(User.id == d.ordered_by_id).first()
+    return {
+        **{c.name: getattr(d, c.name) for c in d.__table__.columns},
+        "ordered_by_name": f"{ordered_by.first_name} {ordered_by.last_name}" if ordered_by else None,
+    }
+
+
+@router.post("/admissions/{admission_id}/diet-orders", response_model=DietOrderResponse, status_code=status.HTTP_201_CREATED)
+async def create_diet_order(
+    admission_id: int,
+    data: DietOrderCreate,
+    current_user: User = Depends(require_permission(Modules.INPATIENT, "write")),
+    db: Session = Depends(get_db),
+):
+    hospital = _get_hospital(db, current_user)
+    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    if not admission:
+        raise HTTPException(status_code=404, detail="Admission not found")
+
+    # Deactivate any existing active diet order for this admission
+    db.query(DietOrder).filter(
+        DietOrder.admission_id == admission_id,
+        DietOrder.is_active == True,
+    ).update({"is_active": False})
+
+    order = DietOrder(
+        admission_id=admission_id,
+        patient_id=admission.patient_id,
+        diet_type=data.diet_type,
+        meal_instructions=data.meal_instructions,
+        allergies=data.allergies,
+        notes=data.notes,
+        ordered_by_id=current_user.id,
+        hospital_id=hospital.id,
+    )
+    db.add(order)
+    db.commit()
+    db.refresh(order)
+    return _diet_to_response(order, db)
+
+
+@router.get("/admissions/{admission_id}/diet-orders", response_model=List[DietOrderResponse])
+async def list_diet_orders(
+    admission_id: int,
+    active_only: bool = Query(default=False),
+    current_user: User = Depends(require_permission(Modules.INPATIENT, "read")),
+    db: Session = Depends(get_db),
+):
+    q = db.query(DietOrder).filter(DietOrder.admission_id == admission_id)
+    if active_only:
+        q = q.filter(DietOrder.is_active == True)
+    orders = q.order_by(DietOrder.created_at.desc()).all()
+    return [_diet_to_response(o, db) for o in orders]
+
+
+@router.put("/diet-orders/{order_id}", response_model=DietOrderResponse)
+async def update_diet_order(
+    order_id: int,
+    data: DietOrderUpdate,
+    current_user: User = Depends(require_permission(Modules.INPATIENT, "write")),
+    db: Session = Depends(get_db),
+):
+    order = db.query(DietOrder).filter(DietOrder.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Diet order not found")
+    for field, value in data.dict(exclude_unset=True).items():
+        setattr(order, field, value)
+    db.commit()
+    db.refresh(order)
+    return _diet_to_response(order, db)
+
+
+@router.delete("/diet-orders/{order_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_diet_order(
+    order_id: int,
+    current_user: User = Depends(require_permission(Modules.INPATIENT, "delete")),
+    db: Session = Depends(get_db),
+):
+    order = db.query(DietOrder).filter(DietOrder.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Diet order not found")
+    db.delete(order)
+    db.commit()
+
+
+@router.get("/diet-orders/active", response_model=List[DietOrderResponse])
+async def list_all_active_diet_orders(
+    current_user: User = Depends(require_permission(Modules.INPATIENT, "read")),
+    db: Session = Depends(get_db),
+):
+    """Get all active diet orders across all current admissions (for nurse dashboard)."""
+    orders = db.query(DietOrder).join(Admission).filter(
+        DietOrder.is_active == True,
+        Admission.status == "admitted",
+    ).order_by(DietOrder.created_at.desc()).all()
+    result = []
+    for o in orders:
+        resp = _diet_to_response(o, db)
+        adm = db.query(Admission).filter(Admission.id == o.admission_id).first()
+        patient = db.query(Patient).filter(Patient.id == o.patient_id).first()
+        resp["patient_name"] = f"{patient.first_name} {patient.last_name}" if patient else None
+        resp["room_number"] = None
+        resp["bed_label"] = None
+        if adm:
+            room = db.query(RoomManagement).filter(RoomManagement.id == adm.room_id).first()
+            resp["room_number"] = room.room_number if room else None
+            resp["bed_label"] = adm.bed.bed_label if adm.bed else adm.bed_number
+            resp["admission_number"] = adm.admission_number
+        result.append(resp)
+    return result

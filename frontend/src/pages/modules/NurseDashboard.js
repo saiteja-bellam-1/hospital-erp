@@ -25,8 +25,11 @@ import {
   UserPlus,
   Eye,
   RefreshCw,
-  Save
+  Save,
+  Bed,
+  Plus,
 } from 'lucide-react';
+import axios from 'axios';
 
 const NurseDashboard = () => {
   const { toast } = useToast();
@@ -38,6 +41,14 @@ const NurseDashboard = () => {
   const [todayAppointments, setTodayAppointments] = useState([]);
   const [showVitalsDialog, setShowVitalsDialog] = useState(false);
   const [activeTab, setActiveTab] = useState('patients');
+
+  // Inpatient ward state
+  const [inpatientEnabled, setInpatientEnabled] = useState(false);
+  const [wardAdmissions, setWardAdmissions] = useState([]);
+  const [showNurseVisitDialog, setShowNurseVisitDialog] = useState(false);
+  const [nurseVisitAdmission, setNurseVisitAdmission] = useState(null);
+  const [nurseVisitNotes, setNurseVisitNotes] = useState('');
+  const [activeDietOrders, setActiveDietOrders] = useState([]);
 
   // Vitals form state
   const [vitalsForm, setVitalsForm] = useState({
@@ -59,6 +70,19 @@ const NurseDashboard = () => {
   useEffect(() => {
     fetchPatients();
     fetchTodayAppointments();
+    // Check if inpatient module is enabled
+    axios.get('/api/system/enabled-modules').then(res => {
+      const mod = (res.data || []).find(m => m.module_name === 'inpatient');
+      if (mod?.is_enabled) {
+        setInpatientEnabled(true);
+        axios.get('/api/inpatient/admissions', { params: { status: 'admitted' } })
+          .then(r => setWardAdmissions(r.data))
+          .catch(() => {});
+        axios.get('/api/inpatient/diet-orders/active')
+          .then(r => setActiveDietOrders(r.data))
+          .catch(() => {});
+      }
+    }).catch(() => {});
   }, []);
 
   // Filter patients based on search term
@@ -239,9 +263,10 @@ const NurseDashboard = () => {
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-        <TabsList className="grid w-full grid-cols-2">
+        <TabsList className={`grid w-full ${inpatientEnabled ? 'grid-cols-3' : 'grid-cols-2'}`}>
           <TabsTrigger value="patients">Patient Care</TabsTrigger>
           <TabsTrigger value="appointments">Today's Schedule</TabsTrigger>
+          {inpatientEnabled && <TabsTrigger value="ward">Inpatient Ward</TabsTrigger>}
         </TabsList>
 
         {/* Patient Care Tab */}
@@ -446,7 +471,136 @@ const NurseDashboard = () => {
             </CardContent>
           </Card>
         </TabsContent>
+
+        {/* Inpatient Ward Tab */}
+        {inpatientEnabled && (
+          <TabsContent value="ward" className="space-y-4">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Bed className="h-5 w-5" /> Inpatient Ward
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {wardAdmissions.length === 0 ? (
+                  <p className="text-gray-500 text-center py-4">No active admissions.</p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full border-collapse">
+                      <thead>
+                        <tr className="border-b">
+                          <th className="text-left py-2 text-sm">Patient</th>
+                          <th className="text-left py-2 text-sm">Room</th>
+                          <th className="text-left py-2 text-sm">Admitted</th>
+                          <th className="text-left py-2 text-sm">Doctor</th>
+                          <th className="text-left py-2 text-sm">Days</th>
+                          <th className="text-left py-2 text-sm">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {wardAdmissions.map(adm => (
+                          <tr key={adm.id} className="border-b hover:bg-gray-50">
+                            <td className="py-2">
+                              <div className="font-medium text-sm">{adm.patient_name || 'N/A'}</div>
+                              <div className="text-xs text-gray-500">{adm.admission_number}</div>
+                            </td>
+                            <td className="py-2 text-sm">{adm.room_number} {adm.bed_number ? `/ ${adm.bed_number}` : ''}</td>
+                            <td className="py-2 text-sm">{adm.admission_date ? new Date(adm.admission_date).toLocaleDateString() : ''}</td>
+                            <td className="py-2 text-sm">{adm.doctor_name || 'N/A'}</td>
+                            <td className="py-2 text-sm">{adm.admission_date ? Math.max(1, Math.floor((Date.now() - new Date(adm.admission_date).getTime()) / 86400000)) : 0}</td>
+                            <td className="py-2">
+                              <Button size="sm" variant="outline" onClick={() => { setNurseVisitAdmission(adm); setNurseVisitNotes(''); setShowNurseVisitDialog(true); }}>
+                                <Plus className="h-3 w-3 mr-1" /> Record Visit
+                              </Button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Active Diet Orders */}
+            {activeDietOrders.length > 0 && (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <Activity className="h-5 w-5" /> Active Diet Orders
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="overflow-x-auto">
+                    <table className="w-full border-collapse">
+                      <thead>
+                        <tr className="border-b">
+                          <th className="text-left py-2 text-sm">Patient</th>
+                          <th className="text-left py-2 text-sm">Room / Bed</th>
+                          <th className="text-left py-2 text-sm">Diet Type</th>
+                          <th className="text-left py-2 text-sm">Allergies</th>
+                          <th className="text-left py-2 text-sm">Instructions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {activeDietOrders.map(d => (
+                          <tr key={d.id} className="border-b hover:bg-gray-50">
+                            <td className="py-2">
+                              <div className="font-medium text-sm">{d.patient_name || 'N/A'}</div>
+                              <div className="text-xs text-gray-500">{d.admission_number || ''}</div>
+                            </td>
+                            <td className="py-2 text-sm">{d.room_number || '-'}{d.bed_label ? ` / ${d.bed_label}` : ''}</td>
+                            <td className="py-2">
+                              <Badge className={d.diet_type === 'npo' ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'}>
+                                {d.diet_type.replace('_', ' ').toUpperCase()}
+                              </Badge>
+                            </td>
+                            <td className="py-2 text-sm text-red-600">{d.allergies || '-'}</td>
+                            <td className="py-2 text-sm text-gray-600">{d.meal_instructions || d.notes || '-'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+          </TabsContent>
+        )}
       </Tabs>
+
+      {/* Nurse Visit Dialog */}
+      <Dialog open={showNurseVisitDialog} onOpenChange={setShowNurseVisitDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Record Nurse Visit - {nurseVisitAdmission?.patient_name}</DialogTitle>
+          </DialogHeader>
+          <form onSubmit={async (e) => {
+            e.preventDefault();
+            try {
+              const userData = JSON.parse(localStorage.getItem('user') || '{}');
+              await axios.post(`/api/inpatient/admissions/${nurseVisitAdmission.id}/visits`, {
+                visit_type: 'nurse_visit',
+                visitor_id: userData.id,
+                notes: nurseVisitNotes || null,
+              });
+              toast({ title: 'Success', description: 'Nurse visit recorded' });
+              setShowNurseVisitDialog(false);
+              // Refresh ward list
+              axios.get('/api/inpatient/admissions', { params: { status: 'admitted' } })
+                .then(r => setWardAdmissions(r.data)).catch(() => {});
+            } catch (err) {
+              toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed to record visit' });
+            }
+          }} className="space-y-4">
+            <div>
+              <Label>Nursing Notes</Label>
+              <Textarea value={nurseVisitNotes} onChange={e => setNurseVisitNotes(e.target.value)} rows={4} placeholder="Patient observations, vitals summary, care notes..." />
+            </div>
+            <Button type="submit" className="w-full">Record Visit</Button>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       {/* Vitals Recording Dialog */}
       <Dialog open={showVitalsDialog} onOpenChange={setShowVitalsDialog}>

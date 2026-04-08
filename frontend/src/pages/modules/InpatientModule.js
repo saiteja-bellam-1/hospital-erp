@@ -107,6 +107,9 @@ const InpatientModule = () => {
   const [billDiscount, setBillDiscount] = useState({ type: 'flat', value: 0 });
   const [billTaxPct, setBillTaxPct] = useState(0);
   const [nursingNotes, setNursingNotes] = useState([]);
+  const [dietOrders, setDietOrders] = useState([]);
+  const [showDietDialog, setShowDietDialog] = useState(false);
+  const [dietForm, setDietForm] = useState({ diet_type: 'regular', meal_instructions: '', allergies: '', notes: '' });
   const [showNursingNoteDialog, setShowNursingNoteDialog] = useState(false);
   const [nursingNoteForm, setNursingNoteForm] = useState({ shift: 'morning', note_type: 'general', content: '' });
   const [editingNursingNote, setEditingNursingNote] = useState(null);
@@ -314,6 +317,7 @@ const InpatientModule = () => {
     fetchLabOrders(admission.id);
     fetchAdmissionDocs(admission.id);
     fetchNursingNotes(admission.id);
+    fetchDietOrders(admission.id);
   };
 
   // Visit
@@ -656,6 +660,49 @@ const InpatientModule = () => {
       fetchNursingNotes(activityAdmission.id);
     } catch (err) {
       toast({ variant: 'destructive', title: 'Error', description: 'Failed to delete nursing note' });
+    }
+  };
+
+  // Diet Orders
+  const fetchDietOrders = async (admissionId) => {
+    try {
+      const res = await axios.get(`/api/inpatient/admissions/${admissionId}/diet-orders`);
+      setDietOrders(res.data);
+    } catch { setDietOrders([]); }
+  };
+
+  const handleCreateDietOrder = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      await axios.post(`/api/inpatient/admissions/${activityAdmission.id}/diet-orders`, dietForm);
+      toast({ title: 'Success', description: 'Diet order created' });
+      setShowDietDialog(false);
+      setDietForm({ diet_type: 'regular', meal_instructions: '', allergies: '', notes: '' });
+      fetchDietOrders(activityAdmission.id);
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed to create diet order';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally { setLoading(false); }
+  };
+
+  const handleToggleDietOrder = async (orderId, isActive) => {
+    try {
+      await axios.put(`/api/inpatient/diet-orders/${orderId}`, { is_active: !isActive });
+      toast({ title: 'Success', description: isActive ? 'Diet order deactivated' : 'Diet order reactivated' });
+      fetchDietOrders(activityAdmission.id);
+    } catch {
+      toast({ variant: 'destructive', title: 'Error', description: 'Failed to update diet order' });
+    }
+  };
+
+  const handleDeleteDietOrder = async (orderId) => {
+    try {
+      await axios.delete(`/api/inpatient/diet-orders/${orderId}`);
+      toast({ title: 'Success', description: 'Diet order deleted' });
+      fetchDietOrders(activityAdmission.id);
+    } catch {
+      toast({ variant: 'destructive', title: 'Error', description: 'Failed to delete diet order' });
     }
   };
 
@@ -1018,9 +1065,10 @@ const InpatientModule = () => {
 
                   <div className="p-4 flex-1">
                     <Tabs value={activityTab} onValueChange={setActivityTab}>
-                      <TabsList className="grid w-full grid-cols-7">
+                      <TabsList className="grid w-full grid-cols-8">
                         <TabsTrigger value="visits">Visits</TabsTrigger>
                         <TabsTrigger value="nursing">Nursing</TabsTrigger>
+                        <TabsTrigger value="diet">Diet</TabsTrigger>
                         <TabsTrigger value="lab">Lab</TabsTrigger>
                         <TabsTrigger value="medications">Meds</TabsTrigger>
                         <TabsTrigger value="bill">Bill</TabsTrigger>
@@ -1125,6 +1173,50 @@ const InpatientModule = () => {
                             </div>
                           );
                         })()}
+                      </TabsContent>
+
+                      {/* Diet sub-tab */}
+                      <TabsContent value="diet" className="space-y-3 mt-3">
+                        <Button size="sm" onClick={() => {
+                          setDietForm({ diet_type: 'regular', meal_instructions: '', allergies: '', notes: '' });
+                          setShowDietDialog(true);
+                        }}>
+                          <Plus className="h-4 w-4 mr-1" /> New Diet Order
+                        </Button>
+                        {dietOrders.length === 0 ? (
+                          <p className="text-sm text-gray-500 text-center py-4">No diet orders.</p>
+                        ) : (
+                          <div className="space-y-2">
+                            {dietOrders.map(d => (
+                              <div key={d.id} className={`border rounded-lg p-3 text-sm ${!d.is_active ? 'opacity-50' : ''}`}>
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-2">
+                                    <Badge className={d.is_active ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600'}>
+                                      {d.diet_type.replace('_', ' ').toUpperCase()}
+                                    </Badge>
+                                    {d.is_active && <Badge className="bg-blue-100 text-blue-800 text-xs">Active</Badge>}
+                                    <span className="text-gray-500 text-xs">by {d.ordered_by_name || 'N/A'}</span>
+                                  </div>
+                                  <div className="flex items-center gap-1">
+                                    <Button variant="ghost" size="sm" className="h-6 text-xs px-2"
+                                      onClick={() => handleToggleDietOrder(d.id, d.is_active)}>
+                                      {d.is_active ? 'Deactivate' : 'Reactivate'}
+                                    </Button>
+                                    <Button variant="ghost" size="sm" className="text-red-500 h-6 w-6 p-0"
+                                      onClick={() => setConfirmState({ open: true, title: 'Delete Diet Order', message: 'Delete this diet order?',
+                                        onConfirm: () => { setConfirmState({ open: false }); handleDeleteDietOrder(d.id); } })}>
+                                      <Trash2 className="h-3 w-3" />
+                                    </Button>
+                                  </div>
+                                </div>
+                                <p className="text-xs text-gray-400 mt-1">{d.created_at ? new Date(d.created_at).toLocaleString() : ''}</p>
+                                {d.meal_instructions && <p className="text-xs mt-1"><span className="font-medium">Meals:</span> {d.meal_instructions}</p>}
+                                {d.allergies && <p className="text-xs mt-1 text-red-600"><span className="font-medium">Allergies:</span> {d.allergies}</p>}
+                                {d.notes && <p className="text-xs mt-1 text-gray-600">{d.notes}</p>}
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </TabsContent>
 
                       {/* Lab Orders sub-tab */}
@@ -1936,6 +2028,47 @@ const InpatientModule = () => {
             </div>
             <Button type="submit" className="w-full" disabled={loading || !nursingNoteForm.content.trim()}>
               {loading ? 'Saving...' : editingNursingNote ? 'Update Note' : 'Add Note'}
+            </Button>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Diet Order Dialog */}
+      <Dialog open={showDietDialog} onOpenChange={setShowDietDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>New Diet Order</DialogTitle></DialogHeader>
+          <form onSubmit={handleCreateDietOrder} className="space-y-4">
+            <div>
+              <Label>Diet Type *</Label>
+              <Select value={dietForm.diet_type} onValueChange={v => setDietForm(p => ({ ...p, diet_type: v }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="regular">Regular</SelectItem>
+                  <SelectItem value="diabetic">Diabetic</SelectItem>
+                  <SelectItem value="liquid">Liquid</SelectItem>
+                  <SelectItem value="soft">Soft</SelectItem>
+                  <SelectItem value="npo">NPO (Nothing by Mouth)</SelectItem>
+                  <SelectItem value="low_salt">Low Salt</SelectItem>
+                  <SelectItem value="renal">Renal</SelectItem>
+                  <SelectItem value="cardiac">Cardiac</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Meal Instructions</Label>
+              <Textarea value={dietForm.meal_instructions} onChange={e => setDietForm(p => ({ ...p, meal_instructions: e.target.value }))} rows={2} placeholder="e.g. Small frequent meals, no breakfast before surgery..." />
+            </div>
+            <div>
+              <Label>Allergies</Label>
+              <Input value={dietForm.allergies} onChange={e => setDietForm(p => ({ ...p, allergies: e.target.value }))} placeholder="e.g. Peanuts, shellfish, dairy..." />
+            </div>
+            <div>
+              <Label>Notes</Label>
+              <Textarea value={dietForm.notes} onChange={e => setDietForm(p => ({ ...p, notes: e.target.value }))} rows={2} placeholder="Additional dietary notes..." />
+            </div>
+            <p className="text-xs text-gray-500">Creating a new diet order will deactivate any previous active order.</p>
+            <Button type="submit" className="w-full" disabled={loading}>
+              {loading ? 'Saving...' : 'Create Diet Order'}
             </Button>
           </form>
         </DialogContent>

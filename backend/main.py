@@ -21,7 +21,7 @@ from app.models.hospital import Hospital, HospitalModule
 from app.models.prescriptions_simple import SimplePrescription
 from app.models.doctor_availability import DoctorAvailability, DoctorSpecialSchedule, DoctorAvailabilityStatus
 from app.models.license import License
-from app.models.inpatient import RoomManagement, Admission, DischargeRecord, PatientVisit, InpatientRateConfig, OTSchedule, Bed, AdmissionDocument, NursingNote
+from app.models.inpatient import RoomManagement, Admission, DischargeRecord, PatientVisit, InpatientRateConfig, OTSchedule, Bed, AdmissionDocument, NursingNote, DietOrder
 
 # Import route modules
 from app.routes import auth, patients, admin, system, module_admin, hospital_admin, appointments, prescriptions, medicines, consultations, prescriptions_simple, doctor_availability, lab, ehr, license, setup, backup, referrals, audit, inpatient
