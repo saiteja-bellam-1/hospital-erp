@@ -22,6 +22,23 @@ class RoomManagement(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     
     admissions = relationship("Admission", back_populates="room")
+    beds = relationship("Bed", back_populates="room")
+
+
+class Bed(Base):
+    __tablename__ = "beds"
+
+    id = Column(Integer, primary_key=True, index=True)
+    room_id = Column(Integer, ForeignKey("room_management.id"), nullable=False)
+    bed_label = Column(String(20), nullable=False)  # e.g. "A", "B", "1", "2"
+    status = Column(String(20), default="available")  # available, occupied, maintenance
+    current_admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    room = relationship("RoomManagement", back_populates="beds")
+    admission = relationship("Admission", foreign_keys=[current_admission_id])
+
 
 class Admission(Base):
     __tablename__ = "admissions"
@@ -39,17 +56,30 @@ class Admission(Base):
     status = Column(String(20), default="admitted")  # admitted, discharged, transferred
     admission_notes = Column(Text)
     insurance_details = Column(Text)
+    insurance_provider = Column(String(200), nullable=True)
+    policy_number = Column(String(100), nullable=True)
+    claim_reference = Column(String(100), nullable=True)
+    claim_status = Column(String(20), default="none")  # none, draft, submitted, approved, rejected
+    claim_amount = Column(Float, nullable=True)
+    claim_submitted_at = Column(DateTime(timezone=True), nullable=True)
+    claim_notes = Column(Text, nullable=True)
     emergency_contact = Column(String(100))
     attending_physician_id = Column(Integer, ForeignKey("users.id"))
-    bed_number = Column(String(10))
+    bed_number = Column(String(10))  # legacy free-text field
+    bed_id = Column(Integer, ForeignKey("beds.id"), nullable=True)  # structured bed reference
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    
+
     patient = relationship("Patient", back_populates="admissions")
+    admitting_doctor = relationship("User", foreign_keys=[admitting_doctor_id])
+    bed = relationship("Bed", foreign_keys=[bed_id])
     room = relationship("RoomManagement", back_populates="admissions")
     discharge = relationship("DischargeRecord", back_populates="admission", uselist=False)
     visits = relationship("PatientVisit", back_populates="admission")
     ot_schedules = relationship("OTSchedule", back_populates="admission")
+    lab_orders = relationship("PatientLabOrder", back_populates="admission")
+    documents = relationship("AdmissionDocument", back_populates="admission")
+    nursing_notes = relationship("NursingNote", back_populates="admission")
 
 class DischargeRecord(Base):
     __tablename__ = "discharge_records"
@@ -105,6 +135,7 @@ class PatientVisit(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     admission = relationship("Admission", back_populates="visits")
+    visitor = relationship("User", foreign_keys=[visitor_id])
 
 
 class OTSchedule(Base):
@@ -128,3 +159,42 @@ class OTSchedule(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     admission = relationship("Admission", back_populates="ot_schedules")
+    patient = relationship("Patient", foreign_keys=[patient_id])
+    surgeon = relationship("User", foreign_keys=[surgeon_id])
+
+
+class AdmissionDocument(Base):
+    __tablename__ = "admission_documents"
+
+    id = Column(Integer, primary_key=True, index=True)
+    admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=False)
+    document_type = Column(String(50), nullable=False)  # consent_form, referral_letter, insurance_doc, lab_report, other
+    document_name = Column(String(200), nullable=False)
+    file_name = Column(String(255), nullable=False)  # stored filename on disk
+    file_path = Column(String(500), nullable=False)  # relative path under uploads/
+    file_size = Column(Integer)  # bytes
+    mime_type = Column(String(100))
+    uploaded_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    admission = relationship("Admission", back_populates="documents")
+    uploaded_by = relationship("User", foreign_keys=[uploaded_by_id])
+
+
+class NursingNote(Base):
+    __tablename__ = "nursing_notes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=False)
+    patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
+    nurse_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    shift = Column(String(20), nullable=False)  # morning, afternoon, night
+    note_type = Column(String(30), nullable=False)  # observation, medication, vitals, procedure, handover, general
+    content = Column(Text, nullable=False)
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    admission = relationship("Admission", back_populates="nursing_notes")
+    nurse = relationship("User", foreign_keys=[nurse_id])

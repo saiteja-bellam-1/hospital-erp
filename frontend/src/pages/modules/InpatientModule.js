@@ -14,7 +14,7 @@ import { printPdfFromUrl } from '../../utils/printPdf';
 import {
   Plus, Search, Edit2, Trash2, Bed, Activity, Clock, User, Users,
   FileText, Loader2, X, ChevronLeft, ChevronRight, DollarSign, Stethoscope,
-  ClipboardList, LayoutDashboard, Scissors
+  ClipboardList, LayoutDashboard, Scissors, Shield, Upload, Download, Paperclip
 } from 'lucide-react';
 import axios from 'axios';
 
@@ -37,6 +37,16 @@ const otStatusColor = {
 
 const roomTypeLabel = { general: 'General', private: 'Private', icu: 'ICU', emergency: 'Emergency', operation: 'Operation' };
 
+const claimStatusColor = {
+  none: 'bg-gray-100 text-gray-800',
+  draft: 'bg-yellow-100 text-yellow-800',
+  submitted: 'bg-blue-100 text-blue-800',
+  approved: 'bg-green-100 text-green-800',
+  rejected: 'bg-red-100 text-red-800',
+};
+
+const claimStatusLabel = { none: 'No Claim', draft: 'Draft', submitted: 'Submitted', approved: 'Approved', rejected: 'Rejected' };
+
 const InpatientModule = () => {
   const { toast } = useToast();
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -53,7 +63,7 @@ const InpatientModule = () => {
   const [admissionForm, setAdmissionForm] = useState({
     patient_id: '', admitting_doctor_id: '', room_id: '', admission_type: 'elective',
     admission_reason: '', condition_on_admission: 'stable', estimated_stay_days: '',
-    admission_notes: '', insurance_provider: '', policy_number: '', claim_reference: '', emergency_contact: '', bed_number: '',
+    admission_notes: '', insurance_provider: '', policy_number: '', claim_reference: '', emergency_contact: '', bed_number: '', bed_id: '',
   });
   const [patientSearchResults, setPatientSearchResults] = useState([]);
   const [patientSearchQuery, setPatientSearchQuery] = useState('');
@@ -85,6 +95,20 @@ const InpatientModule = () => {
     bed_count: 1, room_charge_per_day: '',  amenities: '',
   });
   const [rateForm, setRateForm] = useState({ doctor_visit_rate: 0, nurse_visit_rate: 0, procedure_rate: 0 });
+
+  // Bed Management
+  const [selectedRoomForBeds, setSelectedRoomForBeds] = useState(null);
+  const [roomBeds, setRoomBeds] = useState([]);
+  const [newBedLabel, setNewBedLabel] = useState('');
+  const [showBedManager, setShowBedManager] = useState(false);
+  const [admissionBeds, setAdmissionBeds] = useState([]);  // beds for selected room in admission form
+  const [admissionDocs, setAdmissionDocs] = useState([]);
+  const [docUploading, setDocUploading] = useState(false);
+  const [nursingNotes, setNursingNotes] = useState([]);
+  const [showNursingNoteDialog, setShowNursingNoteDialog] = useState(false);
+  const [nursingNoteForm, setNursingNoteForm] = useState({ shift: 'morning', note_type: 'general', content: '' });
+  const [editingNursingNote, setEditingNursingNote] = useState(null);
+  const [nursingShiftFilter, setNursingShiftFilter] = useState('all');
 
   // Pagination
   const PAGE_SIZE = 50;
@@ -252,6 +276,7 @@ const InpatientModule = () => {
         admitting_doctor_id: parseInt(admissionForm.admitting_doctor_id),
         room_id: parseInt(admissionForm.room_id),
         estimated_stay_days: admissionForm.estimated_stay_days ? parseInt(admissionForm.estimated_stay_days) : null,
+        bed_id: admissionForm.bed_id ? parseInt(admissionForm.bed_id) : null,
       };
       await axios.post('/api/inpatient/admissions', payload);
       toast({ title: 'Success', description: 'Patient admitted successfully' });
@@ -269,7 +294,7 @@ const InpatientModule = () => {
   const resetAdmissionForm = () => {
     setAdmissionForm({ patient_id: '', admitting_doctor_id: '', room_id: '', admission_type: 'elective',
       admission_reason: '', condition_on_admission: 'stable', estimated_stay_days: '',
-      admission_notes: '', insurance_provider: '', policy_number: '', claim_reference: '', emergency_contact: '', bed_number: '' });
+      admission_notes: '', insurance_provider: '', policy_number: '', claim_reference: '', emergency_contact: '', bed_number: '', bed_id: '' });
     setSelectedPatientName('');
     setPatientSearchQuery('');
     setPatientSearchResults([]);
@@ -283,6 +308,8 @@ const InpatientModule = () => {
     fetchBill(admission.id);
     fetchMedications(admission.id);
     fetchLabOrders(admission.id);
+    fetchAdmissionDocs(admission.id);
+    fetchNursingNotes(admission.id);
   };
 
   // Visit
@@ -371,6 +398,22 @@ const InpatientModule = () => {
       fetchBill(activityAdmission.id);
     } catch (err) {
       toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed to finalize bill' });
+    } finally { setLoading(false); }
+  };
+
+  // Insurance claim status update
+  const handleClaimStatusUpdate = async (admissionId, data) => {
+    setLoading(true);
+    try {
+      const res = await axios.put(`/api/inpatient/admissions/${admissionId}/claim-status`, data);
+      toast({ title: 'Success', description: `Claim status updated to ${data.claim_status}` });
+      // Update activityAdmission in place
+      setActivityAdmission(prev => prev ? { ...prev, ...res.data } : prev);
+      // Refresh admissions list
+      fetchAdmissions();
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      toast({ variant: 'destructive', title: 'Error', description: typeof detail === 'string' ? detail : 'Failed to update claim status' });
     } finally { setLoading(false); }
   };
 
@@ -477,6 +520,131 @@ const InpatientModule = () => {
     } catch (err) {
       toast({ variant: 'destructive', title: 'Error', description: 'Failed to update rates' });
     } finally { setLoading(false); }
+  };
+
+  // Bed Management
+  const fetchBeds = async (roomId) => {
+    try {
+      const res = await axios.get(`/api/inpatient/rooms/${roomId}/beds`);
+      setRoomBeds(res.data);
+    } catch { setRoomBeds([]); }
+  };
+
+  const openBedManager = (room) => {
+    setSelectedRoomForBeds(room);
+    fetchBeds(room.id);
+    setNewBedLabel('');
+    setShowBedManager(true);
+  };
+
+  const handleAddBed = async () => {
+    if (!newBedLabel.trim() || !selectedRoomForBeds) return;
+    try {
+      await axios.post(`/api/inpatient/rooms/${selectedRoomForBeds.id}/beds`, { bed_label: newBedLabel.trim() });
+      setNewBedLabel('');
+      fetchBeds(selectedRoomForBeds.id);
+      fetchRooms();
+      toast({ title: 'Success', description: 'Bed added' });
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed to add bed' });
+    }
+  };
+
+  const handleUpdateBedStatus = async (bedId, newStatus) => {
+    try {
+      await axios.patch(`/api/inpatient/beds/${bedId}`, { status: newStatus });
+      fetchBeds(selectedRoomForBeds.id);
+      fetchRooms();
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed to update bed' });
+    }
+  };
+
+  const handleDeleteBed = async (bedId) => {
+    try {
+      await axios.delete(`/api/inpatient/beds/${bedId}`);
+      fetchBeds(selectedRoomForBeds.id);
+      fetchRooms();
+      toast({ title: 'Success', description: 'Bed removed' });
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed to delete bed' });
+    }
+  };
+
+  // Admission Documents
+  const fetchAdmissionDocs = async (admissionId) => {
+    try {
+      const res = await axios.get(`/api/inpatient/admissions/${admissionId}/documents`);
+      setAdmissionDocs(res.data);
+    } catch { setAdmissionDocs([]); }
+  };
+
+  const handleDocUpload = async (admissionId, file, docType, docName, notes) => {
+    setDocUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('document_type', docType);
+      formData.append('document_name', docName || file.name);
+      if (notes) formData.append('notes', notes);
+      await axios.post(`/api/inpatient/admissions/${admissionId}/documents`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      toast({ title: 'Success', description: 'Document uploaded' });
+      fetchAdmissionDocs(admissionId);
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      toast({ variant: 'destructive', title: 'Error', description: typeof detail === 'string' ? detail : 'Upload failed' });
+    } finally { setDocUploading(false); }
+  };
+
+  const handleDocDelete = async (docId) => {
+    try {
+      await axios.delete(`/api/inpatient/documents/${docId}`);
+      toast({ title: 'Success', description: 'Document deleted' });
+      if (activityAdmission) fetchAdmissionDocs(activityAdmission.id);
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Error', description: 'Failed to delete document' });
+    }
+  };
+
+  // Nursing Notes
+  const fetchNursingNotes = async (admissionId) => {
+    try {
+      const res = await axios.get(`/api/inpatient/admissions/${admissionId}/nursing-notes`);
+      setNursingNotes(res.data);
+    } catch { setNursingNotes([]); }
+  };
+
+  const handleCreateNursingNote = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      if (editingNursingNote) {
+        await axios.put(`/api/inpatient/nursing-notes/${editingNursingNote.id}`, nursingNoteForm);
+        toast({ title: 'Success', description: 'Nursing note updated' });
+      } else {
+        await axios.post(`/api/inpatient/admissions/${activityAdmission.id}/nursing-notes`, nursingNoteForm);
+        toast({ title: 'Success', description: 'Nursing note added' });
+      }
+      setShowNursingNoteDialog(false);
+      setEditingNursingNote(null);
+      setNursingNoteForm({ shift: 'morning', note_type: 'general', content: '' });
+      fetchNursingNotes(activityAdmission.id);
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed to save nursing note';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally { setLoading(false); }
+  };
+
+  const handleDeleteNursingNote = async (noteId) => {
+    try {
+      await axios.delete(`/api/inpatient/nursing-notes/${noteId}`);
+      toast({ title: 'Success', description: 'Nursing note deleted' });
+      fetchNursingNotes(activityAdmission.id);
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Error', description: 'Failed to delete nursing note' });
+    }
   };
 
   // OT Schedule
@@ -774,10 +942,15 @@ const InpatientModule = () => {
                           <tr key={adm.id} className={`border-b cursor-pointer transition-colors ${activityAdmission?.id === adm.id ? 'bg-blue-50' : 'hover:bg-gray-50'}`}
                               onClick={() => openActivity(adm)}>
                             <td className="py-2">
-                              <div className="font-medium text-sm">{adm.patient_name || 'N/A'}</div>
+                              <div className="flex items-center gap-1">
+                                <span className="font-medium text-sm">{adm.patient_name || 'N/A'}</span>
+                                {adm.claim_status && adm.claim_status !== 'none' && (
+                                  <Shield className="h-3 w-3 text-blue-500" title={`Claim: ${claimStatusLabel[adm.claim_status]}`} />
+                                )}
+                              </div>
                               <div className="text-xs text-gray-500">{adm.admission_number}</div>
                             </td>
-                            <td className="py-2 text-sm">{adm.room_number} {adm.bed_number ? `/ ${adm.bed_number}` : ''}<br /><span className="text-xs text-gray-500">{roomTypeLabel[adm.room_type] || adm.room_type}</span></td>
+                            <td className="py-2 text-sm">{adm.room_number} {(adm.bed_label || adm.bed_number) ? `/ ${adm.bed_label || adm.bed_number}` : ''}<br /><span className="text-xs text-gray-500">{roomTypeLabel[adm.room_type] || adm.room_type}</span></td>
                             {!activityAdmission && <td className="py-2 text-sm">{adm.doctor_name || 'N/A'}</td>}
                             <td className="py-2 text-sm">{adm.admission_date ? new Date(adm.admission_date).toLocaleDateString() : ''}</td>
                             <td className="py-2 text-sm">{daysSince(adm.admission_date)}</td>
@@ -833,11 +1006,14 @@ const InpatientModule = () => {
 
                   <div className="p-4 flex-1">
                     <Tabs value={activityTab} onValueChange={setActivityTab}>
-                      <TabsList className="grid w-full grid-cols-4">
+                      <TabsList className="grid w-full grid-cols-7">
                         <TabsTrigger value="visits">Visits</TabsTrigger>
+                        <TabsTrigger value="nursing">Nursing</TabsTrigger>
                         <TabsTrigger value="lab">Lab</TabsTrigger>
                         <TabsTrigger value="medications">Meds</TabsTrigger>
                         <TabsTrigger value="bill">Bill</TabsTrigger>
+                        <TabsTrigger value="insurance">Insurance</TabsTrigger>
+                        <TabsTrigger value="docs">Docs</TabsTrigger>
                       </TabsList>
 
                       {/* Visits sub-tab */}
@@ -875,6 +1051,68 @@ const InpatientModule = () => {
                             ))}
                           </div>
                         )}
+                      </TabsContent>
+
+                      {/* Nursing Notes sub-tab */}
+                      <TabsContent value="nursing" className="space-y-3 mt-3">
+                        <div className="flex items-center gap-2">
+                          <Button size="sm" onClick={() => {
+                            setEditingNursingNote(null);
+                            setNursingNoteForm({ shift: 'morning', note_type: 'general', content: '' });
+                            setShowNursingNoteDialog(true);
+                          }}>
+                            <Plus className="h-4 w-4 mr-1" /> Add Note
+                          </Button>
+                          <Select value={nursingShiftFilter} onValueChange={setNursingShiftFilter}>
+                            <SelectTrigger className="w-[140px] h-8 text-xs">
+                              <SelectValue placeholder="Filter shift" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="all">All Shifts</SelectItem>
+                              <SelectItem value="morning">Morning</SelectItem>
+                              <SelectItem value="afternoon">Afternoon</SelectItem>
+                              <SelectItem value="night">Night</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        {(() => {
+                          const filtered = nursingShiftFilter === 'all' ? nursingNotes : nursingNotes.filter(n => n.shift === nursingShiftFilter);
+                          return filtered.length === 0 ? (
+                            <p className="text-sm text-gray-500 text-center py-4">No nursing notes recorded yet.</p>
+                          ) : (
+                            <div className="space-y-2">
+                              {filtered.map(n => (
+                                <div key={n.id} className="border rounded-lg p-3 text-sm">
+                                  <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-2">
+                                      <Badge className={n.shift === 'morning' ? 'bg-yellow-100 text-yellow-800' : n.shift === 'afternoon' ? 'bg-orange-100 text-orange-800' : 'bg-indigo-100 text-indigo-800'}>
+                                        {n.shift.charAt(0).toUpperCase() + n.shift.slice(1)}
+                                      </Badge>
+                                      <Badge variant="outline">{n.note_type.charAt(0).toUpperCase() + n.note_type.slice(1)}</Badge>
+                                      <span className="text-gray-500 text-xs">by {n.nurse_name || 'N/A'}</span>
+                                    </div>
+                                    <div className="flex items-center gap-1">
+                                      <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => {
+                                        setEditingNursingNote(n);
+                                        setNursingNoteForm({ shift: n.shift, note_type: n.note_type, content: n.content });
+                                        setShowNursingNoteDialog(true);
+                                      }}>
+                                        <Edit2 className="h-3 w-3" />
+                                      </Button>
+                                      <Button variant="ghost" size="sm" className="text-red-500 h-6 w-6 p-0"
+                                        onClick={() => setConfirmState({ open: true, title: 'Delete Note', message: 'Delete this nursing note?',
+                                          onConfirm: () => { setConfirmState({ open: false }); handleDeleteNursingNote(n.id); } })}>
+                                        <Trash2 className="h-3 w-3" />
+                                      </Button>
+                                    </div>
+                                  </div>
+                                  <p className="text-xs text-gray-400 mt-1">{n.created_at ? new Date(n.created_at).toLocaleString() : ''}</p>
+                                  <p className="text-sm text-gray-700 mt-1 whitespace-pre-wrap">{n.content}</p>
+                                </div>
+                              ))}
+                            </div>
+                          );
+                        })()}
                       </TabsContent>
 
                       {/* Lab Orders sub-tab */}
@@ -999,6 +1237,214 @@ const InpatientModule = () => {
                           <p className="text-sm text-gray-500 text-center py-4">Loading bill...</p>
                         )}
                       </TabsContent>
+
+                      {/* Insurance sub-tab */}
+                      <TabsContent value="insurance" className="space-y-4 mt-3">
+                        {(() => {
+                          const adm = activityAdmission;
+                          const cs = adm?.claim_status || 'none';
+                          const nextActions = {
+                            none: adm?.insurance_provider ? [{ status: 'draft', label: 'Create Draft Claim', variant: 'default' }] : [],
+                            draft: [
+                              { status: 'submitted', label: 'Submit Claim', variant: 'default' },
+                              { status: 'none', label: 'Cancel Draft', variant: 'outline' },
+                            ],
+                            submitted: [
+                              { status: 'approved', label: 'Mark Approved', variant: 'default' },
+                              { status: 'rejected', label: 'Mark Rejected', variant: 'destructive' },
+                              { status: 'draft', label: 'Revert to Draft', variant: 'outline' },
+                            ],
+                            approved: [],
+                            rejected: [{ status: 'draft', label: 'Resubmit as Draft', variant: 'outline' }],
+                          };
+
+                          return (
+                            <>
+                              {/* Current Status */}
+                              <div className="border rounded-lg p-4">
+                                <div className="flex items-center justify-between mb-3">
+                                  <div className="flex items-center gap-2">
+                                    <Shield className="h-5 w-5 text-gray-500" />
+                                    <h4 className="font-medium text-sm">Insurance Claim</h4>
+                                  </div>
+                                  <Badge className={claimStatusColor[cs]}>{claimStatusLabel[cs]}</Badge>
+                                </div>
+
+                                <div className="space-y-2 text-sm">
+                                  <div className="flex justify-between">
+                                    <span className="text-gray-500">Provider</span>
+                                    <span>{adm?.insurance_provider || '—'}</span>
+                                  </div>
+                                  <div className="flex justify-between">
+                                    <span className="text-gray-500">Policy #</span>
+                                    <span>{adm?.policy_number || '—'}</span>
+                                  </div>
+                                  <div className="flex justify-between">
+                                    <span className="text-gray-500">Claim Ref</span>
+                                    <span>{adm?.claim_reference || '—'}</span>
+                                  </div>
+                                  {adm?.claim_amount != null && adm.claim_amount > 0 && (
+                                    <div className="flex justify-between">
+                                      <span className="text-gray-500">Claim Amount</span>
+                                      <span className="font-medium">₹{parseFloat(adm.claim_amount).toFixed(2)}</span>
+                                    </div>
+                                  )}
+                                  {adm?.claim_submitted_at && (
+                                    <div className="flex justify-between">
+                                      <span className="text-gray-500">Submitted On</span>
+                                      <span>{new Date(adm.claim_submitted_at).toLocaleDateString()}</span>
+                                    </div>
+                                  )}
+                                  {adm?.claim_notes && (
+                                    <div className="pt-2 border-t">
+                                      <span className="text-gray-500 text-xs">Notes</span>
+                                      <p className="text-xs mt-1">{adm.claim_notes}</p>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* Workflow Progress */}
+                              <div className="flex items-center gap-1 text-xs px-1">
+                                {['draft', 'submitted', 'approved'].map((step, idx) => (
+                                  <React.Fragment key={step}>
+                                    <div className={`flex items-center gap-1 px-2 py-1 rounded ${
+                                      cs === step ? 'bg-blue-100 text-blue-800 font-medium' :
+                                      (cs === 'approved' || (cs === 'submitted' && idx < 2) || (cs === 'draft' && idx < 1) || (['submitted', 'approved'].includes(cs) && idx === 0) || (cs === 'approved' && idx <= 1))
+                                        ? 'bg-green-50 text-green-700' : 'bg-gray-50 text-gray-400'
+                                    }`}>
+                                      {step.charAt(0).toUpperCase() + step.slice(1)}
+                                    </div>
+                                    {idx < 2 && <ChevronRight className="h-3 w-3 text-gray-300" />}
+                                  </React.Fragment>
+                                ))}
+                                {cs === 'rejected' && (
+                                  <>
+                                    <ChevronRight className="h-3 w-3 text-gray-300" />
+                                    <div className="px-2 py-1 rounded bg-red-100 text-red-800 font-medium">Rejected</div>
+                                  </>
+                                )}
+                              </div>
+
+                              {/* No insurance warning */}
+                              {!adm?.insurance_provider && cs === 'none' && (
+                                <p className="text-sm text-gray-500 text-center py-2">
+                                  No insurance provider recorded. Update admission details to add insurance info before creating a claim.
+                                </p>
+                              )}
+
+                              {/* Action Buttons */}
+                              {(nextActions[cs] || []).length > 0 && (
+                                <div className="space-y-3">
+                                  {(cs === 'none' || cs === 'draft' || cs === 'rejected') && (
+                                    <div className="space-y-2">
+                                      <div className="grid grid-cols-2 gap-2">
+                                        <div>
+                                          <Label className="text-xs">Claim Amount (₹)</Label>
+                                          <Input type="number" min="0" step="0.01" placeholder="0.00"
+                                            defaultValue={adm?.claim_amount || ''}
+                                            id={`claim-amount-${adm?.id}`} />
+                                        </div>
+                                        <div>
+                                          <Label className="text-xs">Claim Reference</Label>
+                                          <Input placeholder="Ref #" defaultValue={adm?.claim_reference || ''}
+                                            id={`claim-ref-${adm?.id}`} />
+                                        </div>
+                                      </div>
+                                      <div>
+                                        <Label className="text-xs">Notes</Label>
+                                        <Textarea placeholder="Claim notes..." rows={2}
+                                          defaultValue={adm?.claim_notes || ''}
+                                          id={`claim-notes-${adm?.id}`} />
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  <div className="flex gap-2 flex-wrap">
+                                    {(nextActions[cs] || []).map(action => (
+                                      <Button key={action.status} size="sm" variant={action.variant} disabled={loading}
+                                        onClick={() => {
+                                          const amountEl = document.getElementById(`claim-amount-${adm?.id}`);
+                                          const refEl = document.getElementById(`claim-ref-${adm?.id}`);
+                                          const notesEl = document.getElementById(`claim-notes-${adm?.id}`);
+                                          handleClaimStatusUpdate(adm.id, {
+                                            claim_status: action.status,
+                                            claim_amount: amountEl ? parseFloat(amountEl.value) || null : null,
+                                            claim_reference: refEl ? refEl.value || null : null,
+                                            claim_notes: notesEl ? notesEl.value || null : null,
+                                          });
+                                        }}>
+                                        {action.label}
+                                      </Button>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </>
+                          );
+                        })()}
+                      </TabsContent>
+
+                      {/* Documents sub-tab */}
+                      <TabsContent value="docs" className="space-y-3 mt-3">
+                        {/* Upload area */}
+                        <div className="border-2 border-dashed rounded-lg p-4 text-center">
+                          <input type="file" id="doc-upload-input" className="hidden"
+                            accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.doc,.docx"
+                            onChange={e => {
+                              const file = e.target.files?.[0];
+                              if (file && activityAdmission) {
+                                const docType = prompt('Document type:\nconsent_form, referral_letter, insurance_doc, lab_report, other', 'other') || 'other';
+                                handleDocUpload(activityAdmission.id, file, docType, file.name, '');
+                              }
+                              e.target.value = '';
+                            }} />
+                          <Button variant="outline" size="sm" disabled={docUploading}
+                            onClick={() => document.getElementById('doc-upload-input')?.click()}>
+                            <Upload className="h-4 w-4 mr-1" /> {docUploading ? 'Uploading...' : 'Upload Document'}
+                          </Button>
+                          <p className="text-xs text-gray-400 mt-1">PDF, images, Word docs (max 10MB)</p>
+                        </div>
+
+                        {admissionDocs.length === 0 ? (
+                          <p className="text-sm text-gray-500 text-center py-4">No documents attached.</p>
+                        ) : (
+                          <div className="space-y-2">
+                            {admissionDocs.map(doc => (
+                              <div key={doc.id} className="border rounded-lg p-3 text-sm flex items-center justify-between">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <Paperclip className="h-4 w-4 text-gray-400 shrink-0" />
+                                  <div className="min-w-0">
+                                    <p className="font-medium truncate">{doc.document_name}</p>
+                                    <div className="flex items-center gap-2 text-xs text-gray-500">
+                                      <Badge className="bg-gray-100 text-gray-700 text-xs">{doc.document_type.replace('_', ' ')}</Badge>
+                                      <span>{doc.file_size ? `${(doc.file_size / 1024).toFixed(0)} KB` : ''}</span>
+                                      <span>{doc.uploaded_by_name || ''}</span>
+                                      <span>{doc.created_at ? new Date(doc.created_at).toLocaleDateString() : ''}</span>
+                                    </div>
+                                    {doc.notes && <p className="text-xs text-gray-400 mt-1">{doc.notes}</p>}
+                                  </div>
+                                </div>
+                                <div className="flex gap-1 shrink-0">
+                                  <Button variant="ghost" size="sm" onClick={() => {
+                                    window.open(`/api/inpatient/documents/${doc.id}/download`, '_blank');
+                                  }} title="Download">
+                                    <Download className="h-4 w-4" />
+                                  </Button>
+                                  <Button variant="ghost" size="sm" className="text-red-500"
+                                    onClick={() => setConfirmState({
+                                      open: true, title: 'Delete Document',
+                                      message: `Delete "${doc.document_name}"?`,
+                                      onConfirm: () => { setConfirmState({ open: false }); handleDocDelete(doc.id); }
+                                    })} title="Delete">
+                                    <Trash2 className="h-3 w-3" />
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </TabsContent>
                     </Tabs>
                   </div>
                 </div>
@@ -1026,6 +1472,7 @@ const InpatientModule = () => {
                       <Badge className="mt-1">{roomTypeLabel[room.room_type] || room.room_type}</Badge>
                     </div>
                     <div className="flex gap-1">
+                      <Button variant="ghost" size="sm" onClick={() => openBedManager(room)} title="Manage Beds"><Bed className="h-4 w-4" /></Button>
                       <Button variant="ghost" size="sm" onClick={() => handleEditRoom(room)}><Edit2 className="h-4 w-4" /></Button>
                       {room.is_active && (
                         <Button variant="ghost" size="sm" className="text-red-500" onClick={() => {
@@ -1243,7 +1690,11 @@ const InpatientModule = () => {
               </div>
               <div>
                 <Label>Room *</Label>
-                <Select value={admissionForm.room_id ? String(admissionForm.room_id) : ''} onValueChange={v => setAdmissionForm(p => ({ ...p, room_id: v }))}>
+                <Select value={admissionForm.room_id ? String(admissionForm.room_id) : ''} onValueChange={v => {
+                  setAdmissionForm(p => ({ ...p, room_id: v, bed_id: '' }));
+                  // Fetch beds for selected room
+                  axios.get(`/api/inpatient/rooms/${v}/beds`).then(res => setAdmissionBeds(res.data)).catch(() => setAdmissionBeds([]));
+                }}>
                   <SelectTrigger><SelectValue placeholder="Select room" /></SelectTrigger>
                   <SelectContent>
                     {availableRooms.map(r => (
@@ -1254,6 +1705,21 @@ const InpatientModule = () => {
                   </SelectContent>
                 </Select>
               </div>
+              {admissionBeds.length > 0 && (
+                <div>
+                  <Label>Bed</Label>
+                  <Select value={admissionForm.bed_id ? String(admissionForm.bed_id) : ''} onValueChange={v => setAdmissionForm(p => ({ ...p, bed_id: v }))}>
+                    <SelectTrigger><SelectValue placeholder="Select bed" /></SelectTrigger>
+                    <SelectContent>
+                      {admissionBeds.filter(b => b.status === 'available').map(b => (
+                        <SelectItem key={b.id} value={String(b.id)}>
+                          Bed {b.bed_label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-4">
@@ -1374,6 +1840,47 @@ const InpatientModule = () => {
             </div>
             <Button type="submit" className="w-full" disabled={loading || !visitForm.visitor_id}>
               {loading ? 'Saving...' : 'Record Visit'}
+            </Button>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Nursing Note Dialog */}
+      <Dialog open={showNursingNoteDialog} onOpenChange={(open) => { setShowNursingNoteDialog(open); if (!open) setEditingNursingNote(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>{editingNursingNote ? 'Edit Nursing Note' : 'Add Nursing Note'}</DialogTitle></DialogHeader>
+          <form onSubmit={handleCreateNursingNote} className="space-y-4">
+            <div>
+              <Label>Shift *</Label>
+              <Select value={nursingNoteForm.shift} onValueChange={v => setNursingNoteForm(p => ({ ...p, shift: v }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="morning">Morning</SelectItem>
+                  <SelectItem value="afternoon">Afternoon</SelectItem>
+                  <SelectItem value="night">Night</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Note Type *</Label>
+              <Select value={nursingNoteForm.note_type} onValueChange={v => setNursingNoteForm(p => ({ ...p, note_type: v }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="observation">Observation</SelectItem>
+                  <SelectItem value="medication">Medication</SelectItem>
+                  <SelectItem value="vitals">Vitals</SelectItem>
+                  <SelectItem value="procedure">Procedure</SelectItem>
+                  <SelectItem value="handover">Handover</SelectItem>
+                  <SelectItem value="general">General</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Content *</Label>
+              <Textarea value={nursingNoteForm.content} onChange={e => setNursingNoteForm(p => ({ ...p, content: e.target.value }))} rows={5} placeholder="Enter nursing note details..." />
+            </div>
+            <Button type="submit" className="w-full" disabled={loading || !nursingNoteForm.content.trim()}>
+              {loading ? 'Saving...' : editingNursingNote ? 'Update Note' : 'Add Note'}
             </Button>
           </form>
         </DialogContent>
@@ -1592,6 +2099,67 @@ const InpatientModule = () => {
               {loading ? 'Scheduling...' : 'Schedule OT'}
             </Button>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bed Manager Dialog */}
+      <Dialog open={showBedManager} onOpenChange={setShowBedManager}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Manage Beds — {selectedRoomForBeds?.room_number}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="flex gap-2">
+              <Input placeholder="Bed label (e.g. A, B, 1, 2)" value={newBedLabel}
+                onChange={e => setNewBedLabel(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleAddBed(); }} />
+              <Button size="sm" onClick={handleAddBed} disabled={!newBedLabel.trim()}>
+                <Plus className="h-4 w-4 mr-1" /> Add
+              </Button>
+            </div>
+            {roomBeds.length === 0 ? (
+              <p className="text-sm text-gray-500 text-center py-4">No beds configured. Add beds above.</p>
+            ) : (
+              <div className="space-y-2 max-h-64 overflow-y-auto">
+                {roomBeds.map(bed => (
+                  <div key={bed.id} className="flex items-center justify-between border rounded-lg px-3 py-2">
+                    <div className="flex items-center gap-2">
+                      <Bed className="h-4 w-4 text-gray-400" />
+                      <span className="font-medium text-sm">{bed.bed_label}</span>
+                      <Badge className={
+                        bed.status === 'available' ? 'bg-green-100 text-green-800' :
+                        bed.status === 'occupied' ? 'bg-red-100 text-red-800' :
+                        'bg-yellow-100 text-yellow-800'
+                      }>{bed.status}</Badge>
+                    </div>
+                    <div className="flex gap-1">
+                      {bed.status === 'available' && (
+                        <Button variant="ghost" size="sm" className="text-yellow-600 h-7 text-xs"
+                          onClick={() => handleUpdateBedStatus(bed.id, 'maintenance')} title="Set Maintenance">
+                          <Clock className="h-3 w-3" />
+                        </Button>
+                      )}
+                      {bed.status === 'maintenance' && (
+                        <Button variant="ghost" size="sm" className="text-green-600 h-7 text-xs"
+                          onClick={() => handleUpdateBedStatus(bed.id, 'available')} title="Set Available">
+                          <Activity className="h-3 w-3" />
+                        </Button>
+                      )}
+                      {!bed.current_admission_id && (
+                        <Button variant="ghost" size="sm" className="text-red-500 h-7"
+                          onClick={() => handleDeleteBed(bed.id)} title="Delete">
+                          <Trash2 className="h-3 w-3" />
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <p className="text-xs text-gray-400">
+              {roomBeds.length} bed{roomBeds.length !== 1 ? 's' : ''} total, {roomBeds.filter(b => b.status === 'available').length} available
+            </p>
+          </div>
         </DialogContent>
       </Dialog>
 

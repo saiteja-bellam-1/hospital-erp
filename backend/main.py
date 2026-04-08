@@ -21,10 +21,10 @@ from app.models.hospital import Hospital, HospitalModule
 from app.models.prescriptions_simple import SimplePrescription
 from app.models.doctor_availability import DoctorAvailability, DoctorSpecialSchedule, DoctorAvailabilityStatus
 from app.models.license import License
-from app.models.inpatient import RoomManagement, Admission, DischargeRecord, PatientVisit, InpatientRateConfig, OTSchedule
+from app.models.inpatient import RoomManagement, Admission, DischargeRecord, PatientVisit, InpatientRateConfig, OTSchedule, Bed, AdmissionDocument, NursingNote
 
 # Import route modules
-from app.routes import auth, patients, admin, system, module_admin, hospital_admin, appointments, prescriptions, medicines, consultations, prescriptions_simple, doctor_availability, lab, ehr, license, setup, backup, referrals, audit
+from app.routes import auth, patients, admin, system, module_admin, hospital_admin, appointments, prescriptions, medicines, consultations, prescriptions_simple, doctor_availability, lab, ehr, license, setup, backup, referrals, audit, inpatient
 from app.middleware.license_middleware import LicenseMiddleware
 from app.middleware.audit_middleware import AuditMiddleware
 
@@ -223,7 +223,7 @@ app.include_router(backup.router, prefix="/api/backup", tags=["Backup"])
 app.include_router(referrals.router, prefix="/api/referrals", tags=["Referrals"])
 app.include_router(audit.router, prefix="/api/audit", tags=["Audit Logs"])
 # app.include_router(outpatient.router, prefix="/api/outpatient", tags=["Outpatient"])
-# app.include_router(inpatient.router, prefix="/api/inpatient", tags=["Inpatient"])
+app.include_router(inpatient.router, prefix="/api/inpatient", tags=["Inpatient"])
 
 # Serve uploaded files
 _uploads_dir = get_uploads_dir()
