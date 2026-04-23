@@ -42,6 +42,7 @@ class PrescriptionItemResponse(BaseModel):
 class PrescriptionCreate(BaseModel):
     patient_id: int
     consultation_id: Optional[int] = None
+    admission_id: Optional[int] = None
     notes: Optional[str] = None
     items: List[PrescriptionItemCreate]
 
@@ -57,6 +58,7 @@ class PrescriptionResponse(BaseModel):
     doctor_id: int
     doctor_name: str
     consultation_id: Optional[int]
+    admission_id: Optional[int] = None
     prescription_date: datetime
     status: str
     notes: Optional[str]
@@ -126,6 +128,7 @@ async def create_prescription(
         patient_id=prescription_data.patient_id,
         doctor_id=current_user.id,
         consultation_id=prescription_data.consultation_id,
+        admission_id=prescription_data.admission_id,
         notes=prescription_data.notes,
         status="pending"
     )
@@ -244,6 +247,7 @@ async def create_prescription(
 @router.get("/", response_model=List[PrescriptionResponse])
 async def get_prescriptions(
     patient_id: Optional[int] = None,
+    admission_id: Optional[int] = None,
     status: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
@@ -252,11 +256,15 @@ async def get_prescriptions(
 ):
     """Get prescriptions with optional filters"""
     query = db.query(Prescription)
-    
+
     # Filter by patient if requested
     if patient_id:
         query = query.filter(Prescription.patient_id == patient_id)
-    
+
+    # Filter by admission if requested
+    if admission_id:
+        query = query.filter(Prescription.admission_id == admission_id)
+
     # Filter by status if requested
     if status:
         query = query.filter(Prescription.status == status)

@@ -14,7 +14,7 @@ from app.models.patient import Patient
 from app.models.hospital import Hospital
 from app.models.permissions import HospitalSettings
 from app.models.lab import (
-    LabTestCategory, LabTest, LabTestParameter,
+    SampleType, LabTestCategory, LabTest, LabTestParameter,
     PatientLabOrder, LabReport,
     LabTestPackageCategory, LabTestPackage, LabTestPackageItem
 )
@@ -27,6 +27,19 @@ router = APIRouter()
 # ============================================================
 # Pydantic Models
 # ============================================================
+
+class SampleTypeCreate(BaseModel):
+    name: str = Field(..., max_length=100)
+    description: Optional[str] = None
+
+class SampleTypeResponse(BaseModel):
+    id: int
+    name: str
+    description: Optional[str]
+    is_active: bool
+    test_count: Optional[int] = 0
+    class Config:
+        from_attributes = True
 
 class CategoryCreate(BaseModel):
     name: str = Field(..., max_length=100)
@@ -95,7 +108,8 @@ class TestCreate(BaseModel):
     description: Optional[str] = None
     category_id: int
     cost: float = Field(..., ge=0)
-    sample_type: Optional[str] = None
+    sample_type: Optional[str] = None  # Legacy free-text
+    sample_type_id: Optional[int] = None
     method: Optional[str] = None
     preparation_instructions: Optional[str] = None
     parameters: Optional[List[ParameterCreate]] = None
@@ -106,7 +120,8 @@ class TestUpdate(BaseModel):
     description: Optional[str] = None
     category_id: Optional[int] = None
     cost: Optional[float] = None
-    sample_type: Optional[str] = None
+    sample_type: Optional[str] = None  # Legacy free-text
+    sample_type_id: Optional[int] = None
     method: Optional[str] = None
     preparation_instructions: Optional[str] = None
     is_active: Optional[bool] = None
@@ -120,6 +135,8 @@ class TestResponse(BaseModel):
     category_name: Optional[str] = None
     cost: float
     sample_type: Optional[str]
+    sample_type_id: Optional[int] = None
+    sample_type_name: Optional[str] = None
     method: Optional[str]
     preparation_instructions: Optional[str]
     is_active: bool
@@ -131,6 +148,7 @@ class OrderCreate(BaseModel):
     patient_id: int
     test_ids: List[int] = Field(..., min_length=1)
     appointment_id: Optional[int] = None
+    admission_id: Optional[int] = None
     priority: str = Field(default="normal", pattern="^(normal|urgent|stat)$")
     force: bool = False
     notes: Optional[str] = None
@@ -153,7 +171,8 @@ class OrderResponse(BaseModel):
     notes: Optional[str]
     consultation_id: Optional[int] = None
     appointment_id: Optional[int] = None
-    order_source: Optional[str] = None  # "appointment", "package", "direct"
+    admission_id: Optional[int] = None
+    order_source: Optional[str] = None  # "appointment", "package", "direct", "inpatient"
     has_report: bool = False
     report_id: Optional[int] = None
     amount: float = 0.0
@@ -164,6 +183,7 @@ class OrderResponse(BaseModel):
     package_name: Optional[str] = None
     package_booking_id: Optional[str] = None
     sample_id: Optional[str] = None
+    sample_type_name: Optional[str] = None
     class Config:
         from_attributes = True
 
@@ -293,6 +313,15 @@ def _calculate_age(dob):
     today = date.today()
     return today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
 
+def _patient_age(patient):
+    """Resolve patient age: prefer DOB-derived, fall back to stored `age` column."""
+    if not patient:
+        return None
+    age = _calculate_age(patient.date_of_birth) if patient.date_of_birth else None
+    if age is None and getattr(patient, "age", None) is not None:
+        age = patient.age
+    return age
+
 def _match_reference_range(ranges, gender, age):
     """Find the best matching reference range entry for a patient's gender and age.
     Returns (ref_min, ref_max, description).
@@ -348,6 +377,7 @@ def _match_reference_range(ranges, gender, age):
 
 def _build_test_response(test: LabTest, db: Session) -> dict:
     category = db.query(LabTestCategory).filter(LabTestCategory.id == test.category_id).first()
+    sample_type_obj = db.query(SampleType).filter(SampleType.id == test.sample_type_id).first() if test.sample_type_id else None
     params = db.query(LabTestParameter).filter(
         LabTestParameter.test_id == test.id,
         LabTestParameter.is_active == True
@@ -360,7 +390,9 @@ def _build_test_response(test: LabTest, db: Session) -> dict:
         "category_id": test.category_id,
         "category_name": category.name if category else None,
         "cost": test.cost,
-        "sample_type": test.sample_type,
+        "sample_type": sample_type_obj.name if sample_type_obj else test.sample_type,
+        "sample_type_id": test.sample_type_id,
+        "sample_type_name": sample_type_obj.name if sample_type_obj else test.sample_type,
         "method": test.method,
         "preparation_instructions": test.preparation_instructions,
         "is_active": test.is_active,
@@ -408,7 +440,8 @@ def _build_order_response(order: PatientLabOrder, db: Session) -> dict:
         "notes": order.notes,
         "consultation_id": order.consultation_id,
         "appointment_id": order.appointment_id,
-        "order_source": "package" if order.package_id else ("appointment" if order.appointment_id else "direct"),
+        "admission_id": getattr(order, 'admission_id', None),
+        "order_source": "package" if order.package_id else ("inpatient" if getattr(order, 'admission_id', None) else ("appointment" if order.appointment_id else "direct")),
         "has_report": report is not None,
         "report_id": report.id if report else None,
         "amount": order.amount or (test.cost if test else 0.0),
@@ -419,6 +452,10 @@ def _build_order_response(order: PatientLabOrder, db: Session) -> dict:
         "package_name": order.package.name if order.package_id and order.package else None,
         "package_booking_id": order.package_booking_id,
         "sample_id": order.sample_id,
+        "sample_type_name": (
+            test.sample_type_ref.name if test and test.sample_type_id and test.sample_type_ref
+            else (test.sample_type if test else None)
+        ),
     }
 
 def _build_report_response(report: LabReport, db: Session) -> dict:
@@ -429,7 +466,7 @@ def _build_report_response(report: LabReport, db: Session) -> dict:
     tech = db.query(User).filter(User.id == report.technician_id).first() if report.technician_id else None
 
     gender = patient.gender.lower() if patient and patient.gender else None
-    age = _calculate_age(patient.date_of_birth) if patient else None
+    age = _patient_age(patient)
 
     # Build results with abnormal flags
     result_values = report.result_values or []
@@ -549,6 +586,89 @@ def _build_report_response(report: LabReport, db: Session) -> dict:
         "interpretation": report.interpretation,
         "results": results
     }
+
+# ============================================================
+# Sample Type Endpoints
+# ============================================================
+
+@router.get("/sample-types", response_model=List[SampleTypeResponse])
+async def list_sample_types(
+    current_user: User = Depends(require_permission(Modules.LAB, "read")),
+    db: Session = Depends(get_db)
+):
+    types = db.query(SampleType).filter(
+        SampleType.hospital_id == current_user.hospital_id,
+        SampleType.is_active == True
+    ).order_by(SampleType.name).all()
+    result = []
+    for st in types:
+        count = db.query(LabTest).filter(LabTest.sample_type_id == st.id, LabTest.is_active == True).count()
+        result.append({
+            "id": st.id, "name": st.name, "description": st.description,
+            "is_active": st.is_active, "test_count": count
+        })
+    return result
+
+@router.post("/sample-types", response_model=SampleTypeResponse)
+async def create_sample_type(
+    data: SampleTypeCreate,
+    current_user: User = Depends(require_permission(Modules.LAB, "write")),
+    db: Session = Depends(get_db)
+):
+    _require_lab_admin(current_user)
+    # Check duplicate name
+    existing = db.query(SampleType).filter(
+        SampleType.name == data.name,
+        SampleType.hospital_id == current_user.hospital_id,
+        SampleType.is_active == True
+    ).first()
+    if existing:
+        raise HTTPException(status_code=400, detail=f"Sample type '{data.name}' already exists")
+    st = SampleType(
+        name=data.name, description=data.description,
+        hospital_id=current_user.hospital_id
+    )
+    db.add(st)
+    db.commit()
+    db.refresh(st)
+    return {"id": st.id, "name": st.name, "description": st.description, "is_active": True, "test_count": 0}
+
+@router.put("/sample-types/{sample_type_id}", response_model=SampleTypeResponse)
+async def update_sample_type(
+    sample_type_id: int, data: SampleTypeCreate,
+    current_user: User = Depends(require_permission(Modules.LAB, "write")),
+    db: Session = Depends(get_db)
+):
+    _require_lab_admin(current_user)
+    st = db.query(SampleType).filter(
+        SampleType.id == sample_type_id,
+        SampleType.hospital_id == current_user.hospital_id
+    ).first()
+    if not st:
+        raise HTTPException(status_code=404, detail="Sample type not found")
+    st.name = data.name
+    if data.description is not None:
+        st.description = data.description
+    db.commit()
+    count = db.query(LabTest).filter(LabTest.sample_type_id == st.id, LabTest.is_active == True).count()
+    return {"id": st.id, "name": st.name, "description": st.description, "is_active": st.is_active, "test_count": count}
+
+@router.delete("/sample-types/{sample_type_id}")
+async def delete_sample_type(
+    sample_type_id: int,
+    current_user: User = Depends(require_permission(Modules.LAB, "delete")),
+    db: Session = Depends(get_db)
+):
+    _require_lab_admin(current_user)
+    st = db.query(SampleType).filter(
+        SampleType.id == sample_type_id,
+        SampleType.hospital_id == current_user.hospital_id
+    ).first()
+    if not st:
+        raise HTTPException(status_code=404, detail="Sample type not found")
+    st.is_active = False
+    db.commit()
+    return {"message": "Sample type deleted"}
 
 # ============================================================
 # Category Endpoints
@@ -691,7 +811,8 @@ async def create_test(
 
     test = LabTest(
         test_code=data.test_code, name=data.name, description=data.description,
-        category_id=data.category_id, cost=data.cost, sample_type=data.sample_type,
+        category_id=data.category_id, cost=data.cost,
+        sample_type=data.sample_type, sample_type_id=data.sample_type_id,
         method=data.method, preparation_instructions=data.preparation_instructions,
         hospital_id=current_user.hospital_id
     )
@@ -728,7 +849,7 @@ async def update_test(
     if not test:
         raise HTTPException(status_code=404, detail="Test not found")
 
-    for field in ['test_code', 'name', 'description', 'category_id', 'cost', 'sample_type', 'method', 'preparation_instructions', 'is_active']:
+    for field in ['test_code', 'name', 'description', 'category_id', 'cost', 'sample_type', 'sample_type_id', 'method', 'preparation_instructions', 'is_active']:
         val = getattr(data, field, None)
         if val is not None:
             setattr(test, field, val)
@@ -971,6 +1092,7 @@ async def create_orders(
             test_id=test_id,
             doctor_id=current_user.id,
             appointment_id=data.appointment_id,
+            admission_id=data.admission_id,
             priority=data.priority,
             notes=data.notes,
             status="ordered",
@@ -1081,10 +1203,7 @@ async def reception_book_lab_tests(
     hospital = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
     hospital_info = _get_lab_hospital_info(db, hospital)
 
-    age = None
-    if patient.date_of_birth:
-        from dateutil.relativedelta import relativedelta
-        age = relativedelta(now.date(), patient.date_of_birth).years
+    age = _patient_age(patient)
 
     bill_data = {
         "bill_number": f"LB-{now.strftime('%Y%m%d%H%M%S')}-{data.patient_id}",
@@ -1168,10 +1287,26 @@ async def get_order(
         raise HTTPException(status_code=404, detail="Order not found")
     return _build_order_response(order, db)
 
+def _generate_sample_id(db: Session) -> str:
+    """Generate next sample ID in format S-YYMMDD-NNNN."""
+    today_prefix = f"S-{datetime.now().strftime('%y%m%d')}-"
+    last = db.query(PatientLabOrder).filter(
+        PatientLabOrder.sample_id.like(f"{today_prefix}%")
+    ).order_by(PatientLabOrder.sample_id.desc()).first()
+    if last and last.sample_id:
+        try:
+            seq = int(last.sample_id.split('-')[-1]) + 1
+        except ValueError:
+            seq = 1
+    else:
+        seq = 1
+    return f"{today_prefix}{seq:04d}"
+
 @router.put("/orders/{order_id}/status")
 async def update_order_status(
     order_id: int,
     status: str,
+    force_new_sample: bool = False,
     current_user: User = Depends(require_permission(Modules.LAB, "write")),
     db: Session = Depends(get_db)
 ):
@@ -1187,23 +1322,46 @@ async def update_order_status(
 
     order.status = status
     sample_id = None
+    grouped_orders = []
     if status == "collected":
         order.collection_date = datetime.now()
-        # Auto-generate sample ID: S-YYMMDD-NNNN
         if not order.sample_id:
-            from sqlalchemy import func as sql_func
-            today_prefix = f"S-{datetime.now().strftime('%y%m%d')}-"
-            last = db.query(PatientLabOrder).filter(
-                PatientLabOrder.sample_id.like(f"{today_prefix}%")
-            ).order_by(PatientLabOrder.sample_id.desc()).first()
-            if last and last.sample_id:
-                try:
-                    seq = int(last.sample_id.split('-')[-1]) + 1
-                except ValueError:
-                    seq = 1
+            test = db.query(LabTest).filter(LabTest.id == order.test_id).first()
+            sample_type_id = test.sample_type_id if test else None
+            sample_type_text = test.sample_type if test else None
+
+            # Determine if we can group: need either sample_type_id or legacy sample_type text
+            can_group = (sample_type_id or sample_type_text) and not force_new_sample
+
+            if can_group:
+                # Find other "ordered" orders for same patient + same sample type
+                sibling_query = db.query(PatientLabOrder).join(LabTest).filter(
+                    PatientLabOrder.patient_id == order.patient_id,
+                    PatientLabOrder.id != order.id,
+                    PatientLabOrder.status == "ordered",
+                    PatientLabOrder.sample_id.is_(None),
+                )
+                # Match by sample_type_id (preferred) or legacy text fallback
+                if sample_type_id:
+                    sibling_query = sibling_query.filter(LabTest.sample_type_id == sample_type_id)
+                else:
+                    sibling_query = sibling_query.filter(LabTest.sample_type == sample_type_text)
+                sibling_orders = sibling_query.all()
+
+                new_sample_id = _generate_sample_id(db)
+                order.sample_id = new_sample_id
+
+                for sibling in sibling_orders:
+                    sibling.status = "collected"
+                    sibling.collection_date = datetime.now()
+                    sibling.sample_id = new_sample_id
+                    grouped_orders.append({
+                        "id": sibling.id,
+                        "order_number": sibling.order_number,
+                        "test_name": sibling.test.name if sibling.test else "",
+                    })
             else:
-                seq = 1
-            order.sample_id = f"{today_prefix}{seq:04d}"
+                order.sample_id = _generate_sample_id(db)
         sample_id = order.sample_id
     elif status == "completed":
         order.completion_date = datetime.now()
@@ -1215,6 +1373,7 @@ async def update_order_status(
         "order_number": order.order_number,
         "patient_name": f"{order.patient.first_name} {order.patient.last_name}" if order.patient else "",
         "test_name": order.test.name if order.test else "",
+        "grouped_orders": grouped_orders,
     }
 
 
@@ -1238,10 +1397,8 @@ async def download_order_bill(
     hospital = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
     hospital_info = _get_lab_hospital_info(db, hospital)
 
-    age = ""
-    if patient and patient.date_of_birth:
-        today = date.today()
-        age = str(today.year - patient.date_of_birth.year - ((today.month, today.day) < (patient.date_of_birth.month, patient.date_of_birth.day)))
+    _age_val = _patient_age(patient)
+    age = str(_age_val) if _age_val is not None else ""
 
     doctor = db.query(User).filter(User.id == order.doctor_id).first() if order.doctor_id else None
     doctor_name = f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else ""
@@ -1297,10 +1454,8 @@ async def regenerate_lab_bill(
     hospital = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
     hospital_info = _get_lab_hospital_info(db, hospital)
 
-    age = ""
-    if patient and patient.date_of_birth:
-        today = date.today()
-        age = str(today.year - patient.date_of_birth.year - ((today.month, today.day) < (patient.date_of_birth.month, patient.date_of_birth.day)))
+    _age_val = _patient_age(patient)
+    age = str(_age_val) if _age_val is not None else ""
 
     doctor = db.query(User).filter(User.id == orders[0].doctor_id).first() if orders[0].doctor_id else None
     doctor_name = f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else ""
@@ -1460,10 +1615,8 @@ async def generate_lab_bill(
     hospital_info = _get_lab_hospital_info(db, hospital)
 
     # Calculate patient age
-    age = ""
-    if patient.date_of_birth:
-        today = date.today()
-        age = str(today.year - patient.date_of_birth.year - ((today.month, today.day) < (patient.date_of_birth.month, patient.date_of_birth.day)))
+    _age_val = _patient_age(patient)
+    age = str(_age_val) if _age_val is not None else ""
 
     bill_number = f"LB-{datetime.now().strftime('%Y%m%d%H%M%S')}-{patient_id}"
 
@@ -1569,7 +1722,7 @@ async def get_entry_form(
     ).order_by(LabTestParameter.display_order).all()
 
     gender = patient.gender.lower() if patient and patient.gender else None
-    age = _calculate_age(patient.date_of_birth) if patient else None
+    age = _patient_age(patient)
 
     def _resolve_range(p):
         if p.reference_ranges:
@@ -2283,10 +2436,8 @@ async def book_package(
     hospital = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
     hospital_info = _get_lab_hospital_info(db, hospital)
 
-    age = ""
-    if patient.date_of_birth:
-        today = date.today()
-        age = str(today.year - patient.date_of_birth.year - ((today.month, today.day) < (patient.date_of_birth.month, patient.date_of_birth.day)))
+    _age_val = _patient_age(patient)
+    age = str(_age_val) if _age_val is not None else ""
 
     discount = round(pkg.actual_price - pkg.package_price, 2)
     bill_number = f"PKG-{now.strftime('%Y%m%d%H%M%S')}-{data.patient_id}"

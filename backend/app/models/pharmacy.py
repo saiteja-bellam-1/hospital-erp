@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Float, Date
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Float, Date, JSON
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from config.database import Base
@@ -68,19 +68,21 @@ class Prescription(Base):
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
     doctor_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     consultation_id = Column(Integer, ForeignKey("consultations.id"))
+    admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=True)
     prescription_date = Column(DateTime(timezone=True), server_default=func.now())
     status = Column(String(20), default="pending")  # pending, dispensed, partial, cancelled
     notes = Column(Text)
     total_amount = Column(Float, default=0.0)
     dispensed_by_id = Column(Integer, ForeignKey("users.id"))
     dispensed_date = Column(DateTime)
-    
+    inpatient_bill_id = Column(Integer, ForeignKey("bills.id"), nullable=True)  # which admission bill consumed this Rx
+
     items = relationship("PrescriptionItem", back_populates="prescription")
     consultation = relationship("Consultation", back_populates="prescriptions")
 
 class PrescriptionItem(Base):
     __tablename__ = "prescription_items"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     prescription_id = Column(Integer, ForeignKey("prescriptions.id"), nullable=False)
     medicine_id = Column(Integer, ForeignKey("medicines.id"), nullable=False)
@@ -92,6 +94,13 @@ class PrescriptionItem(Base):
     unit_price = Column(Float, nullable=False)
     total_price = Column(Float, nullable=False)
     status = Column(String(20), default="pending")  # pending, dispensed, partial
-    
+
+    # MAR scheduling fields (used when prescription is for an inpatient admission)
+    frequency = Column(String(50))           # e.g. "BD", "TDS", "QID", "Q8H", "ONCE"
+    schedule_times = Column(JSON)            # ["08:00", "16:00", "00:00"] for fixed schedules
+    duration_days = Column(Integer)          # numeric form of duration for MAR generation
+    route = Column(String(30))               # oral, iv, im, sc, topical, inhalation, sublingual, rectal
+    is_prn = Column(Boolean, default=False)  # as-needed medication, no fixed schedule
+
     prescription = relationship("Prescription", back_populates="items")
     medicine = relationship("Medicine", back_populates="prescription_items")

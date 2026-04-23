@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
@@ -14,7 +15,10 @@ import { printPdfFromUrl } from '../../utils/printPdf';
 import {
   Plus, Search, Edit2, Trash2, Bed, Activity, Clock, User, Users,
   FileText, Loader2, X, ChevronLeft, ChevronRight, DollarSign, Stethoscope,
-  ClipboardList, LayoutDashboard, Scissors, Shield, Upload, Download, Paperclip
+  ClipboardList, LayoutDashboard, Scissors, Shield, Upload, Download, Paperclip,
+  HeartPulse, Pill, AlertTriangle, Check, XCircle, Wallet, Package, Receipt, FileCheck, Building2,
+  Sparkles, CalendarDays, ArrowRightLeft, UserPlus, FileSignature, AlertOctagon, RotateCcw, Skull,
+  CalendarRange
 } from 'lucide-react';
 import axios from 'axios';
 
@@ -47,9 +51,46 @@ const claimStatusColor = {
 
 const claimStatusLabel = { none: 'No Claim', draft: 'Draft', submitted: 'Submitted', approved: 'Approved', rejected: 'Rejected' };
 
+// Map between activeTab keys and URL path segments under /dashboard/inpatient
+// Empty string = the bare /dashboard/inpatient root (Ward Overview).
+const TAB_TO_PATH = {
+  dashboard: '',
+  admissions: 'admissions',
+  discharge: 'discharge',
+  ot: 'ot',
+  preauth: 'preauth',
+  reservations: 'reservations',
+  roster: 'duty-roster',
+  housekeeping: 'housekeeping',
+  incidents: 'incidents',
+  quality: 'quality',
+  rooms: 'rooms',
+  setup: 'billing-setup',
+  procedures: 'procedures',
+};
+const PATH_TO_TAB = Object.fromEntries(
+  Object.entries(TAB_TO_PATH).map(([k, v]) => [v, k])
+);
+
 const InpatientModule = () => {
   const { toast } = useToast();
-  const [activeTab, setActiveTab] = useState('dashboard');
+  const location = useLocation();
+  const navigate = useNavigate();
+  // activeTab is derived from the URL — when the user clicks a nav item the
+  // browser navigates and this re-derives. Setting activeTab now means navigating.
+  const activeTab = useMemo(() => {
+    const segs = location.pathname.split('/').filter(Boolean);
+    // ['dashboard', 'inpatient', 'sub-page?']
+    const sub = segs[2] || '';
+    return PATH_TO_TAB[sub] || 'dashboard';
+  }, [location.pathname]);
+
+  const setActiveTab = useCallback((nextKey) => {
+    const seg = TAB_TO_PATH[nextKey];
+    if (seg === undefined) return;
+    const target = seg ? `/dashboard/inpatient/${seg}` : '/dashboard/inpatient';
+    if (location.pathname !== target) navigate(target);
+  }, [navigate, location.pathname]);
   const [loading, setLoading] = useState(false);
   const [confirmState, setConfirmState] = useState({ open: false });
 
@@ -78,7 +119,6 @@ const InpatientModule = () => {
   const [billData, setBillData] = useState(null);
   const [showVisitDialog, setShowVisitDialog] = useState(false);
   const [visitForm, setVisitForm] = useState({ visit_type: 'doctor_visit', visitor_id: '', notes: '' });
-  const [rateConfig, setRateConfig] = useState(null);
   const [admissionMedications, setAdmissionMedications] = useState([]);
   const [admissionLabOrders, setAdmissionLabOrders] = useState([]);
   const [availableLabTests, setAvailableLabTests] = useState([]);
@@ -94,7 +134,6 @@ const InpatientModule = () => {
     room_number: '', room_type: 'general', floor: '', department: '',
     bed_count: 1, room_charge_per_day: '',  amenities: '',
   });
-  const [rateForm, setRateForm] = useState({ doctor_visit_rate: 0, nurse_visit_rate: 0, procedure_rate: 0 });
 
   // Bed Management
   const [selectedRoomForBeds, setSelectedRoomForBeds] = useState(null);
@@ -114,6 +153,189 @@ const InpatientModule = () => {
   const [nursingNoteForm, setNursingNoteForm] = useState({ shift: 'morning', note_type: 'general', content: '' });
   const [editingNursingNote, setEditingNursingNote] = useState(null);
   const [nursingShiftFilter, setNursingShiftFilter] = useState('all');
+
+  // Vitals
+  const [vitals, setVitals] = useState([]);
+  const [latestVitals, setLatestVitals] = useState(null);
+  const [showVitalsDialog, setShowVitalsDialog] = useState(false);
+  const VITALS_BLANK = {
+    shift: 'morning', bp_systolic: '', bp_diastolic: '', heart_rate: '', respiratory_rate: '',
+    temperature_c: '', spo2: '', blood_glucose: '', pain_score: '', gcs_score: '',
+    weight_kg: '', height_cm: '', position: '', notes: '',
+  };
+  const [vitalsForm, setVitalsForm] = useState(VITALS_BLANK);
+
+  // Allergies (patient-level, displayed alongside admission)
+  const [admissionAllergies, setAdmissionAllergies] = useState([]);
+  const [showAllergyDialog, setShowAllergyDialog] = useState(false);
+  const [allergyForm, setAllergyForm] = useState({ allergy_type: 'drug', allergen: '', severity: 'moderate', reaction: '', notes: '' });
+
+  // MAR
+  const [mar, setMar] = useState([]);
+  const [marDate, setMarDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [showAdministerDialog, setShowAdministerDialog] = useState(false);
+  const [administeringDose, setAdministeringDose] = useState(null);
+  const [administerForm, setAdministerForm] = useState({ status: 'given', dose_given: '', route: '', site: '', reason_if_not_given: '', notes: '' });
+  const [showPrnDialog, setShowPrnDialog] = useState(false);
+  const [prnForm, setPrnForm] = useState({ prescription_item_id: '', dose_given: '', route: '', site: '', prn_indication: '', notes: '' });
+
+  // Phase 2: Deposits + balance
+  const [deposits, setDeposits] = useState([]);
+  const [balance, setBalance] = useState(null);
+  const [showDepositDialog, setShowDepositDialog] = useState(false);
+  const [depositForm, setDepositForm] = useState({ amount: '', payment_method: 'cash', deposit_type: 'initial', reference_number: '', notes: '' });
+  const [showRefundDialog, setShowRefundDialog] = useState(false);
+  const [refundForm, setRefundForm] = useState({ amount: '', payment_method: 'cash', reference_number: '', notes: '' });
+
+  // Phase 2: Ancillary charges (per-admission)
+  const [ancillaryCharges, setAncillaryCharges] = useState([]);
+  const [ancillaryServices, setAncillaryServices] = useState([]);
+  const [showAncillaryDialog, setShowAncillaryDialog] = useState(false);
+  const [ancillaryForm, setAncillaryForm] = useState({ service_id: '', quantity: 1, unit_price: '', notes: '' });
+
+  // Phase 2: Bills history + interim
+  const [admissionBills, setAdmissionBills] = useState([]);
+
+  // Phase 2: Package
+  const [admissionPackage, setAdmissionPackage] = useState(null);
+  const [showApplyPackageDialog, setShowApplyPackageDialog] = useState(false);
+  const [applyPackageForm, setApplyPackageForm] = useState({ package_id: '', agreed_price: '', notes: '' });
+
+  // Phase 2: Catalogs (admin)
+  const [packagesList, setPackagesList] = useState([]);
+  const [tpaList, setTpaList] = useState([]);
+  const [setupSubTab, setSetupSubTab] = useState('ancillary');
+
+  // Procedure catalog (drives OT charge auto-fill)
+  const [proceduresList, setProceduresList] = useState([]);
+  const [showProcedureDialog, setShowProcedureDialog] = useState(false);
+  const [editingProcedure, setEditingProcedure] = useState(null);
+  const [procedureForm, setProcedureForm] = useState({ name: '', default_rate: '', description: '' });
+  const [showServiceDialog, setShowServiceDialog] = useState(false);
+  const [editingService, setEditingService] = useState(null);
+  const [serviceForm, setServiceForm] = useState({ service_name: '', service_code: '', category: 'imaging', default_charge: '', charge_unit: 'per_session', description: '' });
+  const [showPackageDialog, setShowPackageDialog] = useState(false);
+  const [editingPackage, setEditingPackage] = useState(null);
+  const [packageForm, setPackageForm] = useState({ package_name: '', package_code: '', base_price: '', included_room_type: '', included_stay_days: 0, included_services: [], excess_per_day_charge: 0, description: '' });
+  const [showTpaDialog, setShowTpaDialog] = useState(false);
+  const [editingTpa, setEditingTpa] = useState(null);
+  const [tpaForm, setTpaForm] = useState({ tpa_name: '', tpa_code: '', address: '', phone: '', email: '', default_discount_percent: 0, contract_details: '' });
+
+  // Phase 2: Pre-authorisations
+  const [preauths, setPreauths] = useState([]);
+  const [preauthSearch, setPreauthSearch] = useState('');
+  const [preauthStatusFilter, setPreauthStatusFilter] = useState('');
+  const [showPreauthDialog, setShowPreauthDialog] = useState(false);
+  const [preauthForm, setPreauthForm] = useState({ patient_id: '', admission_id: '', insurance_provider: '', policy_number: '', tpa_id: '', requested_amount: '', notes: '' });
+  const [activePreauth, setActivePreauth] = useState(null);
+  const [showPreauthDecisionDialog, setShowPreauthDecisionDialog] = useState(false);
+  const [preauthDecisionForm, setPreauthDecisionForm] = useState({ status: 'approved', approved_amount: '', validity_days: '', approval_reference: '', notes: '' });
+  const [preauthPatientSearch, setPreauthPatientSearch] = useState('');
+  const [preauthPatientResults, setPreauthPatientResults] = useState([]);
+  const [preauthSelectedPatient, setPreauthSelectedPatient] = useState(null);
+
+  // Phase 2: Bill split
+  const [billForSplit, setBillForSplit] = useState(null);
+  const [splitRows, setSplitRows] = useState([]);
+  const [showSplitDialog, setShowSplitDialog] = useState(false);
+
+  // Phase 2: OT charges
+  const [showOTChargesDialog, setShowOTChargesDialog] = useState(false);
+  const [editingOT, setEditingOT] = useState(null);
+  const [otChargesForm, setOtChargesForm] = useState({ surgeon_fee: 0, anaesthetist_fee: 0, ot_room_charge: 0, equipment_charge: 0, consumables_charge: 0, procedure_charge: 0, other_charges: 0 });
+
+  // Phase 3: Bed transfer history + inter-ward transfer
+  const [transferHistory, setTransferHistory] = useState([]);
+  const [pendingTransfers, setPendingTransfers] = useState([]);
+  const [showWardTransferDialog, setShowWardTransferDialog] = useState(false);
+  const [wardTransferForm, setWardTransferForm] = useState({ to_room_id: '', to_bed_id: '', reason: '', transfer_note: '' });
+  const [wardTransferBeds, setWardTransferBeds] = useState([]);
+
+  // Phase 3: Housekeeping
+  const [cleaningBeds, setCleaningBeds] = useState([]);
+  const [turnoverStats, setTurnoverStats] = useState(null);
+
+  // Phase 3: Reservations
+  const [reservations, setReservations] = useState([]);
+  const [showReservationDialog, setShowReservationDialog] = useState(false);
+  const [reservationForm, setReservationForm] = useState({ patient_id: '', bed_id: '', room_id: '', room_type: '', reserved_for_date: '', reservation_reason: 'elective', notes: '' });
+  const [reservationPatientSearch, setReservationPatientSearch] = useState('');
+  const [reservationPatientResults, setReservationPatientResults] = useState([]);
+  const [reservationSelectedPatient, setReservationSelectedPatient] = useState(null);
+  const [showConvertReservationDialog, setShowConvertReservationDialog] = useState(false);
+  const [convertingReservation, setConvertingReservation] = useState(null);
+  const [convertForm, setConvertForm] = useState({ admitting_doctor_id: '', admission_type: 'elective', admission_reason: '', condition_on_admission: 'stable' });
+
+  // Phase 3: Nurse assignments
+  const [nurseAssignments, setNurseAssignments] = useState([]);
+  const [nursesList, setNursesList] = useState([]);
+  const [showNurseAssignDialog, setShowNurseAssignDialog] = useState(false);
+  const [nurseAssignForm, setNurseAssignForm] = useState({ nurse_id: '', shift: 'morning', assignment_date: new Date().toISOString().slice(0, 10), is_primary: false, notes: '' });
+  const [onDutyNurses, setOnDutyNurses] = useState([]);
+  const [restrictToOnDuty, setRestrictToOnDuty] = useState(true);
+
+  // Phase 4: Consents
+  const [consents, setConsents] = useState([]);
+  const [consentTemplates, setConsentTemplates] = useState([]);
+  const [showConsentDialog, setShowConsentDialog] = useState(false);
+  const [consentForm, setConsentForm] = useState({ consent_type: 'surgical', template_id: '', procedure_name: '', doctor_id: '', risks_explained: '', patient_signature: '', signed_by: 'patient', guardian_name: '', guardian_relationship: '', witness_name: '', witness_signature: '', notes: '' });
+  const [showConsentTemplateDialog, setShowConsentTemplateDialog] = useState(false);
+  const [editingConsentTemplate, setEditingConsentTemplate] = useState(null);
+  const [consentTemplateForm, setConsentTemplateForm] = useState({ consent_type: 'surgical', template_name: '', content: '', language: 'english' });
+  const [showWithdrawConsentDialog, setShowWithdrawConsentDialog] = useState(false);
+  const [withdrawingConsent, setWithdrawingConsent] = useState(null);
+  const [withdrawReason, setWithdrawReason] = useState('');
+
+  // Phase 4: Incidents
+  const [incidents, setIncidents] = useState([]);
+  const [incidentFilter, setIncidentFilter] = useState({ status: '', severity: '', incident_type: '' });
+  const [incidentReport, setIncidentReport] = useState(null);
+  const [showIncidentDialog, setShowIncidentDialog] = useState(false);
+  const [incidentForm, setIncidentForm] = useState({ incident_type: 'fall', severity: 'medium', incident_date: new Date().toISOString().slice(0, 16), admission_id: '', patient_id: '', location: '', description: '', immediate_action: '', witnessed_by: '' });
+  const [showInvestigateDialog, setShowInvestigateDialog] = useState(false);
+  const [investigatingIncident, setInvestigatingIncident] = useState(null);
+  const [investigateForm, setInvestigateForm] = useState({ investigation_notes: '', root_cause: '', resolution: '', corrective_actions: '', preventive_measures: '', new_status: '' });
+
+  // Phase 4: Readmissions
+  const [readmissions, setReadmissions] = useState([]);
+
+  // ICU: Intake/Output
+  const [ioEntries, setIoEntries] = useState([]);
+  const [ioBalance, setIoBalance] = useState(null);
+  const [ioDate, setIoDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [showIoDialog, setShowIoDialog] = useState(false);
+  const [ioForm, setIoForm] = useState({ io_type: 'intake', category: 'oral', amount_ml: '', shift: 'morning', notes: '' });
+
+  // ICU: Critical lab alerts
+  const [criticalAlerts, setCriticalAlerts] = useState([]);
+  const [admissionCriticalAlerts, setAdmissionCriticalAlerts] = useState([]);
+
+  // Nurse shift roster (duty schedule)
+  const [rosterWeekStart, setRosterWeekStart] = useState(() => {
+    // Start the week on Monday for hospital convention
+    const today = new Date();
+    const dow = today.getDay(); // 0=Sun, 1=Mon, ...
+    const offset = dow === 0 ? -6 : 1 - dow;
+    today.setDate(today.getDate() + offset);
+    today.setHours(0, 0, 0, 0);
+    return today;
+  });
+  const [rosterGrid, setRosterGrid] = useState(null);
+  const [rosterCoverage, setRosterCoverage] = useState([]);
+  const [rosterMinPerShift, setRosterMinPerShift] = useState(2);
+  const [showRosterCellDialog, setShowRosterCellDialog] = useState(false);
+  const [rosterCellEdit, setRosterCellEdit] = useState(null); // { nurse, date, shift, existing }
+  const [rosterCellForm, setRosterCellForm] = useState({ status: 'working', ward: '', notes: '' });
+  const [showBulkRosterDialog, setShowBulkRosterDialog] = useState(false);
+  const [bulkRosterForm, setBulkRosterForm] = useState({
+    nurse_ids: [], from_date: '', to_date: '', shifts: ['morning'], status: 'working', ward: '', notes: '', overwrite: false,
+  });
+
+  // Phase 4: Mortality
+  const [mortalityList, setMortalityList] = useState([]);
+  const [showMortalityDialog, setShowMortalityDialog] = useState(false);
+  const [mortalityAdmission, setMortalityAdmission] = useState(null);
+  const [mortalityForm, setMortalityForm] = useState({ cause_of_death: '', time_of_death: '', death_certificate_number: '', mlc_required: false, mlc_number: '', autopsy_done: false, autopsy_findings: '', body_handed_over_to: '', body_handover_relationship: '', body_handover_time: '', body_handover_id_proof: '' });
 
   // Pagination
   const PAGE_SIZE = 50;
@@ -138,7 +360,7 @@ const InpatientModule = () => {
   const [showOTDialog, setShowOTDialog] = useState(false);
   const [otForm, setOtForm] = useState({
     patient_id: '', surgeon_id: '', anaesthetist_id: '', ot_room_number: '',
-    procedure_name: '', scheduled_date: '', estimated_duration_minutes: '', pre_op_notes: '', admission_id: '',
+    procedure_name: '', procedure_id: '', scheduled_date: '', estimated_duration_minutes: '', pre_op_notes: '', admission_id: '',
   });
 
   // ============================================================
@@ -171,14 +393,6 @@ const InpatientModule = () => {
     try {
       const res = await axios.get('/api/inpatient/rooms');
       setRooms(res.data);
-    } catch { /* silent */ }
-  }, []);
-
-  const fetchRateConfig = useCallback(async () => {
-    try {
-      const res = await axios.get('/api/inpatient/rate-config');
-      setRateConfig(res.data);
-      setRateForm({ doctor_visit_rate: res.data.doctor_visit_rate, nurse_visit_rate: res.data.nurse_visit_rate, procedure_rate: res.data.procedure_rate });
     } catch { /* silent */ }
   }, []);
 
@@ -239,6 +453,335 @@ const InpatientModule = () => {
     } catch { /* silent */ }
   }, []);
 
+  const fetchVitals = useCallback(async (admissionId) => {
+    try {
+      const res = await axios.get(`/api/inpatient/admissions/${admissionId}/vitals`, { params: { limit: 50 } });
+      setVitals(res.data || []);
+      setLatestVitals((res.data && res.data[0]) || null);
+    } catch { setVitals([]); setLatestVitals(null); }
+  }, []);
+
+  const fetchAdmissionAllergies = useCallback(async (patientId) => {
+    if (!patientId) { setAdmissionAllergies([]); return; }
+    try {
+      const res = await axios.get(`/api/patients/${patientId}/allergies`, { params: { active_only: true } });
+      setAdmissionAllergies(res.data || []);
+    } catch { setAdmissionAllergies([]); }
+  }, []);
+
+  const fetchMAR = useCallback(async (admissionId, date = null) => {
+    try {
+      const params = date ? { target_date: date } : {};
+      const res = await axios.get(`/api/inpatient/admissions/${admissionId}/mar`, { params });
+      setMar(res.data || []);
+    } catch { setMar([]); }
+  }, []);
+
+  const fetchDeposits = useCallback(async (admissionId) => {
+    try {
+      const res = await axios.get(`/api/inpatient/admissions/${admissionId}/deposits`);
+      setDeposits(res.data || []);
+    } catch { setDeposits([]); }
+  }, []);
+
+  const fetchBalance = useCallback(async (admissionId) => {
+    try {
+      const res = await axios.get(`/api/inpatient/admissions/${admissionId}/balance`);
+      setBalance(res.data);
+    } catch { setBalance(null); }
+  }, []);
+
+  const fetchAncillaryCharges = useCallback(async (admissionId) => {
+    try {
+      const res = await axios.get(`/api/inpatient/admissions/${admissionId}/ancillary-charges`);
+      setAncillaryCharges(res.data || []);
+    } catch { setAncillaryCharges([]); }
+  }, []);
+
+  const fetchAncillaryServices = useCallback(async () => {
+    try {
+      const res = await axios.get('/api/inpatient/ancillary-services', { params: { active_only: true } });
+      setAncillaryServices(res.data || []);
+    } catch { setAncillaryServices([]); }
+  }, []);
+
+  const fetchProcedures = useCallback(async (activeOnly = true) => {
+    try {
+      const res = await axios.get('/api/inpatient/procedures', { params: { active_only: activeOnly } });
+      setProceduresList(res.data || []);
+    } catch { setProceduresList([]); }
+  }, []);
+
+  const resetProcedureForm = () => {
+    setProcedureForm({ name: '', default_rate: '', description: '' });
+    setEditingProcedure(null);
+  };
+
+  const handleProcedureSubmit = async (e) => {
+    e.preventDefault();
+    const payload = {
+      name: procedureForm.name.trim(),
+      default_rate: parseFloat(procedureForm.default_rate) || 0,
+      description: procedureForm.description || null,
+    };
+    if (!payload.name) {
+      toast({ variant: 'destructive', title: 'Error', description: 'Name is required' });
+      return;
+    }
+    try {
+      if (editingProcedure) {
+        await axios.put(`/api/inpatient/procedures/${editingProcedure.id}`, payload);
+        toast({ title: 'Success', description: 'Procedure updated' });
+      } else {
+        await axios.post('/api/inpatient/procedures', payload);
+        toast({ title: 'Success', description: 'Procedure added' });
+      }
+      setShowProcedureDialog(false);
+      resetProcedureForm();
+      fetchProcedures(false);
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      toast({
+        variant: 'destructive',
+        title: 'Error',
+        description: typeof detail === 'string' ? detail : 'Failed to save procedure',
+      });
+    }
+  };
+
+  const handleProcedureDelete = async (procedureId) => {
+    if (!window.confirm('Remove this procedure from the catalog? Existing OT records keep their values.')) return;
+    try {
+      await axios.delete(`/api/inpatient/procedures/${procedureId}`);
+      toast({ title: 'Removed', description: 'Procedure removed from catalog' });
+      fetchProcedures(false);
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      toast({
+        variant: 'destructive',
+        title: 'Error',
+        description: typeof detail === 'string' ? detail : 'Failed to remove procedure',
+      });
+    }
+  };
+
+  const startEditProcedure = (proc) => {
+    setEditingProcedure(proc);
+    setProcedureForm({
+      name: proc.name || '',
+      default_rate: proc.default_rate ?? '',
+      description: proc.description || '',
+    });
+    setShowProcedureDialog(true);
+  };
+
+  const fetchAdmissionBills = useCallback(async (admissionId) => {
+    try {
+      const res = await axios.get(`/api/inpatient/admissions/${admissionId}/bills`);
+      setAdmissionBills(res.data || []);
+    } catch { setAdmissionBills([]); }
+  }, []);
+
+  const fetchAdmissionPackage = useCallback(async (admissionId) => {
+    try {
+      const res = await axios.get(`/api/inpatient/admissions/${admissionId}/package`);
+      setAdmissionPackage(res.data);
+    } catch { setAdmissionPackage(null); }
+  }, []);
+
+  const fetchPackages = useCallback(async () => {
+    try {
+      const res = await axios.get('/api/inpatient/packages', { params: { active_only: true } });
+      setPackagesList(res.data || []);
+    } catch { setPackagesList([]); }
+  }, []);
+
+  const fetchTpaList = useCallback(async () => {
+    try {
+      const res = await axios.get('/api/inpatient/tpa', { params: { active_only: true } });
+      setTpaList(res.data || []);
+    } catch { setTpaList([]); }
+  }, []);
+
+  // Phase 3 fetchers
+  const fetchTransferHistory = useCallback(async (admissionId) => {
+    try {
+      const res = await axios.get(`/api/inpatient/admissions/${admissionId}/transfers`);
+      setTransferHistory(res.data || []);
+    } catch { setTransferHistory([]); }
+  }, []);
+
+  const fetchPendingTransfers = useCallback(async () => {
+    try {
+      const res = await axios.get('/api/inpatient/transfers/pending');
+      setPendingTransfers(res.data || []);
+    } catch { setPendingTransfers([]); }
+  }, []);
+
+  const fetchCleaningBeds = useCallback(async () => {
+    try {
+      const res = await axios.get('/api/inpatient/beds/needs-cleaning');
+      setCleaningBeds(res.data || []);
+    } catch { setCleaningBeds([]); }
+  }, []);
+
+  const fetchTurnoverStats = useCallback(async () => {
+    try {
+      const res = await axios.get('/api/inpatient/beds/turnover-stats');
+      setTurnoverStats(res.data);
+    } catch { setTurnoverStats(null); }
+  }, []);
+
+  const fetchReservations = useCallback(async () => {
+    try {
+      const res = await axios.get('/api/inpatient/reservations', { params: { active_only: true } });
+      setReservations(res.data || []);
+    } catch { setReservations([]); }
+  }, []);
+
+  const fetchNurseAssignments = useCallback(async (admissionId) => {
+    try {
+      const res = await axios.get(`/api/inpatient/admissions/${admissionId}/nurse-assignments`);
+      setNurseAssignments(res.data || []);
+    } catch { setNurseAssignments([]); }
+  }, []);
+
+  const fetchNursesList = useCallback(async () => {
+    try {
+      const res = await axios.get('/api/admin/users');
+      const nurses = (res.data || []).filter(u => (u.role_names || [u.role?.name]).some(r => r === 'nurse'));
+      setNursesList(nurses);
+    } catch { setNursesList([]); }
+  }, []);
+
+  // Phase 4 fetchers
+  const fetchConsents = useCallback(async (admissionId) => {
+    try {
+      const res = await axios.get(`/api/inpatient/admissions/${admissionId}/consents`);
+      setConsents(res.data || []);
+    } catch { setConsents([]); }
+  }, []);
+
+  const fetchConsentTemplates = useCallback(async () => {
+    try {
+      const res = await axios.get('/api/inpatient/consent-templates', { params: { active_only: true } });
+      setConsentTemplates(res.data || []);
+    } catch { setConsentTemplates([]); }
+  }, []);
+
+  const fetchIncidents = useCallback(async () => {
+    try {
+      const params = {};
+      if (incidentFilter.status) params.status = incidentFilter.status;
+      if (incidentFilter.severity) params.severity = incidentFilter.severity;
+      if (incidentFilter.incident_type) params.incident_type = incidentFilter.incident_type;
+      const res = await axios.get('/api/inpatient/incidents', { params });
+      setIncidents(res.data || []);
+    } catch { setIncidents([]); }
+  }, [incidentFilter]);
+
+  const fetchIncidentReport = useCallback(async () => {
+    try {
+      const res = await axios.get('/api/inpatient/incidents/reports/monthly');
+      setIncidentReport(res.data);
+    } catch { setIncidentReport(null); }
+  }, []);
+
+  const fetchReadmissions = useCallback(async () => {
+    try {
+      const res = await axios.get('/api/inpatient/reports/readmissions');
+      setReadmissions(res.data || []);
+    } catch { setReadmissions([]); }
+  }, []);
+
+  const fetchIoEntries = useCallback(async (admissionId, targetDate = null) => {
+    try {
+      const params = targetDate ? { target_date: targetDate } : {};
+      const res = await axios.get(`/api/inpatient/admissions/${admissionId}/io`, { params });
+      setIoEntries(res.data || []);
+    } catch { setIoEntries([]); }
+  }, []);
+
+  const fetchIoBalance = useCallback(async (admissionId, targetDate = null) => {
+    try {
+      const params = targetDate ? { target_date: targetDate } : {};
+      const res = await axios.get(`/api/inpatient/admissions/${admissionId}/io/balance`, { params });
+      setIoBalance(res.data);
+    } catch { setIoBalance(null); }
+  }, []);
+
+  const fetchCriticalAlerts = useCallback(async () => {
+    try {
+      const res = await axios.get('/api/inpatient/critical-alerts', { params: { status: 'new' } });
+      setCriticalAlerts(res.data || []);
+    } catch { setCriticalAlerts([]); }
+  }, []);
+
+  const fetchAdmissionCriticalAlerts = useCallback(async (admissionId) => {
+    try {
+      const res = await axios.get('/api/inpatient/critical-alerts', { params: { admission_id: admissionId } });
+      setAdmissionCriticalAlerts(res.data || []);
+    } catch { setAdmissionCriticalAlerts([]); }
+  }, []);
+
+  // Roster fetchers
+  const _toIso = (d) => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
+
+  const fetchRosterGrid = useCallback(async () => {
+    if (!rosterWeekStart) return;
+    const start = new Date(rosterWeekStart);
+    const end = new Date(rosterWeekStart);
+    end.setDate(end.getDate() + 6);
+    try {
+      const res = await axios.get('/api/inpatient/roster/grid', {
+        params: { from_date: _toIso(start), to_date: _toIso(end) },
+      });
+      setRosterGrid(res.data);
+    } catch { setRosterGrid(null); }
+  }, [rosterWeekStart]);
+
+  const fetchRosterCoverage = useCallback(async () => {
+    if (!rosterWeekStart) return;
+    const start = new Date(rosterWeekStart);
+    const end = new Date(rosterWeekStart);
+    end.setDate(end.getDate() + 6);
+    try {
+      const res = await axios.get('/api/inpatient/roster/coverage', {
+        params: { from_date: _toIso(start), to_date: _toIso(end), min_per_shift: rosterMinPerShift },
+      });
+      setRosterCoverage(res.data.shifts || []);
+    } catch { setRosterCoverage([]); }
+  }, [rosterWeekStart, rosterMinPerShift]);
+
+  const fetchMortalityList = useCallback(async () => {
+    try {
+      const res = await axios.get('/api/inpatient/reports/mortality');
+      setMortalityList(res.data || []);
+    } catch { setMortalityList([]); }
+  }, []);
+
+  const fetchPreauths = useCallback(async () => {
+    try {
+      const params = preauthStatusFilter ? { status: preauthStatusFilter } : {};
+      const res = await axios.get('/api/inpatient/preauth', { params });
+      let data = res.data || [];
+      if (preauthSearch) {
+        const q = preauthSearch.toLowerCase();
+        data = data.filter(p =>
+          (p.patient_name || '').toLowerCase().includes(q) ||
+          (p.insurance_provider || '').toLowerCase().includes(q) ||
+          (p.tpa_name || '').toLowerCase().includes(q)
+        );
+      }
+      setPreauths(data);
+    } catch { setPreauths([]); }
+  }, [preauthStatusFilter, preauthSearch]);
+
   useEffect(() => {
     fetchDashboard();
     fetchDoctors();
@@ -246,11 +789,41 @@ const InpatientModule = () => {
 
   useEffect(() => {
     if (activeTab === 'admissions') { fetchAdmissions('admitted', admissionsPage); fetchAvailableRooms(); }
-    if (activeTab === 'rooms') { fetchRooms(); fetchRateConfig(); }
+    if (activeTab === 'rooms') { fetchRooms(); }
     if (activeTab === 'discharge') fetchAdmissions('discharged', dischargePage);
     if (activeTab === 'ot') fetchOTSchedules();
     if (activeTab === 'dashboard') fetchDashboard();
-  }, [activeTab, admissionsPage, dischargePage, fetchAdmissions, fetchRooms, fetchRateConfig, fetchDashboard, fetchAvailableRooms, fetchOTSchedules]);
+    if (activeTab === 'preauth') fetchPreauths();
+    if (activeTab === 'setup') {
+      fetchAncillaryServices();
+      fetchPackages();
+      fetchTpaList();
+    }
+    if (activeTab === 'housekeeping') {
+      fetchCleaningBeds();
+      fetchTurnoverStats();
+      fetchPendingTransfers();
+    }
+    if (activeTab === 'reservations') {
+      fetchReservations();
+      fetchAvailableRooms();
+    }
+    if (activeTab === 'incidents') {
+      fetchIncidents();
+      fetchIncidentReport();
+    }
+    if (activeTab === 'quality') {
+      fetchReadmissions();
+      fetchMortalityList();
+    }
+    if (activeTab === 'roster') {
+      fetchRosterGrid();
+      fetchRosterCoverage();
+      fetchNursesList();  // for the bulk-assign multi-select
+    }
+    if (activeTab === 'procedures') fetchProcedures(false);
+    if (activeTab === 'ot') fetchProcedures(true);  // OT scheduling needs the active catalog
+  }, [activeTab, admissionsPage, dischargePage, fetchAdmissions, fetchRooms, fetchDashboard, fetchAvailableRooms, fetchOTSchedules, fetchPreauths, fetchAncillaryServices, fetchPackages, fetchTpaList, fetchCleaningBeds, fetchTurnoverStats, fetchPendingTransfers, fetchReservations, fetchIncidents, fetchIncidentReport, fetchReadmissions, fetchMortalityList, fetchRosterGrid, fetchRosterCoverage, fetchNursesList, fetchProcedures]);
 
   // ============================================================
   // Patient search typeahead
@@ -265,6 +838,13 @@ const InpatientModule = () => {
     }, 300);
     return () => clearTimeout(timer);
   }, [patientSearchQuery]);
+
+  // Re-fetch MAR when the date changes for an open admission
+  useEffect(() => {
+    if (activityAdmission && activityTab === 'mar') {
+      fetchMAR(activityAdmission.id, marDate);
+    }
+  }, [marDate, activityAdmission, activityTab, fetchMAR]);
 
   // ============================================================
   // Handlers
@@ -318,7 +898,33 @@ const InpatientModule = () => {
     fetchAdmissionDocs(admission.id);
     fetchNursingNotes(admission.id);
     fetchDietOrders(admission.id);
+    fetchVitals(admission.id);
+    fetchAdmissionAllergies(admission.patient_id);
+    fetchMAR(admission.id, marDate);
+    fetchDeposits(admission.id);
+    fetchBalance(admission.id);
+    fetchAncillaryCharges(admission.id);
+    fetchAncillaryServices();
+    fetchAdmissionBills(admission.id);
+    fetchAdmissionPackage(admission.id);
+    fetchPackages();
+    fetchTransferHistory(admission.id);
+    fetchNurseAssignments(admission.id);
+    fetchNursesList();
+    fetchConsents(admission.id);
+    fetchConsentTemplates();
+    fetchIoEntries(admission.id, ioDate);
+    fetchIoBalance(admission.id, ioDate);
+    fetchAdmissionCriticalAlerts(admission.id);
   };
+
+  // Re-fetch I/O when date changes
+  useEffect(() => {
+    if (activityAdmission && activityTab === 'io') {
+      fetchIoEntries(activityAdmission.id, ioDate);
+      fetchIoBalance(activityAdmission.id, ioDate);
+    }
+  }, [ioDate, activityAdmission, activityTab, fetchIoEntries, fetchIoBalance]);
 
   // Visit
   const handleCreateVisit = async (e) => {
@@ -469,12 +1075,27 @@ const InpatientModule = () => {
       if (payload.follow_up_date) payload.follow_up_date = new Date(payload.follow_up_date).toISOString();
       else delete payload.follow_up_date;
       await axios.post(`/api/inpatient/admissions/${dischargeAdmission.id}/discharge`, payload);
-      toast({ title: 'Success', description: 'Patient discharged successfully' });
+      const wasDeath = dischargeForm.discharge_type === 'death';
+      toast({ title: wasDeath ? 'Discharge recorded — please fill mortality details' : 'Patient discharged successfully' });
       setShowDischargeDialog(false);
+      const admId = dischargeAdmission.id;
       setDischargeAdmission(null);
       fetchAdmissions('admitted');
       fetchDashboard();
-      if (activityAdmission?.id === dischargeAdmission.id) setActivityAdmission(null);
+      if (activityAdmission?.id === admId) setActivityAdmission(null);
+      // On death, immediately prompt for mortality details
+      if (wasDeath) {
+        setMortalityAdmission({ id: admId, discharge: {} });
+        setMortalityForm({
+          cause_of_death: dischargeForm.diagnosis_on_discharge || '',
+          time_of_death: new Date().toISOString().slice(0, 16),
+          death_certificate_number: '', mlc_required: false, mlc_number: '',
+          autopsy_done: false, autopsy_findings: '',
+          body_handed_over_to: '', body_handover_relationship: '',
+          body_handover_time: '', body_handover_id_proof: '',
+        });
+        setShowMortalityDialog(true);
+      }
     } catch (err) {
       const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed to discharge patient';
       toast({ variant: 'destructive', title: 'Error', description: msg });
@@ -521,21 +1142,6 @@ const InpatientModule = () => {
     } catch (err) {
       toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed to delete room' });
     }
-  };
-
-  const handleSaveRateConfig = async () => {
-    setLoading(true);
-    try {
-      await axios.put('/api/inpatient/rate-config', {
-        doctor_visit_rate: parseFloat(rateForm.doctor_visit_rate),
-        nurse_visit_rate: parseFloat(rateForm.nurse_visit_rate),
-        procedure_rate: parseFloat(rateForm.procedure_rate),
-      });
-      toast({ title: 'Success', description: 'Rate configuration updated' });
-      fetchRateConfig();
-    } catch (err) {
-      toast({ variant: 'destructive', title: 'Error', description: 'Failed to update rates' });
-    } finally { setLoading(false); }
   };
 
   // Bed Management
@@ -706,6 +1312,993 @@ const InpatientModule = () => {
     }
   };
 
+  // Vitals
+  const handleRecordVitals = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const payload = {};
+      Object.entries(vitalsForm).forEach(([k, v]) => {
+        if (v === '' || v === null) return;
+        if (['bp_systolic', 'bp_diastolic', 'heart_rate', 'respiratory_rate', 'spo2', 'pain_score', 'gcs_score'].includes(k)) {
+          payload[k] = parseInt(v);
+        } else if (['temperature_c', 'blood_glucose', 'weight_kg', 'height_cm'].includes(k)) {
+          payload[k] = parseFloat(v);
+        } else {
+          payload[k] = v;
+        }
+      });
+      await axios.post(`/api/inpatient/admissions/${activityAdmission.id}/vitals`, payload);
+      toast({ title: 'Vitals recorded' });
+      setShowVitalsDialog(false);
+      setVitalsForm(VITALS_BLANK);
+      fetchVitals(activityAdmission.id);
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed to record vitals';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally { setLoading(false); }
+  };
+
+  const handleDeleteVitals = async (vitalId) => {
+    try {
+      await axios.delete(`/api/inpatient/vitals/${vitalId}`);
+      toast({ title: 'Vitals entry removed' });
+      fetchVitals(activityAdmission.id);
+    } catch {
+      toast({ variant: 'destructive', title: 'Error', description: 'Failed to delete entry' });
+    }
+  };
+
+  // Allergies
+  const handleCreateAllergy = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      await axios.post(`/api/patients/${activityAdmission.patient_id}/allergies`, allergyForm);
+      toast({ title: 'Allergy recorded' });
+      setShowAllergyDialog(false);
+      setAllergyForm({ allergy_type: 'drug', allergen: '', severity: 'moderate', reaction: '', notes: '' });
+      fetchAdmissionAllergies(activityAdmission.patient_id);
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed to record allergy';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally { setLoading(false); }
+  };
+
+  const handleDeleteAllergy = async (allergyId) => {
+    try {
+      await axios.delete(`/api/patients/allergies/${allergyId}`);
+      toast({ title: 'Allergy removed' });
+      fetchAdmissionAllergies(activityAdmission.patient_id);
+    } catch {
+      toast({ variant: 'destructive', title: 'Error', description: 'Failed to delete allergy' });
+    }
+  };
+
+  // MAR
+  const handleGenerateMAR = async () => {
+    setLoading(true);
+    try {
+      const res = await axios.post(`/api/inpatient/admissions/${activityAdmission.id}/mar/generate`, null, { params: { horizon_hours: 24 } });
+      toast({ title: 'MAR generated', description: `${res.data.created} new doses scheduled (${res.data.skipped_existing} already existed)` });
+      fetchMAR(activityAdmission.id, marDate);
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed to generate MAR' });
+    } finally { setLoading(false); }
+  };
+
+  const openAdministerDialog = (dose) => {
+    setAdministeringDose(dose);
+    setAdministerForm({
+      status: 'given',
+      dose_given: dose.dosage || '',
+      route: dose.route || '',
+      site: '',
+      reason_if_not_given: '',
+      notes: '',
+    });
+    setShowAdministerDialog(true);
+  };
+
+  const handleAdminister = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const payload = { ...administerForm };
+      if (payload.status === 'given') {
+        delete payload.reason_if_not_given;
+      }
+      await axios.post(`/api/inpatient/mar/${administeringDose.id}/administer`, payload);
+      toast({ title: 'Dose updated' });
+      setShowAdministerDialog(false);
+      fetchMAR(activityAdmission.id, marDate);
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed to update dose';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally { setLoading(false); }
+  };
+
+  // Phase 2: Deposits + Refund
+  const handleCreateDeposit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      await axios.post(`/api/inpatient/admissions/${activityAdmission.id}/deposits`, {
+        amount: parseFloat(depositForm.amount),
+        payment_method: depositForm.payment_method,
+        deposit_type: depositForm.deposit_type,
+        reference_number: depositForm.reference_number || null,
+        notes: depositForm.notes || null,
+      });
+      toast({ title: 'Deposit recorded' });
+      setShowDepositDialog(false);
+      setDepositForm({ amount: '', payment_method: 'cash', deposit_type: 'topup', reference_number: '', notes: '' });
+      fetchDeposits(activityAdmission.id);
+      fetchBalance(activityAdmission.id);
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed to record deposit';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally { setLoading(false); }
+  };
+
+  const handleCreateRefund = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      await axios.post(`/api/inpatient/admissions/${activityAdmission.id}/refund`, {
+        amount: parseFloat(refundForm.amount),
+        payment_method: refundForm.payment_method,
+        reference_number: refundForm.reference_number || null,
+        notes: refundForm.notes || null,
+      });
+      toast({ title: 'Refund issued' });
+      setShowRefundDialog(false);
+      setRefundForm({ amount: '', payment_method: 'cash', reference_number: '', notes: '' });
+      fetchDeposits(activityAdmission.id);
+      fetchBalance(activityAdmission.id);
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed to issue refund';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally { setLoading(false); }
+  };
+
+  const handlePrintDepositReceipt = async (depositId) => {
+    await printPdfFromUrl(`/api/inpatient/deposits/${depositId}/receipt/pdf`, { include_header: true });
+  };
+
+  // Phase 2: Ancillary charge
+  const handleCreateAncillaryCharge = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const payload = {
+        service_id: parseInt(ancillaryForm.service_id),
+        quantity: parseFloat(ancillaryForm.quantity) || 1,
+        notes: ancillaryForm.notes || null,
+      };
+      if (ancillaryForm.unit_price) payload.unit_price = parseFloat(ancillaryForm.unit_price);
+      await axios.post(`/api/inpatient/admissions/${activityAdmission.id}/ancillary-charges`, payload);
+      toast({ title: 'Charge added' });
+      setShowAncillaryDialog(false);
+      setAncillaryForm({ service_id: '', quantity: 1, unit_price: '', notes: '' });
+      fetchAncillaryCharges(activityAdmission.id);
+      fetchBill(activityAdmission.id);
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed to add charge';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally { setLoading(false); }
+  };
+
+  const handleDeleteAncillaryCharge = async (chargeId) => {
+    try {
+      await axios.delete(`/api/inpatient/ancillary-charges/${chargeId}`);
+      toast({ title: 'Charge removed' });
+      fetchAncillaryCharges(activityAdmission.id);
+      fetchBill(activityAdmission.id);
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed' });
+    }
+  };
+
+  // Phase 2: Interim bill
+  const handleGenerateInterim = async () => {
+    setLoading(true);
+    try {
+      const payload = {
+        discount_type: billDiscount.type,
+        discount_value: billDiscount.value || 0,
+        tax_percentage: billTaxPct || 0,
+      };
+      const res = await axios.post(`/api/inpatient/admissions/${activityAdmission.id}/bill/interim`, payload);
+      toast({ title: 'Interim bill created', description: `${res.data.bill_number} — ₹${res.data.total_amount.toFixed(2)}` });
+      fetchBill(activityAdmission.id);
+      fetchAdmissionBills(activityAdmission.id);
+      fetchBalance(activityAdmission.id);
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed to create interim bill';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally { setLoading(false); }
+  };
+
+  // Phase 2: Apply / remove package
+  const handleApplyPackage = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const payload = {
+        package_id: parseInt(applyPackageForm.package_id),
+        notes: applyPackageForm.notes || null,
+      };
+      if (applyPackageForm.agreed_price) payload.agreed_price = parseFloat(applyPackageForm.agreed_price);
+      await axios.post(`/api/inpatient/admissions/${activityAdmission.id}/package`, payload);
+      toast({ title: 'Package applied' });
+      setShowApplyPackageDialog(false);
+      setApplyPackageForm({ package_id: '', agreed_price: '', notes: '' });
+      fetchAdmissionPackage(activityAdmission.id);
+      fetchBill(activityAdmission.id);
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed to apply package';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally { setLoading(false); }
+  };
+
+  const handleRemovePackage = async () => {
+    try {
+      await axios.delete(`/api/inpatient/admissions/${activityAdmission.id}/package`);
+      toast({ title: 'Package removed' });
+      fetchAdmissionPackage(activityAdmission.id);
+      fetchBill(activityAdmission.id);
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Error', description: 'Failed' });
+    }
+  };
+
+  // Phase 2: Catalog CRUD
+  const handleSubmitService = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const payload = {
+        ...serviceForm,
+        default_charge: parseFloat(serviceForm.default_charge) || 0,
+      };
+      if (editingService) {
+        await axios.put(`/api/inpatient/ancillary-services/${editingService.id}`, payload);
+      } else {
+        await axios.post('/api/inpatient/ancillary-services', payload);
+      }
+      toast({ title: 'Service saved' });
+      setShowServiceDialog(false);
+      setEditingService(null);
+      setServiceForm({ service_name: '', service_code: '', category: 'imaging', default_charge: '', charge_unit: 'per_session', description: '' });
+      fetchAncillaryServices();
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally { setLoading(false); }
+  };
+
+  const handleDeleteService = async (id) => {
+    try {
+      await axios.delete(`/api/inpatient/ancillary-services/${id}`);
+      toast({ title: 'Service deactivated' });
+      fetchAncillaryServices();
+    } catch { toast({ variant: 'destructive', title: 'Error', description: 'Failed' }); }
+  };
+
+  const handleSubmitPackage = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const payload = {
+        ...packageForm,
+        base_price: parseFloat(packageForm.base_price) || 0,
+        included_stay_days: parseInt(packageForm.included_stay_days) || 0,
+        excess_per_day_charge: parseFloat(packageForm.excess_per_day_charge) || 0,
+      };
+      if (editingPackage) {
+        await axios.put(`/api/inpatient/packages/${editingPackage.id}`, payload);
+      } else {
+        await axios.post('/api/inpatient/packages', payload);
+      }
+      toast({ title: 'Package saved' });
+      setShowPackageDialog(false);
+      setEditingPackage(null);
+      setPackageForm({ package_name: '', package_code: '', base_price: '', included_room_type: '', included_stay_days: 0, included_services: [], excess_per_day_charge: 0, description: '' });
+      fetchPackages();
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally { setLoading(false); }
+  };
+
+  const handleDeletePackage = async (id) => {
+    try {
+      await axios.delete(`/api/inpatient/packages/${id}`);
+      toast({ title: 'Package deactivated' });
+      fetchPackages();
+    } catch { toast({ variant: 'destructive', title: 'Error', description: 'Failed' }); }
+  };
+
+  const handleSubmitTpa = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const payload = {
+        ...tpaForm,
+        default_discount_percent: parseFloat(tpaForm.default_discount_percent) || 0,
+      };
+      if (editingTpa) {
+        await axios.put(`/api/inpatient/tpa/${editingTpa.id}`, payload);
+      } else {
+        await axios.post('/api/inpatient/tpa', payload);
+      }
+      toast({ title: 'TPA saved' });
+      setShowTpaDialog(false);
+      setEditingTpa(null);
+      setTpaForm({ tpa_name: '', tpa_code: '', address: '', phone: '', email: '', default_discount_percent: 0, contract_details: '' });
+      fetchTpaList();
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally { setLoading(false); }
+  };
+
+  const handleDeleteTpa = async (id) => {
+    try {
+      await axios.delete(`/api/inpatient/tpa/${id}`);
+      toast({ title: 'TPA deactivated' });
+      fetchTpaList();
+    } catch { toast({ variant: 'destructive', title: 'Error', description: 'Failed' }); }
+  };
+
+  // Phase 2: Pre-auth
+  const handleCreatePreauth = async (e) => {
+    e.preventDefault();
+    if (!preauthSelectedPatient) {
+      toast({ variant: 'destructive', title: 'Error', description: 'Pick a patient' });
+      return;
+    }
+    setLoading(true);
+    try {
+      const payload = {
+        patient_id: preauthSelectedPatient.id,
+        admission_id: preauthForm.admission_id ? parseInt(preauthForm.admission_id) : null,
+        insurance_provider: preauthForm.insurance_provider,
+        policy_number: preauthForm.policy_number || null,
+        tpa_id: preauthForm.tpa_id ? parseInt(preauthForm.tpa_id) : null,
+        requested_amount: parseFloat(preauthForm.requested_amount),
+        notes: preauthForm.notes || null,
+      };
+      await axios.post('/api/inpatient/preauth', payload);
+      toast({ title: 'Pre-authorisation requested' });
+      setShowPreauthDialog(false);
+      setPreauthForm({ patient_id: '', admission_id: '', insurance_provider: '', policy_number: '', tpa_id: '', requested_amount: '', notes: '' });
+      setPreauthSelectedPatient(null);
+      fetchPreauths();
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally { setLoading(false); }
+  };
+
+  const handlePreauthDecision = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const payload = {
+        status: preauthDecisionForm.status,
+        approved_amount: preauthDecisionForm.approved_amount ? parseFloat(preauthDecisionForm.approved_amount) : null,
+        validity_days: preauthDecisionForm.validity_days ? parseInt(preauthDecisionForm.validity_days) : null,
+        approval_reference: preauthDecisionForm.approval_reference || null,
+        notes: preauthDecisionForm.notes || null,
+      };
+      await axios.post(`/api/inpatient/preauth/${activePreauth.id}/decision`, payload);
+      toast({ title: 'Decision recorded' });
+      setShowPreauthDecisionDialog(false);
+      fetchPreauths();
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally { setLoading(false); }
+  };
+
+  // Phase 2: Bill split
+  const openSplitDialog = async (bill) => {
+    setBillForSplit(bill);
+    try {
+      const res = await axios.get(`/api/inpatient/bills/${bill.id}/split`);
+      const existing = res.data || [];
+      if (existing.length > 0) {
+        setSplitRows(existing.map(s => ({ payer_type: s.payer_type, payer_name: s.payer_name, tpa_id: s.tpa_id || '', amount: s.amount })));
+      } else {
+        setSplitRows([{ payer_type: 'cash', payer_name: 'Patient', tpa_id: '', amount: bill.total_amount }]);
+      }
+    } catch { setSplitRows([{ payer_type: 'cash', payer_name: 'Patient', tpa_id: '', amount: bill.total_amount }]); }
+    fetchTpaList();
+    setShowSplitDialog(true);
+  };
+
+  const handleSubmitSplit = async (e) => {
+    e.preventDefault();
+    const total = splitRows.reduce((s, r) => s + (parseFloat(r.amount) || 0), 0);
+    if (Math.abs(total - billForSplit.total_amount) > 0.01) {
+      toast({ variant: 'destructive', title: 'Error', description: `Splits sum to ₹${total.toFixed(2)}, must equal ₹${billForSplit.total_amount.toFixed(2)}` });
+      return;
+    }
+    setLoading(true);
+    try {
+      await axios.post(`/api/inpatient/bills/${billForSplit.id}/split`, {
+        splits: splitRows.map(r => ({
+          payer_type: r.payer_type,
+          payer_name: r.payer_name,
+          tpa_id: r.tpa_id ? parseInt(r.tpa_id) : null,
+          amount: parseFloat(r.amount),
+        })),
+      });
+      toast({ title: 'Bill split saved' });
+      setShowSplitDialog(false);
+      setBillForSplit(null);
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally { setLoading(false); }
+  };
+
+  // OT charges
+  const openOTChargesDialog = (ot) => {
+    setEditingOT(ot);
+    setOtChargesForm({
+      surgeon_fee: ot.surgeon_fee || 0,
+      anaesthetist_fee: ot.anaesthetist_fee || 0,
+      ot_room_charge: ot.ot_room_charge || 0,
+      equipment_charge: ot.equipment_charge || 0,
+      consumables_charge: ot.consumables_charge || 0,
+      procedure_charge: ot.procedure_charge || 0,
+      other_charges: ot.other_charges || 0,
+    });
+    setShowOTChargesDialog(true);
+  };
+
+  const handleSaveOTCharges = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const payload = {};
+      Object.entries(otChargesForm).forEach(([k, v]) => {
+        const num = parseFloat(v);
+        if (!isNaN(num)) payload[k] = num;
+      });
+      await axios.put(`/api/inpatient/ot/${editingOT.id}/charges`, payload);
+      toast({ title: 'OT charges saved' });
+      setShowOTChargesDialog(false);
+      fetchOTSchedules();
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally { setLoading(false); }
+  };
+
+  // Phase 3: Inter-ward transfer
+  const handleInitiateWardTransfer = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const payload = {
+        to_room_id: parseInt(wardTransferForm.to_room_id),
+        to_bed_id: wardTransferForm.to_bed_id ? parseInt(wardTransferForm.to_bed_id) : null,
+        reason: wardTransferForm.reason,
+        transfer_note: wardTransferForm.transfer_note,
+      };
+      await axios.post(`/api/inpatient/admissions/${activityAdmission.id}/transfer-ward`, payload);
+      toast({ title: 'Ward transfer initiated', description: 'Awaiting acceptance by receiving ward' });
+      setShowWardTransferDialog(false);
+      setWardTransferForm({ to_room_id: '', to_bed_id: '', reason: '', transfer_note: '' });
+      fetchTransferHistory(activityAdmission.id);
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally { setLoading(false); }
+  };
+
+  const handleAcceptTransfer = async (transferId) => {
+    try {
+      await axios.patch(`/api/inpatient/transfers/${transferId}/accept`);
+      toast({ title: 'Transfer accepted' });
+      if (activityAdmission) fetchTransferHistory(activityAdmission.id);
+      fetchPendingTransfers();
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    }
+  };
+
+  const handleCancelPendingTransfer = async (transferId) => {
+    try {
+      await axios.patch(`/api/inpatient/transfers/${transferId}/cancel`);
+      toast({ title: 'Transfer cancelled' });
+      if (activityAdmission) fetchTransferHistory(activityAdmission.id);
+      fetchPendingTransfers();
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed' });
+    }
+  };
+
+  // Phase 3: Housekeeping
+  const handleMarkBedAvailable = async (bedId) => {
+    try {
+      await axios.patch(`/api/inpatient/beds/${bedId}/status`, { status: 'available' });
+      toast({ title: 'Bed marked available' });
+      fetchCleaningBeds();
+      fetchTurnoverStats();
+      fetchRooms();
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed' });
+    }
+  };
+
+  const handleMarkBedMaintenance = async (bedId, status) => {
+    try {
+      await axios.patch(`/api/inpatient/beds/${bedId}/status`, { status });
+      toast({ title: `Bed marked ${status}` });
+      fetchCleaningBeds();
+      fetchRooms();
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed' });
+    }
+  };
+
+  // Phase 3: Reservations
+  const handleCreateReservation = async (e) => {
+    e.preventDefault();
+    if (!reservationSelectedPatient && !reservationForm.patient_id) {
+      toast({ variant: 'destructive', title: 'Error', description: 'Pick a patient' });
+      return;
+    }
+    setLoading(true);
+    try {
+      const payload = {
+        patient_id: reservationSelectedPatient?.id,
+        reserved_for_date: new Date(reservationForm.reserved_for_date).toISOString(),
+        reservation_reason: reservationForm.reservation_reason,
+        notes: reservationForm.notes || null,
+      };
+      if (reservationForm.bed_id) payload.bed_id = parseInt(reservationForm.bed_id);
+      if (reservationForm.room_id) payload.room_id = parseInt(reservationForm.room_id);
+      if (reservationForm.room_type) payload.room_type = reservationForm.room_type;
+      if (!payload.bed_id && !payload.room_id && !payload.room_type) {
+        toast({ variant: 'destructive', title: 'Error', description: 'Pick a bed, room, or room type' });
+        setLoading(false); return;
+      }
+      await axios.post('/api/inpatient/reservations', payload);
+      toast({ title: 'Reservation created' });
+      setShowReservationDialog(false);
+      setReservationForm({ patient_id: '', bed_id: '', room_id: '', room_type: '', reserved_for_date: '', reservation_reason: 'elective', notes: '' });
+      setReservationSelectedPatient(null);
+      fetchReservations();
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally { setLoading(false); }
+  };
+
+  const handleCancelReservation = async (id) => {
+    try {
+      await axios.patch(`/api/inpatient/reservations/${id}/cancel`);
+      toast({ title: 'Reservation cancelled' });
+      fetchReservations();
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed' });
+    }
+  };
+
+  const handleConvertReservation = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const payload = {
+        admitting_doctor_id: parseInt(convertForm.admitting_doctor_id),
+        admission_type: convertForm.admission_type,
+        admission_reason: convertForm.admission_reason || null,
+        condition_on_admission: convertForm.condition_on_admission,
+      };
+      await axios.post(`/api/inpatient/reservations/${convertingReservation.id}/convert`, payload);
+      toast({ title: 'Reservation converted to admission' });
+      setShowConvertReservationDialog(false);
+      setConvertingReservation(null);
+      fetchReservations();
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally { setLoading(false); }
+  };
+
+  // Patient typeahead for reservations
+  useEffect(() => {
+    if (reservationPatientSearch.length < 2) { setReservationPatientResults([]); return; }
+    const t = setTimeout(async () => {
+      try {
+        const res = await axios.get('/api/patients', { params: { search: reservationPatientSearch } });
+        setReservationPatientResults(res.data.patients || res.data || []);
+      } catch { setReservationPatientResults([]); }
+    }, 300);
+    return () => clearTimeout(t);
+  }, [reservationPatientSearch]);
+
+  // Phase 3: Nurse assignment
+  const handleAssignNurse = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      await axios.post(`/api/inpatient/admissions/${activityAdmission.id}/assign-nurse`, {
+        nurse_id: parseInt(nurseAssignForm.nurse_id),
+        shift: nurseAssignForm.shift,
+        assignment_date: nurseAssignForm.assignment_date,
+        is_primary: nurseAssignForm.is_primary,
+        notes: nurseAssignForm.notes || null,
+      });
+      toast({ title: 'Nurse assigned' });
+      setShowNurseAssignDialog(false);
+      setNurseAssignForm({ nurse_id: '', shift: 'morning', assignment_date: new Date().toISOString().slice(0, 10), is_primary: false, notes: '' });
+      fetchNurseAssignments(activityAdmission.id);
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally { setLoading(false); }
+  };
+
+  const handleRemoveNurseAssignment = async (assignmentId) => {
+    try {
+      await axios.delete(`/api/inpatient/nurse-assignments/${assignmentId}`);
+      toast({ title: 'Assignment removed' });
+      fetchNurseAssignments(activityAdmission.id);
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed' });
+    }
+  };
+
+  // Phase 4: Consents
+  const handleCreateConsent = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const payload = { ...consentForm };
+      if (payload.template_id) payload.template_id = parseInt(payload.template_id);
+      else delete payload.template_id;
+      if (payload.doctor_id) payload.doctor_id = parseInt(payload.doctor_id);
+      else delete payload.doctor_id;
+      await axios.post(`/api/inpatient/admissions/${activityAdmission.id}/consents`, payload);
+      toast({ title: 'Consent recorded' });
+      setShowConsentDialog(false);
+      setConsentForm({ consent_type: 'surgical', template_id: '', procedure_name: '', doctor_id: '', risks_explained: '', patient_signature: '', signed_by: 'patient', guardian_name: '', guardian_relationship: '', witness_name: '', witness_signature: '', notes: '' });
+      fetchConsents(activityAdmission.id);
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally { setLoading(false); }
+  };
+
+  const handleWithdrawConsent = async (e) => {
+    e.preventDefault();
+    if (!withdrawReason.trim()) return;
+    setLoading(true);
+    try {
+      await axios.post(`/api/inpatient/consents/${withdrawingConsent.id}/withdraw`, { withdrawal_reason: withdrawReason });
+      toast({ title: 'Consent withdrawn' });
+      setShowWithdrawConsentDialog(false);
+      setWithdrawingConsent(null);
+      setWithdrawReason('');
+      fetchConsents(activityAdmission.id);
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed' });
+    } finally { setLoading(false); }
+  };
+
+  const handlePrintConsent = async (consentId) => {
+    await printPdfFromUrl(`/api/inpatient/consents/${consentId}/pdf`, { include_header: true });
+  };
+
+  const handleSubmitConsentTemplate = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      if (editingConsentTemplate) {
+        await axios.put(`/api/inpatient/consent-templates/${editingConsentTemplate.id}`, consentTemplateForm);
+      } else {
+        await axios.post('/api/inpatient/consent-templates', consentTemplateForm);
+      }
+      toast({ title: 'Template saved' });
+      setShowConsentTemplateDialog(false);
+      setEditingConsentTemplate(null);
+      setConsentTemplateForm({ consent_type: 'surgical', template_name: '', content: '', language: 'english' });
+      fetchConsentTemplates();
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed' });
+    } finally { setLoading(false); }
+  };
+
+  const handleDeleteConsentTemplate = async (id) => {
+    try {
+      await axios.delete(`/api/inpatient/consent-templates/${id}`);
+      toast({ title: 'Template deactivated' });
+      fetchConsentTemplates();
+    } catch { toast({ variant: 'destructive', title: 'Error', description: 'Failed' }); }
+  };
+
+  // Phase 4: Incidents
+  const handleCreateIncident = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const payload = {
+        incident_type: incidentForm.incident_type,
+        severity: incidentForm.severity,
+        incident_date: new Date(incidentForm.incident_date).toISOString(),
+        description: incidentForm.description,
+        immediate_action: incidentForm.immediate_action || null,
+        location: incidentForm.location || null,
+        witnessed_by: incidentForm.witnessed_by || null,
+      };
+      if (incidentForm.admission_id) payload.admission_id = parseInt(incidentForm.admission_id);
+      if (incidentForm.patient_id) payload.patient_id = parseInt(incidentForm.patient_id);
+      await axios.post('/api/inpatient/incidents', payload);
+      toast({ title: 'Incident reported' });
+      setShowIncidentDialog(false);
+      setIncidentForm({ incident_type: 'fall', severity: 'medium', incident_date: new Date().toISOString().slice(0, 16), admission_id: '', patient_id: '', location: '', description: '', immediate_action: '', witnessed_by: '' });
+      fetchIncidents();
+      fetchIncidentReport();
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed' });
+    } finally { setLoading(false); }
+  };
+
+  const handleInvestigateIncident = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const payload = { ...investigateForm };
+      if (!payload.new_status) delete payload.new_status;
+      await axios.post(`/api/inpatient/incidents/${investigatingIncident.id}/investigate`, payload);
+      toast({ title: 'Investigation updated' });
+      setShowInvestigateDialog(false);
+      setInvestigatingIncident(null);
+      fetchIncidents();
+      fetchIncidentReport();
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed' });
+    } finally { setLoading(false); }
+  };
+
+  // Phase 4: Mortality
+  const openMortalityDialog = (admission) => {
+    setMortalityAdmission(admission);
+    const d = admission.discharge || {};
+    setMortalityForm({
+      cause_of_death: d.cause_of_death || '',
+      time_of_death: d.time_of_death ? new Date(d.time_of_death).toISOString().slice(0, 16) : '',
+      death_certificate_number: d.death_certificate_number || '',
+      mlc_required: !!d.mlc_required,
+      mlc_number: d.mlc_number || '',
+      autopsy_done: !!d.autopsy_done,
+      autopsy_findings: d.autopsy_findings || '',
+      body_handed_over_to: d.body_handed_over_to || '',
+      body_handover_relationship: d.body_handover_relationship || '',
+      body_handover_time: d.body_handover_time ? new Date(d.body_handover_time).toISOString().slice(0, 16) : '',
+      body_handover_id_proof: d.body_handover_id_proof || '',
+    });
+    setShowMortalityDialog(true);
+  };
+
+  const handleSaveMortality = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const payload = { ...mortalityForm };
+      if (payload.time_of_death) payload.time_of_death = new Date(payload.time_of_death).toISOString();
+      else delete payload.time_of_death;
+      if (payload.body_handover_time) payload.body_handover_time = new Date(payload.body_handover_time).toISOString();
+      else delete payload.body_handover_time;
+      await axios.put(`/api/inpatient/admissions/${mortalityAdmission.id}/discharge/mortality`, payload);
+      toast({ title: 'Mortality details saved' });
+      setShowMortalityDialog(false);
+      fetchMortalityList();
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed' });
+    } finally { setLoading(false); }
+  };
+
+  const handlePrintDeathCertificate = async (admissionId) => {
+    await printPdfFromUrl(`/api/inpatient/admissions/${admissionId}/death-certificate/pdf`, { include_header: true });
+  };
+
+  // ICU: I/O record
+  const handleRecordIO = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      await axios.post(`/api/inpatient/admissions/${activityAdmission.id}/io`, {
+        io_type: ioForm.io_type,
+        category: ioForm.category,
+        amount_ml: parseFloat(ioForm.amount_ml),
+        shift: ioForm.shift,
+        notes: ioForm.notes || null,
+      });
+      toast({ title: 'I/O entry recorded' });
+      setShowIoDialog(false);
+      setIoForm({ io_type: 'intake', category: 'oral', amount_ml: '', shift: 'morning', notes: '' });
+      fetchIoEntries(activityAdmission.id, ioDate);
+      fetchIoBalance(activityAdmission.id, ioDate);
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally { setLoading(false); }
+  };
+
+  const handleDeleteIO = async (entryId) => {
+    try {
+      await axios.delete(`/api/inpatient/io/${entryId}`);
+      fetchIoEntries(activityAdmission.id, ioDate);
+      fetchIoBalance(activityAdmission.id, ioDate);
+    } catch { toast({ variant: 'destructive', title: 'Error', description: 'Failed' }); }
+  };
+
+  // ICU: Critical alert acknowledge
+  const handleAcknowledgeAlert = async (alertId, markAddressed = false, notes = '') => {
+    try {
+      await axios.patch(`/api/inpatient/critical-alerts/${alertId}/acknowledge`, {
+        mark_addressed: markAddressed,
+        addressed_notes: notes || null,
+      });
+      toast({ title: markAddressed ? 'Alert addressed' : 'Alert acknowledged' });
+      if (activityAdmission) fetchAdmissionCriticalAlerts(activityAdmission.id);
+      fetchCriticalAlerts();
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed' });
+    }
+  };
+
+  // Roster handlers
+  const openRosterCell = (nurse, dateIso, shift, existing) => {
+    setRosterCellEdit({ nurse, dateIso, shift, existing });
+    setRosterCellForm({
+      status: existing?.status || 'working',
+      ward: existing?.ward || '',
+      notes: existing?.notes || '',
+    });
+    setShowRosterCellDialog(true);
+  };
+
+  const handleSaveRosterCell = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const { nurse, dateIso, shift, existing } = rosterCellEdit;
+      if (existing) {
+        await axios.put(`/api/inpatient/roster/${existing.id}`, rosterCellForm);
+      } else {
+        await axios.post('/api/inpatient/roster', {
+          nurse_id: nurse.id,
+          roster_date: dateIso,
+          shift,
+          status: rosterCellForm.status,
+          ward: rosterCellForm.ward || null,
+          notes: rosterCellForm.notes || null,
+        });
+      }
+      toast({ title: 'Roster updated' });
+      setShowRosterCellDialog(false);
+      fetchRosterGrid();
+      fetchRosterCoverage();
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally { setLoading(false); }
+  };
+
+  const handleDeleteRosterCell = async () => {
+    if (!rosterCellEdit?.existing) return;
+    setLoading(true);
+    try {
+      await axios.delete(`/api/inpatient/roster/${rosterCellEdit.existing.id}`);
+      toast({ title: 'Roster entry removed' });
+      setShowRosterCellDialog(false);
+      fetchRosterGrid();
+      fetchRosterCoverage();
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed' });
+    } finally { setLoading(false); }
+  };
+
+  const handleBulkRoster = async (e) => {
+    e.preventDefault();
+    if (bulkRosterForm.nurse_ids.length === 0) {
+      toast({ variant: 'destructive', title: 'Error', description: 'Pick at least one nurse' });
+      return;
+    }
+    if (bulkRosterForm.shifts.length === 0) {
+      toast({ variant: 'destructive', title: 'Error', description: 'Pick at least one shift' });
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await axios.post('/api/inpatient/roster/bulk', {
+        nurse_ids: bulkRosterForm.nurse_ids.map(Number),
+        from_date: bulkRosterForm.from_date,
+        to_date: bulkRosterForm.to_date,
+        shifts: bulkRosterForm.shifts,
+        status: bulkRosterForm.status,
+        ward: bulkRosterForm.ward || null,
+        notes: bulkRosterForm.notes || null,
+        overwrite: bulkRosterForm.overwrite,
+      });
+      toast({ title: 'Bulk roster applied', description: `Created ${res.data.created}, overwritten ${res.data.overwritten}, skipped ${res.data.skipped}` });
+      setShowBulkRosterDialog(false);
+      fetchRosterGrid();
+      fetchRosterCoverage();
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally { setLoading(false); }
+  };
+
+  // When the Assign Nurse dialog is open, refetch on-duty nurses each time
+  // shift or date changes
+  useEffect(() => {
+    if (!showNurseAssignDialog) return;
+    if (!nurseAssignForm.assignment_date || !nurseAssignForm.shift) {
+      setOnDutyNurses([]); return;
+    }
+    axios.get('/api/inpatient/roster/on-duty', {
+      params: { target_date: nurseAssignForm.assignment_date, shift: nurseAssignForm.shift },
+    })
+      .then(r => setOnDutyNurses(r.data || []))
+      .catch(() => setOnDutyNurses([]));
+  }, [showNurseAssignDialog, nurseAssignForm.assignment_date, nurseAssignForm.shift]);
+
+  const shiftWeek = (deltaDays) => {
+    const d = new Date(rosterWeekStart);
+    d.setDate(d.getDate() + deltaDays);
+    setRosterWeekStart(d);
+  };
+
+  // Patient typeahead for pre-auth
+  useEffect(() => {
+    if (preauthPatientSearch.length < 2) { setPreauthPatientResults([]); return; }
+    const t = setTimeout(async () => {
+      try {
+        const res = await axios.get('/api/patients', { params: { search: preauthPatientSearch } });
+        setPreauthPatientResults(res.data.patients || res.data || []);
+      } catch { setPreauthPatientResults([]); }
+    }, 300);
+    return () => clearTimeout(t);
+  }, [preauthPatientSearch]);
+
+  const handleRecordPRN = async (e) => {
+    e.preventDefault();
+    if (!prnForm.prescription_item_id) {
+      toast({ variant: 'destructive', title: 'Error', description: 'Pick a prescribed medication' });
+      return;
+    }
+    setLoading(true);
+    try {
+      await axios.post(`/api/inpatient/admissions/${activityAdmission.id}/mar/prn`, {
+        prescription_item_id: parseInt(prnForm.prescription_item_id),
+        dose_given: prnForm.dose_given,
+        route: prnForm.route || null,
+        site: prnForm.site || null,
+        prn_indication: prnForm.prn_indication || null,
+        notes: prnForm.notes || null,
+      });
+      toast({ title: 'PRN dose recorded' });
+      setShowPrnDialog(false);
+      setPrnForm({ prescription_item_id: '', dose_given: '', route: '', site: '', prn_indication: '', notes: '' });
+      fetchMAR(activityAdmission.id, marDate);
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed to record PRN';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally { setLoading(false); }
+  };
+
   // OT Schedule
   const handleCreateOT = async (e) => {
     e.preventDefault();
@@ -718,6 +2311,7 @@ const InpatientModule = () => {
         admission_id: otForm.admission_id ? parseInt(otForm.admission_id) : null,
         ot_room_number: otForm.ot_room_number,
         procedure_name: otForm.procedure_name,
+        procedure_id: otForm.procedure_id ? parseInt(otForm.procedure_id) : null,
         scheduled_date: new Date(otForm.scheduled_date).toISOString(),
         estimated_duration_minutes: otForm.estimated_duration_minutes ? parseInt(otForm.estimated_duration_minutes) : null,
         pre_op_notes: otForm.pre_op_notes || null,
@@ -725,7 +2319,7 @@ const InpatientModule = () => {
       await axios.post('/api/inpatient/ot', payload);
       toast({ title: 'Success', description: 'OT scheduled successfully' });
       setShowOTDialog(false);
-      setOtForm({ patient_id: '', surgeon_id: '', anaesthetist_id: '', ot_room_number: '', procedure_name: '', scheduled_date: '', estimated_duration_minutes: '', pre_op_notes: '', admission_id: '' });
+      setOtForm({ patient_id: '', surgeon_id: '', anaesthetist_id: '', ot_room_number: '', procedure_name: '', procedure_id: '', scheduled_date: '', estimated_duration_minutes: '', pre_op_notes: '', admission_id: '' });
       fetchOTSchedules();
     } catch (err) {
       toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed to schedule OT' });
@@ -787,55 +2381,19 @@ const InpatientModule = () => {
   // ============================================================
   // RENDER
   // ============================================================
-  const sidebarItems = [
-    { key: 'dashboard', label: 'Ward Overview', icon: LayoutDashboard },
-    { key: 'admissions', label: 'Active Admissions', icon: Users },
-    { key: 'discharge', label: 'Discharge History', icon: FileText },
-    { key: 'ot', label: 'OT Schedule', icon: Scissors },
-    { key: 'rooms', label: 'Room Management', icon: Bed },
-  ];
+  // The internal sidebar that previously listed Ward Overview / Active Admissions / etc.
+  // has been moved to the main left navigation in Dashboard.js. This module is now
+  // purely the content area for whichever inpatient route is active.
+  // When admissions tab is left, drop the open admission slide-over so reopening starts fresh.
+  useEffect(() => {
+    if (activeTab !== 'admissions') {
+      setActivityAdmission(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
 
   return (
     <div className="flex h-[calc(100vh-4rem)]">
-      {/* ============ LEFT SIDEBAR ============ */}
-      <aside className="w-56 bg-white border-r shrink-0 flex flex-col">
-        <div className="p-4 border-b">
-          <h1 className="text-lg font-bold text-gray-900">Inpatient</h1>
-          <p className="text-xs text-gray-500">Management</p>
-        </div>
-        <nav className="flex-1 p-2 space-y-1">
-          {sidebarItems.map(item => (
-            <button
-              key={item.key}
-              onClick={() => { setActiveTab(item.key); if (item.key !== 'admissions') setActivityAdmission(null); }}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors ${
-                activeTab === item.key
-                  ? 'bg-blue-50 text-blue-700 font-medium'
-                  : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
-              }`}
-            >
-              <item.icon className="h-4 w-4 shrink-0" />
-              {item.label}
-            </button>
-          ))}
-        </nav>
-        {dashboardData && (
-          <div className="p-4 border-t space-y-2 text-xs">
-            <div className="flex justify-between text-gray-500">
-              <span>Beds</span>
-              <span className="font-medium text-gray-900">{dashboardData.occupied}/{dashboardData.total_beds}</span>
-            </div>
-            <div className="w-full bg-gray-200 rounded-full h-1.5">
-              <div className="bg-blue-500 h-1.5 rounded-full" style={{ width: `${dashboardData.total_beds > 0 ? (dashboardData.occupied / dashboardData.total_beds * 100) : 0}%` }} />
-            </div>
-            <div className="flex justify-between text-gray-500">
-              <span>Active</span>
-              <span className="font-medium text-gray-900">{dashboardData.active_admissions}</span>
-            </div>
-          </div>
-        )}
-      </aside>
-
       {/* ============ MAIN CONTENT ============ */}
       <div className="flex-1 overflow-hidden flex flex-col min-w-0">
         {/* Quick Actions Bar */}
@@ -1001,10 +2559,15 @@ const InpatientModule = () => {
                           <tr key={adm.id} className={`border-b cursor-pointer transition-colors ${activityAdmission?.id === adm.id ? 'bg-blue-50' : 'hover:bg-gray-50'}`}
                               onClick={() => openActivity(adm)}>
                             <td className="py-2">
-                              <div className="flex items-center gap-1">
+                              <div className="flex items-center gap-1 flex-wrap">
                                 <span className="font-medium text-sm">{adm.patient_name || 'N/A'}</span>
                                 {adm.claim_status && adm.claim_status !== 'none' && (
                                   <Shield className="h-3 w-3 text-blue-500" title={`Claim: ${claimStatusLabel[adm.claim_status]}`} />
+                                )}
+                                {adm.is_readmission && (
+                                  <Badge className="text-xs bg-purple-100 text-purple-800" title={`${adm.days_since_last_discharge} days since last discharge`}>
+                                    <RotateCcw className="h-3 w-3 mr-0.5" /> Readmit
+                                  </Badge>
                                 )}
                               </div>
                               <div className="text-xs text-gray-500">{adm.admission_number}</div>
@@ -1054,6 +2617,20 @@ const InpatientModule = () => {
                     <div>
                       <h2 className="font-semibold">{activityAdmission.patient_name}</h2>
                       <p className="text-xs text-gray-500">{activityAdmission.admission_number} &bull; {roomTypeLabel[activityAdmission.room_type] || activityAdmission.room_type} - {activityAdmission.room_number} &bull; Dr. {activityAdmission.doctor_name || 'N/A'}</p>
+                      {balance && (
+                        <div className="flex items-center gap-2 mt-1">
+                          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${
+                            balance.balance > 0 ? 'bg-green-100 text-green-800' :
+                            balance.balance < 0 ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-700'
+                          }`}>
+                            <Wallet className="h-3 w-3" />
+                            {balance.balance > 0 ? `Credit ₹${balance.balance.toFixed(2)}` :
+                             balance.balance < 0 ? `Owes ₹${Math.abs(balance.balance).toFixed(2)}` :
+                             `Settled`}
+                          </span>
+                          <span className="text-xs text-gray-400">Deposits ₹{balance.net_deposits.toFixed(2)} · Billed ₹{balance.total_billed.toFixed(2)}</span>
+                        </div>
+                      )}
                     </div>
                     <div className="flex items-center gap-2">
                       {activityAdmission.status === 'admitted' && (
@@ -1063,18 +2640,119 @@ const InpatientModule = () => {
                     </div>
                   </div>
 
+                  {/* Critical lab value alerts banner */}
+                  {admissionCriticalAlerts.filter(a => a.status === 'new').length > 0 && (
+                    <div className="mx-4 mt-4 rounded-md border-l-4 border-red-700 bg-red-100 p-3">
+                      <div className="flex items-start gap-2">
+                        <AlertOctagon className="h-5 w-5 text-red-700 mt-0.5 flex-shrink-0" />
+                        <div className="flex-1">
+                          <p className="text-sm font-semibold text-red-900">
+                            {admissionCriticalAlerts.filter(a => a.status === 'new').length} critical lab value alert(s)
+                          </p>
+                          <div className="space-y-1 mt-1">
+                            {admissionCriticalAlerts.filter(a => a.status === 'new').slice(0, 3).map(a => (
+                              <div key={a.id} className="text-xs flex items-center justify-between gap-2 bg-white/70 rounded p-1.5">
+                                <span>
+                                  <b>{a.parameter_name}</b> = {a.actual_value}
+                                  {a.critical_min != null && a.critical_max != null && <span className="text-gray-600"> (range: {a.critical_min}–{a.critical_max})</span>}
+                                </span>
+                                <div className="flex gap-1">
+                                  <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={() => handleAcknowledgeAlert(a.id, false)}>Ack</Button>
+                                  <Button size="sm" variant="outline" className="h-6 text-xs" onClick={() => handleAcknowledgeAlert(a.id, true)}>Addressed</Button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Allergy alert banner — patient-level, always visible */}
+                  {admissionAllergies.length > 0 && (
+                    <div className={`mx-4 mt-4 rounded-md border-l-4 p-3 ${
+                      admissionAllergies.some(a => a.severity === 'anaphylaxis' || a.severity === 'severe')
+                        ? 'border-red-600 bg-red-50' : 'border-orange-500 bg-orange-50'
+                    }`}>
+                      <div className="flex items-start gap-2">
+                        <AlertTriangle className={`h-5 w-5 mt-0.5 flex-shrink-0 ${
+                          admissionAllergies.some(a => a.severity === 'anaphylaxis' || a.severity === 'severe')
+                            ? 'text-red-600' : 'text-orange-600'
+                        }`} />
+                        <div className="flex-1">
+                          <p className="text-sm font-semibold text-gray-900">Active allergies</p>
+                          <div className="flex flex-wrap gap-1.5 mt-1">
+                            {admissionAllergies.map(a => (
+                              <span key={a.id} className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${
+                                a.severity === 'anaphylaxis' ? 'bg-red-200 text-red-900' :
+                                a.severity === 'severe' ? 'bg-red-100 text-red-800' :
+                                a.severity === 'moderate' ? 'bg-orange-100 text-orange-800' :
+                                'bg-yellow-100 text-yellow-800'
+                              }`} title={a.reaction || ''}>
+                                {a.allergen} ({a.severity})
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   <div className="p-4 flex-1">
-                    <Tabs value={activityTab} onValueChange={setActivityTab}>
-                      <TabsList className="grid w-full grid-cols-8">
-                        <TabsTrigger value="visits">Visits</TabsTrigger>
-                        <TabsTrigger value="nursing">Nursing</TabsTrigger>
-                        <TabsTrigger value="diet">Diet</TabsTrigger>
-                        <TabsTrigger value="lab">Lab</TabsTrigger>
-                        <TabsTrigger value="medications">Meds</TabsTrigger>
-                        <TabsTrigger value="bill">Bill</TabsTrigger>
-                        <TabsTrigger value="insurance">Insurance</TabsTrigger>
-                        <TabsTrigger value="docs">Docs</TabsTrigger>
-                      </TabsList>
+                    {(() => {
+                      const TAB_GROUPS = {
+                        clinical: { label: 'Clinical', tabs: [
+                          { v: 'vitals', l: 'Vitals' },
+                          { v: 'mar', l: 'MAR' },
+                          { v: 'io', l: 'I/O' },
+                          { v: 'nursing', l: 'Nursing' },
+                          { v: 'diet', l: 'Diet' },
+                          { v: 'allergies', l: 'Allergies' },
+                          { v: 'consents', l: 'Consents' },
+                        ]},
+                        orders: { label: 'Orders & Care', tabs: [
+                          { v: 'visits', l: 'Visits' },
+                          { v: 'lab', l: 'Lab' },
+                          { v: 'medications', l: 'Meds' },
+                        ]},
+                        billing: { label: 'Billing', tabs: [
+                          { v: 'bill', l: 'Bill' },
+                          { v: 'deposits', l: 'Deposits' },
+                          { v: 'insurance', l: 'Insurance' },
+                        ]},
+                        operations: { label: 'Operations', tabs: [
+                          { v: 'staff', l: 'Staff' },
+                          { v: 'docs', l: 'Docs' },
+                        ]},
+                      };
+                      const groupOf = (tab) => Object.entries(TAB_GROUPS).find(([, g]) => g.tabs.some(t => t.v === tab))?.[0] || 'clinical';
+                      const currentGroup = groupOf(activityTab);
+                      const subTabs = TAB_GROUPS[currentGroup].tabs;
+                      return (
+                        <Tabs value={activityTab} onValueChange={setActivityTab}>
+                          {/* Primary group selector */}
+                          <div className="flex gap-1 border-b mb-2">
+                            {Object.entries(TAB_GROUPS).map(([k, g]) => (
+                              <button
+                                key={k}
+                                type="button"
+                                className={`px-4 py-2 text-sm transition-colors ${
+                                  currentGroup === k
+                                    ? 'border-b-2 border-blue-600 font-semibold text-blue-700'
+                                    : 'text-gray-500 hover:text-gray-700'
+                                }`}
+                                onClick={() => setActivityTab(g.tabs[0].v)}
+                              >
+                                {g.label}
+                              </button>
+                            ))}
+                          </div>
+                          {/* Sub-tabs for the active group */}
+                          <TabsList className="grid w-full text-xs" style={{ gridTemplateColumns: `repeat(${subTabs.length}, minmax(0, 1fr))` }}>
+                            {subTabs.map(t => (
+                              <TabsTrigger key={t.v} value={t.v}>{t.l}</TabsTrigger>
+                            ))}
+                          </TabsList>
 
                       {/* Visits sub-tab */}
                       <TabsContent value="visits" className="space-y-3 mt-3">
@@ -1304,7 +2982,54 @@ const InpatientModule = () => {
                       <TabsContent value="bill" className="space-y-3 mt-3">
                         {billData ? (
                           <>
+                            {/* Package banner if applied */}
+                            {admissionPackage && billData.package && (
+                              <div className="border-l-4 border-purple-500 bg-purple-50 p-3 rounded text-sm">
+                                <div className="flex justify-between items-start">
+                                  <div>
+                                    <div className="font-semibold flex items-center gap-1.5"><Package className="h-4 w-4" /> {billData.package.package_name}</div>
+                                    <p className="text-xs text-gray-600 mt-0.5">Agreed price ₹{billData.package.agreed_price.toFixed(2)} · {billData.package.included_stay_days} days included · Excess after that ₹{billData.package.excess_per_day_charge.toFixed(2)}/day</p>
+                                    <p className="text-xs text-gray-600">Includes: {(billData.package.included_services || []).join(', ') || 'core only'}</p>
+                                  </div>
+                                  <Button variant="ghost" size="sm" onClick={() => setConfirmState({ open: true, title: 'Remove package?', description: 'Bill will revert to itemised mode.', onConfirm: () => { setConfirmState({ open: false }); handleRemovePackage(); } })}>
+                                    <X className="h-4 w-4" />
+                                  </Button>
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Bills history */}
+                            {admissionBills.length > 0 && (
+                              <div className="border rounded p-3 text-sm">
+                                <p className="font-semibold mb-2 flex items-center gap-1.5"><Receipt className="h-4 w-4" /> Bills issued ({admissionBills.length})</p>
+                                <div className="space-y-1">
+                                  {admissionBills.map(b => (
+                                    <div key={b.id} className="flex items-center justify-between text-xs border-b last:border-0 pb-1">
+                                      <div>
+                                        <span className="font-mono">{b.bill_number}</span>
+                                        <Badge variant="outline" className="ml-2 text-xs">{b.bill_subtype}</Badge>
+                                        <span className="text-gray-500 ml-2">{b.bill_date && new Date(b.bill_date).toLocaleDateString()}</span>
+                                      </div>
+                                      <div className="flex items-center gap-2">
+                                        <span className="font-semibold">₹{b.total_amount.toFixed(2)}</span>
+                                        <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => openSplitDialog(b)}>Split</Button>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Current breakdown */}
                             <div className="border rounded-lg p-3 text-sm space-y-2">
+                              <div className="flex items-center justify-between mb-1">
+                                <p className="font-semibold">Current charges {billData.unbilled_only && <Badge variant="outline" className="ml-1 text-xs">unbilled only</Badge>}</p>
+                                {!admissionPackage && (
+                                  <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => { setApplyPackageForm({ package_id: '', agreed_price: '', notes: '' }); setShowApplyPackageDialog(true); }}>
+                                    <Package className="h-3.5 w-3.5 mr-1" /> Apply Package
+                                  </Button>
+                                )}
+                              </div>
                               <div className="flex justify-between"><span className="text-gray-500">Room ({billData.room?.room_number} - {billData.stay_days} days)</span><span>₹{billData.room_total?.toFixed(2)}</span></div>
                               {billData.visits && Object.entries(billData.visits).map(([type, data]) => (
                                 <div key={type} className="flex justify-between">
@@ -1312,6 +3037,18 @@ const InpatientModule = () => {
                                   <span>₹{data.total.toFixed(2)}</span>
                                 </div>
                               ))}
+                              {billData.ot_total > 0 && (
+                                <div className="flex justify-between">
+                                  <span className="text-gray-500">OT Procedures ({(billData.ot_entries || []).length})</span>
+                                  <span>₹{billData.ot_total.toFixed(2)}</span>
+                                </div>
+                              )}
+                              {billData.ancillary_total > 0 && (
+                                <div className="flex justify-between">
+                                  <span className="text-gray-500">Ancillary services ({(billData.ancillary_entries || []).length})</span>
+                                  <span>₹{billData.ancillary_total.toFixed(2)}</span>
+                                </div>
+                              )}
                               {billData.pharmacy_total > 0 && (
                                 <div className="flex justify-between">
                                   <span className="text-gray-500">Pharmacy / Medications</span>
@@ -1325,8 +3062,17 @@ const InpatientModule = () => {
                                 </div>
                               )}
                               <div className="border-t pt-2 flex justify-between font-semibold">
-                                <span>Subtotal</span><span>₹{billData.grand_total?.toFixed(2)}</span>
+                                <span>{billData.package ? 'Excess + Package' : 'Subtotal'}</span><span>₹{billData.grand_total?.toFixed(2)}</span>
                               </div>
+                              {billData.package && (
+                                <p className="text-xs text-purple-700">Package ₹{billData.package.agreed_price.toFixed(2)} + Excess ₹{billData.package.excess_total.toFixed(2)}</p>
+                              )}
+                            </div>
+
+                            <div className="flex gap-2 flex-wrap">
+                              <Button size="sm" variant="outline" onClick={() => { setAncillaryForm({ service_id: '', quantity: 1, unit_price: '', notes: '' }); setShowAncillaryDialog(true); }}>
+                                <Plus className="h-4 w-4 mr-1" /> Add Service Charge
+                              </Button>
                             </div>
 
                             {/* Discount & Tax */}
@@ -1371,9 +3117,12 @@ const InpatientModule = () => {
                               })()}
                             </div>
 
-                            <div className="flex gap-2">
+                            <div className="flex gap-2 flex-wrap">
                               <Button size="sm" onClick={handleFinalizeBill} disabled={loading}>
                                 {loading ? 'Finalizing...' : 'Finalize Bill'}
+                              </Button>
+                              <Button size="sm" variant="outline" onClick={handleGenerateInterim} disabled={loading}>
+                                <Receipt className="h-4 w-4 mr-1" /> Generate Interim
                               </Button>
                               <Button size="sm" variant="outline" onClick={() => handlePrintBillPdf(activityAdmission.id)}>
                                 <FileText className="h-4 w-4 mr-1" /> Print Bill
@@ -1383,6 +3132,207 @@ const InpatientModule = () => {
                         ) : (
                           <p className="text-sm text-gray-500 text-center py-4">Loading bill...</p>
                         )}
+                      </TabsContent>
+
+                      {/* Deposits sub-tab */}
+                      <TabsContent value="deposits" className="space-y-3 mt-3">
+                        {balance && (
+                          <div className="border rounded p-3 bg-gray-50 text-sm">
+                            <div className="grid grid-cols-2 gap-2">
+                              <div><span className="text-gray-500">Collected:</span> <span className="font-semibold">₹{balance.total_collected.toFixed(2)}</span></div>
+                              <div><span className="text-gray-500">Refunded:</span> <span className="font-semibold">₹{balance.total_refunded.toFixed(2)}</span></div>
+                              <div><span className="text-gray-500">Net deposits:</span> <span className="font-semibold">₹{balance.net_deposits.toFixed(2)}</span></div>
+                              <div><span className="text-gray-500">Total billed:</span> <span className="font-semibold">₹{balance.total_billed.toFixed(2)}</span></div>
+                            </div>
+                            <div className={`mt-2 pt-2 border-t font-semibold ${balance.balance > 0 ? 'text-green-700' : balance.balance < 0 ? 'text-red-700' : ''}`}>
+                              Balance: ₹{balance.balance.toFixed(2)}
+                              <span className="text-xs font-normal ml-2 text-gray-500">
+                                {balance.balance > 0 ? '(patient credit / refund due)' :
+                                 balance.balance < 0 ? '(patient owes)' : ''}
+                              </span>
+                            </div>
+                          </div>
+                        )}
+                        <div className="flex gap-2">
+                          <Button size="sm" onClick={() => { setDepositForm({ amount: '', payment_method: 'cash', deposit_type: deposits.length === 0 ? 'initial' : 'topup', reference_number: '', notes: '' }); setShowDepositDialog(true); }}>
+                            <Plus className="h-4 w-4 mr-1" /> Receive Deposit
+                          </Button>
+                          {balance && balance.balance > 0 && (
+                            <Button size="sm" variant="outline" onClick={() => { setRefundForm({ amount: balance.balance.toFixed(2), payment_method: 'cash', reference_number: '', notes: '' }); setShowRefundDialog(true); }}>
+                              <Wallet className="h-4 w-4 mr-1" /> Issue Refund
+                            </Button>
+                          )}
+                        </div>
+                        {deposits.length === 0 ? (
+                          <div className="text-center text-sm text-gray-500 py-8">No deposits recorded for this admission.</div>
+                        ) : (
+                          <div className="border rounded overflow-hidden">
+                            <table className="w-full text-xs">
+                              <thead className="bg-gray-50">
+                                <tr className="text-left">
+                                  <th className="px-2 py-2">Receipt</th>
+                                  <th className="px-2 py-2">Date</th>
+                                  <th className="px-2 py-2">Type</th>
+                                  <th className="px-2 py-2">Method</th>
+                                  <th className="px-2 py-2 text-right">Amount</th>
+                                  <th className="px-2 py-2">By</th>
+                                  <th className="px-2 py-2"></th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {deposits.map(d => (
+                                  <tr key={d.id} className={`border-t ${d.deposit_type === 'refund' ? 'bg-orange-50' : ''}`}>
+                                    <td className="px-2 py-1.5 font-mono">{d.deposit_number}</td>
+                                    <td className="px-2 py-1.5">{new Date(d.received_at).toLocaleString()}</td>
+                                    <td className="px-2 py-1.5"><Badge variant="outline" className="text-xs">{d.deposit_type}</Badge></td>
+                                    <td className="px-2 py-1.5">{d.payment_method}</td>
+                                    <td className={`px-2 py-1.5 text-right font-semibold ${d.deposit_type === 'refund' ? 'text-orange-700' : ''}`}>
+                                      {d.deposit_type === 'refund' ? '-' : ''}₹{d.amount.toFixed(2)}
+                                    </td>
+                                    <td className="px-2 py-1.5">{d.received_by_name || '–'}</td>
+                                    <td className="px-2 py-1.5">
+                                      <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => handlePrintDepositReceipt(d.id)}>
+                                        <FileText className="h-3.5 w-3.5" />
+                                      </Button>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </TabsContent>
+
+                      {/* Consents sub-tab */}
+                      <TabsContent value="consents" className="space-y-3 mt-3">
+                        <div className="flex justify-between items-center">
+                          <p className="text-sm text-gray-600">Signed consent forms for procedures, anaesthesia, blood transfusions, and more.</p>
+                          <Button size="sm" onClick={() => { setConsentForm({ consent_type: 'surgical', template_id: '', procedure_name: '', doctor_id: '', risks_explained: '', patient_signature: '', signed_by: 'patient', guardian_name: '', guardian_relationship: '', witness_name: '', witness_signature: '', notes: '' }); setShowConsentDialog(true); }}>
+                            <Plus className="h-4 w-4 mr-1" /> New Consent
+                          </Button>
+                        </div>
+                        {consents.length === 0 ? (
+                          <div className="text-center text-sm text-gray-500 py-8">No consents recorded.</div>
+                        ) : (
+                          <div className="space-y-2">
+                            {consents.map(c => (
+                              <div key={c.id} className={`border rounded p-3 ${c.withdrawn_at ? 'bg-orange-50 border-orange-300' : ''}`}>
+                                <div className="flex justify-between items-start gap-2">
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <FileSignature className="h-4 w-4 text-gray-500" />
+                                      <span className="font-medium text-sm">{c.consent_type.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</span>
+                                      {c.procedure_name && <span className="text-xs text-gray-500">— {c.procedure_name}</span>}
+                                      {c.withdrawn_at && <Badge className="text-xs bg-orange-100 text-orange-800">withdrawn</Badge>}
+                                      {!c.withdrawn_at && <Badge className="text-xs bg-green-100 text-green-800">active</Badge>}
+                                    </div>
+                                    <div className="text-xs text-gray-600 mt-1">
+                                      Signed by {c.signed_by}
+                                      {c.guardian_name && <> ({c.guardian_name} — {c.guardian_relationship})</>}
+                                      {c.doctor_name && <> · Dr: {c.doctor_name}</>}
+                                      {c.witness_name && <> · Witness: {c.witness_name}</>}
+                                    </div>
+                                    <p className="text-xs text-gray-400 mt-1">Signed {new Date(c.signed_at).toLocaleString()}</p>
+                                    {c.withdrawn_at && (
+                                      <p className="text-xs text-orange-700 mt-1">Withdrawn {new Date(c.withdrawn_at).toLocaleString()} — {c.withdrawal_reason}</p>
+                                    )}
+                                  </div>
+                                  <div className="flex gap-1">
+                                    <Button size="sm" variant="ghost" className="h-7" onClick={() => handlePrintConsent(c.id)}>
+                                      <FileText className="h-4 w-4" />
+                                    </Button>
+                                    {!c.withdrawn_at && (
+                                      <Button size="sm" variant="ghost" className="h-7 text-orange-600" onClick={() => { setWithdrawingConsent(c); setWithdrawReason(''); setShowWithdrawConsentDialog(true); }}>
+                                        Withdraw
+                                      </Button>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </TabsContent>
+
+                      {/* Staff sub-tab — nurse assignments + transfer history + ward transfer */}
+                      <TabsContent value="staff" className="space-y-4 mt-3">
+                        {/* Nurse assignments */}
+                        <div>
+                          <div className="flex justify-between items-center mb-2">
+                            <h3 className="text-sm font-semibold flex items-center gap-1.5"><UserPlus className="h-4 w-4" /> Nurse Assignments</h3>
+                            <Button size="sm" onClick={() => { setNurseAssignForm({ nurse_id: '', shift: 'morning', assignment_date: new Date().toISOString().slice(0, 10), is_primary: false, notes: '' }); setShowNurseAssignDialog(true); }}>
+                              <Plus className="h-4 w-4 mr-1" /> Assign Nurse
+                            </Button>
+                          </div>
+                          {nurseAssignments.length === 0 ? (
+                            <div className="text-xs text-gray-500 text-center py-4 border rounded">No nurses assigned</div>
+                          ) : (
+                            <div className="space-y-1">
+                              {nurseAssignments.map(a => (
+                                <div key={a.id} className={`flex justify-between items-center border rounded p-2 ${a.is_primary ? 'bg-blue-50 border-blue-300' : ''}`}>
+                                  <div className="text-sm">
+                                    <span className="font-medium">{a.nurse_name}</span>
+                                    <Badge variant="outline" className="ml-2 text-xs">{a.shift}</Badge>
+                                    {a.is_primary && <Badge className="ml-1 text-xs bg-blue-100 text-blue-800">primary</Badge>}
+                                    <span className="text-xs text-gray-500 ml-2">{a.assignment_date && new Date(a.assignment_date).toLocaleDateString()}</span>
+                                    {a.notes && <p className="text-xs text-gray-500 mt-0.5">{a.notes}</p>}
+                                  </div>
+                                  <Button size="sm" variant="ghost" className="h-6 w-6 p-0" onClick={() => handleRemoveNurseAssignment(a.id)}>
+                                    <Trash2 className="h-3.5 w-3.5 text-red-500" />
+                                  </Button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Transfer history */}
+                        <div>
+                          <div className="flex justify-between items-center mb-2">
+                            <h3 className="text-sm font-semibold flex items-center gap-1.5"><ArrowRightLeft className="h-4 w-4" /> Bed / Ward Transfers</h3>
+                            <Button size="sm" variant="outline" onClick={() => { setWardTransferForm({ to_room_id: '', to_bed_id: '', reason: '', transfer_note: '' }); fetchAvailableRooms(); setShowWardTransferDialog(true); }}>
+                              <Plus className="h-4 w-4 mr-1" /> Initiate Ward Transfer
+                            </Button>
+                          </div>
+                          {transferHistory.length === 0 ? (
+                            <div className="text-xs text-gray-500 text-center py-4 border rounded">No transfers recorded</div>
+                          ) : (
+                            <div className="space-y-1">
+                              {transferHistory.map(t => {
+                                const statusColor = {
+                                  completed: 'bg-gray-100 text-gray-700',
+                                  pending: 'bg-yellow-100 text-yellow-800',
+                                  accepted: 'bg-green-100 text-green-800',
+                                  cancelled: 'bg-red-100 text-red-800',
+                                }[t.status] || 'bg-gray-100 text-gray-700';
+                                return (
+                                  <div key={t.id} className={`border rounded p-2 text-sm ${t.status === 'pending' ? 'border-yellow-300 bg-yellow-50' : ''}`}>
+                                    <div className="flex justify-between items-start">
+                                      <div className="flex-1 min-w-0">
+                                        <div className="flex items-center gap-2 flex-wrap">
+                                          <Badge className={`text-xs ${statusColor}`}>{t.status}</Badge>
+                                          <Badge variant="outline" className="text-xs">{t.transfer_type}</Badge>
+                                          <span className="text-xs">
+                                            {t.from_room_number || '—'}{t.from_bed_label ? `/${t.from_bed_label}` : ''} → {t.to_room_number}{t.to_bed_label ? `/${t.to_bed_label}` : ''}
+                                          </span>
+                                        </div>
+                                        <p className="text-xs text-gray-600 mt-1"><b>Reason:</b> {t.reason}</p>
+                                        {t.transfer_note && <p className="text-xs italic text-gray-600 mt-0.5">{t.transfer_note}</p>}
+                                        <p className="text-xs text-gray-400 mt-1">{new Date(t.transferred_at).toLocaleString()} by {t.transferred_by_name || '—'}</p>
+                                      </div>
+                                      {t.status === 'pending' && (
+                                        <div className="flex gap-1">
+                                          <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => handleAcceptTransfer(t.id)}>Accept</Button>
+                                          <Button size="sm" variant="ghost" className="h-7 text-xs text-red-600" onClick={() => handleCancelPendingTransfer(t.id)}>Cancel</Button>
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
                       </TabsContent>
 
                       {/* Insurance sub-tab */}
@@ -1592,7 +3542,268 @@ const InpatientModule = () => {
                           </div>
                         )}
                       </TabsContent>
+
+                      {/* Vitals sub-tab */}
+                      <TabsContent value="vitals" className="space-y-3 mt-3">
+                        <div className="flex justify-between items-center">
+                          <div className="text-sm text-gray-600">
+                            {latestVitals ? (
+                              <>Latest: BP {latestVitals.bp_systolic || '–'}/{latestVitals.bp_diastolic || '–'} · HR {latestVitals.heart_rate || '–'} · SpO₂ {latestVitals.spo2 || '–'}% · Temp {latestVitals.temperature_c || '–'}°C{latestVitals.is_abnormal && <span className="ml-2 inline-flex items-center text-red-600 font-medium"><AlertTriangle className="h-3.5 w-3.5 mr-0.5" />Abnormal</span>}</>
+                            ) : 'No vitals recorded yet'}
+                          </div>
+                          <Button size="sm" onClick={() => { setVitalsForm(VITALS_BLANK); setShowVitalsDialog(true); }}>
+                            <Plus className="h-4 w-4 mr-1" /> Record Vitals
+                          </Button>
+                        </div>
+                        {vitals.length === 0 ? (
+                          <div className="text-center text-sm text-gray-500 py-8">No vital signs recorded</div>
+                        ) : (
+                          <div className="border rounded overflow-hidden">
+                            <table className="w-full text-xs">
+                              <thead className="bg-gray-50">
+                                <tr className="text-left">
+                                  <th className="px-2 py-2">Time</th>
+                                  <th className="px-2 py-2">BP</th>
+                                  <th className="px-2 py-2">HR</th>
+                                  <th className="px-2 py-2">RR</th>
+                                  <th className="px-2 py-2">Temp</th>
+                                  <th className="px-2 py-2">SpO₂</th>
+                                  <th className="px-2 py-2">Glu</th>
+                                  <th className="px-2 py-2">Pain</th>
+                                  <th className="px-2 py-2">By</th>
+                                  <th className="px-2 py-2"></th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {vitals.map(v => {
+                                  const flags = v.abnormal_flags || [];
+                                  const cell = (field, val, suffix = '') => (
+                                    <td className={`px-2 py-1.5 ${flags.includes(field) ? 'text-red-600 font-semibold' : ''}`}>
+                                      {val ?? '–'}{val != null ? suffix : ''}
+                                    </td>
+                                  );
+                                  return (
+                                    <tr key={v.id} className={`border-t ${v.is_abnormal ? 'bg-red-50' : ''}`}>
+                                      <td className="px-2 py-1.5 whitespace-nowrap">{new Date(v.recorded_at).toLocaleString()}</td>
+                                      <td className={`px-2 py-1.5 ${(flags.includes('bp_systolic') || flags.includes('bp_diastolic')) ? 'text-red-600 font-semibold' : ''}`}>
+                                        {v.bp_systolic ?? '–'}/{v.bp_diastolic ?? '–'}
+                                      </td>
+                                      {cell('heart_rate', v.heart_rate)}
+                                      {cell('respiratory_rate', v.respiratory_rate)}
+                                      {cell('temperature_c', v.temperature_c, '°')}
+                                      {cell('spo2', v.spo2, '%')}
+                                      {cell('blood_glucose', v.blood_glucose)}
+                                      {cell('pain_score', v.pain_score)}
+                                      <td className="px-2 py-1.5">{v.recorded_by_name || '–'}</td>
+                                      <td className="px-2 py-1.5">
+                                        <Button variant="ghost" size="sm" className="h-6 w-6 p-0"
+                                          onClick={() => setConfirmState({ open: true, title: 'Delete vitals?', description: 'This entry will be removed.', onConfirm: () => { setConfirmState({ open: false }); handleDeleteVitals(v.id); } })}>
+                                          <Trash2 className="h-3.5 w-3.5 text-red-500" />
+                                        </Button>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </TabsContent>
+
+                      {/* MAR sub-tab */}
+                      <TabsContent value="mar" className="space-y-3 mt-3">
+                        <div className="flex justify-between items-center gap-2 flex-wrap">
+                          <div className="flex items-center gap-2">
+                            <Label className="text-xs">Date</Label>
+                            <Input type="date" value={marDate} onChange={(e) => setMarDate(e.target.value)} className="h-8 w-40" />
+                          </div>
+                          <div className="flex gap-2">
+                            <Button size="sm" variant="outline" onClick={handleGenerateMAR} disabled={loading}>
+                              <Clock className="h-4 w-4 mr-1" /> Generate Schedule (24h)
+                            </Button>
+                            <Button size="sm" onClick={() => { setPrnForm({ prescription_item_id: '', dose_given: '', route: '', site: '', prn_indication: '', notes: '' }); setShowPrnDialog(true); }}>
+                              <Pill className="h-4 w-4 mr-1" /> Record PRN
+                            </Button>
+                          </div>
+                        </div>
+                        {mar.length === 0 ? (
+                          <div className="text-center text-sm text-gray-500 py-8">
+                            No scheduled doses. Click "Generate Schedule" after creating prescriptions with frequency set.
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            {mar.map(d => {
+                              const statusColor = {
+                                scheduled: 'bg-blue-100 text-blue-800',
+                                given: 'bg-green-100 text-green-800',
+                                missed: 'bg-red-100 text-red-800',
+                                refused: 'bg-orange-100 text-orange-800',
+                                held: 'bg-gray-100 text-gray-800',
+                              }[d.status] || 'bg-gray-100 text-gray-800';
+                              const overdue = d.status === 'scheduled' && d.scheduled_time && new Date(d.scheduled_time) < new Date();
+                              return (
+                                <div key={d.id} className={`p-3 border rounded ${overdue ? 'border-red-300 bg-red-50' : ''}`}>
+                                  <div className="flex justify-between items-start gap-3">
+                                    <div className="flex-1 min-w-0">
+                                      <div className="flex items-center gap-2 flex-wrap">
+                                        <Pill className="h-4 w-4 text-gray-500" />
+                                        <span className="font-medium text-sm">{d.medicine_name || `Med #${d.medicine_id}`}</span>
+                                        {d.dosage && <span className="text-xs text-gray-500">· {d.dosage}</span>}
+                                        {d.route && <span className="text-xs text-gray-500">· {d.route}</span>}
+                                        {d.is_prn && <Badge variant="outline" className="text-xs">PRN</Badge>}
+                                        <Badge className={`text-xs ${statusColor}`}>{d.status}</Badge>
+                                        {overdue && <Badge variant="outline" className="text-xs text-red-600 border-red-300">overdue</Badge>}
+                                      </div>
+                                      <div className="text-xs text-gray-600 mt-1">
+                                        {d.scheduled_time && <>Scheduled: {new Date(d.scheduled_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</>}
+                                        {d.administered_at && <> · Given: {new Date(d.administered_at).toLocaleString()}</>}
+                                        {d.administered_by_name && <> · By: {d.administered_by_name}</>}
+                                      </div>
+                                      {d.prn_indication && <div className="text-xs italic text-gray-600 mt-1">Indication: {d.prn_indication}</div>}
+                                      {d.reason_if_not_given && <div className="text-xs italic text-orange-700 mt-1">Reason: {d.reason_if_not_given}</div>}
+                                      {d.notes && <div className="text-xs text-gray-600 mt-1">Notes: {d.notes}</div>}
+                                    </div>
+                                    {d.status === 'scheduled' && (
+                                      <Button size="sm" onClick={() => openAdministerDialog(d)}>
+                                        <Check className="h-4 w-4 mr-1" /> Administer
+                                      </Button>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </TabsContent>
+
+                      {/* I/O (Intake/Output) sub-tab */}
+                      <TabsContent value="io" className="space-y-3 mt-3">
+                        <div className="flex justify-between items-center gap-2 flex-wrap">
+                          <div className="flex items-center gap-2">
+                            <Label className="text-xs">Date</Label>
+                            <Input type="date" value={ioDate} onChange={e => setIoDate(e.target.value)} className="h-8 w-40" />
+                          </div>
+                          <Button size="sm" onClick={() => { setIoForm({ io_type: 'intake', category: 'oral', amount_ml: '', shift: 'morning', notes: '' }); setShowIoDialog(true); }}>
+                            <Plus className="h-4 w-4 mr-1" /> Record I/O
+                          </Button>
+                        </div>
+
+                        {/* Balance summary */}
+                        {ioBalance && (
+                          <div className="border rounded p-3 bg-gray-50 space-y-2">
+                            <div className="grid grid-cols-3 gap-2 text-sm">
+                              <div>
+                                <div className="text-xs text-gray-500">Total Intake</div>
+                                <div className="text-lg font-semibold text-blue-700">{ioBalance.total_intake_ml.toFixed(0)} ml</div>
+                              </div>
+                              <div>
+                                <div className="text-xs text-gray-500">Total Output</div>
+                                <div className="text-lg font-semibold text-orange-700">{ioBalance.total_output_ml.toFixed(0)} ml</div>
+                              </div>
+                              <div>
+                                <div className="text-xs text-gray-500">Net Balance</div>
+                                <div className={`text-lg font-semibold ${ioBalance.net_balance_ml > 0 ? 'text-blue-700' : ioBalance.net_balance_ml < 0 ? 'text-orange-700' : ''}`}>
+                                  {ioBalance.net_balance_ml > 0 ? '+' : ''}{ioBalance.net_balance_ml.toFixed(0)} ml
+                                </div>
+                              </div>
+                            </div>
+                            <div className="border-t pt-2">
+                              <table className="w-full text-xs">
+                                <thead><tr className="text-left text-gray-500">
+                                  <th className="py-1">Shift</th><th className="py-1 text-right">Intake</th><th className="py-1 text-right">Output</th><th className="py-1 text-right">Balance</th>
+                                </tr></thead>
+                                <tbody>
+                                  {['morning', 'afternoon', 'night'].map(s => (
+                                    <tr key={s} className="border-t">
+                                      <td className="py-1 capitalize">{s}</td>
+                                      <td className="py-1 text-right">{ioBalance.by_shift[s].intake.toFixed(0)}</td>
+                                      <td className="py-1 text-right">{ioBalance.by_shift[s].output.toFixed(0)}</td>
+                                      <td className="py-1 text-right">{(ioBalance.by_shift[s].intake - ioBalance.by_shift[s].output).toFixed(0)}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        )}
+
+                        {ioEntries.length === 0 ? (
+                          <div className="text-center text-sm text-gray-500 py-8">No I/O entries for this date.</div>
+                        ) : (
+                          <div className="border rounded overflow-hidden">
+                            <table className="w-full text-xs">
+                              <thead className="bg-gray-50"><tr className="text-left">
+                                <th className="px-2 py-2">Time</th><th className="px-2 py-2">Shift</th><th className="px-2 py-2">Type</th>
+                                <th className="px-2 py-2">Category</th><th className="px-2 py-2 text-right">Amount (ml)</th>
+                                <th className="px-2 py-2">Nurse</th><th className="px-2 py-2"></th>
+                              </tr></thead>
+                              <tbody>
+                                {ioEntries.map(e => (
+                                  <tr key={e.id} className="border-t">
+                                    <td className="px-2 py-1.5 whitespace-nowrap">{new Date(e.recorded_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
+                                    <td className="px-2 py-1.5 capitalize">{e.shift}</td>
+                                    <td className="px-2 py-1.5">
+                                      <Badge className={`text-xs ${e.io_type === 'intake' ? 'bg-blue-100 text-blue-800' : 'bg-orange-100 text-orange-800'}`}>
+                                        {e.io_type}
+                                      </Badge>
+                                    </td>
+                                    <td className="px-2 py-1.5 capitalize">{e.category.replace(/_/g, ' ')}</td>
+                                    <td className="px-2 py-1.5 text-right font-semibold">{e.amount_ml}</td>
+                                    <td className="px-2 py-1.5 text-xs">{e.recorded_by_name || '–'}</td>
+                                    <td className="px-2 py-1.5">
+                                      <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => handleDeleteIO(e.id)}>
+                                        <Trash2 className="h-3.5 w-3.5 text-red-500" />
+                                      </Button>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </TabsContent>
+
+                      {/* Allergies sub-tab */}
+                      <TabsContent value="allergies" className="space-y-3 mt-3">
+                        <div className="flex justify-between items-center">
+                          <p className="text-xs text-gray-500">Patient-level allergies — visible across all admissions and prescriptions.</p>
+                          <Button size="sm" onClick={() => { setAllergyForm({ allergy_type: 'drug', allergen: '', severity: 'moderate', reaction: '', notes: '' }); setShowAllergyDialog(true); }}>
+                            <Plus className="h-4 w-4 mr-1" /> Record Allergy
+                          </Button>
+                        </div>
+                        {admissionAllergies.length === 0 ? (
+                          <div className="text-center text-sm text-gray-500 py-8">No active allergies recorded for this patient.</div>
+                        ) : (
+                          <div className="space-y-2">
+                            {admissionAllergies.map(a => (
+                              <div key={a.id} className="p-3 border rounded flex justify-between items-start gap-3">
+                                <div className="flex-1">
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span className="font-medium text-sm">{a.allergen}</span>
+                                    <Badge variant="outline" className="text-xs">{a.allergy_type}</Badge>
+                                    <Badge className={`text-xs ${
+                                      a.severity === 'anaphylaxis' ? 'bg-red-200 text-red-900' :
+                                      a.severity === 'severe' ? 'bg-red-100 text-red-800' :
+                                      a.severity === 'moderate' ? 'bg-orange-100 text-orange-800' :
+                                      'bg-yellow-100 text-yellow-800'
+                                    }`}>{a.severity}</Badge>
+                                  </div>
+                                  {a.reaction && <p className="text-xs text-gray-700 mt-1">Reaction: {a.reaction}</p>}
+                                  {a.notes && <p className="text-xs text-gray-500 mt-0.5">{a.notes}</p>}
+                                  <p className="text-xs text-gray-400 mt-1">Recorded {a.recorded_at ? new Date(a.recorded_at).toLocaleDateString() : '–'} by {a.recorded_by_name || '–'}</p>
+                                </div>
+                                <Button variant="ghost" size="sm" className="h-7 w-7 p-0"
+                                  onClick={() => setConfirmState({ open: true, title: 'Remove allergy?', description: 'This will mark the allergy inactive.', onConfirm: () => { setConfirmState({ open: false }); handleDeleteAllergy(a.id); } })}>
+                                  <Trash2 className="h-4 w-4 text-red-500" />
+                                </Button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </TabsContent>
                     </Tabs>
+                      );
+                    })()}
                   </div>
                 </div>
               )}
@@ -1644,32 +3855,6 @@ const InpatientModule = () => {
             ))}
           </div>
 
-          {/* Rate Config */}
-          <Card className="mt-6">
-            <CardHeader><CardTitle className="text-lg">Rate Configuration</CardTitle></CardHeader>
-            <CardContent>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div>
-                  <Label>Doctor Visit Rate (₹)</Label>
-                  <Input type="number" min="0" step="0.01" value={rateForm.doctor_visit_rate}
-                         onChange={e => setRateForm(p => ({ ...p, doctor_visit_rate: e.target.value }))} />
-                </div>
-                <div>
-                  <Label>Nurse Visit Rate (₹)</Label>
-                  <Input type="number" min="0" step="0.01" value={rateForm.nurse_visit_rate}
-                         onChange={e => setRateForm(p => ({ ...p, nurse_visit_rate: e.target.value }))} />
-                </div>
-                <div>
-                  <Label>Procedure Rate (₹)</Label>
-                  <Input type="number" min="0" step="0.01" value={rateForm.procedure_rate}
-                         onChange={e => setRateForm(p => ({ ...p, procedure_rate: e.target.value }))} />
-                </div>
-              </div>
-              <Button className="mt-4" onClick={handleSaveRateConfig} disabled={loading}>
-                {loading ? 'Saving...' : 'Save Rates'}
-              </Button>
-            </CardContent>
-          </Card>
           </div>
           )}
 
@@ -1781,6 +3966,11 @@ const InpatientModule = () => {
                         {ot.status === 'in_progress' && (
                           <Button size="sm" variant="outline" onClick={() => handleUpdateOTStatus(ot.id, 'completed')}>Complete</Button>
                         )}
+                        {(ot.status === 'completed' || ot.status === 'in_progress') && (
+                          <Button size="sm" variant="outline" onClick={() => openOTChargesDialog(ot)} disabled={ot.billed}>
+                            <DollarSign className="h-3.5 w-3.5 mr-1" /> {ot.billed ? 'Billed' : `Charges${ot.total_charges ? ` ₹${ot.total_charges.toFixed(2)}` : ''}`}
+                          </Button>
+                        )}
                       </div>
                     </div>
                   </CardContent>
@@ -1789,6 +3979,761 @@ const InpatientModule = () => {
             </div>
           )}
           </div>
+          )}
+
+          {/* ============ PROCEDURES CATALOG ============ */}
+          {activeTab === 'procedures' && (
+            <div className="p-6 overflow-y-auto h-full space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-lg font-semibold">Procedure Catalog</h2>
+                  <p className="text-sm text-gray-500">Default rates auto-fill into OT schedules. Editable per-procedure during scheduling.</p>
+                </div>
+                <Button onClick={() => { resetProcedureForm(); setShowProcedureDialog(true); }}>
+                  <Plus className="h-4 w-4 mr-2" /> Add Procedure
+                </Button>
+              </div>
+
+              {proceduresList.length === 0 ? (
+                <Card><CardContent className="py-12 text-center text-gray-500">No procedures in catalog yet.</CardContent></Card>
+              ) : (
+                <Card>
+                  <CardContent className="p-0">
+                    <div className="overflow-x-auto">
+                      <table className="min-w-full text-sm">
+                        <thead className="bg-gray-50 text-xs uppercase text-gray-600">
+                          <tr>
+                            <th className="px-4 py-2 text-left">Name</th>
+                            <th className="px-4 py-2 text-right">Default Rate</th>
+                            <th className="px-4 py-2 text-left">Description</th>
+                            <th className="px-4 py-2 text-center">Status</th>
+                            <th className="px-4 py-2 text-right">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {proceduresList.map(p => (
+                            <tr key={p.id} className="border-t">
+                              <td className="px-4 py-2 font-medium">{p.name}</td>
+                              <td className="px-4 py-2 text-right">₹{Number(p.default_rate || 0).toFixed(2)}</td>
+                              <td className="px-4 py-2 text-gray-600">{p.description || '—'}</td>
+                              <td className="px-4 py-2 text-center">
+                                {p.is_active
+                                  ? <Badge className="bg-green-100 text-green-800">Active</Badge>
+                                  : <Badge className="bg-gray-200 text-gray-700">Inactive</Badge>}
+                              </td>
+                              <td className="px-4 py-2 text-right space-x-1">
+                                <Button size="sm" variant="ghost" onClick={() => startEditProcedure(p)}>Edit</Button>
+                                {p.is_active && (
+                                  <Button size="sm" variant="ghost" className="text-red-500" onClick={() => handleProcedureDelete(p.id)}>Remove</Button>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+            </div>
+          )}
+
+          {/* ============ PRE-AUTHORISATIONS ============ */}
+          {activeTab === 'preauth' && (
+            <div className="p-6 overflow-y-auto h-full space-y-4">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-semibold">Insurance Pre-Authorisations</h2>
+                <Button onClick={() => { setPreauthForm({ patient_id: '', admission_id: '', insurance_provider: '', policy_number: '', tpa_id: '', requested_amount: '', notes: '' }); setPreauthSelectedPatient(null); setShowPreauthDialog(true); }}>
+                  <Plus className="h-4 w-4 mr-2" /> New Request
+                </Button>
+              </div>
+              <div className="flex gap-3">
+                <Input className="max-w-xs" placeholder="Search by patient, provider, TPA..." value={preauthSearch} onChange={e => setPreauthSearch(e.target.value)} />
+                <Select value={preauthStatusFilter || 'all'} onValueChange={v => setPreauthStatusFilter(v === 'all' ? '' : v)}>
+                  <SelectTrigger className="max-w-[200px]"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All statuses</SelectItem>
+                    <SelectItem value="requested">Requested</SelectItem>
+                    <SelectItem value="approved">Approved</SelectItem>
+                    <SelectItem value="rejected">Rejected</SelectItem>
+                    <SelectItem value="expansion_requested">Expansion Requested</SelectItem>
+                    <SelectItem value="expanded">Expanded</SelectItem>
+                    <SelectItem value="expired">Expired</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {preauths.length === 0 ? (
+                <Card><CardContent className="py-12 text-center text-gray-500">No pre-authorisation requests.</CardContent></Card>
+              ) : (
+                <div className="space-y-2">
+                  {preauths.map(p => {
+                    const statusColor = {
+                      requested: 'bg-blue-100 text-blue-800',
+                      approved: 'bg-green-100 text-green-800',
+                      rejected: 'bg-red-100 text-red-800',
+                      expansion_requested: 'bg-yellow-100 text-yellow-800',
+                      expanded: 'bg-purple-100 text-purple-800',
+                      expired: 'bg-gray-100 text-gray-800',
+                    }[p.status] || 'bg-gray-100 text-gray-800';
+                    return (
+                      <Card key={p.id}>
+                        <CardContent className="py-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-semibold text-sm">{p.patient_name || '—'}</span>
+                                <Badge className={`text-xs ${statusColor}`}>{p.status}</Badge>
+                                <span className="text-xs text-gray-500">{p.insurance_provider}</span>
+                                {p.tpa_name && <span className="text-xs text-gray-500">· TPA: {p.tpa_name}</span>}
+                              </div>
+                              <div className="text-xs text-gray-600 mt-1">
+                                Requested ₹{p.requested_amount.toFixed(2)}
+                                {p.approved_amount > 0 && <> · Approved ₹{p.approved_amount.toFixed(2)}</>}
+                                {p.policy_number && <> · Policy {p.policy_number}</>}
+                                · {new Date(p.request_date).toLocaleDateString()}
+                              </div>
+                              {p.admission_number && <div className="text-xs text-gray-500">Admission {p.admission_number}</div>}
+                              {p.notes && <p className="text-xs italic text-gray-600 mt-1">{p.notes}</p>}
+                            </div>
+                            <div className="flex gap-1">
+                              {(p.status === 'requested' || p.status === 'expansion_requested') && (
+                                <Button size="sm" variant="outline" onClick={() => {
+                                  setActivePreauth(p);
+                                  setPreauthDecisionForm({ status: 'approved', approved_amount: String(p.requested_amount), validity_days: '', approval_reference: '', notes: '' });
+                                  setShowPreauthDecisionDialog(true);
+                                }}>Record Decision</Button>
+                              )}
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ============ DUTY ROSTER ============ */}
+          {activeTab === 'roster' && (
+            <div className="p-6 overflow-y-auto h-full space-y-4">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <h2 className="text-lg font-semibold flex items-center gap-2"><CalendarRange className="h-5 w-5" /> Nurse Duty Roster</h2>
+                <div className="flex items-center gap-2">
+                  <Button size="sm" variant="outline" onClick={() => shiftWeek(-7)}>
+                    <ChevronLeft className="h-4 w-4" /> Prev Week
+                  </Button>
+                  <span className="text-sm font-medium px-2">
+                    {rosterWeekStart.toLocaleDateString()} – {(() => {
+                      const e = new Date(rosterWeekStart); e.setDate(e.getDate() + 6); return e.toLocaleDateString();
+                    })()}
+                  </span>
+                  <Button size="sm" variant="outline" onClick={() => shiftWeek(7)}>
+                    Next Week <ChevronRight className="h-4 w-4" />
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => {
+                    const today = new Date(); const dow = today.getDay();
+                    const offset = dow === 0 ? -6 : 1 - dow;
+                    today.setDate(today.getDate() + offset); today.setHours(0, 0, 0, 0);
+                    setRosterWeekStart(today);
+                  }}>This Week</Button>
+                  <div className="flex items-center gap-1 ml-3">
+                    <Label className="text-xs">Min/shift</Label>
+                    <Input type="number" min="1" max="50" value={rosterMinPerShift} onChange={e => setRosterMinPerShift(parseInt(e.target.value) || 1)} className="h-8 w-16" />
+                  </div>
+                  <Button size="sm" onClick={() => {
+                    const start = new Date(rosterWeekStart);
+                    const end = new Date(rosterWeekStart); end.setDate(end.getDate() + 6);
+                    setBulkRosterForm({
+                      nurse_ids: [], from_date: _toIso(start), to_date: _toIso(end),
+                      shifts: ['morning'], status: 'working', ward: '', notes: '', overwrite: false,
+                    });
+                    setShowBulkRosterDialog(true);
+                  }}>
+                    <Plus className="h-4 w-4 mr-1" /> Bulk Assign
+                  </Button>
+                </div>
+              </div>
+
+              <p className="text-xs text-gray-500">
+                Click any cell to assign or edit. Status legend: <Badge className="bg-green-100 text-green-800 text-xs ml-1">working</Badge> <Badge className="bg-blue-100 text-blue-800 text-xs ml-1">on_call</Badge> <Badge className="bg-orange-100 text-orange-800 text-xs ml-1">leave</Badge> <Badge className="bg-gray-100 text-gray-700 text-xs ml-1">off</Badge>
+              </p>
+
+              {/* Roster grid */}
+              {!rosterGrid ? (
+                <Card><CardContent className="py-12 text-center text-gray-500">Loading roster…</CardContent></Card>
+              ) : rosterGrid.nurses.length === 0 ? (
+                <Card><CardContent className="py-12 text-center text-gray-500">No nurses on staff. Create users with the 'nurse' role first.</CardContent></Card>
+              ) : (
+                <div className="border rounded overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-2 py-2 text-left sticky left-0 bg-gray-50 border-r">Nurse</th>
+                        {rosterGrid.dates.map(d => {
+                          const dt = new Date(d);
+                          return (
+                            <th key={d} className="px-1 py-2 text-center border-r" colSpan={3}>
+                              <div className="font-semibold">{dt.toLocaleDateString(undefined, { weekday: 'short' })}</div>
+                              <div className="text-gray-500">{dt.toLocaleDateString(undefined, { day: '2-digit', month: 'short' })}</div>
+                            </th>
+                          );
+                        })}
+                      </tr>
+                      <tr className="bg-gray-100">
+                        <th className="px-2 py-1 text-left sticky left-0 bg-gray-100 border-r"></th>
+                        {rosterGrid.dates.map(d => (
+                          <React.Fragment key={d}>
+                            <th className="px-1 py-1 text-center text-[10px]">M</th>
+                            <th className="px-1 py-1 text-center text-[10px]">A</th>
+                            <th className="px-1 py-1 text-center text-[10px] border-r">N</th>
+                          </React.Fragment>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rosterGrid.nurses.map(nurse => (
+                        <tr key={nurse.id} className="border-t">
+                          <td className="px-2 py-1 sticky left-0 bg-white border-r font-medium">{nurse.name}</td>
+                          {rosterGrid.dates.map(d => (
+                            <React.Fragment key={d}>
+                              {['morning', 'afternoon', 'night'].map(shift => {
+                                const cell = rosterGrid.cells[nurse.id]?.[d]?.[shift];
+                                const cellClass = cell ? {
+                                  working: 'bg-green-100 hover:bg-green-200',
+                                  on_call: 'bg-blue-100 hover:bg-blue-200',
+                                  leave: 'bg-orange-100 hover:bg-orange-200',
+                                  off: 'bg-gray-200 hover:bg-gray-300',
+                                }[cell.status] : 'hover:bg-blue-50';
+                                const label = cell ? {
+                                  working: 'W', on_call: 'O', leave: 'L', off: '-',
+                                }[cell.status] : '+';
+                                const titleParts = cell ? [cell.status] : ['Click to assign'];
+                                if (cell?.ward) titleParts.push(`Ward: ${cell.ward}`);
+                                if (cell?.notes) titleParts.push(`Notes: ${cell.notes}`);
+                                const isLastShift = shift === 'night';
+                                return (
+                                  <td
+                                    key={shift}
+                                    title={titleParts.join(' · ')}
+                                    className={`px-1 py-1 text-center text-[11px] cursor-pointer ${cellClass} ${isLastShift ? 'border-r' : ''}`}
+                                    onClick={() => openRosterCell(nurse, d, shift, cell)}
+                                  >
+                                    {label}
+                                  </td>
+                                );
+                              })}
+                            </React.Fragment>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                    {/* Coverage row */}
+                    {rosterCoverage.length > 0 && (
+                      <tfoot className="bg-yellow-50 border-t-2 border-yellow-300">
+                        <tr>
+                          <td className="px-2 py-1 sticky left-0 bg-yellow-50 border-r font-semibold text-[10px]">Working / shift</td>
+                          {rosterGrid.dates.map(d => (
+                            <React.Fragment key={d}>
+                              {['morning', 'afternoon', 'night'].map(shift => {
+                                const cov = rosterCoverage.find(c => c.date === d && c.shift === shift);
+                                const isLastShift = shift === 'night';
+                                return (
+                                  <td
+                                    key={shift}
+                                    className={`px-1 py-1 text-center text-[10px] font-semibold ${isLastShift ? 'border-r' : ''} ${cov?.is_understaffed ? 'text-red-700 bg-red-50' : 'text-gray-700'}`}
+                                    title={cov?.is_understaffed ? `Below minimum ${cov.min_required}` : ''}
+                                  >
+                                    {cov?.working ?? 0}
+                                  </td>
+                                );
+                              })}
+                            </React.Fragment>
+                          ))}
+                        </tr>
+                      </tfoot>
+                    )}
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ============ HOUSEKEEPING ============ */}
+          {activeTab === 'housekeeping' && (
+            <div className="p-6 overflow-y-auto h-full space-y-4">
+              <h2 className="text-lg font-semibold">Housekeeping & Bed Turnover</h2>
+
+              {/* Pending ward transfers (receiving ward actions) */}
+              {pendingTransfers.length > 0 && (
+                <div className="border-l-4 border-yellow-500 bg-yellow-50 p-3 rounded">
+                  <h3 className="text-sm font-semibold mb-2">Pending ward transfers ({pendingTransfers.length})</h3>
+                  <div className="space-y-1">
+                    {pendingTransfers.map(t => (
+                      <div key={t.id} className="flex justify-between items-center text-sm bg-white p-2 rounded border">
+                        <div>
+                          Admission #{t.admission_id} — {t.from_room_number || '—'} → {t.to_room_number}
+                          <span className="text-xs text-gray-500 ml-2">{t.reason}</span>
+                        </div>
+                        <div className="flex gap-1">
+                          <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => handleAcceptTransfer(t.id)}>Accept</Button>
+                          <Button size="sm" variant="ghost" className="h-7 text-xs text-red-600" onClick={() => handleCancelPendingTransfer(t.id)}>Cancel</Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Turnover stats */}
+              {turnoverStats && (
+                <div className="grid grid-cols-4 gap-3">
+                  <Card><CardContent className="py-4">
+                    <div className="text-xs text-gray-500">Awaiting cleaning</div>
+                    <div className="text-2xl font-semibold">{turnoverStats.beds_currently_dirty + turnoverStats.beds_currently_cleaning}</div>
+                  </CardContent></Card>
+                  <Card><CardContent className="py-4">
+                    <div className="text-xs text-gray-500">Avg turnover time</div>
+                    <div className="text-2xl font-semibold">{turnoverStats.avg_minutes} <span className="text-sm font-normal">min</span></div>
+                  </CardContent></Card>
+                  <Card><CardContent className="py-4">
+                    <div className="text-xs text-gray-500">Turnovers logged</div>
+                    <div className="text-2xl font-semibold">{turnoverStats.turnover_count}</div>
+                  </CardContent></Card>
+                  <Card><CardContent className="py-4">
+                    <div className="text-xs text-gray-500">Pending transfers</div>
+                    <div className="text-2xl font-semibold">{pendingTransfers.length}</div>
+                  </CardContent></Card>
+                </div>
+              )}
+
+              {/* Beds needing cleaning */}
+              <Card>
+                <CardHeader className="py-3"><CardTitle className="text-sm flex items-center gap-1.5"><Sparkles className="h-4 w-4" /> Beds needing attention</CardTitle></CardHeader>
+                <CardContent>
+                  {cleaningBeds.length === 0 ? (
+                    <p className="text-sm text-gray-500 text-center py-6">All beds are ready.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {cleaningBeds.map(b => (
+                        <div key={b.bed_id} className="flex items-center justify-between border rounded p-2 text-sm">
+                          <div>
+                            <span className="font-medium">Room {b.room_number} — Bed {b.bed_label}</span>
+                            <Badge className={`ml-2 text-xs ${b.status === 'dirty' ? 'bg-red-100 text-red-800' : 'bg-yellow-100 text-yellow-800'}`}>{b.status}</Badge>
+                            {b.since && <span className="text-xs text-gray-500 ml-2">since {new Date(b.since).toLocaleString()}</span>}
+                          </div>
+                          <div className="flex gap-1">
+                            {b.status === 'dirty' && (
+                              <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => handleMarkBedMaintenance(b.bed_id, 'cleaning')}>Start Cleaning</Button>
+                            )}
+                            <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => handleMarkBedAvailable(b.bed_id)}>Mark Ready</Button>
+                            <Button size="sm" variant="ghost" className="h-7 text-xs text-red-600" onClick={() => handleMarkBedMaintenance(b.bed_id, 'out_of_service')}>Out of Service</Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+          )}
+
+          {/* ============ RESERVATIONS ============ */}
+          {activeTab === 'reservations' && (
+            <div className="p-6 overflow-y-auto h-full space-y-4">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-semibold">Bed Reservations</h2>
+                <Button onClick={() => { setReservationForm({ patient_id: '', bed_id: '', room_id: '', room_type: '', reserved_for_date: new Date().toISOString().slice(0, 16), reservation_reason: 'elective', notes: '' }); setReservationSelectedPatient(null); setShowReservationDialog(true); }}>
+                  <Plus className="h-4 w-4 mr-2" /> New Reservation
+                </Button>
+              </div>
+
+              {reservations.length === 0 ? (
+                <Card><CardContent className="py-12 text-center text-gray-500">No active reservations.</CardContent></Card>
+              ) : (
+                <div className="space-y-2">
+                  {reservations.map(r => (
+                    <Card key={r.id}>
+                      <CardContent className="py-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-semibold text-sm">{r.patient_name || '—'}</span>
+                              <Badge variant="outline" className="text-xs">{r.reservation_reason}</Badge>
+                              <Badge className="text-xs bg-blue-100 text-blue-800">{r.status}</Badge>
+                            </div>
+                            <div className="text-xs text-gray-600 mt-1">
+                              Reserved for {new Date(r.reserved_for_date).toLocaleString()}
+                              {r.bed_label && <> · Bed {r.bed_label}</>}
+                              {r.room_number && <> · Room {r.room_number}</>}
+                              {r.room_type && !r.room_number && <> · Any {r.room_type} room</>}
+                            </div>
+                            {r.notes && <p className="text-xs italic text-gray-500 mt-1">{r.notes}</p>}
+                            <p className="text-xs text-gray-400 mt-1">Created by {r.reserved_by_name || '—'}</p>
+                          </div>
+                          <div className="flex gap-1">
+                            {r.patient_id && (
+                              <Button size="sm" variant="outline" onClick={() => { setConvertingReservation(r); setConvertForm({ admitting_doctor_id: '', admission_type: 'elective', admission_reason: '', condition_on_admission: 'stable' }); setShowConvertReservationDialog(true); }}>Convert to Admission</Button>
+                            )}
+                            <Button size="sm" variant="ghost" onClick={() => setConfirmState({ open: true, title: 'Cancel reservation?', description: 'This cannot be undone.', onConfirm: () => { setConfirmState({ open: false }); handleCancelReservation(r.id); } })}>
+                              <X className="h-4 w-4 text-red-500" />
+                            </Button>
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ============ INCIDENTS ============ */}
+          {activeTab === 'incidents' && (
+            <div className="p-6 overflow-y-auto h-full space-y-4">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-semibold">Incident Reporting</h2>
+                <Button onClick={() => { setIncidentForm({ incident_type: 'fall', severity: 'medium', incident_date: new Date().toISOString().slice(0, 16), admission_id: '', patient_id: '', location: '', description: '', immediate_action: '', witnessed_by: '' }); setShowIncidentDialog(true); }}>
+                  <Plus className="h-4 w-4 mr-2" /> Report Incident
+                </Button>
+              </div>
+
+              {/* Monthly stats */}
+              {incidentReport && (
+                <div className="grid grid-cols-4 gap-3">
+                  <Card><CardContent className="py-4">
+                    <div className="text-xs text-gray-500">Last 30 days</div>
+                    <div className="text-2xl font-semibold">{incidentReport.total}</div>
+                  </CardContent></Card>
+                  {['low', 'medium', 'high', 'critical'].map(sev => (
+                    <Card key={sev}><CardContent className="py-4">
+                      <div className="text-xs text-gray-500 capitalize">{sev}</div>
+                      <div className={`text-2xl font-semibold ${sev === 'critical' ? 'text-red-700' : sev === 'high' ? 'text-orange-700' : ''}`}>
+                        {incidentReport.by_severity?.[sev] || 0}
+                      </div>
+                    </CardContent></Card>
+                  ))}
+                </div>
+              )}
+
+              {/* Filters */}
+              <div className="flex gap-2 flex-wrap">
+                <Select value={incidentFilter.status || 'all'} onValueChange={v => setIncidentFilter(p => ({ ...p, status: v === 'all' ? '' : v }))}>
+                  <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All statuses</SelectItem>
+                    <SelectItem value="reported">Reported</SelectItem>
+                    <SelectItem value="investigating">Investigating</SelectItem>
+                    <SelectItem value="resolved">Resolved</SelectItem>
+                    <SelectItem value="closed">Closed</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Select value={incidentFilter.severity || 'all'} onValueChange={v => setIncidentFilter(p => ({ ...p, severity: v === 'all' ? '' : v }))}>
+                  <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All severities</SelectItem>
+                    <SelectItem value="low">Low</SelectItem>
+                    <SelectItem value="medium">Medium</SelectItem>
+                    <SelectItem value="high">High</SelectItem>
+                    <SelectItem value="critical">Critical</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Select value={incidentFilter.incident_type || 'all'} onValueChange={v => setIncidentFilter(p => ({ ...p, incident_type: v === 'all' ? '' : v }))}>
+                  <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All types</SelectItem>
+                    <SelectItem value="fall">Fall</SelectItem>
+                    <SelectItem value="medication_error">Medication Error</SelectItem>
+                    <SelectItem value="pressure_ulcer">Pressure Ulcer</SelectItem>
+                    <SelectItem value="needle_stick">Needle Stick</SelectItem>
+                    <SelectItem value="infection">Infection</SelectItem>
+                    <SelectItem value="equipment_failure">Equipment Failure</SelectItem>
+                    <SelectItem value="documentation_error">Documentation Error</SelectItem>
+                    <SelectItem value="wrong_patient">Wrong Patient</SelectItem>
+                    <SelectItem value="other">Other</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {incidents.length === 0 ? (
+                <Card><CardContent className="py-12 text-center text-gray-500">No incidents match the filter.</CardContent></Card>
+              ) : (
+                <div className="space-y-2">
+                  {incidents.map(i => {
+                    const statusColor = { reported: 'bg-blue-100 text-blue-800', investigating: 'bg-yellow-100 text-yellow-800', resolved: 'bg-green-100 text-green-800', closed: 'bg-gray-100 text-gray-700' }[i.status] || 'bg-gray-100';
+                    const sevColor = { low: 'bg-gray-100', medium: 'bg-yellow-100 text-yellow-800', high: 'bg-orange-100 text-orange-800', critical: 'bg-red-100 text-red-800' }[i.severity] || 'bg-gray-100';
+                    return (
+                      <Card key={i.id}>
+                        <CardContent className="py-3">
+                          <div className="flex justify-between items-start gap-3">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-semibold text-sm">{i.incident_type.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</span>
+                                <Badge className={`text-xs ${sevColor}`}>{i.severity}</Badge>
+                                <Badge className={`text-xs ${statusColor}`}>{i.status}</Badge>
+                                <span className="text-xs text-gray-500">{new Date(i.incident_date).toLocaleString()}</span>
+                              </div>
+                              {i.location && <p className="text-xs text-gray-500 mt-0.5">Location: {i.location}</p>}
+                              {i.patient_name && <p className="text-xs text-gray-500">Patient: {i.patient_name} ({i.admission_number || '—'})</p>}
+                              <p className="text-sm text-gray-700 mt-1">{i.description}</p>
+                              {i.root_cause && <p className="text-xs text-gray-600 mt-1"><b>Root cause:</b> {i.root_cause}</p>}
+                              {i.corrective_actions && <p className="text-xs text-gray-600"><b>Corrective actions:</b> {i.corrective_actions}</p>}
+                              <p className="text-xs text-gray-400 mt-1">Reported by {i.reported_by_name}</p>
+                            </div>
+                            {i.status !== 'closed' && (
+                              <Button size="sm" variant="outline" onClick={() => {
+                                setInvestigatingIncident(i);
+                                setInvestigateForm({ investigation_notes: i.investigation_notes || '', root_cause: i.root_cause || '', resolution: i.resolution || '', corrective_actions: i.corrective_actions || '', preventive_measures: i.preventive_measures || '', new_status: '' });
+                                setShowInvestigateDialog(true);
+                              }}>Investigate</Button>
+                            )}
+                          </div>
+                        </CardContent>
+                      </Card>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ============ QUALITY REPORTS (Readmissions + Mortality) ============ */}
+          {activeTab === 'quality' && (
+            <div className="p-6 overflow-y-auto h-full space-y-6">
+              <h2 className="text-lg font-semibold">Quality Reports</h2>
+
+              {/* Readmissions */}
+              <div>
+                <h3 className="text-md font-semibold mb-2 flex items-center gap-1.5"><RotateCcw className="h-4 w-4" /> 30-Day Readmissions ({readmissions.length})</h3>
+                {readmissions.length === 0 ? (
+                  <Card><CardContent className="py-6 text-center text-sm text-gray-500">No readmissions in the last 30 days.</CardContent></Card>
+                ) : (
+                  <div className="border rounded overflow-hidden">
+                    <table className="w-full text-sm">
+                      <thead className="bg-gray-50"><tr>
+                        <th className="px-3 py-2 text-left">Admission</th>
+                        <th className="px-3 py-2 text-left">Patient</th>
+                        <th className="px-3 py-2 text-left">Admitted</th>
+                        <th className="px-3 py-2 text-right">Days since prev discharge</th>
+                        <th className="px-3 py-2 text-left">Reason</th>
+                        <th className="px-3 py-2 text-left">Status</th>
+                      </tr></thead>
+                      <tbody>
+                        {readmissions.map(r => (
+                          <tr key={r.admission_id} className="border-t">
+                            <td className="px-3 py-2 font-mono text-xs">{r.admission_number}</td>
+                            <td className="px-3 py-2">{r.patient_name}</td>
+                            <td className="px-3 py-2 text-xs">{r.admission_date && new Date(r.admission_date).toLocaleDateString()}</td>
+                            <td className="px-3 py-2 text-right font-semibold">{r.days_since_last_discharge}</td>
+                            <td className="px-3 py-2 text-xs">{r.admission_reason || '—'}</td>
+                            <td className="px-3 py-2"><Badge variant="outline" className="text-xs">{r.status}</Badge></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              {/* Mortality */}
+              <div>
+                <h3 className="text-md font-semibold mb-2 flex items-center gap-1.5"><Skull className="h-4 w-4" /> Mortality Records ({mortalityList.length})</h3>
+                {mortalityList.length === 0 ? (
+                  <Card><CardContent className="py-6 text-center text-sm text-gray-500">No mortality records.</CardContent></Card>
+                ) : (
+                  <div className="space-y-2">
+                    {mortalityList.map(m => (
+                      <Card key={m.discharge_id}>
+                        <CardContent className="py-3">
+                          <div className="flex justify-between items-start gap-3">
+                            <div className="flex-1 min-w-0">
+                              <div className="font-semibold text-sm">{m.patient_name}</div>
+                              <div className="text-xs text-gray-600 mt-0.5">
+                                Admission {m.admission_number} · Discharged {m.discharge_date && new Date(m.discharge_date).toLocaleDateString()}
+                                {m.time_of_death && <> · Time of death {new Date(m.time_of_death).toLocaleString()}</>}
+                              </div>
+                              {m.cause_of_death ? (
+                                <p className="text-xs text-gray-700 mt-1"><b>Cause:</b> {m.cause_of_death}</p>
+                              ) : (
+                                <p className="text-xs text-orange-600 mt-1">⚠ Cause of death not recorded</p>
+                              )}
+                              <div className="flex gap-2 mt-1 flex-wrap">
+                                {m.mlc_required && <Badge className="text-xs bg-red-100 text-red-800">MLC</Badge>}
+                                {m.autopsy_done && <Badge variant="outline" className="text-xs">Autopsy done</Badge>}
+                                {m.death_certificate_number && <Badge variant="outline" className="text-xs">Cert #{m.death_certificate_number}</Badge>}
+                              </div>
+                            </div>
+                            <div className="flex gap-1">
+                              <Button size="sm" variant="outline" onClick={() => openMortalityDialog({ id: m.admission_id, discharge: m })}>Edit Details</Button>
+                              <Button size="sm" variant="ghost" onClick={() => handlePrintDeathCertificate(m.admission_id)}>
+                                <FileText className="h-4 w-4 mr-1" /> Certificate
+                              </Button>
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ============ BILLING SETUP (catalogs) ============ */}
+          {activeTab === 'setup' && (
+            <div className="p-6 overflow-y-auto h-full space-y-4">
+              <h2 className="text-lg font-semibold">Billing Setup</h2>
+              <Tabs value={setupSubTab} onValueChange={(v) => { setSetupSubTab(v); if (v === 'consent-templates') fetchConsentTemplates(); }}>
+                <TabsList>
+                  <TabsTrigger value="ancillary">Ancillary Services</TabsTrigger>
+                  <TabsTrigger value="packages">Surgery Packages</TabsTrigger>
+                  <TabsTrigger value="tpa">TPA Companies</TabsTrigger>
+                  <TabsTrigger value="consent-templates">Consent Templates</TabsTrigger>
+                </TabsList>
+
+                <TabsContent value="ancillary" className="space-y-3 mt-3">
+                  <div className="flex justify-between items-center">
+                    <p className="text-sm text-gray-500">Services billable against admissions (imaging, physiotherapy, dialysis, equipment, etc.)</p>
+                    <Button size="sm" onClick={() => { setEditingService(null); setServiceForm({ service_name: '', service_code: '', category: 'imaging', default_charge: '', charge_unit: 'per_session', description: '' }); setShowServiceDialog(true); }}>
+                      <Plus className="h-4 w-4 mr-1" /> New Service
+                    </Button>
+                  </div>
+                  {ancillaryServices.length === 0 ? (
+                    <Card><CardContent className="py-8 text-center text-gray-500 text-sm">No services configured.</CardContent></Card>
+                  ) : (
+                    <div className="border rounded overflow-hidden">
+                      <table className="w-full text-sm">
+                        <thead className="bg-gray-50"><tr>
+                          <th className="px-3 py-2 text-left">Service</th>
+                          <th className="px-3 py-2 text-left">Category</th>
+                          <th className="px-3 py-2 text-left">Unit</th>
+                          <th className="px-3 py-2 text-right">Default Charge</th>
+                          <th className="px-3 py-2"></th>
+                        </tr></thead>
+                        <tbody>
+                          {ancillaryServices.map(s => (
+                            <tr key={s.id} className="border-t">
+                              <td className="px-3 py-2"><div>{s.service_name}</div>{s.service_code && <div className="text-xs text-gray-500">{s.service_code}</div>}</td>
+                              <td className="px-3 py-2"><Badge variant="outline">{s.category}</Badge></td>
+                              <td className="px-3 py-2 text-xs text-gray-500">{s.charge_unit.replace('per_', '/')}</td>
+                              <td className="px-3 py-2 text-right font-semibold">₹{s.default_charge.toFixed(2)}</td>
+                              <td className="px-3 py-2 text-right">
+                                <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => { setEditingService(s); setServiceForm({ service_name: s.service_name, service_code: s.service_code || '', category: s.category, default_charge: String(s.default_charge), charge_unit: s.charge_unit, description: s.description || '' }); setShowServiceDialog(true); }}><Edit2 className="h-3.5 w-3.5" /></Button>
+                                <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => setConfirmState({ open: true, title: 'Deactivate service?', description: `"${s.service_name}" will be hidden from new charges.`, onConfirm: () => { setConfirmState({ open: false }); handleDeleteService(s.id); } })}><Trash2 className="h-3.5 w-3.5 text-red-500" /></Button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </TabsContent>
+
+                <TabsContent value="packages" className="space-y-3 mt-3">
+                  <div className="flex justify-between items-center">
+                    <p className="text-sm text-gray-500">Fixed-price surgery/treatment packages (e.g. cataract, LSCS, appendectomy).</p>
+                    <Button size="sm" onClick={() => { setEditingPackage(null); setPackageForm({ package_name: '', package_code: '', base_price: '', included_room_type: '', included_stay_days: 0, included_services: [], excess_per_day_charge: 0, description: '' }); setShowPackageDialog(true); }}>
+                      <Plus className="h-4 w-4 mr-1" /> New Package
+                    </Button>
+                  </div>
+                  {packagesList.length === 0 ? (
+                    <Card><CardContent className="py-8 text-center text-gray-500 text-sm">No packages configured.</CardContent></Card>
+                  ) : (
+                    <div className="space-y-2">
+                      {packagesList.map(pkg => (
+                        <Card key={pkg.id}>
+                          <CardContent className="py-3">
+                            <div className="flex justify-between items-start">
+                              <div>
+                                <div className="font-semibold text-sm">{pkg.package_name} {pkg.package_code && <span className="text-xs text-gray-400">· {pkg.package_code}</span>}</div>
+                                <div className="text-xs text-gray-600 mt-1">₹{pkg.base_price.toFixed(2)} base · {pkg.included_stay_days} days · ₹{pkg.excess_per_day_charge}/excess day · Room: {pkg.included_room_type || 'any'}</div>
+                                {pkg.included_services && pkg.included_services.length > 0 && (
+                                  <div className="flex gap-1 flex-wrap mt-1">
+                                    {pkg.included_services.map(s => <Badge key={s} variant="outline" className="text-xs">{s.replace('_', ' ')}</Badge>)}
+                                  </div>
+                                )}
+                                {pkg.description && <p className="text-xs text-gray-500 mt-1">{pkg.description}</p>}
+                              </div>
+                              <div className="flex gap-1">
+                                <Button size="sm" variant="ghost" onClick={() => { setEditingPackage(pkg); setPackageForm({ package_name: pkg.package_name, package_code: pkg.package_code || '', base_price: String(pkg.base_price), included_room_type: pkg.included_room_type || '', included_stay_days: pkg.included_stay_days, included_services: pkg.included_services || [], excess_per_day_charge: pkg.excess_per_day_charge, description: pkg.description || '' }); setShowPackageDialog(true); }}><Edit2 className="h-3.5 w-3.5" /></Button>
+                                <Button size="sm" variant="ghost" onClick={() => setConfirmState({ open: true, title: 'Deactivate package?', description: `"${pkg.package_name}" will be hidden from new admissions.`, onConfirm: () => { setConfirmState({ open: false }); handleDeletePackage(pkg.id); } })}><Trash2 className="h-3.5 w-3.5 text-red-500" /></Button>
+                              </div>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </div>
+                  )}
+                </TabsContent>
+
+                <TabsContent value="consent-templates" className="space-y-3 mt-3">
+                  <div className="flex justify-between items-center">
+                    <p className="text-sm text-gray-500">Reusable consent form templates by category (surgical, anaesthesia, blood transfusion, etc.)</p>
+                    <Button size="sm" onClick={() => { setEditingConsentTemplate(null); setConsentTemplateForm({ consent_type: 'surgical', template_name: '', content: '', language: 'english' }); setShowConsentTemplateDialog(true); }}>
+                      <Plus className="h-4 w-4 mr-1" /> New Template
+                    </Button>
+                  </div>
+                  {consentTemplates.length === 0 ? (
+                    <Card><CardContent className="py-8 text-center text-gray-500 text-sm">No templates configured.</CardContent></Card>
+                  ) : (
+                    <div className="space-y-2">
+                      {consentTemplates.map(t => (
+                        <Card key={t.id}>
+                          <CardContent className="py-3">
+                            <div className="flex justify-between items-start">
+                              <div>
+                                <div className="font-semibold text-sm flex items-center gap-1.5"><FileSignature className="h-4 w-4" /> {t.template_name}</div>
+                                <div className="text-xs text-gray-500 mt-0.5">
+                                  <Badge variant="outline" className="text-xs mr-1">{t.consent_type.replace(/_/g, ' ')}</Badge>
+                                  Language: {t.language}
+                                </div>
+                                <p className="text-xs text-gray-600 mt-1 line-clamp-2">{t.content.substring(0, 150)}{t.content.length > 150 ? '...' : ''}</p>
+                              </div>
+                              <div className="flex gap-1">
+                                <Button size="sm" variant="ghost" onClick={() => { setEditingConsentTemplate(t); setConsentTemplateForm({ consent_type: t.consent_type, template_name: t.template_name, content: t.content, language: t.language }); setShowConsentTemplateDialog(true); }}><Edit2 className="h-3.5 w-3.5" /></Button>
+                                <Button size="sm" variant="ghost" onClick={() => setConfirmState({ open: true, title: 'Deactivate template?', description: `"${t.template_name}" will be hidden from new consents.`, onConfirm: () => { setConfirmState({ open: false }); handleDeleteConsentTemplate(t.id); } })}><Trash2 className="h-3.5 w-3.5 text-red-500" /></Button>
+                              </div>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </div>
+                  )}
+                </TabsContent>
+
+                <TabsContent value="tpa" className="space-y-3 mt-3">
+                  <div className="flex justify-between items-center">
+                    <p className="text-sm text-gray-500">Third Party Administrators used when splitting bills or routing pre-auth requests.</p>
+                    <Button size="sm" onClick={() => { setEditingTpa(null); setTpaForm({ tpa_name: '', tpa_code: '', address: '', phone: '', email: '', default_discount_percent: 0, contract_details: '' }); setShowTpaDialog(true); }}>
+                      <Plus className="h-4 w-4 mr-1" /> New TPA
+                    </Button>
+                  </div>
+                  {tpaList.length === 0 ? (
+                    <Card><CardContent className="py-8 text-center text-gray-500 text-sm">No TPAs configured.</CardContent></Card>
+                  ) : (
+                    <div className="space-y-2">
+                      {tpaList.map(t => (
+                        <Card key={t.id}>
+                          <CardContent className="py-3">
+                            <div className="flex justify-between items-start">
+                              <div>
+                                <div className="font-semibold text-sm flex items-center gap-1.5"><Building2 className="h-4 w-4 text-gray-500" /> {t.tpa_name} {t.tpa_code && <span className="text-xs text-gray-400">· {t.tpa_code}</span>}</div>
+                                <div className="text-xs text-gray-600 mt-1">{t.phone || '—'} · {t.email || '—'} · Discount {t.default_discount_percent}%</div>
+                                {t.address && <p className="text-xs text-gray-500 mt-0.5">{t.address}</p>}
+                              </div>
+                              <div className="flex gap-1">
+                                <Button size="sm" variant="ghost" onClick={() => { setEditingTpa(t); setTpaForm({ tpa_name: t.tpa_name, tpa_code: t.tpa_code || '', address: t.address || '', phone: t.phone || '', email: t.email || '', default_discount_percent: t.default_discount_percent, contract_details: t.contract_details || '' }); setShowTpaDialog(true); }}><Edit2 className="h-3.5 w-3.5" /></Button>
+                                <Button size="sm" variant="ghost" onClick={() => setConfirmState({ open: true, title: 'Deactivate TPA?', description: `"${t.tpa_name}" will be hidden from new splits.`, onConfirm: () => { setConfirmState({ open: false }); handleDeleteTpa(t.id); } })}><Trash2 className="h-3.5 w-3.5 text-red-500" /></Button>
+                              </div>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </div>
+                  )}
+                </TabsContent>
+              </Tabs>
+            </div>
           )}
 
         </div>
@@ -1975,12 +4920,16 @@ const InpatientModule = () => {
                 </SelectContent>
               </Select>
             </div>
-            {rateConfig && (
-              <p className="text-xs text-gray-500">
-                Auto-charge: ₹{visitForm.visit_type === 'doctor_visit' ? rateConfig.doctor_visit_rate :
-                  visitForm.visit_type === 'nurse_visit' ? rateConfig.nurse_visit_rate : rateConfig.procedure_rate}
-              </p>
-            )}
+            {visitForm.visitor_id && (visitForm.visit_type === 'doctor_visit' || visitForm.visit_type === 'nurse_visit') && (() => {
+              const visitor = [...(doctorsList || []), ...(nursesList || [])]
+                .find(u => String(u.id) === String(visitForm.visitor_id));
+              const fee = visitor?.inpatient_fee_inr;
+              return (
+                <p className="text-xs text-gray-500">
+                  Auto-charge: {fee ? `₹${Number(fee).toFixed(2)}` : 'no fee set on this user'} (from selected staff member's inpatient fee)
+                </p>
+              );
+            })()}
             <div>
               <Label>Notes</Label>
               <Textarea value={visitForm.notes} onChange={e => setVisitForm(p => ({ ...p, notes: e.target.value }))} rows={3} />
@@ -2070,6 +5019,1547 @@ const InpatientModule = () => {
             <Button type="submit" className="w-full" disabled={loading}>
               {loading ? 'Saving...' : 'Create Diet Order'}
             </Button>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Vitals Dialog */}
+      <Dialog open={showVitalsDialog} onOpenChange={setShowVitalsDialog}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader><DialogTitle>Record Vital Signs</DialogTitle></DialogHeader>
+          <form onSubmit={handleRecordVitals} className="space-y-3">
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <Label>Shift</Label>
+                <Select value={vitalsForm.shift} onValueChange={v => setVitalsForm(p => ({ ...p, shift: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="morning">Morning</SelectItem>
+                    <SelectItem value="afternoon">Afternoon</SelectItem>
+                    <SelectItem value="night">Night</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>BP Systolic (mmHg)</Label>
+                <Input type="number" value={vitalsForm.bp_systolic} onChange={e => setVitalsForm(p => ({ ...p, bp_systolic: e.target.value }))} placeholder="120" />
+              </div>
+              <div>
+                <Label>BP Diastolic (mmHg)</Label>
+                <Input type="number" value={vitalsForm.bp_diastolic} onChange={e => setVitalsForm(p => ({ ...p, bp_diastolic: e.target.value }))} placeholder="80" />
+              </div>
+              <div>
+                <Label>Heart Rate (bpm)</Label>
+                <Input type="number" value={vitalsForm.heart_rate} onChange={e => setVitalsForm(p => ({ ...p, heart_rate: e.target.value }))} placeholder="72" />
+              </div>
+              <div>
+                <Label>Resp. Rate (/min)</Label>
+                <Input type="number" value={vitalsForm.respiratory_rate} onChange={e => setVitalsForm(p => ({ ...p, respiratory_rate: e.target.value }))} placeholder="16" />
+              </div>
+              <div>
+                <Label>SpO₂ (%)</Label>
+                <Input type="number" value={vitalsForm.spo2} onChange={e => setVitalsForm(p => ({ ...p, spo2: e.target.value }))} placeholder="98" />
+              </div>
+              <div>
+                <Label>Temperature (°C)</Label>
+                <Input type="number" step="0.1" value={vitalsForm.temperature_c} onChange={e => setVitalsForm(p => ({ ...p, temperature_c: e.target.value }))} placeholder="36.8" />
+              </div>
+              <div>
+                <Label>Blood Glucose (mg/dL)</Label>
+                <Input type="number" step="0.1" value={vitalsForm.blood_glucose} onChange={e => setVitalsForm(p => ({ ...p, blood_glucose: e.target.value }))} placeholder="110" />
+              </div>
+              <div>
+                <Label>Pain (0-10)</Label>
+                <Input type="number" min="0" max="10" value={vitalsForm.pain_score} onChange={e => setVitalsForm(p => ({ ...p, pain_score: e.target.value }))} />
+              </div>
+              <div>
+                <Label>GCS (3-15)</Label>
+                <Input type="number" min="3" max="15" value={vitalsForm.gcs_score} onChange={e => setVitalsForm(p => ({ ...p, gcs_score: e.target.value }))} />
+              </div>
+              <div>
+                <Label>Weight (kg)</Label>
+                <Input type="number" step="0.1" value={vitalsForm.weight_kg} onChange={e => setVitalsForm(p => ({ ...p, weight_kg: e.target.value }))} />
+              </div>
+              <div>
+                <Label>Height (cm)</Label>
+                <Input type="number" step="0.1" value={vitalsForm.height_cm} onChange={e => setVitalsForm(p => ({ ...p, height_cm: e.target.value }))} />
+              </div>
+            </div>
+            <div>
+              <Label>Notes</Label>
+              <Textarea value={vitalsForm.notes} onChange={e => setVitalsForm(p => ({ ...p, notes: e.target.value }))} rows={2} placeholder="Patient position, observations..." />
+            </div>
+            <p className="text-xs text-gray-500">Leave fields blank if not measured. Out-of-range values will be flagged automatically.</p>
+            <Button type="submit" className="w-full" disabled={loading}>
+              {loading ? 'Saving…' : 'Record Vitals'}
+            </Button>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Allergy Dialog */}
+      <Dialog open={showAllergyDialog} onOpenChange={setShowAllergyDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Record Patient Allergy</DialogTitle></DialogHeader>
+          <form onSubmit={handleCreateAllergy} className="space-y-3">
+            <div>
+              <Label>Type *</Label>
+              <Select value={allergyForm.allergy_type} onValueChange={v => setAllergyForm(p => ({ ...p, allergy_type: v }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="drug">Drug</SelectItem>
+                  <SelectItem value="food">Food</SelectItem>
+                  <SelectItem value="environmental">Environmental</SelectItem>
+                  <SelectItem value="other">Other</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Allergen *</Label>
+              <Input value={allergyForm.allergen} onChange={e => setAllergyForm(p => ({ ...p, allergen: e.target.value }))} required placeholder="e.g. Penicillin, Peanuts, Latex" />
+            </div>
+            <div>
+              <Label>Severity *</Label>
+              <Select value={allergyForm.severity} onValueChange={v => setAllergyForm(p => ({ ...p, severity: v }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="mild">Mild</SelectItem>
+                  <SelectItem value="moderate">Moderate</SelectItem>
+                  <SelectItem value="severe">Severe</SelectItem>
+                  <SelectItem value="anaphylaxis">Anaphylaxis</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Reaction</Label>
+              <Textarea value={allergyForm.reaction} onChange={e => setAllergyForm(p => ({ ...p, reaction: e.target.value }))} rows={2} placeholder="e.g. Rash, swelling, anaphylactic shock" />
+            </div>
+            <div>
+              <Label>Notes</Label>
+              <Textarea value={allergyForm.notes} onChange={e => setAllergyForm(p => ({ ...p, notes: e.target.value }))} rows={2} />
+            </div>
+            <Button type="submit" className="w-full" disabled={loading}>
+              {loading ? 'Saving…' : 'Record Allergy'}
+            </Button>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Administer Dose Dialog */}
+      <Dialog open={showAdministerDialog} onOpenChange={setShowAdministerDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Administer Dose</DialogTitle></DialogHeader>
+          {administeringDose && (
+            <form onSubmit={handleAdminister} className="space-y-3">
+              <div className="text-sm bg-gray-50 p-3 rounded">
+                <div className="font-medium">{administeringDose.medicine_name}</div>
+                <div className="text-xs text-gray-600 mt-0.5">
+                  {administeringDose.dosage} · Scheduled {administeringDose.scheduled_time && new Date(administeringDose.scheduled_time).toLocaleString()}
+                </div>
+              </div>
+              {admissionAllergies.filter(a => a.allergy_type === 'drug').some(a => administeringDose.medicine_name && (administeringDose.medicine_name.toLowerCase().includes(a.allergen.toLowerCase()) || a.allergen.toLowerCase().includes(administeringDose.medicine_name.toLowerCase()))) && (
+                <div className="border-l-4 border-red-600 bg-red-50 p-3 rounded text-sm flex items-start gap-2">
+                  <AlertTriangle className="h-4 w-4 text-red-600 mt-0.5" />
+                  <div className="text-red-800">Possible drug allergy match — please verify before administering.</div>
+                </div>
+              )}
+              <div>
+                <Label>Status *</Label>
+                <Select value={administerForm.status} onValueChange={v => setAdministerForm(p => ({ ...p, status: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="given">Given</SelectItem>
+                    <SelectItem value="missed">Missed</SelectItem>
+                    <SelectItem value="refused">Refused by patient</SelectItem>
+                    <SelectItem value="held">Held (clinical decision)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {administerForm.status === 'given' && (
+                <>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <Label>Dose Given</Label>
+                      <Input value={administerForm.dose_given} onChange={e => setAdministerForm(p => ({ ...p, dose_given: e.target.value }))} placeholder="e.g. 500mg" />
+                    </div>
+                    <div>
+                      <Label>Route</Label>
+                      <Input value={administerForm.route} onChange={e => setAdministerForm(p => ({ ...p, route: e.target.value }))} placeholder="oral / iv / im..." />
+                    </div>
+                  </div>
+                  <div>
+                    <Label>Site (for injections)</Label>
+                    <Input value={administerForm.site} onChange={e => setAdministerForm(p => ({ ...p, site: e.target.value }))} placeholder="e.g. Left deltoid" />
+                  </div>
+                </>
+              )}
+              {administerForm.status !== 'given' && (
+                <div>
+                  <Label>Reason *</Label>
+                  <Textarea value={administerForm.reason_if_not_given} onChange={e => setAdministerForm(p => ({ ...p, reason_if_not_given: e.target.value }))} rows={2} required placeholder="Why was the dose not given?" />
+                </div>
+              )}
+              <div>
+                <Label>Notes</Label>
+                <Textarea value={administerForm.notes} onChange={e => setAdministerForm(p => ({ ...p, notes: e.target.value }))} rows={2} />
+              </div>
+              <Button type="submit" className="w-full" disabled={loading}>
+                {loading ? 'Saving…' : 'Save'}
+              </Button>
+            </form>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* PRN Dose Dialog */}
+      <Dialog open={showPrnDialog} onOpenChange={setShowPrnDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Record PRN (As-Needed) Dose</DialogTitle></DialogHeader>
+          <form onSubmit={handleRecordPRN} className="space-y-3">
+            <div>
+              <Label>Medication *</Label>
+              <Select value={prnForm.prescription_item_id} onValueChange={v => setPrnForm(p => ({ ...p, prescription_item_id: v }))}>
+                <SelectTrigger><SelectValue placeholder="Pick a prescribed medication" /></SelectTrigger>
+                <SelectContent>
+                  {admissionMedications.flatMap(rx => (rx.medicines || []).filter(m => m.id).map(m => (
+                    <SelectItem key={m.id} value={String(m.id)}>{m.name} — {m.dosage || 'PRN'}</SelectItem>
+                  )))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-gray-500 mt-1">PRN medication must be on the patient's prescription list.</p>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Dose Given *</Label>
+                <Input value={prnForm.dose_given} onChange={e => setPrnForm(p => ({ ...p, dose_given: e.target.value }))} required placeholder="e.g. 500mg" />
+              </div>
+              <div>
+                <Label>Route</Label>
+                <Input value={prnForm.route} onChange={e => setPrnForm(p => ({ ...p, route: e.target.value }))} placeholder="oral / iv / im..." />
+              </div>
+            </div>
+            <div>
+              <Label>Indication *</Label>
+              <Input value={prnForm.prn_indication} onChange={e => setPrnForm(p => ({ ...p, prn_indication: e.target.value }))} required placeholder="e.g. Pain, fever, anxiety" />
+            </div>
+            <div>
+              <Label>Notes</Label>
+              <Textarea value={prnForm.notes} onChange={e => setPrnForm(p => ({ ...p, notes: e.target.value }))} rows={2} />
+            </div>
+            <Button type="submit" className="w-full" disabled={loading}>
+              {loading ? 'Saving…' : 'Record PRN Dose'}
+            </Button>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* I/O Dialog */}
+      <Dialog open={showIoDialog} onOpenChange={setShowIoDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Record Intake / Output</DialogTitle></DialogHeader>
+          <form onSubmit={handleRecordIO} className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Type *</Label>
+                <Select value={ioForm.io_type} onValueChange={v => {
+                  const firstCat = v === 'intake' ? 'oral' : 'urine';
+                  setIoForm(p => ({ ...p, io_type: v, category: firstCat }));
+                }}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="intake">Intake</SelectItem>
+                    <SelectItem value="output">Output</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Shift *</Label>
+                <Select value={ioForm.shift} onValueChange={v => setIoForm(p => ({ ...p, shift: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="morning">Morning</SelectItem>
+                    <SelectItem value="afternoon">Afternoon</SelectItem>
+                    <SelectItem value="night">Night</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div>
+              <Label>Category *</Label>
+              <Select value={ioForm.category} onValueChange={v => setIoForm(p => ({ ...p, category: v }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {ioForm.io_type === 'intake' ? (
+                    <>
+                      <SelectItem value="oral">Oral</SelectItem>
+                      <SelectItem value="iv">IV</SelectItem>
+                      <SelectItem value="ng_tube">NG Tube</SelectItem>
+                      <SelectItem value="blood_product">Blood Product</SelectItem>
+                      <SelectItem value="irrigation">Irrigation</SelectItem>
+                      <SelectItem value="other">Other</SelectItem>
+                    </>
+                  ) : (
+                    <>
+                      <SelectItem value="urine">Urine</SelectItem>
+                      <SelectItem value="drain">Drain</SelectItem>
+                      <SelectItem value="ng_aspirate">NG Aspirate</SelectItem>
+                      <SelectItem value="vomitus">Vomitus</SelectItem>
+                      <SelectItem value="stool">Stool</SelectItem>
+                      <SelectItem value="blood_loss">Blood Loss</SelectItem>
+                      <SelectItem value="other">Other</SelectItem>
+                    </>
+                  )}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Amount (ml) *</Label>
+              <Input type="number" step="0.1" min="0.1" value={ioForm.amount_ml} onChange={e => setIoForm(p => ({ ...p, amount_ml: e.target.value }))} required />
+            </div>
+            <div>
+              <Label>Notes</Label>
+              <Textarea value={ioForm.notes} onChange={e => setIoForm(p => ({ ...p, notes: e.target.value }))} rows={2} />
+            </div>
+            <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Saving…' : 'Record'}</Button>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Deposit Dialog */}
+      <Dialog open={showDepositDialog} onOpenChange={setShowDepositDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Receive Advance Deposit</DialogTitle></DialogHeader>
+          <form onSubmit={handleCreateDeposit} className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Amount (₹) *</Label>
+                <Input type="number" step="0.01" min="0.01" value={depositForm.amount} onChange={e => setDepositForm(p => ({ ...p, amount: e.target.value }))} required />
+              </div>
+              <div>
+                <Label>Type</Label>
+                <Select value={depositForm.deposit_type} onValueChange={v => setDepositForm(p => ({ ...p, deposit_type: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="initial">Initial</SelectItem>
+                    <SelectItem value="topup">Top-up</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Payment Method</Label>
+                <Select value={depositForm.payment_method} onValueChange={v => setDepositForm(p => ({ ...p, payment_method: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="cash">Cash</SelectItem>
+                    <SelectItem value="card">Card</SelectItem>
+                    <SelectItem value="upi">UPI</SelectItem>
+                    <SelectItem value="cheque">Cheque</SelectItem>
+                    <SelectItem value="online">Online</SelectItem>
+                    <SelectItem value="bank_transfer">Bank Transfer</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Reference #</Label>
+                <Input value={depositForm.reference_number} onChange={e => setDepositForm(p => ({ ...p, reference_number: e.target.value }))} placeholder="Txn ref / cheque #" />
+              </div>
+            </div>
+            <div>
+              <Label>Notes</Label>
+              <Textarea value={depositForm.notes} onChange={e => setDepositForm(p => ({ ...p, notes: e.target.value }))} rows={2} />
+            </div>
+            <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Saving…' : 'Record Deposit'}</Button>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Refund Dialog */}
+      <Dialog open={showRefundDialog} onOpenChange={setShowRefundDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Issue Refund</DialogTitle></DialogHeader>
+          <form onSubmit={handleCreateRefund} className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Amount (₹) *</Label>
+                <Input type="number" step="0.01" min="0.01" value={refundForm.amount} onChange={e => setRefundForm(p => ({ ...p, amount: e.target.value }))} required />
+              </div>
+              <div>
+                <Label>Method</Label>
+                <Select value={refundForm.payment_method} onValueChange={v => setRefundForm(p => ({ ...p, payment_method: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="cash">Cash</SelectItem>
+                    <SelectItem value="card">Card</SelectItem>
+                    <SelectItem value="upi">UPI</SelectItem>
+                    <SelectItem value="cheque">Cheque</SelectItem>
+                    <SelectItem value="online">Online</SelectItem>
+                    <SelectItem value="bank_transfer">Bank Transfer</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div>
+              <Label>Reference #</Label>
+              <Input value={refundForm.reference_number} onChange={e => setRefundForm(p => ({ ...p, reference_number: e.target.value }))} />
+            </div>
+            <div>
+              <Label>Notes</Label>
+              <Textarea value={refundForm.notes} onChange={e => setRefundForm(p => ({ ...p, notes: e.target.value }))} rows={2} />
+            </div>
+            <p className="text-xs text-gray-500">Refund cannot exceed current credit balance.</p>
+            <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Saving…' : 'Issue Refund'}</Button>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Ancillary Charge Dialog */}
+      <Dialog open={showAncillaryDialog} onOpenChange={setShowAncillaryDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Add Ancillary Service Charge</DialogTitle></DialogHeader>
+          <form onSubmit={handleCreateAncillaryCharge} className="space-y-3">
+            <div>
+              <Label>Service *</Label>
+              <Select value={ancillaryForm.service_id} onValueChange={v => {
+                const svc = ancillaryServices.find(s => String(s.id) === v);
+                setAncillaryForm(p => ({ ...p, service_id: v, unit_price: svc ? String(svc.default_charge) : '' }));
+              }}>
+                <SelectTrigger><SelectValue placeholder="Select service" /></SelectTrigger>
+                <SelectContent>
+                  {ancillaryServices.map(s => (
+                    <SelectItem key={s.id} value={String(s.id)}>{s.service_name} ({s.category}) — ₹{s.default_charge}/{s.charge_unit.replace('per_', '')}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {ancillaryServices.length === 0 && <p className="text-xs text-gray-500 mt-1">No services in catalog. Add them under Billing Setup.</p>}
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Quantity *</Label>
+                <Input type="number" step="0.01" min="0.01" value={ancillaryForm.quantity} onChange={e => setAncillaryForm(p => ({ ...p, quantity: e.target.value }))} required />
+              </div>
+              <div>
+                <Label>Unit Price (₹)</Label>
+                <Input type="number" step="0.01" value={ancillaryForm.unit_price} onChange={e => setAncillaryForm(p => ({ ...p, unit_price: e.target.value }))} placeholder="Catalog default" />
+              </div>
+            </div>
+            <div>
+              <Label>Notes</Label>
+              <Textarea value={ancillaryForm.notes} onChange={e => setAncillaryForm(p => ({ ...p, notes: e.target.value }))} rows={2} />
+            </div>
+            <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Saving…' : 'Add Charge'}</Button>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Apply Package Dialog */}
+      <Dialog open={showApplyPackageDialog} onOpenChange={setShowApplyPackageDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Apply Surgery Package</DialogTitle></DialogHeader>
+          <form onSubmit={handleApplyPackage} className="space-y-3">
+            <div>
+              <Label>Package *</Label>
+              <Select value={applyPackageForm.package_id} onValueChange={v => {
+                const pkg = packagesList.find(p => String(p.id) === v);
+                setApplyPackageForm(p => ({ ...p, package_id: v, agreed_price: pkg ? String(pkg.base_price) : '' }));
+              }}>
+                <SelectTrigger><SelectValue placeholder="Select package" /></SelectTrigger>
+                <SelectContent>
+                  {packagesList.map(p => (
+                    <SelectItem key={p.id} value={String(p.id)}>{p.package_name} — ₹{p.base_price} · {p.included_stay_days} days</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {packagesList.length === 0 && <p className="text-xs text-gray-500 mt-1">No packages configured. Add them under Billing Setup.</p>}
+            </div>
+            <div>
+              <Label>Agreed Price (₹)</Label>
+              <Input type="number" step="0.01" value={applyPackageForm.agreed_price} onChange={e => setApplyPackageForm(p => ({ ...p, agreed_price: e.target.value }))} placeholder="Defaults to package base price" />
+            </div>
+            <div>
+              <Label>Notes</Label>
+              <Textarea value={applyPackageForm.notes} onChange={e => setApplyPackageForm(p => ({ ...p, notes: e.target.value }))} rows={2} />
+            </div>
+            <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Saving…' : 'Apply Package'}</Button>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bill Split Dialog */}
+      <Dialog open={showSplitDialog} onOpenChange={setShowSplitDialog}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader><DialogTitle>Split Bill — {billForSplit?.bill_number}</DialogTitle></DialogHeader>
+          {billForSplit && (
+            <form onSubmit={handleSubmitSplit} className="space-y-3">
+              <p className="text-sm text-gray-600">Bill total: <b>₹{billForSplit.total_amount.toFixed(2)}</b>. Split must sum to the total.</p>
+              <div className="space-y-2">
+                {splitRows.map((r, i) => (
+                  <div key={i} className="grid grid-cols-12 gap-2 items-end">
+                    <div className="col-span-3">
+                      {i === 0 && <Label className="text-xs">Payer Type</Label>}
+                      <Select value={r.payer_type} onValueChange={v => setSplitRows(rows => rows.map((x, j) => j === i ? { ...x, payer_type: v } : x))}>
+                        <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="cash">Cash</SelectItem>
+                          <SelectItem value="insurance">Insurance</SelectItem>
+                          <SelectItem value="tpa">TPA</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="col-span-4">
+                      {i === 0 && <Label className="text-xs">Payer Name</Label>}
+                      <Input value={r.payer_name} onChange={e => setSplitRows(rows => rows.map((x, j) => j === i ? { ...x, payer_name: e.target.value } : x))} />
+                    </div>
+                    <div className="col-span-3">
+                      {i === 0 && <Label className="text-xs">TPA (if any)</Label>}
+                      <Select value={r.tpa_id ? String(r.tpa_id) : ''} onValueChange={v => setSplitRows(rows => rows.map((x, j) => j === i ? { ...x, tpa_id: v } : x))} disabled={r.payer_type !== 'tpa'}>
+                        <SelectTrigger className="h-9"><SelectValue placeholder="–" /></SelectTrigger>
+                        <SelectContent>
+                          {tpaList.map(t => <SelectItem key={t.id} value={String(t.id)}>{t.tpa_name}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="col-span-1">
+                      {i === 0 && <Label className="text-xs">Amount</Label>}
+                      <Input type="number" step="0.01" value={r.amount} onChange={e => setSplitRows(rows => rows.map((x, j) => j === i ? { ...x, amount: e.target.value } : x))} />
+                    </div>
+                    <div className="col-span-1">
+                      <Button type="button" variant="ghost" size="sm" onClick={() => setSplitRows(rows => rows.filter((_, j) => j !== i))}>
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="flex justify-between">
+                <Button type="button" variant="outline" size="sm" onClick={() => setSplitRows(rows => [...rows, { payer_type: 'insurance', payer_name: '', tpa_id: '', amount: 0 }])}>
+                  <Plus className="h-3.5 w-3.5 mr-1" /> Add Split
+                </Button>
+                <div className="text-sm">
+                  Sum: <b>₹{splitRows.reduce((s, r) => s + (parseFloat(r.amount) || 0), 0).toFixed(2)}</b> / ₹{billForSplit.total_amount.toFixed(2)}
+                </div>
+              </div>
+              <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Saving…' : 'Save Split'}</Button>
+            </form>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Pre-auth Create Dialog */}
+      <Dialog open={showPreauthDialog} onOpenChange={(open) => { setShowPreauthDialog(open); if (!open) { setPreauthSelectedPatient(null); setPreauthPatientSearch(''); } }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader><DialogTitle>New Pre-Authorisation Request</DialogTitle></DialogHeader>
+          <form onSubmit={handleCreatePreauth} className="space-y-3">
+            <div>
+              <Label>Patient *</Label>
+              {preauthSelectedPatient ? (
+                <div className="flex justify-between items-center p-2 border rounded text-sm">
+                  <span>{preauthSelectedPatient.first_name} {preauthSelectedPatient.last_name} ({preauthSelectedPatient.patient_id?.slice(0, 8)}…)</span>
+                  <Button type="button" variant="ghost" size="sm" onClick={() => { setPreauthSelectedPatient(null); setPreauthPatientSearch(''); }}><X className="h-4 w-4" /></Button>
+                </div>
+              ) : (
+                <>
+                  <Input value={preauthPatientSearch} onChange={e => setPreauthPatientSearch(e.target.value)} placeholder="Search by name or phone..." />
+                  {preauthPatientResults.length > 0 && (
+                    <div className="border rounded max-h-40 overflow-y-auto mt-1">
+                      {preauthPatientResults.slice(0, 10).map(p => (
+                        <div key={p.id} className="p-2 hover:bg-gray-50 cursor-pointer text-sm" onClick={() => { setPreauthSelectedPatient(p); setPreauthPatientSearch(''); setPreauthPatientResults([]); }}>
+                          {p.first_name} {p.last_name} — {p.primary_phone}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Insurance Provider *</Label>
+                <Input value={preauthForm.insurance_provider} onChange={e => setPreauthForm(p => ({ ...p, insurance_provider: e.target.value }))} required placeholder="e.g. Star Health" />
+              </div>
+              <div>
+                <Label>Policy Number</Label>
+                <Input value={preauthForm.policy_number} onChange={e => setPreauthForm(p => ({ ...p, policy_number: e.target.value }))} />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>TPA</Label>
+                <Select value={preauthForm.tpa_id} onValueChange={v => setPreauthForm(p => ({ ...p, tpa_id: v }))}>
+                  <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
+                  <SelectContent>
+                    {tpaList.map(t => <SelectItem key={t.id} value={String(t.id)}>{t.tpa_name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Requested Amount (₹) *</Label>
+                <Input type="number" step="0.01" min="0.01" value={preauthForm.requested_amount} onChange={e => setPreauthForm(p => ({ ...p, requested_amount: e.target.value }))} required />
+              </div>
+            </div>
+            <div>
+              <Label>Admission (if any)</Label>
+              <Input value={preauthForm.admission_id} onChange={e => setPreauthForm(p => ({ ...p, admission_id: e.target.value }))} placeholder="Admission ID (numeric)" />
+            </div>
+            <div>
+              <Label>Notes</Label>
+              <Textarea value={preauthForm.notes} onChange={e => setPreauthForm(p => ({ ...p, notes: e.target.value }))} rows={2} />
+            </div>
+            <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Saving…' : 'Submit Request'}</Button>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Pre-auth Decision Dialog */}
+      <Dialog open={showPreauthDecisionDialog} onOpenChange={setShowPreauthDecisionDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Record Insurer Decision</DialogTitle></DialogHeader>
+          {activePreauth && (
+            <form onSubmit={handlePreauthDecision} className="space-y-3">
+              <p className="text-sm">{activePreauth.insurance_provider} · Requested ₹{activePreauth.requested_amount.toFixed(2)}</p>
+              <div>
+                <Label>Decision *</Label>
+                <Select value={preauthDecisionForm.status} onValueChange={v => setPreauthDecisionForm(p => ({ ...p, status: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="approved">Approved</SelectItem>
+                    <SelectItem value="rejected">Rejected</SelectItem>
+                    <SelectItem value="expired">Expired</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {preauthDecisionForm.status === 'approved' && (
+                <>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <Label>Approved Amount (₹) *</Label>
+                      <Input type="number" step="0.01" value={preauthDecisionForm.approved_amount} onChange={e => setPreauthDecisionForm(p => ({ ...p, approved_amount: e.target.value }))} required />
+                    </div>
+                    <div>
+                      <Label>Validity (days)</Label>
+                      <Input type="number" value={preauthDecisionForm.validity_days} onChange={e => setPreauthDecisionForm(p => ({ ...p, validity_days: e.target.value }))} />
+                    </div>
+                  </div>
+                  <div>
+                    <Label>Approval Reference</Label>
+                    <Input value={preauthDecisionForm.approval_reference} onChange={e => setPreauthDecisionForm(p => ({ ...p, approval_reference: e.target.value }))} />
+                  </div>
+                </>
+              )}
+              <div>
+                <Label>Notes</Label>
+                <Textarea value={preauthDecisionForm.notes} onChange={e => setPreauthDecisionForm(p => ({ ...p, notes: e.target.value }))} rows={2} />
+              </div>
+              <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Saving…' : 'Save Decision'}</Button>
+            </form>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Ancillary Service Catalog Dialog */}
+      <Dialog open={showServiceDialog} onOpenChange={(open) => { setShowServiceDialog(open); if (!open) setEditingService(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>{editingService ? 'Edit' : 'New'} Ancillary Service</DialogTitle></DialogHeader>
+          <form onSubmit={handleSubmitService} className="space-y-3">
+            <div>
+              <Label>Service Name *</Label>
+              <Input value={serviceForm.service_name} onChange={e => setServiceForm(p => ({ ...p, service_name: e.target.value }))} required />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Code</Label>
+                <Input value={serviceForm.service_code} onChange={e => setServiceForm(p => ({ ...p, service_code: e.target.value }))} />
+              </div>
+              <div>
+                <Label>Category *</Label>
+                <Select value={serviceForm.category} onValueChange={v => setServiceForm(p => ({ ...p, category: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="imaging">Imaging</SelectItem>
+                    <SelectItem value="physiotherapy">Physiotherapy</SelectItem>
+                    <SelectItem value="dialysis">Dialysis</SelectItem>
+                    <SelectItem value="oxygen">Oxygen</SelectItem>
+                    <SelectItem value="equipment">Equipment</SelectItem>
+                    <SelectItem value="consumable">Consumable</SelectItem>
+                    <SelectItem value="procedure">Procedure</SelectItem>
+                    <SelectItem value="other">Other</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Default Charge (₹) *</Label>
+                <Input type="number" step="0.01" value={serviceForm.default_charge} onChange={e => setServiceForm(p => ({ ...p, default_charge: e.target.value }))} required />
+              </div>
+              <div>
+                <Label>Charge Unit</Label>
+                <Select value={serviceForm.charge_unit} onValueChange={v => setServiceForm(p => ({ ...p, charge_unit: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="per_session">Per Session</SelectItem>
+                    <SelectItem value="per_hour">Per Hour</SelectItem>
+                    <SelectItem value="per_day">Per Day</SelectItem>
+                    <SelectItem value="per_unit">Per Unit</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div>
+              <Label>Description</Label>
+              <Textarea value={serviceForm.description} onChange={e => setServiceForm(p => ({ ...p, description: e.target.value }))} rows={2} />
+            </div>
+            <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Saving…' : 'Save Service'}</Button>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Package Dialog */}
+      <Dialog open={showPackageDialog} onOpenChange={(open) => { setShowPackageDialog(open); if (!open) setEditingPackage(null); }}>
+        <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
+          <DialogHeader><DialogTitle>{editingPackage ? 'Edit' : 'New'} Surgery Package</DialogTitle></DialogHeader>
+          <form onSubmit={handleSubmitPackage} className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Package Name *</Label>
+                <Input value={packageForm.package_name} onChange={e => setPackageForm(p => ({ ...p, package_name: e.target.value }))} required />
+              </div>
+              <div>
+                <Label>Code</Label>
+                <Input value={packageForm.package_code} onChange={e => setPackageForm(p => ({ ...p, package_code: e.target.value }))} />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Base Price (₹) *</Label>
+                <Input type="number" step="0.01" value={packageForm.base_price} onChange={e => setPackageForm(p => ({ ...p, base_price: e.target.value }))} required />
+              </div>
+              <div>
+                <Label>Included Room Type</Label>
+                <Select value={packageForm.included_room_type} onValueChange={v => setPackageForm(p => ({ ...p, included_room_type: v }))}>
+                  <SelectTrigger><SelectValue placeholder="Any" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="general">General</SelectItem>
+                    <SelectItem value="private">Private</SelectItem>
+                    <SelectItem value="icu">ICU</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Included Stay Days</Label>
+                <Input type="number" min="0" value={packageForm.included_stay_days} onChange={e => setPackageForm(p => ({ ...p, included_stay_days: e.target.value }))} />
+              </div>
+              <div>
+                <Label>Excess/day (₹)</Label>
+                <Input type="number" step="0.01" value={packageForm.excess_per_day_charge} onChange={e => setPackageForm(p => ({ ...p, excess_per_day_charge: e.target.value }))} />
+              </div>
+            </div>
+            <div>
+              <Label>Included Services</Label>
+              <div className="grid grid-cols-2 gap-1 text-xs">
+                {['room', 'doctor_visit', 'nurse_visit', 'procedure', 'ot', 'pharmacy', 'lab', 'ancillary'].map(s => (
+                  <label key={s} className="flex items-center gap-1">
+                    <input type="checkbox" checked={(packageForm.included_services || []).includes(s)} onChange={e => {
+                      setPackageForm(p => ({ ...p, included_services: e.target.checked ? [...(p.included_services || []), s] : (p.included_services || []).filter(x => x !== s) }));
+                    }} />
+                    {s.replace('_', ' ')}
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div>
+              <Label>Description</Label>
+              <Textarea value={packageForm.description} onChange={e => setPackageForm(p => ({ ...p, description: e.target.value }))} rows={2} />
+            </div>
+            <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Saving…' : 'Save Package'}</Button>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Consent Dialog */}
+      <Dialog open={showConsentDialog} onOpenChange={setShowConsentDialog}>
+        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+          <DialogHeader><DialogTitle>Record Consent</DialogTitle></DialogHeader>
+          <form onSubmit={handleCreateConsent} className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Type *</Label>
+                <Select value={consentForm.consent_type} onValueChange={v => setConsentForm(p => ({ ...p, consent_type: v, template_id: '' }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="surgical">Surgical</SelectItem>
+                    <SelectItem value="anaesthesia">Anaesthesia</SelectItem>
+                    <SelectItem value="blood_transfusion">Blood Transfusion</SelectItem>
+                    <SelectItem value="high_risk_procedure">High-risk Procedure</SelectItem>
+                    <SelectItem value="general_treatment">General Treatment</SelectItem>
+                    <SelectItem value="research">Research</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Template</Label>
+                <Select value={consentForm.template_id || 'none'} onValueChange={v => setConsentForm(p => ({ ...p, template_id: v === 'none' ? '' : v }))}>
+                  <SelectTrigger><SelectValue placeholder="No template" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">No template</SelectItem>
+                    {consentTemplates.filter(t => t.consent_type === consentForm.consent_type).map(t => (
+                      <SelectItem key={t.id} value={String(t.id)}>{t.template_name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div>
+              <Label>Procedure Name</Label>
+              <Input value={consentForm.procedure_name} onChange={e => setConsentForm(p => ({ ...p, procedure_name: e.target.value }))} placeholder="e.g. Cataract surgery (OD)" />
+            </div>
+            <div>
+              <Label>Treating Doctor</Label>
+              <Select value={consentForm.doctor_id || 'none'} onValueChange={v => setConsentForm(p => ({ ...p, doctor_id: v === 'none' ? '' : v }))}>
+                <SelectTrigger><SelectValue placeholder="Optional" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">—</SelectItem>
+                  {doctorsList.map(d => <SelectItem key={d.id} value={String(d.id)}>Dr. {d.first_name} {d.last_name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Risks Explained</Label>
+              <Textarea value={consentForm.risks_explained} onChange={e => setConsentForm(p => ({ ...p, risks_explained: e.target.value }))} rows={3} placeholder="e.g. Infection, bleeding, anaesthesia reactions..." />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Signed By *</Label>
+                <Select value={consentForm.signed_by} onValueChange={v => setConsentForm(p => ({ ...p, signed_by: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="patient">Patient</SelectItem>
+                    <SelectItem value="guardian">Guardian</SelectItem>
+                    <SelectItem value="proxy">Proxy</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Patient Signature (typed) *</Label>
+                <Input value={consentForm.patient_signature} onChange={e => setConsentForm(p => ({ ...p, patient_signature: e.target.value }))} required placeholder="Type full name" />
+              </div>
+            </div>
+            {consentForm.signed_by !== 'patient' && (
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label>Guardian Name *</Label>
+                  <Input value={consentForm.guardian_name} onChange={e => setConsentForm(p => ({ ...p, guardian_name: e.target.value }))} required />
+                </div>
+                <div>
+                  <Label>Relationship</Label>
+                  <Input value={consentForm.guardian_relationship} onChange={e => setConsentForm(p => ({ ...p, guardian_relationship: e.target.value }))} placeholder="e.g. Father, Spouse" />
+                </div>
+              </div>
+            )}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Witness Name</Label>
+                <Input value={consentForm.witness_name} onChange={e => setConsentForm(p => ({ ...p, witness_name: e.target.value }))} />
+              </div>
+              <div>
+                <Label>Witness Signature</Label>
+                <Input value={consentForm.witness_signature} onChange={e => setConsentForm(p => ({ ...p, witness_signature: e.target.value }))} placeholder="Typed name" />
+              </div>
+            </div>
+            <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Saving…' : 'Record Consent'}</Button>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Consent Withdraw Dialog */}
+      <Dialog open={showWithdrawConsentDialog} onOpenChange={setShowWithdrawConsentDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Withdraw Consent</DialogTitle></DialogHeader>
+          <form onSubmit={handleWithdrawConsent} className="space-y-3">
+            <p className="text-sm text-gray-600">Withdrawing this consent will mark it as no longer valid. The original record is preserved.</p>
+            <div>
+              <Label>Reason *</Label>
+              <Textarea value={withdrawReason} onChange={e => setWithdrawReason(e.target.value)} rows={3} required />
+            </div>
+            <Button type="submit" className="w-full" variant="destructive" disabled={loading}>{loading ? 'Saving…' : 'Withdraw'}</Button>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Consent Template Dialog */}
+      <Dialog open={showConsentTemplateDialog} onOpenChange={(open) => { setShowConsentTemplateDialog(open); if (!open) setEditingConsentTemplate(null); }}>
+        <DialogContent className="max-w-xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader><DialogTitle>{editingConsentTemplate ? 'Edit' : 'New'} Consent Template</DialogTitle></DialogHeader>
+          <form onSubmit={handleSubmitConsentTemplate} className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Type *</Label>
+                <Select value={consentTemplateForm.consent_type} onValueChange={v => setConsentTemplateForm(p => ({ ...p, consent_type: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="surgical">Surgical</SelectItem>
+                    <SelectItem value="anaesthesia">Anaesthesia</SelectItem>
+                    <SelectItem value="blood_transfusion">Blood Transfusion</SelectItem>
+                    <SelectItem value="high_risk_procedure">High-risk Procedure</SelectItem>
+                    <SelectItem value="general_treatment">General Treatment</SelectItem>
+                    <SelectItem value="research">Research</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Language</Label>
+                <Input value={consentTemplateForm.language} onChange={e => setConsentTemplateForm(p => ({ ...p, language: e.target.value }))} />
+              </div>
+            </div>
+            <div>
+              <Label>Template Name *</Label>
+              <Input value={consentTemplateForm.template_name} onChange={e => setConsentTemplateForm(p => ({ ...p, template_name: e.target.value }))} required />
+            </div>
+            <div>
+              <Label>Content *</Label>
+              <Textarea value={consentTemplateForm.content} onChange={e => setConsentTemplateForm(p => ({ ...p, content: e.target.value }))} rows={10} required placeholder="Full consent text — will appear on the printed PDF." />
+            </div>
+            <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Saving…' : 'Save Template'}</Button>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Incident Report Dialog */}
+      <Dialog open={showIncidentDialog} onOpenChange={setShowIncidentDialog}>
+        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+          <DialogHeader><DialogTitle>Report Incident</DialogTitle></DialogHeader>
+          <form onSubmit={handleCreateIncident} className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Type *</Label>
+                <Select value={incidentForm.incident_type} onValueChange={v => setIncidentForm(p => ({ ...p, incident_type: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="fall">Fall</SelectItem>
+                    <SelectItem value="medication_error">Medication Error</SelectItem>
+                    <SelectItem value="pressure_ulcer">Pressure Ulcer</SelectItem>
+                    <SelectItem value="needle_stick">Needle Stick</SelectItem>
+                    <SelectItem value="infection">Infection</SelectItem>
+                    <SelectItem value="equipment_failure">Equipment Failure</SelectItem>
+                    <SelectItem value="documentation_error">Documentation Error</SelectItem>
+                    <SelectItem value="wrong_patient">Wrong Patient</SelectItem>
+                    <SelectItem value="other">Other</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Severity *</Label>
+                <Select value={incidentForm.severity} onValueChange={v => setIncidentForm(p => ({ ...p, severity: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="low">Low</SelectItem>
+                    <SelectItem value="medium">Medium</SelectItem>
+                    <SelectItem value="high">High</SelectItem>
+                    <SelectItem value="critical">Critical</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Date / Time *</Label>
+                <Input type="datetime-local" value={incidentForm.incident_date} onChange={e => setIncidentForm(p => ({ ...p, incident_date: e.target.value }))} required />
+              </div>
+              <div>
+                <Label>Location</Label>
+                <Input value={incidentForm.location} onChange={e => setIncidentForm(p => ({ ...p, location: e.target.value }))} placeholder="e.g. Ward A, Bed 3" />
+              </div>
+              <div>
+                <Label>Admission #</Label>
+                <Input value={incidentForm.admission_id} onChange={e => setIncidentForm(p => ({ ...p, admission_id: e.target.value }))} placeholder="Optional (numeric ID)" />
+              </div>
+              <div>
+                <Label>Witnessed By</Label>
+                <Input value={incidentForm.witnessed_by} onChange={e => setIncidentForm(p => ({ ...p, witnessed_by: e.target.value }))} placeholder="Name(s)" />
+              </div>
+            </div>
+            <div>
+              <Label>Description *</Label>
+              <Textarea value={incidentForm.description} onChange={e => setIncidentForm(p => ({ ...p, description: e.target.value }))} rows={4} required placeholder="What happened?" />
+            </div>
+            <div>
+              <Label>Immediate Action</Label>
+              <Textarea value={incidentForm.immediate_action} onChange={e => setIncidentForm(p => ({ ...p, immediate_action: e.target.value }))} rows={2} placeholder="Actions taken at the time" />
+            </div>
+            <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Saving…' : 'Submit Report'}</Button>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Investigate Incident Dialog */}
+      <Dialog open={showInvestigateDialog} onOpenChange={setShowInvestigateDialog}>
+        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+          <DialogHeader><DialogTitle>Investigate Incident</DialogTitle></DialogHeader>
+          {investigatingIncident && (
+            <form onSubmit={handleInvestigateIncident} className="space-y-3">
+              <div className="bg-gray-50 p-3 rounded text-sm">
+                <div><b>{investigatingIncident.incident_type.replace(/_/g, ' ')}</b> ({investigatingIncident.severity}) · currently <b>{investigatingIncident.status}</b></div>
+                <p className="text-xs text-gray-600 mt-1">{investigatingIncident.description}</p>
+              </div>
+              <div>
+                <Label>Change status to</Label>
+                <Select value={investigateForm.new_status || 'none'} onValueChange={v => setInvestigateForm(p => ({ ...p, new_status: v === 'none' ? '' : v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">(keep current)</SelectItem>
+                    <SelectItem value="investigating">Investigating</SelectItem>
+                    <SelectItem value="resolved">Resolved</SelectItem>
+                    <SelectItem value="closed">Closed</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Investigation Notes</Label>
+                <Textarea value={investigateForm.investigation_notes} onChange={e => setInvestigateForm(p => ({ ...p, investigation_notes: e.target.value }))} rows={3} />
+              </div>
+              <div>
+                <Label>Root Cause</Label>
+                <Textarea value={investigateForm.root_cause} onChange={e => setInvestigateForm(p => ({ ...p, root_cause: e.target.value }))} rows={2} />
+              </div>
+              <div>
+                <Label>Resolution</Label>
+                <Textarea value={investigateForm.resolution} onChange={e => setInvestigateForm(p => ({ ...p, resolution: e.target.value }))} rows={2} />
+              </div>
+              <div>
+                <Label>Corrective Actions</Label>
+                <Textarea value={investigateForm.corrective_actions} onChange={e => setInvestigateForm(p => ({ ...p, corrective_actions: e.target.value }))} rows={2} />
+              </div>
+              <div>
+                <Label>Preventive Measures</Label>
+                <Textarea value={investigateForm.preventive_measures} onChange={e => setInvestigateForm(p => ({ ...p, preventive_measures: e.target.value }))} rows={2} />
+              </div>
+              <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Saving…' : 'Update Investigation'}</Button>
+            </form>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Mortality Details Dialog */}
+      <Dialog open={showMortalityDialog} onOpenChange={setShowMortalityDialog}>
+        <DialogContent className="max-w-xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader><DialogTitle>Mortality Details</DialogTitle></DialogHeader>
+          <form onSubmit={handleSaveMortality} className="space-y-3">
+            <div>
+              <Label>Cause of Death *</Label>
+              <Textarea value={mortalityForm.cause_of_death} onChange={e => setMortalityForm(p => ({ ...p, cause_of_death: e.target.value }))} rows={3} required />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Time of Death</Label>
+                <Input type="datetime-local" value={mortalityForm.time_of_death} onChange={e => setMortalityForm(p => ({ ...p, time_of_death: e.target.value }))} />
+              </div>
+              <div>
+                <Label>Certificate #</Label>
+                <Input value={mortalityForm.death_certificate_number} onChange={e => setMortalityForm(p => ({ ...p, death_certificate_number: e.target.value }))} />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={mortalityForm.mlc_required} onChange={e => setMortalityForm(p => ({ ...p, mlc_required: e.target.checked }))} />
+                <span className="text-sm">MLC Required</span>
+              </label>
+              {mortalityForm.mlc_required && (
+                <div>
+                  <Label className="text-xs">MLC Number</Label>
+                  <Input value={mortalityForm.mlc_number} onChange={e => setMortalityForm(p => ({ ...p, mlc_number: e.target.value }))} />
+                </div>
+              )}
+            </div>
+            <div>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={mortalityForm.autopsy_done} onChange={e => setMortalityForm(p => ({ ...p, autopsy_done: e.target.checked }))} />
+                <span className="text-sm">Autopsy Done</span>
+              </label>
+              {mortalityForm.autopsy_done && (
+                <Textarea className="mt-2" value={mortalityForm.autopsy_findings} onChange={e => setMortalityForm(p => ({ ...p, autopsy_findings: e.target.value }))} rows={2} placeholder="Autopsy findings..." />
+              )}
+            </div>
+            <hr />
+            <h4 className="text-sm font-semibold">Body Handover</h4>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Handed over to</Label>
+                <Input value={mortalityForm.body_handed_over_to} onChange={e => setMortalityForm(p => ({ ...p, body_handed_over_to: e.target.value }))} />
+              </div>
+              <div>
+                <Label>Relationship</Label>
+                <Input value={mortalityForm.body_handover_relationship} onChange={e => setMortalityForm(p => ({ ...p, body_handover_relationship: e.target.value }))} placeholder="e.g. Son, Spouse" />
+              </div>
+              <div>
+                <Label>Date / Time</Label>
+                <Input type="datetime-local" value={mortalityForm.body_handover_time} onChange={e => setMortalityForm(p => ({ ...p, body_handover_time: e.target.value }))} />
+              </div>
+              <div>
+                <Label>ID Proof</Label>
+                <Input value={mortalityForm.body_handover_id_proof} onChange={e => setMortalityForm(p => ({ ...p, body_handover_id_proof: e.target.value }))} placeholder="e.g. Aadhaar XXXX-XXXX-1234" />
+              </div>
+            </div>
+            <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Saving…' : 'Save Mortality Details'}</Button>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Ward Transfer Dialog */}
+      <Dialog open={showWardTransferDialog} onOpenChange={setShowWardTransferDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Initiate Ward Transfer</DialogTitle></DialogHeader>
+          <form onSubmit={handleInitiateWardTransfer} className="space-y-3">
+            <div>
+              <Label>Target Room *</Label>
+              <Select value={wardTransferForm.to_room_id} onValueChange={v => {
+                setWardTransferForm(p => ({ ...p, to_room_id: v, to_bed_id: '' }));
+                axios.get(`/api/inpatient/rooms/${v}/beds`).then(res => setWardTransferBeds(res.data)).catch(() => setWardTransferBeds([]));
+              }}>
+                <SelectTrigger><SelectValue placeholder="Select room" /></SelectTrigger>
+                <SelectContent>
+                  {availableRooms.map(r => (
+                    <SelectItem key={r.id} value={String(r.id)}>{r.room_number} ({roomTypeLabel[r.room_type]}) · {r.available_beds} bed(s) available</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {wardTransferBeds.length > 0 && (
+              <div>
+                <Label>Bed (optional)</Label>
+                <Select value={wardTransferForm.to_bed_id} onValueChange={v => setWardTransferForm(p => ({ ...p, to_bed_id: v }))}>
+                  <SelectTrigger><SelectValue placeholder="Any available" /></SelectTrigger>
+                  <SelectContent>
+                    {wardTransferBeds.filter(b => b.status === 'available').map(b => (
+                      <SelectItem key={b.id} value={String(b.id)}>Bed {b.bed_label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+            <div>
+              <Label>Reason *</Label>
+              <Input value={wardTransferForm.reason} onChange={e => setWardTransferForm(p => ({ ...p, reason: e.target.value }))} required placeholder="e.g. Step-down from ICU, patient request..." />
+            </div>
+            <div>
+              <Label>Clinical Handover Note *</Label>
+              <Textarea value={wardTransferForm.transfer_note} onChange={e => setWardTransferForm(p => ({ ...p, transfer_note: e.target.value }))} rows={4} required placeholder="Current status, pending treatments, precautions..." />
+            </div>
+            <p className="text-xs text-gray-500">Transfer will be pending until accepted by a nurse or doctor on the receiving ward.</p>
+            <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Submitting…' : 'Initiate Transfer'}</Button>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Roster Cell Dialog */}
+      <Dialog open={showRosterCellDialog} onOpenChange={setShowRosterCellDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{rosterCellEdit?.existing ? 'Edit' : 'Assign'} Roster — {rosterCellEdit?.nurse?.name}</DialogTitle>
+          </DialogHeader>
+          {rosterCellEdit && (
+            <form onSubmit={handleSaveRosterCell} className="space-y-3">
+              <div className="bg-gray-50 p-2 rounded text-sm">
+                <b>{rosterCellEdit.dateIso}</b> · {rosterCellEdit.shift} shift
+              </div>
+              <div>
+                <Label>Status *</Label>
+                <Select value={rosterCellForm.status} onValueChange={v => setRosterCellForm(p => ({ ...p, status: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="working">Working</SelectItem>
+                    <SelectItem value="on_call">On Call</SelectItem>
+                    <SelectItem value="leave">Leave</SelectItem>
+                    <SelectItem value="off">Off (rest day)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Ward (optional)</Label>
+                <Input value={rosterCellForm.ward} onChange={e => setRosterCellForm(p => ({ ...p, ward: e.target.value }))} placeholder="e.g. ICU, Ward A" />
+              </div>
+              <div>
+                <Label>Notes</Label>
+                <Textarea value={rosterCellForm.notes} onChange={e => setRosterCellForm(p => ({ ...p, notes: e.target.value }))} rows={2} />
+              </div>
+              <div className="flex justify-between gap-2">
+                {rosterCellEdit.existing && (
+                  <Button type="button" variant="ghost" className="text-red-600" onClick={handleDeleteRosterCell}>
+                    <Trash2 className="h-4 w-4 mr-1" /> Remove
+                  </Button>
+                )}
+                <Button type="submit" className="ml-auto" disabled={loading}>
+                  {loading ? 'Saving…' : (rosterCellEdit.existing ? 'Save Changes' : 'Assign')}
+                </Button>
+              </div>
+            </form>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk Roster Dialog */}
+      <Dialog open={showBulkRosterDialog} onOpenChange={setShowBulkRosterDialog}>
+        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+          <DialogHeader><DialogTitle>Bulk Roster Assign</DialogTitle></DialogHeader>
+          <form onSubmit={handleBulkRoster} className="space-y-3">
+            <div>
+              <Label>Nurses * <span className="text-xs text-gray-500">({bulkRosterForm.nurse_ids.length} selected)</span></Label>
+              <div className="border rounded max-h-40 overflow-y-auto p-2 space-y-1">
+                {nursesList.length === 0 ? (
+                  <p className="text-xs text-gray-500">No nurses found. Create users with the 'nurse' role.</p>
+                ) : (
+                  nursesList.map(n => (
+                    <label key={n.id} className="flex items-center gap-2 text-sm cursor-pointer hover:bg-gray-50 p-1 rounded">
+                      <input
+                        type="checkbox"
+                        checked={bulkRosterForm.nurse_ids.includes(n.id)}
+                        onChange={e => {
+                          setBulkRosterForm(p => ({
+                            ...p,
+                            nurse_ids: e.target.checked
+                              ? [...p.nurse_ids, n.id]
+                              : p.nurse_ids.filter(x => x !== n.id),
+                          }));
+                        }}
+                      />
+                      {n.first_name} {n.last_name}
+                    </label>
+                  ))
+                )}
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>From Date *</Label>
+                <Input type="date" value={bulkRosterForm.from_date} onChange={e => setBulkRosterForm(p => ({ ...p, from_date: e.target.value }))} required />
+              </div>
+              <div>
+                <Label>To Date *</Label>
+                <Input type="date" value={bulkRosterForm.to_date} onChange={e => setBulkRosterForm(p => ({ ...p, to_date: e.target.value }))} required />
+              </div>
+            </div>
+            <div>
+              <Label>Shifts *</Label>
+              <div className="flex gap-3 mt-1">
+                {['morning', 'afternoon', 'night'].map(s => (
+                  <label key={s} className="flex items-center gap-1 text-sm capitalize cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={bulkRosterForm.shifts.includes(s)}
+                      onChange={e => {
+                        setBulkRosterForm(p => ({
+                          ...p,
+                          shifts: e.target.checked ? [...p.shifts, s] : p.shifts.filter(x => x !== s),
+                        }));
+                      }}
+                    />
+                    {s}
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Status</Label>
+                <Select value={bulkRosterForm.status} onValueChange={v => setBulkRosterForm(p => ({ ...p, status: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="working">Working</SelectItem>
+                    <SelectItem value="on_call">On Call</SelectItem>
+                    <SelectItem value="leave">Leave</SelectItem>
+                    <SelectItem value="off">Off</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Ward (optional)</Label>
+                <Input value={bulkRosterForm.ward} onChange={e => setBulkRosterForm(p => ({ ...p, ward: e.target.value }))} />
+              </div>
+            </div>
+            <div>
+              <Label>Notes</Label>
+              <Textarea value={bulkRosterForm.notes} onChange={e => setBulkRosterForm(p => ({ ...p, notes: e.target.value }))} rows={2} />
+            </div>
+            <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <input type="checkbox" checked={bulkRosterForm.overwrite} onChange={e => setBulkRosterForm(p => ({ ...p, overwrite: e.target.checked }))} />
+              <span>Overwrite existing entries</span>
+              <span className="text-xs text-gray-500">(replace any current grants in the date/shift range)</span>
+            </label>
+            <Button type="submit" className="w-full" disabled={loading}>
+              {loading ? 'Applying…' : `Apply to ${bulkRosterForm.nurse_ids.length} nurse(s) × ${bulkRosterForm.shifts.length} shift(s)`}
+            </Button>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Nurse Assignment Dialog */}
+      <Dialog open={showNurseAssignDialog} onOpenChange={setShowNurseAssignDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Assign Nurse</DialogTitle></DialogHeader>
+          <form onSubmit={handleAssignNurse} className="space-y-3">
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <Label>Nurse *</Label>
+                <label className="flex items-center gap-1 text-xs cursor-pointer">
+                  <input type="checkbox" checked={restrictToOnDuty} onChange={e => setRestrictToOnDuty(e.target.checked)} />
+                  On-duty only
+                </label>
+              </div>
+              <Select value={nurseAssignForm.nurse_id} onValueChange={v => setNurseAssignForm(p => ({ ...p, nurse_id: v }))}>
+                <SelectTrigger><SelectValue placeholder={restrictToOnDuty ? `Select from ${onDutyNurses.length} on-duty nurse(s)` : "Select nurse"} /></SelectTrigger>
+                <SelectContent>
+                  {(restrictToOnDuty ? onDutyNurses.map(n => ({ id: n.nurse_id, first_name: n.nurse_name?.split(' ')[0] || '', last_name: n.nurse_name?.split(' ').slice(1).join(' ') || '', _on_duty_status: n.status })) : nursesList).map(n => (
+                    <SelectItem key={n.id} value={String(n.id)}>
+                      {n.first_name} {n.last_name}{n._on_duty_status === 'on_call' ? ' (on call)' : ''}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {restrictToOnDuty && onDutyNurses.length === 0 && (
+                <p className="text-xs text-orange-600 mt-1">No nurses rostered for {nurseAssignForm.shift} on {nurseAssignForm.assignment_date}. Uncheck "On-duty only" to override or update the duty roster first.</p>
+              )}
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Shift *</Label>
+                <Select value={nurseAssignForm.shift} onValueChange={v => setNurseAssignForm(p => ({ ...p, shift: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="morning">Morning</SelectItem>
+                    <SelectItem value="afternoon">Afternoon</SelectItem>
+                    <SelectItem value="night">Night</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Date *</Label>
+                <Input type="date" value={nurseAssignForm.assignment_date} onChange={e => setNurseAssignForm(p => ({ ...p, assignment_date: e.target.value }))} required />
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <input type="checkbox" id="is_primary" checked={nurseAssignForm.is_primary} onChange={e => setNurseAssignForm(p => ({ ...p, is_primary: e.target.checked }))} />
+              <Label htmlFor="is_primary" className="cursor-pointer">Primary nurse for this shift</Label>
+            </div>
+            <div>
+              <Label>Notes</Label>
+              <Textarea value={nurseAssignForm.notes} onChange={e => setNurseAssignForm(p => ({ ...p, notes: e.target.value }))} rows={2} />
+            </div>
+            <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Saving…' : 'Assign'}</Button>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Reservation Dialog */}
+      <Dialog open={showReservationDialog} onOpenChange={(open) => { setShowReservationDialog(open); if (!open) { setReservationSelectedPatient(null); setReservationPatientSearch(''); } }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>New Bed Reservation</DialogTitle></DialogHeader>
+          <form onSubmit={handleCreateReservation} className="space-y-3">
+            <div>
+              <Label>Patient *</Label>
+              {reservationSelectedPatient ? (
+                <div className="flex justify-between items-center p-2 border rounded text-sm">
+                  <span>{reservationSelectedPatient.first_name} {reservationSelectedPatient.last_name}</span>
+                  <Button type="button" variant="ghost" size="sm" onClick={() => { setReservationSelectedPatient(null); setReservationPatientSearch(''); }}><X className="h-4 w-4" /></Button>
+                </div>
+              ) : (
+                <>
+                  <Input value={reservationPatientSearch} onChange={e => setReservationPatientSearch(e.target.value)} placeholder="Search by name or phone..." />
+                  {reservationPatientResults.length > 0 && (
+                    <div className="border rounded max-h-40 overflow-y-auto mt-1">
+                      {reservationPatientResults.slice(0, 10).map(p => (
+                        <div key={p.id} className="p-2 hover:bg-gray-50 cursor-pointer text-sm" onClick={() => { setReservationSelectedPatient(p); setReservationPatientSearch(''); setReservationPatientResults([]); }}>
+                          {p.first_name} {p.last_name} — {p.primary_phone}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+            <div>
+              <Label>Reserved For *</Label>
+              <Input type="datetime-local" value={reservationForm.reserved_for_date} onChange={e => setReservationForm(p => ({ ...p, reserved_for_date: e.target.value }))} required />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Reason</Label>
+                <Select value={reservationForm.reservation_reason} onValueChange={v => setReservationForm(p => ({ ...p, reservation_reason: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="elective">Elective admission</SelectItem>
+                    <SelectItem value="post_op">Post-op recovery</SelectItem>
+                    <SelectItem value="transfer">Transfer in</SelectItem>
+                    <SelectItem value="other">Other</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Room Type</Label>
+                <Select value={reservationForm.room_type || 'any'} onValueChange={v => setReservationForm(p => ({ ...p, room_type: v === 'any' ? '' : v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="any">Any</SelectItem>
+                    <SelectItem value="general">General</SelectItem>
+                    <SelectItem value="private">Private</SelectItem>
+                    <SelectItem value="icu">ICU</SelectItem>
+                    <SelectItem value="emergency">Emergency</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div>
+              <Label>Specific Room (optional)</Label>
+              <Select value={reservationForm.room_id || 'any'} onValueChange={v => setReservationForm(p => ({ ...p, room_id: v === 'any' ? '' : v }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="any">Any room</SelectItem>
+                  {availableRooms.map(r => (
+                    <SelectItem key={r.id} value={String(r.id)}>{r.room_number} ({roomTypeLabel[r.room_type]})</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Notes</Label>
+              <Textarea value={reservationForm.notes} onChange={e => setReservationForm(p => ({ ...p, notes: e.target.value }))} rows={2} />
+            </div>
+            <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Saving…' : 'Reserve'}</Button>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Convert Reservation Dialog */}
+      <Dialog open={showConvertReservationDialog} onOpenChange={setShowConvertReservationDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Convert to Admission</DialogTitle></DialogHeader>
+          {convertingReservation && (
+            <form onSubmit={handleConvertReservation} className="space-y-3">
+              <div className="bg-gray-50 p-3 rounded text-sm">
+                <div><b>Patient:</b> {convertingReservation.patient_name}</div>
+                <div><b>Target:</b> {convertingReservation.bed_label ? `Bed ${convertingReservation.bed_label} in Room ${convertingReservation.room_number}` : convertingReservation.room_number ? `Room ${convertingReservation.room_number}` : `Any ${convertingReservation.room_type} room`}</div>
+              </div>
+              <div>
+                <Label>Admitting Doctor *</Label>
+                <Select value={convertForm.admitting_doctor_id} onValueChange={v => setConvertForm(p => ({ ...p, admitting_doctor_id: v }))}>
+                  <SelectTrigger><SelectValue placeholder="Select doctor" /></SelectTrigger>
+                  <SelectContent>
+                    {doctorsList.map(d => <SelectItem key={d.id} value={String(d.id)}>Dr. {d.first_name} {d.last_name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label>Admission Type</Label>
+                  <Select value={convertForm.admission_type} onValueChange={v => setConvertForm(p => ({ ...p, admission_type: v }))}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="elective">Elective</SelectItem>
+                      <SelectItem value="emergency">Emergency</SelectItem>
+                      <SelectItem value="transfer">Transfer</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Condition</Label>
+                  <Select value={convertForm.condition_on_admission} onValueChange={v => setConvertForm(p => ({ ...p, condition_on_admission: v }))}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="stable">Stable</SelectItem>
+                      <SelectItem value="serious">Serious</SelectItem>
+                      <SelectItem value="critical">Critical</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <div>
+                <Label>Admission Reason</Label>
+                <Textarea value={convertForm.admission_reason} onChange={e => setConvertForm(p => ({ ...p, admission_reason: e.target.value }))} rows={2} />
+              </div>
+              <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Converting…' : 'Convert'}</Button>
+            </form>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* OT Charges Dialog */}
+      <Dialog open={showOTChargesDialog} onOpenChange={setShowOTChargesDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>OT Charges</DialogTitle></DialogHeader>
+          {editingOT && (
+            <form onSubmit={handleSaveOTCharges} className="space-y-3">
+              <p className="text-sm text-gray-600">{editingOT.procedure_name} · {editingOT.patient_name}</p>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label>Surgeon Fee (₹)</Label>
+                  <Input type="number" step="0.01" value={otChargesForm.surgeon_fee} onChange={e => setOtChargesForm(p => ({ ...p, surgeon_fee: e.target.value }))} />
+                </div>
+                <div>
+                  <Label>Anaesthetist Fee (₹)</Label>
+                  <Input type="number" step="0.01" value={otChargesForm.anaesthetist_fee} onChange={e => setOtChargesForm(p => ({ ...p, anaesthetist_fee: e.target.value }))} />
+                </div>
+                <div>
+                  <Label>OT Room Charge (₹)</Label>
+                  <Input type="number" step="0.01" value={otChargesForm.ot_room_charge} onChange={e => setOtChargesForm(p => ({ ...p, ot_room_charge: e.target.value }))} />
+                </div>
+                <div>
+                  <Label>Equipment (₹)</Label>
+                  <Input type="number" step="0.01" value={otChargesForm.equipment_charge} onChange={e => setOtChargesForm(p => ({ ...p, equipment_charge: e.target.value }))} />
+                </div>
+                <div>
+                  <Label>Consumables (₹)</Label>
+                  <Input type="number" step="0.01" value={otChargesForm.consumables_charge} onChange={e => setOtChargesForm(p => ({ ...p, consumables_charge: e.target.value }))} />
+                </div>
+                <div>
+                  <Label>Procedure Charge (₹)</Label>
+                  <Input type="number" step="0.01" value={otChargesForm.procedure_charge} onChange={e => setOtChargesForm(p => ({ ...p, procedure_charge: e.target.value }))} />
+                </div>
+                <div>
+                  <Label>Other (₹)</Label>
+                  <Input type="number" step="0.01" value={otChargesForm.other_charges} onChange={e => setOtChargesForm(p => ({ ...p, other_charges: e.target.value }))} />
+                </div>
+              </div>
+              <div className="border-t pt-2 text-right font-semibold text-sm">
+                Total: ₹{Object.values(otChargesForm).reduce((s, v) => s + (parseFloat(v) || 0), 0).toFixed(2)}
+              </div>
+              <p className="text-xs text-gray-500">Charges flow into the admission bill next time it is previewed or finalised.</p>
+              <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Saving…' : 'Save Charges'}</Button>
+            </form>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* TPA Dialog */}
+      <Dialog open={showTpaDialog} onOpenChange={(open) => { setShowTpaDialog(open); if (!open) setEditingTpa(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>{editingTpa ? 'Edit' : 'New'} TPA</DialogTitle></DialogHeader>
+          <form onSubmit={handleSubmitTpa} className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>TPA Name *</Label>
+                <Input value={tpaForm.tpa_name} onChange={e => setTpaForm(p => ({ ...p, tpa_name: e.target.value }))} required />
+              </div>
+              <div>
+                <Label>Code</Label>
+                <Input value={tpaForm.tpa_code} onChange={e => setTpaForm(p => ({ ...p, tpa_code: e.target.value }))} />
+              </div>
+              <div>
+                <Label>Phone</Label>
+                <Input value={tpaForm.phone} onChange={e => setTpaForm(p => ({ ...p, phone: e.target.value }))} />
+              </div>
+              <div>
+                <Label>Email</Label>
+                <Input type="email" value={tpaForm.email} onChange={e => setTpaForm(p => ({ ...p, email: e.target.value }))} />
+              </div>
+              <div className="col-span-2">
+                <Label>Address</Label>
+                <Textarea value={tpaForm.address} onChange={e => setTpaForm(p => ({ ...p, address: e.target.value }))} rows={2} />
+              </div>
+              <div>
+                <Label>Default Discount %</Label>
+                <Input type="number" step="0.01" min="0" max="100" value={tpaForm.default_discount_percent} onChange={e => setTpaForm(p => ({ ...p, default_discount_percent: e.target.value }))} />
+              </div>
+            </div>
+            <div>
+              <Label>Contract Details</Label>
+              <Textarea value={tpaForm.contract_details} onChange={e => setTpaForm(p => ({ ...p, contract_details: e.target.value }))} rows={2} />
+            </div>
+            <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Saving…' : 'Save TPA'}</Button>
           </form>
         </DialogContent>
       </Dialog>
@@ -2267,16 +6757,63 @@ const InpatientModule = () => {
                 )}
               </div>
             </div>
-            <div>
-              <Label>Surgeon *</Label>
-              <Select value={otForm.surgeon_id ? String(otForm.surgeon_id) : ''} onValueChange={v => setOtForm(p => ({ ...p, surgeon_id: v }))}>
-                <SelectTrigger><SelectValue placeholder="Select surgeon" /></SelectTrigger>
-                <SelectContent>
-                  {doctorsList.map(d => (<SelectItem key={d.id} value={String(d.id)}>Dr. {d.first_name} {d.last_name}</SelectItem>))}
-                </SelectContent>
-              </Select>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label>Surgeon *</Label>
+                <Select value={otForm.surgeon_id ? String(otForm.surgeon_id) : ''} onValueChange={v => setOtForm(p => ({ ...p, surgeon_id: v }))}>
+                  <SelectTrigger><SelectValue placeholder="Select surgeon" /></SelectTrigger>
+                  <SelectContent>
+                    {doctorsList.map(d => (<SelectItem key={d.id} value={String(d.id)}>Dr. {d.first_name} {d.last_name}</SelectItem>))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-gray-500 mt-1">Surgeon fee auto-fills from their inpatient fee.</p>
+              </div>
+              <div>
+                <Label>Anaesthetist</Label>
+                <Select value={otForm.anaesthetist_id ? String(otForm.anaesthetist_id) : ''} onValueChange={v => setOtForm(p => ({ ...p, anaesthetist_id: v }))}>
+                  <SelectTrigger><SelectValue placeholder="Optional" /></SelectTrigger>
+                  <SelectContent>
+                    {doctorsList.map(d => (<SelectItem key={d.id} value={String(d.id)}>Dr. {d.first_name} {d.last_name}</SelectItem>))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-gray-500 mt-1">Anaesthetist fee auto-fills from their inpatient fee.</p>
+              </div>
             </div>
-            <div><Label>Procedure Name *</Label><Input required value={otForm.procedure_name} onChange={e => setOtForm(p => ({ ...p, procedure_name: e.target.value }))} /></div>
+            <div>
+              <Label>Procedure *</Label>
+              {proceduresList.length > 0 && (
+                <Select
+                  value={otForm.procedure_id ? String(otForm.procedure_id) : ''}
+                  onValueChange={v => {
+                    const proc = proceduresList.find(p => String(p.id) === v);
+                    setOtForm(prev => ({
+                      ...prev,
+                      procedure_id: v,
+                      procedure_name: proc ? proc.name : prev.procedure_name,
+                    }));
+                  }}
+                >
+                  <SelectTrigger><SelectValue placeholder="Pick from catalog (or type below for free-text)" /></SelectTrigger>
+                  <SelectContent>
+                    {proceduresList.map(p => (
+                      <SelectItem key={p.id} value={String(p.id)}>
+                        {p.name} — ₹{Number(p.default_rate || 0).toFixed(2)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+              <Input
+                required
+                className="mt-2"
+                placeholder={proceduresList.length > 0 ? "Or type a custom procedure name" : "Procedure name"}
+                value={otForm.procedure_name}
+                onChange={e => setOtForm(p => ({ ...p, procedure_name: e.target.value, procedure_id: '' }))}
+              />
+              {otForm.procedure_id && (
+                <p className="text-xs text-green-600 mt-1">Procedure charge will auto-fill from catalog.</p>
+              )}
+            </div>
             <div className="grid grid-cols-2 gap-4">
               <div><Label>OT Room *</Label><Input required value={otForm.ot_room_number} onChange={e => setOtForm(p => ({ ...p, ot_room_number: e.target.value }))} /></div>
               <div><Label>Duration (min)</Label><Input type="number" min="1" value={otForm.estimated_duration_minutes} onChange={e => setOtForm(p => ({ ...p, estimated_duration_minutes: e.target.value }))} /></div>
@@ -2286,6 +6823,47 @@ const InpatientModule = () => {
             <Button type="submit" className="w-full" disabled={loading || !otForm.patient_id || !otForm.surgeon_id}>
               {loading ? 'Scheduling...' : 'Schedule OT'}
             </Button>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Procedure Catalog Dialog */}
+      <Dialog open={showProcedureDialog} onOpenChange={(open) => { setShowProcedureDialog(open); if (!open) resetProcedureForm(); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{editingProcedure ? 'Edit Procedure' : 'Add Procedure'}</DialogTitle>
+          </DialogHeader>
+          <form onSubmit={handleProcedureSubmit} className="space-y-3">
+            <div>
+              <Label>Name *</Label>
+              <Input required value={procedureForm.name} onChange={e => setProcedureForm(p => ({ ...p, name: e.target.value }))} placeholder="e.g. Appendectomy" />
+            </div>
+            <div>
+              <Label>Default Rate (INR) *</Label>
+              <Input
+                required
+                type="number"
+                step="0.01"
+                min="0"
+                value={procedureForm.default_rate}
+                onChange={e => setProcedureForm(p => ({ ...p, default_rate: e.target.value }))}
+                placeholder="₹15000"
+              />
+              <p className="text-xs text-gray-500 mt-1">Auto-fills as the procedure charge when this procedure is selected during OT scheduling. Editable per OT.</p>
+            </div>
+            <div>
+              <Label>Description</Label>
+              <Textarea
+                rows={2}
+                value={procedureForm.description}
+                onChange={e => setProcedureForm(p => ({ ...p, description: e.target.value }))}
+                placeholder="Optional notes"
+              />
+            </div>
+            <div className="flex justify-end gap-2 pt-2 border-t">
+              <Button type="button" variant="outline" onClick={() => { setShowProcedureDialog(false); resetProcedureForm(); }}>Cancel</Button>
+              <Button type="submit">{editingProcedure ? 'Update' : 'Add'}</Button>
+            </div>
           </form>
         </DialogContent>
       </Dialog>

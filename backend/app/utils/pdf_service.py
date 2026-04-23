@@ -501,7 +501,7 @@ class PDFService:
         age_sex = ''
         if patient_age:
             try:
-                age_sex = f"{int(patient_age)} Year"
+                age_sex = f"{int(patient_age)} Years"
             except ValueError:
                 age_sex = str(patient_age)
         if patient_gender:
@@ -960,7 +960,7 @@ class PDFService:
         patient_name = report_data.get('patient_name', '')
         patient_gender = report_data.get('patient_gender', '')
         patient_age = report_data.get('patient_age', '')
-        age_sex = f"{patient_age} Year" if patient_age else ''
+        age_sex = f"{patient_age} Years" if patient_age else ''
         if patient_gender:
             age_sex = f"{age_sex} / {patient_gender.capitalize()}" if age_sex else patient_gender.capitalize()
 
@@ -1012,11 +1012,11 @@ class PDFService:
         # ============================================================
         # RESULTS TABLE
         # ============================================================
-        param_w = page_width * 0.30
+        param_w = page_width * 0.28
         result_w = page_width * 0.15
         unit_w = page_width * 0.12
-        ref_w = page_width * 0.28
-        flag_w = page_width * 0.15
+        ref_w = page_width * 0.25
+        method_w = page_width * 0.20
 
         # Section header style
         section_label_style = ParagraphStyle('LabSectionLabel', parent=self.styles['Normal'],
@@ -1024,10 +1024,10 @@ class PDFService:
 
         results_header = [
             Paragraph('<b>TEST DESCRIPTION</b>', cell_label),
-            Paragraph('<b>RESULT ENTRY</b>', cell_label),
-            Paragraph('<b>FLAG</b>', cell_label),
-            Paragraph('<b>BIO. REF. RANGE</b>', cell_label),
+            Paragraph('<b>RESULT</b>', cell_label),
             Paragraph('<b>UNIT</b>', cell_label),
+            Paragraph('<b>BIO. REF. RANGE</b>', cell_label),
+            Paragraph('<b>METHOD</b>', cell_label),
         ]
 
         results_data = [results_header]
@@ -1069,30 +1069,22 @@ class PDFService:
             elif normal_val:
                 ref_range = normal_val
 
-            flag_text = ''
-            if is_abnormal:
-                flag_text = 'ABNORMAL'
-            elif r.get('field_type') in ('numeric', 'less_than', 'greater_than') and (ref_min is not None or ref_max is not None):
-                flag_text = 'Normal'
-            elif r.get('field_type') in ('select', 'text') and normal_val and r.get('value'):
-                flag_text = 'Normal' if not is_abnormal else ''
-
-            flag_style = cell_abnormal if is_abnormal else cell_value
-
             param_text = r.get('parameter_name', '')
             remarks = r.get('remarks', '')
             if remarks:
                 param_text = f"{param_text}<br/><i><font size='7' color='grey'>{remarks}</font></i>"
 
+            method_text = r.get('method', '') or ''
+
             results_data.append([
                 Paragraph(param_text, cell_value),
                 Paragraph(str(r.get('value', '')), value_style),
-                Paragraph(flag_text, flag_style),
-                Paragraph(ref_range, cell_value),
                 Paragraph(r.get('unit', '') or '-', cell_value),
+                Paragraph(ref_range, cell_value),
+                Paragraph(method_text, cell_value),
             ])
 
-        results_table = Table(results_data, colWidths=[param_w, result_w, flag_w, ref_w, unit_w])
+        results_table = Table(results_data, colWidths=[param_w, result_w, unit_w, ref_w, method_w])
 
         table_style_cmds = [
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
@@ -1359,7 +1351,7 @@ class PDFService:
         patient_name = first_report.get('patient_name', '')
         patient_gender = first_report.get('patient_gender', '')
         patient_age = first_report.get('patient_age', '')
-        age_sex = f"{patient_age} Year" if patient_age else ''
+        age_sex = f"{patient_age} Years" if patient_age else ''
         if patient_gender:
             age_sex = f"{age_sex} / {patient_gender.capitalize()}" if age_sex else patient_gender.capitalize()
 
@@ -1389,11 +1381,11 @@ class PDFService:
         # ============================================================
         # RESULTS TABLE COLUMN WIDTHS
         # ============================================================
-        param_w = page_width * 0.30
+        param_w = page_width * 0.28
         result_w = page_width * 0.15
-        flag_w = page_width * 0.15
-        ref_w = page_width * 0.28
         unit_w = page_width * 0.12
+        ref_w = page_width * 0.25
+        method_w = page_width * 0.20
 
         # ============================================================
         # LOOP THROUGH EACH TEST — continuous flow
@@ -1414,10 +1406,10 @@ class PDFService:
             # Results table
             results_header = [
                 Paragraph('<b>TEST DESCRIPTION</b>', cell_label),
-                Paragraph('<b>RESULT ENTRY</b>', cell_label),
-                Paragraph('<b>FLAG</b>', cell_label),
-                Paragraph('<b>BIO. REF. RANGE</b>', cell_label),
+                Paragraph('<b>RESULT</b>', cell_label),
                 Paragraph('<b>UNIT</b>', cell_label),
+                Paragraph('<b>BIO. REF. RANGE</b>', cell_label),
+                Paragraph('<b>METHOD</b>', cell_label),
             ]
             results_data = [results_header]
             results_list_inner = report_data.get('results', [])
@@ -1454,30 +1446,22 @@ class PDFService:
                 elif normal_val:
                     ref_range = normal_val
 
-                flag_text = ''
-                if is_abnormal:
-                    flag_text = 'ABNORMAL'
-                elif r.get('field_type') in ('numeric', 'less_than', 'greater_than') and (ref_min is not None or ref_max is not None):
-                    flag_text = 'Normal'
-                elif r.get('field_type') in ('select', 'text') and normal_val and r.get('value'):
-                    flag_text = 'Normal' if not is_abnormal else ''
-
-                flag_style = cell_abnormal if is_abnormal else cell_value
-
                 param_text = r.get('parameter_name', '')
                 remarks = r.get('remarks', '')
                 if remarks:
                     param_text = f"{param_text}<br/><i><font size='7' color='grey'>{remarks}</font></i>"
 
+                method_text = r.get('method', '') or ''
+
                 results_data.append([
                     Paragraph(param_text, cell_value),
                     Paragraph(str(r.get('value', '')), value_style),
-                    Paragraph(flag_text, flag_style),
-                    Paragraph(ref_range, cell_value),
                     Paragraph(r.get('unit', '') or '-', cell_value),
+                    Paragraph(ref_range, cell_value),
+                    Paragraph(method_text, cell_value),
                 ])
 
-            results_table = Table(results_data, colWidths=[param_w, result_w, flag_w, ref_w, unit_w])
+            results_table = Table(results_data, colWidths=[param_w, result_w, unit_w, ref_w, method_w])
 
             table_style_cmds = [
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
@@ -1568,6 +1552,551 @@ class PDFService:
         doc.build(elements, onFirstPage=_draw_header, onLaterPages=_draw_header)
         buffer.seek(0)
         return buffer
+
+    def generate_discharge_summary_pdf(self, discharge_data, hospital_info, include_header=True):
+        """Generate PDF for discharge summary"""
+        buffer = BytesIO()
+
+        doc = SimpleDocTemplate(
+            buffer,
+            pagesize=A4,
+            rightMargin=30,
+            leftMargin=30,
+            topMargin=30,
+            bottomMargin=20
+        )
+
+        elements = []
+        page_width = A4[0] - 60  # total usable width
+
+        # --- Styles (black & white, consistent with bill PDF) ---
+        title_style = ParagraphStyle('DischTitle', parent=self.styles['Title'],
+            fontSize=16, alignment=1, fontName='Helvetica-Bold',
+            textColor=colors.black, spaceAfter=2)
+
+        subtitle_style = ParagraphStyle('DischSubtitle', parent=self.styles['Normal'],
+            fontSize=9, alignment=1, fontName='Helvetica',
+            textColor=colors.black, spaceAfter=2)
+
+        doc_title_style = ParagraphStyle('DischDocTitle', parent=self.styles['Normal'],
+            fontSize=13, alignment=1, fontName='Helvetica-Bold',
+            textColor=colors.black, spaceAfter=4)
+
+        section_heading = ParagraphStyle('DischSection', parent=self.styles['Heading2'],
+            fontSize=11, fontName='Helvetica-Bold', textColor=colors.black,
+            spaceAfter=4, spaceBefore=8)
+
+        cell_value = ParagraphStyle('DischCellValue', parent=self.styles['Normal'],
+            fontSize=9, fontName='Helvetica', textColor=colors.black, spaceAfter=2)
+
+        footer_style = ParagraphStyle('DischFooter', parent=self.styles['Normal'],
+            fontSize=7, fontName='Helvetica-Oblique', textColor=colors.grey,
+            alignment=1)
+
+        # Helper for label:value pairs
+        def lv(label, value):
+            return Paragraph(f"<b>{label}:</b> {value}", cell_value)
+
+        # ============================================================
+        # HEADER: Hospital Name + Logo + Address
+        # ============================================================
+        if include_header:
+            logo_path = hospital_info.get('logo_url', '')
+            uploads_base = _get_uploads_base()
+            has_logo = False
+            full_logo_path = ''
+            if logo_path:
+                relative = logo_path.lstrip('/')
+                if relative.startswith('uploads/'):
+                    relative = relative[len('uploads/'):]
+                full_logo_path = os.path.join(uploads_base, relative)
+                has_logo = os.path.exists(full_logo_path)
+
+            hospital_name = hospital_info.get('name', 'HOSPITAL').upper()
+            hospital_subname = hospital_info.get('hospital_subname', '')
+            address = hospital_info.get('address', '')
+            contact_parts = []
+            if hospital_info.get('email'):
+                contact_parts.append(f"Email: {hospital_info['email']}")
+            if hospital_info.get('phone'):
+                contact_parts.append(f"Phone: {hospital_info['phone']}")
+
+            header_text_elems = [Paragraph(hospital_name, title_style)]
+            if hospital_subname:
+                header_text_elems.append(Paragraph(hospital_subname, subtitle_style))
+            if address:
+                header_text_elems.append(Paragraph(address, subtitle_style))
+            if contact_parts:
+                header_text_elems.append(Paragraph("  |  ".join(contact_parts), subtitle_style))
+
+            if has_logo:
+                try:
+                    logo_img = Image(full_logo_path, width=60, height=60)
+                    logo_img.hAlign = 'CENTER'
+                    header_table = Table([[logo_img, header_text_elems]], colWidths=[75, page_width - 75])
+                    header_table.setStyle(TableStyle([
+                        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+                        ('TOPPADDING', (0, 0), (-1, -1), 0),
+                        ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+                    ]))
+                    elements.append(header_table)
+                except Exception:
+                    for el in header_text_elems:
+                        elements.append(el)
+            else:
+                for el in header_text_elems:
+                    elements.append(el)
+
+            elements.append(Spacer(1, 6))
+            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+        else:
+            # Leave blank space for pre-printed letterhead
+            elements.append(Spacer(1, 100))
+
+        elements.append(Spacer(1, 4))
+        elements.append(Paragraph("DISCHARGE SUMMARY", doc_title_style))
+        elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+        elements.append(Spacer(1, 6))
+
+        # ============================================================
+        # PATIENT INFO BOX
+        # ============================================================
+        age_gender = discharge_data.get('age', '')
+        if discharge_data.get('gender'):
+            gender = discharge_data['gender'].upper()
+            age_gender = f"{age_gender} / {gender}" if age_gender else gender
+
+        col_w = page_width / 2
+        patient_info_data = [
+            [lv('Patient', discharge_data.get('patient_name', '')),
+             lv('Patient ID', discharge_data.get('patient_id', ''))],
+            [lv('Age / Gender', age_gender),
+             lv('Doctor', discharge_data.get('doctor_name', ''))],
+            [lv('Admission No', discharge_data.get('admission_number', '')),
+             lv('Total Stay', f"{discharge_data.get('total_stay_days', 0)} days")],
+            [lv('Admitted', discharge_data.get('admission_date', '')),
+             lv('Discharged', discharge_data.get('discharge_date', ''))],
+            [lv('Discharge Type', discharge_data.get('discharge_type', '')),
+             lv('Condition on Admission', discharge_data.get('condition_on_admission', ''))],
+        ]
+
+        info_table = Table(patient_info_data, colWidths=[col_w, col_w])
+        info_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING', (0, 0), (-1, -1), 3),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+            ('LEFTPADDING', (0, 0), (-1, -1), 8),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+            ('BOX', (0, 0), (-1, -1), 1, colors.black),
+        ]))
+        elements.append(info_table)
+        elements.append(Spacer(1, 8))
+
+        # ============================================================
+        # CLINICAL SECTIONS
+        # ============================================================
+        sections = [
+            ("Diagnosis", discharge_data.get("diagnosis", "")),
+            ("Treatment Given", discharge_data.get("treatment", "")),
+            ("Discharge Summary", discharge_data.get("discharge_summary", "")),
+        ]
+
+        for title, content in sections:
+            if content:
+                elements.append(Paragraph(title, section_heading))
+                # Support multiline content
+                for line in content.split('\n'):
+                    line = line.strip()
+                    if line:
+                        elements.append(Paragraph(line, cell_value))
+
+        # ============================================================
+        # MEDICATIONS PRESCRIBED (bullet list)
+        # ============================================================
+        medications = discharge_data.get("medications", "")
+        if medications:
+            elements.append(Paragraph("Medications Prescribed", section_heading))
+            # Split by newline or semicolon for bullet list
+            med_lines = [m.strip() for m in medications.replace(';', '\n').split('\n') if m.strip()]
+            if len(med_lines) > 1:
+                for med in med_lines:
+                    bullet = med if med.startswith(('•', '-', '*')) else f"• {med}"
+                    elements.append(Paragraph(bullet, cell_value))
+            else:
+                elements.append(Paragraph(medications, cell_value))
+
+        # ============================================================
+        # FOLLOW-UP INSTRUCTIONS
+        # ============================================================
+        follow_up = discharge_data.get("follow_up", "")
+        follow_up_date = discharge_data.get("follow_up_date", "")
+        if follow_up or follow_up_date:
+            elements.append(Paragraph("Follow-up Instructions", section_heading))
+            if follow_up:
+                elements.append(Paragraph(follow_up, cell_value))
+            if follow_up_date:
+                elements.append(Paragraph(f"<b>Follow-up Date:</b> {follow_up_date}", cell_value))
+
+        # ============================================================
+        # DIET & ACTIVITY
+        # ============================================================
+        diet = discharge_data.get("diet_instructions", "")
+        activity = discharge_data.get("activity_restrictions", "")
+        if diet or activity:
+            elements.append(Paragraph("Diet &amp; Activity", section_heading))
+            if diet:
+                elements.append(Paragraph(f"<b>Diet:</b> {diet}", cell_value))
+            if activity:
+                elements.append(Paragraph(f"<b>Activity Restrictions:</b> {activity}", cell_value))
+
+        # ============================================================
+        # CONDITION ON DISCHARGE & PREPARED BY
+        # ============================================================
+        elements.append(Spacer(1, 16))
+        condition_discharge = discharge_data.get("condition_on_discharge", "")
+        if condition_discharge:
+            elements.append(Paragraph(f"<b>Condition on Discharge:</b> {condition_discharge}", cell_value))
+            elements.append(Spacer(1, 12))
+
+        doctor_name = discharge_data.get("doctor_name", "")
+        if doctor_name:
+            sig_data = [
+                [Paragraph('', cell_value),
+                 Paragraph('_' * 30, ParagraphStyle('SigLine', parent=self.styles['Normal'],
+                    fontSize=9, alignment=2))],
+                [Paragraph('', cell_value),
+                 Paragraph(f"<b>{doctor_name}</b>", ParagraphStyle('SigName', parent=self.styles['Normal'],
+                    fontSize=9, fontName='Helvetica-Bold', alignment=2))],
+                [Paragraph('', cell_value),
+                 Paragraph("Attending Physician", ParagraphStyle('SigTitle', parent=self.styles['Normal'],
+                    fontSize=8, fontName='Helvetica', textColor=colors.grey, alignment=2))],
+            ]
+            sig_table = Table(sig_data, colWidths=[page_width / 2, page_width / 2])
+            sig_table.setStyle(TableStyle([
+                ('VALIGN', (0, 0), (-1, -1), 'BOTTOM'),
+                ('TOPPADDING', (0, 0), (-1, -1), 1),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
+            ]))
+            elements.append(sig_table)
+
+        # ============================================================
+        # FOOTER
+        # ============================================================
+        elements.append(Spacer(1, 20))
+        elements.append(Paragraph(
+            f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M:%S')}",
+            footer_style
+        ))
+
+        doc.build(elements)
+        buffer.seek(0)
+        return buffer
+
+    def generate_deposit_receipt_pdf(self, deposit_data, hospital_info, include_header=True):
+        """Compact A5-ish advance deposit / refund receipt."""
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(
+            buffer, pagesize=A4,
+            rightMargin=40, leftMargin=40, topMargin=30, bottomMargin=30,
+        )
+        elements = []
+        page_width = A4[0] - 80
+
+        title_style = ParagraphStyle('Title', parent=self.styles['Title'],
+            fontSize=15, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)
+        sub_style = ParagraphStyle('Sub', parent=self.styles['Normal'],
+            fontSize=9, alignment=1, fontName='Helvetica', textColor=colors.black, spaceAfter=2)
+        receipt_title_style = ParagraphStyle('RT', parent=self.styles['Normal'],
+            fontSize=12, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=6)
+        label_style = ParagraphStyle('Label', parent=self.styles['Normal'],
+            fontSize=10, fontName='Helvetica-Bold', textColor=colors.black)
+        value_style = ParagraphStyle('Value', parent=self.styles['Normal'],
+            fontSize=10, fontName='Helvetica', textColor=colors.black)
+        amount_style = ParagraphStyle('Amount', parent=self.styles['Normal'],
+            fontSize=14, fontName='Helvetica-Bold', alignment=1, textColor=colors.black, spaceAfter=4)
+        footer_style = ParagraphStyle('Footer', parent=self.styles['Normal'],
+            fontSize=8, alignment=1, fontName='Helvetica', textColor=colors.black)
+
+        # Header
+        if include_header:
+            name = hospital_info.get('name', 'HOSPITAL').upper()
+            elements.append(Paragraph(name, title_style))
+            if hospital_info.get('hospital_subname'):
+                elements.append(Paragraph(hospital_info['hospital_subname'], sub_style))
+            if hospital_info.get('address'):
+                elements.append(Paragraph(hospital_info['address'], sub_style))
+            contact = []
+            if hospital_info.get('phone'): contact.append(f"Phone: {hospital_info['phone']}")
+            if hospital_info.get('email'): contact.append(f"Email: {hospital_info['email']}")
+            if contact:
+                elements.append(Paragraph("  |  ".join(contact), sub_style))
+            elements.append(Spacer(1, 6))
+            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+        else:
+            elements.append(Spacer(1, 90))
+
+        elements.append(Spacer(1, 8))
+        is_refund = deposit_data.get('deposit_type') == 'refund'
+        elements.append(Paragraph(
+            "REFUND RECEIPT" if is_refund else "ADVANCE DEPOSIT RECEIPT",
+            receipt_title_style,
+        ))
+        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
+        elements.append(Spacer(1, 10))
+
+        # Meta block — two columns
+        rows = [
+            [Paragraph("Receipt No:", label_style), Paragraph(str(deposit_data.get('deposit_number', '')), value_style),
+             Paragraph("Date:", label_style), Paragraph(str(deposit_data.get('received_at', '')), value_style)],
+            [Paragraph("Patient:", label_style), Paragraph(str(deposit_data.get('patient_name', '')), value_style),
+             Paragraph("Patient ID:", label_style), Paragraph(str(deposit_data.get('patient_id', '')), value_style)],
+            [Paragraph("Admission #:", label_style), Paragraph(str(deposit_data.get('admission_number', '')), value_style),
+             Paragraph("Type:", label_style), Paragraph(str(deposit_data.get('deposit_type', '')).title(), value_style)],
+            [Paragraph("Payment Method:", label_style), Paragraph(str(deposit_data.get('payment_method', '')).title(), value_style),
+             Paragraph("Reference:", label_style), Paragraph(str(deposit_data.get('reference_number', '') or '-'), value_style)],
+        ]
+        meta_table = Table(rows, colWidths=[page_width * 0.18, page_width * 0.32, page_width * 0.18, page_width * 0.32])
+        meta_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+        ]))
+        elements.append(meta_table)
+        elements.append(Spacer(1, 14))
+
+        # Amount box
+        amount = float(deposit_data.get('amount', 0))
+        amount_label = "AMOUNT REFUNDED" if is_refund else "AMOUNT RECEIVED"
+        elements.append(Paragraph(amount_label, label_style))
+        elements.append(Spacer(1, 4))
+        elements.append(Paragraph(f"Rs. {abs(amount):,.2f}", amount_style))
+        elements.append(Spacer(1, 14))
+
+        # Notes
+        if deposit_data.get('notes'):
+            elements.append(Paragraph("<b>Notes:</b>", label_style))
+            elements.append(Paragraph(str(deposit_data['notes']), value_style))
+            elements.append(Spacer(1, 10))
+
+        # Signatures
+        sig_table = Table(
+            [[Paragraph("____________________<br/>Received By", value_style),
+              Paragraph("____________________<br/>Patient / Attendant", value_style)]],
+            colWidths=[page_width / 2, page_width / 2],
+        )
+        sig_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('ALIGN', (0, 0), (0, 0), 'LEFT'),
+            ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
+            ('TOPPADDING', (0, 0), (-1, -1), 30),
+        ]))
+        elements.append(sig_table)
+        elements.append(Spacer(1, 16))
+        elements.append(Paragraph(
+            f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M:%S')}",
+            footer_style,
+        ))
+
+        doc.build(elements)
+        buffer.seek(0)
+        return buffer
+
+    def generate_consent_pdf(self, consent_data, hospital_info, include_header=True):
+        """Signed consent form PDF."""
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=30, bottomMargin=30)
+        elements = []
+        page_width = A4[0] - 80
+
+        title_style = ParagraphStyle('Title', parent=self.styles['Title'],
+            fontSize=14, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)
+        sub_style = ParagraphStyle('Sub', parent=self.styles['Normal'],
+            fontSize=9, alignment=1, fontName='Helvetica', textColor=colors.black, spaceAfter=2)
+        heading = ParagraphStyle('Heading', parent=self.styles['Normal'],
+            fontSize=11, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)
+        body = ParagraphStyle('Body', parent=self.styles['Normal'],
+            fontSize=10, fontName='Helvetica', textColor=colors.black, spaceAfter=4)
+        label_small = ParagraphStyle('Label', parent=self.styles['Normal'],
+            fontSize=9, fontName='Helvetica-Bold', textColor=colors.black)
+        footer_style = ParagraphStyle('Footer', parent=self.styles['Normal'],
+            fontSize=8, alignment=1, fontName='Helvetica', textColor=colors.black)
+
+        if include_header:
+            elements.append(Paragraph(hospital_info.get('name', 'HOSPITAL').upper(), title_style))
+            if hospital_info.get('hospital_subname'):
+                elements.append(Paragraph(hospital_info['hospital_subname'], sub_style))
+            if hospital_info.get('address'):
+                elements.append(Paragraph(hospital_info['address'], sub_style))
+            elements.append(Spacer(1, 6))
+            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+        else:
+            elements.append(Spacer(1, 90))
+
+        elements.append(Spacer(1, 8))
+        ctype = consent_data.get('consent_type', '').replace('_', ' ').upper()
+        elements.append(Paragraph(f"{ctype} CONSENT FORM", ParagraphStyle('CT', parent=self.styles['Normal'],
+            fontSize=13, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=6)))
+        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
+        elements.append(Spacer(1, 8))
+
+        # Patient/admission meta
+        meta_rows = [
+            [Paragraph("Patient:", label_small), Paragraph(str(consent_data.get('patient_name', '')), body),
+             Paragraph("Patient ID:", label_small), Paragraph(str(consent_data.get('patient_id', '')), body)],
+            [Paragraph("Admission #:", label_small), Paragraph(str(consent_data.get('admission_number', '')), body),
+             Paragraph("Doctor:", label_small), Paragraph(str(consent_data.get('doctor_name', '')), body)],
+        ]
+        if consent_data.get('procedure_name'):
+            meta_rows.append([Paragraph("Procedure:", label_small), Paragraph(str(consent_data['procedure_name']), body),
+                              Paragraph("Language:", label_small), Paragraph(str(consent_data.get('language', 'english')).title(), body)])
+        meta_table = Table(meta_rows, colWidths=[page_width * 0.15, page_width * 0.35, page_width * 0.15, page_width * 0.35])
+        meta_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ]))
+        elements.append(meta_table)
+        elements.append(Spacer(1, 10))
+
+        # Template content
+        content = consent_data.get('template_content') or 'No template content.'
+        elements.append(Paragraph("CONSENT STATEMENT", heading))
+        for para in content.split("\n"):
+            if para.strip():
+                elements.append(Paragraph(para.strip(), body))
+        elements.append(Spacer(1, 6))
+
+        if consent_data.get('risks_explained'):
+            elements.append(Paragraph("RISKS EXPLAINED", heading))
+            elements.append(Paragraph(consent_data['risks_explained'], body))
+            elements.append(Spacer(1, 6))
+
+        # Signatures
+        elements.append(Paragraph("SIGNATURES", heading))
+        signed_by = consent_data.get('signed_by', 'patient')
+        sig_label = "Patient" if signed_by == "patient" else f"{signed_by.title()} on behalf of patient"
+        sig_lines = [[
+            Paragraph(f"<b>{sig_label} Signature:</b><br/><br/>{consent_data.get('patient_signature', '') if consent_data.get('patient_signature_type') == 'typed' else '[drawn signature on file]'}<br/><br/>____________________", body),
+            Paragraph(f"<b>Witness:</b><br/><br/>{consent_data.get('witness_name', '') or '—'}<br/><br/>____________________", body),
+        ]]
+        if signed_by != "patient":
+            elements.append(Paragraph(f"<b>Signed by:</b> {signed_by} — {consent_data.get('guardian_name', '')} ({consent_data.get('guardian_relationship', '')})", body))
+        sig_table = Table(sig_lines, colWidths=[page_width / 2, page_width / 2])
+        sig_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('TOPPADDING', (0, 0), (-1, -1), 10),
+        ]))
+        elements.append(sig_table)
+        elements.append(Spacer(1, 6))
+        elements.append(Paragraph(f"Signed at: {consent_data.get('signed_at', '')}", body))
+
+        if consent_data.get('withdrawn_at'):
+            elements.append(Spacer(1, 10))
+            elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
+            elements.append(Paragraph("<b>CONSENT WITHDRAWN</b>", heading))
+            elements.append(Paragraph(f"Withdrawn at: {consent_data['withdrawn_at']}", body))
+            elements.append(Paragraph(f"Reason: {consent_data.get('withdrawal_reason', '')}", body))
+
+        elements.append(Spacer(1, 18))
+        elements.append(Paragraph(f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M:%S')}", footer_style))
+        doc.build(elements)
+        buffer.seek(0)
+        return buffer
+
+    def generate_death_certificate_pdf(self, cert_data, hospital_info, include_header=True):
+        """Death certificate / mortality record."""
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=30, bottomMargin=30)
+        elements = []
+        page_width = A4[0] - 80
+
+        title_style = ParagraphStyle('Title', parent=self.styles['Title'],
+            fontSize=14, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)
+        sub_style = ParagraphStyle('Sub', parent=self.styles['Normal'],
+            fontSize=9, alignment=1, fontName='Helvetica', textColor=colors.black, spaceAfter=2)
+        heading = ParagraphStyle('Heading', parent=self.styles['Normal'],
+            fontSize=12, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)
+        label = ParagraphStyle('Label', parent=self.styles['Normal'],
+            fontSize=9, fontName='Helvetica-Bold', textColor=colors.black)
+        value = ParagraphStyle('Value', parent=self.styles['Normal'],
+            fontSize=9, fontName='Helvetica', textColor=colors.black)
+        footer_style = ParagraphStyle('Footer', parent=self.styles['Normal'],
+            fontSize=8, alignment=1, fontName='Helvetica', textColor=colors.black)
+
+        if include_header:
+            elements.append(Paragraph(hospital_info.get('name', 'HOSPITAL').upper(), title_style))
+            if hospital_info.get('address'):
+                elements.append(Paragraph(hospital_info['address'], sub_style))
+            elements.append(Spacer(1, 6))
+            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+        else:
+            elements.append(Spacer(1, 90))
+
+        elements.append(Spacer(1, 8))
+        elements.append(Paragraph("DEATH CERTIFICATE", ParagraphStyle('DC', parent=self.styles['Normal'],
+            fontSize=14, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=6)))
+        if cert_data.get('death_certificate_number'):
+            elements.append(Paragraph(f"Certificate No: {cert_data['death_certificate_number']}",
+                ParagraphStyle('CN', parent=self.styles['Normal'], fontSize=10, alignment=1, textColor=colors.black)))
+        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
+        elements.append(Spacer(1, 10))
+
+        rows = [
+            [Paragraph("Name of Deceased:", label), Paragraph(str(cert_data.get('patient_name', '')), value)],
+            [Paragraph("Age / Gender:", label), Paragraph(f"{cert_data.get('age', '')} / {cert_data.get('gender', '')}", value)],
+            [Paragraph("Patient ID:", label), Paragraph(str(cert_data.get('patient_id', '')), value)],
+            [Paragraph("Admission No:", label), Paragraph(str(cert_data.get('admission_number', '')), value)],
+            [Paragraph("Admitted On:", label), Paragraph(str(cert_data.get('admission_date', '')), value)],
+            [Paragraph("Date of Death:", label), Paragraph(str(cert_data.get('discharge_date', '')), value)],
+            [Paragraph("Time of Death:", label), Paragraph(str(cert_data.get('time_of_death', '')), value)],
+            [Paragraph("Cause of Death:", label), Paragraph(str(cert_data.get('cause_of_death', '')), value)],
+            [Paragraph("Treating Doctor:", label), Paragraph(str(cert_data.get('treating_doctor', '')), value)],
+            [Paragraph("MLC Required:", label), Paragraph("Yes" if cert_data.get('mlc_required') else "No", value)],
+        ]
+        if cert_data.get('mlc_required') and cert_data.get('mlc_number'):
+            rows.append([Paragraph("MLC No:", label), Paragraph(str(cert_data['mlc_number']), value)])
+        rows.append([Paragraph("Autopsy Done:", label), Paragraph("Yes" if cert_data.get('autopsy_done') else "No", value)])
+
+        meta_table = Table(rows, colWidths=[page_width * 0.3, page_width * 0.7])
+        meta_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+        ]))
+        elements.append(meta_table)
+
+        if cert_data.get('body_handed_over_to'):
+            elements.append(Spacer(1, 10))
+            elements.append(Paragraph("BODY HANDOVER", heading))
+            handover_rows = [
+                [Paragraph("Handed over to:", label), Paragraph(str(cert_data.get('body_handed_over_to', '')), value)],
+                [Paragraph("Relationship:", label), Paragraph(str(cert_data.get('body_handover_relationship', '')), value)],
+                [Paragraph("Date/Time:", label), Paragraph(str(cert_data.get('body_handover_time', '')), value)],
+                [Paragraph("ID Proof:", label), Paragraph(str(cert_data.get('body_handover_id_proof', '')), value)],
+            ]
+            h_table = Table(handover_rows, colWidths=[page_width * 0.3, page_width * 0.7])
+            h_table.setStyle(TableStyle([
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ]))
+            elements.append(h_table)
+
+        # Signatures
+        elements.append(Spacer(1, 20))
+        sig_table = Table([[
+            Paragraph("____________________<br/>Medical Officer / Treating Doctor", value),
+            Paragraph("____________________<br/>Medical Superintendent", value),
+        ]], colWidths=[page_width / 2, page_width / 2])
+        sig_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('TOPPADDING', (0, 0), (-1, -1), 30),
+        ]))
+        elements.append(sig_table)
+        elements.append(Spacer(1, 14))
+        elements.append(Paragraph(f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M:%S')}", footer_style))
+        doc.build(elements)
+        buffer.seek(0)
+        return buffer
+
 
 # Create global instance
 pdf_service = PDFService()

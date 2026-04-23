@@ -51,13 +51,82 @@ def setup_module_permissions():
         {"module_name": "outpatient", "permission_name": "view_appointments", "permission_description": "View appointment details", "category": "user"},
         {"module_name": "outpatient", "permission_name": "cancel_appointments", "permission_description": "Cancel appointments", "category": "user"},
         
-        # Inpatient Module Permissions
-        {"module_name": "inpatient", "permission_name": "manage_beds", "permission_description": "Manage hospital bed allocation", "category": "admin"},
-        {"module_name": "inpatient", "permission_name": "admit_patients", "permission_description": "Admit patients", "category": "user"},
-        {"module_name": "inpatient", "permission_name": "discharge_patients", "permission_description": "Discharge patients", "category": "user"},
-        {"module_name": "inpatient", "permission_name": "manage_wards", "permission_description": "Manage ward configurations", "category": "admin"},
-        {"module_name": "inpatient", "permission_name": "set_room_rates", "permission_description": "Set room pricing", "category": "admin"},
-        {"module_name": "inpatient", "permission_name": "view_occupancy", "permission_description": "View bed occupancy reports", "category": "user"},
+        # Inpatient Module Permissions — granular per-feature keys
+        # Core admissions + rooms
+        {"module_name": "inpatient", "permission_name": "view_occupancy", "permission_description": "View beds, rooms, dashboard, and admission lists", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "admit_patients", "permission_description": "Create admissions", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "update_admission", "permission_description": "Update admission details", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "discharge_patients", "permission_description": "Create discharge records", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "record_mortality", "permission_description": "Record mortality details on death discharges", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "manage_beds", "permission_description": "Create / update / delete rooms and beds", "category": "admin"},
+        {"module_name": "inpatient", "permission_name": "manage_wards", "permission_description": "Ward-level configuration", "category": "admin"},
+        {"module_name": "inpatient", "permission_name": "set_room_rates", "permission_description": "Set room rates and visit rate config", "category": "admin"},
+        {"module_name": "inpatient", "permission_name": "transfer_beds", "permission_description": "Change a patient's room/bed within an admission", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "initiate_ward_transfer", "permission_description": "Start a pending inter-ward transfer", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "accept_ward_transfer", "permission_description": "Accept or cancel a pending ward transfer", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "manage_housekeeping", "permission_description": "Change bed status (cleaning/dirty/maintenance)", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "manage_reservations", "permission_description": "Bed reservations CRUD + convert", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "assign_nurses", "permission_description": "Assign nurses to admissions per shift", "category": "admin"},
+        {"module_name": "inpatient", "permission_name": "manage_roster", "permission_description": "Build and edit the nurse shift roster (duty schedule)", "category": "admin"},
+        {"module_name": "inpatient", "permission_name": "view_roster", "permission_description": "View the nurse shift roster", "category": "user"},
+
+        # Clinical documentation
+        {"module_name": "inpatient", "permission_name": "record_vitals", "permission_description": "Record patient vital signs during stay", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "view_vitals", "permission_description": "View patient vital signs", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "record_io", "permission_description": "Record intake/output fluid balance entries", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "view_io", "permission_description": "View fluid balance charts", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "administer_medications", "permission_description": "Administer scheduled and PRN medications, update MAR", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "view_mar", "permission_description": "View Medication Administration Record", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "manage_nursing_notes", "permission_description": "Create and edit nursing notes", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "manage_diet_orders", "permission_description": "Create and edit diet orders", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "manage_allergies", "permission_description": "Record and update patient allergies", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "record_visits", "permission_description": "Record ward round / nurse visits", "category": "user"},
+
+        # Orders
+        {"module_name": "inpatient", "permission_name": "order_labs", "permission_description": "Order lab tests for admitted patients", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "prescribe_medications", "permission_description": "Create prescriptions for admitted patients", "category": "user"},
+
+        # OT
+        {"module_name": "inpatient", "permission_name": "schedule_ot", "permission_description": "Schedule operating theatre procedures", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "record_ot_charges", "permission_description": "Set surgeon / anaesthetist / consumable charges on OT", "category": "admin"},
+
+        # Billing
+        {"module_name": "inpatient", "permission_name": "view_bill", "permission_description": "View admission bills and previews", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "generate_interim_bill", "permission_description": "Create interim bills during stay", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "finalize_bill", "permission_description": "Finalize the admission bill", "category": "admin"},
+        {"module_name": "inpatient", "permission_name": "manage_packages", "permission_description": "Apply or remove surgery packages on an admission", "category": "admin"},
+        {"module_name": "inpatient", "permission_name": "manage_ancillary_charges", "permission_description": "Add / update / delete ancillary charges on admissions", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "receive_deposits", "permission_description": "Record advance deposits", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "issue_refunds", "permission_description": "Issue refunds against deposits", "category": "admin"},
+        {"module_name": "inpatient", "permission_name": "manage_bill_splits", "permission_description": "Split bill across cash / insurance / TPA payers", "category": "admin"},
+
+        # Insurance
+        {"module_name": "inpatient", "permission_name": "update_claim_status", "permission_description": "Advance the admission insurance claim state machine", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "manage_preauth", "permission_description": "Create pre-auth requests, record decisions, request expansions", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "manage_tpa", "permission_description": "Maintain TPA company master", "category": "admin"},
+
+        # Quality & compliance
+        {"module_name": "inpatient", "permission_name": "record_consent", "permission_description": "Record signed consents", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "withdraw_consent", "permission_description": "Withdraw a previously signed consent", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "report_incident", "permission_description": "File incident reports (falls, med errors, etc.)", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "investigate_incident", "permission_description": "Run investigations on incidents", "category": "admin"},
+        {"module_name": "inpatient", "permission_name": "close_incident", "permission_description": "Close incident investigations", "category": "admin"},
+        {"module_name": "inpatient", "permission_name": "view_readmissions", "permission_description": "View 30-day readmission reports", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "view_mortality", "permission_description": "View mortality records and death certificates", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "acknowledge_critical_alert", "permission_description": "Acknowledge / address critical lab value alerts", "category": "user"},
+
+        # Catalogs
+        {"module_name": "inpatient", "permission_name": "manage_ancillary_catalog", "permission_description": "Maintain the ancillary services catalog", "category": "admin"},
+        {"module_name": "inpatient", "permission_name": "manage_surgery_packages", "permission_description": "Maintain surgery package catalog", "category": "admin"},
+        {"module_name": "inpatient", "permission_name": "manage_consent_templates", "permission_description": "Maintain consent form templates", "category": "admin"},
+        {"module_name": "inpatient", "permission_name": "set_critical_thresholds", "permission_description": "Configure critical lab value thresholds", "category": "admin"},
+        {"module_name": "inpatient", "permission_name": "view_procedures", "permission_description": "View the procedure catalog", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "manage_procedures", "permission_description": "Add, edit, and remove procedures with default rates", "category": "admin"},
+
+        # Documents
+        {"module_name": "inpatient", "permission_name": "upload_documents", "permission_description": "Upload admission documents", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "view_documents", "permission_description": "Download and list admission documents", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "delete_documents", "permission_description": "Delete admission documents", "category": "admin"},
         
         # EHR Module Permissions (always enabled)
         {"module_name": "ehr", "permission_name": "view_records", "permission_description": "View patient electronic health records", "category": "user"},
@@ -188,16 +257,64 @@ def setup_role_permissions():
             "pharmacy": ["manage_inventory", "set_drug_rates", "dispense_medications", "view_prescriptions", "manage_suppliers", "generate_reports"],
             "billing": ["manage_rates", "process_payments", "generate_invoices", "view_financial_reports", "manage_insurance", "handle_refunds"],
             "outpatient": ["schedule_appointments", "manage_schedules", "register_patients", "manage_queues", "view_appointments", "cancel_appointments"],
-            "inpatient": ["manage_beds", "admit_patients", "discharge_patients", "manage_wards", "set_room_rates", "view_occupancy"],
-            "ehr": ["view_records", "edit_records", "create_prescriptions", "manage_templates", "view_history", "generate_reports"]
+            # Inpatient: everything (also bypassed at decorator level, but seeded for completeness)
+            "inpatient": [
+                "view_occupancy", "admit_patients", "update_admission", "discharge_patients", "record_mortality",
+                "manage_beds", "manage_wards", "set_room_rates",
+                "transfer_beds", "initiate_ward_transfer", "accept_ward_transfer",
+                "manage_housekeeping", "manage_reservations", "assign_nurses",
+                "record_vitals", "view_vitals", "record_io", "view_io",
+                "administer_medications", "view_mar",
+                "manage_nursing_notes", "manage_diet_orders", "manage_allergies", "record_visits",
+                "order_labs", "prescribe_medications",
+                "schedule_ot", "record_ot_charges",
+                "view_bill", "generate_interim_bill", "finalize_bill",
+                "manage_packages", "manage_ancillary_charges",
+                "receive_deposits", "issue_refunds", "manage_bill_splits",
+                "update_claim_status", "manage_preauth", "manage_tpa",
+                "record_consent", "withdraw_consent",
+                "report_incident", "investigate_incident", "close_incident",
+                "view_readmissions", "view_mortality", "acknowledge_critical_alert",
+                "manage_ancillary_catalog", "manage_surgery_packages",
+                "manage_consent_templates", "set_critical_thresholds",
+                "view_procedures", "manage_procedures",
+                "manage_roster", "view_roster",
+                "upload_documents", "view_documents", "delete_documents",
+            ],
+            "ehr": ["view_records", "edit_records", "create_prescriptions", "manage_templates", "view_history", "generate_reports", "manage_allergies"]
         },
+        # Hospital admin bypasses all inpatient checks at the decorator level,
+        # so the seeded list is symbolic. We still populate it so the role admin UI
+        # can show a consistent grid.
         "hospital_admin": {
             "admin": ["manage_users", "manage_roles", "view_system_reports", "manage_settings"],
             "lab": ["view_reports", "create_reports"],
             "pharmacy": ["view_prescriptions", "generate_reports"],
             "billing": ["view_financial_reports", "manage_insurance", "process_payments", "generate_invoices"],
             "outpatient": ["schedule_appointments", "manage_schedules", "register_patients", "manage_queues", "view_appointments", "cancel_appointments"],
-            "inpatient": ["view_occupancy"],
+            "inpatient": [
+                "view_occupancy", "admit_patients", "update_admission", "discharge_patients", "record_mortality",
+                "manage_beds", "manage_wards", "set_room_rates",
+                "transfer_beds", "initiate_ward_transfer", "accept_ward_transfer",
+                "manage_housekeeping", "manage_reservations", "assign_nurses",
+                "record_vitals", "view_vitals", "record_io", "view_io",
+                "administer_medications", "view_mar",
+                "manage_nursing_notes", "manage_diet_orders", "manage_allergies", "record_visits",
+                "order_labs", "prescribe_medications",
+                "schedule_ot", "record_ot_charges",
+                "view_bill", "generate_interim_bill", "finalize_bill",
+                "manage_packages", "manage_ancillary_charges",
+                "receive_deposits", "issue_refunds", "manage_bill_splits",
+                "update_claim_status", "manage_preauth", "manage_tpa",
+                "record_consent", "withdraw_consent",
+                "report_incident", "investigate_incident", "close_incident",
+                "view_readmissions", "view_mortality", "acknowledge_critical_alert",
+                "manage_ancillary_catalog", "manage_surgery_packages",
+                "manage_consent_templates", "set_critical_thresholds",
+                "view_procedures", "manage_procedures",
+                "manage_roster", "view_roster",
+                "upload_documents", "view_documents", "delete_documents",
+            ],
             "ehr": ["view_records", "edit_records", "view_history", "generate_reports"]
         },
         "lab_admin": {
@@ -210,23 +327,74 @@ def setup_role_permissions():
             "billing": ["manage_rates", "process_payments", "generate_invoices", "view_financial_reports", "manage_insurance", "handle_refunds"]
         },
         "inpatient_admin": {
-            "inpatient": ["manage_beds", "admit_patients", "discharge_patients", "manage_wards", "set_room_rates", "view_occupancy"]
+            "inpatient": [
+                "view_occupancy", "admit_patients", "update_admission", "discharge_patients",
+                "manage_beds", "manage_wards", "set_room_rates",
+                "transfer_beds", "initiate_ward_transfer", "accept_ward_transfer",
+                "manage_housekeeping", "manage_reservations", "assign_nurses",
+                "view_bill", "manage_ancillary_charges", "receive_deposits", "record_ot_charges",
+                "schedule_ot", "view_procedures",
+                "update_claim_status", "manage_preauth",
+                "report_incident", "investigate_incident", "close_incident",
+                "view_readmissions", "view_mortality",
+                "manage_consent_templates", "set_critical_thresholds",
+                "manage_roster", "view_roster",
+                "upload_documents", "view_documents", "delete_documents",
+            ],
+            "ehr": ["manage_allergies", "view_records", "view_history"]
+        },
+        "billing_admin": {
+            "inpatient": [
+                "view_occupancy",
+                "view_bill", "generate_interim_bill", "finalize_bill",
+                "manage_packages", "manage_ancillary_charges",
+                "receive_deposits", "issue_refunds", "manage_bill_splits",
+                "record_ot_charges",
+                "update_claim_status", "manage_preauth",
+                "manage_ancillary_catalog", "manage_surgery_packages", "manage_tpa",
+                "view_documents",
+            ],
+            "billing": ["manage_rates", "process_payments", "generate_invoices", "view_financial_reports", "manage_insurance", "handle_refunds"],
         },
         "frontdesk": {
             "outpatient": ["schedule_appointments", "register_patients", "manage_queues", "view_appointments", "cancel_appointments"],
             "ehr": ["view_records", "view_history"]
         },
         "doctor": {
-            "ehr": ["view_records", "edit_records", "create_prescriptions", "view_history", "generate_reports"],
+            "ehr": ["view_records", "edit_records", "create_prescriptions", "view_history", "generate_reports", "manage_allergies"],
             "lab": ["view_reports", "create_reports"],
             "pharmacy": ["view_prescriptions"],
             "outpatient": ["view_appointments", "view_patients", "schedule_appointments", "update_appointments", "register_patients", "manage_queues", "cancel_appointments"],
-            "inpatient": ["admit_patients", "discharge_patients", "view_occupancy"]
+            "inpatient": [
+                "view_occupancy",
+                "admit_patients", "update_admission", "discharge_patients", "record_mortality",
+                "record_vitals", "view_vitals", "record_io", "view_io",
+                "administer_medications", "view_mar",
+                "manage_nursing_notes", "manage_diet_orders", "manage_allergies", "record_visits",
+                "order_labs", "prescribe_medications",
+                "schedule_ot", "view_procedures",
+                "record_consent", "withdraw_consent",
+                "transfer_beds", "initiate_ward_transfer", "accept_ward_transfer",
+                "report_incident", "acknowledge_critical_alert",
+                "view_bill", "view_readmissions", "view_mortality",
+                "view_roster",
+                "upload_documents", "view_documents",
+            ],
         },
         "nurse": {
-            "ehr": ["view_records", "edit_records", "view_history"],
-            "inpatient": ["view_occupancy"],
-            "outpatient": ["manage_queues", "view_appointments"]
+            "ehr": ["view_records", "edit_records", "view_history", "manage_allergies"],
+            "outpatient": ["manage_queues", "view_appointments"],
+            "inpatient": [
+                "view_occupancy",
+                "record_vitals", "view_vitals", "record_io", "view_io",
+                "administer_medications", "view_mar",
+                "manage_nursing_notes", "manage_diet_orders", "manage_allergies", "record_visits",
+                "record_consent",
+                "accept_ward_transfer", "manage_housekeeping",
+                "report_incident", "acknowledge_critical_alert",
+                "view_roster",
+                "view_documents",
+            ],
         },
         "lab_technician": {
             "lab": ["view_reports", "create_reports"]
@@ -237,8 +405,23 @@ def setup_role_permissions():
         "receptionist": {
             "outpatient": ["schedule_appointments", "register_patients", "manage_queues", "view_appointments", "cancel_appointments"],
             "billing": ["process_payments", "generate_invoices", "view_financial_reports"],
-            "ehr": ["view_records", "view_history"]
-        }
+            "ehr": ["view_records", "view_history"],
+            "inpatient": [
+                "view_occupancy", "admit_patients", "update_admission",
+                "receive_deposits", "manage_reservations",
+                "view_bill",
+                "upload_documents", "view_documents",
+            ],
+        },
+        "frontdesk": {
+            "outpatient": ["schedule_appointments", "register_patients", "manage_queues", "view_appointments", "cancel_appointments"],
+            "ehr": ["view_records", "view_history"],
+            "inpatient": [
+                "view_occupancy", "admit_patients", "update_admission",
+                "receive_deposits", "manage_reservations",
+                "view_bill", "view_documents",
+            ],
+        },
     }
     
     try:

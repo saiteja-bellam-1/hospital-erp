@@ -368,6 +368,16 @@ const AdminModule = () => {
     });
   };
 
+  const isNurseRole = () => {
+    return (userForm?.role_ids || []).some(rid => {
+      const r = roles.find(role => role.id === rid);
+      return r?.name === 'nurse';
+    });
+  };
+
+  // Inpatient/visit fee is required for both doctors and nurses (same column on the user record).
+  const requiresInpatientFee = () => isDoctorRole() || isNurseRole();
+
   if (!hasRole('super_admin') && !hasRole('hospital_admin')) {
     return (
       <div className="space-y-6">
@@ -593,6 +603,23 @@ const AdminModule = () => {
                   )}
                 </div>
 
+                {/* Nurse-only inpatient/visit fee (doctor section already includes this field) */}
+                {isNurseRole() && !isDoctorRole() && (
+                  <div className="space-y-3 border-t pt-3">
+                    <p className="text-sm font-semibold text-gray-700">Visit Fee</p>
+                    <div>
+                      <Label>Inpatient / Visit Fee (INR) <span className="text-red-500">*</span></Label>
+                      <Input
+                        required
+                        value={userForm.inpatient_fee_inr}
+                        onChange={(e) => setUserForm({ ...userForm, inpatient_fee_inr: e.target.value })}
+                        placeholder="₹500"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">Charged per nursing visit during inpatient admissions.</p>
+                    </div>
+                  </div>
+                )}
+
                 {/* Doctor-specific fields */}
                 {isDoctorRole() && (
                   <div className="space-y-3 border-t pt-3">
@@ -623,8 +650,13 @@ const AdminModule = () => {
                         <Input value={userForm.consultation_fee_inr} onChange={(e) => setUserForm({ ...userForm, consultation_fee_inr: e.target.value })} placeholder="₹1500" />
                       </div>
                       <div>
-                        <Label>Inpatient Fee</Label>
-                        <Input value={userForm.inpatient_fee_inr} onChange={(e) => setUserForm({ ...userForm, inpatient_fee_inr: e.target.value })} placeholder="₹3000" />
+                        <Label>Inpatient Fee <span className="text-red-500">*</span></Label>
+                        <Input
+                          required
+                          value={userForm.inpatient_fee_inr}
+                          onChange={(e) => setUserForm({ ...userForm, inpatient_fee_inr: e.target.value })}
+                          placeholder="₹3000"
+                        />
                       </div>
                       <div>
                         <Label>Emergency Fee</Label>

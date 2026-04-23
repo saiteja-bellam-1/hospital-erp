@@ -56,6 +56,10 @@ const LabTechDashboard = () => {
   // Stats
   const [stats, setStats] = useState(null);
 
+  // Sample collection dialog
+  const [showCollectDialog, setShowCollectDialog] = useState(false);
+  const [collectDialogData, setCollectDialogData] = useState(null); // { order, groupedOrders }
+
   // Sample barcode dialog
   const [showBarcodeDialog, setShowBarcodeDialog] = useState(false);
   const [barcodeData, setBarcodeData] = useState(null);
@@ -134,17 +138,59 @@ const LabTechDashboard = () => {
   // ============ Status update ============
 
   const handleUpdateStatus = async (orderId, newStatus) => {
+    if (newStatus === 'collected') {
+      // Find the order and check for groupable siblings
+      const order = orders.find(o => o.id === orderId);
+      if (order && order.sample_type_name) {
+        // Find other "ordered" orders for same patient + same sample type
+        const siblings = orders.filter(o =>
+          o.id !== orderId &&
+          o.patient_id === order.patient_id &&
+          o.sample_type_name === order.sample_type_name &&
+          o.status === 'ordered' &&
+          !o.sample_id
+        );
+        if (siblings.length > 0) {
+          // Show collect dialog with grouping options
+          setCollectDialogData({ order, groupedOrders: siblings });
+          setShowCollectDialog(true);
+          return;
+        }
+      }
+      // No siblings to group — collect directly
+      await doCollect(orderId, false);
+      return;
+    }
     try {
-      const res = await axios.put(`/api/lab/orders/${orderId}/status?status=${newStatus}`);
+      await axios.put(`/api/lab/orders/${orderId}/status?status=${newStatus}`);
       showFeedback(`Order marked as ${newStatus}`);
       fetchOrders();
-      // Show barcode popup when sample is collected
-      if (newStatus === 'collected' && res.data.sample_id) {
+    } catch (err) {
+      showFeedback(err.response?.data?.detail || 'Failed to update status', 'error');
+    }
+  };
+
+  const doCollect = async (orderId, forceNewSample = false) => {
+    try {
+      const res = await axios.put(`/api/lab/orders/${orderId}/status?status=collected&force_new_sample=${forceNewSample}`);
+      const groupedCount = res.data.grouped_orders?.length || 0;
+      const msg = groupedCount > 0
+        ? `Sample collected for ${groupedCount + 1} tests (grouped)`
+        : 'Order marked as collected';
+      showFeedback(msg);
+      fetchOrders();
+      // Show barcode popup
+      if (res.data.sample_id) {
+        const testNames = [res.data.test_name];
+        if (res.data.grouped_orders) {
+          res.data.grouped_orders.forEach(g => testNames.push(g.test_name));
+        }
         setBarcodeData({
           sample_id: res.data.sample_id,
           order_number: res.data.order_number,
           patient_name: res.data.patient_name,
-          test_name: res.data.test_name,
+          test_name: testNames.join(', '),
+          test_count: testNames.length,
         });
         setShowBarcodeDialog(true);
       }
@@ -375,10 +421,11 @@ const LabTechDashboard = () => {
     return true;
   });
 
-  // Group orders: package orders grouped by package_booking_id, individual orders standalone
+  // Group orders: package orders by package_booking_id, then by patient+sample_type, rest standalone
   const groupOrders = (orderList) => {
     const groups = [];
     const packageMap = {};
+    const sampleGroupMap = {};
     for (const order of orderList) {
       if (order.package_booking_id) {
         if (!packageMap[order.package_booking_id]) {
@@ -395,12 +442,31 @@ const LabTechDashboard = () => {
           groups.push(packageMap[order.package_booking_id]);
         }
         packageMap[order.package_booking_id].orders.push(order);
-        // Escalate priority if any order is urgent/emergency
         if (order.priority === 'emergency' || (order.priority === 'urgent' && packageMap[order.package_booking_id].priority === 'normal')) {
           packageMap[order.package_booking_id].priority = order.priority;
         }
+      } else if (order.sample_type_name) {
+        // Group by patient_id + sample_type_name
+        const key = `${order.patient_id}_${order.sample_type_name}`;
+        if (!sampleGroupMap[key]) {
+          sampleGroupMap[key] = {
+            type: 'sample_group',
+            sample_type_name: order.sample_type_name,
+            patient_name: order.patient_name,
+            patient_id: order.patient_id,
+            orders: [],
+          };
+          groups.push(sampleGroupMap[key]);
+        }
+        sampleGroupMap[key].orders.push(order);
       } else {
         groups.push({ type: 'single', order });
+      }
+    }
+    // For sample groups with only 1 order, convert to single
+    for (let i = groups.length - 1; i >= 0; i--) {
+      if (groups[i].type === 'sample_group' && groups[i].orders.length === 1) {
+        groups[i] = { type: 'single', order: groups[i].orders[0] };
       }
     }
     return groups;
@@ -490,6 +556,11 @@ const LabTechDashboard = () => {
               <p><User className="inline h-3 w-3 mr-1" />{order.doctor_name || 'N/A'}</p>
               <p><Clock className="inline h-3 w-3 mr-1" />{formatDate(order.order_date)}</p>
               <p className="text-xs text-gray-400">#{order.order_number}</p>
+              {order.sample_type_name && (
+                <span className="inline-flex items-center gap-1 text-xs text-amber-600">
+                  <Beaker className="h-3 w-3" />{order.sample_type_name}
+                </span>
+              )}
               {order.sample_id && (
                 <p className="text-xs font-mono font-semibold text-indigo-600">
                   Sample: {order.sample_id}
@@ -629,6 +700,77 @@ const LabTechDashboard = () => {
     );
   };
 
+  const renderSampleGroup = (group, key) => (
+    <Card key={`sg-${key}`} className="border-2 border-amber-200 bg-amber-50/30">
+      <CardContent className="py-3 px-4">
+        {/* Sample group header */}
+        <div className="flex items-center justify-between mb-3 pb-2 border-b border-amber-200">
+          <div className="flex items-center gap-2">
+            <span className="font-semibold text-gray-900">{group.patient_name}</span>
+            <span className="text-gray-400">|</span>
+            <Beaker className="h-4 w-4 text-amber-600" />
+            <span className="font-semibold text-amber-700">{group.sample_type_name}</span>
+            <Badge className="bg-amber-100 text-amber-700 text-xs">{group.orders.length} tests</Badge>
+          </div>
+        </div>
+        {/* Individual tests within sample group */}
+        <div className="space-y-2">
+          {group.orders.map(order => (
+            <div key={order.id} className="flex items-center justify-between bg-white rounded-lg p-3 border border-amber-100">
+              <div className="flex-1">
+                <div className="flex items-center gap-2 mb-0.5">
+                  <TestTube className="h-3 w-3 text-gray-400" />
+                  <span className="font-medium text-sm">{order.test_name} ({order.test_code})</span>
+                  <Badge className={`text-xs ${getStatusColor(order.status)}`}>{order.status}</Badge>
+                  {order.priority !== 'normal' && (
+                    <Badge variant={getPriorityColor(order.priority)}>{order.priority.toUpperCase()}</Badge>
+                  )}
+                </div>
+                <div className="flex items-center gap-3 ml-5">
+                  <span className="text-xs text-gray-400">#{order.order_number}</span>
+                  <span className="text-xs text-gray-400"><User className="inline h-3 w-3 mr-0.5" />{order.doctor_name || 'N/A'}</span>
+                  {order.sample_id && <span className="text-xs font-mono font-semibold text-indigo-600">Sample: {order.sample_id}</span>}
+                </div>
+              </div>
+              <div className="flex gap-2 ml-4">
+                {order.payment_status === 'paid' && (
+                  <Button size="sm" variant="ghost" className="h-7 text-xs text-gray-500" onClick={() => downloadOrderBill(order.id)}>
+                    <Download className="h-3 w-3 mr-1" /> Bill
+                  </Button>
+                )}
+                {order.status === 'ordered' && (
+                  <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => handleUpdateStatus(order.id, 'collected')}>
+                    Mark Collected
+                  </Button>
+                )}
+                {order.status === 'collected' && (
+                  <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => handleUpdateStatus(order.id, 'processing')}>
+                    Start Processing
+                  </Button>
+                )}
+                {(order.status === 'collected' || order.status === 'processing') && (
+                  <Button size="sm" className="h-7 text-xs" onClick={() => openEntryForm(order.id)}>
+                    <FileText className="h-3 w-3 mr-1" /> Enter Results
+                  </Button>
+                )}
+                {order.status === 'completed' && order.has_report && (
+                  <>
+                    <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => openReport(order.report_id)}>
+                      <Eye className="h-3 w-3 mr-1" /> Report
+                    </Button>
+                    <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => printReport(order.report_id)}>
+                      <Printer className="h-3 w-3 mr-1" /> Print
+                    </Button>
+                  </>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+
   const renderPendingTab = () => (
     <div className="space-y-4">
       <div className="flex flex-col md:flex-row gap-3">
@@ -666,7 +808,9 @@ const LabTechDashboard = () => {
       ) : (
         <div className="space-y-3">
           {groupOrders(filteredOrders).map((group, gi) =>
-            group.type === 'package' ? renderPackageGroup(group, gi) : renderOrderCard(group.order)
+            group.type === 'package' ? renderPackageGroup(group, gi)
+              : group.type === 'sample_group' ? renderSampleGroup(group, gi)
+              : renderOrderCard(group.order)
           )}
         </div>
       )}
@@ -683,7 +827,9 @@ const LabTechDashboard = () => {
         </Card>
       ) : (
         groupOrders(completedOrders).map((group, gi) =>
-          group.type === 'package' ? renderPackageGroup(group, gi) : renderOrderCard(group.order)
+          group.type === 'package' ? renderPackageGroup(group, gi)
+            : group.type === 'sample_group' ? renderSampleGroup(group, gi)
+            : renderOrderCard(group.order)
         )
       )}
     </div>
@@ -966,6 +1112,65 @@ const LabTechDashboard = () => {
       {renderEntryDialog()}
       {renderReportDialog()}
 
+      {/* Sample Collection Confirmation Dialog */}
+      <Dialog open={showCollectDialog} onOpenChange={setShowCollectDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Beaker className="h-5 w-5 text-amber-600" /> Collect Sample
+            </DialogTitle>
+          </DialogHeader>
+          {collectDialogData && (
+            <div className="space-y-4">
+              <p className="text-sm text-gray-600">
+                Patient: <strong>{collectDialogData.order.patient_name}</strong>
+              </p>
+              <p className="text-sm text-gray-600">
+                Sample Type: <strong className="text-amber-700">{collectDialogData.order.sample_type_name}</strong>
+              </p>
+
+              <div className="border rounded-lg p-3 bg-amber-50">
+                <p className="text-sm font-medium mb-2">
+                  The following tests use the same sample type and can share one sample:
+                </p>
+                <ul className="space-y-1.5">
+                  <li className="flex items-center gap-2 text-sm">
+                    <TestTube className="h-3.5 w-3.5 text-amber-600" />
+                    <span className="font-medium">{collectDialogData.order.test_name}</span>
+                    <Badge variant="outline" className="text-[10px]">{collectDialogData.order.test_code}</Badge>
+                  </li>
+                  {collectDialogData.groupedOrders.map(o => (
+                    <li key={o.id} className="flex items-center gap-2 text-sm">
+                      <TestTube className="h-3.5 w-3.5 text-amber-600" />
+                      <span className="font-medium">{o.test_name}</span>
+                      <Badge variant="outline" className="text-[10px]">{o.test_code}</Badge>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <Button onClick={() => {
+                  setShowCollectDialog(false);
+                  doCollect(collectDialogData.order.id, false);
+                }} className="w-full">
+                  Collect Single Sample for All ({collectDialogData.groupedOrders.length + 1} tests)
+                </Button>
+                <Button variant="outline" onClick={() => {
+                  setShowCollectDialog(false);
+                  doCollect(collectDialogData.order.id, true);
+                }} className="w-full">
+                  Collect Separate Sample (this test only)
+                </Button>
+                <Button variant="ghost" onClick={() => setShowCollectDialog(false)} className="w-full text-gray-500">
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
       {/* Sample Barcode Dialog */}
       <Dialog open={showBarcodeDialog} onOpenChange={setShowBarcodeDialog}>
         <DialogContent className="max-w-sm">
@@ -979,6 +1184,9 @@ const LabTechDashboard = () => {
               {/* Label preview */}
               <div className="border-2 border-dashed border-gray-300 rounded-lg p-4 bg-white text-center">
                 <p className="text-sm font-semibold">{barcodeData.patient_name}</p>
+                {barcodeData.test_count > 1 && (
+                  <p className="text-[10px] text-amber-600 font-medium">{barcodeData.test_count} tests grouped</p>
+                )}
                 <p className="text-xs text-gray-500">{barcodeData.test_name}</p>
                 <div className="mt-2 mb-1">
                   {barcodeImgSrc && <img src={barcodeImgSrc} alt="barcode" className="mx-auto" style={{ height: 45, maxWidth: '80%' }} />}

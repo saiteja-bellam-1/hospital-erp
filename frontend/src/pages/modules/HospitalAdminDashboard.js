@@ -16,6 +16,10 @@ import {
   AlertCircle,
   RefreshCw,
   Loader2,
+  BedDouble,
+  LogIn,
+  LogOut,
+  Timer,
 } from 'lucide-react';
 import { Button } from '../../components/ui/button';
 import axios from 'axios';
@@ -66,6 +70,7 @@ const HospitalAdminDashboard = () => {
   const [lastRefresh, setLastRefresh] = useState(new Date());
 
   const [enabledModules, setEnabledModules] = useState({});
+  const [inpatientCensus, setInpatientCensus] = useState(null);
   useEffect(() => {
     const fetchMods = async () => {
       try {
@@ -73,6 +78,12 @@ const HospitalAdminDashboard = () => {
         const map = {};
         res.data.forEach(m => { map[m.module_name] = m.is_enabled; });
         setEnabledModules(map);
+        if (map.inpatient) {
+          try {
+            const ipRes = await axios.get('/api/inpatient/dashboard');
+            setInpatientCensus(ipRes.data);
+          } catch { /* silently omit if API fails */ }
+        }
       } catch { setEnabledModules({ outpatient: true, lab: true }); }
     };
     fetchMods();
@@ -85,13 +96,20 @@ const HospitalAdminDashboard = () => {
       const res = await axios.get('/api/hospital/dashboard-overview');
       setData(res.data);
       setLastRefresh(new Date());
+      // Refresh inpatient census if enabled
+      if (enabledModules.inpatient) {
+        try {
+          const ipRes = await axios.get('/api/inpatient/dashboard');
+          setInpatientCensus(ipRes.data);
+        } catch { /* silently omit */ }
+      }
     } catch (err) {
       console.error('Dashboard fetch error:', err);
       setError('Failed to load dashboard data');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [enabledModules.inpatient]);
 
   useEffect(() => {
     fetchDashboard();
@@ -246,6 +264,123 @@ const HospitalAdminDashboard = () => {
           </Card>
         )}
       </div>
+
+      {/* Inpatient Census — only when inpatient enabled and data loaded */}
+      {enabledModules.inpatient && inpatientCensus && (
+        <div>
+          <h2 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-2">
+            <BedDouble className="h-4 w-4 text-rose-500" />
+            Inpatient Census
+          </h2>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <Card className="border-0 shadow-sm bg-gradient-to-br from-rose-50 to-white">
+              <CardContent className="p-5">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <p className="text-xs font-medium text-rose-600 uppercase tracking-wide">Total Beds</p>
+                    <p className="text-3xl font-bold text-gray-900 mt-1">{inpatientCensus.total_beds || 0}</p>
+                    <div className="flex items-center gap-1.5 mt-1.5">
+                      <CheckCircle2 className="h-3 w-3 text-green-500" />
+                      <span className="text-xs text-gray-500">
+                        {inpatientCensus.available || 0} available
+                      </span>
+                    </div>
+                  </div>
+                  <div className="h-10 w-10 rounded-xl bg-rose-100 flex items-center justify-center">
+                    <BedDouble className="h-5 w-5 text-rose-600" />
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="border-0 shadow-sm bg-gradient-to-br from-orange-50 to-white">
+              <CardContent className="p-5">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <p className="text-xs font-medium text-orange-600 uppercase tracking-wide">Occupied Beds</p>
+                    <p className="text-3xl font-bold text-gray-900 mt-1">{inpatientCensus.occupied || 0}</p>
+                    <div className="flex items-center gap-1.5 mt-1.5">
+                      <Activity className="h-3 w-3 text-orange-500" />
+                      <span className="text-xs text-gray-500">
+                        {inpatientCensus.total_beds > 0 ? Math.round((inpatientCensus.occupied / inpatientCensus.total_beds) * 100) : 0}% occupancy
+                      </span>
+                    </div>
+                  </div>
+                  <div className="h-10 w-10 rounded-xl bg-orange-100 flex items-center justify-center">
+                    <Users className="h-5 w-5 text-orange-600" />
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="border-0 shadow-sm bg-gradient-to-br from-cyan-50 to-white">
+              <CardContent className="p-5">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <p className="text-xs font-medium text-cyan-600 uppercase tracking-wide">Today's Admissions</p>
+                    <p className="text-3xl font-bold text-gray-900 mt-1">{inpatientCensus.today_admissions || 0}</p>
+                    <div className="flex items-center gap-1.5 mt-1.5">
+                      <LogIn className="h-3 w-3 text-cyan-500" />
+                      <span className="text-xs text-gray-500">
+                        {inpatientCensus.active_admissions || 0} active total
+                      </span>
+                    </div>
+                  </div>
+                  <div className="h-10 w-10 rounded-xl bg-cyan-100 flex items-center justify-center">
+                    <LogIn className="h-5 w-5 text-cyan-600" />
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="border-0 shadow-sm bg-gradient-to-br from-violet-50 to-white">
+              <CardContent className="p-5">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <p className="text-xs font-medium text-violet-600 uppercase tracking-wide">Pending Discharges</p>
+                    <p className="text-3xl font-bold text-gray-900 mt-1">{inpatientCensus.pending_discharges || 0}</p>
+                    <div className="flex items-center gap-1.5 mt-1.5">
+                      <Timer className="h-3 w-3 text-violet-500" />
+                      <span className="text-xs text-gray-500">
+                        Avg stay: {inpatientCensus.avg_stay_days != null ? inpatientCensus.avg_stay_days.toFixed(1) : '—'} days
+                      </span>
+                    </div>
+                  </div>
+                  <div className="h-10 w-10 rounded-xl bg-violet-100 flex items-center justify-center">
+                    <LogOut className="h-5 w-5 text-violet-600" />
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Room Type Breakdown */}
+          {inpatientCensus.by_type && Object.keys(inpatientCensus.by_type).length > 0 && (
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mt-3">
+              {Object.entries(inpatientCensus.by_type).map(([type, info]) => (
+                <Card key={type} className="border-0 shadow-sm">
+                  <CardContent className="p-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-xs font-medium text-gray-600 capitalize">{type}</p>
+                        <p className="text-sm font-semibold text-gray-900 mt-0.5">
+                          {info.occupied}/{info.total}
+                        </p>
+                      </div>
+                      <div className="w-16 h-2 bg-gray-100 rounded-full overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-rose-400 transition-all"
+                          style={{ width: `${info.total > 0 ? (info.occupied / info.total) * 100 : 0}%` }}
+                        />
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Second Row: Revenue Summary + Appointment Status */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">

@@ -49,6 +49,9 @@ const NurseDashboard = () => {
   const [nurseVisitAdmission, setNurseVisitAdmission] = useState(null);
   const [nurseVisitNotes, setNurseVisitNotes] = useState('');
   const [activeDietOrders, setActiveDietOrders] = useState([]);
+  const [myPatientsOnly, setMyPatientsOnly] = useState(false);
+  const [myPatients, setMyPatients] = useState([]);
+  const [myPatientsShift, setMyPatientsShift] = useState('');
 
   // Vitals form state
   const [vitalsForm, setVitalsForm] = useState({
@@ -76,7 +79,7 @@ const NurseDashboard = () => {
       if (mod?.is_enabled) {
         setInpatientEnabled(true);
         axios.get('/api/inpatient/admissions', { params: { status: 'admitted' } })
-          .then(r => setWardAdmissions(r.data))
+          .then(r => setWardAdmissions(Array.isArray(r.data) ? r.data : (r.data?.items || [])))
           .catch(() => {});
         axios.get('/api/inpatient/diet-orders/active')
           .then(r => setActiveDietOrders(r.data))
@@ -84,6 +87,16 @@ const NurseDashboard = () => {
       }
     }).catch(() => {});
   }, []);
+
+  // Fetch "my patients" when the toggle is on
+  useEffect(() => {
+    if (!myPatientsOnly) return;
+    const params = {};
+    if (myPatientsShift) params.shift = myPatientsShift;
+    axios.get('/api/inpatient/nurses/my-patients', { params })
+      .then(r => setMyPatients(r.data || []))
+      .catch(() => setMyPatients([]));
+  }, [myPatientsOnly, myPatientsShift]);
 
   // Filter patients based on search term
   useEffect(() => {
@@ -475,14 +488,73 @@ const NurseDashboard = () => {
         {/* Inpatient Ward Tab */}
         {inpatientEnabled && (
           <TabsContent value="ward" className="space-y-4">
+            {/* "My Patients" filter */}
+            <div className="flex items-center justify-between bg-gray-50 p-3 rounded border">
+              <div className="flex items-center gap-3">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={myPatientsOnly} onChange={e => setMyPatientsOnly(e.target.checked)} />
+                  <span className="text-sm font-medium">My Patients only</span>
+                </label>
+                {myPatientsOnly && (
+                  <select className="text-sm border rounded px-2 py-1" value={myPatientsShift} onChange={e => setMyPatientsShift(e.target.value)}>
+                    <option value="">Any shift (today)</option>
+                    <option value="morning">Morning</option>
+                    <option value="afternoon">Afternoon</option>
+                    <option value="night">Night</option>
+                  </select>
+                )}
+              </div>
+              {myPatientsOnly && (
+                <span className="text-xs text-gray-500">{myPatients.length} assigned</span>
+              )}
+            </div>
+
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
-                  <Bed className="h-5 w-5" /> Inpatient Ward
+                  <Bed className="h-5 w-5" /> {myPatientsOnly ? 'My Assigned Patients' : 'Inpatient Ward'}
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                {wardAdmissions.length === 0 ? (
+                {myPatientsOnly ? (
+                  myPatients.length === 0 ? (
+                    <p className="text-gray-500 text-center py-4">No patients assigned to you{myPatientsShift ? ` for ${myPatientsShift} shift` : ''}.</p>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full border-collapse">
+                        <thead>
+                          <tr className="border-b">
+                            <th className="text-left py-2 text-sm">Patient</th>
+                            <th className="text-left py-2 text-sm">Room</th>
+                            <th className="text-left py-2 text-sm">Shift</th>
+                            <th className="text-left py-2 text-sm">Role</th>
+                            <th className="text-left py-2 text-sm">Notes</th>
+                            <th className="text-left py-2 text-sm">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {myPatients.map(mp => (
+                            <tr key={`${mp.admission_id}-${mp.shift}`} className="border-b hover:bg-gray-50">
+                              <td className="py-2">
+                                <div className="font-medium text-sm">{mp.patient_name || 'N/A'}</div>
+                                <div className="text-xs text-gray-500">{mp.admission_number}</div>
+                              </td>
+                              <td className="py-2 text-sm">{mp.room_number} <span className="text-xs text-gray-500">({mp.room_type})</span></td>
+                              <td className="py-2 text-sm"><Badge variant="outline" className="text-xs">{mp.shift}</Badge></td>
+                              <td className="py-2 text-sm">{mp.is_primary ? <Badge className="text-xs bg-blue-100 text-blue-800">Primary</Badge> : '—'}</td>
+                              <td className="py-2 text-sm text-gray-600">{mp.assignment_notes || '—'}</td>
+                              <td className="py-2">
+                                <Button size="sm" variant="outline" onClick={() => { setNurseVisitAdmission({ id: mp.admission_id, patient_name: mp.patient_name, admission_number: mp.admission_number }); setNurseVisitNotes(''); setShowNurseVisitDialog(true); }}>
+                                  <Plus className="h-3 w-3 mr-1" /> Record Visit
+                                </Button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )
+                ) : wardAdmissions.length === 0 ? (
                   <p className="text-gray-500 text-center py-4">No active admissions.</p>
                 ) : (
                   <div className="overflow-x-auto">

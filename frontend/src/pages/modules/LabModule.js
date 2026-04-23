@@ -12,7 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../componen
 import { ConfirmDialog } from '../../components/ui/confirm-dialog';
 import {
   TestTube, Plus, Edit2, Trash2, Search, RefreshCw,
-  Activity, ClipboardList, CheckCircle, Loader2, Database, Settings2, Package
+  Activity, ClipboardList, CheckCircle, Loader2, Database, Settings2, Package, Droplets
 } from 'lucide-react';
 import axios from 'axios';
 import LabTestParametersPage from './LabTestParametersPage';
@@ -32,12 +32,18 @@ const LabModuleMain = () => {
   const [editingCategory, setEditingCategory] = useState(null);
   const [categoryForm, setCategoryForm] = useState({ name: '', description: '' });
 
+  // Sample Types
+  const [sampleTypes, setSampleTypes] = useState([]);
+  const [showSampleTypeDialog, setShowSampleTypeDialog] = useState(false);
+  const [editingSampleType, setEditingSampleType] = useState(null);
+  const [sampleTypeForm, setSampleTypeForm] = useState({ name: '', description: '' });
+
   // Test dialog
   const [showTestDialog, setShowTestDialog] = useState(false);
   const [editingTest, setEditingTest] = useState(null);
   const [testForm, setTestForm] = useState({
     test_code: '', name: '', description: '', category_id: '',
-    cost: '', sample_type: '', method: '', preparation_instructions: ''
+    cost: '', sample_type_id: '', method: '', preparation_instructions: ''
   });
 
   // Confirm dialog
@@ -91,6 +97,15 @@ const LabModuleMain = () => {
     }
   }, []);
 
+  const fetchSampleTypes = useCallback(async () => {
+    try {
+      const res = await axios.get('/api/lab/sample-types');
+      setSampleTypes(res.data);
+    } catch (err) {
+      console.error('Failed to fetch sample types:', err);
+    }
+  }, []);
+
   const fetchTests = useCallback(async () => {
     setLoading(true);
     try {
@@ -109,7 +124,8 @@ const LabModuleMain = () => {
   useEffect(() => {
     fetchStats();
     fetchCategories();
-  }, [fetchStats, fetchCategories]);
+    fetchSampleTypes();
+  }, [fetchStats, fetchCategories, fetchSampleTypes]);
 
   useEffect(() => {
     fetchTests();
@@ -160,6 +176,48 @@ const LabModuleMain = () => {
     }, 'Delete Category');
   };
 
+  // ============ Sample Type CRUD ============
+
+  const openSampleTypeDialog = (st = null) => {
+    if (st) {
+      setEditingSampleType(st);
+      setSampleTypeForm({ name: st.name, description: st.description || '' });
+    } else {
+      setEditingSampleType(null);
+      setSampleTypeForm({ name: '', description: '' });
+    }
+    setShowSampleTypeDialog(true);
+  };
+
+  const handleSaveSampleType = async () => {
+    if (!sampleTypeForm.name.trim()) return;
+    try {
+      if (editingSampleType) {
+        await axios.put(`/api/lab/sample-types/${editingSampleType.id}`, sampleTypeForm);
+        showFeedback('Sample type updated');
+      } else {
+        await axios.post('/api/lab/sample-types', sampleTypeForm);
+        showFeedback('Sample type created');
+      }
+      setShowSampleTypeDialog(false);
+      fetchSampleTypes();
+    } catch (err) {
+      showFeedback(err.response?.data?.detail || 'Failed to save sample type', 'error');
+    }
+  };
+
+  const handleDeleteSampleType = (id) => {
+    confirm('Delete this sample type? Tests using it will not be deleted.', async () => {
+      try {
+        await axios.delete(`/api/lab/sample-types/${id}`);
+        showFeedback('Sample type deleted');
+        fetchSampleTypes();
+      } catch (err) {
+        showFeedback(err.response?.data?.detail || 'Failed to delete sample type', 'error');
+      }
+    }, 'Delete Sample Type');
+  };
+
   // ============ Test CRUD ============
 
   const openTestDialog = (test = null) => {
@@ -168,14 +226,14 @@ const LabModuleMain = () => {
       setTestForm({
         test_code: test.test_code, name: test.name,
         description: test.description || '', category_id: String(test.category_id),
-        cost: String(test.cost), sample_type: test.sample_type || '',
+        cost: String(test.cost), sample_type_id: test.sample_type_id ? String(test.sample_type_id) : '',
         method: test.method || '', preparation_instructions: test.preparation_instructions || ''
       });
     } else {
       setEditingTest(null);
       setTestForm({
         test_code: '', name: '', description: '', category_id: '',
-        cost: '', sample_type: '', method: '', preparation_instructions: ''
+        cost: '', sample_type_id: '', method: '', preparation_instructions: ''
       });
     }
     setShowTestDialog(true);
@@ -186,7 +244,8 @@ const LabModuleMain = () => {
     const payload = {
       ...testForm,
       category_id: parseInt(testForm.category_id),
-      cost: parseFloat(testForm.cost)
+      cost: parseFloat(testForm.cost),
+      sample_type_id: testForm.sample_type_id ? parseInt(testForm.sample_type_id) : null,
     };
     try {
       if (editingTest) {
@@ -510,6 +569,78 @@ const LabModuleMain = () => {
     </div>
   );
 
+  // ============ Sample Types Tab ============
+
+  const renderSampleTypes = () => (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold">Sample Types</h2>
+        <Button onClick={() => openSampleTypeDialog()}>
+          <Plus className="h-4 w-4 mr-2" /> Add Sample Type
+        </Button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {sampleTypes.map(st => (
+          <Card key={st.id}>
+            <CardContent className="pt-6">
+              <div className="flex items-start justify-between">
+                <div>
+                  <h3 className="font-semibold text-lg">{st.name}</h3>
+                  {st.description && <p className="text-sm text-gray-500 mt-1">{st.description}</p>}
+                  <Badge variant="secondary" className="mt-2">{st.test_count || 0} tests</Badge>
+                </div>
+                <div className="flex gap-1">
+                  <Button variant="ghost" size="sm" onClick={() => openSampleTypeDialog(st)}>
+                    <Edit2 className="h-4 w-4" />
+                  </Button>
+                  <Button variant="ghost" size="sm" className="text-red-500" onClick={() => handleDeleteSampleType(st.id)}>
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        ))}
+        {sampleTypes.length === 0 && (
+          <div className="col-span-full text-center py-8 text-gray-500">
+            No sample types yet. Add sample types like Blood, Urine, Serum, etc.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  const renderSampleTypeDialog = () => (
+    <Dialog open={showSampleTypeDialog} onOpenChange={setShowSampleTypeDialog}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>{editingSampleType ? 'Edit Sample Type' : 'New Sample Type'}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div>
+            <Label>Sample Type Name *</Label>
+            <Input value={sampleTypeForm.name}
+              onChange={(e) => setSampleTypeForm({ ...sampleTypeForm, name: e.target.value })}
+              placeholder="e.g. Blood, Urine, Serum" />
+          </div>
+          <div>
+            <Label>Description</Label>
+            <Textarea value={sampleTypeForm.description}
+              onChange={(e) => setSampleTypeForm({ ...sampleTypeForm, description: e.target.value })}
+              placeholder="Optional description" rows={3} />
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setShowSampleTypeDialog(false)}>Cancel</Button>
+            <Button onClick={handleSaveSampleType} disabled={!sampleTypeForm.name.trim()}>
+              {editingSampleType ? 'Update' : 'Create'}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+
   // ============ Tests Tab ============
 
   const renderTests = () => (
@@ -573,7 +704,7 @@ const LabModuleMain = () => {
                       <span>{test.category_name}</span>
                       <span>|</span>
                       <span>Rs. {test.cost}</span>
-                      {test.sample_type && <><span>|</span><span>{test.sample_type}</span></>}
+                      {test.sample_type_name && <><span>|</span><span>{test.sample_type_name}</span></>}
                       {test.method && <><span>|</span><span>{test.method}</span></>}
                       <span>|</span>
                       <span>{test.parameters?.length || 0} parameters</span>
@@ -675,9 +806,17 @@ const LabModuleMain = () => {
           <div className="grid grid-cols-2 gap-4">
             <div>
               <Label>Sample Type</Label>
-              <Input value={testForm.sample_type}
-                onChange={(e) => setTestForm({ ...testForm, sample_type: e.target.value })}
-                placeholder="e.g. Blood, Urine, Serum" />
+              <Select value={testForm.sample_type_id || 'none'} onValueChange={(v) => setTestForm({ ...testForm, sample_type_id: v === 'none' ? '' : v })}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select sample type" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">None</SelectItem>
+                  {sampleTypes.map(st => (
+                    <SelectItem key={st.id} value={String(st.id)}>{st.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div>
               <Label>Method</Label>
@@ -995,6 +1134,9 @@ const LabModuleMain = () => {
           <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
           <TabsTrigger value="tests">Test Catalog</TabsTrigger>
           <TabsTrigger value="categories">Categories</TabsTrigger>
+          <TabsTrigger value="sample_types">
+            <Droplets className="h-4 w-4 mr-1.5" /> Sample Types
+          </TabsTrigger>
           <TabsTrigger value="packages">
             <Package className="h-4 w-4 mr-1.5" /> Packages
           </TabsTrigger>
@@ -1003,11 +1145,13 @@ const LabModuleMain = () => {
         <TabsContent value="dashboard">{renderDashboard()}</TabsContent>
         <TabsContent value="tests">{renderTests()}</TabsContent>
         <TabsContent value="categories">{renderCategories()}</TabsContent>
+        <TabsContent value="sample_types">{renderSampleTypes()}</TabsContent>
         <TabsContent value="packages">{renderPackages()}</TabsContent>
       </Tabs>
 
       {renderCategoryDialog()}
       {renderTestDialog()}
+      {renderSampleTypeDialog()}
       {renderPkgCategoryDialog()}
       {renderPackageDialog()}
 

@@ -16,6 +16,8 @@ from app.models.patient import Patient
 from app.models.outpatient import Appointment
 from app.models.ehr import Consultation
 from app.models.lab import PatientLabOrder, LabTest, LabTestCategory
+from app.models.billing import Bill, BillItem, Payment
+from app.models.inpatient import Admission
 from app.utils.dependencies import get_current_user
 
 from app.utils.paths import get_uploads_dir
@@ -805,8 +807,8 @@ async def get_all_bills(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Centralised billing view — all appointment + lab bills with filters."""
-    if not any(r in current_user.role_names for r in ['super_admin', 'hospital_admin']):
+    """Centralised billing view — all appointment + lab + admission bills with filters."""
+    if not any(r in current_user.role_names for r in ['super_admin', 'hospital_admin', 'receptionist']):
         raise HTTPException(status_code=403, detail="Not authorized")
 
     hospital_id = current_user.hospital_id
@@ -912,6 +914,63 @@ async def get_all_bills(
             "cancelled_at": lo.bill_cancelled_at.isoformat() if getattr(lo, 'bill_cancelled_at', None) else "",
         })
 
+    # --- Admission (inpatient) bills from bills table ---
+    if bill_type in (None, 'admission', 'inpatient'):
+        adm_query = db.query(Bill).join(Patient, Bill.patient_id == Patient.id).filter(
+            Patient.hospital_id == hospital_id,
+            Bill.bill_type == "admission",
+            sql_func.date(Bill.bill_date) >= d_from,
+            sql_func.date(Bill.bill_date) <= d_to,
+        )
+        if payment_status:
+            status_map = {"paid": "paid", "pending": "pending", "cancelled": "cancelled"}
+            mapped = status_map.get(payment_status, payment_status)
+            adm_query = adm_query.filter(Bill.status == mapped)
+        if patient_search:
+            q = f"%{patient_search}%"
+            adm_query = adm_query.filter(
+                (Patient.first_name.ilike(q)) | (Patient.last_name.ilike(q)) | (Patient.primary_phone.ilike(q))
+            )
+
+        for b in adm_query.order_by(Bill.bill_date.desc()).all():
+            p = db.query(Patient).filter(Patient.id == b.patient_id).first()
+            admission = db.query(Admission).filter(Admission.id == b.reference_id).first() if b.reference_id else None
+            admitting_doc = None
+            if admission and admission.admitting_doctor_id:
+                admitting_doc = db.query(User).filter(User.id == admission.admitting_doctor_id).first()
+            # Collect bill items summary
+            items_list = db.query(BillItem).filter(BillItem.bill_id == b.id).all()
+            items_text = ", ".join(it.item_name for it in items_list[:3])
+            if len(items_list) > 3:
+                items_text += f" +{len(items_list) - 3} more"
+            # Calculate amount paid from payments
+            paid_total = sum(float(pay.amount_paid) for pay in (b.payments or []))
+            bills.append({
+                "id": f"ADM-{b.id}",
+                "bill_id": b.id,
+                "type": "admission",
+                "date": b.bill_date.isoformat() if b.bill_date else "",
+                "patient_name": f"{p.first_name} {p.last_name}" if p else "Unknown",
+                "patient_phone": p.primary_phone if p else "",
+                "patient_id": p.patient_id if p else "",
+                "_doctor_id": admission.admitting_doctor_id if admission else None,
+                "doctor_name": f"Dr. {admitting_doc.first_name} {admitting_doc.last_name}" if admitting_doc else "",
+                "reference": b.bill_number,
+                "items": items_text or "Admission charges",
+                "subtotal": float(b.subtotal or 0),
+                "discount": float(b.discount_amount or 0),
+                "amount": float(b.total_amount or 0),
+                "payment_status": b.status or "pending",
+                "payment_method": "",
+                "referred_by": "",
+                "cancel_reason": "",
+                "cancelled_by": "",
+                "cancelled_at": "",
+                "amount_paid": paid_total,
+                "balance_due": float(b.total_amount or 0) - paid_total,
+                "admission_id": admission.id if admission else None,
+            })
+
     # Sort all by date descending
     bills.sort(key=lambda b: b["date"], reverse=True)
 
@@ -919,10 +978,11 @@ async def get_all_bills(
     active_bills = [b for b in bills if b["payment_status"] != "cancelled"]
     total_billed = sum(b["amount"] for b in active_bills)
     total_paid = sum(b["amount"] for b in active_bills if b["payment_status"] == "paid")
-    total_pending = sum(b["amount"] for b in active_bills if b["payment_status"] == "pending")
+    total_pending = sum(b["amount"] for b in active_bills if b["payment_status"] in ("pending", "partial"))
     cancelled_count = sum(1 for b in bills if b["payment_status"] == "cancelled")
     apt_count = sum(1 for b in bills if b["type"] == "consultation")
     lab_count = sum(1 for b in bills if b["type"] == "lab")
+    adm_count = sum(1 for b in bills if b["type"] == "admission")
 
     # Extract unique doctors from bills for filter dropdown
     doctor_ids_seen = set()
@@ -966,8 +1026,147 @@ async def get_all_bills(
             "total_pending": total_pending,
             "appointment_count": apt_count,
             "lab_count": lab_count,
+            "admission_count": adm_count,
             "cancelled_count": cancelled_count,
         },
         "doctors": doctor_list,
         "referrals": referral_list,
+    }
+
+
+# --- Bill Detail (from bills table) ---
+@router.get("/billing/bills/{bill_id}")
+async def get_bill_detail(
+    bill_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get full bill detail with items and payments."""
+    if not any(r in current_user.role_names for r in ['super_admin', 'hospital_admin', 'receptionist']):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    bill = db.query(Bill).filter(Bill.id == bill_id).first()
+    if not bill:
+        raise HTTPException(status_code=404, detail="Bill not found")
+
+    patient = db.query(Patient).filter(Patient.id == bill.patient_id).first()
+    items = db.query(BillItem).filter(BillItem.bill_id == bill.id).all()
+    payments = db.query(Payment).filter(Payment.bill_id == bill.id).order_by(Payment.payment_date.desc()).all()
+
+    total_paid = sum(float(p.amount_paid) for p in payments)
+
+    return {
+        "id": bill.id,
+        "bill_number": bill.bill_number,
+        "bill_type": bill.bill_type,
+        "bill_date": bill.bill_date.isoformat() if bill.bill_date else None,
+        "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "Unknown",
+        "patient_phone": patient.primary_phone if patient else "",
+        "status": bill.status,
+        "subtotal": float(bill.subtotal or 0),
+        "tax_amount": float(bill.tax_amount or 0),
+        "discount_amount": float(bill.discount_amount or 0),
+        "total_amount": float(bill.total_amount or 0),
+        "amount_paid": total_paid,
+        "balance_due": float(bill.total_amount or 0) - total_paid,
+        "notes": bill.notes,
+        "items": [
+            {
+                "id": it.id,
+                "item_type": it.item_type,
+                "item_name": it.item_name,
+                "item_code": it.item_code,
+                "quantity": it.quantity,
+                "unit_price": float(it.unit_price),
+                "total_price": float(it.total_price),
+            }
+            for it in items
+        ],
+        "payments": [
+            {
+                "id": p.id,
+                "payment_number": p.payment_number,
+                "amount_paid": float(p.amount_paid),
+                "payment_method_name": p.payment_method_name or "cash",
+                "payment_date": p.payment_date.isoformat() if p.payment_date else None,
+                "transaction_reference": p.transaction_reference,
+                "notes": p.notes,
+            }
+            for p in payments
+        ],
+    }
+
+
+class BillPaymentRequest(BaseModel):
+    amount_paid: float = Field(..., gt=0)
+    payment_method: str = "cash"
+    transaction_reference: Optional[str] = None
+    notes: Optional[str] = None
+
+
+@router.post("/billing/bills/{bill_id}/payment")
+async def record_bill_payment(
+    bill_id: int,
+    req: BillPaymentRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Record a payment against a bill in the bills table."""
+    if not any(r in current_user.role_names for r in ['super_admin', 'hospital_admin', 'receptionist']):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    bill = db.query(Bill).filter(Bill.id == bill_id).first()
+    if not bill:
+        raise HTTPException(status_code=404, detail="Bill not found")
+    if bill.status == "cancelled":
+        raise HTTPException(status_code=400, detail="Cannot pay a cancelled bill")
+    if bill.status == "paid":
+        raise HTTPException(status_code=400, detail="Bill is already fully paid")
+
+    existing_paid = sum(float(p.amount_paid) for p in (bill.payments or []))
+    balance = float(bill.total_amount or 0) - existing_paid
+
+    if req.amount_paid > balance + 0.01:
+        raise HTTPException(status_code=400, detail=f"Amount exceeds balance due (₹{balance:.2f})")
+
+    # Generate payment number
+    today_str = datetime.now().strftime("%Y%m%d")
+    pay_prefix = f"PAY-{today_str}-"
+    last_pay = db.query(Payment).filter(
+        Payment.payment_number.like(f"{pay_prefix}%")
+    ).order_by(Payment.id.desc()).first()
+    seq = (int(last_pay.payment_number.split("-")[-1]) + 1) if last_pay else 1
+    payment_number = f"{pay_prefix}{seq:04d}"
+
+    payment = Payment(
+        payment_number=payment_number,
+        bill_id=bill.id,
+        amount_paid=req.amount_paid,
+        payment_method_name=req.payment_method,
+        transaction_reference=req.transaction_reference,
+        notes=req.notes,
+        received_by_id=current_user.id,
+    )
+    db.add(payment)
+
+    new_paid = existing_paid + req.amount_paid
+    if new_paid >= float(bill.total_amount or 0) - 0.01:
+        bill.status = "paid"
+    else:
+        bill.status = "partial"
+
+    db.commit()
+
+    from app.services.audit_service import log_action
+    log_action(db, current_user, "record_payment", "billing", "Payment", payment.id,
+               f"Recorded payment {payment_number} of ₹{req.amount_paid:.2f} for bill {bill.bill_number}")
+
+    return {
+        "payment_id": payment.id,
+        "payment_number": payment_number,
+        "amount_paid": req.amount_paid,
+        "bill_status": bill.status,
+        "total_paid": new_paid,
+        "balance_due": float(bill.total_amount or 0) - new_paid,
+        "message": "Payment recorded successfully",
     }

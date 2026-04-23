@@ -1,48 +1,57 @@
-# Hospital ERP System
+# KT HEALTH ERP — Hospital Management System
 
-A comprehensive Hospital Enterprise Resource Planning (ERP) system built with React frontend and Python FastAPI backend, designed for local network deployment.
+A comprehensive hospital management system with React + shadcn/Tailwind frontend and FastAPI backend, designed for on-premise local network deployment. Distributed either as a Windows `.exe` bundle (PyInstaller) or run from source.
 
-## Features
+## 📚 Documentation
 
-### Core Modules
-- **Patient Management** - Patient registration with auto-generated UUID system
-- **Laboratory Management** - Lab test configuration, orders, and reports
-- **Pharmacy Management** - Medicine inventory, prescriptions, and dispensing
-- **Billing Management** - Integrated billing across all modules
-- **EHR (Electronic Health Records)** - Doctor consultations and patient records
-- **Outpatient Management** - Appointment scheduling and visit management
-- **Inpatient Management** - Admission, room management, and discharge
+End-user and administrator guides live in [`docs/`](docs/):
 
-### User Roles & Access Control
-- **Super Admin** - System-wide access, hospital and module management
-- **Hospital Admin** - Full hospital access, user management
-- **Module Admins** - Lab, Pharmacy, Billing, Outpatient, Inpatient admins
-- **Doctors** - EHR access, prescription creation, lab orders
-- **Staff** - Role-based access (Nurses, Lab Technicians, Pharmacists, Receptionists)
+- **[Inpatient User Guide](docs/INPATIENT_USER_GUIDE.md)** — complete feature walkthrough for clinical and operational staff, per-role capabilities, end-to-end patient journey, and FAQ
+- **[Permissions Administrator Guide](docs/PERMISSIONS_ADMIN_GUIDE.md)** — how to configure role permissions, the default role→permission matrix, complete permission reference, and operational recommendations
 
-### Key Features
-- Role-based authentication and access control
-- Patient UUID system for unique identification
-- Integrated billing across all services
-- Import/export functionality for configurations
-- Local network deployment ready
-- Responsive web interface
+Developer / architecture reference (for future contributors or AI-assisted coding): `CLAUDE.md` at the repo root and `backend/CLAUDE.md`.
 
-## Technology Stack
+## Features at a glance
+
+### Core modules
+- **Patient Management** — registration with auto-generated UUID
+- **Outpatient** — appointments, queue management, check-in/out, visit recording
+- **Inpatient** — full 5-phase lifecycle: admission, vitals/MAR/I/O, billing with interim bills + packages + TPA splits, consents, incidents, readmission detection, mortality + death certificates. See the [Inpatient User Guide](docs/INPATIENT_USER_GUIDE.md) for the full list.
+- **Laboratory** — test configuration, orders, result entry with abnormal flagging, critical-value alerts, package booking, reports
+- **Pharmacy** — medicine inventory, prescriptions, dispensing
+- **EHR** — doctor consultations, prescriptions, lab order entry
+- **Billing** — integrated across modules, with dashboards and referral/commission tracking
+- **Audit & Quality** — configurable retention, incident reporting, mortality review, readmission tracking
+
+### Access control
+
+Fine-grained per-feature permissions for the inpatient module (~54 permission keys, 7 shipped roles). Hospital admins can customise role grants through the **Hospital Administration → Role Permissions** screen. See the [Permissions Admin Guide](docs/PERMISSIONS_ADMIN_GUIDE.md) for the default matrix and the complete permission reference.
+
+Two bypass roles:
+- **Super Admin** — vendor/IT senior, unrestricted
+- **Hospital Admin** — hospital IT head, unrestricted within one hospital
+
+Operational roles: `doctor`, `nurse`, `inpatient_admin`, `billing_admin`, `receptionist`, `frontdesk`, plus module admins (`lab_admin`, `pharmacy_admin`, etc.) and technicians (`lab_technician`, `pharmacist`).
+
+## Technology stack
 
 ### Backend
-- **Python 3.8+** with FastAPI
-- **SQLite** database
-- **SQLAlchemy** ORM
-- **JWT** authentication
+- Python 3.8+ with **FastAPI**
+- **SQLite** database (`kthealth_erp.db`)
+- **SQLAlchemy 2.x** ORM
+- **JWT** authentication (HS256, 24h expiry, bcrypt passwords)
 - **Pydantic** data validation
+- **ReportLab** for PDF generation
+- **Ed25519** signed `.lic` license files bound to a machine ID
 
 ### Frontend
-- **React 18** with functional components
-- **Material-UI (MUI)** for UI components
+- **React 18** with functional components + hooks
+- **Tailwind CSS + shadcn/ui** (Radix primitives) for UI
 - **React Router** for navigation
-- **React Query** for API state management
-- **Axios** for HTTP requests
+- **@tanstack/react-query** for server state
+- **react-hook-form** for forms
+- **lucide-react** for icons
+- **recharts** for trend graphs
 
 ## Installation & Setup
 

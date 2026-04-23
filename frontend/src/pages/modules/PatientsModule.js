@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../componen
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select';
 import { useToast } from '../../hooks/use-toast';
 import {
-  Users, UserPlus, Search, Phone, Calendar, Eye, Edit, RefreshCw
+  Users, UserPlus, Search, Phone, Calendar, Eye, Edit, RefreshCw, BedDouble
 } from 'lucide-react';
 import axios from 'axios';
 
@@ -21,6 +21,9 @@ const PatientsModule = () => {
   const [showDetailDialog, setShowDetailDialog] = useState(false);
   const [selectedPatient, setSelectedPatient] = useState(null);
   const [registering, setRegistering] = useState(false);
+  const [inpatientEnabled, setInpatientEnabled] = useState(false);
+  const [admissions, setAdmissions] = useState([]);
+  const [loadingAdmissions, setLoadingAdmissions] = useState(false);
 
   const [patientForm, setPatientForm] = useState({
     first_name: '', last_name: '', date_of_birth: '', gender: '',
@@ -58,6 +61,13 @@ const PatientsModule = () => {
     fetchPatients();
   }, [fetchPatients]);
 
+  useEffect(() => {
+    axios.get('/api/system/enabled-modules').then(res => {
+      const mod = (res.data || []).find(m => m.module_name === 'inpatient');
+      if (mod?.is_enabled) setInpatientEnabled(true);
+    }).catch(() => {});
+  }, []);
+
   const handleRegister = async () => {
     if (!patientForm.first_name || !patientForm.last_name || !patientForm.primary_phone) {
       toast({ variant: 'destructive', title: 'Error', description: 'First name, last name and phone are required' });
@@ -82,6 +92,15 @@ const PatientsModule = () => {
       const response = await axios.get(`/api/patients/${patientUuid}`);
       setSelectedPatient(response.data);
       setShowDetailDialog(true);
+      setAdmissions([]);
+      if (inpatientEnabled && response.data.id) {
+        setLoadingAdmissions(true);
+        try {
+          const admRes = await axios.get(`/api/inpatient/admissions/patient/${response.data.id}`);
+          setAdmissions(admRes.data || []);
+        } catch { }
+        setLoadingAdmissions(false);
+      }
     } catch (error) {
       toast({ variant: 'destructive', title: 'Error', description: 'Failed to load patient details' });
     }
@@ -286,7 +305,7 @@ const PatientsModule = () => {
 
       {/* Patient Detail Dialog */}
       <Dialog open={showDetailDialog} onOpenChange={setShowDetailDialog}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className={inpatientEnabled ? "max-w-3xl max-h-[85vh] overflow-y-auto" : "max-w-lg"}>
           <DialogHeader>
             <DialogTitle>Patient Details</DialogTitle>
           </DialogHeader>
@@ -310,6 +329,56 @@ const PatientsModule = () => {
                   </p>
                 </div>
               )}
+
+              {/* Admission History */}
+              {inpatientEnabled && (
+                <div className="border-t pt-3 mt-3">
+                  <h4 className="font-medium text-sm text-gray-700 mb-2 flex items-center gap-2">
+                    <BedDouble className="h-4 w-4" />
+                    Admission History
+                  </h4>
+                  {loadingAdmissions ? (
+                    <p className="text-sm text-gray-500 py-2">Loading admissions...</p>
+                  ) : admissions.length === 0 ? (
+                    <p className="text-sm text-gray-500 py-2">No admission records found</p>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b text-left text-gray-500">
+                            <th className="py-1.5 pr-2">Admission No</th>
+                            <th className="py-1.5 pr-2">Admission Date</th>
+                            <th className="py-1.5 pr-2">Room</th>
+                            <th className="py-1.5 pr-2">Doctor</th>
+                            <th className="py-1.5 pr-2">Stay Days</th>
+                            <th className="py-1.5 pr-2">Status</th>
+                            <th className="py-1.5">Discharge Date</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {admissions.map((adm) => (
+                            <tr key={adm.id} className="border-b last:border-0 hover:bg-gray-50">
+                              <td className="py-1.5 pr-2 font-mono text-xs">{adm.admission_number}</td>
+                              <td className="py-1.5 pr-2">{adm.admission_date ? new Date(adm.admission_date).toLocaleDateString() : '-'}</td>
+                              <td className="py-1.5 pr-2">{adm.room_number || '-'}</td>
+                              <td className="py-1.5 pr-2">{adm.doctor_name || '-'}</td>
+                              <td className="py-1.5 pr-2">{adm.stay_days != null ? adm.stay_days : '-'}</td>
+                              <td className="py-1.5 pr-2">
+                                <Badge variant={adm.status === 'admitted' ? 'default' : 'secondary'}
+                                  className={adm.status === 'admitted' ? 'bg-blue-100 text-blue-800' : 'bg-green-100 text-green-800'}>
+                                  {adm.status === 'admitted' ? 'Active' : 'Discharged'}
+                                </Badge>
+                              </td>
+                              <td className="py-1.5">{adm.discharge_date ? new Date(adm.discharge_date).toLocaleDateString() : '-'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )}
+
               <Button variant="outline" onClick={() => setShowDetailDialog(false)} className="w-full mt-2">Close</Button>
             </div>
           )}

@@ -91,6 +91,41 @@ class RoleResponse(BaseModel):
     class Config:
         from_attributes = True
 
+_VISIT_FEE_ROLES = {"doctor", "nurse"}
+
+
+def _role_requires_visit_fee(db: Session, role_id: Optional[int]) -> bool:
+    """True when the role is one for which inpatient/visit fee is mandatory (doctor or nurse)."""
+    if role_id is None:
+        return False
+    role = db.query(UserRole).filter(UserRole.id == role_id).first()
+    return bool(role and role.name in _VISIT_FEE_ROLES)
+
+
+def _parse_positive_fee(value: Optional[str]) -> Optional[float]:
+    """Parse a fee string and return the float if > 0, else None."""
+    if value is None:
+        return None
+    try:
+        v = float(str(value).strip())
+    except (ValueError, TypeError):
+        return None
+    return v if v > 0 else None
+
+
+def _ensure_visit_fee_for_role(db: Session, role_id: Optional[int], fee_str: Optional[str]):
+    """Raise 400 if the role needs a visit fee and the supplied value is missing or non-positive."""
+    if not _role_requires_visit_fee(db, role_id):
+        return
+    if _parse_positive_fee(fee_str) is None:
+        role = db.query(UserRole).filter(UserRole.id == role_id).first()
+        role_name = role.name if role else "doctor/nurse"
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Inpatient/visit fee (inpatient_fee_inr) is required and must be greater than 0 for {role_name} users."
+        )
+
+
 def require_super_admin(current_user: User = Depends(get_current_user)):
     """Dependency to ensure only super admin can access these endpoints"""
     if not current_user.has_role('super_admin'):
@@ -411,7 +446,10 @@ async def create_user(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Role not found"
         )
-    
+
+    # Doctor/nurse users must have a positive inpatient/visit fee.
+    _ensure_visit_fee_for_role(db, user_data.role_id, user_data.inpatient_fee_inr)
+
     # Create user
     user = User(
         username=user_data.username,
@@ -538,7 +576,10 @@ async def update_user(
         user.role_id = user_data.role_id
     if user_data.is_active is not None:
         user.is_active = user_data.is_active
-    
+
+    # If the resulting role is doctor/nurse, the inpatient fee must be set and > 0.
+    _ensure_visit_fee_for_role(db, user.role_id, user.inpatient_fee_inr)
+
     db.commit()
     db.refresh(user)
     
@@ -789,3 +830,141 @@ async def delete_role(
     db.delete(role)
     db.commit()
     return {"message": "Role deleted successfully"}
+
+
+# ============================================================
+# Role-permission management (granular per-feature auth)
+# ============================================================
+
+class ModulePermissionResponse(BaseModel):
+    id: int
+    module_name: str
+    permission_name: str
+    permission_description: Optional[str] = None
+    category: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class RolePermissionsByModule(BaseModel):
+    module_name: str
+    permissions: List[str]  # permission_name strings the role has
+
+
+class RolePermissionsResponse(BaseModel):
+    role_id: int
+    role_name: str
+    grants: List[RolePermissionsByModule]
+
+
+class RolePermissionsUpdate(BaseModel):
+    module_name: str
+    permissions: List[str]
+
+
+@router.get("/module-permissions", response_model=List[ModulePermissionResponse])
+async def list_module_permissions(
+    module_name: Optional[str] = None,
+    current_user: User = Depends(require_admin_access),
+    db: Session = Depends(get_db),
+):
+    """Catalog of all defined module permissions (the vocabulary)."""
+    from app.models.permissions import ModulePermission
+    q = db.query(ModulePermission)
+    if module_name:
+        q = q.filter(ModulePermission.module_name == module_name)
+    return q.order_by(ModulePermission.module_name, ModulePermission.permission_name).all()
+
+
+@router.get("/roles/{role_id}/permissions", response_model=RolePermissionsResponse)
+async def get_role_permissions(
+    role_id: int,
+    current_user: User = Depends(require_admin_access),
+    db: Session = Depends(get_db),
+):
+    """Get all module-permission grants for a role."""
+    from app.models.permissions import RoleModulePermission
+    role = db.query(UserRole).filter(UserRole.id == role_id).first()
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found")
+
+    rows = db.query(RoleModulePermission).filter(
+        RoleModulePermission.role_id == role_id
+    ).all()
+    grants = [
+        RolePermissionsByModule(module_name=r.module_name, permissions=list(r.permissions or []))
+        for r in rows
+    ]
+    return RolePermissionsResponse(
+        role_id=role.id, role_name=role.name, grants=grants,
+    )
+
+
+@router.put("/roles/{role_id}/permissions", response_model=RolePermissionsByModule)
+async def update_role_permissions(
+    role_id: int,
+    data: RolePermissionsUpdate,
+    current_user: User = Depends(require_admin_access),
+    db: Session = Depends(get_db),
+):
+    """Replace the permission list for (role, module) with the provided set."""
+    from app.models.permissions import RoleModulePermission, ModulePermission
+    role = db.query(UserRole).filter(UserRole.id == role_id).first()
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found")
+
+    if role.name in ("super_admin", "hospital_admin"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"'{role.name}' bypasses permission checks; its grants cannot be narrowed",
+        )
+
+    # Validate each requested permission exists in the catalog for that module
+    catalog = {
+        p.permission_name for p in db.query(ModulePermission).filter(
+            ModulePermission.module_name == data.module_name
+        ).all()
+    }
+    unknown = [p for p in data.permissions if p not in catalog]
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown permissions for module '{data.module_name}': {', '.join(unknown)}",
+        )
+
+    existing = db.query(RoleModulePermission).filter(
+        RoleModulePermission.role_id == role_id,
+        RoleModulePermission.module_name == data.module_name,
+    ).first()
+    previous = list(existing.permissions or []) if existing else []
+
+    if existing:
+        existing.permissions = data.permissions
+    else:
+        existing = RoleModulePermission(
+            role_id=role_id,
+            module_name=data.module_name,
+            permissions=data.permissions,
+        )
+        db.add(existing)
+
+    db.commit()
+    db.refresh(existing)
+
+    # Audit
+    added = sorted(set(data.permissions) - set(previous))
+    removed = sorted(set(previous) - set(data.permissions))
+    try:
+        from app.services.audit_service import log_action
+        log_action(
+            db, current_user, "update_role_permissions", "admin",
+            "RoleModulePermission", existing.id,
+            f"Updated '{role.name}' permissions on '{data.module_name}': +{len(added)} / -{len(removed)}",
+            details={"role": role.name, "module": data.module_name,
+                     "added": added, "removed": removed},
+        )
+    except Exception:
+        pass
+
+    return RolePermissionsByModule(module_name=existing.module_name, permissions=list(existing.permissions or []))

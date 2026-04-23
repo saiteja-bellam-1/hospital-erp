@@ -99,12 +99,15 @@ def require_permission(module: str, action: str):
                 action_mapping = {
                     'read': ['view_appointments', 'view_patients', 'view_schedules', 'read',
                              'view_reports', 'view_records', 'view_history', 'view_prescriptions',
-                             'view_occupancy', 'view_financial_reports', 'view_system_reports'],
+                             'view_occupancy', 'view_financial_reports', 'view_system_reports',
+                             'view_vitals', 'view_mar'],
                     'write': ['schedule_appointments', 'register_patients', 'manage_queues', 'write',
                               'update_appointments', 'create_reports', 'edit_records', 'create_prescriptions',
                               'process_payments', 'generate_invoices', 'dispense_medications',
                               'admit_patients', 'discharge_patients', 'manage_tests', 'set_rates',
-                              'manage_inventory', 'manage_templates', 'manage_equipment', 'generate_reports'],
+                              'manage_inventory', 'manage_templates', 'manage_equipment', 'generate_reports',
+                              'record_vitals', 'administer_medications', 'manage_nursing_notes',
+                              'manage_diet_orders', 'manage_allergies'],
                     'delete': ['cancel_appointments', 'schedule_appointments', 'delete',
                                'handle_refunds', 'manage_tests', 'manage_inventory'],
                     'admin': ['manage_schedules', 'admin', 'manage_users', 'manage_roles',
@@ -158,6 +161,66 @@ def require_permission(module: str, action: str):
         return current_user
 
     return permission_checker
+
+def require_feature_permission(module: str, permission_name: str):
+    """Require a specific permission key on the given module (fine-grained auth).
+
+    Unlike `require_permission(module, action)` which matches any permission in
+    an action bucket, this checks for one specific permission name. Super_admin
+    and hospital_admin bypass. Module-enabled and license gates still apply."""
+    def feature_checker(
+        current_user: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ):
+        user_roles = set(current_user.role_names)
+
+        if UserRoles.SUPER_ADMIN in user_roles:
+            return current_user
+        if UserRoles.HOSPITAL_ADMIN in user_roles:
+            return current_user
+
+        # Module-enabled check
+        from app.models.system import SystemModule
+        sys_module = db.query(SystemModule).filter(
+            SystemModule.module_name == module
+        ).first()
+        if sys_module and not sys_module.is_enabled:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Module '{module}' is not enabled",
+            )
+
+        # License feature gate
+        from app.services.license_service import get_current_license
+        license_record = get_current_license(db)
+        if license_record and license_record.features:
+            if module not in license_record.features:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Module '{module}' is not included in your license",
+                )
+
+        from app.models.permissions import RoleModulePermission
+
+        # Collect all role ids the user has (multi-role + legacy primary role_id)
+        role_ids = [r.id for r in (current_user.roles or [])]
+        if current_user.role_id and current_user.role_id not in role_ids:
+            role_ids.append(current_user.role_id)
+
+        for rid in role_ids:
+            rp = db.query(RoleModulePermission).filter(
+                RoleModulePermission.role_id == rid,
+                RoleModulePermission.module_name == module,
+            ).first()
+            if rp and rp.permissions and permission_name in rp.permissions:
+                return current_user
+
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Permission '{permission_name}' required on {module}",
+        )
+    return feature_checker
+
 
 def require_role(required_roles: list):
     def role_checker(current_user: User = Depends(get_current_user)):

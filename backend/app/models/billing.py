@@ -17,11 +17,12 @@ class PaymentMethod(Base):
 
 class Bill(Base):
     __tablename__ = "bills"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     bill_number = Column(String(50), unique=True, nullable=False)
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
     bill_type = Column(String(20), nullable=False)  # consultation, lab, pharmacy, admission, outpatient
+    bill_subtype = Column(String(20), default="final")  # final, interim, advance_receipt
     reference_id = Column(Integer)  # ID of the source record (consultation_id, lab_order_id, etc.)
     subtotal = Column(Float, nullable=False, default=0.0)
     tax_amount = Column(Float, default=0.0)
@@ -33,10 +34,11 @@ class Bill(Base):
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     notes = Column(Text)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    
+
     patient = relationship("Patient", back_populates="bills")
     items = relationship("BillItem", back_populates="bill")
     payments = relationship("Payment", back_populates="bill")
+    splits = relationship("BillSplit", back_populates="bill", cascade="all, delete-orphan")
 
 class BillItem(Base):
     __tablename__ = "bill_items"

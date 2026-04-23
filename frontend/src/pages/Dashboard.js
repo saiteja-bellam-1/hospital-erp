@@ -19,6 +19,7 @@ import {
   Database,
   X,
   ChevronRight,
+  ChevronDown,
   BookOpen,
   Package,
   Phone,
@@ -34,6 +35,15 @@ import {
   BarChart3,
   ScrollText,
   ClipboardList,
+  BedDouble,
+  Scissors,
+  LayoutDashboard,
+  FileCheck,
+  CalendarDays,
+  CalendarRange,
+  Sparkles,
+  AlertOctagon,
+  RotateCcw,
 } from 'lucide-react';
 import axios from 'axios';
 
@@ -101,6 +111,24 @@ const Dashboard = () => {
   }, []);
   const [enabledModules, setEnabledModules] = useState({});
   const location = useLocation();
+
+  // Sidebar section collapse state — persisted per user in localStorage.
+  // Map of { [sectionLabel]: boolean (true = collapsed) }. Sections not in the map default to expanded.
+  const SIDEBAR_STATE_KEY = 'sidebar_section_state_v1';
+  const [collapsedSections, setCollapsedSections] = useState(() => {
+    try {
+      const raw = localStorage.getItem(SIDEBAR_STATE_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(SIDEBAR_STATE_KEY, JSON.stringify(collapsedSections)); } catch { /* ignore */ }
+  }, [collapsedSections]);
+  const toggleSection = (label) => {
+    setCollapsedSections(prev => ({ ...prev, [label]: !prev[label] }));
+  };
 
   useEffect(() => {
     const fetchEnabledModules = async () => {
@@ -189,6 +217,9 @@ const Dashboard = () => {
         add(items, { text: 'Lab Packages', icon: I(Package), path: '/dashboard/reception/packages' });
       }
       add(items, { text: 'Referrals', icon: I(Share2), path: '/dashboard/reception/referrals' });
+      if (enabledModules.billing) {
+        add(items, { text: 'Billing', icon: I(Receipt), path: '/dashboard/billing' });
+      }
       if (enabledModules.outpatient) {
         add(items, { text: 'Reports', icon: I(TrendingUp), path: '/dashboard/reception/reports' });
       }
@@ -219,6 +250,60 @@ const Dashboard = () => {
       if (items.length > 0) sections.push({ label: 'Health Records', items });
     }
 
+    // ── INPATIENT ──
+    if (enabledModules.inpatient && hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'billing_admin', 'receptionist', 'frontdesk', 'nurse', 'doctor')) {
+      const items = [];
+      // Ward Overview — anyone with inpatient access
+      add(items, { text: 'Ward Overview', icon: I(LayoutDashboard), path: '/dashboard/inpatient' });
+      // Active Admissions — most operational roles
+      add(items, { text: 'Active Admissions', icon: I(BedDouble), path: '/dashboard/inpatient/admissions' });
+      // Discharge History — clinical + admin + billing
+      if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'doctor', 'billing_admin')) {
+        add(items, { text: 'Discharge History', icon: I(FileText), path: '/dashboard/inpatient/discharge' });
+      }
+      // OT Schedule — admin + clinical
+      if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'doctor')) {
+        add(items, { text: 'OT Schedule', icon: I(Scissors), path: '/dashboard/inpatient/ot' });
+      }
+      // Pre-Authorisations — admin + billing
+      if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'billing_admin')) {
+        add(items, { text: 'Pre-Authorisations', icon: I(FileCheck), path: '/dashboard/inpatient/preauth' });
+      }
+      // Reservations — admin + front desk + receptionist
+      if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'receptionist', 'frontdesk')) {
+        add(items, { text: 'Reservations', icon: I(CalendarDays), path: '/dashboard/inpatient/reservations' });
+      }
+      // Duty Roster — clinical staff + admin (nurses see when they're scheduled)
+      if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'doctor', 'nurse')) {
+        add(items, { text: 'Duty Roster', icon: I(CalendarRange), path: '/dashboard/inpatient/duty-roster' });
+      }
+      // Housekeeping — admin + nurses (cleaning workflow)
+      if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'nurse')) {
+        add(items, { text: 'Housekeeping', icon: I(Sparkles), path: '/dashboard/inpatient/housekeeping' });
+      }
+      // Incidents — clinical + admin (anyone who can report or investigate)
+      if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'doctor', 'nurse')) {
+        add(items, { text: 'Incidents', icon: I(AlertOctagon), path: '/dashboard/inpatient/incidents' });
+      }
+      // Quality Reports — admin + clinical
+      if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'doctor')) {
+        add(items, { text: 'Quality Reports', icon: I(RotateCcw), path: '/dashboard/inpatient/quality' });
+      }
+      // Room Management — admin only
+      if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin')) {
+        add(items, { text: 'Room Management', icon: I(Building2), path: '/dashboard/inpatient/rooms' });
+      }
+      // Billing Setup — admin + billing
+      if (hasAnyRole('hospital_admin', 'super_admin', 'billing_admin')) {
+        add(items, { text: 'Billing Setup', icon: I(Package), path: '/dashboard/inpatient/billing-setup' });
+      }
+      // Procedures — admin (manage) + doctor (view); the page itself gates create/edit/delete buttons
+      if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'doctor')) {
+        add(items, { text: 'Procedures', icon: I(Scissors), path: '/dashboard/inpatient/procedures' });
+      }
+      if (items.length > 0) sections.push({ label: 'Inpatient', items });
+    }
+
     // ── ADMIN ──
     if (hasAnyRole('super_admin', 'hospital_admin')) {
       const items = [];
@@ -247,6 +332,18 @@ const Dashboard = () => {
     if (path === '/dashboard') return location.pathname === '/dashboard';
     return location.pathname.startsWith(path);
   };
+
+  // When the route changes, auto-open the section that contains the active item
+  // so the user always sees where they are. We never auto-collapse — user toggles win.
+  useEffect(() => {
+    const activeSectionLabel = navigationSections.find(sec =>
+      sec.items.some(item => isActive(item.path))
+    )?.label;
+    if (activeSectionLabel && collapsedSections[activeSectionLabel]) {
+      setCollapsedSections(prev => ({ ...prev, [activeSectionLabel]: false }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.pathname]);
 
   const userInitials = user.full_name
     ? user.full_name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)
@@ -289,58 +386,72 @@ const Dashboard = () => {
 
         {/* Navigation */}
         <nav className="sidebar-nav flex-1 overflow-y-auto py-4 px-3">
-          {navigationSections.map((section, sIdx) => (
-            <div key={section.label || `section-${sIdx}`} className={sIdx > 0 ? 'mt-5' : ''}>
-              {section.label && (
-                <p
-                  className="px-3 mb-2 text-[11px] font-semibold tracking-wider uppercase"
-                  style={{ color: 'hsl(var(--sidebar-muted))' }}
-                >
-                  {section.label}
-                </p>
-              )}
-              <div className="space-y-0.5">
-                {section.items.map((item) => {
-                  const active = isActive(item.path);
-                  return (
-                    <Link
-                      key={item.text}
-                      to={item.path}
-                      className={`
-                        group flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13.5px] font-medium
-                        transition-all duration-150 relative
-                        ${active ? 'nav-item-active' : ''}
-                      `}
-                      style={{
-                        color: active ? '#fff' : 'hsl(var(--sidebar-fg))',
-                        background: active ? 'hsl(var(--sidebar-active))' : 'transparent',
-                      }}
-                      onMouseEnter={(e) => {
-                        if (!active) {
-                          e.currentTarget.style.background = 'hsl(var(--sidebar-hover))';
-                          e.currentTarget.style.color = '#fff';
-                        }
-                      }}
-                      onMouseLeave={(e) => {
-                        if (!active) {
-                          e.currentTarget.style.background = 'transparent';
-                          e.currentTarget.style.color = 'hsl(var(--sidebar-fg))';
-                        }
-                      }}
-                    >
-                      <span className="flex-shrink-0 opacity-80 group-hover:opacity-100" style={active ? { opacity: 1 } : {}}>
-                        {item.icon}
-                      </span>
-                      <span className="truncate">{item.text}</span>
-                      {active && (
-                        <ChevronRight className="h-3.5 w-3.5 ml-auto opacity-60" />
-                      )}
-                    </Link>
-                  );
-                })}
+          {navigationSections.map((section, sIdx) => {
+            // Sections without a label (e.g. Home) stay flat — no header, always visible.
+            const isCollapsible = !!section.label;
+            const isCollapsed = isCollapsible && !!collapsedSections[section.label];
+            return (
+              <div key={section.label || `section-${sIdx}`} className={sIdx > 0 ? 'mt-3' : ''}>
+                {isCollapsible && (
+                  <button
+                    type="button"
+                    onClick={() => toggleSection(section.label)}
+                    className="w-full flex items-center justify-between px-3 mb-1 py-1.5 rounded-md text-[11px] font-semibold tracking-wider uppercase transition-colors"
+                    style={{ color: 'hsl(var(--sidebar-muted))' }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = 'hsl(var(--sidebar-hover))'; e.currentTarget.style.color = '#fff'; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'hsl(var(--sidebar-muted))'; }}
+                  >
+                    <span>{section.label}</span>
+                    {isCollapsed
+                      ? <ChevronRight className="h-3.5 w-3.5 opacity-70" />
+                      : <ChevronDown className="h-3.5 w-3.5 opacity-70" />}
+                  </button>
+                )}
+                {!isCollapsed && (
+                  <div className="space-y-0.5">
+                    {section.items.map((item) => {
+                      const active = isActive(item.path);
+                      return (
+                        <Link
+                          key={item.text}
+                          to={item.path}
+                          className={`
+                            group flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13.5px] font-medium
+                            transition-all duration-150 relative
+                            ${active ? 'nav-item-active' : ''}
+                          `}
+                          style={{
+                            color: active ? '#fff' : 'hsl(var(--sidebar-fg))',
+                            background: active ? 'hsl(var(--sidebar-active))' : 'transparent',
+                          }}
+                          onMouseEnter={(e) => {
+                            if (!active) {
+                              e.currentTarget.style.background = 'hsl(var(--sidebar-hover))';
+                              e.currentTarget.style.color = '#fff';
+                            }
+                          }}
+                          onMouseLeave={(e) => {
+                            if (!active) {
+                              e.currentTarget.style.background = 'transparent';
+                              e.currentTarget.style.color = 'hsl(var(--sidebar-fg))';
+                            }
+                          }}
+                        >
+                          <span className="flex-shrink-0 opacity-80 group-hover:opacity-100" style={active ? { opacity: 1 } : {}}>
+                            {item.icon}
+                          </span>
+                          <span className="truncate">{item.text}</span>
+                          {active && (
+                            <ChevronRight className="h-3.5 w-3.5 ml-auto opacity-60" />
+                          )}
+                        </Link>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </nav>
 
         {/* Separator */}
@@ -457,7 +568,7 @@ const Dashboard = () => {
         </div>
 
         {/* Page content */}
-        <main className="flex-1 overflow-y-auto p-4 lg:p-6">
+        <main className={`flex-1 overflow-y-auto ${location.pathname.startsWith('/dashboard/inpatient') ? '' : 'p-4 lg:p-6'}`}>
           {hasAnyRole('hospital_admin', 'receptionist') && licenseStatus?.days_remaining != null && (
             <div className="flex items-center justify-end gap-1.5 text-xs mb-4">
               <Shield className="h-3.5 w-3.5 text-gray-400" />

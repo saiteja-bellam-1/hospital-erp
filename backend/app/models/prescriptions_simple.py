@@ -14,7 +14,8 @@ class SimplePrescription(Base):
     patient_id = Column(String(100), ForeignKey("patients.patient_id"), nullable=False)  # Using patient_id UUID
     doctor_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     consultation_id = Column(Integer, ForeignKey("consultations.id"), nullable=True)
-    
+    admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=True)
+
     # Store medicines as JSON array
     medicines = Column(JSON, nullable=False)  
     # Example structure: [

@@ -50,6 +50,59 @@ NEW_COLUMNS = [
     ("payments", "policy_number", "VARCHAR(100)"),
     ("payments", "claim_reference", "VARCHAR(100)"),
     ("prescriptions", "admission_id", "INTEGER"),
+    ("prescriptions_simple", "admission_id", "INTEGER"),
+    ("admissions", "insurance_provider", "VARCHAR(200)"),
+    ("admissions", "policy_number", "VARCHAR(100)"),
+    ("admissions", "claim_reference", "VARCHAR(100)"),
+    ("admissions", "claim_status", "VARCHAR(20) DEFAULT 'none'"),
+    ("admissions", "claim_amount", "FLOAT"),
+    ("admissions", "claim_submitted_at", "DATETIME"),
+    ("admissions", "claim_notes", "TEXT"),
+    ("patient_lab_orders", "admission_id", "INTEGER REFERENCES admissions(id)"),
+    ("admissions", "bed_id", "INTEGER REFERENCES beds(id)"),
+    # MAR scheduling on prescription_items (Phase 1 — Inpatient expansion)
+    ("prescription_items", "frequency", "VARCHAR(50)"),
+    ("prescription_items", "schedule_times", "JSON"),
+    ("prescription_items", "duration_days", "INTEGER"),
+    ("prescription_items", "route", "VARCHAR(30)"),
+    ("prescription_items", "is_prn", "BOOLEAN DEFAULT 0"),
+    # Phase 2 — Billing & financial maturity
+    ("bills", "bill_subtype", "VARCHAR(20) DEFAULT 'final'"),
+    ("patient_visits", "bill_id", "INTEGER REFERENCES bills(id)"),
+    ("ot_schedules", "surgeon_fee", "FLOAT DEFAULT 0.0"),
+    ("ot_schedules", "anaesthetist_fee", "FLOAT DEFAULT 0.0"),
+    ("ot_schedules", "ot_room_charge", "FLOAT DEFAULT 0.0"),
+    ("ot_schedules", "equipment_charge", "FLOAT DEFAULT 0.0"),
+    ("ot_schedules", "consumables_charge", "FLOAT DEFAULT 0.0"),
+    ("ot_schedules", "other_charges", "FLOAT DEFAULT 0.0"),
+    ("ot_schedules", "billed", "BOOLEAN DEFAULT 0"),
+    ("ot_schedules", "bill_id", "INTEGER REFERENCES bills(id)"),
+    ("prescriptions", "inpatient_bill_id", "INTEGER REFERENCES bills(id)"),
+    ("patient_lab_orders", "inpatient_bill_id", "INTEGER REFERENCES bills(id)"),
+    # Phase 3 — no new columns on existing tables; new tables created via create_all
+    # Phase 4 — compliance & quality
+    ("admissions", "is_readmission", "BOOLEAN DEFAULT 0"),
+    ("admissions", "previous_admission_id", "INTEGER REFERENCES admissions(id)"),
+    ("admissions", "days_since_last_discharge", "INTEGER"),
+    ("discharge_records", "cause_of_death", "TEXT"),
+    ("discharge_records", "time_of_death", "DATETIME"),
+    ("discharge_records", "death_certificate_number", "VARCHAR(100)"),
+    ("discharge_records", "mlc_required", "BOOLEAN DEFAULT 0"),
+    ("discharge_records", "mlc_number", "VARCHAR(100)"),
+    ("discharge_records", "autopsy_done", "BOOLEAN DEFAULT 0"),
+    ("discharge_records", "autopsy_findings", "TEXT"),
+    ("discharge_records", "body_handed_over_to", "VARCHAR(200)"),
+    ("discharge_records", "body_handover_relationship", "VARCHAR(100)"),
+    ("discharge_records", "body_handover_time", "DATETIME"),
+    ("discharge_records", "body_handover_id_proof", "VARCHAR(200)"),
+    # ICU add-ons: critical lab thresholds
+    ("lab_test_parameters", "critical_low", "FLOAT"),
+    ("lab_test_parameters", "critical_high", "FLOAT"),
+    # Procedure catalog refactor (rate management)
+    ("ot_schedules", "procedure_id", "INTEGER REFERENCES procedures(id)"),
+    ("ot_schedules", "procedure_charge", "FLOAT DEFAULT 0.0"),
+    # Sample type grouping for lab tests
+    ("lab_tests", "sample_type_id", "INTEGER REFERENCES sample_types(id)"),
 ]
 
 def migrate():
@@ -119,6 +172,49 @@ def migrate():
                 print("  Removed unique constraint from patients.primary_phone")
         except Exception as e:
             print(f"  Note (phone constraint): {e}")
+
+        # Remove unique constraint on patient_lab_orders.sample_id (needed for sample grouping)
+        try:
+            result = conn.execute(text("PRAGMA index_list(patient_lab_orders)"))
+            rows = result.fetchall()
+            for row in rows:
+                index_name = row[1]
+                is_unique = row[2]
+                idx_info = conn.execute(text(f"PRAGMA index_info({index_name})"))
+                cols = [r[2] for r in idx_info.fetchall()]
+                if 'sample_id' in cols and is_unique == 1:
+                    if index_name.startswith('sqlite_autoindex_'):
+                        # Auto-index from CREATE TABLE can't be dropped — must rebuild table
+                        # Read all column definitions from the existing table
+                        table_info = conn.execute(text("PRAGMA table_info(patient_lab_orders)")).fetchall()
+                        col_defs = []
+                        for ci in table_info:
+                            cid, cname, ctype, notnull, default_val, pk = ci
+                            parts = [cname, ctype or 'TEXT']
+                            if pk:
+                                parts.append("PRIMARY KEY")
+                            if notnull and not pk:
+                                parts.append("NOT NULL")
+                            if default_val is not None:
+                                parts.append(f"DEFAULT {default_val}")
+                            col_defs.append(" ".join(parts))
+                        # Rebuild without unique on sample_id
+                        col_names = ", ".join([ci[1] for ci in table_info])
+                        col_def_str = ", ".join(col_defs)
+                        conn.execute(text("ALTER TABLE patient_lab_orders RENAME TO _plo_backup"))
+                        conn.execute(text(f"CREATE TABLE patient_lab_orders ({col_def_str})"))
+                        conn.execute(text(f"INSERT INTO patient_lab_orders SELECT {col_names} FROM _plo_backup"))
+                        conn.execute(text("DROP TABLE _plo_backup"))
+                        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_patient_lab_orders_sample_id ON patient_lab_orders(sample_id)"))
+                        print("  Rebuilt patient_lab_orders to remove unique constraint on sample_id")
+                    else:
+                        conn.execute(text(f"DROP INDEX IF EXISTS {index_name}"))
+                        print(f"  Dropped unique index {index_name} on patient_lab_orders.sample_id")
+                        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_patient_lab_orders_sample_id ON patient_lab_orders(sample_id)"))
+                        print("  Created non-unique index on patient_lab_orders.sample_id")
+                    break
+        except Exception as e:
+            print(f"  Note (sample_id index): {e}")
 
         conn.commit()
     print("Migration complete.")

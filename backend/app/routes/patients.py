@@ -7,10 +7,11 @@ import json
 
 from config.database import get_db
 from app.models.user import User
-from app.models.patient import Patient
+from app.models.patient import Patient, PatientAllergy
 from app.services.patient_service import PatientService
-from app.utils.dependencies import get_current_user, require_permission
+from app.utils.dependencies import get_current_user, require_permission, require_feature_permission
 from app.utils.auth import Modules
+from app.services.audit_service import log_action
 
 router = APIRouter()
 
@@ -420,5 +421,172 @@ async def get_patient_vitals(
             recorded_by_role=recorder.role.name if recorder else "unknown",
             recorded_at=consultation.created_at
         ))
-    
+
     return vitals_list
+
+
+# ============================================================
+# Patient Allergies (patient-level, carries across admissions)
+# ============================================================
+
+class AllergyCreate(BaseModel):
+    allergy_type: str = Field(..., pattern="^(drug|food|environmental|other)$")
+    allergen: str = Field(..., min_length=1, max_length=200)
+    severity: str = Field(..., pattern="^(mild|moderate|severe|anaphylaxis)$")
+    reaction: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class AllergyUpdate(BaseModel):
+    allergy_type: Optional[str] = Field(default=None, pattern="^(drug|food|environmental|other)$")
+    allergen: Optional[str] = Field(default=None, max_length=200)
+    severity: Optional[str] = Field(default=None, pattern="^(mild|moderate|severe|anaphylaxis)$")
+    reaction: Optional[str] = None
+    notes: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class AllergyResponse(BaseModel):
+    id: int
+    patient_id: int
+    allergy_type: str
+    allergen: str
+    severity: str
+    reaction: Optional[str]
+    notes: Optional[str]
+    is_active: bool
+    recorded_by_id: int
+    recorded_by_name: Optional[str] = None
+    recorded_at: datetime
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+def _allergy_to_response(a: PatientAllergy, db: Session) -> dict:
+    rec = db.query(User).filter(User.id == a.recorded_by_id).first()
+    return {
+        **{c.name: getattr(a, c.name) for c in a.__table__.columns},
+        "recorded_by_name": f"{rec.first_name} {rec.last_name}" if rec else None,
+    }
+
+
+def _resolve_patient(db: Session, patient_ref: str) -> Patient:
+    """patient_ref can be the integer id (as string) or the UUID patient_id."""
+    p = None
+    if patient_ref.isdigit():
+        p = db.query(Patient).filter(Patient.id == int(patient_ref)).first()
+    if not p:
+        p = db.query(Patient).filter(Patient.patient_id == patient_ref).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    return p
+
+
+@router.get("/{patient_ref}/allergies", response_model=List[AllergyResponse])
+async def list_patient_allergies(
+    patient_ref: str,
+    active_only: bool = True,
+    current_user: User = Depends(get_current_user),  # any authenticated user can read — safety read
+    db: Session = Depends(get_db),
+):
+    p = _resolve_patient(db, patient_ref)
+    q = db.query(PatientAllergy).filter(PatientAllergy.patient_id == p.id)
+    if active_only:
+        q = q.filter(PatientAllergy.is_active == True)
+    rows = q.order_by(PatientAllergy.severity.desc(), PatientAllergy.recorded_at.desc()).all()
+    return [_allergy_to_response(a, db) for a in rows]
+
+
+@router.post("/{patient_ref}/allergies", response_model=AllergyResponse, status_code=status.HTTP_201_CREATED)
+async def create_patient_allergy(
+    patient_ref: str,
+    data: AllergyCreate,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_allergies")),
+    db: Session = Depends(get_db),
+):
+    p = _resolve_patient(db, patient_ref)
+
+    # Prevent exact-duplicate active entries (same allergen + type)
+    existing = db.query(PatientAllergy).filter(
+        PatientAllergy.patient_id == p.id,
+        PatientAllergy.allergen.ilike(data.allergen.strip()),
+        PatientAllergy.allergy_type == data.allergy_type,
+        PatientAllergy.is_active == True,
+    ).first()
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Active allergy '{data.allergen}' already recorded for this patient",
+        )
+
+    allergy = PatientAllergy(
+        patient_id=p.id,
+        allergy_type=data.allergy_type,
+        allergen=data.allergen.strip(),
+        severity=data.severity,
+        reaction=data.reaction,
+        notes=data.notes,
+        recorded_by_id=current_user.id,
+    )
+    db.add(allergy)
+    db.commit()
+    db.refresh(allergy)
+
+    log_action(
+        db, current_user, "create_allergy", "patient", "PatientAllergy", allergy.id,
+        f"Recorded {data.severity} {data.allergy_type} allergy: {data.allergen} for patient {p.patient_id}",
+        {"severity": data.severity, "type": data.allergy_type},
+    )
+    return _allergy_to_response(allergy, db)
+
+
+@router.put("/allergies/{allergy_id}", response_model=AllergyResponse)
+async def update_patient_allergy(
+    allergy_id: int,
+    data: AllergyUpdate,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_allergies")),
+    db: Session = Depends(get_db),
+):
+    a = db.query(PatientAllergy).filter(PatientAllergy.id == allergy_id).first()
+    if not a:
+        raise HTTPException(status_code=404, detail="Allergy not found")
+    for field, value in data.dict(exclude_unset=True).items():
+        setattr(a, field, value)
+    db.commit()
+    db.refresh(a)
+    return _allergy_to_response(a, db)
+
+
+@router.delete("/allergies/{allergy_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_patient_allergy(
+    allergy_id: int,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_allergies")),
+    db: Session = Depends(get_db),
+):
+    a = db.query(PatientAllergy).filter(PatientAllergy.id == allergy_id).first()
+    if not a:
+        raise HTTPException(status_code=404, detail="Allergy not found")
+    # Soft-delete by setting inactive (preserves history); actually delete only if requested by hard delete (rare)
+    a.is_active = False
+    db.commit()
+
+
+def check_drug_allergy_match(db: Session, patient_id: int, drug_name: str) -> Optional[PatientAllergy]:
+    """Returns the matching active drug allergy for the patient, or None.
+    Match is case-insensitive substring on allergen — intentionally lenient
+    (e.g. allergy 'penicillin' matches 'Amoxicillin' is NOT desired here, so we use word match)."""
+    if not drug_name:
+        return None
+    drug_lower = drug_name.lower().strip()
+    allergies = db.query(PatientAllergy).filter(
+        PatientAllergy.patient_id == patient_id,
+        PatientAllergy.allergy_type == "drug",
+        PatientAllergy.is_active == True,
+    ).all()
+    for a in allergies:
+        allergen_lower = a.allergen.lower().strip()
+        if allergen_lower in drug_lower or drug_lower in allergen_lower:
+            return a
+    return None

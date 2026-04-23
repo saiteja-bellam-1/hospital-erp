@@ -41,6 +41,7 @@ class Patient(Base):
     appointments = relationship("Appointment", back_populates="patient")
     admissions = relationship("Admission", back_populates="patient")
     bills = relationship("Bill", back_populates="patient")
+    allergies = relationship("PatientAllergy", back_populates="patient", cascade="all, delete-orphan")
 
 class PatientContact(Base):
     __tablename__ = "patient_contacts"
@@ -68,3 +69,22 @@ class PatientMedicalHistory(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     patient = relationship("Patient", back_populates="medical_history")
+
+
+class PatientAllergy(Base):
+    __tablename__ = "patient_allergies"
+
+    id = Column(Integer, primary_key=True, index=True)
+    patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
+    allergy_type = Column(String(20), nullable=False)  # drug, food, environmental, other
+    allergen = Column(String(200), nullable=False)
+    severity = Column(String(20), nullable=False)  # mild, moderate, severe, anaphylaxis
+    reaction = Column(Text)
+    notes = Column(Text)
+    is_active = Column(Boolean, default=True, nullable=False)
+    recorded_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    recorded_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    patient = relationship("Patient", back_populates="allergies")
+    recorded_by = relationship("User", foreign_keys=[recorded_by_id])

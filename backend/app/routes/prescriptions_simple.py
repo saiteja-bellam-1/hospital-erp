@@ -31,6 +31,7 @@ class MedicineItem(BaseModel):
 class PrescriptionCreate(BaseModel):
     patient_id: str = Field(..., description="Patient UUID")
     consultation_id: Optional[int] = Field(None, description="Consultation ID if linked")
+    admission_id: Optional[int] = Field(None, description="Inpatient admission ID if linked")
     medicines: List[MedicineItem] = Field(..., min_items=1, description="List of medicines")
     diagnosis: Optional[str] = Field(None, description="Diagnosis")
     notes: Optional[str] = Field(None, description="Additional notes")
@@ -49,6 +50,7 @@ class PrescriptionResponse(BaseModel):
     doctor_id: int
     doctor_name: str
     consultation_id: Optional[int]
+    admission_id: Optional[int] = None
     medicines: List[dict]
     diagnosis: Optional[str]
     notes: Optional[str]
@@ -124,6 +126,7 @@ async def create_prescription(
         patient_id=prescription_data.patient_id,
         doctor_id=current_user.id,
         consultation_id=prescription_data.consultation_id,
+        admission_id=prescription_data.admission_id,
         medicines=medicines_json,
         diagnosis=prescription_data.diagnosis,
         notes=prescription_data.notes,
@@ -142,6 +145,7 @@ async def get_prescriptions(
     patient_id: Optional[str] = None,
     doctor_id: Optional[int] = None,
     consultation_id: Optional[int] = None,
+    admission_id: Optional[int] = None,
     status: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
@@ -162,6 +166,9 @@ async def get_prescriptions(
 
     if consultation_id:
         query = query.filter(SimplePrescription.consultation_id == consultation_id)
+
+    if admission_id:
+        query = query.filter(SimplePrescription.admission_id == admission_id)
 
     if status:
         query = query.filter(SimplePrescription.status == status)
@@ -381,6 +388,8 @@ async def download_prescription_pdf(
             patient_age = str(today.year - patient.date_of_birth.year - (
                 (today.month, today.day) < (patient.date_of_birth.month, patient.date_of_birth.day)
             ))
+        elif patient.age is not None:
+            patient_age = str(patient.age)
 
     # Get appointment reason if linked
     appointment_reason = ''

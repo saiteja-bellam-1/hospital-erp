@@ -3,16 +3,29 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from config.database import Base
 
-class LabTestCategory(Base):
-    __tablename__ = "lab_test_categories"
-    
+class SampleType(Base):
+    __tablename__ = "sample_types"
+
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(100), nullable=False)
     description = Column(Text)
     is_active = Column(Boolean, default=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    
+
+    tests = relationship("LabTest", back_populates="sample_type_ref")
+
+
+class LabTestCategory(Base):
+    __tablename__ = "lab_test_categories"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), nullable=False)
+    description = Column(Text)
+    is_active = Column(Boolean, default=True)
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
     tests = relationship("LabTest", back_populates="category")
 
 class LabTest(Base):
@@ -24,7 +37,8 @@ class LabTest(Base):
     description = Column(Text)
     category_id = Column(Integer, ForeignKey("lab_test_categories.id"), nullable=False)
     cost = Column(Float, nullable=False)
-    sample_type = Column(String(50))
+    sample_type = Column(String(50))  # Legacy free-text, kept for backward compat
+    sample_type_id = Column(Integer, ForeignKey("sample_types.id"), nullable=True)
     method = Column(String(200))
     preparation_instructions = Column(Text)
     normal_range = Column(String(100))
@@ -33,8 +47,9 @@ class LabTest(Base):
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    
+
     category = relationship("LabTestCategory", back_populates="tests")
+    sample_type_ref = relationship("SampleType", back_populates="tests")
     orders = relationship("PatientLabOrder", back_populates="test")
     parameters = relationship("LabTestParameter", back_populates="test", order_by="LabTestParameter.display_order")
 
@@ -60,6 +75,8 @@ class LabTestParameter(Base):
     reference_max_child = Column(Float, nullable=True)
     possible_values = Column(JSON, nullable=True)  # For select-type: ["Positive","Negative"]
     abnormal_values = Column(JSON, nullable=True)  # Values considered abnormal
+    critical_low = Column(Float, nullable=True)    # Values below trigger a critical alert
+    critical_high = Column(Float, nullable=True)   # Values above trigger a critical alert
     normal_value = Column(String(100), nullable=True)
     notes = Column(String(500), nullable=True)
     display_order = Column(Integer, default=0)
@@ -136,6 +153,7 @@ class PatientLabOrder(Base):
     doctor_id = Column(Integer, ForeignKey("users.id"))
     consultation_id = Column(Integer, ForeignKey("consultations.id"), nullable=True)  # Link to consultation
     appointment_id = Column(Integer, ForeignKey("appointments.id"), nullable=True)  # Link to appointment
+    admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=True)  # Link to inpatient admission
     status = Column(String(20), default="ordered")  # ordered, collected, processing, completed, cancelled
     order_date = Column(DateTime(timezone=True), server_default=func.now())
     collection_date = Column(DateTime)
@@ -146,18 +164,20 @@ class PatientLabOrder(Base):
     payment_status = Column(String(20), default="pending")  # pending, paid
     payment_method = Column(String(50), nullable=True)  # cash, card, online
     payment_date = Column(DateTime, nullable=True)
-    sample_id = Column(String(50), nullable=True, unique=True)
+    sample_id = Column(String(50), nullable=True, index=True)
     referred_by = Column(String(100), nullable=True)
     package_id = Column(Integer, ForeignKey("lab_test_packages.id"), nullable=True)
     package_booking_id = Column(String(50), nullable=True)  # Groups orders from same package booking
     bill_cancelled_reason = Column(Text, nullable=True)
     bill_cancelled_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     bill_cancelled_at = Column(DateTime, nullable=True)
+    inpatient_bill_id = Column(Integer, ForeignKey("bills.id"), nullable=True)  # which admission bill consumed this lab order
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     patient = relationship("Patient", back_populates="lab_orders")
     test = relationship("LabTest", back_populates="orders")
     consultation = relationship("Consultation", back_populates="lab_orders")
+    admission = relationship("Admission", back_populates="lab_orders")
     report = relationship("LabReport", back_populates="order", uselist=False)
     package = relationship("LabTestPackage", back_populates="orders")
 
