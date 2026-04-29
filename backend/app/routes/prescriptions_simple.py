@@ -374,7 +374,7 @@ async def download_prescription_pdf(
             })
 
     # Patient details
-    patient_age = ''
+    patient_age = None
     patient_gender = ''
     patient_phone = ''
     patient_blood_group = ''
@@ -385,11 +385,11 @@ async def download_prescription_pdf(
         if patient.date_of_birth:
             from datetime import date
             today = date.today()
-            patient_age = str(today.year - patient.date_of_birth.year - (
+            patient_age = today.year - patient.date_of_birth.year - (
                 (today.month, today.day) < (patient.date_of_birth.month, patient.date_of_birth.day)
-            ))
+            )
         elif patient.age is not None:
-            patient_age = str(patient.age)
+            patient_age = patient.age
 
     # Get appointment reason if linked
     appointment_reason = ''

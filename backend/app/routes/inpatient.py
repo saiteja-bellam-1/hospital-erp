@@ -33,6 +33,20 @@ from app.services.audit_service import log_action
 router = APIRouter()
 
 # ============================================================
+# Age helper — prefer DOB-derived age, fall back to stored age
+# ============================================================
+def _patient_age(patient):
+    if not patient:
+        return None
+    if patient.date_of_birth:
+        today = date.today()
+        dob = patient.date_of_birth
+        return today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+    if getattr(patient, "age", None) is not None:
+        return patient.age
+    return None
+
+# ============================================================
 # Pydantic Models
 # ============================================================
 
@@ -1314,7 +1328,7 @@ async def get_discharge_pdf(
         "admission_number": admission.admission_number,
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "N/A",
         "patient_id": patient.patient_id if patient else "N/A",
-        "age": patient.age if patient and hasattr(patient, "age") else "",
+        "age": _patient_age(patient) or "",
         "gender": patient.gender if patient else "",
         "doctor_name": f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else "N/A",
         "admission_date": admission.admission_date.strftime("%d/%m/%Y") if admission.admission_date else "",
@@ -1912,6 +1926,9 @@ async def get_bill_pdf(
         "bill_number": bill.bill_number,
         "bill_date": bill.bill_date.isoformat() if bill.bill_date else datetime.now().isoformat(),
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "N/A",
+        "patient_age": _patient_age(patient),
+        "patient_gender": patient.gender if patient else "",
+        "patient_phone": patient.primary_phone if patient else "",
         "patient_id": patient.patient_id if patient else "N/A",
         "items": [
             {
@@ -5754,7 +5771,7 @@ async def death_certificate_pdf(
     cert_data = {
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "",
         "patient_id": patient.patient_id if patient else "",
-        "age": patient.age if patient and patient.age else "",
+        "age": _patient_age(patient) or "",
         "gender": patient.gender if patient else "",
         "admission_number": admission.admission_number,
         "admission_date": admission.admission_date.strftime("%d/%m/%Y") if admission.admission_date else "",

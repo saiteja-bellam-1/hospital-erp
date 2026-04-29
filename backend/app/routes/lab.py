@@ -1209,7 +1209,7 @@ async def reception_book_lab_tests(
         "bill_number": f"LB-{now.strftime('%Y%m%d%H%M%S')}-{data.patient_id}",
         "bill_date": now.isoformat(),
         "patient_name": f"{patient.first_name} {patient.last_name}",
-        "patient_age": f"{age} Years" if age else "",
+        "patient_age": age,
         "patient_gender": patient.gender,
         "patient_phone": patient.primary_phone or "",
         "patient_id": patient.patient_id,
@@ -1397,8 +1397,7 @@ async def download_order_bill(
     hospital = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
     hospital_info = _get_lab_hospital_info(db, hospital)
 
-    _age_val = _patient_age(patient)
-    age = str(_age_val) if _age_val is not None else ""
+    age = _patient_age(patient)
 
     doctor = db.query(User).filter(User.id == order.doctor_id).first() if order.doctor_id else None
     doctor_name = f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else ""
@@ -1454,8 +1453,7 @@ async def regenerate_lab_bill(
     hospital = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
     hospital_info = _get_lab_hospital_info(db, hospital)
 
-    _age_val = _patient_age(patient)
-    age = str(_age_val) if _age_val is not None else ""
+    age = _patient_age(patient)
 
     doctor = db.query(User).filter(User.id == orders[0].doctor_id).first() if orders[0].doctor_id else None
     doctor_name = f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else ""
@@ -1487,7 +1485,7 @@ async def regenerate_lab_bill(
         "bill_number": f"LB-{now.strftime('%Y%m%d%H%M%S')}-{patient.id}" if patient else "LB-UNKNOWN",
         "bill_date": now.isoformat(),
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "Unknown",
-        "patient_age": f"{age} Years" if age else "",
+        "patient_age": age,
         "patient_gender": patient.gender if patient else "",
         "patient_phone": patient.primary_phone if patient else "",
         "patient_id": patient.patient_id if patient else "",
@@ -1615,8 +1613,7 @@ async def generate_lab_bill(
     hospital_info = _get_lab_hospital_info(db, hospital)
 
     # Calculate patient age
-    _age_val = _patient_age(patient)
-    age = str(_age_val) if _age_val is not None else ""
+    age = _patient_age(patient)
 
     bill_number = f"LB-{datetime.now().strftime('%Y%m%d%H%M%S')}-{patient_id}"
 
@@ -2436,8 +2433,7 @@ async def book_package(
     hospital = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
     hospital_info = _get_lab_hospital_info(db, hospital)
 
-    _age_val = _patient_age(patient)
-    age = str(_age_val) if _age_val is not None else ""
+    age = _patient_age(patient)
 
     discount = round(pkg.actual_price - pkg.package_price, 2)
     bill_number = f"PKG-{now.strftime('%Y%m%d%H%M%S')}-{data.patient_id}"

@@ -179,7 +179,8 @@ class PDFService:
         # PATIENT INFO + BILL INFO (bordered box, like lab report)
         # ============================================================
         patient_name = bill_data.get('patient_name', '')
-        age_sex = bill_data.get('patient_age', '')
+        _age_raw = bill_data.get('patient_age')
+        age_sex = f"{_age_raw} Years" if _age_raw is not None and _age_raw != '' else ''
         if bill_data.get('patient_gender'):
             gender = bill_data['patient_gender'].upper()
             if age_sex:
@@ -498,12 +499,7 @@ class PDFService:
         patient_phone = prescription_data.get('patient_phone', '')
         patient_id = prescription_data.get('patient_id_display', prescription_data.get('patient_id', ''))
 
-        age_sex = ''
-        if patient_age:
-            try:
-                age_sex = f"{int(patient_age)} Years"
-            except ValueError:
-                age_sex = str(patient_age)
+        age_sex = f"{patient_age} Years" if patient_age is not None and patient_age != '' else ''
         if patient_gender:
             age_sex = f"{age_sex} / {patient_gender.capitalize()}" if age_sex else patient_gender.capitalize()
 
@@ -959,8 +955,8 @@ class PDFService:
 
         patient_name = report_data.get('patient_name', '')
         patient_gender = report_data.get('patient_gender', '')
-        patient_age = report_data.get('patient_age', '')
-        age_sex = f"{patient_age} Years" if patient_age else ''
+        _age_raw = report_data.get('patient_age')
+        age_sex = f"{_age_raw} Years" if _age_raw is not None and _age_raw != '' else ''
         if patient_gender:
             age_sex = f"{age_sex} / {patient_gender.capitalize()}" if age_sex else patient_gender.capitalize()
 
@@ -1350,8 +1346,8 @@ class PDFService:
         # ============================================================
         patient_name = first_report.get('patient_name', '')
         patient_gender = first_report.get('patient_gender', '')
-        patient_age = first_report.get('patient_age', '')
-        age_sex = f"{patient_age} Years" if patient_age else ''
+        _age_raw = first_report.get('patient_age')
+        age_sex = f"{_age_raw} Years" if _age_raw is not None and _age_raw != '' else ''
         if patient_gender:
             age_sex = f"{age_sex} / {patient_gender.capitalize()}" if age_sex else patient_gender.capitalize()
 
@@ -1663,7 +1659,8 @@ class PDFService:
         # ============================================================
         # PATIENT INFO BOX
         # ============================================================
-        age_gender = discharge_data.get('age', '')
+        _age_raw = discharge_data.get('age')
+        age_gender = f"{_age_raw} Years" if _age_raw is not None and _age_raw != '' else ''
         if discharge_data.get('gender'):
             gender = discharge_data['gender'].upper()
             age_gender = f"{age_gender} / {gender}" if age_gender else gender
@@ -2043,7 +2040,7 @@ class PDFService:
 
         rows = [
             [Paragraph("Name of Deceased:", label), Paragraph(str(cert_data.get('patient_name', '')), value)],
-            [Paragraph("Age / Gender:", label), Paragraph(f"{cert_data.get('age', '')} / {cert_data.get('gender', '')}", value)],
+            [Paragraph("Age / Gender:", label), Paragraph(f"{cert_data.get('age', '')} Years / {cert_data.get('gender', '')}" if cert_data.get('age') else cert_data.get('gender', ''), value)],
             [Paragraph("Patient ID:", label), Paragraph(str(cert_data.get('patient_id', '')), value)],
             [Paragraph("Admission No:", label), Paragraph(str(cert_data.get('admission_number', '')), value)],
             [Paragraph("Admitted On:", label), Paragraph(str(cert_data.get('admission_date', '')), value)],
