@@ -1056,13 +1056,72 @@ async def check_duplicate_orders(
     duplicates = _check_duplicate_orders(db, patient_id, test_ids)
     return {"duplicates": duplicates}
 
+def _can_create_lab_order(current_user: User, db: Session, admission_id: Optional[int]) -> None:
+    """Permission gate for creating a lab order.
+
+    Allowed when EITHER:
+      • the user has the legacy `LAB:write` action permission (doctors, lab admins,
+        lab techs, super_admin/hospital_admin), OR
+      • the order is for an inpatient admission AND the user has the granular
+        `inpatient:order_labs` permission (lets nurses order labs from the
+        bedside without giving them full lab-module write access).
+    Raises 403 if neither path passes.
+    """
+    from fastapi import HTTPException, status as _status
+    from app.utils.auth import UserRoles
+    from app.models.permissions import RoleModulePermission
+
+    user_roles = set(current_user.role_names)
+    if {UserRoles.SUPER_ADMIN, UserRoles.HOSPITAL_ADMIN} & user_roles:
+        return
+    # Lab roles always allowed
+    if {UserRoles.LAB_ADMIN, UserRoles.LAB_TECHNICIAN} & user_roles:
+        return
+
+    role_ids = [r.id for r in (current_user.roles or [])]
+    if current_user.role_id and current_user.role_id not in role_ids:
+        role_ids.append(current_user.role_id)
+
+    # Path 1 — legacy LAB:write
+    write_perms = {
+        "schedule_appointments", "register_patients", "manage_queues", "write",
+        "update_appointments", "create_reports", "edit_records", "create_prescriptions",
+        "process_payments", "generate_invoices", "dispense_medications",
+        "admit_patients", "discharge_patients", "manage_tests", "set_rates",
+        "manage_inventory", "manage_templates", "manage_equipment", "generate_reports",
+    }
+    for rid in role_ids:
+        rp = db.query(RoleModulePermission).filter(
+            RoleModulePermission.role_id == rid,
+            RoleModulePermission.module_name == Modules.LAB,
+        ).first()
+        if rp and rp.permissions and any(p in write_perms for p in rp.permissions):
+            return
+
+    # Path 2 — inpatient.order_labs (only for admission-scoped orders)
+    if admission_id is not None:
+        for rid in role_ids:
+            rp = db.query(RoleModulePermission).filter(
+                RoleModulePermission.role_id == rid,
+                RoleModulePermission.module_name == Modules.INPATIENT,
+            ).first()
+            if rp and rp.permissions and "order_labs" in rp.permissions:
+                return
+
+    raise HTTPException(
+        status_code=_status.HTTP_403_FORBIDDEN,
+        detail="Permission required: lab.write or inpatient.order_labs (for admission orders)",
+    )
+
+
 @router.post("/orders", response_model=List[OrderResponse])
 async def create_orders(
     data: OrderCreate,
-    current_user: User = Depends(require_permission(Modules.LAB, "write")),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Doctor creates lab orders for a patient"""
+    """Create lab orders for a patient (outpatient or inpatient)."""
+    _can_create_lab_order(current_user, db, data.admission_id)
     patient = db.query(Patient).filter(
         Patient.id == data.patient_id,
         Patient.hospital_id == current_user.hospital_id

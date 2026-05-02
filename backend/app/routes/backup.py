@@ -291,12 +291,17 @@ async def run_backup_now(current_user: User = Depends(get_current_user)):
 
 @router.get("/mirror-status")
 async def get_mirror_backup_status(current_user: User = Depends(get_current_user)):
-    """Get real-time mirror backup status."""
+    """Get real-time mirror backup status, including per-location detail so the
+    admin dashboard can show a green/red row per destination instead of a
+    single global flag.
+    """
     if not any(r in current_user.role_names for r in ("super_admin", "hospital_admin")):
         raise HTTPException(status_code=403, detail="Admin access required")
 
-    from app.utils.config import get_mirror_status
-    return get_mirror_status()
+    from app.utils.config import get_mirror_status, get_per_location_status
+    status = get_mirror_status()
+    status["per_location"] = get_per_location_status()
+    return status
 
 
 @router.post("/mirror/start")

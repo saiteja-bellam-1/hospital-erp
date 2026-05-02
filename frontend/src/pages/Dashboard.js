@@ -1,49 +1,20 @@
 import React, { useState, useEffect } from 'react';
-import { Routes, Route, useLocation, Link } from 'react-router-dom';
+import { Routes, Route, useLocation, useNavigate, Link } from 'react-router-dom';
 import {
   Menu,
-  Home,
-  Users,
-  Stethoscope,
-  Pill,
-  Receipt,
-  FileText,
-  UserPlus,
-  Bed,
-  Settings,
   LogOut,
-  Building2,
-  Calendar,
-  TrendingUp,
   Shield,
-  Database,
   X,
   ChevronRight,
   ChevronDown,
   BookOpen,
-  Package,
   Phone,
   Monitor,
   Headphones,
   MapPin,
   Mail,
   X as XIcon,
-  TestTube,
-  FlaskConical,
-  CalendarClock,
-  Share2,
-  BarChart3,
-  ScrollText,
-  ClipboardList,
-  BedDouble,
-  Scissors,
-  LayoutDashboard,
-  FileCheck,
-  CalendarDays,
-  CalendarRange,
-  Sparkles,
-  AlertOctagon,
-  RotateCcw,
+  LayoutGrid,
 } from 'lucide-react';
 import axios from 'axios';
 
@@ -80,6 +51,8 @@ import ConsultationPage from './modules/ConsultationPage';
 import LicenseManagement from './modules/LicenseManagement';
 import BackupManagement from './modules/BackupManagement';
 import LicenseBanner from '../components/LicenseBanner';
+import { useNavigationSections } from '../hooks/useNavigationSections';
+import HomeGrid from './modules/HomeGrid';
 
 const HomeDashboard = ({ hasRole, enabledModules }) => {
   // Priority-based: show the most relevant dashboard for the user
@@ -111,6 +84,7 @@ const Dashboard = () => {
   }, []);
   const [enabledModules, setEnabledModules] = useState({});
   const location = useLocation();
+  const navigate = useNavigate();
 
   // Sidebar section collapse state — persisted per user in localStorage.
   // Map of { [sectionLabel]: boolean (true = collapsed) }. Sections not in the map default to expanded.
@@ -191,142 +165,8 @@ const Dashboard = () => {
     return roles.map(r => labels[r] || r).join(', ') || 'Staff';
   };
 
-  // Build navigation with sections — merge navs for all roles
-  const getNavigationSections = () => {
-    const addedPaths = new Set();
-    const add = (items, item) => {
-      if (!addedPaths.has(item.path)) { items.push(item); addedPaths.add(item.path); }
-    };
-    const I = (Icon) => <Icon className="h-[18px] w-[18px]" />;
-    const sections = [];
-
-    // ── HOME ──
-    const homeItems = [{ text: 'Dashboard', icon: I(Home), path: '/dashboard' }];
-    addedPaths.add('/dashboard');
-    sections.push({ label: '', items: homeItems }); // no label for home
-
-    // ── RECEPTION ──
-    if (hasRole('receptionist')) {
-      const items = [];
-      add(items, { text: 'Patients', icon: I(Users), path: '/dashboard/reception/patients' });
-      if (enabledModules.outpatient) {
-        add(items, { text: 'Appointments', icon: I(Calendar), path: '/dashboard/reception/appointments' });
-        add(items, { text: 'Doctor Schedule', icon: I(CalendarClock), path: '/dashboard/reception/doctor-availability' });
-      }
-      if (enabledModules.lab) {
-        add(items, { text: 'Lab Packages', icon: I(Package), path: '/dashboard/reception/packages' });
-      }
-      add(items, { text: 'Referrals', icon: I(Share2), path: '/dashboard/reception/referrals' });
-      if (enabledModules.billing) {
-        add(items, { text: 'Billing', icon: I(Receipt), path: '/dashboard/billing' });
-      }
-      if (enabledModules.outpatient) {
-        add(items, { text: 'Reports', icon: I(TrendingUp), path: '/dashboard/reception/reports' });
-      }
-      if (items.length > 0) sections.push({ label: 'Reception', items });
-    }
-
-    // ── DOCTOR ──
-    if (hasRole('doctor') && enabledModules.outpatient) {
-      const items = [];
-      add(items, { text: 'Availability', icon: I(CalendarClock), path: '/dashboard/availability' });
-      if (enabledModules.ehr) {
-        add(items, { text: 'EHR', icon: I(FileText), path: '/dashboard/ehr' });
-      }
-      if (items.length > 0) sections.push({ label: 'Doctor', items });
-    }
-
-    // ── LAB ──
-    if (hasAnyRole('lab_technician', 'lab_admin', 'hospital_admin', 'super_admin') && enabledModules.lab) {
-      const items = [];
-      add(items, { text: 'Lab Dashboard', icon: I(TestTube), path: '/dashboard/lab' });
-      if (items.length > 0) sections.push({ label: 'Laboratory', items });
-    }
-
-    // ── EHR (for admin who isn't a doctor) ──
-    if (hasAnyRole('hospital_admin', 'super_admin') && !hasRole('doctor') && enabledModules.ehr) {
-      const items = [];
-      add(items, { text: 'EHR', icon: I(FileText), path: '/dashboard/ehr' });
-      if (items.length > 0) sections.push({ label: 'Health Records', items });
-    }
-
-    // ── INPATIENT ──
-    if (enabledModules.inpatient && hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'billing_admin', 'receptionist', 'frontdesk', 'nurse', 'doctor')) {
-      const items = [];
-      // Ward Overview — anyone with inpatient access
-      add(items, { text: 'Ward Overview', icon: I(LayoutDashboard), path: '/dashboard/inpatient' });
-      // Active Admissions — most operational roles
-      add(items, { text: 'Active Admissions', icon: I(BedDouble), path: '/dashboard/inpatient/admissions' });
-      // Discharge History — clinical + admin + billing
-      if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'doctor', 'billing_admin')) {
-        add(items, { text: 'Discharge History', icon: I(FileText), path: '/dashboard/inpatient/discharge' });
-      }
-      // OT Schedule — admin + clinical
-      if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'doctor')) {
-        add(items, { text: 'OT Schedule', icon: I(Scissors), path: '/dashboard/inpatient/ot' });
-      }
-      // Pre-Authorisations — admin + billing
-      if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'billing_admin')) {
-        add(items, { text: 'Pre-Authorisations', icon: I(FileCheck), path: '/dashboard/inpatient/preauth' });
-      }
-      // Reservations — admin + front desk + receptionist
-      if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'receptionist', 'frontdesk')) {
-        add(items, { text: 'Reservations', icon: I(CalendarDays), path: '/dashboard/inpatient/reservations' });
-      }
-      // Duty Roster — clinical staff + admin (nurses see when they're scheduled)
-      if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'doctor', 'nurse')) {
-        add(items, { text: 'Duty Roster', icon: I(CalendarRange), path: '/dashboard/inpatient/duty-roster' });
-      }
-      // Housekeeping — admin + nurses (cleaning workflow)
-      if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'nurse')) {
-        add(items, { text: 'Housekeeping', icon: I(Sparkles), path: '/dashboard/inpatient/housekeeping' });
-      }
-      // Incidents — clinical + admin (anyone who can report or investigate)
-      if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'doctor', 'nurse')) {
-        add(items, { text: 'Incidents', icon: I(AlertOctagon), path: '/dashboard/inpatient/incidents' });
-      }
-      // Quality Reports — admin + clinical
-      if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'doctor')) {
-        add(items, { text: 'Quality Reports', icon: I(RotateCcw), path: '/dashboard/inpatient/quality' });
-      }
-      // Room Management — admin only
-      if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin')) {
-        add(items, { text: 'Room Management', icon: I(Building2), path: '/dashboard/inpatient/rooms' });
-      }
-      // Billing Setup — admin + billing
-      if (hasAnyRole('hospital_admin', 'super_admin', 'billing_admin')) {
-        add(items, { text: 'Billing Setup', icon: I(Package), path: '/dashboard/inpatient/billing-setup' });
-      }
-      // Procedures — admin (manage) + doctor (view); the page itself gates create/edit/delete buttons
-      if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'doctor')) {
-        add(items, { text: 'Procedures', icon: I(Scissors), path: '/dashboard/inpatient/procedures' });
-      }
-      if (items.length > 0) sections.push({ label: 'Inpatient', items });
-    }
-
-    // ── ADMIN ──
-    if (hasAnyRole('super_admin', 'hospital_admin')) {
-      const items = [];
-      add(items, { text: 'Billing', icon: I(BarChart3), path: '/dashboard/billing-dashboard' });
-      add(items, { text: 'Users & Roles', icon: I(ClipboardList), path: '/dashboard/admin' });
-      add(items, { text: 'Hospital Config', icon: I(Building2), path: '/dashboard/hospital-admin' });
-      add(items, { text: 'License', icon: I(Shield), path: '/dashboard/license' });
-      add(items, { text: 'Database', icon: I(Database), path: '/dashboard/backup' });
-      add(items, { text: 'Audit Logs', icon: I(ScrollText), path: '/dashboard/audit' });
-      sections.push({ label: 'Admin', items });
-    }
-
-    // ── NURSE ──
-    if (hasRole('nurse') && !hasAnyRole('receptionist', 'doctor', 'hospital_admin', 'super_admin')) {
-      const items = [];
-      add(items, { text: 'Patients', icon: I(Users), path: '/dashboard/patients' });
-      if (items.length > 0) sections.push({ label: 'Nursing', items });
-    }
-
-    return sections;
-  };
-
-  const navigationSections = getNavigationSections();
+  // Navigation sections — single source of truth shared with HomeGrid (see hooks/useNavigationSections.js).
+  const { sections: navigationSections } = useNavigationSections({ roles, enabledModules });
 
   const isActive = (path) => {
     if (path === '/dashboard') return location.pathname === '/dashboard';
@@ -568,7 +408,7 @@ const Dashboard = () => {
         </div>
 
         {/* Page content */}
-        <main className={`flex-1 overflow-y-auto ${location.pathname.startsWith('/dashboard/inpatient') ? '' : 'p-4 lg:p-6'}`}>
+        <main className={`flex-1 overflow-y-auto ${(location.pathname.startsWith('/dashboard/inpatient') || location.pathname === '/dashboard/home') ? '' : 'p-4 lg:p-6'}`}>
           {hasAnyRole('hospital_admin', 'receptionist') && licenseStatus?.days_remaining != null && (
             <div className="flex items-center justify-end gap-1.5 text-xs mb-4">
               <Shield className="h-3.5 w-3.5 text-gray-400" />
@@ -597,6 +437,16 @@ const Dashboard = () => {
               path="/"
               element={
                 <HomeDashboard hasRole={hasRole} enabledModules={enabledModules} />
+              }
+            />
+            <Route
+              path="/home"
+              element={
+                <HomeGrid
+                  enabledModules={enabledModules}
+                  pwaInstallPrompt={pwaInstallPrompt}
+                  onOpenSupport={() => setShowSupportPopup(true)}
+                />
               }
             />
             <Route path="/reception/patients" element={<ReceptionPatientsPage />} />
@@ -643,6 +493,20 @@ const Dashboard = () => {
           onClick={() => setSidebarOpen(false)}
         />
       )}
+
+      {/* Floating Menu Grid Button — sits above the support button */}
+      <div className="fixed bottom-24 right-6 z-50 group">
+        <button
+          onClick={() => navigate('/dashboard/home')}
+          aria-label="All Menus"
+          className="h-14 w-14 rounded-full shadow-lg flex items-center justify-center transition-all duration-200 bg-emerald-600 hover:bg-emerald-700 hover:scale-105"
+        >
+          <LayoutGrid className="h-6 w-6 text-white" />
+        </button>
+        <span className="pointer-events-none absolute right-16 top-1/2 -translate-y-1/2 whitespace-nowrap rounded-md bg-gray-900 px-2 py-1 text-xs text-white opacity-0 group-hover:opacity-100 transition-opacity">
+          All Menus
+        </span>
+      </div>
 
       {/* Floating Support Button */}
       <div className="fixed bottom-6 right-6 z-50">

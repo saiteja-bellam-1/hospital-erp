@@ -384,11 +384,13 @@ def setup_role_permissions():
         "nurse": {
             "ehr": ["view_records", "edit_records", "view_history", "manage_allergies"],
             "outpatient": ["manage_queues", "view_appointments"],
+            "lab": ["view_reports"],
             "inpatient": [
                 "view_occupancy",
                 "record_vitals", "view_vitals", "record_io", "view_io",
                 "administer_medications", "view_mar",
                 "manage_nursing_notes", "manage_diet_orders", "manage_allergies", "record_visits",
+                "order_labs",
                 "record_consent",
                 "accept_ward_transfer", "manage_housekeeping",
                 "report_incident", "acknowledge_critical_alert",

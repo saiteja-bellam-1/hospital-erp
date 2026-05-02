@@ -153,11 +153,17 @@ async def create_patient(
     patient_dict["hospital_id"] = current_user.hospital_id
 
     # Auto-calculate age from DOB if DOB is provided but age is not
-    if patient_dict.get("date_of_birth") and not patient_dict.get("age"):
+    if patient_dict.get("date_of_birth") and patient_dict.get("age") is None:
         from datetime import date as date_type
         today = date_type.today()
         dob = patient_dict["date_of_birth"]
         patient_dict["age"] = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+
+    if patient_dict.get("age") is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Age is required. Provide age directly or a date of birth.",
+        )
 
     patient = patient_service.create_patient(patient_dict)
 
@@ -263,6 +269,18 @@ async def update_patient(
         raise HTTPException(status_code=403, detail="Access denied")
     
     update_data = {k: v for k, v in patient_update.dict().items() if v is not None}
+
+    # Keep age in sync with DOB:
+    # - If DOB is being updated, recompute age (overrides any stale age in payload).
+    # - If only age is being updated, clear DOB so they don't disagree.
+    if update_data.get("date_of_birth"):
+        from datetime import date as date_type
+        today = date_type.today()
+        dob = update_data["date_of_birth"]
+        update_data["age"] = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+    elif "age" in update_data and patient.date_of_birth:
+        update_data["date_of_birth"] = None
+
     updated_patient = patient_service.update_patient(patient_id, update_data)
     
     return updated_patient

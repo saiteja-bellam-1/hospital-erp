@@ -182,6 +182,29 @@ class TestInpatientE2E:
         assert resp.status_code == 200
         assert len(resp.json()) >= 1
 
+    def test_auto_post_today_creates_doctor_visit(self, client, auth_headers):
+        """Manual trigger of the daily auto-post should create a doctor_visit."""
+        before = client.get(
+            f"/api/inpatient/admissions/{_state['admission_id']}/visits",
+            headers=auth_headers,
+        ).json()
+        before_ids = {v["id"] for v in before}
+
+        resp = client.post(
+            f"/api/inpatient/admissions/{_state['admission_id']}/auto-post-today",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200, resp.text
+        # First call may post, or may be a no-op if create_visit already covered today.
+        # Idempotency check: a second call must NEVER post again.
+        resp2 = client.post(
+            f"/api/inpatient/admissions/{_state['admission_id']}/auto-post-today",
+            headers=auth_headers,
+        )
+        assert resp2.status_code == 200
+        assert resp2.json()["posted"] is False
+
+
     # ------------------------------------------------------------------
     # 6. Bill preview
     # ------------------------------------------------------------------
@@ -221,9 +244,80 @@ class TestInpatientE2E:
         for visit in resp.json():
             assert visit["billed"] is True
 
+    def test_duplicate_finalize_rejected(self, client, auth_headers):
+        """A second finalize while an active final bill exists must 409."""
+        resp = client.post(
+            f"/api/inpatient/admissions/{_state['admission_id']}/bill/finalize",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 409, resp.text
+        assert resp.json()["detail"]["code"] == "final_bill_exists"
+
+    def test_cancel_bill_releases_source_items_and_allows_refinalize(self, client, auth_headers):
+        """Cancelling the final bill must reset visit.billed and clear bill_id;
+        the admission must then be finalisable again."""
+        bills_resp = client.get(
+            f"/api/inpatient/admissions/{_state['admission_id']}/bills",
+            headers=auth_headers,
+        )
+        assert bills_resp.status_code == 200
+        final_bill = next(b for b in bills_resp.json() if b["bill_subtype"] == "final" and b["status"] != "cancelled")
+
+        cancel_resp = client.post(
+            f"/api/inpatient/admissions/{_state['admission_id']}/bills/{final_bill['id']}/cancel",
+            json={"reason": "Smoke test — wrong discount"},
+            headers=auth_headers,
+        )
+        assert cancel_resp.status_code == 200, cancel_resp.text
+        released = cancel_resp.json()["released"]
+        assert released["visits"] >= 1
+
+        # Visits should be available for re-billing
+        visits_resp = client.get(
+            f"/api/inpatient/admissions/{_state['admission_id']}/visits",
+            headers=auth_headers,
+        )
+        for visit in visits_resp.json():
+            assert visit["billed"] is False
+
+        # Re-finalise — should succeed because the prior bill is cancelled
+        refinal = client.post(
+            f"/api/inpatient/admissions/{_state['admission_id']}/bill/finalize",
+            headers=auth_headers,
+        )
+        assert refinal.status_code == 200, refinal.text
+
     # ------------------------------------------------------------------
     # 8. Discharge
     # ------------------------------------------------------------------
+    def test_discharge_blocked_when_balance_negative(self, client, auth_headers):
+        """A normal discharge with an unpaid bill must be blocked unless forced."""
+        resp = client.post(
+            f"/api/inpatient/admissions/{_state['admission_id']}/discharge",
+            json={
+                "discharge_type": "normal",
+                "condition_on_discharge": "stable",
+                "discharge_summary": "Patient recovered well",
+            },
+            headers=auth_headers,
+        )
+        assert resp.status_code == 409, resp.text
+        body = resp.json()
+        assert body["detail"]["code"] == "outstanding_balance"
+
+    def test_discharge_force_requires_reason(self, client, auth_headers):
+        """force_outstanding_balance without override_reason is rejected."""
+        resp = client.post(
+            f"/api/inpatient/admissions/{_state['admission_id']}/discharge",
+            json={
+                "discharge_type": "normal",
+                "condition_on_discharge": "stable",
+                "force_outstanding_balance": True, "force_unacknowledged_alerts": True, "force_missing_consents": True,
+            },
+            headers=auth_headers,
+        )
+        assert resp.status_code == 400, resp.text
+
     def test_discharge(self, client, auth_headers):
         resp = client.post(
             f"/api/inpatient/admissions/{_state['admission_id']}/discharge",
@@ -232,6 +326,8 @@ class TestInpatientE2E:
                 "condition_on_discharge": "stable",
                 "discharge_summary": "Patient recovered well",
                 "follow_up_instructions": "Return in 1 week",
+                "force_outstanding_balance": True, "force_unacknowledged_alerts": True, "force_missing_consents": True,
+                "override_reason": "Smoke test — bill will be settled post-exit",
             },
             headers=auth_headers,
         )
@@ -552,7 +648,8 @@ class TestInpatientPhase2:
                     client.post(
                         f"/api/inpatient/admissions/{adm['id']}/discharge",
                         json={"discharge_type": "normal", "condition_on_discharge": "stable",
-                              "discharge_summary": "Auto-discharged for Phase 2 setup"},
+                              "discharge_summary": "Auto-discharged for Phase 2 setup",
+                              "force_outstanding_balance": True, "force_unacknowledged_alerts": True, "force_missing_consents": True, "override_reason": "test cleanup"},
                         headers=auth_headers,
                     )
 
@@ -796,6 +893,8 @@ class TestInpatientPhase2:
                 "discharge_type": "normal",
                 "condition_on_discharge": "stable",
                 "discharge_summary": "Phase 2 smoke test complete",
+                "force_outstanding_balance": True, "force_unacknowledged_alerts": True, "force_missing_consents": True,
+                "override_reason": "test",
             },
             headers=auth_headers,
         )
@@ -952,7 +1051,8 @@ class TestInpatientPhase3:
                     client.post(
                         f"/api/inpatient/admissions/{adm['id']}/discharge",
                         json={"discharge_type": "normal", "condition_on_discharge": "stable",
-                              "discharge_summary": "Auto-discharged for Phase 3 setup"},
+                              "discharge_summary": "Auto-discharged for Phase 3 setup",
+                              "force_outstanding_balance": True, "force_unacknowledged_alerts": True, "force_missing_consents": True, "override_reason": "test cleanup"},
                         headers=auth_headers,
                     )
 
@@ -1068,7 +1168,8 @@ class TestInpatientPhase3:
         r_disch = client.post(
             f"/api/inpatient/admissions/{_phase3['admission_id']}/discharge",
             json={"discharge_type": "normal", "condition_on_discharge": "stable",
-                  "discharge_summary": "Phase 3 test discharge"},
+                  "discharge_summary": "Phase 3 test discharge",
+                  "force_outstanding_balance": True, "force_unacknowledged_alerts": True, "force_missing_consents": True, "override_reason": "test"},
             headers=auth_headers,
         )
         assert r_disch.status_code == 201, r_disch.text
@@ -1221,7 +1322,8 @@ class TestInpatientPhase4:
                     client.post(
                         f"/api/inpatient/admissions/{adm['id']}/discharge",
                         json={"discharge_type": "normal", "condition_on_discharge": "stable",
-                              "discharge_summary": "Auto-discharged for Phase 4 setup"},
+                              "discharge_summary": "Auto-discharged for Phase 4 setup",
+                              "force_outstanding_balance": True, "force_unacknowledged_alerts": True, "force_missing_consents": True, "override_reason": "test cleanup"},
                         headers=auth_headers,
                     )
                     has_discharge = True
@@ -1243,7 +1345,9 @@ class TestInpatientPhase4:
             warm_id = r_warm.json()["id"]
             client.post(f"/api/inpatient/admissions/{warm_id}/discharge",
                 json={"discharge_type": "normal", "condition_on_discharge": "stable",
-                      "discharge_summary": "warm-up"}, headers=auth_headers)
+                      "discharge_summary": "warm-up",
+                      "force_outstanding_balance": True, "force_unacknowledged_alerts": True, "force_missing_consents": True, "override_reason": "test"},
+                headers=auth_headers)
 
         r_room = client.post("/api/inpatient/rooms",
             json={"room_number": "P4-1", "room_type": "general", "bed_count": 1,
@@ -1428,7 +1532,9 @@ class TestInpatientPhase4:
         adm_id = r_adm.json()["id"]
         client.post(f"/api/inpatient/admissions/{adm_id}/discharge",
             json={"discharge_type": "normal", "condition_on_discharge": "stable",
-                  "discharge_summary": "routine"}, headers=auth_headers)
+                  "discharge_summary": "routine",
+                  "force_outstanding_balance": True, "force_unacknowledged_alerts": True, "force_missing_consents": True, "override_reason": "test"},
+            headers=auth_headers)
 
         r = client.put(f"/api/inpatient/admissions/{adm_id}/discharge/mortality",
             json={"cause_of_death": "x"}, headers=auth_headers)
@@ -1468,6 +1574,472 @@ class TestInpatientPhase4:
 
 
 # ======================================================================
+# DAMA — Discharge Against Medical Advice
+# ======================================================================
+
+_dama: dict = {}
+
+
+class TestDAMAFlow:
+    def test_setup_admission_and_discharge_against_advice(self, client, auth_headers, seed_data):
+        # Clear any active admission
+        existing = client.get(f"/api/inpatient/admissions/patient/{seed_data['patient_id']}",
+            headers=auth_headers)
+        if existing.status_code == 200:
+            for adm in existing.json():
+                if adm.get("status") == "admitted":
+                    client.post(
+                        f"/api/inpatient/admissions/{adm['id']}/discharge",
+                        json={"discharge_type": "normal", "condition_on_discharge": "stable",
+                              "discharge_summary": "DAMA setup cleanup",
+                              "force_outstanding_balance": True, "force_unacknowledged_alerts": True,
+                              "force_missing_consents": True, "override_reason": "test"},
+                        headers=auth_headers)
+        r_room = client.post("/api/inpatient/rooms",
+            json={"room_number": "DAMA-1", "room_type": "general", "bed_count": 1,
+                  "room_charge_per_day": 800.0},
+            headers=auth_headers)
+        assert r_room.status_code == 201
+        r_adm = client.post("/api/inpatient/admissions",
+            json={"patient_id": seed_data["patient_id"],
+                  "admitting_doctor_id": seed_data["doctor_user_id"],
+                  "room_id": r_room.json()["id"], "admission_type": "elective",
+                  "admission_reason": "DAMA test"},
+            headers=auth_headers)
+        assert r_adm.status_code == 201, r_adm.text
+        _dama["admission_id"] = r_adm.json()["id"]
+        _dama["doctor_id"] = seed_data["doctor_user_id"]
+        # Discharge against advice — death/AMA discharges skip the safety gates
+        r_disc = client.post(f"/api/inpatient/admissions/{_dama['admission_id']}/discharge",
+            json={"discharge_type": "against_advice", "condition_on_discharge": "unchanged",
+                  "discharge_summary": "Patient demanded discharge; advised against."},
+            headers=auth_headers)
+        assert r_disc.status_code == 201, r_disc.text
+
+    def test_dama_requires_both_acknowledgements(self, client, auth_headers):
+        r = client.post(f"/api/inpatient/admissions/{_dama['admission_id']}/dama",
+            json={
+                "attending_doctor_id": _dama["doctor_id"],
+                "medical_advice_given": "Continue IV antibiotics for 48 more hours",
+                "risks_explained": "Sepsis, organ failure, death",
+                "patient_acknowledges_advice": True,
+                "patient_absolves_hospital": False,
+                "primary_signature": "John Doe",
+                "witness_name": "Nurse Smith",
+                "witness_signature": "Nurse Smith",
+            },
+            headers=auth_headers)
+        assert r.status_code == 400, r.text
+
+    def test_dama_record_creates_and_pdf_renders(self, client, auth_headers):
+        r = client.post(f"/api/inpatient/admissions/{_dama['admission_id']}/dama",
+            json={
+                "attending_doctor_id": _dama["doctor_id"],
+                "medical_advice_given": "Continue IV antibiotics for 48 more hours.",
+                "risks_explained": "Sepsis, organ failure, possible death.",
+                "language_used": "english",
+                "patient_acknowledges_advice": True,
+                "patient_absolves_hospital": True,
+                "signed_by": "patient",
+                "primary_signature": "John Doe",
+                "primary_signature_type": "typed",
+                "witness_name": "Nurse Smith",
+                "witness_designation": "Senior Nurse",
+                "witness_signature": "Nurse Smith",
+                "witness_signature_type": "typed",
+                "notes": "Patient was lucid and articulate at signing.",
+            },
+            headers=auth_headers)
+        assert r.status_code == 201, r.text
+        assert r.json()["signed_by"] == "patient"
+        # Duplicate filing rejected
+        r2 = client.post(f"/api/inpatient/admissions/{_dama['admission_id']}/dama",
+            json={
+                "attending_doctor_id": _dama["doctor_id"],
+                "medical_advice_given": "x", "risks_explained": "y",
+                "patient_acknowledges_advice": True, "patient_absolves_hospital": True,
+                "primary_signature": "X", "witness_name": "Y", "witness_signature": "Z",
+            },
+            headers=auth_headers)
+        assert r2.status_code == 409
+        # PDF
+        r_pdf = client.get(f"/api/inpatient/admissions/{_dama['admission_id']}/dama/pdf",
+            headers=auth_headers)
+        assert r_pdf.status_code == 200
+        assert r_pdf.headers["content-type"] == "application/pdf"
+        assert len(r_pdf.content) > 1000
+
+
+# ======================================================================
+# E1 — Daily census report
+# ======================================================================
+
+
+class TestDailyCensus:
+    def test_census_json(self, client, auth_headers):
+        r = client.get("/api/inpatient/reports/census", headers=auth_headers)
+        assert r.status_code == 200
+        data = r.json()
+        assert "totals" in data
+        assert "by_department" in data
+        assert "by_room_type" in data
+        t = data["totals"]
+        assert t["total_beds"] >= 0
+        assert t["occupied"] >= 0
+
+    def test_census_pdf(self, client, auth_headers):
+        r = client.get("/api/inpatient/reports/census/pdf", headers=auth_headers)
+        assert r.status_code == 200
+        assert r.headers["content-type"] == "application/pdf"
+        assert len(r.content) > 1000
+
+
+# ======================================================================
+# D1 — Room rate snapshotting per stay segment
+# ======================================================================
+
+_rate_snap: dict = {}
+
+
+class TestRoomRateSnapshot:
+    def test_admission_snapshots_initial_rate(self, client, auth_headers, seed_data):
+        # Clear any active admission
+        existing = client.get(f"/api/inpatient/admissions/patient/{seed_data['patient_id']}",
+            headers=auth_headers)
+        if existing.status_code == 200:
+            for adm in existing.json():
+                if adm.get("status") == "admitted":
+                    client.post(f"/api/inpatient/admissions/{adm['id']}/discharge",
+                        json={"discharge_type": "normal", "condition_on_discharge": "stable",
+                              "discharge_summary": "rate snapshot setup",
+                              "force_outstanding_balance": True, "force_unacknowledged_alerts": True,
+                              "force_missing_consents": True, "override_reason": "test"},
+                        headers=auth_headers)
+        r_room = client.post("/api/inpatient/rooms",
+            json={"room_number": "RATE-1", "room_type": "general", "bed_count": 1,
+                  "room_charge_per_day": 1000.0},
+            headers=auth_headers)
+        assert r_room.status_code == 201
+        _rate_snap["room_id"] = r_room.json()["id"]
+        r_adm = client.post("/api/inpatient/admissions",
+            json={"patient_id": seed_data["patient_id"],
+                  "admitting_doctor_id": seed_data["doctor_user_id"],
+                  "room_id": r_room.json()["id"], "admission_type": "elective",
+                  "admission_reason": "Rate snapshot test"},
+            headers=auth_headers)
+        assert r_adm.status_code == 201, r_adm.text
+        _rate_snap["admission_id"] = r_adm.json()["id"]
+
+        # Bill preview should reflect the initial rate
+        r_bill = client.get(f"/api/inpatient/admissions/{_rate_snap['admission_id']}/bill",
+            headers=auth_headers)
+        assert r_bill.status_code == 200
+        data = r_bill.json()
+        assert data["room"]["charge_per_day"] == 1000.0
+        assert "rate_segments" in data["room"]
+        assert len(data["room"]["rate_segments"]) >= 1
+        assert data["room"]["rate_segments"][0]["rate"] == 1000.0
+
+    def test_room_rate_change_does_not_rerate_existing_stay(self, client, auth_headers):
+        # Bump the room rate after admission
+        r = client.put(f"/api/inpatient/rooms/{_rate_snap['room_id']}",
+            json={"room_charge_per_day": 5000.0}, headers=auth_headers)
+        assert r.status_code == 200, r.text
+        # Bill must still use the snapshotted 1000.0 rate, not the new 5000.0
+        r_bill = client.get(f"/api/inpatient/admissions/{_rate_snap['admission_id']}/bill",
+            headers=auth_headers)
+        assert r_bill.status_code == 200
+        data = r_bill.json()
+        assert data["room"]["rate_segments"][0]["rate"] == 1000.0
+
+
+# ======================================================================
+# LOA — Leave of Absence (pass-out)
+# ======================================================================
+
+_loa: dict = {}
+
+
+class TestLOAFlow:
+    def test_setup_admission(self, client, auth_headers, seed_data):
+        existing = client.get(f"/api/inpatient/admissions/patient/{seed_data['patient_id']}",
+            headers=auth_headers)
+        if existing.status_code == 200:
+            for adm in existing.json():
+                if adm.get("status") == "admitted":
+                    client.post(f"/api/inpatient/admissions/{adm['id']}/discharge",
+                        json={"discharge_type": "normal", "condition_on_discharge": "stable",
+                              "discharge_summary": "loa setup",
+                              "force_outstanding_balance": True, "force_unacknowledged_alerts": True,
+                              "force_missing_consents": True, "override_reason": "test"},
+                        headers=auth_headers)
+        r_room = client.post("/api/inpatient/rooms",
+            json={"room_number": "LOA-1", "room_type": "general", "bed_count": 1,
+                  "room_charge_per_day": 1000.0},
+            headers=auth_headers)
+        assert r_room.status_code == 201
+        r_adm = client.post("/api/inpatient/admissions",
+            json={"patient_id": seed_data["patient_id"],
+                  "admitting_doctor_id": seed_data["doctor_user_id"],
+                  "room_id": r_room.json()["id"], "admission_type": "elective",
+                  "admission_reason": "LOA test"},
+            headers=auth_headers)
+        assert r_adm.status_code == 201, r_adm.text
+        _loa["admission_id"] = r_adm.json()["id"]
+        _loa["doctor_id"] = seed_data["doctor_user_id"]
+
+    def test_create_loa(self, client, auth_headers):
+        from datetime import datetime as _dt, timedelta as _td
+        r = client.post(f"/api/inpatient/admissions/{_loa['admission_id']}/loa",
+            json={
+                "start_datetime": _dt.utcnow().isoformat(),
+                "expected_return_datetime": (_dt.utcnow() + _td(days=2)).isoformat(),
+                "reason": "Family wedding",
+                "approved_by_doctor_id": _loa["doctor_id"],
+            },
+            headers=auth_headers)
+        assert r.status_code == 201, r.text
+        _loa["loa_id"] = r.json()["id"]
+
+    def test_overlapping_loa_rejected(self, client, auth_headers):
+        from datetime import datetime as _dt, timedelta as _td
+        r = client.post(f"/api/inpatient/admissions/{_loa['admission_id']}/loa",
+            json={
+                "start_datetime": _dt.utcnow().isoformat(),
+                "expected_return_datetime": (_dt.utcnow() + _td(days=1)).isoformat(),
+                "reason": "Overlap",
+                "approved_by_doctor_id": _loa["doctor_id"],
+            },
+            headers=auth_headers)
+        assert r.status_code == 409
+
+    def test_discharge_blocked_during_loa(self, client, auth_headers):
+        r = client.post(f"/api/inpatient/admissions/{_loa['admission_id']}/discharge",
+            json={"discharge_type": "normal", "condition_on_discharge": "stable",
+                  "discharge_summary": "x"},
+            headers=auth_headers)
+        assert r.status_code == 409, r.text
+        assert r.json()["detail"]["code"] == "active_loa"
+
+    def test_loa_return_then_discharge_allowed(self, client, auth_headers):
+        r1 = client.patch(f"/api/inpatient/loa/{_loa['loa_id']}/return",
+            json={}, headers=auth_headers)
+        assert r1.status_code == 200, r1.text
+        # Now discharge succeeds (no bills → balance is zero, no outstanding gate)
+        r2 = client.post(f"/api/inpatient/admissions/{_loa['admission_id']}/discharge",
+            json={"discharge_type": "normal", "condition_on_discharge": "stable",
+                  "discharge_summary": "Returned from LOA, ready to go home"},
+            headers=auth_headers)
+        assert r2.status_code == 201, r2.text
+
+
+# ======================================================================
+# E2 — Monthly outcomes report
+# ======================================================================
+
+
+class TestMonthlyOutcomes:
+    def test_monthly_outcomes_default_window(self, client, auth_headers):
+        r = client.get("/api/inpatient/reports/monthly-outcomes", headers=auth_headers)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert "month" in data
+        assert "totals" in data
+        assert "mortality" in data
+        assert "readmissions" in data
+        assert "length_of_stay" in data
+        # Required totals keys
+        for k in ("admissions", "discharges", "deaths", "readmissions",
+                  "mortality_rate_pct", "readmission_rate_pct",
+                  "average_daily_occupancy", "average_occupancy_pct"):
+            assert k in data["totals"]
+
+    def test_monthly_outcomes_explicit_month(self, client, auth_headers):
+        r = client.get("/api/inpatient/reports/monthly-outcomes?month=2026-04",
+            headers=auth_headers)
+        assert r.status_code == 200, r.text
+        assert r.json()["month"] == "2026-04"
+
+    def test_monthly_outcomes_invalid_month(self, client, auth_headers):
+        r = client.get("/api/inpatient/reports/monthly-outcomes?month=not-a-month",
+            headers=auth_headers)
+        assert r.status_code == 400
+
+    def test_monthly_outcomes_pdf(self, client, auth_headers):
+        r = client.get("/api/inpatient/reports/monthly-outcomes/pdf",
+            headers=auth_headers)
+        assert r.status_code == 200
+        assert r.headers["content-type"] == "application/pdf"
+        assert len(r.content) > 1000
+
+
+# ======================================================================
+# E3 — Doctor productivity report
+# ======================================================================
+
+
+class TestDoctorProductivity:
+    def test_doctor_productivity_default_window(self, client, auth_headers):
+        from datetime import date as _d, timedelta as _td
+        today = _d.today()
+        start = (today - _td(days=30)).isoformat()
+        end = today.isoformat()
+        r = client.get(f"/api/inpatient/reports/doctor-productivity?date_from={start}&date_to={end}",
+            headers=auth_headers)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert "rows" in data
+        assert "doctor_count" in data
+        # At least one doctor should have activity from prior tests
+        assert data["doctor_count"] >= 1
+        for row in data["rows"]:
+            for k in ("doctor_id", "doctor_name", "admissions", "discharges",
+                      "deaths", "readmissions_30d", "ot_as_surgeon",
+                      "ot_as_anaesthetist", "visits", "average_los_days",
+                      "visit_fees_billed", "ot_surgeon_fees", "ot_anaesthetist_fees",
+                      "total_billed_attributable"):
+                assert k in row
+
+    def test_doctor_productivity_invalid_range(self, client, auth_headers):
+        r = client.get("/api/inpatient/reports/doctor-productivity?date_from=2026-05-01&date_to=2026-04-01",
+            headers=auth_headers)
+        assert r.status_code == 400
+
+    def test_doctor_productivity_csv(self, client, auth_headers):
+        from datetime import date as _d, timedelta as _td
+        today = _d.today()
+        start = (today - _td(days=30)).isoformat()
+        end = today.isoformat()
+        r = client.get(f"/api/inpatient/reports/doctor-productivity/csv?date_from={start}&date_to={end}",
+            headers=auth_headers)
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/csv")
+        body = r.content.decode("utf-8")
+        assert "doctor_id" in body
+        assert "total_billed_attributable" in body
+
+    def test_doctor_productivity_pdf(self, client, auth_headers):
+        from datetime import date as _d, timedelta as _td
+        today = _d.today()
+        start = (today - _td(days=30)).isoformat()
+        end = today.isoformat()
+        r = client.get(f"/api/inpatient/reports/doctor-productivity/pdf?date_from={start}&date_to={end}",
+            headers=auth_headers)
+        assert r.status_code == 200
+        assert r.headers["content-type"] == "application/pdf"
+        assert len(r.content) > 1000
+
+
+# ======================================================================
+# A2/A3 — Code-blue + Shift handover
+# ======================================================================
+
+
+class TestCodeBlueAndHandover:
+    def test_log_code_blue(self, client, auth_headers):
+        from datetime import datetime as _dt
+        r = client.post("/api/inpatient/code-blue",
+            json={
+                "event_type": "code_blue",
+                "event_datetime": _dt.utcnow().isoformat(),
+                "location": "ICU bed 3",
+                "response_time_seconds": 45,
+                "team_members": "Dr A, Nurse B, Tech C",
+                "interventions": "CPR, defibrillation x2, intubated",
+                "outcome": "rosc",
+            },
+            headers=auth_headers)
+        assert r.status_code == 201, r.text
+        assert r.json()["outcome"] == "rosc"
+
+    def test_invalid_outcome_rejected(self, client, auth_headers):
+        from datetime import datetime as _dt
+        r = client.post("/api/inpatient/code-blue",
+            json={"event_datetime": _dt.utcnow().isoformat(),
+                  "location": "x", "outcome": "miracle"},
+            headers=auth_headers)
+        assert r.status_code == 400
+
+    def test_code_blue_monthly_stats(self, client, auth_headers):
+        r = client.get("/api/inpatient/reports/code-blue", headers=auth_headers)
+        assert r.status_code == 200
+        d = r.json()
+        assert d["total_events"] >= 1
+        assert "by_outcome" in d
+
+
+# ======================================================================
+# Diet — meal log + kitchen ticket
+# ======================================================================
+
+_diet: dict = {}
+
+
+class TestDietMealLog:
+    def test_setup_admission_and_diet_order(self, client, auth_headers, seed_data):
+        existing = client.get(f"/api/inpatient/admissions/patient/{seed_data['patient_id']}",
+            headers=auth_headers)
+        if existing.status_code == 200:
+            for adm in existing.json():
+                if adm.get("status") == "admitted":
+                    client.post(f"/api/inpatient/admissions/{adm['id']}/discharge",
+                        json={"discharge_type": "normal", "condition_on_discharge": "stable",
+                              "discharge_summary": "diet setup",
+                              "force_outstanding_balance": True, "force_unacknowledged_alerts": True,
+                              "force_missing_consents": True, "override_reason": "test"},
+                        headers=auth_headers)
+        r_room = client.post("/api/inpatient/rooms",
+            json={"room_number": "DIET-1", "room_type": "general", "bed_count": 1,
+                  "room_charge_per_day": 800.0, "department": "Medical Ward A"},
+            headers=auth_headers)
+        assert r_room.status_code == 201
+        r_adm = client.post("/api/inpatient/admissions",
+            json={"patient_id": seed_data["patient_id"],
+                  "admitting_doctor_id": seed_data["doctor_user_id"],
+                  "room_id": r_room.json()["id"], "admission_type": "elective",
+                  "admission_reason": "Diet test"},
+            headers=auth_headers)
+        assert r_adm.status_code == 201, r_adm.text
+        _diet["admission_id"] = r_adm.json()["id"]
+        # Order a diabetic diet
+        r_order = client.post(
+            f"/api/inpatient/admissions/{_diet['admission_id']}/diet-orders",
+            json={"diet_type": "diabetic", "meal_instructions": "Low sugar; 4 meals/day",
+                  "allergies": "Peanuts"},
+            headers=auth_headers)
+        assert r_order.status_code == 201, r_order.text
+        _diet["order_id"] = r_order.json()["id"]
+
+    def test_log_meal_creates_then_idempotent(self, client, auth_headers):
+        # First call creates
+        r1 = client.post(f"/api/inpatient/diet-orders/{_diet['order_id']}/meal-log",
+            json={"meal_time": "lunch", "status": "served", "notes": "Ate well"},
+            headers=auth_headers)
+        assert r1.status_code == 201, r1.text
+        first_id = r1.json()["id"]
+        # Same slot updates instead of duplicating
+        r2 = client.post(f"/api/inpatient/diet-orders/{_diet['order_id']}/meal-log",
+            json={"meal_time": "lunch", "status": "partial", "notes": "Ate half"},
+            headers=auth_headers)
+        assert r2.status_code == 201
+        assert r2.json()["id"] == first_id
+        assert r2.json()["status"] == "partial"
+
+    def test_invalid_meal_time_rejected(self, client, auth_headers):
+        r = client.post(f"/api/inpatient/diet-orders/{_diet['order_id']}/meal-log",
+            json={"meal_time": "midnight_snack", "status": "served"},
+            headers=auth_headers)
+        assert r.status_code == 400
+
+    def test_kitchen_ticket_pdf_renders(self, client, auth_headers):
+        r = client.get("/api/inpatient/diet/kitchen-ticket/pdf?meal_time=lunch",
+            headers=auth_headers)
+        assert r.status_code == 200, r.text
+        assert r.headers["content-type"] == "application/pdf"
+        assert len(r.content) > 1000
+
+
+# ======================================================================
 # ICU add-ons: I/O fluid balance + critical lab alerts
 # ======================================================================
 
@@ -1486,7 +2058,8 @@ class TestIcuAddons:
                     client.post(
                         f"/api/inpatient/admissions/{adm['id']}/discharge",
                         json={"discharge_type": "normal", "condition_on_discharge": "stable",
-                              "discharge_summary": "Auto-discharge for ICU setup"},
+                              "discharge_summary": "Auto-discharge for ICU setup",
+                              "force_outstanding_balance": True, "force_unacknowledged_alerts": True, "force_missing_consents": True, "override_reason": "test cleanup"},
                         headers=auth_headers,
                     )
 
@@ -1805,7 +2378,8 @@ class TestRoleBoundaries:
         r = client.post(
             f"/api/inpatient/admissions/{boundary_setup['admission_id']}/discharge",
             json={"discharge_type": "normal", "condition_on_discharge": "stable",
-                  "discharge_summary": "x"},
+                  "discharge_summary": "x",
+                  "force_outstanding_balance": True, "force_unacknowledged_alerts": True, "force_missing_consents": True, "override_reason": "test"},
             headers=boundary_setup["nurse_headers"],
         )
         assert r.status_code == 403
@@ -1856,7 +2430,8 @@ class TestRoleBoundaries:
         r = client.post(
             f"/api/inpatient/admissions/{boundary_setup['admission_id']}/discharge",
             json={"discharge_type": "normal", "condition_on_discharge": "stable",
-                  "discharge_summary": "x"},
+                  "discharge_summary": "x",
+                  "force_outstanding_balance": True, "force_unacknowledged_alerts": True, "force_missing_consents": True, "override_reason": "test"},
             headers=boundary_setup["biller_headers"],
         )
         assert r.status_code == 403
@@ -2334,3 +2909,328 @@ class TestRateRefactor:
         assert r.status_code == 201, r.text
         assert float(r.json()["procedure_charge"]) == 0.0
         assert r.json()["procedure_id"] is None
+
+
+# ============================================================
+# B7 — Emergency / casualty workflow
+# ============================================================
+class TestEmergencyAdmission:
+    def _fresh_room(self, client, auth_headers, label):
+        r = client.post("/api/inpatient/rooms", json={
+            "room_number": label, "room_type": "emergency",
+            "ward_name": "Casualty", "bed_count": 2, "room_charge_per_day": 1500,
+        }, headers=auth_headers)
+        assert r.status_code == 201, r.text
+        return r.json()["id"]
+
+    def test_quick_admit_creates_stub_patient(self, client, auth_headers, seed_data):
+        room_id = self._fresh_room(client, auth_headers, "ER-Q1")
+        r = client.post("/api/inpatient/admissions/quick-admit", json={
+            "first_name": "UNKNOWN MALE-1",
+            "admitting_doctor_id": seed_data["doctor_user_id"],
+            "room_id": room_id,
+            "triage_level": 1,
+            "chief_complaint": "Unconscious, RTA suspected",
+            "arrival_mode": "ambulance",
+            "ambulance_details": "AP-09-AB-1234, paramedic Ravi",
+            "is_mlc": True,
+            "mlc_type": "rta",
+            "police_station_informed": "Madhapur PS",
+            "condition_on_admission": "critical",
+        }, headers=auth_headers)
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["admission_type"] == "emergency"
+        assert body["triage_level"] == 1
+        assert body["is_mlc"] is True
+        assert body["mlc_type"] == "rta"
+        assert body["mlc_informed_at"] is not None
+        assert body["registration_complete"] is False
+
+    def test_mlc_requires_valid_type(self, client, auth_headers, seed_data):
+        room_id = self._fresh_room(client, auth_headers, "ER-Q2")
+        r = client.post("/api/inpatient/admissions/quick-admit", json={
+            "first_name": "Test",
+            "admitting_doctor_id": seed_data["doctor_user_id"],
+            "room_id": room_id,
+            "triage_level": 2,
+            "is_mlc": True,
+            "mlc_type": "not_a_real_type",
+        }, headers=auth_headers)
+        assert r.status_code == 422  # pydantic pattern rejects
+
+    def test_triage_level_out_of_range(self, client, auth_headers, seed_data):
+        room_id = self._fresh_room(client, auth_headers, "ER-Q3")
+        r = client.post("/api/inpatient/admissions/quick-admit", json={
+            "first_name": "Test",
+            "admitting_doctor_id": seed_data["doctor_user_id"],
+            "room_id": room_id,
+            "triage_level": 9,
+        }, headers=auth_headers)
+        assert r.status_code == 422
+
+    def test_emergency_fields_round_trip_via_normal_admit(self, client, auth_headers, seed_data, TestSessionLocal):
+        # Create a fresh patient
+        from app.models.patient import Patient
+        import uuid
+        db = TestSessionLocal()
+        p = Patient(first_name="ER", last_name="Patient",
+                    primary_phone="9999999999", patient_id=str(uuid.uuid4()),
+                    age=30, gender="male", hospital_id=1)
+        db.add(p); db.commit(); pid = p.id; db.close()
+
+        room_id = self._fresh_room(client, auth_headers, "ER-Q4")
+        r = client.post("/api/inpatient/admissions", json={
+            "patient_id": pid,
+            "admitting_doctor_id": seed_data["doctor_user_id"],
+            "room_id": room_id,
+            "admission_type": "emergency",
+            "triage_level": 3,
+            "chief_complaint": "Chest pain",
+            "arrival_mode": "walk_in",
+        }, headers=auth_headers)
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["triage_level"] == 3
+        assert body["arrival_mode"] == "walk_in"
+        assert body["registration_complete"] is True  # patient was full
+
+    def test_add_mlc_later_via_update(self, client, auth_headers, seed_data, TestSessionLocal):
+        # Create patient + emergency admission without MLC, then mark MLC after
+        from app.models.patient import Patient
+        import uuid
+        db = TestSessionLocal()
+        p = Patient(first_name="Late", last_name="MLC",
+                    primary_phone="8888888888", patient_id=str(uuid.uuid4()),
+                    age=40, gender="female", hospital_id=1)
+        db.add(p); db.commit(); pid = p.id; db.close()
+
+        room_id = self._fresh_room(client, auth_headers, "ER-Q5")
+        r = client.post("/api/inpatient/admissions", json={
+            "patient_id": pid,
+            "admitting_doctor_id": seed_data["doctor_user_id"],
+            "room_id": room_id,
+            "admission_type": "emergency",
+            "triage_level": 4,
+        }, headers=auth_headers)
+        assert r.status_code == 201
+        adm_id = r.json()["id"]
+
+        u = client.put(f"/api/inpatient/admissions/{adm_id}", json={
+            "is_mlc": True,
+            "mlc_type": "assault",
+            "mlc_number": "MLC-2026-001",
+            "police_station_informed": "Cyberabad PS",
+        }, headers=auth_headers)
+        assert u.status_code == 200, u.text
+        body = u.json()
+        assert body["is_mlc"] is True
+        assert body["mlc_number"] == "MLC-2026-001"
+        assert body["mlc_informed_at"] is not None
+
+
+# ============================================================
+# B7.5 / B7.6 / B7.7 / B7.8 — MLC PDF, Observation, Waiver, Triage queue
+# ============================================================
+class TestEmergencyExtras:
+    def _fresh_room(self, client, auth_headers, label):
+        r = client.post("/api/inpatient/rooms", json={
+            "room_number": label, "room_type": "emergency",
+            "ward_name": "Casualty", "bed_count": 2, "room_charge_per_day": 1500,
+        }, headers=auth_headers)
+        assert r.status_code == 201, r.text
+        return r.json()["id"]
+
+    def test_mlc_pdf_generates(self, client, auth_headers, seed_data):
+        room_id = self._fresh_room(client, auth_headers, "ER-PDF1")
+        r = client.post("/api/inpatient/admissions/quick-admit", json={
+            "first_name": "MLC", "admitting_doctor_id": seed_data["doctor_user_id"],
+            "room_id": room_id, "triage_level": 2,
+            "is_mlc": True, "mlc_type": "rta", "mlc_number": "MLC-001",
+            "police_station_informed": "Test PS",
+        }, headers=auth_headers)
+        assert r.status_code == 201
+        adm_id = r.json()["id"]
+        pdf = client.get(f"/api/inpatient/admissions/{adm_id}/mlc/pdf", headers=auth_headers)
+        assert pdf.status_code == 200
+        assert pdf.headers["content-type"] == "application/pdf"
+        assert pdf.content[:4] == b"%PDF"
+
+    def test_mlc_pdf_rejects_non_mlc(self, client, auth_headers, seed_data):
+        room_id = self._fresh_room(client, auth_headers, "ER-PDF2")
+        r = client.post("/api/inpatient/admissions/quick-admit", json={
+            "first_name": "Not-MLC", "admitting_doctor_id": seed_data["doctor_user_id"],
+            "room_id": room_id, "triage_level": 4,
+        }, headers=auth_headers)
+        assert r.status_code == 201
+        adm_id = r.json()["id"]
+        pdf = client.get(f"/api/inpatient/admissions/{adm_id}/mlc/pdf", headers=auth_headers)
+        assert pdf.status_code == 400
+
+    def test_observation_skips_room_charge(self, client, auth_headers, seed_data):
+        room_id = self._fresh_room(client, auth_headers, "ER-OBS1")
+        r = client.post("/api/inpatient/admissions/quick-admit", json={
+            "first_name": "Obs", "admitting_doctor_id": seed_data["doctor_user_id"],
+            "room_id": room_id, "triage_level": 3,
+            "is_observation": True,
+        }, headers=auth_headers)
+        assert r.status_code == 201
+        adm_id = r.json()["id"]
+        # Bill preview — room_total must be 0 even though some stay days elapsed
+        bp = client.get(f"/api/inpatient/admissions/{adm_id}/bill", headers=auth_headers)
+        assert bp.status_code == 200, bp.text
+        assert float(bp.json().get("room_total", 0)) == 0.0
+
+    def test_deposit_waiver_allows_discharge_with_balance(self, client, auth_headers, seed_data, TestSessionLocal):
+        from app.models.patient import Patient
+        import uuid
+        db = TestSessionLocal()
+        p = Patient(first_name="Waiver", last_name="Case",
+                    primary_phone="7777777777", patient_id=str(uuid.uuid4()),
+                    age=55, gender="male", hospital_id=1)
+        db.add(p); db.commit(); pid = p.id; db.close()
+        room_id = self._fresh_room(client, auth_headers, "ER-WAV1")
+        r = client.post("/api/inpatient/admissions", json={
+            "patient_id": pid, "admitting_doctor_id": seed_data["doctor_user_id"],
+            "room_id": room_id, "admission_type": "emergency",
+            "triage_level": 2,
+            "deposit_waived": True, "deposit_waiver_reason": "Charity case",
+        }, headers=auth_headers)
+        assert r.status_code == 201
+        adm_id = r.json()["id"]
+        # Discharge without paying — should succeed (waiver soft-passes)
+        d = client.post(f"/api/inpatient/admissions/{adm_id}/discharge", json={
+            "discharge_type": "normal",
+            "condition_on_discharge": "stable",
+            "force_unacknowledged_alerts": True,
+            "force_missing_consents": True,
+        }, headers=auth_headers)
+        assert d.status_code in (200, 201), d.text
+
+    def test_triage_queue_sorted_by_acuity(self, client, auth_headers, seed_data):
+        # Three fresh ER admits with different triage levels — verify ordering
+        room1 = self._fresh_room(client, auth_headers, "ER-TQ-A")
+        room2 = self._fresh_room(client, auth_headers, "ER-TQ-B")
+        room3 = self._fresh_room(client, auth_headers, "ER-TQ-C")
+        for (rid, name, t) in [(room1, "Triage-Low", 5), (room2, "Triage-Hi", 1), (room3, "Triage-Mid", 3)]:
+            r = client.post("/api/inpatient/admissions/quick-admit", json={
+                "first_name": name, "admitting_doctor_id": seed_data["doctor_user_id"],
+                "room_id": rid, "triage_level": t,
+            }, headers=auth_headers)
+            assert r.status_code == 201, r.text
+
+        q = client.get("/api/inpatient/admissions/triage-queue", headers=auth_headers)
+        assert q.status_code == 200, q.text
+        items = q.json()["items"]
+        # Filter to the three we just created (others may be present from prior tests)
+        names = [i["patient_name"] for i in items if i["patient_name"] in ("Triage-Hi UNKNOWN", "Triage-Mid UNKNOWN", "Triage-Low UNKNOWN")]
+        assert names.index("Triage-Hi UNKNOWN") < names.index("Triage-Mid UNKNOWN") < names.index("Triage-Low UNKNOWN")
+        for i in items:
+            assert "elapsed_minutes" in i
+
+
+
+
+# ============================================================
+# B6 — Body release / mortuary / post-mortem
+# ============================================================
+class TestBodyRelease:
+    def _admit_and_die(self, client, auth_headers, seed_data, label, mlc=False):
+        rr = client.post("/api/inpatient/rooms", json={
+            "room_number": label, "room_type": "general", "ward_name": "W1",
+            "bed_count": 1, "room_charge_per_day": 1000,
+        }, headers=auth_headers)
+        assert rr.status_code == 201, rr.text
+        room_id = rr.json()["id"]
+        # Fresh patient
+        from app.models.patient import Patient
+        import uuid
+        from app.models.inpatient import Admission as _A
+        # Create via admission API
+        if mlc:
+            r = client.post("/api/inpatient/admissions/quick-admit", json={
+                "first_name": "Decedent-" + label, "admitting_doctor_id": seed_data["doctor_user_id"],
+                "room_id": room_id, "triage_level": 1, "is_mlc": True, "mlc_type": "rta",
+                "mlc_number": "MLC-" + label, "police_station_informed": "Test PS",
+            }, headers=auth_headers)
+        else:
+            # Make a stub patient then admit
+            pid_resp = client.post("/api/inpatient/admissions/quick-admit", json={
+                "first_name": "Decedent-" + label, "admitting_doctor_id": seed_data["doctor_user_id"],
+                "room_id": room_id, "triage_level": 3,
+            }, headers=auth_headers)
+            r = pid_resp
+        assert r.status_code == 201, r.text
+        adm_id = r.json()["id"]
+        # Discharge as death
+        d = client.post(f"/api/inpatient/admissions/{adm_id}/discharge", json={
+            "discharge_type": "death", "condition_on_discharge": "critical",
+            "force_outstanding_balance": True, "force_unacknowledged_alerts": True,
+            "force_missing_consents": True, "override_reason": "test",
+        }, headers=auth_headers)
+        assert d.status_code in (200, 201), d.text
+        return adm_id
+
+    def test_get_creates_record_with_mlc_defaults(self, client, auth_headers, seed_data):
+        adm_id = self._admit_and_die(client, auth_headers, seed_data, "BR-MLC", mlc=True)
+        r = client.get(f"/api/inpatient/admissions/{adm_id}/body-release", headers=auth_headers)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["police_noc_required"] is True
+        assert body["post_mortem_required"] is True
+        assert body["body_in_mortuary_at"] is not None
+
+    def test_release_blocked_without_noc(self, client, auth_headers, seed_data):
+        adm_id = self._admit_and_die(client, auth_headers, seed_data, "BR-NOCBLK", mlc=True)
+        # Mark PM done so only NOC gate fires
+        client.put(f"/api/inpatient/admissions/{adm_id}/body-release",
+            json={"pm_completed_at": "2026-05-01T10:00:00", "pm_report_received": True}, headers=auth_headers)
+        r = client.post(f"/api/inpatient/admissions/{adm_id}/body-release/release", json={
+            "released_to_name": "Son", "released_to_relationship": "son",
+            "released_to_id_proof_type": "aadhar", "released_to_id_proof_number": "1234",
+            "witness_name": "Cousin",
+        }, headers=auth_headers)
+        assert r.status_code == 409
+        assert r.json()["detail"]["code"] == "missing_police_noc"
+
+    def test_release_succeeds_with_noc_and_pm(self, client, auth_headers, seed_data):
+        adm_id = self._admit_and_die(client, auth_headers, seed_data, "BR-OK", mlc=True)
+        client.put(f"/api/inpatient/admissions/{adm_id}/body-release", json={
+            "pm_completed_at": "2026-05-01T10:00:00", "pm_report_received": True,
+            "police_noc_received": True, "police_noc_number": "NOC-1",
+        }, headers=auth_headers)
+        r = client.post(f"/api/inpatient/admissions/{adm_id}/body-release/release", json={
+            "released_to_name": "Wife", "released_to_relationship": "wife",
+            "released_to_id_proof_type": "aadhar", "released_to_id_proof_number": "5678",
+            "witness_name": "Brother",
+        }, headers=auth_headers)
+        assert r.status_code == 200, r.text
+        assert r.json()["body_released"] is True
+        # Locked after release
+        r2 = client.put(f"/api/inpatient/admissions/{adm_id}/body-release", json={"mortuary_slot": "M9"}, headers=auth_headers)
+        assert r2.status_code == 400
+
+    def test_force_release_requires_reason(self, client, auth_headers, seed_data):
+        adm_id = self._admit_and_die(client, auth_headers, seed_data, "BR-FORCE", mlc=True)
+        # Try forcing without reason → 400
+        r = client.post(f"/api/inpatient/admissions/{adm_id}/body-release/release", json={
+            "released_to_name": "Son", "released_to_relationship": "son",
+            "released_to_id_proof_type": "aadhar", "released_to_id_proof_number": "1234",
+            "witness_name": "Cousin",
+            "force_missing_noc": True, "force_missing_pm": True,
+        }, headers=auth_headers)
+        assert r.status_code == 400
+
+    def test_release_pdf_generates(self, client, auth_headers, seed_data):
+        adm_id = self._admit_and_die(client, auth_headers, seed_data, "BR-PDF", mlc=False)
+        # Non-MLC: defaults make NOC and PM not required, can release directly
+        r = client.post(f"/api/inpatient/admissions/{adm_id}/body-release/release", json={
+            "released_to_name": "Daughter", "released_to_relationship": "daughter",
+            "released_to_id_proof_type": "voter", "released_to_id_proof_number": "VTR-1",
+            "witness_name": "Friend",
+        }, headers=auth_headers)
+        assert r.status_code == 200, r.text
+        pdf = client.get(f"/api/inpatient/admissions/{adm_id}/body-release/pdf", headers=auth_headers)
+        assert pdf.status_code == 200
+        assert pdf.headers["content-type"] == "application/pdf"
+        assert pdf.content[:4] == b"%PDF"

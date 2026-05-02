@@ -66,12 +66,27 @@ async def startup_event():
     if is_setup_complete():
         create_tables()
         print("Database tables created successfully")
-        # Run migrations for new columns on existing DBs
+        # Run migrations under the schema-migrations tracker. A failed
+        # migration is now LOUD: we abort startup instead of silently
+        # serving a half-migrated DB. The recorded failure stays in
+        # schema_migrations for the admin Diagnostics page.
+        from config.database import engine as _engine
+        from app.utils.schema_migrations import run_migration
         try:
-            from migrate_patient_fields import migrate
-            migrate()
+            from migrate_patient_fields import migrate as _patient_migrate
+            run_migration(_engine, "migrate_patient_fields", _patient_migrate)
         except Exception as e:
-            print(f"Migration note: {e}")
+            raise RuntimeError(
+                f"Schema migration migrate_patient_fields failed — refusing to boot. "
+                f"See schema_migrations table for details. Error: {e}"
+            )
+        try:
+            from migrate_inpatient_indexes import migrate_indexes as _idx_migrate
+            run_migration(_engine, "migrate_inpatient_indexes", _idx_migrate)
+        except Exception as e:
+            raise RuntimeError(
+                f"Schema migration migrate_inpatient_indexes failed — refusing to boot. Error: {e}"
+            )
         # Ensure role permissions exist (for installations that pre-date the wizard)
         _ensure_role_permissions()
         # Ensure all modules exist (add missing ones for upgrades)
@@ -116,22 +131,36 @@ async def startup_event():
             print("Google Drive backup thread started — checking every 10 min")
         except Exception as e:
             print(f"Google Drive backup note: {e}")
+        # Inpatient daily charges auto-post (one doctor visit per admitted
+        # patient per day at the admitting doctor's fee). Idempotent — manually
+        # recorded visits supersede the auto-post.
+        try:
+            from app.services.inpatient_daily_charges import start_daily_charges_thread
+            start_daily_charges_thread(check_interval_seconds=3600)
+            print("Inpatient daily-charges thread started — hourly check")
+        except Exception as e:
+            print(f"Daily-charges note: {e}")
     else:
         print("Setup not complete — waiting for setup wizard")
 
 
 def _ensure_role_permissions():
-    """Seed/update role permissions on every startup to keep them in sync."""
+    """Seed/update roles, module-permission catalog, and role permissions on every startup."""
     from config.database import SessionLocal
-    from app.models.permissions import RoleModulePermission
+    from app.models.permissions import RoleModulePermission, ModulePermission
     from app.models.user import UserRole
-    from app.routes.setup import _seed_role_permissions
+    from app.routes.setup import _seed_role_permissions, _seed_roles, _seed_module_permissions
     db = SessionLocal()
     try:
+        # Ensure all system roles exist (heals pre-existing DBs that lack inpatient_admin etc.)
+        _seed_roles(db, UserRole)
+        # Ensure the module-permission catalog is fully populated
+        _seed_module_permissions(db, ModulePermission)
+        db.flush()
         # Always upsert role permissions (creates missing, updates existing)
         _seed_role_permissions(db, UserRole, RoleModulePermission)
         db.commit()
-        print("Role permissions synced")
+        print("Roles, module permissions, and role permissions synced")
 
         # Fix outpatient: make it toggleable (not always-on) for existing installs
         from app.models.system import SystemModule

@@ -11,6 +11,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/ta
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../components/ui/dialog';
 import { ConfirmDialog } from '../../components/ui/confirm-dialog';
 import { useToast } from '../../hooks/use-toast';
+import { useAuth } from '../../contexts/AuthContext';
 import { printPdfFromUrl } from '../../utils/printPdf';
 import {
   Plus, Search, Edit2, Trash2, Bed, Activity, Clock, User, Users,
@@ -18,7 +19,7 @@ import {
   ClipboardList, LayoutDashboard, Scissors, Shield, Upload, Download, Paperclip,
   HeartPulse, Pill, AlertTriangle, Check, XCircle, Wallet, Package, Receipt, FileCheck, Building2,
   Sparkles, CalendarDays, ArrowRightLeft, UserPlus, FileSignature, AlertOctagon, RotateCcw, Skull,
-  CalendarRange
+  CalendarRange, Printer
 } from 'lucide-react';
 import axios from 'axios';
 
@@ -56,6 +57,7 @@ const claimStatusLabel = { none: 'No Claim', draft: 'Draft', submitted: 'Submitt
 const TAB_TO_PATH = {
   dashboard: '',
   admissions: 'admissions',
+  triage: 'triage',
   discharge: 'discharge',
   ot: 'ot',
   preauth: 'preauth',
@@ -67,6 +69,7 @@ const TAB_TO_PATH = {
   rooms: 'rooms',
   setup: 'billing-setup',
   procedures: 'procedures',
+  reports: 'reports',
 };
 const PATH_TO_TAB = Object.fromEntries(
   Object.entries(TAB_TO_PATH).map(([k, v]) => [v, k])
@@ -74,8 +77,49 @@ const PATH_TO_TAB = Object.fromEntries(
 
 const InpatientModule = () => {
   const { toast } = useToast();
+  const { user } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
+
+  // Roles that should see billing-related views inside an admission.
+  // Clinical-only roles (nurse, doctor) are intentionally excluded.
+  const userRoles = useMemo(() => {
+    if (!user) return [];
+    return user.role_names || [user.role?.name].filter(Boolean);
+  }, [user]);
+  const canViewBilling = useMemo(() => {
+    const billingRoles = ['super_admin', 'hospital_admin', 'billing_admin', 'receptionist', 'frontdesk', 'inpatient_admin'];
+    return userRoles.some(r => billingRoles.includes(r));
+  }, [userRoles]);
+  const isAdminLike = useMemo(() => userRoles.some(r => ['super_admin', 'hospital_admin', 'inpatient_admin'].includes(r)), [userRoles]);
+  const isDoctorRole = useMemo(() => userRoles.includes('doctor'), [userRoles]);
+  const isNurseRole = useMemo(() => userRoles.includes('nurse'), [userRoles]);
+
+  // Effective permission map (module → permission keys) loaded from backend.
+  // Used to gate UI elements so users only see actions they can actually perform.
+  const [permsLoaded, setPermsLoaded] = useState(false);
+  const [myPerms, setMyPerms] = useState({ is_admin: false, modules: {} });
+  useEffect(() => {
+    let cancelled = false;
+    axios.get('/api/admin/me/permissions').then(res => {
+      if (cancelled) return;
+      setMyPerms(res.data || { is_admin: false, modules: {} });
+      setPermsLoaded(true);
+    }).catch(() => { setPermsLoaded(true); });
+    return () => { cancelled = true; };
+  }, []);
+  const hasPerm = useCallback((module, key) => {
+    if (myPerms?.is_admin) return true;
+    const mods = myPerms?.modules || {};
+    if (mods['*']?.includes('*')) return true;
+    const list = mods[module] || [];
+    return list.includes('*') || list.includes(key);
+  }, [myPerms]);
+  const ip = useCallback((key) => hasPerm('inpatient', key), [hasPerm]);
+  // Nurse-only users get a nurse-scoped Visit form (no Doctor Visit option,
+  // visitor list limited to nurses, and the form defaults to nurse_visit).
+  const isNurseOnly = isNurseRole && !isDoctorRole && !isAdminLike;
+  const defaultVisitType = isNurseOnly ? 'nurse_visit' : 'doctor_visit';
   // activeTab is derived from the URL — when the user clicks a nav item the
   // browser navigates and this re-derives. Setting activeTab now means navigating.
   const activeTab = useMemo(() => {
@@ -99,16 +143,33 @@ const InpatientModule = () => {
 
   // Admissions
   const [admissions, setAdmissions] = useState([]);
+  const [triageQueue, setTriageQueue] = useState([]);
+  const [triageLoading, setTriageLoading] = useState(false);
   const [admissionSearch, setAdmissionSearch] = useState('');
   const [showAdmissionDialog, setShowAdmissionDialog] = useState(false);
   const [admissionForm, setAdmissionForm] = useState({
     patient_id: '', admitting_doctor_id: '', room_id: '', admission_type: 'elective',
     admission_reason: '', condition_on_admission: 'stable', estimated_stay_days: '',
     admission_notes: '', insurance_provider: '', policy_number: '', claim_reference: '', emergency_contact: '', bed_number: '', bed_id: '',
+    triage_level: '', chief_complaint: '', arrival_mode: 'walk_in', ambulance_details: '',
+    is_mlc: false, mlc_type: '', mlc_number: '', police_station_informed: '',
+    is_observation: false, deposit_waived: false, deposit_waiver_reason: '',
+  });
+  const [showQuickAdmitDialog, setShowQuickAdmitDialog] = useState(false);
+  const [quickAdmitForm, setQuickAdmitForm] = useState({
+    first_name: '', last_name: 'UNKNOWN', age: '', gender: '', primary_phone: '',
+    admitting_doctor_id: '', room_id: '', bed_id: '',
+    admission_reason: '', condition_on_admission: 'critical',
+    triage_level: '1', chief_complaint: '', arrival_mode: 'walk_in', ambulance_details: '',
+    is_mlc: false, mlc_type: '', mlc_number: '', police_station_informed: '',
+    is_observation: false, deposit_waived: false, deposit_waiver_reason: '',
+    emergency_contact: '',
   });
   const [patientSearchResults, setPatientSearchResults] = useState([]);
   const [patientSearchQuery, setPatientSearchQuery] = useState('');
   const [selectedPatientName, setSelectedPatientName] = useState('');
+  const [selectedPatient, setSelectedPatient] = useState(null);
+  const [patientSearching, setPatientSearching] = useState(false);
   const [doctorsList, setDoctorsList] = useState([]);
   const [availableRooms, setAvailableRooms] = useState([]);
 
@@ -118,13 +179,19 @@ const InpatientModule = () => {
   const [visits, setVisits] = useState([]);
   const [billData, setBillData] = useState(null);
   const [showVisitDialog, setShowVisitDialog] = useState(false);
-  const [visitForm, setVisitForm] = useState({ visit_type: 'doctor_visit', visitor_id: '', notes: '' });
+  const [visitForm, setVisitForm] = useState({ visit_type: defaultVisitType, visitor_id: '', notes: '', vitals_reviewed: false, labs_reviewed: false, pain_assessed: false, mobility_checked: false, plan_for_today: '', family_updated: false });
   const [admissionMedications, setAdmissionMedications] = useState([]);
   const [admissionLabOrders, setAdmissionLabOrders] = useState([]);
   const [availableLabTests, setAvailableLabTests] = useState([]);
   const [showLabOrderDialog, setShowLabOrderDialog] = useState(false);
   const [labOrderForm, setLabOrderForm] = useState({ test_ids: [], priority: 'normal', notes: '' });
   const [labTestSearch, setLabTestSearch] = useState('');
+  // Inpatient prescription (Add Medication) state
+  const BLANK_RX_ITEM = { medicine_id: '', medicine_name: '', dosage: '', duration: '', quantity_prescribed: 1, instructions: '' };
+  const [showPrescriptionDialog, setShowPrescriptionDialog] = useState(false);
+  const [prescriptionForm, setPrescriptionForm] = useState({ notes: '', items: [{ ...BLANK_RX_ITEM }] });
+  const [medicineSearchResults, setMedicineSearchResults] = useState([]);
+  const [medicineSearchTargetIdx, setMedicineSearchTargetIdx] = useState(null);
 
   // Rooms
   const [rooms, setRooms] = useState([]);
@@ -149,6 +216,29 @@ const InpatientModule = () => {
   const [dietOrders, setDietOrders] = useState([]);
   const [showDietDialog, setShowDietDialog] = useState(false);
   const [dietForm, setDietForm] = useState({ diet_type: 'regular', meal_instructions: '', allergies: '', notes: '' });
+  // Per-meal log dialog
+  const [mealLogDialog, setMealLogDialog] = useState({ open: false, orderId: null, meal_time: 'lunch', status: 'served', notes: '' });
+  // Kitchen ticket print dialog
+  const [kitchenTicketDialog, setKitchenTicketDialog] = useState({ open: false, meal_time: 'lunch', department: '' });
+  // LOA dialog state
+  const [loaDialog, setLoaDialog] = useState({ open: false, admissionId: null,
+    start_datetime: '', expected_return_datetime: '', reason: '',
+    approved_by_doctor_id: '', notes: '', bed_held: true });
+  const [loaList, setLoaList] = useState([]);
+  // E2 — Monthly outcomes report
+  const [reportSubTab, setReportSubTab] = useState('outcomes');
+  const [outcomesMonth, setOutcomesMonth] = useState(() => {
+    const d = new Date(); d.setDate(0); // last day of previous month
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  });
+  const [outcomesData, setOutcomesData] = useState(null);
+  // E3 — Doctor productivity report
+  const [productivityRange, setProductivityRange] = useState(() => {
+    const today = new Date();
+    const start = new Date(Date.now() - 30 * 86400 * 1000);
+    return { from: start.toISOString().slice(0, 10), to: today.toISOString().slice(0, 10), doctor_id: '' };
+  });
+  const [productivityData, setProductivityData] = useState(null);
   const [showNursingNoteDialog, setShowNursingNoteDialog] = useState(false);
   const [nursingNoteForm, setNursingNoteForm] = useState({ shift: 'morning', note_type: 'general', content: '' });
   const [editingNursingNote, setEditingNursingNote] = useState(null);
@@ -334,8 +424,38 @@ const InpatientModule = () => {
   // Phase 4: Mortality
   const [mortalityList, setMortalityList] = useState([]);
   const [showMortalityDialog, setShowMortalityDialog] = useState(false);
+  // B6 — Body release / mortuary tracking
+  const [showBodyReleaseDialog, setShowBodyReleaseDialog] = useState(false);
+  const [bodyReleaseAdmId, setBodyReleaseAdmId] = useState(null);
+  const [bodyReleaseRec, setBodyReleaseRec] = useState(null);
+  const [bodyReleaseTrack, setBodyReleaseTrack] = useState({
+    mortuary_slot: '', body_in_mortuary_at: '', body_out_mortuary_at: '',
+    embalming_done: false, embalming_at: '', embalmed_by: '',
+    post_mortem_required: false, pm_hospital: '', pm_doctor: '',
+    pm_referred_at: '', pm_completed_at: '', pm_report_received: false, pm_report_number: '',
+    police_noc_required: false, police_noc_received: false,
+    police_noc_number: '', police_noc_received_at: '', notes: '',
+  });
+  const [bodyReleaseAction, setBodyReleaseAction] = useState({
+    released_to_name: '', released_to_relationship: '', released_to_phone: '',
+    released_to_id_proof_type: 'aadhar', released_to_id_proof_number: '',
+    released_to_address: '', witness_name: '', witness_phone: '', witness_id_proof: '',
+    transport_details: '', notes: '',
+    force_missing_noc: false, force_missing_pm: false, override_reason: '',
+  });
   const [mortalityAdmission, setMortalityAdmission] = useState(null);
   const [mortalityForm, setMortalityForm] = useState({ cause_of_death: '', time_of_death: '', death_certificate_number: '', mlc_required: false, mlc_number: '', autopsy_done: false, autopsy_findings: '', body_handed_over_to: '', body_handover_relationship: '', body_handover_time: '', body_handover_id_proof: '' });
+  // DAMA — Discharge Against Medical Advice
+  const [showDamaDialog, setShowDamaDialog] = useState(false);
+  const [damaAdmission, setDamaAdmission] = useState(null);
+  const [damaForm, setDamaForm] = useState({
+    attending_doctor_id: '', medical_advice_given: '', risks_explained: '', language_used: 'english',
+    patient_acknowledges_advice: false, patient_absolves_hospital: false,
+    signed_by: 'patient', guardian_name: '', guardian_relationship: '',
+    primary_signature: '', primary_signature_type: 'typed',
+    witness_name: '', witness_designation: '', witness_signature: '', witness_signature_type: 'typed',
+    notes: '',
+  });
 
   // Pagination
   const PAGE_SIZE = 50;
@@ -354,6 +474,13 @@ const InpatientModule = () => {
     diagnosis_on_discharge: '', treatment_given: '', medications_prescribed: '',
     follow_up_instructions: '', follow_up_date: '', diet_instructions: '', activity_restrictions: '',
   });
+  // Backend may 409 with one of three gate codes: outstanding_balance,
+  // unacknowledged_critical_alerts, missing_surgical_consent. We collect the
+  // details and require the user to type a single reason that overrides them.
+  const [dischargeBlockers, setDischargeBlockers] = useState([]);
+  const [overrideReason, setOverrideReason] = useState('');
+  // Bill cancel dialog (admission bills only)
+  const [cancelBillDialog, setCancelBillDialog] = useState({ open: false, bill: null, reason: '' });
 
   // OT Schedule
   const [otSchedules, setOtSchedules] = useState([]);
@@ -389,6 +516,15 @@ const InpatientModule = () => {
     } catch { /* silent */ }
   }, []);
 
+  const fetchTriageQueue = useCallback(async () => {
+    setTriageLoading(true);
+    try {
+      const res = await axios.get('/api/inpatient/admissions/triage-queue');
+      setTriageQueue(res.data?.items || []);
+    } catch { setTriageQueue([]); }
+    finally { setTriageLoading(false); }
+  }, []);
+
   const fetchRooms = useCallback(async () => {
     try {
       const res = await axios.get('/api/inpatient/rooms');
@@ -398,10 +534,15 @@ const InpatientModule = () => {
 
   const fetchDoctors = useCallback(async () => {
     try {
-      const res = await axios.get('/api/admin/users');
-      const docs = (res.data || []).filter(u => (u.role_names || [u.role?.name]).some(r => r === 'doctor'));
-      setDoctorsList(docs);
-    } catch { /* silent */ }
+      const res = await axios.get('/api/inpatient/doctors');
+      setDoctorsList(res.data || []);
+    } catch {
+      try {
+        const res = await axios.get('/api/admin/users');
+        const docs = (res.data || []).filter(u => (u.role_names || [u.role?.name]).some(r => r === 'doctor'));
+        setDoctorsList(docs);
+      } catch { /* silent */ }
+    }
   }, []);
 
   const fetchAvailableRooms = useCallback(async () => {
@@ -549,20 +690,27 @@ const InpatientModule = () => {
     }
   };
 
-  const handleProcedureDelete = async (procedureId) => {
-    if (!window.confirm('Remove this procedure from the catalog? Existing OT records keep their values.')) return;
-    try {
-      await axios.delete(`/api/inpatient/procedures/${procedureId}`);
-      toast({ title: 'Removed', description: 'Procedure removed from catalog' });
-      fetchProcedures(false);
-    } catch (err) {
-      const detail = err.response?.data?.detail;
-      toast({
-        variant: 'destructive',
-        title: 'Error',
-        description: typeof detail === 'string' ? detail : 'Failed to remove procedure',
-      });
-    }
+  const handleProcedureDelete = (procedureId) => {
+    setConfirmState({
+      open: true,
+      title: 'Remove procedure',
+      message: 'Remove this procedure from the catalog? Existing OT records keep their values.',
+      onConfirm: async () => {
+        setConfirmState({ open: false });
+        try {
+          await axios.delete(`/api/inpatient/procedures/${procedureId}`);
+          toast({ title: 'Removed', description: 'Procedure removed from catalog' });
+          fetchProcedures(false);
+        } catch (err) {
+          const detail = err.response?.data?.detail;
+          toast({
+            variant: 'destructive',
+            title: 'Error',
+            description: typeof detail === 'string' ? detail : 'Failed to remove procedure',
+          });
+        }
+      },
+    });
   };
 
   const startEditProcedure = (proc) => {
@@ -648,10 +796,15 @@ const InpatientModule = () => {
 
   const fetchNursesList = useCallback(async () => {
     try {
-      const res = await axios.get('/api/admin/users');
-      const nurses = (res.data || []).filter(u => (u.role_names || [u.role?.name]).some(r => r === 'nurse'));
-      setNursesList(nurses);
-    } catch { setNursesList([]); }
+      const res = await axios.get('/api/inpatient/nurses');
+      setNursesList(res.data || []);
+    } catch {
+      try {
+        const res = await axios.get('/api/admin/users');
+        const nurses = (res.data || []).filter(u => (u.role_names || [u.role?.name]).some(r => r === 'nurse'));
+        setNursesList(nurses);
+      } catch { setNursesList([]); }
+    }
   }, []);
 
   // Phase 4 fetchers
@@ -765,6 +918,36 @@ const InpatientModule = () => {
     } catch { setMortalityList([]); }
   }, []);
 
+  // E2 — monthly outcomes
+  const fetchMonthlyOutcomes = useCallback(async (month) => {
+    try {
+      const params = month ? { month } : {};
+      const res = await axios.get('/api/inpatient/reports/monthly-outcomes', { params });
+      setOutcomesData(res.data);
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed to load monthly outcomes';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+      setOutcomesData(null);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // E3 — doctor productivity
+  const fetchDoctorProductivity = useCallback(async (range) => {
+    try {
+      const params = { date_from: range.from, date_to: range.to };
+      if (range.doctor_id) params.doctor_id = range.doctor_id;
+      const res = await axios.get('/api/inpatient/reports/doctor-productivity', { params });
+      setProductivityData(res.data);
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      toast({ variant: 'destructive', title: 'Error',
+        description: typeof detail === 'string' ? detail : 'Failed to load doctor productivity' });
+      setProductivityData(null);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const fetchPreauths = useCallback(async () => {
     try {
       const params = preauthStatusFilter ? { status: preauthStatusFilter } : {};
@@ -789,6 +972,7 @@ const InpatientModule = () => {
 
   useEffect(() => {
     if (activeTab === 'admissions') { fetchAdmissions('admitted', admissionsPage); fetchAvailableRooms(); }
+    if (activeTab === 'triage') { fetchTriageQueue(); }
     if (activeTab === 'rooms') { fetchRooms(); }
     if (activeTab === 'discharge') fetchAdmissions('discharged', dischargePage);
     if (activeTab === 'ot') fetchOTSchedules();
@@ -816,6 +1000,11 @@ const InpatientModule = () => {
       fetchReadmissions();
       fetchMortalityList();
     }
+    if (activeTab === 'reports') {
+      if (reportSubTab === 'outcomes') fetchMonthlyOutcomes(outcomesMonth);
+      if (reportSubTab === 'productivity') fetchDoctorProductivity(productivityRange);
+      fetchDoctors();
+    }
     if (activeTab === 'roster') {
       fetchRosterGrid();
       fetchRosterCoverage();
@@ -823,18 +1012,27 @@ const InpatientModule = () => {
     }
     if (activeTab === 'procedures') fetchProcedures(false);
     if (activeTab === 'ot') fetchProcedures(true);  // OT scheduling needs the active catalog
-  }, [activeTab, admissionsPage, dischargePage, fetchAdmissions, fetchRooms, fetchDashboard, fetchAvailableRooms, fetchOTSchedules, fetchPreauths, fetchAncillaryServices, fetchPackages, fetchTpaList, fetchCleaningBeds, fetchTurnoverStats, fetchPendingTransfers, fetchReservations, fetchIncidents, fetchIncidentReport, fetchReadmissions, fetchMortalityList, fetchRosterGrid, fetchRosterCoverage, fetchNursesList, fetchProcedures]);
+  }, [activeTab, admissionsPage, dischargePage, fetchAdmissions, fetchRooms, fetchDashboard, fetchAvailableRooms, fetchOTSchedules, fetchPreauths, fetchAncillaryServices, fetchPackages, fetchTpaList, fetchCleaningBeds, fetchTurnoverStats, fetchPendingTransfers, fetchReservations, fetchIncidents, fetchIncidentReport, fetchReadmissions, fetchMortalityList, fetchRosterGrid, fetchRosterCoverage, fetchNursesList, fetchProcedures, fetchTriageQueue]);
 
   // ============================================================
   // Patient search typeahead
   // ============================================================
   useEffect(() => {
-    if (patientSearchQuery.length < 2) { setPatientSearchResults([]); return; }
+    if (!patientSearchQuery.trim()) { setPatientSearchResults([]); setPatientSearching(false); return; }
+    setPatientSearching(true);
     const timer = setTimeout(async () => {
       try {
-        const res = await axios.get('/api/patients', { params: { search: patientSearchQuery } });
-        setPatientSearchResults(res.data.patients || res.data || []);
-      } catch { setPatientSearchResults([]); }
+        const res = await axios.post('/api/patients/search', {
+          search_term: patientSearchQuery.trim(),
+          sort_by: 'name',
+          sort_order: 'asc',
+        });
+        setPatientSearchResults(res.data?.patients || []);
+      } catch {
+        setPatientSearchResults([]);
+      } finally {
+        setPatientSearching(false);
+      }
     }, 300);
     return () => clearTimeout(timer);
   }, [patientSearchQuery]);
@@ -862,6 +1060,14 @@ const InpatientModule = () => {
         room_id: parseInt(admissionForm.room_id),
         estimated_stay_days: admissionForm.estimated_stay_days ? parseInt(admissionForm.estimated_stay_days) : null,
         bed_id: admissionForm.bed_id ? parseInt(admissionForm.bed_id) : null,
+        triage_level: admissionForm.triage_level ? parseInt(admissionForm.triage_level) : null,
+        // Strip emergency-only fields when not an emergency admission
+        ...(admissionForm.admission_type !== 'emergency' ? {
+          triage_level: null, chief_complaint: null, arrival_mode: null,
+          ambulance_details: null, is_mlc: false, mlc_type: null, mlc_number: null,
+          police_station_informed: null, is_observation: false,
+          deposit_waived: false, deposit_waiver_reason: null,
+        } : {}),
       };
       await axios.post('/api/inpatient/admissions', payload);
       toast({ title: 'Success', description: 'Patient admitted successfully' });
@@ -876,11 +1082,58 @@ const InpatientModule = () => {
     } finally { setLoading(false); }
   };
 
+  const handleQuickAdmit = async (e) => {
+    e.preventDefault();
+    if (!quickAdmitForm.first_name.trim() || !quickAdmitForm.admitting_doctor_id || !quickAdmitForm.room_id) {
+      toast({ variant: 'destructive', title: 'Missing fields', description: 'Name, doctor, and room are required.' });
+      return;
+    }
+    if (quickAdmitForm.is_mlc && !quickAdmitForm.mlc_type) {
+      toast({ variant: 'destructive', title: 'MLC type required', description: 'Select the MLC type when flagging as medico-legal.' });
+      return;
+    }
+    setLoading(true);
+    try {
+      const payload = {
+        ...quickAdmitForm,
+        age: quickAdmitForm.age ? parseInt(quickAdmitForm.age) : null,
+        admitting_doctor_id: parseInt(quickAdmitForm.admitting_doctor_id),
+        room_id: parseInt(quickAdmitForm.room_id),
+        bed_id: quickAdmitForm.bed_id ? parseInt(quickAdmitForm.bed_id) : null,
+        triage_level: parseInt(quickAdmitForm.triage_level || '3'),
+        gender: quickAdmitForm.gender || null,
+        primary_phone: quickAdmitForm.primary_phone || '0000000000',
+      };
+      await axios.post('/api/inpatient/admissions/quick-admit', payload);
+      toast({ title: 'Emergency admission created', description: 'Reception must complete patient KYC.' });
+      setShowQuickAdmitDialog(false);
+      setQuickAdmitForm({
+        first_name: '', last_name: 'UNKNOWN', age: '', gender: '', primary_phone: '',
+        admitting_doctor_id: '', room_id: '', bed_id: '',
+        admission_reason: '', condition_on_admission: 'critical',
+        triage_level: '1', chief_complaint: '', arrival_mode: 'walk_in', ambulance_details: '',
+        is_mlc: false, mlc_type: '', mlc_number: '', police_station_informed: '',
+        is_observation: false, deposit_waived: false, deposit_waiver_reason: '',
+        emergency_contact: '',
+      });
+      fetchAdmissions('admitted');
+      fetchDashboard();
+      fetchAvailableRooms();
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed to admit patient';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally { setLoading(false); }
+  };
+
   const resetAdmissionForm = () => {
     setAdmissionForm({ patient_id: '', admitting_doctor_id: '', room_id: '', admission_type: 'elective',
       admission_reason: '', condition_on_admission: 'stable', estimated_stay_days: '',
-      admission_notes: '', insurance_provider: '', policy_number: '', claim_reference: '', emergency_contact: '', bed_number: '', bed_id: '' });
+      admission_notes: '', insurance_provider: '', policy_number: '', claim_reference: '', emergency_contact: '', bed_number: '', bed_id: '',
+      triage_level: '', chief_complaint: '', arrival_mode: 'walk_in', ambulance_details: '',
+      is_mlc: false, mlc_type: '', mlc_number: '', police_station_informed: '',
+      is_observation: false, deposit_waived: false, deposit_waiver_reason: '' });
     setSelectedPatientName('');
+    setSelectedPatient(null);
     setPatientSearchQuery('');
     setPatientSearchResults([]);
   };
@@ -935,10 +1188,17 @@ const InpatientModule = () => {
         visit_type: visitForm.visit_type,
         visitor_id: parseInt(visitForm.visitor_id),
         notes: visitForm.notes || null,
+        // Round-checklist (only sent for doctor_visit; backend ignores otherwise)
+        vitals_reviewed: !!visitForm.vitals_reviewed,
+        labs_reviewed: !!visitForm.labs_reviewed,
+        pain_assessed: !!visitForm.pain_assessed,
+        mobility_checked: !!visitForm.mobility_checked,
+        plan_for_today: visitForm.plan_for_today || null,
+        family_updated: !!visitForm.family_updated,
       });
       toast({ title: 'Success', description: 'Visit recorded' });
       setShowVisitDialog(false);
-      setVisitForm({ visit_type: 'doctor_visit', visitor_id: '', notes: '' });
+      setVisitForm({ visit_type: defaultVisitType, visitor_id: '', notes: '', vitals_reviewed: false, labs_reviewed: false, pain_assessed: false, mobility_checked: false, plan_for_today: '', family_updated: false });
       fetchVisits(activityAdmission.id);
       fetchBill(activityAdmission.id);
     } catch (err) {
@@ -956,6 +1216,52 @@ const InpatientModule = () => {
     } catch (err) {
       toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed to delete' });
     }
+  };
+
+  // Inpatient prescription
+  const searchMedicines = useCallback(async (query, idx) => {
+    setMedicineSearchTargetIdx(idx);
+    if (!query || query.trim().length < 2) { setMedicineSearchResults([]); return; }
+    try {
+      const res = await axios.get('/api/medicines/', { params: { search: query.trim(), limit: 15 } });
+      setMedicineSearchResults(res.data || []);
+    } catch { setMedicineSearchResults([]); }
+  }, []);
+
+  const handleCreateInpatientPrescription = async (e) => {
+    e.preventDefault();
+    const items = prescriptionForm.items
+      .map(it => ({
+        medicine_id: it.medicine_id ? parseInt(it.medicine_id) : null,
+        medicine_name: it.medicine_id ? null : (it.medicine_name?.trim() || null),
+        quantity_prescribed: Math.max(1, parseInt(it.quantity_prescribed) || 1),
+        dosage: it.dosage?.trim() || '',
+        duration: it.duration?.trim() || '',
+        instructions: it.instructions?.trim() || null,
+      }))
+      .filter(it => (it.medicine_id || it.medicine_name) && it.dosage && it.duration);
+    if (items.length === 0) {
+      toast({ variant: 'destructive', title: 'Error', description: 'Add at least one medicine with dosage and duration' });
+      return;
+    }
+    setLoading(true);
+    try {
+      await axios.post('/api/prescriptions/', {
+        patient_id: activityAdmission.patient_id,
+        admission_id: activityAdmission.id,
+        notes: prescriptionForm.notes || null,
+        items,
+      });
+      toast({ title: 'Prescription created' });
+      setShowPrescriptionDialog(false);
+      setPrescriptionForm({ notes: '', items: [{ ...BLANK_RX_ITEM }] });
+      setMedicineSearchResults([]);
+      fetchMedications(activityAdmission.id);
+      fetchBill(activityAdmission.id);
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed to create prescription';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally { setLoading(false); }
   };
 
   // Lab Order
@@ -1042,41 +1348,61 @@ const InpatientModule = () => {
   // Discharge
   const openDischargeDialog = async (admission) => {
     setDischargeAdmission(admission);
-    let medsText = '';
-    try {
-      const res = await axios.get(`/api/inpatient/admissions/${admission.id}/prescriptions`);
-      if (res.data && res.data.length > 0) {
-        const lines = [];
-        for (const rx of res.data) {
-          const meds = rx.medicines || [];
-          for (const med of meds) {
-            const parts = [med.name];
-            if (med.dosage) parts.push(med.dosage);
-            if (med.duration) parts.push(`for ${med.duration}`);
-            if (med.instructions) parts.push(`(${med.instructions})`);
-            if (med.quantity) parts.push(`- Qty: ${med.quantity}`);
-            lines.push(parts.join(' '));
-          }
-        }
-        medsText = lines.join('\n');
-      }
-    } catch { /* silent */ }
+    // Discharge medications are NOT auto-filled from inpatient prescriptions —
+    // ward drugs and take-home prescriptions are separate clinical concepts.
+    // Doctor builds the take-home list explicitly.
     setDischargeForm({ discharge_type: 'normal', condition_on_discharge: 'stable', discharge_summary: '',
-      diagnosis_on_discharge: '', treatment_given: '', medications_prescribed: medsText,
+      diagnosis_on_discharge: '', treatment_given: '', medications_prescribed: '',
+      take_home_medications: [],
       follow_up_instructions: '', follow_up_date: '', diet_instructions: '', activity_restrictions: '' });
+    setDischargeBlockers([]);
+    setOverrideReason('');
     setShowDischargeDialog(true);
   };
 
   const handleDischarge = async (e) => {
     e.preventDefault();
+    // If gates are blocking, require a non-empty override_reason before retrying.
+    if (dischargeBlockers.length > 0 && !overrideReason.trim()) {
+      toast({ variant: 'destructive', title: 'Override reason required',
+        description: 'Type a reason to override the safety gates.' });
+      return;
+    }
     setLoading(true);
     try {
       const payload = { ...dischargeForm };
       if (payload.follow_up_date) payload.follow_up_date = new Date(payload.follow_up_date).toISOString();
       else delete payload.follow_up_date;
+      // Clean the take-home meds: drop empty rows; coerce quantity to int.
+      const meds = (payload.take_home_medications || [])
+        .filter(m => (m.medicine_name || '').trim())
+        .map(m => ({
+          medicine_id: m.medicine_id ? parseInt(m.medicine_id) : null,
+          medicine_name: m.medicine_name.trim(),
+          dosage: m.dosage?.trim() || null,
+          frequency: m.frequency?.trim() || null,
+          duration: m.duration?.trim() || null,
+          quantity: m.quantity ? parseInt(m.quantity) : null,
+          instructions: m.instructions?.trim() || null,
+        }));
+      payload.take_home_medications = meds.length ? meds : null;
+      // Don't send the legacy free-text dump; the structured list replaces it.
+      payload.medications_prescribed = payload.medications_prescribed || null;
+      // If we previously hit gates, attach the matching force flags + reason.
+      if (dischargeBlockers.length > 0) {
+        const codes = dischargeBlockers.map(b => b.code);
+        if (codes.includes('outstanding_balance')) payload.force_outstanding_balance = true;
+        if (codes.includes('unacknowledged_critical_alerts')) payload.force_unacknowledged_alerts = true;
+        if (codes.includes('missing_surgical_consent')) payload.force_missing_consents = true;
+        payload.override_reason = overrideReason.trim();
+      }
       await axios.post(`/api/inpatient/admissions/${dischargeAdmission.id}/discharge`, payload);
       const wasDeath = dischargeForm.discharge_type === 'death';
-      toast({ title: wasDeath ? 'Discharge recorded — please fill mortality details' : 'Patient discharged successfully' });
+      const wasDama = dischargeForm.discharge_type === 'against_advice';
+      const admDoctorId = dischargeAdmission.admitting_doctor_id;
+      toast({ title: wasDeath ? 'Discharge recorded — please fill mortality details'
+        : wasDama ? 'Discharge recorded — please complete the DAMA form'
+        : 'Patient discharged successfully' });
       setShowDischargeDialog(false);
       const admId = dischargeAdmission.id;
       setDischargeAdmission(null);
@@ -1096,8 +1422,71 @@ const InpatientModule = () => {
         });
         setShowMortalityDialog(true);
       }
+      // On DAMA, immediately prompt for the signed form
+      if (wasDama) {
+        setDamaAdmission({ id: admId });
+        setDamaForm({
+          attending_doctor_id: admDoctorId || '',
+          medical_advice_given: dischargeForm.treatment_given || '',
+          risks_explained: '',
+          language_used: 'english',
+          patient_acknowledges_advice: false, patient_absolves_hospital: false,
+          signed_by: 'patient', guardian_name: '', guardian_relationship: '',
+          primary_signature: '', primary_signature_type: 'typed',
+          witness_name: '', witness_designation: '', witness_signature: '', witness_signature_type: 'typed',
+          notes: '',
+        });
+        setShowDamaDialog(true);
+      }
     } catch (err) {
-      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed to discharge patient';
+      const detail = err.response?.data?.detail;
+      const isGate = err.response?.status === 409 && detail && typeof detail === 'object' && detail.code &&
+        ['outstanding_balance', 'unacknowledged_critical_alerts', 'missing_surgical_consent'].includes(detail.code);
+      const isLoaBlock = err.response?.status === 409 && detail && typeof detail === 'object' && detail.code === 'active_loa';
+      if (isGate) {
+        // Accumulate blockers — the next retry may surface another gate, and
+        // we want all override flags set when the user finally confirms.
+        setDischargeBlockers(prev => prev.some(b => b.code === detail.code) ? prev : [...prev, detail]);
+        // Keep the dialog open so the user can read the blockers and type a reason.
+      } else if (isLoaBlock) {
+        toast({ variant: 'destructive', title: 'Patient is on Leave',
+          description: 'Mark the LOA as returned, no-show, or cancelled before discharging.' });
+      } else {
+        const msg = typeof detail === 'string' ? detail : 'Failed to discharge patient';
+        toast({ variant: 'destructive', title: 'Error', description: msg });
+      }
+    } finally { setLoading(false); }
+  };
+
+  const handleCancelBill = async () => {
+    if (!cancelBillDialog.bill || !cancelBillDialog.reason.trim()) {
+      toast({ variant: 'destructive', title: 'Reason required',
+        description: 'Type why you are cancelling this bill.' });
+      return;
+    }
+    setLoading(true);
+    try {
+      const billId = cancelBillDialog.bill.id;
+      const admId = activityAdmission?.id || dischargeAdmission?.id;
+      const res = await axios.post(
+        `/api/inpatient/admissions/${admId}/bills/${billId}/cancel`,
+        { reason: cancelBillDialog.reason.trim() },
+      );
+      const r = res.data?.released || {};
+      const released = (r.visits || 0) + (r.ot || 0) + (r.ancillary || 0) + (r.prescriptions || 0) + (r.lab_orders || 0);
+      toast({ title: 'Bill cancelled', description: `Released ${released} item(s) for re-billing.` });
+      setCancelBillDialog({ open: false, bill: null, reason: '' });
+      if (admId) {
+        fetchAdmissionBills(admId);
+        // Refresh bill preview if the activity panel is showing it
+        try { await axios.get(`/api/inpatient/admissions/${admId}/bill`); } catch { /* ignore */ }
+      }
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      let msg = 'Failed to cancel bill';
+      if (typeof detail === 'string') msg = detail;
+      else if (detail?.code === 'bill_has_payments') msg = `Cannot cancel — ₹${detail.amount_paid} has been paid. Refund first.`;
+      else if (detail?.message) msg = detail.message;
       toast({ variant: 'destructive', title: 'Error', description: msg });
     } finally { setLoading(false); }
   };
@@ -1310,6 +1699,90 @@ const InpatientModule = () => {
     } catch {
       toast({ variant: 'destructive', title: 'Error', description: 'Failed to delete diet order' });
     }
+  };
+
+  const handleLogMeal = async () => {
+    if (!mealLogDialog.orderId) return;
+    setLoading(true);
+    try {
+      await axios.post(`/api/inpatient/diet-orders/${mealLogDialog.orderId}/meal-log`, {
+        meal_time: mealLogDialog.meal_time,
+        status: mealLogDialog.status,
+        notes: mealLogDialog.notes || null,
+      });
+      toast({ title: 'Meal logged', description: `${mealLogDialog.meal_time}: ${mealLogDialog.status}` });
+      setMealLogDialog({ open: false, orderId: null, meal_time: 'lunch', status: 'served', notes: '' });
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed to log meal';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally { setLoading(false); }
+  };
+
+  const handlePrintKitchenTicket = async () => {
+    const params = { meal_time: kitchenTicketDialog.meal_time, include_header: true };
+    if (kitchenTicketDialog.department.trim()) params.department = kitchenTicketDialog.department.trim();
+    setKitchenTicketDialog({ open: false, meal_time: 'lunch', department: '' });
+    await printPdfFromUrl(`/api/inpatient/diet/kitchen-ticket/pdf`, params);
+  };
+
+  const fetchLoaList = useCallback(async (admissionId) => {
+    if (!admissionId) return;
+    try {
+      const res = await axios.get(`/api/inpatient/admissions/${admissionId}/loa`);
+      setLoaList(res.data || []);
+    } catch { setLoaList([]); }
+  }, []);
+
+  const openLoaDialog = (admission) => {
+    const nowLocal = new Date().toISOString().slice(0, 16);
+    const tomorrowLocal = new Date(Date.now() + 24 * 3600 * 1000).toISOString().slice(0, 16);
+    setLoaDialog({
+      open: true, admissionId: admission.id,
+      start_datetime: nowLocal,
+      expected_return_datetime: tomorrowLocal,
+      reason: '',
+      approved_by_doctor_id: admission.admitting_doctor_id || '',
+      notes: '', bed_held: true,
+    });
+    fetchLoaList(admission.id);
+  };
+
+  const handleCreateLoa = async () => {
+    if (!loaDialog.reason.trim() || !loaDialog.approved_by_doctor_id) {
+      toast({ variant: 'destructive', title: 'Missing fields',
+        description: 'Reason and approving doctor are required.' });
+      return;
+    }
+    setLoading(true);
+    try {
+      await axios.post(`/api/inpatient/admissions/${loaDialog.admissionId}/loa`, {
+        start_datetime: new Date(loaDialog.start_datetime).toISOString(),
+        expected_return_datetime: new Date(loaDialog.expected_return_datetime).toISOString(),
+        reason: loaDialog.reason.trim(),
+        approved_by_doctor_id: parseInt(loaDialog.approved_by_doctor_id, 10),
+        notes: loaDialog.notes || null,
+        bed_held: !!loaDialog.bed_held,
+      });
+      toast({ title: 'LOA started' });
+      fetchLoaList(loaDialog.admissionId);
+      fetchAdmissions('admitted');
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed to start LOA';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally { setLoading(false); }
+  };
+
+  const handleLoaAction = async (loaId, action) => {
+    setLoading(true);
+    try {
+      await axios.patch(`/api/inpatient/loa/${loaId}/${action}`, action === 'return' ? {} : undefined);
+      toast({ title: action === 'return' ? 'Patient marked returned' :
+        action === 'cancel' ? 'LOA cancelled' : 'LOA marked as no-show' });
+      if (loaDialog.admissionId) fetchLoaList(loaDialog.admissionId);
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Error',
+        description: err.response?.data?.detail || 'Failed' });
+    } finally { setLoading(false); }
   };
 
   // Vitals
@@ -1918,7 +2391,7 @@ const InpatientModule = () => {
     if (reservationPatientSearch.length < 2) { setReservationPatientResults([]); return; }
     const t = setTimeout(async () => {
       try {
-        const res = await axios.get('/api/patients', { params: { search: reservationPatientSearch } });
+        const res = await axios.get('/api/patients/', { params: { search: reservationPatientSearch } });
         setReservationPatientResults(res.data.patients || res.data || []);
       } catch { setReservationPatientResults([]); }
     }, 300);
@@ -2111,6 +2584,116 @@ const InpatientModule = () => {
     await printPdfFromUrl(`/api/inpatient/admissions/${admissionId}/death-certificate/pdf`, { include_header: true });
   };
 
+  // ---- Body release / mortuary tracking ----
+  const openBodyRelease = async (admissionId) => {
+    setBodyReleaseAdmId(admissionId);
+    try {
+      const r = await axios.get(`/api/inpatient/admissions/${admissionId}/body-release`);
+      const d = r.data || {};
+      setBodyReleaseRec(d);
+      const fmt = (v) => v ? new Date(v).toISOString().slice(0, 16) : '';
+      setBodyReleaseTrack({
+        mortuary_slot: d.mortuary_slot || '',
+        body_in_mortuary_at: fmt(d.body_in_mortuary_at),
+        body_out_mortuary_at: fmt(d.body_out_mortuary_at),
+        embalming_done: !!d.embalming_done, embalming_at: fmt(d.embalming_at),
+        embalmed_by: d.embalmed_by || '',
+        post_mortem_required: !!d.post_mortem_required,
+        pm_hospital: d.pm_hospital || '', pm_doctor: d.pm_doctor || '',
+        pm_referred_at: fmt(d.pm_referred_at), pm_completed_at: fmt(d.pm_completed_at),
+        pm_report_received: !!d.pm_report_received, pm_report_number: d.pm_report_number || '',
+        police_noc_required: !!d.police_noc_required, police_noc_received: !!d.police_noc_received,
+        police_noc_number: d.police_noc_number || '',
+        police_noc_received_at: fmt(d.police_noc_received_at),
+        notes: d.notes || '',
+      });
+      setBodyReleaseAction({
+        released_to_name: d.released_to_name || '', released_to_relationship: d.released_to_relationship || '',
+        released_to_phone: d.released_to_phone || '',
+        released_to_id_proof_type: d.released_to_id_proof_type || 'aadhar',
+        released_to_id_proof_number: d.released_to_id_proof_number || '',
+        released_to_address: d.released_to_address || '',
+        witness_name: d.witness_name || '', witness_phone: d.witness_phone || '',
+        witness_id_proof: d.witness_id_proof || '',
+        transport_details: d.transport_details || '', notes: '',
+        force_missing_noc: false, force_missing_pm: false, override_reason: '',
+      });
+      setShowBodyReleaseDialog(true);
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Error',
+        description: typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed to load body release record' });
+    }
+  };
+
+  const saveBodyReleaseTracking = async () => {
+    try {
+      const r = await axios.put(`/api/inpatient/admissions/${bodyReleaseAdmId}/body-release`, bodyReleaseTrack);
+      setBodyReleaseRec(r.data);
+      toast({ title: 'Saved', description: 'Mortuary tracking updated.' });
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Error',
+        description: typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Save failed' });
+    }
+  };
+
+  const performBodyRelease = async () => {
+    if (!bodyReleaseAction.released_to_name?.trim() || !bodyReleaseAction.released_to_relationship?.trim()
+        || !bodyReleaseAction.released_to_id_proof_number?.trim() || !bodyReleaseAction.witness_name?.trim()) {
+      toast({ variant: 'destructive', title: 'Missing required fields',
+        description: 'Releasee name, relationship, ID proof number, and witness name are required.' });
+      return;
+    }
+    try {
+      const r = await axios.post(`/api/inpatient/admissions/${bodyReleaseAdmId}/body-release/release`, bodyReleaseAction);
+      setBodyReleaseRec(r.data);
+      toast({ title: 'Body released', description: 'Handover recorded — print the form for the family.' });
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      const msg = typeof detail === 'string' ? detail : (detail?.message || 'Release failed');
+      toast({ variant: 'destructive', title: 'Cannot release', description: msg });
+    }
+  };
+
+  const printBodyRelease = (admissionId) => {
+    printPdfFromUrl(`/api/inpatient/admissions/${admissionId}/body-release/pdf`, { include_header: true });
+  };
+
+  const handleSaveDama = async (e) => {
+    e.preventDefault();
+    if (!damaForm.patient_acknowledges_advice || !damaForm.patient_absolves_hospital) {
+      toast({ variant: 'destructive', title: 'Acknowledgements required',
+        description: 'Both checkboxes must be ticked for the form to have legal weight.' });
+      return;
+    }
+    if (damaForm.signed_by === 'guardian' && !damaForm.guardian_name?.trim()) {
+      toast({ variant: 'destructive', title: 'Guardian name required' });
+      return;
+    }
+    setLoading(true);
+    try {
+      const payload = { ...damaForm };
+      if (!payload.attending_doctor_id) delete payload.attending_doctor_id;
+      else payload.attending_doctor_id = parseInt(payload.attending_doctor_id, 10);
+      await axios.post(`/api/inpatient/admissions/${damaAdmission.id}/dama`, payload);
+      toast({ title: 'DAMA form saved' });
+      setShowDamaDialog(false);
+      const admId = damaAdmission.id;
+      setDamaAdmission(null);
+      // Offer to print the signed PDF immediately
+      setTimeout(() => {
+        printPdfFromUrl(`/api/inpatient/admissions/${admId}/dama/pdf`, { include_header: true });
+      }, 200);
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      toast({ variant: 'destructive', title: 'Error',
+        description: typeof detail === 'string' ? detail : 'Failed to save DAMA form' });
+    } finally { setLoading(false); }
+  };
+
+  const handlePrintDama = async (admissionId) => {
+    await printPdfFromUrl(`/api/inpatient/admissions/${admissionId}/dama/pdf`, { include_header: true });
+  };
+
   // ICU: I/O record
   const handleRecordIO = async (e) => {
     e.preventDefault();
@@ -2266,7 +2849,7 @@ const InpatientModule = () => {
     if (preauthPatientSearch.length < 2) { setPreauthPatientResults([]); return; }
     const t = setTimeout(async () => {
       try {
-        const res = await axios.get('/api/patients', { params: { search: preauthPatientSearch } });
+        const res = await axios.get('/api/patients/', { params: { search: preauthPatientSearch } });
         setPreauthPatientResults(res.data.patients || res.data || []);
       } catch { setPreauthPatientResults([]); }
     }, 300);
@@ -2399,14 +2982,23 @@ const InpatientModule = () => {
         {/* Quick Actions Bar */}
         <div className="border-b bg-white px-6 py-3 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2">
-            <Button size="sm" onClick={() => { resetAdmissionForm(); fetchAvailableRooms(); setShowAdmissionDialog(true); }}>
-              <Plus className="h-4 w-4 mr-1" /> Admit Patient
-            </Button>
-            <Button size="sm" variant="outline" onClick={() => setShowOTDialog(true)}>
-              <Scissors className="h-4 w-4 mr-1" /> Schedule OT
-            </Button>
-            {activityAdmission && (
-              <Button size="sm" variant="outline" onClick={() => { setVisitForm({ visit_type: 'doctor_visit', visitor_id: '', notes: '' }); setShowVisitDialog(true); }}>
+            {ip('admit_patients') && (
+              <Button size="sm" onClick={() => { resetAdmissionForm(); fetchAvailableRooms(); setShowAdmissionDialog(true); }}>
+                <Plus className="h-4 w-4 mr-1" /> Admit Patient
+              </Button>
+            )}
+            {ip('admit_patients') && (
+              <Button size="sm" variant="destructive" onClick={() => { fetchAvailableRooms(); setShowQuickAdmitDialog(true); }}>
+                <Plus className="h-4 w-4 mr-1" /> Emergency Admit
+              </Button>
+            )}
+            {ip('schedule_ot') && (
+              <Button size="sm" variant="outline" onClick={() => setShowOTDialog(true)}>
+                <Scissors className="h-4 w-4 mr-1" /> Schedule OT
+              </Button>
+            )}
+            {activityAdmission && ip('record_visits') && (
+              <Button size="sm" variant="outline" onClick={() => { setVisitForm({ visit_type: defaultVisitType, visitor_id: '', notes: '', vitals_reviewed: false, labs_reviewed: false, pain_assessed: false, mobility_checked: false, plan_for_today: '', family_updated: false }); setShowVisitDialog(true); }}>
                 <Stethoscope className="h-4 w-4 mr-1" /> New Visit
               </Button>
             )}
@@ -2429,6 +3021,12 @@ const InpatientModule = () => {
           {/* ============ WARD OVERVIEW ============ */}
           {activeTab === 'dashboard' && (
             <div className="p-6 overflow-y-auto h-full space-y-4">
+          <div className="flex justify-end">
+            <Button size="sm" variant="outline"
+              onClick={() => printPdfFromUrl('/api/inpatient/reports/census/pdf', { include_header: true })}>
+              <Printer className="h-4 w-4 mr-1" /> Print daily census
+            </Button>
+          </div>
           {dashboardData ? (
             <>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -2569,6 +3167,32 @@ const InpatientModule = () => {
                                     <RotateCcw className="h-3 w-3 mr-0.5" /> Readmit
                                   </Badge>
                                 )}
+                                {adm.admission_type === 'emergency' && (
+                                  <Badge className="text-xs bg-red-100 text-red-800" title={adm.chief_complaint || 'Emergency admission'}>
+                                    ER{adm.triage_level ? ` T${adm.triage_level}` : ''}
+                                  </Badge>
+                                )}
+                                {adm.is_mlc && (
+                                  <Badge className="text-xs bg-yellow-200 text-yellow-900" title={`MLC: ${adm.mlc_type || ''} ${adm.mlc_number ? '#' + adm.mlc_number : ''}`}
+                                    onClick={(e) => { e.stopPropagation(); printPdfFromUrl(`/api/inpatient/admissions/${adm.id}/mlc/pdf`, `MLC_${adm.admission_number}.pdf`); }}>
+                                    MLC
+                                  </Badge>
+                                )}
+                                {adm.is_observation && (
+                                  <Badge className="text-xs bg-blue-100 text-blue-800" title="Observation case — room rent skipped">
+                                    Obs
+                                  </Badge>
+                                )}
+                                {adm.deposit_waived && (
+                                  <Badge className="text-xs bg-amber-100 text-amber-800" title={`Deposit waived: ${adm.deposit_waiver_reason || ''}`}>
+                                    Waiver
+                                  </Badge>
+                                )}
+                                {adm.registration_complete === false && (
+                                  <Badge className="text-xs bg-orange-100 text-orange-800" title="Patient KYC pending — complete registration">
+                                    KYC Pending
+                                  </Badge>
+                                )}
                               </div>
                               <div className="text-xs text-gray-500">{adm.admission_number}</div>
                             </td>
@@ -2578,7 +3202,7 @@ const InpatientModule = () => {
                             <td className="py-2 text-sm">{daysSince(adm.admission_date)}</td>
                             <td className="py-2">
                               <div className="flex gap-1" onClick={e => e.stopPropagation()}>
-                                {adm.status === 'admitted' && (
+                                {adm.status === 'admitted' && ip('discharge_patients') && (
                                   <Button variant="ghost" size="sm" className="text-red-500" onClick={() => openDischargeDialog(adm)} title="Discharge">
                                     <ChevronRight className="h-4 w-4" />
                                   </Button>
@@ -2634,7 +3258,16 @@ const InpatientModule = () => {
                     </div>
                     <div className="flex items-center gap-2">
                       {activityAdmission.status === 'admitted' && (
-                        <Button size="sm" variant="outline" className="text-red-600" onClick={() => openDischargeDialog(activityAdmission)}>Discharge</Button>
+                        <>
+                          {ip('update_admission') && (
+                            <Button size="sm" variant="outline" onClick={() => openLoaDialog(activityAdmission)}>
+                              <CalendarRange className="h-4 w-4 mr-1" /> Leave
+                            </Button>
+                          )}
+                          {ip('discharge_patients') && (
+                            <Button size="sm" variant="outline" className="text-red-600" onClick={() => openDischargeDialog(activityAdmission)}>Discharge</Button>
+                          )}
+                        </>
                       )}
                       <Button variant="ghost" size="sm" onClick={() => setActivityAdmission(null)}><X className="h-4 w-4" /></Button>
                     </div>
@@ -2715,11 +3348,13 @@ const InpatientModule = () => {
                           { v: 'lab', l: 'Lab' },
                           { v: 'medications', l: 'Meds' },
                         ]},
-                        billing: { label: 'Billing', tabs: [
-                          { v: 'bill', l: 'Bill' },
-                          { v: 'deposits', l: 'Deposits' },
-                          { v: 'insurance', l: 'Insurance' },
-                        ]},
+                        ...(canViewBilling ? {
+                          billing: { label: 'Billing', tabs: [
+                            { v: 'bill', l: 'Bill' },
+                            { v: 'deposits', l: 'Deposits' },
+                            { v: 'insurance', l: 'Insurance' },
+                          ]},
+                        } : {}),
                         operations: { label: 'Operations', tabs: [
                           { v: 'staff', l: 'Staff' },
                           { v: 'docs', l: 'Docs' },
@@ -2756,7 +3391,7 @@ const InpatientModule = () => {
 
                       {/* Visits sub-tab */}
                       <TabsContent value="visits" className="space-y-3 mt-3">
-                        <Button size="sm" onClick={() => { setVisitForm({ visit_type: 'doctor_visit', visitor_id: '', notes: '' }); setShowVisitDialog(true); }}>
+                        <Button size="sm" onClick={() => { setVisitForm({ visit_type: defaultVisitType, visitor_id: '', notes: '', vitals_reviewed: false, labs_reviewed: false, pain_assessed: false, mobility_checked: false, plan_for_today: '', family_updated: false }); setShowVisitDialog(true); }}>
                           <Plus className="h-4 w-4 mr-1" /> Add Visit
                         </Button>
                         {visits.length === 0 ? (
@@ -2855,12 +3490,17 @@ const InpatientModule = () => {
 
                       {/* Diet sub-tab */}
                       <TabsContent value="diet" className="space-y-3 mt-3">
-                        <Button size="sm" onClick={() => {
-                          setDietForm({ diet_type: 'regular', meal_instructions: '', allergies: '', notes: '' });
-                          setShowDietDialog(true);
-                        }}>
-                          <Plus className="h-4 w-4 mr-1" /> New Diet Order
-                        </Button>
+                        <div className="flex items-center gap-2">
+                          <Button size="sm" onClick={() => {
+                            setDietForm({ diet_type: 'regular', meal_instructions: '', allergies: '', notes: '' });
+                            setShowDietDialog(true);
+                          }}>
+                            <Plus className="h-4 w-4 mr-1" /> New Diet Order
+                          </Button>
+                          <Button size="sm" variant="outline" onClick={() => setKitchenTicketDialog({ open: true, meal_time: 'lunch', department: '' })}>
+                            <Printer className="h-4 w-4 mr-1" /> Kitchen Ticket
+                          </Button>
+                        </div>
                         {dietOrders.length === 0 ? (
                           <p className="text-sm text-gray-500 text-center py-4">No diet orders.</p>
                         ) : (
@@ -2876,6 +3516,12 @@ const InpatientModule = () => {
                                     <span className="text-gray-500 text-xs">by {d.ordered_by_name || 'N/A'}</span>
                                   </div>
                                   <div className="flex items-center gap-1">
+                                    {d.is_active && (
+                                      <Button variant="outline" size="sm" className="h-6 text-xs px-2"
+                                        onClick={() => setMealLogDialog({ open: true, orderId: d.id, meal_time: 'lunch', status: 'served', notes: '' })}>
+                                        Log meal
+                                      </Button>
+                                    )}
                                     <Button variant="ghost" size="sm" className="h-6 text-xs px-2"
                                       onClick={() => handleToggleDietOrder(d.id, d.is_active)}>
                                       {d.is_active ? 'Deactivate' : 'Reactivate'}
@@ -2899,9 +3545,11 @@ const InpatientModule = () => {
 
                       {/* Lab Orders sub-tab */}
                       <TabsContent value="lab" className="space-y-3 mt-3">
-                        <Button size="sm" onClick={() => { setLabOrderForm({ test_ids: [], priority: 'normal', notes: '' }); setLabTestSearch(''); fetchAvailableLabTests(activityAdmission.id); setShowLabOrderDialog(true); }}>
-                          <Plus className="h-4 w-4 mr-1" /> Order Lab Tests
-                        </Button>
+                        {ip('order_labs') && (
+                          <Button size="sm" onClick={() => { setLabOrderForm({ test_ids: [], priority: 'normal', notes: '' }); setLabTestSearch(''); fetchAvailableLabTests(activityAdmission.id); setShowLabOrderDialog(true); }}>
+                            <Plus className="h-4 w-4 mr-1" /> Order Lab Tests
+                          </Button>
+                        )}
                         {admissionLabOrders.length === 0 ? (
                           <p className="text-sm text-gray-500 text-center py-4">No lab orders for this admission.</p>
                         ) : (
@@ -2941,6 +3589,17 @@ const InpatientModule = () => {
 
                       {/* Medications sub-tab */}
                       <TabsContent value="medications" className="space-y-3 mt-3">
+                        {ip('prescribe_medications') && (
+                          <div className="flex justify-end">
+                            <Button size="sm" onClick={() => {
+                              setPrescriptionForm({ notes: '', items: [{ ...BLANK_RX_ITEM }] });
+                              setMedicineSearchResults([]);
+                              setShowPrescriptionDialog(true);
+                            }}>
+                              <Plus className="h-4 w-4 mr-1" /> Add Prescription
+                            </Button>
+                          </div>
+                        )}
                         {admissionMedications.length === 0 ? (
                           <p className="text-sm text-gray-500 text-center py-4">No prescriptions linked to this admission.</p>
                         ) : (
@@ -3008,11 +3667,18 @@ const InpatientModule = () => {
                                       <div>
                                         <span className="font-mono">{b.bill_number}</span>
                                         <Badge variant="outline" className="ml-2 text-xs">{b.bill_subtype}</Badge>
+                                        {b.status === 'cancelled' && <Badge variant="destructive" className="ml-1 text-xs">cancelled</Badge>}
                                         <span className="text-gray-500 ml-2">{b.bill_date && new Date(b.bill_date).toLocaleDateString()}</span>
                                       </div>
                                       <div className="flex items-center gap-2">
-                                        <span className="font-semibold">₹{b.total_amount.toFixed(2)}</span>
-                                        <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => openSplitDialog(b)}>Split</Button>
+                                        <span className={`font-semibold ${b.status === 'cancelled' ? 'line-through text-gray-400' : ''}`}>₹{b.total_amount.toFixed(2)}</span>
+                                        {b.status !== 'cancelled' && (
+                                          <>
+                                            <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => openSplitDialog(b)}>Split</Button>
+                                            <Button variant="ghost" size="sm" className="h-6 px-2 text-xs text-red-600 hover:text-red-700"
+                                              onClick={() => setCancelBillDialog({ open: true, bill: b, reason: '' })}>Cancel</Button>
+                                          </>
+                                        )}
                                       </div>
                                     </div>
                                   ))}
@@ -3069,11 +3735,13 @@ const InpatientModule = () => {
                               )}
                             </div>
 
-                            <div className="flex gap-2 flex-wrap">
-                              <Button size="sm" variant="outline" onClick={() => { setAncillaryForm({ service_id: '', quantity: 1, unit_price: '', notes: '' }); setShowAncillaryDialog(true); }}>
-                                <Plus className="h-4 w-4 mr-1" /> Add Service Charge
-                              </Button>
-                            </div>
+                            {ip('manage_ancillary_charges') && (
+                              <div className="flex gap-2 flex-wrap">
+                                <Button size="sm" variant="outline" onClick={() => { setAncillaryForm({ service_id: '', quantity: 1, unit_price: '', notes: '' }); setShowAncillaryDialog(true); }}>
+                                  <Plus className="h-4 w-4 mr-1" /> Add Service Charge
+                                </Button>
+                              </div>
+                            )}
 
                             {/* Discount & Tax */}
                             <div className="border rounded-lg p-3 text-sm space-y-3">
@@ -3118,12 +3786,16 @@ const InpatientModule = () => {
                             </div>
 
                             <div className="flex gap-2 flex-wrap">
-                              <Button size="sm" onClick={handleFinalizeBill} disabled={loading}>
-                                {loading ? 'Finalizing...' : 'Finalize Bill'}
-                              </Button>
-                              <Button size="sm" variant="outline" onClick={handleGenerateInterim} disabled={loading}>
-                                <Receipt className="h-4 w-4 mr-1" /> Generate Interim
-                              </Button>
+                              {ip('finalize_bill') && (
+                                <Button size="sm" onClick={handleFinalizeBill} disabled={loading}>
+                                  {loading ? 'Finalizing...' : 'Finalize Bill'}
+                                </Button>
+                              )}
+                              {ip('generate_interim_bill') && (
+                                <Button size="sm" variant="outline" onClick={handleGenerateInterim} disabled={loading}>
+                                  <Receipt className="h-4 w-4 mr-1" /> Generate Interim
+                                </Button>
+                              )}
                               <Button size="sm" variant="outline" onClick={() => handlePrintBillPdf(activityAdmission.id)}>
                                 <FileText className="h-4 w-4 mr-1" /> Print Bill
                               </Button>
@@ -3154,10 +3826,12 @@ const InpatientModule = () => {
                           </div>
                         )}
                         <div className="flex gap-2">
-                          <Button size="sm" onClick={() => { setDepositForm({ amount: '', payment_method: 'cash', deposit_type: deposits.length === 0 ? 'initial' : 'topup', reference_number: '', notes: '' }); setShowDepositDialog(true); }}>
-                            <Plus className="h-4 w-4 mr-1" /> Receive Deposit
-                          </Button>
-                          {balance && balance.balance > 0 && (
+                          {ip('receive_deposits') && (
+                            <Button size="sm" onClick={() => { setDepositForm({ amount: '', payment_method: 'cash', deposit_type: deposits.length === 0 ? 'initial' : 'topup', reference_number: '', notes: '' }); setShowDepositDialog(true); }}>
+                              <Plus className="h-4 w-4 mr-1" /> Receive Deposit
+                            </Button>
+                          )}
+                          {balance && balance.balance > 0 && ip('issue_refunds') && (
                             <Button size="sm" variant="outline" onClick={() => { setRefundForm({ amount: balance.balance.toFixed(2), payment_method: 'cash', reference_number: '', notes: '' }); setShowRefundDialog(true); }}>
                               <Wallet className="h-4 w-4 mr-1" /> Issue Refund
                             </Button>
@@ -3260,9 +3934,11 @@ const InpatientModule = () => {
                         <div>
                           <div className="flex justify-between items-center mb-2">
                             <h3 className="text-sm font-semibold flex items-center gap-1.5"><UserPlus className="h-4 w-4" /> Nurse Assignments</h3>
-                            <Button size="sm" onClick={() => { setNurseAssignForm({ nurse_id: '', shift: 'morning', assignment_date: new Date().toISOString().slice(0, 10), is_primary: false, notes: '' }); setShowNurseAssignDialog(true); }}>
-                              <Plus className="h-4 w-4 mr-1" /> Assign Nurse
-                            </Button>
+                            {ip('assign_nurses') && (
+                              <Button size="sm" onClick={() => { setNurseAssignForm({ nurse_id: '', shift: 'morning', assignment_date: new Date().toISOString().slice(0, 10), is_primary: false, notes: '' }); setShowNurseAssignDialog(true); }}>
+                                <Plus className="h-4 w-4 mr-1" /> Assign Nurse
+                              </Button>
+                            )}
                           </div>
                           {nurseAssignments.length === 0 ? (
                             <div className="text-xs text-gray-500 text-center py-4 border rounded">No nurses assigned</div>
@@ -3290,9 +3966,11 @@ const InpatientModule = () => {
                         <div>
                           <div className="flex justify-between items-center mb-2">
                             <h3 className="text-sm font-semibold flex items-center gap-1.5"><ArrowRightLeft className="h-4 w-4" /> Bed / Ward Transfers</h3>
-                            <Button size="sm" variant="outline" onClick={() => { setWardTransferForm({ to_room_id: '', to_bed_id: '', reason: '', transfer_note: '' }); fetchAvailableRooms(); setShowWardTransferDialog(true); }}>
-                              <Plus className="h-4 w-4 mr-1" /> Initiate Ward Transfer
-                            </Button>
+                            {ip('initiate_ward_transfer') && (
+                              <Button size="sm" variant="outline" onClick={() => { setWardTransferForm({ to_room_id: '', to_bed_id: '', reason: '', transfer_note: '' }); fetchAvailableRooms(); setShowWardTransferDialog(true); }}>
+                                <Plus className="h-4 w-4 mr-1" /> Initiate Ward Transfer
+                              </Button>
+                            )}
                           </div>
                           {transferHistory.length === 0 ? (
                             <div className="text-xs text-gray-500 text-center py-4 border rounded">No transfers recorded</div>
@@ -3858,6 +4536,85 @@ const InpatientModule = () => {
           </div>
           )}
 
+          {/* ============ TRIAGE QUEUE ============ */}
+          {activeTab === 'triage' && (
+            <div className="p-6 overflow-y-auto h-full space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-xl font-semibold">ER Triage Queue</h2>
+                  <p className="text-sm text-gray-500">Active emergency admissions, sorted by triage acuity then arrival time.</p>
+                </div>
+                <Button size="sm" variant="outline" onClick={fetchTriageQueue}>
+                  <RotateCcw className="h-4 w-4 mr-1" /> Refresh
+                </Button>
+              </div>
+
+              {triageLoading ? (
+                <div className="text-center py-12 text-gray-400">Loading…</div>
+              ) : triageQueue.length === 0 ? (
+                <div className="text-center py-12 text-gray-400 border rounded">
+                  No active emergency admissions.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {triageQueue.map(p => {
+                    const tColor = {
+                      1: 'bg-red-600 text-white',
+                      2: 'bg-orange-500 text-white',
+                      3: 'bg-amber-400 text-black',
+                      4: 'bg-green-400 text-black',
+                      5: 'bg-blue-300 text-black',
+                    }[p.triage_level] || 'bg-gray-200 text-gray-700';
+                    const elapsed = p.elapsed_minutes;
+                    const elapsedStr = elapsed != null
+                      ? (elapsed < 60 ? `${elapsed}m` : `${Math.floor(elapsed / 60)}h ${elapsed % 60}m`)
+                      : '—';
+                    const slowThresh = {1: 5, 2: 15, 3: 30, 4: 60, 5: 120}[p.triage_level] || 60;
+                    const slow = elapsed != null && p.triage_level && elapsed > slowThresh;
+                    return (
+                      <Card key={p.id} className={`${slow ? 'border-red-400' : ''} hover:shadow cursor-pointer`}
+                        onClick={() => { setActiveTab('admissions'); setActivityAdmission(p); }}>
+                        <CardContent className="p-3">
+                          <div className="flex items-center gap-3">
+                            <div className={`w-12 h-12 rounded ${tColor} flex flex-col items-center justify-center font-bold`}>
+                              <span className="text-lg leading-none">T{p.triage_level || '?'}</span>
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-medium">{p.patient_name || '—'}</span>
+                                <span className="text-xs text-gray-500">{p.admission_number}</span>
+                                {p.is_mlc && <Badge className="bg-yellow-200 text-yellow-900 text-[10px]">MLC{p.mlc_type ? ' · ' + p.mlc_type : ''}</Badge>}
+                                {p.is_observation && <Badge className="bg-blue-100 text-blue-800 text-[10px]">Obs</Badge>}
+                                {p.deposit_waived && <Badge className="bg-amber-100 text-amber-800 text-[10px]">Waiver</Badge>}
+                                {p.registration_complete === false && <Badge className="bg-orange-100 text-orange-800 text-[10px]">KYC Pending</Badge>}
+                              </div>
+                              <p className="text-xs text-gray-600 truncate">{p.chief_complaint || p.admission_reason || 'No complaint recorded'}</p>
+                              <p className="text-[11px] text-gray-400">
+                                Arrival: {p.arrival_mode ? p.arrival_mode.replace('_', ' ') : '—'}
+                                {' · '}{p.room_number || 'no room'} {(p.bed_label || p.bed_number) ? `/ ${p.bed_label || p.bed_number}` : ''}
+                                {' · '}Dr. {p.doctor_name || '—'}
+                              </p>
+                            </div>
+                            <div className="text-right">
+                              <div className={`text-sm font-semibold ${slow ? 'text-red-600' : 'text-gray-700'}`}>{elapsedStr}</div>
+                              <div className="text-[10px] text-gray-400">in dept</div>
+                              {p.is_mlc && (
+                                <Button size="sm" variant="outline" className="mt-1 h-6 text-[10px] px-2"
+                                  onClick={(e) => { e.stopPropagation(); printPdfFromUrl(`/api/inpatient/admissions/${p.id}/mlc/pdf`, `MLC_${p.admission_number}.pdf`); }}>
+                                  <Printer className="h-3 w-3 mr-1" /> MLC
+                                </Button>
+                              )}
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* ============ DISCHARGE HISTORY ============ */}
           {activeTab === 'discharge' && (
             <div className="p-6 overflow-y-auto h-full space-y-4">
@@ -4372,12 +5129,14 @@ const InpatientModule = () => {
                             <p className="text-xs text-gray-400 mt-1">Created by {r.reserved_by_name || '—'}</p>
                           </div>
                           <div className="flex gap-1">
-                            {r.patient_id && (
+                            {r.patient_id && ip('admit_patients') && (
                               <Button size="sm" variant="outline" onClick={() => { setConvertingReservation(r); setConvertForm({ admitting_doctor_id: '', admission_type: 'elective', admission_reason: '', condition_on_admission: 'stable' }); setShowConvertReservationDialog(true); }}>Convert to Admission</Button>
                             )}
-                            <Button size="sm" variant="ghost" onClick={() => setConfirmState({ open: true, title: 'Cancel reservation?', description: 'This cannot be undone.', onConfirm: () => { setConfirmState({ open: false }); handleCancelReservation(r.id); } })}>
-                              <X className="h-4 w-4 text-red-500" />
-                            </Button>
+                            {ip('manage_reservations') && (
+                              <Button size="sm" variant="ghost" onClick={() => setConfirmState({ open: true, title: 'Cancel reservation?', description: 'This cannot be undone.', onConfirm: () => { setConfirmState({ open: false }); handleCancelReservation(r.id); } })}>
+                                <X className="h-4 w-4 text-red-500" />
+                              </Button>
+                            )}
                           </div>
                         </div>
                       </CardContent>
@@ -4563,8 +5322,11 @@ const InpatientModule = () => {
                                 {m.death_certificate_number && <Badge variant="outline" className="text-xs">Cert #{m.death_certificate_number}</Badge>}
                               </div>
                             </div>
-                            <div className="flex gap-1">
+                            <div className="flex gap-1 flex-wrap justify-end">
                               <Button size="sm" variant="outline" onClick={() => openMortalityDialog({ id: m.admission_id, discharge: m })}>Edit Details</Button>
+                              <Button size="sm" variant="outline" onClick={() => openBodyRelease(m.admission_id)}>
+                                Body Release
+                              </Button>
                               <Button size="sm" variant="ghost" onClick={() => handlePrintDeathCertificate(m.admission_id)}>
                                 <FileText className="h-4 w-4 mr-1" /> Certificate
                               </Button>
@@ -4576,6 +5338,257 @@ const InpatientModule = () => {
                   </div>
                 )}
               </div>
+            </div>
+          )}
+
+          {/* ============ MANAGEMENT REPORTS ============ */}
+          {activeTab === 'reports' && (
+            <div className="p-6 overflow-y-auto h-full space-y-4">
+              <h2 className="text-lg font-semibold">Management Reports</h2>
+              <Tabs value={reportSubTab} onValueChange={(v) => {
+                setReportSubTab(v);
+                if (v === 'outcomes') fetchMonthlyOutcomes(outcomesMonth);
+                if (v === 'productivity') fetchDoctorProductivity(productivityRange);
+              }}>
+                <TabsList>
+                  <TabsTrigger value="outcomes">Monthly Outcomes</TabsTrigger>
+                  <TabsTrigger value="productivity">Doctor Productivity</TabsTrigger>
+                </TabsList>
+
+                {/* ----- E2: Monthly outcomes ----- */}
+                <TabsContent value="outcomes" className="space-y-4 mt-4">
+                  <div className="flex items-end gap-3 flex-wrap">
+                    <div>
+                      <Label className="text-xs">Month</Label>
+                      <Input type="month" value={outcomesMonth}
+                        onChange={e => setOutcomesMonth(e.target.value)} />
+                    </div>
+                    <Button size="sm" onClick={() => fetchMonthlyOutcomes(outcomesMonth)}>
+                      Refresh
+                    </Button>
+                    <Button size="sm" variant="outline"
+                      onClick={() => printPdfFromUrl('/api/inpatient/reports/monthly-outcomes/pdf',
+                        { month: outcomesMonth, include_header: true })}>
+                      <Printer className="h-4 w-4 mr-1" /> Print PDF
+                    </Button>
+                    {outcomesData && (
+                      <span className="text-xs text-gray-500 ml-auto">Window: {outcomesData.month}</span>
+                    )}
+                  </div>
+
+                  {!outcomesData ? (
+                    <p className="text-sm text-gray-500">Loading…</p>
+                  ) : (
+                    <>
+                      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
+                        {[
+                          ['Admissions', outcomesData.totals.admissions],
+                          ['Discharges', outcomesData.totals.discharges],
+                          ['Deaths', outcomesData.totals.deaths],
+                          ['Mortality %', `${outcomesData.totals.mortality_rate_pct}%`],
+                          ['Readmissions', outcomesData.totals.readmissions],
+                          ['Readmit %', `${outcomesData.totals.readmission_rate_pct}%`],
+                          ['Avg occupancy', `${outcomesData.totals.average_occupancy_pct}%`],
+                        ].map(([label, val]) => (
+                          <Card key={label}>
+                            <CardContent className="pt-4">
+                              <p className="text-xs text-gray-500">{label}</p>
+                              <p className="text-xl font-bold">{val}</p>
+                            </CardContent>
+                          </Card>
+                        ))}
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <Card>
+                          <CardContent className="pt-4">
+                            <p className="font-semibold mb-2">Mortality — by department</p>
+                            {Object.keys(outcomesData.mortality.by_department).length === 0 ? (
+                              <p className="text-xs text-gray-400">No deaths in this window.</p>
+                            ) : (
+                              <table className="w-full text-sm">
+                                <tbody>
+                                  {Object.entries(outcomesData.mortality.by_department).map(([k, v]) => (
+                                    <tr key={k} className="border-b last:border-0">
+                                      <td className="py-1">{k}</td>
+                                      <td className="py-1 text-right font-medium">{v}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            )}
+                            <p className="text-xs text-gray-500 mt-2">
+                              MLC: {outcomesData.mortality.mlc_count} · Autopsy: {outcomesData.mortality.autopsy_count}
+                            </p>
+                          </CardContent>
+                        </Card>
+                        <Card>
+                          <CardContent className="pt-4">
+                            <p className="font-semibold mb-2">Mortality — top diagnoses</p>
+                            {Object.keys(outcomesData.mortality.by_diagnosis_top10).length === 0 ? (
+                              <p className="text-xs text-gray-400">—</p>
+                            ) : (
+                              <table className="w-full text-sm">
+                                <tbody>
+                                  {Object.entries(outcomesData.mortality.by_diagnosis_top10).map(([k, v]) => (
+                                    <tr key={k} className="border-b last:border-0">
+                                      <td className="py-1 truncate max-w-md">{k}</td>
+                                      <td className="py-1 text-right font-medium">{v}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            )}
+                          </CardContent>
+                        </Card>
+                        <Card>
+                          <CardContent className="pt-4">
+                            <p className="font-semibold mb-2">Readmissions — by days since discharge</p>
+                            <table className="w-full text-sm">
+                              <tbody>
+                                {Object.entries(outcomesData.readmissions.by_window_days).map(([k, v]) => (
+                                  <tr key={k} className="border-b last:border-0">
+                                    <td className="py-1">{k} days</td>
+                                    <td className="py-1 text-right font-medium">{v}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </CardContent>
+                        </Card>
+                        <Card>
+                          <CardContent className="pt-4">
+                            <p className="font-semibold mb-2">Length of stay (days)</p>
+                            <table className="w-full text-sm">
+                              <thead className="text-xs text-gray-500">
+                                <tr><th className="text-left">Scope</th><th>Count</th><th>Mean</th><th>Median</th><th>Min</th><th>Max</th></tr>
+                              </thead>
+                              <tbody>
+                                <tr className="border-b">
+                                  <td className="py-1 font-medium">Overall</td>
+                                  <td className="py-1 text-center">{outcomesData.length_of_stay.overall.count}</td>
+                                  <td className="py-1 text-center">{outcomesData.length_of_stay.overall.mean ?? '—'}</td>
+                                  <td className="py-1 text-center">{outcomesData.length_of_stay.overall.median ?? '—'}</td>
+                                  <td className="py-1 text-center">{outcomesData.length_of_stay.overall.min ?? '—'}</td>
+                                  <td className="py-1 text-center">{outcomesData.length_of_stay.overall.max ?? '—'}</td>
+                                </tr>
+                                {Object.entries(outcomesData.length_of_stay.by_department || {}).map(([dept, s]) => (
+                                  <tr key={dept} className="border-b last:border-0">
+                                    <td className="py-1">{dept}</td>
+                                    <td className="py-1 text-center">{s.count}</td>
+                                    <td className="py-1 text-center">{s.mean ?? '—'}</td>
+                                    <td className="py-1 text-center">{s.median ?? '—'}</td>
+                                    <td className="py-1 text-center">{s.min ?? '—'}</td>
+                                    <td className="py-1 text-center">{s.max ?? '—'}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </CardContent>
+                        </Card>
+                      </div>
+                    </>
+                  )}
+                </TabsContent>
+
+                {/* ----- E3: Doctor productivity ----- */}
+                <TabsContent value="productivity" className="space-y-4 mt-4">
+                  <div className="flex items-end gap-3 flex-wrap">
+                    <div>
+                      <Label className="text-xs">From</Label>
+                      <Input type="date" value={productivityRange.from}
+                        onChange={e => setProductivityRange(p => ({ ...p, from: e.target.value }))} />
+                    </div>
+                    <div>
+                      <Label className="text-xs">To</Label>
+                      <Input type="date" value={productivityRange.to}
+                        onChange={e => setProductivityRange(p => ({ ...p, to: e.target.value }))} />
+                    </div>
+                    <div className="min-w-[200px]">
+                      <Label className="text-xs">Doctor (optional)</Label>
+                      <Select value={productivityRange.doctor_id || 'all'}
+                        onValueChange={v => setProductivityRange(p => ({ ...p, doctor_id: v === 'all' ? '' : v }))}>
+                        <SelectTrigger><SelectValue placeholder="All doctors" /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">All doctors</SelectItem>
+                          {doctorsList.map(d => (
+                            <SelectItem key={d.id} value={String(d.id)}>Dr. {d.first_name} {d.last_name}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <Button size="sm" onClick={() => fetchDoctorProductivity(productivityRange)}>
+                      Refresh
+                    </Button>
+                    <Button size="sm" variant="outline"
+                      onClick={() => {
+                        const params = { date_from: productivityRange.from, date_to: productivityRange.to, include_header: true };
+                        if (productivityRange.doctor_id) params.doctor_id = productivityRange.doctor_id;
+                        printPdfFromUrl('/api/inpatient/reports/doctor-productivity/pdf', params);
+                      }}>
+                      <Printer className="h-4 w-4 mr-1" /> Print PDF
+                    </Button>
+                    <Button size="sm" variant="outline"
+                      onClick={() => {
+                        const qs = new URLSearchParams({ date_from: productivityRange.from, date_to: productivityRange.to });
+                        if (productivityRange.doctor_id) qs.append('doctor_id', productivityRange.doctor_id);
+                        window.open(`/api/inpatient/reports/doctor-productivity/csv?${qs.toString()}`, '_blank');
+                      }}>
+                      <Download className="h-4 w-4 mr-1" /> CSV
+                    </Button>
+                  </div>
+
+                  {!productivityData ? (
+                    <p className="text-sm text-gray-500">Loading…</p>
+                  ) : productivityData.rows.length === 0 ? (
+                    <p className="text-sm text-gray-500">No activity in this date range.</p>
+                  ) : (
+                    <div className="border rounded overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead className="bg-gray-100 text-xs">
+                          <tr>
+                            <th className="p-2 text-left">Doctor</th>
+                            <th className="p-2 text-right">Adm</th>
+                            <th className="p-2 text-right">Dis</th>
+                            <th className="p-2 text-right">Death</th>
+                            <th className="p-2 text-right">Re-30d</th>
+                            <th className="p-2 text-right">OT-Sur</th>
+                            <th className="p-2 text-right">OT-An</th>
+                            <th className="p-2 text-right">Visits</th>
+                            <th className="p-2 text-right">Avg LOS</th>
+                            <th className="p-2 text-right">Visit ₹</th>
+                            <th className="p-2 text-right">OT-Sur ₹</th>
+                            <th className="p-2 text-right">OT-An ₹</th>
+                            <th className="p-2 text-right font-bold">Total ₹</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {productivityData.rows.map(r => (
+                            <tr key={r.doctor_id} className="border-b last:border-0">
+                              <td className="p-2">{r.doctor_name}</td>
+                              <td className="p-2 text-right">{r.admissions}</td>
+                              <td className="p-2 text-right">{r.discharges}</td>
+                              <td className="p-2 text-right">{r.deaths}</td>
+                              <td className="p-2 text-right">{r.readmissions_30d}</td>
+                              <td className="p-2 text-right">{r.ot_as_surgeon}</td>
+                              <td className="p-2 text-right">{r.ot_as_anaesthetist}</td>
+                              <td className="p-2 text-right">{r.visits}</td>
+                              <td className="p-2 text-right">{r.average_los_days ?? '—'}</td>
+                              <td className="p-2 text-right">₹{Number(r.visit_fees_billed).toLocaleString()}</td>
+                              <td className="p-2 text-right">₹{Number(r.ot_surgeon_fees).toLocaleString()}</td>
+                              <td className="p-2 text-right">₹{Number(r.ot_anaesthetist_fees).toLocaleString()}</td>
+                              <td className="p-2 text-right font-bold">₹{Number(r.total_billed_attributable).toLocaleString()}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                  <p className="text-xs text-gray-500 italic">
+                    Total ₹ = Visit fees + OT surgeon fees (for OTs led) + OT anaesthetist fees. Outpatient consultation fees not included.
+                  </p>
+                </TabsContent>
+              </Tabs>
             </div>
           )}
 
@@ -4751,21 +5764,79 @@ const InpatientModule = () => {
             {/* Patient search */}
             <div>
               <Label>Patient *</Label>
-              <div className="relative">
-                <Input placeholder="Search patient by name or phone..." value={patientSearchQuery}
-                  onChange={e => { setPatientSearchQuery(e.target.value); setAdmissionForm(p => ({ ...p, patient_id: '' })); setSelectedPatientName(''); }} />
-                {selectedPatientName && <p className="text-sm text-green-600 mt-1">Selected: {selectedPatientName}</p>}
-                {patientSearchResults.length > 0 && !admissionForm.patient_id && (
-                  <div className="absolute z-10 w-full bg-white border rounded-lg shadow-lg mt-1 max-h-40 overflow-y-auto">
-                    {patientSearchResults.map(p => (
-                      <div key={p.id} className="px-3 py-2 hover:bg-gray-100 cursor-pointer text-sm"
-                        onClick={() => { setAdmissionForm(prev => ({ ...prev, patient_id: p.id })); setSelectedPatientName(`${p.first_name} ${p.last_name}`); setPatientSearchQuery(''); setPatientSearchResults([]); }}>
-                        {p.first_name} {p.last_name} <span className="text-gray-400">{p.phone}</span>
-                      </div>
-                    ))}
+              {selectedPatient && admissionForm.patient_id ? (
+                <div className="flex items-center justify-between p-3 bg-green-50 border border-green-200 rounded-lg mt-1">
+                  <div>
+                    <p className="font-medium text-green-900">{selectedPatient.first_name} {selectedPatient.last_name}</p>
+                    <p className="text-sm text-green-600">ID: {selectedPatient.patient_id} • Phone: {selectedPatient.primary_phone}</p>
                   </div>
-                )}
-              </div>
+                  <Button type="button" variant="ghost" size="sm" onClick={() => {
+                    setSelectedPatient(null);
+                    setSelectedPatientName('');
+                    setAdmissionForm(p => ({ ...p, patient_id: '' }));
+                    setPatientSearchQuery('');
+                    setPatientSearchResults([]);
+                  }}>
+                    <XCircle className="h-4 w-4" />
+                  </Button>
+                </div>
+              ) : (
+                <>
+                  <div className="relative mt-1">
+                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                    <Input
+                      className="pl-9"
+                      placeholder="Type patient name, phone number, or ID..."
+                      value={patientSearchQuery}
+                      onChange={e => setPatientSearchQuery(e.target.value)}
+                    />
+                    {patientSearching && (
+                      <div className="absolute right-3 top-1/2 transform -translate-y-1/2">
+                        <Loader2 className="h-4 w-4 animate-spin text-gray-400" />
+                      </div>
+                    )}
+                  </div>
+                  {!patientSearchQuery.trim() && (
+                    <p className="text-gray-400 text-xs mt-1.5">Start typing to search patients...</p>
+                  )}
+                  {patientSearchQuery.trim() && (
+                    <div className="mt-1 border rounded-lg max-h-48 overflow-y-auto">
+                      {patientSearching ? (
+                        <div className="flex items-center justify-center py-4 gap-2 text-gray-400">
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          <span className="text-sm">Searching...</span>
+                        </div>
+                      ) : patientSearchResults.length === 0 ? (
+                        <p className="text-gray-500 text-sm text-center py-4">No patients found. Please register the patient first.</p>
+                      ) : (
+                        patientSearchResults.map(p => (
+                          <div
+                            key={p.patient_id}
+                            className="px-4 py-2.5 hover:bg-blue-50 cursor-pointer border-b last:border-b-0"
+                            onClick={() => {
+                              setAdmissionForm(prev => ({ ...prev, patient_id: p.id }));
+                              setSelectedPatient(p);
+                              setSelectedPatientName(`${p.first_name} ${p.last_name}`);
+                              setPatientSearchQuery('');
+                              setPatientSearchResults([]);
+                            }}
+                          >
+                            <div className="flex justify-between items-center">
+                              <div>
+                                <p className="font-medium text-gray-900 text-sm">{p.first_name} {p.last_name}</p>
+                                <p className="text-xs text-gray-500">{p.primary_phone} • ID: {p.patient_id?.slice(0, 8)}...</p>
+                              </div>
+                              <Badge variant="outline" className="text-xs">
+                                {p.gender || 'N/A'}{p.age != null ? ` • ${p.age}y` : (p.date_of_birth ? ` • ${new Date().getFullYear() - new Date(p.date_of_birth).getFullYear()}y` : '')}
+                              </Badge>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-4">
@@ -4860,6 +5931,107 @@ const InpatientModule = () => {
               <Input value={admissionForm.emergency_contact} onChange={e => setAdmissionForm(p => ({ ...p, emergency_contact: e.target.value }))} />
             </div>
 
+            {admissionForm.admission_type === 'emergency' && (
+              <div className="border-t pt-4 bg-red-50 -mx-6 px-6 py-4">
+                <h4 className="font-medium text-sm mb-3 text-red-700">Emergency / Casualty Details</h4>
+                <div className="grid grid-cols-3 gap-3">
+                  <div>
+                    <Label className="text-xs">Triage Level *</Label>
+                    <Select value={admissionForm.triage_level} onValueChange={v => setAdmissionForm(p => ({ ...p, triage_level: v }))}>
+                      <SelectTrigger className="h-9"><SelectValue placeholder="ESI 1-5" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="1">1 — Resuscitation</SelectItem>
+                        <SelectItem value="2">2 — Emergent</SelectItem>
+                        <SelectItem value="3">3 — Urgent</SelectItem>
+                        <SelectItem value="4">4 — Less Urgent</SelectItem>
+                        <SelectItem value="5">5 — Non-Urgent</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label className="text-xs">Arrival Mode</Label>
+                    <Select value={admissionForm.arrival_mode} onValueChange={v => setAdmissionForm(p => ({ ...p, arrival_mode: v }))}>
+                      <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="walk_in">Walk-in</SelectItem>
+                        <SelectItem value="ambulance">Ambulance</SelectItem>
+                        <SelectItem value="referred">Referred</SelectItem>
+                        <SelectItem value="police">Police</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="flex items-center gap-2 pt-5">
+                    <input type="checkbox" id="is_mlc" checked={admissionForm.is_mlc}
+                      onChange={e => setAdmissionForm(p => ({ ...p, is_mlc: e.target.checked }))} />
+                    <Label htmlFor="is_mlc" className="text-xs font-medium text-red-700">Medico-Legal Case (MLC)</Label>
+                  </div>
+                </div>
+                <div className="mt-3">
+                  <Label className="text-xs">Chief Complaint</Label>
+                  <Input value={admissionForm.chief_complaint} placeholder="e.g. Chest pain, RTA, Burn 30%"
+                    onChange={e => setAdmissionForm(p => ({ ...p, chief_complaint: e.target.value }))} className="h-9" />
+                </div>
+                {admissionForm.arrival_mode === 'ambulance' && (
+                  <div className="mt-3">
+                    <Label className="text-xs">Ambulance Details</Label>
+                    <Input value={admissionForm.ambulance_details} placeholder="Vehicle no., paramedic name, vitals on arrival"
+                      onChange={e => setAdmissionForm(p => ({ ...p, ambulance_details: e.target.value }))} className="h-9" />
+                  </div>
+                )}
+                {admissionForm.is_mlc && (
+                  <div className="mt-3 grid grid-cols-3 gap-3 border-t border-red-200 pt-3">
+                    <div>
+                      <Label className="text-xs">MLC Type *</Label>
+                      <Select value={admissionForm.mlc_type} onValueChange={v => setAdmissionForm(p => ({ ...p, mlc_type: v }))}>
+                        <SelectTrigger className="h-9"><SelectValue placeholder="Select" /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="rta">Road Traffic Accident</SelectItem>
+                          <SelectItem value="assault">Assault</SelectItem>
+                          <SelectItem value="poisoning">Poisoning</SelectItem>
+                          <SelectItem value="burn">Burn</SelectItem>
+                          <SelectItem value="sexual_assault">Sexual Assault</SelectItem>
+                          <SelectItem value="attempted_suicide">Attempted Suicide</SelectItem>
+                          <SelectItem value="other">Other</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div>
+                      <Label className="text-xs">MLC Number</Label>
+                      <Input value={admissionForm.mlc_number}
+                        onChange={e => setAdmissionForm(p => ({ ...p, mlc_number: e.target.value }))} className="h-9" />
+                    </div>
+                    <div>
+                      <Label className="text-xs">Police Station Informed</Label>
+                      <Input value={admissionForm.police_station_informed} placeholder="PS name"
+                        onChange={e => setAdmissionForm(p => ({ ...p, police_station_informed: e.target.value }))} className="h-9" />
+                    </div>
+                  </div>
+                )}
+
+                <div className="mt-3 grid grid-cols-2 gap-3 border-t border-red-200 pt-3">
+                  <label className="flex items-start gap-2 text-sm">
+                    <input type="checkbox" className="mt-1" checked={admissionForm.is_observation}
+                      onChange={e => setAdmissionForm(p => ({ ...p, is_observation: e.target.checked }))} />
+                    <span><span className="font-medium">Observation case (≤24h)</span>
+                      <span className="block text-[11px] text-gray-500">Skips room rent. Billable services (drugs/lab/visits) still apply.</span></span>
+                  </label>
+                  <label className="flex items-start gap-2 text-sm">
+                    <input type="checkbox" className="mt-1" checked={admissionForm.deposit_waived}
+                      onChange={e => setAdmissionForm(p => ({ ...p, deposit_waived: e.target.checked }))} />
+                    <span><span className="font-medium">Waive admission deposit</span>
+                      <span className="block text-[11px] text-gray-500">Per Supreme Court / CEA Act — cannot turn away emergency cases.</span></span>
+                  </label>
+                </div>
+                {admissionForm.deposit_waived && (
+                  <div className="mt-2">
+                    <Label className="text-xs">Waiver Reason *</Label>
+                    <Input value={admissionForm.deposit_waiver_reason} placeholder="e.g. Unconscious unidentified patient — RTA"
+                      onChange={e => setAdmissionForm(p => ({ ...p, deposit_waiver_reason: e.target.value }))} className="h-9" />
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="border-t pt-4">
               <h4 className="font-medium text-sm mb-3">Insurance (Optional)</h4>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -4893,6 +6065,173 @@ const InpatientModule = () => {
         </DialogContent>
       </Dialog>
 
+      {/* Emergency Quick Admit Dialog */}
+      <Dialog open={showQuickAdmitDialog} onOpenChange={setShowQuickAdmitDialog}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="text-red-700">Emergency Quick Admit</DialogTitle>
+            <p className="text-xs text-gray-500">For casualty arrivals — minimal info now, reception completes patient KYC later.</p>
+          </DialogHeader>
+          <form onSubmit={handleQuickAdmit} className="space-y-4">
+            <div className="bg-red-50 -mx-6 px-6 py-3 border-b border-red-200">
+              <h4 className="font-medium text-sm mb-2 text-red-700">Patient Identity (minimum)</h4>
+              <div className="grid grid-cols-2 gap-3">
+                <div><Label className="text-xs">First / Identifying Name *</Label>
+                  <Input value={quickAdmitForm.first_name} placeholder="UNKNOWN MALE-1 if unidentified"
+                    onChange={e => setQuickAdmitForm(p => ({ ...p, first_name: e.target.value }))} className="h-9" /></div>
+                <div><Label className="text-xs">Last Name</Label>
+                  <Input value={quickAdmitForm.last_name}
+                    onChange={e => setQuickAdmitForm(p => ({ ...p, last_name: e.target.value }))} className="h-9" /></div>
+                <div><Label className="text-xs">Approx Age</Label>
+                  <Input type="number" value={quickAdmitForm.age}
+                    onChange={e => setQuickAdmitForm(p => ({ ...p, age: e.target.value }))} className="h-9" /></div>
+                <div><Label className="text-xs">Gender</Label>
+                  <Select value={quickAdmitForm.gender} onValueChange={v => setQuickAdmitForm(p => ({ ...p, gender: v }))}>
+                    <SelectTrigger className="h-9"><SelectValue placeholder="Select" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="male">Male</SelectItem>
+                      <SelectItem value="female">Female</SelectItem>
+                      <SelectItem value="other">Other</SelectItem>
+                    </SelectContent>
+                  </Select></div>
+                <div><Label className="text-xs">Contact Phone</Label>
+                  <Input value={quickAdmitForm.primary_phone} placeholder="If known"
+                    onChange={e => setQuickAdmitForm(p => ({ ...p, primary_phone: e.target.value }))} className="h-9" /></div>
+                <div><Label className="text-xs">Emergency Contact</Label>
+                  <Input value={quickAdmitForm.emergency_contact}
+                    onChange={e => setQuickAdmitForm(p => ({ ...p, emergency_contact: e.target.value }))} className="h-9" /></div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div><Label className="text-xs">Admitting Doctor *</Label>
+                <Select value={quickAdmitForm.admitting_doctor_id} onValueChange={v => setQuickAdmitForm(p => ({ ...p, admitting_doctor_id: v }))}>
+                  <SelectTrigger className="h-9"><SelectValue placeholder="Select doctor" /></SelectTrigger>
+                  <SelectContent>
+                    {doctorsList.map(d => <SelectItem key={d.id} value={String(d.id)}>{d.first_name} {d.last_name}</SelectItem>)}
+                  </SelectContent>
+                </Select></div>
+              <div><Label className="text-xs">Room *</Label>
+                <Select value={quickAdmitForm.room_id} onValueChange={v => setQuickAdmitForm(p => ({ ...p, room_id: v, bed_id: '' }))}>
+                  <SelectTrigger className="h-9"><SelectValue placeholder="Select room" /></SelectTrigger>
+                  <SelectContent>
+                    {availableRooms.filter(r => r.available_beds > 0).map(r => (
+                      <SelectItem key={r.id} value={String(r.id)}>
+                        {r.room_number} ({roomTypeLabel[r.room_type] || r.room_type}) — {r.available_beds} free
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select></div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-3">
+              <div><Label className="text-xs">Triage *</Label>
+                <Select value={quickAdmitForm.triage_level} onValueChange={v => setQuickAdmitForm(p => ({ ...p, triage_level: v }))}>
+                  <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="1">1 — Resuscitation</SelectItem>
+                    <SelectItem value="2">2 — Emergent</SelectItem>
+                    <SelectItem value="3">3 — Urgent</SelectItem>
+                    <SelectItem value="4">4 — Less Urgent</SelectItem>
+                    <SelectItem value="5">5 — Non-Urgent</SelectItem>
+                  </SelectContent>
+                </Select></div>
+              <div><Label className="text-xs">Arrival Mode</Label>
+                <Select value={quickAdmitForm.arrival_mode} onValueChange={v => setQuickAdmitForm(p => ({ ...p, arrival_mode: v }))}>
+                  <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="walk_in">Walk-in</SelectItem>
+                    <SelectItem value="ambulance">Ambulance</SelectItem>
+                    <SelectItem value="referred">Referred</SelectItem>
+                    <SelectItem value="police">Police</SelectItem>
+                  </SelectContent>
+                </Select></div>
+              <div><Label className="text-xs">Condition</Label>
+                <Select value={quickAdmitForm.condition_on_admission} onValueChange={v => setQuickAdmitForm(p => ({ ...p, condition_on_admission: v }))}>
+                  <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="stable">Stable</SelectItem>
+                    <SelectItem value="serious">Serious</SelectItem>
+                    <SelectItem value="critical">Critical</SelectItem>
+                  </SelectContent>
+                </Select></div>
+            </div>
+
+            <div><Label className="text-xs">Chief Complaint</Label>
+              <Input value={quickAdmitForm.chief_complaint} placeholder="e.g. Chest pain x 2hrs, RTA head injury"
+                onChange={e => setQuickAdmitForm(p => ({ ...p, chief_complaint: e.target.value }))} className="h-9" /></div>
+
+            {quickAdmitForm.arrival_mode === 'ambulance' && (
+              <div><Label className="text-xs">Ambulance Details</Label>
+                <Input value={quickAdmitForm.ambulance_details} placeholder="Vehicle no., paramedic, vitals on arrival"
+                  onChange={e => setQuickAdmitForm(p => ({ ...p, ambulance_details: e.target.value }))} className="h-9" /></div>
+            )}
+
+            <div className="border-t pt-3">
+              <label className="flex items-center gap-2 text-sm font-medium text-red-700">
+                <input type="checkbox" checked={quickAdmitForm.is_mlc}
+                  onChange={e => setQuickAdmitForm(p => ({ ...p, is_mlc: e.target.checked }))} />
+                Medico-Legal Case (MLC)
+              </label>
+              {quickAdmitForm.is_mlc && (
+                <div className="grid grid-cols-3 gap-3 mt-3">
+                  <div><Label className="text-xs">MLC Type *</Label>
+                    <Select value={quickAdmitForm.mlc_type} onValueChange={v => setQuickAdmitForm(p => ({ ...p, mlc_type: v }))}>
+                      <SelectTrigger className="h-9"><SelectValue placeholder="Select" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="rta">Road Traffic Accident</SelectItem>
+                        <SelectItem value="assault">Assault</SelectItem>
+                        <SelectItem value="poisoning">Poisoning</SelectItem>
+                        <SelectItem value="burn">Burn</SelectItem>
+                        <SelectItem value="sexual_assault">Sexual Assault</SelectItem>
+                        <SelectItem value="attempted_suicide">Attempted Suicide</SelectItem>
+                        <SelectItem value="other">Other</SelectItem>
+                      </SelectContent>
+                    </Select></div>
+                  <div><Label className="text-xs">MLC Number</Label>
+                    <Input value={quickAdmitForm.mlc_number}
+                      onChange={e => setQuickAdmitForm(p => ({ ...p, mlc_number: e.target.value }))} className="h-9" /></div>
+                  <div><Label className="text-xs">Police Station</Label>
+                    <Input value={quickAdmitForm.police_station_informed}
+                      onChange={e => setQuickAdmitForm(p => ({ ...p, police_station_informed: e.target.value }))} className="h-9" /></div>
+                </div>
+              )}
+            </div>
+
+            <div className="border-t pt-3 grid grid-cols-2 gap-3">
+              <label className="flex items-start gap-2 text-sm">
+                <input type="checkbox" className="mt-1" checked={quickAdmitForm.is_observation}
+                  onChange={e => setQuickAdmitForm(p => ({ ...p, is_observation: e.target.checked }))} />
+                <span><span className="font-medium">Observation case (≤24h)</span>
+                  <span className="block text-[11px] text-gray-500">No room rent.</span></span>
+              </label>
+              <label className="flex items-start gap-2 text-sm">
+                <input type="checkbox" className="mt-1" checked={quickAdmitForm.deposit_waived}
+                  onChange={e => setQuickAdmitForm(p => ({ ...p, deposit_waived: e.target.checked }))} />
+                <span><span className="font-medium">Waive deposit</span>
+                  <span className="block text-[11px] text-gray-500">Cannot-pay emergency.</span></span>
+              </label>
+            </div>
+            {quickAdmitForm.deposit_waived && (
+              <div><Label className="text-xs">Waiver Reason *</Label>
+                <Input value={quickAdmitForm.deposit_waiver_reason} placeholder="e.g. RTA — unidentified patient"
+                  onChange={e => setQuickAdmitForm(p => ({ ...p, deposit_waiver_reason: e.target.value }))} className="h-9" /></div>
+            )}
+
+            <div><Label className="text-xs">Admission Reason / Provisional Diagnosis</Label>
+              <Textarea value={quickAdmitForm.admission_reason}
+                onChange={e => setQuickAdmitForm(p => ({ ...p, admission_reason: e.target.value }))} rows={2} /></div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t">
+              <Button type="button" variant="outline" onClick={() => setShowQuickAdmitDialog(false)}>Cancel</Button>
+              <Button type="submit" variant="destructive" disabled={loading}>
+                {loading ? 'Admitting...' : 'Admit Now'}
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
+
       {/* Visit Dialog */}
       <Dialog open={showVisitDialog} onOpenChange={setShowVisitDialog}>
         <DialogContent className="max-w-md">
@@ -4900,12 +6239,12 @@ const InpatientModule = () => {
           <form onSubmit={handleCreateVisit} className="space-y-4">
             <div>
               <Label>Visit Type *</Label>
-              <Select value={visitForm.visit_type} onValueChange={v => setVisitForm(p => ({ ...p, visit_type: v }))}>
+              <Select value={visitForm.visit_type} onValueChange={v => setVisitForm(p => ({ ...p, visit_type: v, visitor_id: '' }))}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="doctor_visit">Doctor Visit</SelectItem>
+                  {!isNurseOnly && <SelectItem value="doctor_visit">Doctor Visit</SelectItem>}
                   <SelectItem value="nurse_visit">Nurse Visit</SelectItem>
-                  <SelectItem value="procedure">Procedure</SelectItem>
+                  {!isNurseOnly && <SelectItem value="procedure">Procedure</SelectItem>}
                 </SelectContent>
               </Select>
             </div>
@@ -4914,7 +6253,7 @@ const InpatientModule = () => {
               <Select value={visitForm.visitor_id ? String(visitForm.visitor_id) : ''} onValueChange={v => setVisitForm(p => ({ ...p, visitor_id: v }))}>
                 <SelectTrigger><SelectValue placeholder="Select staff" /></SelectTrigger>
                 <SelectContent>
-                  {doctorsList.map(d => (
+                  {(visitForm.visit_type === 'nurse_visit' ? nursesList : doctorsList).map(d => (
                     <SelectItem key={d.id} value={String(d.id)}>{d.first_name} {d.last_name}</SelectItem>
                   ))}
                 </SelectContent>
@@ -4934,6 +6273,30 @@ const InpatientModule = () => {
               <Label>Notes</Label>
               <Textarea value={visitForm.notes} onChange={e => setVisitForm(p => ({ ...p, notes: e.target.value }))} rows={3} />
             </div>
+            {visitForm.visit_type === 'doctor_visit' && (
+              <div className="border rounded p-2 space-y-1 bg-gray-50">
+                <p className="text-xs font-semibold text-gray-700">Ward-round checklist (optional)</p>
+                {[
+                  ['vitals_reviewed', 'Vitals reviewed'],
+                  ['labs_reviewed', 'Labs reviewed'],
+                  ['pain_assessed', 'Pain assessed'],
+                  ['mobility_checked', 'Mobility checked'],
+                  ['family_updated', 'Family updated'],
+                ].map(([key, lbl]) => (
+                  <label key={key} className="flex items-center gap-2 text-sm cursor-pointer">
+                    <input type="checkbox" checked={!!visitForm[key]}
+                      onChange={e => setVisitForm(p => ({ ...p, [key]: e.target.checked }))} />
+                    {lbl}
+                  </label>
+                ))}
+                <div>
+                  <Label className="text-xs">Plan for today</Label>
+                  <Textarea rows={2} value={visitForm.plan_for_today}
+                    placeholder="e.g., 'Continue IV antibiotics; repeat CBC tomorrow.'"
+                    onChange={e => setVisitForm(p => ({ ...p, plan_for_today: e.target.value }))} />
+                </div>
+              </div>
+            )}
             <Button type="submit" className="w-full" disabled={loading || !visitForm.visitor_id}>
               {loading ? 'Saving...' : 'Record Visit'}
             </Button>
@@ -5020,6 +6383,176 @@ const InpatientModule = () => {
               {loading ? 'Saving...' : 'Create Diet Order'}
             </Button>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Meal Log Dialog */}
+      <Dialog open={mealLogDialog.open} onOpenChange={(o) => !o && setMealLogDialog(p => ({ ...p, open: false }))}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Log meal served</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Meal *</Label>
+                <Select value={mealLogDialog.meal_time}
+                  onValueChange={v => setMealLogDialog(p => ({ ...p, meal_time: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="breakfast">Breakfast</SelectItem>
+                    <SelectItem value="snack_morning">Mid-morning snack</SelectItem>
+                    <SelectItem value="lunch">Lunch</SelectItem>
+                    <SelectItem value="snack_evening">Evening snack</SelectItem>
+                    <SelectItem value="dinner">Dinner</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Status *</Label>
+                <Select value={mealLogDialog.status}
+                  onValueChange={v => setMealLogDialog(p => ({ ...p, status: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="served">Served (full)</SelectItem>
+                    <SelectItem value="partial">Partial</SelectItem>
+                    <SelectItem value="refused">Refused</SelectItem>
+                    <SelectItem value="missed">Missed (NPO/asleep)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div>
+              <Label>Notes (optional)</Label>
+              <Textarea rows={2} value={mealLogDialog.notes}
+                onChange={e => setMealLogDialog(p => ({ ...p, notes: e.target.value }))} />
+            </div>
+            <p className="text-xs text-gray-500">If a log already exists for this meal slot today, it will be updated.</p>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setMealLogDialog({ open: false, orderId: null, meal_time: 'lunch', status: 'served', notes: '' })}>Cancel</Button>
+              <Button onClick={handleLogMeal} disabled={loading}>{loading ? 'Saving…' : 'Save'}</Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* LOA Dialog */}
+      <Dialog open={loaDialog.open} onOpenChange={(o) => !o && setLoaDialog(p => ({ ...p, open: false }))}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader><DialogTitle>Leave of Absence (Pass-out)</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            {loaList.length > 0 && (
+              <div className="border rounded p-2 text-sm space-y-1 max-h-48 overflow-y-auto">
+                <p className="font-semibold mb-1">History ({loaList.length})</p>
+                {loaList.map(l => (
+                  <div key={l.id} className="flex items-center justify-between border-b last:border-0 pb-1">
+                    <div className="flex flex-col">
+                      <span className="text-xs">
+                        <Badge variant="outline" className="mr-2 text-[10px]">{l.status}</Badge>
+                        {l.start_datetime && new Date(l.start_datetime).toLocaleString()}
+                        {' → '}
+                        {(l.actual_return_datetime || l.expected_return_datetime) &&
+                          new Date(l.actual_return_datetime || l.expected_return_datetime).toLocaleString()}
+                      </span>
+                      <span className="text-xs text-gray-500 truncate max-w-md">{l.reason}</span>
+                    </div>
+                    {l.status === 'active' && (
+                      <div className="flex gap-1">
+                        <Button size="sm" variant="outline" className="h-6 text-xs" onClick={() => handleLoaAction(l.id, 'return')}>Returned</Button>
+                        <Button size="sm" variant="ghost" className="h-6 text-xs text-red-600" onClick={() => handleLoaAction(l.id, 'cancel')}>Cancel</Button>
+                        <Button size="sm" variant="ghost" className="h-6 text-xs text-amber-600" onClick={() => handleLoaAction(l.id, 'no-show')}>No-show</Button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+            <p className="text-xs text-gray-500 border-t pt-2 font-semibold">Start a new LOA</p>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Start *</Label>
+                <Input type="datetime-local" value={loaDialog.start_datetime}
+                  onChange={e => setLoaDialog(p => ({ ...p, start_datetime: e.target.value }))} />
+              </div>
+              <div>
+                <Label>Expected return *</Label>
+                <Input type="datetime-local" value={loaDialog.expected_return_datetime}
+                  onChange={e => setLoaDialog(p => ({ ...p, expected_return_datetime: e.target.value }))} />
+              </div>
+            </div>
+            <div>
+              <Label>Reason *</Label>
+              <Textarea rows={2} value={loaDialog.reason}
+                placeholder="e.g., 'Family wedding; will return Monday morning.'"
+                onChange={e => setLoaDialog(p => ({ ...p, reason: e.target.value }))} />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Approving Doctor *</Label>
+                <Select value={String(loaDialog.approved_by_doctor_id || '')}
+                  onValueChange={v => setLoaDialog(p => ({ ...p, approved_by_doctor_id: v }))}>
+                  <SelectTrigger><SelectValue placeholder="Select doctor" /></SelectTrigger>
+                  <SelectContent>
+                    {doctorsList.map(d => (
+                      <SelectItem key={d.id} value={String(d.id)}>Dr. {d.first_name} {d.last_name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <label className="flex items-center gap-2 mt-6 text-sm cursor-pointer">
+                <input type="checkbox" checked={loaDialog.bed_held}
+                  onChange={e => setLoaDialog(p => ({ ...p, bed_held: e.target.checked }))} />
+                Bed held during LOA
+              </label>
+            </div>
+            <div>
+              <Label>Notes</Label>
+              <Textarea rows={2} value={loaDialog.notes}
+                onChange={e => setLoaDialog(p => ({ ...p, notes: e.target.value }))} />
+            </div>
+            <p className="text-xs text-gray-500">
+              Whole calendar days fully covered by the LOA window will be excluded from room rent.
+              The patient remains admitted; bed is held by default.
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setLoaDialog(p => ({ ...p, open: false }))}>Close</Button>
+              <Button onClick={handleCreateLoa} disabled={loading}>{loading ? 'Saving…' : 'Start LOA'}</Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Kitchen Ticket Print Dialog */}
+      <Dialog open={kitchenTicketDialog.open} onOpenChange={(o) => !o && setKitchenTicketDialog(p => ({ ...p, open: false }))}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Print kitchen ticket</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <Label>Meal *</Label>
+              <Select value={kitchenTicketDialog.meal_time}
+                onValueChange={v => setKitchenTicketDialog(p => ({ ...p, meal_time: v }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="breakfast">Breakfast</SelectItem>
+                  <SelectItem value="snack_morning">Mid-morning snack</SelectItem>
+                  <SelectItem value="lunch">Lunch</SelectItem>
+                  <SelectItem value="snack_evening">Evening snack</SelectItem>
+                  <SelectItem value="dinner">Dinner</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Department / Ward filter (optional)</Label>
+              <Input value={kitchenTicketDialog.department}
+                placeholder="e.g., Medical Ward A — leave blank for all wards"
+                onChange={e => setKitchenTicketDialog(p => ({ ...p, department: e.target.value }))} />
+            </div>
+            <p className="text-xs text-gray-500">The ticket lists every patient currently admitted with an active diet order, sorted by ward → room → bed.</p>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setKitchenTicketDialog({ open: false, meal_time: 'lunch', department: '' })}>Cancel</Button>
+              <Button onClick={handlePrintKitchenTicket}>
+                <Printer className="h-4 w-4 mr-1" /> Print
+              </Button>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
 
@@ -6101,6 +7634,376 @@ const InpatientModule = () => {
         </DialogContent>
       </Dialog>
 
+      {/* B6 — Body Release / Mortuary Tracking */}
+      <Dialog open={showBodyReleaseDialog} onOpenChange={setShowBodyReleaseDialog}>
+        <DialogContent className="max-w-3xl max-h-[92vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Body Release & Mortuary Tracking</DialogTitle>
+            {bodyReleaseRec?.body_released && (
+              <Badge className="bg-green-100 text-green-800 w-fit">
+                Released on {bodyReleaseRec.body_released_at && new Date(bodyReleaseRec.body_released_at).toLocaleString()}
+              </Badge>
+            )}
+          </DialogHeader>
+
+          <div className="space-y-5">
+            {/* Section 1 — Mortuary */}
+            <div className="border rounded p-3 space-y-3">
+              <h4 className="font-semibold text-sm">Mortuary</h4>
+              <div className="grid grid-cols-3 gap-3">
+                <div><Label className="text-xs">Mortuary Slot</Label>
+                  <Input value={bodyReleaseTrack.mortuary_slot} placeholder="e.g. M-3"
+                    onChange={e => setBodyReleaseTrack(p => ({ ...p, mortuary_slot: e.target.value }))} className="h-9" /></div>
+                <div><Label className="text-xs">Body In</Label>
+                  <Input type="datetime-local" value={bodyReleaseTrack.body_in_mortuary_at}
+                    onChange={e => setBodyReleaseTrack(p => ({ ...p, body_in_mortuary_at: e.target.value }))} className="h-9" /></div>
+                <div><Label className="text-xs">Body Out</Label>
+                  <Input type="datetime-local" value={bodyReleaseTrack.body_out_mortuary_at}
+                    onChange={e => setBodyReleaseTrack(p => ({ ...p, body_out_mortuary_at: e.target.value }))} className="h-9" /></div>
+              </div>
+            </div>
+
+            {/* Section 2 — Embalming */}
+            <div className="border rounded p-3 space-y-3">
+              <label className="flex items-center gap-2 text-sm font-semibold">
+                <input type="checkbox" checked={bodyReleaseTrack.embalming_done}
+                  onChange={e => setBodyReleaseTrack(p => ({ ...p, embalming_done: e.target.checked }))} />
+                Embalming done
+              </label>
+              {bodyReleaseTrack.embalming_done && (
+                <div className="grid grid-cols-2 gap-3">
+                  <div><Label className="text-xs">Embalmed By</Label>
+                    <Input value={bodyReleaseTrack.embalmed_by}
+                      onChange={e => setBodyReleaseTrack(p => ({ ...p, embalmed_by: e.target.value }))} className="h-9" /></div>
+                  <div><Label className="text-xs">Embalming At</Label>
+                    <Input type="datetime-local" value={bodyReleaseTrack.embalming_at}
+                      onChange={e => setBodyReleaseTrack(p => ({ ...p, embalming_at: e.target.value }))} className="h-9" /></div>
+                </div>
+              )}
+            </div>
+
+            {/* Section 3 — Post-mortem */}
+            <div className="border rounded p-3 space-y-3">
+              <label className="flex items-center gap-2 text-sm font-semibold">
+                <input type="checkbox" checked={bodyReleaseTrack.post_mortem_required}
+                  onChange={e => setBodyReleaseTrack(p => ({ ...p, post_mortem_required: e.target.checked }))} />
+                Post-mortem required
+              </label>
+              {bodyReleaseTrack.post_mortem_required && (
+                <div className="grid grid-cols-2 gap-3">
+                  <div><Label className="text-xs">PM Hospital</Label>
+                    <Input value={bodyReleaseTrack.pm_hospital}
+                      onChange={e => setBodyReleaseTrack(p => ({ ...p, pm_hospital: e.target.value }))} className="h-9" /></div>
+                  <div><Label className="text-xs">PM Doctor</Label>
+                    <Input value={bodyReleaseTrack.pm_doctor}
+                      onChange={e => setBodyReleaseTrack(p => ({ ...p, pm_doctor: e.target.value }))} className="h-9" /></div>
+                  <div><Label className="text-xs">Referred At</Label>
+                    <Input type="datetime-local" value={bodyReleaseTrack.pm_referred_at}
+                      onChange={e => setBodyReleaseTrack(p => ({ ...p, pm_referred_at: e.target.value }))} className="h-9" /></div>
+                  <div><Label className="text-xs">PM Completed At</Label>
+                    <Input type="datetime-local" value={bodyReleaseTrack.pm_completed_at}
+                      onChange={e => setBodyReleaseTrack(p => ({ ...p, pm_completed_at: e.target.value }))} className="h-9" /></div>
+                  <div className="col-span-2 flex items-center gap-3">
+                    <label className="flex items-center gap-2 text-sm">
+                      <input type="checkbox" checked={bodyReleaseTrack.pm_report_received}
+                        onChange={e => setBodyReleaseTrack(p => ({ ...p, pm_report_received: e.target.checked }))} />
+                      PM report received
+                    </label>
+                    {bodyReleaseTrack.pm_report_received && (
+                      <Input value={bodyReleaseTrack.pm_report_number} placeholder="PM report no."
+                        onChange={e => setBodyReleaseTrack(p => ({ ...p, pm_report_number: e.target.value }))} className="h-9 max-w-xs" />
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Section 4 — Police NOC */}
+            <div className="border rounded p-3 space-y-3">
+              <div className="flex items-center justify-between">
+                <label className="flex items-center gap-2 text-sm font-semibold">
+                  <input type="checkbox" checked={bodyReleaseTrack.police_noc_required}
+                    onChange={e => setBodyReleaseTrack(p => ({ ...p, police_noc_required: e.target.checked }))} />
+                  Police NOC required (auto-set for MLC)
+                </label>
+                {bodyReleaseTrack.police_noc_required && bodyReleaseTrack.police_noc_received && (
+                  <Badge className="bg-green-100 text-green-800 text-[10px]">NOC received</Badge>
+                )}
+              </div>
+              {bodyReleaseTrack.police_noc_required && (
+                <div className="grid grid-cols-3 gap-3">
+                  <label className="flex items-center gap-2 text-sm pt-5">
+                    <input type="checkbox" checked={bodyReleaseTrack.police_noc_received}
+                      onChange={e => setBodyReleaseTrack(p => ({ ...p, police_noc_received: e.target.checked }))} />
+                    Received
+                  </label>
+                  <div><Label className="text-xs">NOC Number</Label>
+                    <Input value={bodyReleaseTrack.police_noc_number}
+                      onChange={e => setBodyReleaseTrack(p => ({ ...p, police_noc_number: e.target.value }))} className="h-9" /></div>
+                  <div><Label className="text-xs">Received At</Label>
+                    <Input type="datetime-local" value={bodyReleaseTrack.police_noc_received_at}
+                      onChange={e => setBodyReleaseTrack(p => ({ ...p, police_noc_received_at: e.target.value }))} className="h-9" /></div>
+                </div>
+              )}
+            </div>
+
+            {!bodyReleaseRec?.body_released && (
+              <div className="flex justify-end">
+                <Button size="sm" variant="outline" onClick={saveBodyReleaseTracking}>Save tracking</Button>
+              </div>
+            )}
+
+            {/* Section 5 — Final release */}
+            <div className={`border-2 rounded p-3 space-y-3 ${bodyReleaseRec?.body_released ? 'border-green-300 bg-green-50' : 'border-amber-300 bg-amber-50'}`}>
+              <h4 className="font-semibold text-sm">Final release to family</h4>
+              <div className="grid grid-cols-2 gap-3">
+                <div><Label className="text-xs">Releasee Name *</Label>
+                  <Input value={bodyReleaseAction.released_to_name} disabled={bodyReleaseRec?.body_released}
+                    onChange={e => setBodyReleaseAction(p => ({ ...p, released_to_name: e.target.value }))} className="h-9" /></div>
+                <div><Label className="text-xs">Relationship *</Label>
+                  <Input value={bodyReleaseAction.released_to_relationship} disabled={bodyReleaseRec?.body_released} placeholder="son, wife, brother…"
+                    onChange={e => setBodyReleaseAction(p => ({ ...p, released_to_relationship: e.target.value }))} className="h-9" /></div>
+                <div><Label className="text-xs">Phone</Label>
+                  <Input value={bodyReleaseAction.released_to_phone} disabled={bodyReleaseRec?.body_released}
+                    onChange={e => setBodyReleaseAction(p => ({ ...p, released_to_phone: e.target.value }))} className="h-9" /></div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div><Label className="text-xs">ID Type *</Label>
+                    <Select value={bodyReleaseAction.released_to_id_proof_type} disabled={bodyReleaseRec?.body_released}
+                      onValueChange={v => setBodyReleaseAction(p => ({ ...p, released_to_id_proof_type: v }))}>
+                      <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="aadhar">Aadhaar</SelectItem>
+                        <SelectItem value="voter">Voter ID</SelectItem>
+                        <SelectItem value="license">Driving License</SelectItem>
+                        <SelectItem value="passport">Passport</SelectItem>
+                        <SelectItem value="other">Other</SelectItem>
+                      </SelectContent>
+                    </Select></div>
+                  <div><Label className="text-xs">ID Number *</Label>
+                    <Input value={bodyReleaseAction.released_to_id_proof_number} disabled={bodyReleaseRec?.body_released}
+                      onChange={e => setBodyReleaseAction(p => ({ ...p, released_to_id_proof_number: e.target.value }))} className="h-9" /></div>
+                </div>
+              </div>
+              <div><Label className="text-xs">Address</Label>
+                <Textarea value={bodyReleaseAction.released_to_address} disabled={bodyReleaseRec?.body_released}
+                  onChange={e => setBodyReleaseAction(p => ({ ...p, released_to_address: e.target.value }))} rows={2} /></div>
+              <div className="grid grid-cols-3 gap-3">
+                <div><Label className="text-xs">Witness Name *</Label>
+                  <Input value={bodyReleaseAction.witness_name} disabled={bodyReleaseRec?.body_released}
+                    onChange={e => setBodyReleaseAction(p => ({ ...p, witness_name: e.target.value }))} className="h-9" /></div>
+                <div><Label className="text-xs">Witness Phone</Label>
+                  <Input value={bodyReleaseAction.witness_phone} disabled={bodyReleaseRec?.body_released}
+                    onChange={e => setBodyReleaseAction(p => ({ ...p, witness_phone: e.target.value }))} className="h-9" /></div>
+                <div><Label className="text-xs">Witness ID</Label>
+                  <Input value={bodyReleaseAction.witness_id_proof} disabled={bodyReleaseRec?.body_released}
+                    onChange={e => setBodyReleaseAction(p => ({ ...p, witness_id_proof: e.target.value }))} className="h-9" /></div>
+              </div>
+              <div><Label className="text-xs">Transport Details</Label>
+                <Input value={bodyReleaseAction.transport_details} disabled={bodyReleaseRec?.body_released}
+                  placeholder="Vehicle no., ambulance, hearse"
+                  onChange={e => setBodyReleaseAction(p => ({ ...p, transport_details: e.target.value }))} className="h-9" /></div>
+
+              {!bodyReleaseRec?.body_released && (
+                <>
+                  {(bodyReleaseTrack.police_noc_required && !bodyReleaseTrack.police_noc_received) && (
+                    <label className="flex items-center gap-2 text-xs text-red-700">
+                      <input type="checkbox" checked={bodyReleaseAction.force_missing_noc}
+                        onChange={e => setBodyReleaseAction(p => ({ ...p, force_missing_noc: e.target.checked }))} />
+                      Force release without police NOC (audit-logged)
+                    </label>
+                  )}
+                  {(bodyReleaseTrack.post_mortem_required && !bodyReleaseTrack.pm_completed_at) && (
+                    <label className="flex items-center gap-2 text-xs text-red-700">
+                      <input type="checkbox" checked={bodyReleaseAction.force_missing_pm}
+                        onChange={e => setBodyReleaseAction(p => ({ ...p, force_missing_pm: e.target.checked }))} />
+                      Force release without completed post-mortem (audit-logged)
+                    </label>
+                  )}
+                  {(bodyReleaseAction.force_missing_noc || bodyReleaseAction.force_missing_pm) && (
+                    <div><Label className="text-xs text-red-700">Override Reason *</Label>
+                      <Textarea value={bodyReleaseAction.override_reason}
+                        onChange={e => setBodyReleaseAction(p => ({ ...p, override_reason: e.target.value }))} rows={2} /></div>
+                  )}
+                  <div className="flex justify-end gap-2 pt-2">
+                    <Button variant="outline" onClick={() => setShowBodyReleaseDialog(false)}>Close</Button>
+                    <Button onClick={performBodyRelease} className="bg-amber-600 hover:bg-amber-700">
+                      Release Body
+                    </Button>
+                  </div>
+                </>
+              )}
+
+              {bodyReleaseRec?.body_released && (
+                <div className="flex justify-end gap-2 pt-2">
+                  <Button variant="outline" onClick={() => setShowBodyReleaseDialog(false)}>Close</Button>
+                  <Button onClick={() => printBodyRelease(bodyReleaseAdmId)}>
+                    <Printer className="h-4 w-4 mr-1" /> Print Release Form
+                  </Button>
+                </div>
+              )}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* DAMA — Discharge Against Medical Advice */}
+      <Dialog open={showDamaDialog} onOpenChange={setShowDamaDialog}>
+        <DialogContent className="max-w-2xl max-h-[92vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Discharge Against Medical Advice (DAMA)</DialogTitle>
+          </DialogHeader>
+          <form onSubmit={handleSaveDama} className="space-y-3">
+            <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
+              This signed form is the legal record that the patient is leaving against medical advice.
+              References Sections 88 &amp; 92 IPC. The form is mandatory and cannot be undone once filed.
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Attending Doctor *</Label>
+                <Select value={String(damaForm.attending_doctor_id || '')}
+                  onValueChange={v => setDamaForm(p => ({ ...p, attending_doctor_id: v }))}>
+                  <SelectTrigger><SelectValue placeholder="Select doctor" /></SelectTrigger>
+                  <SelectContent>
+                    {doctorsList.map(d => (
+                      <SelectItem key={d.id} value={String(d.id)}>Dr. {d.first_name} {d.last_name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Language Used</Label>
+                <Select value={damaForm.language_used}
+                  onValueChange={v => setDamaForm(p => ({ ...p, language_used: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="english">English</SelectItem>
+                    <SelectItem value="hindi">Hindi</SelectItem>
+                    <SelectItem value="telugu">Telugu</SelectItem>
+                    <SelectItem value="tamil">Tamil</SelectItem>
+                    <SelectItem value="kannada">Kannada</SelectItem>
+                    <SelectItem value="malayalam">Malayalam</SelectItem>
+                    <SelectItem value="marathi">Marathi</SelectItem>
+                    <SelectItem value="bengali">Bengali</SelectItem>
+                    <SelectItem value="gujarati">Gujarati</SelectItem>
+                    <SelectItem value="other">Other</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div>
+              <Label>Medical Advice Given *</Label>
+              <Textarea required rows={3}
+                placeholder="What was the patient advised? (e.g., 'Continue IV antibiotics for 48 more hours')"
+                value={damaForm.medical_advice_given}
+                onChange={e => setDamaForm(p => ({ ...p, medical_advice_given: e.target.value }))} />
+            </div>
+            <div>
+              <Label>Risks Explained *</Label>
+              <Textarea required rows={3}
+                placeholder="What risks were explained? (e.g., 'Sepsis, organ failure, possible death')"
+                value={damaForm.risks_explained}
+                onChange={e => setDamaForm(p => ({ ...p, risks_explained: e.target.value }))} />
+            </div>
+
+            <div className="border rounded p-2 space-y-2 bg-gray-50">
+              <p className="text-sm font-semibold">Acknowledgements (both required)</p>
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input type="checkbox" className="mt-1" checked={damaForm.patient_acknowledges_advice}
+                  onChange={e => setDamaForm(p => ({ ...p, patient_acknowledges_advice: e.target.checked }))} />
+                <span className="text-sm">Patient/guardian acknowledges that medical advice and risks were clearly explained in the language they understand.</span>
+              </label>
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input type="checkbox" className="mt-1" checked={damaForm.patient_absolves_hospital}
+                  onChange={e => setDamaForm(p => ({ ...p, patient_absolves_hospital: e.target.checked }))} />
+                <span className="text-sm">Patient/guardian absolves the hospital and its staff of any consequences resulting from this discharge against medical advice.</span>
+              </label>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Signed By *</Label>
+                <Select value={damaForm.signed_by}
+                  onValueChange={v => setDamaForm(p => ({ ...p, signed_by: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="patient">Patient</SelectItem>
+                    <SelectItem value="guardian">Guardian / Next of Kin</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Signature Type</Label>
+                <Select value={damaForm.primary_signature_type}
+                  onValueChange={v => setDamaForm(p => ({ ...p, primary_signature_type: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="typed">Typed name</SelectItem>
+                    <SelectItem value="drawn">Drawn signature (paste base64)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            {damaForm.signed_by === 'guardian' && (
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label>Guardian Name *</Label>
+                  <Input required value={damaForm.guardian_name}
+                    onChange={e => setDamaForm(p => ({ ...p, guardian_name: e.target.value }))} />
+                </div>
+                <div>
+                  <Label>Relationship to Patient</Label>
+                  <Input value={damaForm.guardian_relationship}
+                    placeholder="e.g., spouse, parent, son"
+                    onChange={e => setDamaForm(p => ({ ...p, guardian_relationship: e.target.value }))} />
+                </div>
+              </div>
+            )}
+
+            <div>
+              <Label>{damaForm.signed_by === 'guardian' ? 'Guardian Signature *' : 'Patient Signature *'}</Label>
+              <Input required value={damaForm.primary_signature}
+                placeholder={damaForm.primary_signature_type === 'typed' ? 'Type full name' : 'Paste base64 signature image'}
+                onChange={e => setDamaForm(p => ({ ...p, primary_signature: e.target.value }))} />
+            </div>
+
+            <div className="border-t pt-2">
+              <p className="text-sm font-semibold mb-2">Witness</p>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label>Witness Name *</Label>
+                  <Input required value={damaForm.witness_name}
+                    onChange={e => setDamaForm(p => ({ ...p, witness_name: e.target.value }))} />
+                </div>
+                <div>
+                  <Label>Designation</Label>
+                  <Input value={damaForm.witness_designation}
+                    placeholder="e.g., Senior Nurse, Resident Doctor"
+                    onChange={e => setDamaForm(p => ({ ...p, witness_designation: e.target.value }))} />
+                </div>
+              </div>
+              <div className="mt-2">
+                <Label>Witness Signature *</Label>
+                <Input required value={damaForm.witness_signature}
+                  placeholder="Type full name"
+                  onChange={e => setDamaForm(p => ({ ...p, witness_signature: e.target.value }))} />
+              </div>
+            </div>
+
+            <div>
+              <Label>Notes (optional)</Label>
+              <Textarea rows={2} value={damaForm.notes}
+                placeholder="e.g., 'Patient was lucid and articulate at signing.'"
+                onChange={e => setDamaForm(p => ({ ...p, notes: e.target.value }))} />
+            </div>
+
+            <Button type="submit" className="w-full" disabled={loading} variant="destructive">
+              {loading ? 'Saving…' : 'Sign and Save DAMA Form'}
+            </Button>
+          </form>
+        </DialogContent>
+      </Dialog>
+
       {/* Ward Transfer Dialog */}
       <Dialog open={showWardTransferDialog} onOpenChange={setShowWardTransferDialog}>
         <DialogContent className="max-w-md">
@@ -6564,6 +8467,137 @@ const InpatientModule = () => {
         </DialogContent>
       </Dialog>
 
+      {/* Inpatient Prescription Dialog */}
+      <Dialog open={showPrescriptionDialog} onOpenChange={(o) => { setShowPrescriptionDialog(o); if (!o) setMedicineSearchResults([]); }}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader><DialogTitle>Add Prescription</DialogTitle></DialogHeader>
+          <form onSubmit={handleCreateInpatientPrescription} className="space-y-3">
+            <div>
+              <Label className="text-xs">Notes (optional)</Label>
+              <Textarea
+                rows={2}
+                value={prescriptionForm.notes}
+                onChange={e => setPrescriptionForm(p => ({ ...p, notes: e.target.value }))}
+                placeholder="e.g., Take after meals; review in 3 days"
+              />
+            </div>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs">Medicines *</Label>
+                <Button type="button" size="sm" variant="outline" onClick={() => setPrescriptionForm(p => ({ ...p, items: [...p.items, { ...BLANK_RX_ITEM }] }))}>
+                  <Plus className="h-3 w-3 mr-1" /> Add Row
+                </Button>
+              </div>
+              {prescriptionForm.items.map((it, idx) => (
+                <div key={idx} className="border rounded p-2 space-y-2 bg-gray-50">
+                  <div className="flex items-start gap-2">
+                    <div className="flex-1 relative">
+                      <Input
+                        placeholder="Medicine name (search inventory or type free-text)"
+                        value={it.medicine_name}
+                        onChange={e => {
+                          const v = e.target.value;
+                          setPrescriptionForm(p => {
+                            const next = [...p.items];
+                            next[idx] = { ...next[idx], medicine_name: v, medicine_id: '' };
+                            return { ...p, items: next };
+                          });
+                          searchMedicines(v, idx);
+                        }}
+                      />
+                      {medicineSearchTargetIdx === idx && medicineSearchResults.length > 0 && !it.medicine_id && (
+                        <div className="absolute z-20 w-full bg-white border rounded shadow-lg mt-1 max-h-40 overflow-y-auto">
+                          {medicineSearchResults.map(m => (
+                            <div
+                              key={m.id}
+                              className="px-3 py-1.5 hover:bg-blue-50 cursor-pointer text-xs"
+                              onClick={() => {
+                                setPrescriptionForm(p => {
+                                  const next = [...p.items];
+                                  next[idx] = {
+                                    ...next[idx],
+                                    medicine_id: m.id,
+                                    medicine_name: `${m.name}${m.strength ? ' ' + m.strength : ''}${m.dosage_form ? ' (' + m.dosage_form + ')' : ''}`,
+                                  };
+                                  return { ...p, items: next };
+                                });
+                                setMedicineSearchResults([]);
+                              }}
+                            >
+                              <span className="font-medium">{m.name}</span>
+                              {m.strength && <span className="text-gray-500"> · {m.strength}</span>}
+                              {m.dosage_form && <span className="text-gray-500"> · {m.dosage_form}</span>}
+                              <span className="text-gray-400 ml-1">₹{Number(m.unit_price || 0).toFixed(2)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      className="h-9 w-9 p-0"
+                      disabled={prescriptionForm.items.length === 1}
+                      onClick={() => setPrescriptionForm(p => ({ ...p, items: p.items.filter((_, i) => i !== idx) }))}
+                    >
+                      <Trash2 className="h-4 w-4 text-red-500" />
+                    </Button>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <div>
+                      <Label className="text-[10px] text-gray-500">Dosage *</Label>
+                      <Input
+                        placeholder="1 tab BD"
+                        value={it.dosage}
+                        onChange={e => setPrescriptionForm(p => {
+                          const next = [...p.items]; next[idx] = { ...next[idx], dosage: e.target.value }; return { ...p, items: next };
+                        })}
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-[10px] text-gray-500">Duration *</Label>
+                      <Input
+                        placeholder="5 days"
+                        value={it.duration}
+                        onChange={e => setPrescriptionForm(p => {
+                          const next = [...p.items]; next[idx] = { ...next[idx], duration: e.target.value }; return { ...p, items: next };
+                        })}
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-[10px] text-gray-500">Quantity</Label>
+                      <Input
+                        type="number"
+                        min="1"
+                        value={it.quantity_prescribed}
+                        onChange={e => setPrescriptionForm(p => {
+                          const next = [...p.items]; next[idx] = { ...next[idx], quantity_prescribed: e.target.value }; return { ...p, items: next };
+                        })}
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <Label className="text-[10px] text-gray-500">Instructions (optional)</Label>
+                    <Input
+                      placeholder="After food, with water, etc."
+                      value={it.instructions}
+                      onChange={e => setPrescriptionForm(p => {
+                        const next = [...p.items]; next[idx] = { ...next[idx], instructions: e.target.value }; return { ...p, items: next };
+                      })}
+                    />
+                  </div>
+                </div>
+              ))}
+              <p className="text-[11px] text-gray-500">Linking a row to inventory (by clicking a search suggestion) bills it via pharmacy. Free-text rows are advisory only and won't be billed.</p>
+            </div>
+            <Button type="submit" className="w-full" disabled={loading}>
+              {loading ? 'Saving…' : 'Create Prescription'}
+            </Button>
+          </form>
+        </DialogContent>
+      </Dialog>
+
       {/* Lab Order Dialog */}
       <Dialog open={showLabOrderDialog} onOpenChange={setShowLabOrderDialog}>
         <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
@@ -6665,9 +8699,55 @@ const InpatientModule = () => {
               <Label>Discharge Summary</Label>
               <Textarea value={dischargeForm.discharge_summary} onChange={e => setDischargeForm(p => ({ ...p, discharge_summary: e.target.value }))} rows={2} />
             </div>
-            <div>
-              <Label>Medications Prescribed</Label>
-              <Textarea value={dischargeForm.medications_prescribed} onChange={e => setDischargeForm(p => ({ ...p, medications_prescribed: e.target.value }))} rows={2} />
+            <div className="border rounded p-3 bg-gray-50 space-y-2">
+              <div className="flex items-center justify-between">
+                <Label className="font-semibold">Take-Home Medications</Label>
+                <Button type="button" size="sm" variant="outline" onClick={() => setDischargeForm(p => ({
+                  ...p,
+                  take_home_medications: [...(p.take_home_medications || []), { medicine_id: '', medicine_name: '', dosage: '', frequency: '', duration: '', quantity: '', instructions: '' }],
+                }))}>
+                  <Plus className="h-3 w-3 mr-1" /> Add Medicine
+                </Button>
+              </div>
+              <p className="text-[11px] text-gray-500">List the prescription the patient takes home. This is separate from drugs given during the stay.</p>
+              {(dischargeForm.take_home_medications || []).length === 0 ? (
+                <p className="text-xs text-gray-500 italic">No take-home medications.</p>
+              ) : (
+                <div className="space-y-2">
+                  {(dischargeForm.take_home_medications || []).map((m, idx) => (
+                    <div key={idx} className="border rounded p-2 bg-white space-y-1">
+                      <div className="flex items-start gap-2">
+                        <Input
+                          placeholder="Medicine name (e.g., Paracetamol 500mg)"
+                          value={m.medicine_name}
+                          onChange={e => setDischargeForm(p => {
+                            const next = [...(p.take_home_medications || [])];
+                            next[idx] = { ...next[idx], medicine_name: e.target.value };
+                            return { ...p, take_home_medications: next };
+                          })}
+                          className="flex-1"
+                        />
+                        <Button type="button" size="sm" variant="ghost" className="h-9 w-9 p-0"
+                          onClick={() => setDischargeForm(p => ({ ...p, take_home_medications: (p.take_home_medications || []).filter((_, i) => i !== idx) }))}>
+                          <Trash2 className="h-4 w-4 text-red-500" />
+                        </Button>
+                      </div>
+                      <div className="grid grid-cols-4 gap-2">
+                        <Input placeholder="Dosage" value={m.dosage}
+                          onChange={e => setDischargeForm(p => { const next = [...(p.take_home_medications || [])]; next[idx] = { ...next[idx], dosage: e.target.value }; return { ...p, take_home_medications: next }; })} />
+                        <Input placeholder="Frequency (BD/TID)" value={m.frequency}
+                          onChange={e => setDischargeForm(p => { const next = [...(p.take_home_medications || [])]; next[idx] = { ...next[idx], frequency: e.target.value }; return { ...p, take_home_medications: next }; })} />
+                        <Input placeholder="Duration (5 days)" value={m.duration}
+                          onChange={e => setDischargeForm(p => { const next = [...(p.take_home_medications || [])]; next[idx] = { ...next[idx], duration: e.target.value }; return { ...p, take_home_medications: next }; })} />
+                        <Input type="number" min="1" placeholder="Qty" value={m.quantity}
+                          onChange={e => setDischargeForm(p => { const next = [...(p.take_home_medications || [])]; next[idx] = { ...next[idx], quantity: e.target.value }; return { ...p, take_home_medications: next }; })} />
+                      </div>
+                      <Input placeholder="Instructions (after meals, with water…)" value={m.instructions}
+                        onChange={e => setDischargeForm(p => { const next = [...(p.take_home_medications || [])]; next[idx] = { ...next[idx], instructions: e.target.value }; return { ...p, take_home_medications: next }; })} />
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
@@ -6689,10 +8769,63 @@ const InpatientModule = () => {
                 <Textarea value={dischargeForm.activity_restrictions} onChange={e => setDischargeForm(p => ({ ...p, activity_restrictions: e.target.value }))} rows={2} />
               </div>
             </div>
-            <Button type="submit" className="w-full" disabled={loading}>
-              {loading ? 'Discharging...' : 'Confirm Discharge'}
+            {dischargeBlockers.length > 0 && (
+              <div className="border border-red-300 bg-red-50 rounded p-3 text-sm space-y-2">
+                <p className="font-semibold text-red-800">Discharge blocked by safety gate{dischargeBlockers.length > 1 ? 's' : ''}:</p>
+                <ul className="list-disc ml-5 space-y-1 text-red-700">
+                  {dischargeBlockers.map(b => (
+                    <li key={b.code}>
+                      <span className="font-medium">{b.code.replace(/_/g, ' ')}</span>: {b.message}
+                      {b.code === 'outstanding_balance' && typeof b.balance === 'number' && (
+                        <span className="block text-xs">Balance: ₹{b.balance.toFixed(2)} (billed ₹{b.total_billed?.toFixed(2)}, deposited ₹{b.net_deposits?.toFixed(2)})</span>
+                      )}
+                      {b.code === 'unacknowledged_critical_alerts' && (
+                        <span className="block text-xs">{b.alert_count} alert(s){b.parameters?.length ? ` — ${b.parameters.join(', ')}` : ''}</span>
+                      )}
+                      {b.code === 'missing_surgical_consent' && (
+                        <span className="block text-xs">{b.completed_ot_count} completed OT procedure(s) without recorded consent.</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+                <div>
+                  <Label className="text-red-800">Override reason (required) *</Label>
+                  <Textarea required value={overrideReason} onChange={e => setOverrideReason(e.target.value)}
+                    rows={2} placeholder="Explain why this discharge should proceed despite the gate(s)…" />
+                </div>
+                <p className="text-xs text-red-600">Submitting will record this override in the audit log against your account.</p>
+              </div>
+            )}
+            <Button type="submit" className="w-full" disabled={loading} variant={dischargeBlockers.length > 0 ? 'destructive' : 'default'}>
+              {loading ? 'Discharging...' : (dischargeBlockers.length > 0 ? 'Override and Confirm Discharge' : 'Confirm Discharge')}
             </Button>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Cancel Admission Bill Dialog */}
+      <Dialog open={cancelBillDialog.open} onOpenChange={(o) => !o && setCancelBillDialog({ open: false, bill: null, reason: '' })}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Cancel bill {cancelBillDialog.bill?.bill_number}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            <p className="text-gray-600">
+              Cancelling releases every visit / OT / ancillary / prescription / lab order on this bill so they can be billed again. Bills with recorded payments cannot be cancelled — refund first.
+            </p>
+            <div>
+              <Label>Reason *</Label>
+              <Textarea required value={cancelBillDialog.reason}
+                onChange={e => setCancelBillDialog(p => ({ ...p, reason: e.target.value }))}
+                rows={2} placeholder="Why is this bill being cancelled?" />
+            </div>
+            <div className="flex gap-2 justify-end">
+              <Button variant="outline" onClick={() => setCancelBillDialog({ open: false, bill: null, reason: '' })}>Keep bill</Button>
+              <Button variant="destructive" onClick={handleCancelBill} disabled={loading || !cancelBillDialog.reason.trim()}>
+                {loading ? 'Cancelling…' : 'Cancel bill'}
+              </Button>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
 

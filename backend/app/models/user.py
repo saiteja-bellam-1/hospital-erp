@@ -43,6 +43,7 @@ class User(Base):
     qualification = Column(String(255))   # Doctor's qualifications
     experience_years = Column(Integer)     # Years of experience
     is_active = Column(Boolean, default=True)
+    must_change_password = Column(Boolean, default=False, nullable=False)
     role_id = Column(Integer, ForeignKey("user_roles.id"), nullable=False)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"))
     created_at = Column(DateTime(timezone=True), server_default=func.now())

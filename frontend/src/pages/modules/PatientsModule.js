@@ -26,7 +26,7 @@ const PatientsModule = () => {
   const [loadingAdmissions, setLoadingAdmissions] = useState(false);
 
   const [patientForm, setPatientForm] = useState({
-    first_name: '', last_name: '', date_of_birth: '', gender: '',
+    first_name: '', last_name: '', date_of_birth: '', age: '', gender: '',
     primary_phone: '', email: '', blood_group: '', marital_status: '',
     abha_id: '', address_line1: '', address_line2: '', village: '',
     mandal: '', district: '', emergency_contact_name: '',
@@ -73,9 +73,17 @@ const PatientsModule = () => {
       toast({ variant: 'destructive', title: 'Error', description: 'First name, last name and phone are required' });
       return;
     }
+    if (!patientForm.age) {
+      toast({ variant: 'destructive', title: 'Error', description: 'Age is required (enter age or pick a date of birth)' });
+      return;
+    }
     setRegistering(true);
     try {
-      await axios.post('/api/patients/', patientForm);
+      await axios.post('/api/patients/', {
+        ...patientForm,
+        age: parseInt(patientForm.age),
+        date_of_birth: patientForm.date_of_birth || null,
+      });
       toast({ title: 'Success', description: 'Patient registered successfully' });
       setShowRegisterDialog(false);
       resetForm();
@@ -205,7 +213,33 @@ const PatientsModule = () => {
               </div>
               <div>
                 <Label>Date of Birth</Label>
-                <Input type="date" value={patientForm.date_of_birth} onChange={(e) => setPatientForm({ ...patientForm, date_of_birth: e.target.value })} />
+                <Input
+                  type="date"
+                  value={patientForm.date_of_birth}
+                  onChange={(e) => {
+                    const dob = e.target.value;
+                    const updates = { date_of_birth: dob };
+                    if (dob) {
+                      const today = new Date();
+                      const birth = new Date(dob);
+                      let calcAge = today.getFullYear() - birth.getFullYear();
+                      if (today.getMonth() < birth.getMonth() || (today.getMonth() === birth.getMonth() && today.getDate() < birth.getDate())) calcAge--;
+                      updates.age = calcAge >= 0 ? String(calcAge) : '';
+                    }
+                    setPatientForm(prev => ({ ...prev, ...updates }));
+                  }}
+                />
+              </div>
+              <div>
+                <Label>Age (years) <span className="text-red-500">*</span></Label>
+                <Input
+                  type="number"
+                  min="0"
+                  max="150"
+                  placeholder="Enter age"
+                  value={patientForm.age}
+                  onChange={(e) => setPatientForm({ ...patientForm, age: e.target.value, date_of_birth: '' })}
+                />
               </div>
               <div>
                 <Label>Gender</Label>

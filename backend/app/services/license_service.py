@@ -83,6 +83,61 @@ def get_license_status(db: Session) -> dict:
     }
 
 
+def inspect_license_file(file_content: str) -> dict:
+    """Dry-run: parse + verify a .lic file and report compatibility WITHOUT
+    touching the database.
+
+    Returns a structured payload the UI can display before the user commits to
+    applying the license. Never raises on machine-ID mismatch — instead the
+    mismatch is reported as a flag so the caller can decide what to do (offer
+    rebind, etc).
+    """
+    from app.utils.machine_id import get_machine_id
+
+    try:
+        license_data = verify_license_file(file_content)
+    except ValueError as e:
+        return {
+            "valid_signature": False,
+            "error": str(e),
+        }
+
+    license_machine_id = license_data.get("machine_id") or ""
+    current_machine_id = get_machine_id()
+    machine_match = (not license_machine_id) or (license_machine_id == current_machine_id)
+
+    try:
+        issued_at = datetime.fromisoformat(license_data["issued_at"]).replace(tzinfo=None)
+        expires_at = datetime.fromisoformat(license_data["expires_at"]).replace(tzinfo=None)
+        date_error = None
+    except Exception as e:
+        issued_at = None
+        expires_at = None
+        date_error = str(e)
+
+    status = compute_license_status(expires_at) if expires_at else None
+    days_remaining = (expires_at - datetime.utcnow()).days if expires_at else None
+
+    return {
+        "valid_signature": True,
+        "machine_match": machine_match,
+        "license_machine_id": license_machine_id,
+        "current_machine_id": current_machine_id,
+        "license_id": license_data.get("license_id"),
+        "hospital_id": license_data.get("hospital_id"),
+        "hospital_name": license_data.get("hospital_name"),
+        "plan": license_data.get("plan"),
+        "max_users": license_data.get("max_users"),
+        "features": license_data.get("features", []),
+        "seller_info": license_data.get("seller"),
+        "issued_at": issued_at.isoformat() if issued_at else None,
+        "expires_at": expires_at.isoformat() if expires_at else None,
+        "status": status,
+        "days_remaining": days_remaining,
+        "date_error": date_error,
+    }
+
+
 def upload_license(db: Session, file_content: str, uploaded_by: int = None) -> dict:
     """Verify and store a new license file."""
     from app.utils.machine_id import get_machine_id

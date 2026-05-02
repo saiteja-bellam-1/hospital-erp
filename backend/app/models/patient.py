@@ -30,6 +30,9 @@ class Patient(Base):
     address = Column(Text)  # kept for backward compat / display
     referred_by = Column(String(100))
     is_active = Column(Boolean, default=True)
+    # B7 — flag stub records created via emergency quick-admit so reception
+    # can complete KYC (full name, DOB, address, ID proof) afterwards.
+    registration_complete = Column(Boolean, default=True, nullable=False)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

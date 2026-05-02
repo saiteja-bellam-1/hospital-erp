@@ -6,7 +6,7 @@ import { Label } from '../components/ui/label';
 import {
   Building2, Database, UserCog, Shield, FolderSync,
   ChevronRight, ChevronLeft, Check, Plus, X, Eye, EyeOff,
-  AlertCircle, CheckCircle2, FolderOpen
+  AlertCircle, CheckCircle2, FolderOpen, Upload, Cpu
 } from 'lucide-react';
 
 const STEPS = [
@@ -14,6 +14,7 @@ const STEPS = [
   { id: 'hospital', title: 'Hospital Info',     icon: Building2 },
   { id: 'database', title: 'Database Location', icon: Database },
   { id: 'admin',    title: 'Admin Account',     icon: UserCog },
+  { id: 'license',  title: 'License',           icon: Shield },
   { id: 'backup',   title: 'Backup Locations',  icon: FolderSync },
   { id: 'review',   title: 'Review & Install',  icon: Check },
 ];
@@ -39,9 +40,55 @@ const SetupWizard = ({ onComplete }) => {
     admin_first_name: '',
     admin_last_name: '',
     backup_locations: [],
+    license_file_content: '',
+    license_filename: '',
   });
 
   const [newBackupPath, setNewBackupPath] = useState('');
+  const [machineInfo, setMachineInfo] = useState(null);
+  const [licenseInspect, setLicenseInspect] = useState(null);
+  const [licenseChecking, setLicenseChecking] = useState(false);
+
+  React.useEffect(() => {
+    fetch('/api/license/machine-id')
+      .then((r) => r.json())
+      .then(setMachineInfo)
+      .catch(() => setMachineInfo(null));
+  }, []);
+
+  const handleLicenseFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.name.endsWith('.lic')) {
+      setLicenseInspect({ valid_signature: false, error: 'File must be a .lic license file' });
+      return;
+    }
+    setLicenseChecking(true);
+    setLicenseInspect(null);
+    try {
+      // Dry-run inspect (no DB write)
+      const fd = new FormData();
+      fd.append('file', file);
+      const inspectRes = await fetch('/api/license/validate', { method: 'POST', body: fd });
+      const inspectData = await inspectRes.json();
+      setLicenseInspect(inspectData);
+      // Stash the raw text so we can ship it to /api/setup/complete
+      const text = await file.text();
+      updateField('license_file_content', text);
+      updateField('license_filename', file.name);
+    } catch (err) {
+      setLicenseInspect({ valid_signature: false, error: 'Could not validate license file' });
+    } finally {
+      setLicenseChecking(false);
+      e.target.value = '';
+    }
+  };
+
+  const clearLicense = () => {
+    updateField('license_file_content', '');
+    updateField('license_filename', '');
+    setLicenseInspect(null);
+  };
 
   const updateField = (field, value) => {
     setFormData(prev => ({ ...prev, [field]: value }));
@@ -106,6 +153,10 @@ const SetupWizard = ({ onComplete }) => {
           formData.admin_password.length >= 6 &&
           formData.admin_password === formData.admin_confirm_password
         );
+      case 'license':
+        // Step is optional, but if a file IS chosen it must be valid for this machine
+        if (!formData.license_file_content) return true;
+        return !!(licenseInspect && licenseInspect.valid_signature && licenseInspect.machine_match);
       default:
         return true;
     }
@@ -130,6 +181,7 @@ const SetupWizard = ({ onComplete }) => {
           admin_first_name: formData.admin_first_name || 'System',
           admin_last_name: formData.admin_last_name || 'Administrator',
           backup_locations: formData.backup_locations,
+          license_file_content: formData.license_file_content || '',
         }),
       });
       const data = await res.json();
@@ -354,6 +406,124 @@ const SetupWizard = ({ onComplete }) => {
           </div>
         );
 
+      case 'license':
+        return (
+          <div className="space-y-4">
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-sm text-blue-800">
+              Each license is bound to <strong>this specific machine</strong>.
+              Send your machine ID to your vendor to receive a <code>.lic</code> file,
+              then upload it here. This step is optional — you can upload the
+              license later from <strong>Dashboard &gt; License</strong>.
+            </div>
+
+            {machineInfo && (
+              <div className="space-y-2">
+                <Label>This machine&apos;s ID</Label>
+                <div className="flex items-center gap-2">
+                  <code className="flex-1 text-lg font-bold tracking-widest bg-gray-100 px-3 py-2 rounded select-all">
+                    {machineInfo.machine_id}
+                  </code>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      navigator.clipboard.writeText(machineInfo.machine_id);
+                    }}
+                  >
+                    Copy
+                  </Button>
+                </div>
+                <p className="text-xs text-gray-500 flex items-center gap-1">
+                  <Cpu className="w-3 h-3" />
+                  {machineInfo.hostname} · {machineInfo.os}
+                </p>
+              </div>
+            )}
+
+            <div className="space-y-2">
+              <Label>License file (.lic)</Label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="file"
+                  accept=".lic"
+                  onChange={handleLicenseFile}
+                  className="hidden"
+                  id="wizard-license-upload"
+                />
+                <label htmlFor="wizard-license-upload" className="flex-1">
+                  <Button asChild variant="outline" className="w-full">
+                    <span>
+                      <Upload className="w-4 h-4 mr-2" />
+                      {formData.license_filename || 'Choose .lic file'}
+                    </span>
+                  </Button>
+                </label>
+                {formData.license_filename && (
+                  <Button type="button" variant="outline" onClick={clearLicense}>
+                    <X className="w-4 h-4" />
+                  </Button>
+                )}
+              </div>
+              {licenseChecking && (
+                <p className="text-sm text-muted-foreground">Verifying license…</p>
+              )}
+            </div>
+
+            {licenseInspect && !licenseChecking && (
+              <div className={`rounded-lg p-4 text-sm border ${
+                licenseInspect.valid_signature && licenseInspect.machine_match
+                  ? 'bg-green-50 border-green-200 text-green-800'
+                  : 'bg-red-50 border-red-200 text-red-800'
+              }`}>
+                {!licenseInspect.valid_signature ? (
+                  <div className="flex items-start gap-2">
+                    <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                    <div>
+                      <div className="font-semibold">Invalid license</div>
+                      <div>{licenseInspect.error || 'Signature verification failed.'}</div>
+                    </div>
+                  </div>
+                ) : !licenseInspect.machine_match ? (
+                  <div className="flex items-start gap-2">
+                    <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                    <div>
+                      <div className="font-semibold">Wrong machine</div>
+                      <div>
+                        License is bound to{' '}
+                        <code>{licenseInspect.license_machine_id}</code> but this
+                        machine is <code>{licenseInspect.current_machine_id}</code>.
+                      </div>
+                      <div className="mt-1 text-xs">
+                        Ask your vendor to re-issue the license for this machine
+                        (or use the rebind flow on the License page after setup).
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-start gap-2">
+                    <CheckCircle2 className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                    <div className="space-y-0.5">
+                      <div className="font-semibold">License is valid for this machine</div>
+                      <div>{licenseInspect.hospital_name} · {licenseInspect.plan} plan</div>
+                      <div>
+                        Expires {licenseInspect.expires_at
+                          ? new Date(licenseInspect.expires_at).toLocaleDateString()
+                          : 'unknown'}
+                        {' '}({licenseInspect.days_remaining} days remaining)
+                      </div>
+                      {(licenseInspect.features || []).length > 0 && (
+                        <div className="text-xs">
+                          Modules: {licenseInspect.features.join(', ')}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+
       case 'backup':
         return (
           <div className="space-y-4">
@@ -419,6 +589,12 @@ const SetupWizard = ({ onComplete }) => {
               <ReviewRow label="Database Location" value={formData.db_location || 'Default (data/ folder)'} />
               <ReviewRow label="Admin Username" value={formData.admin_username} />
               <ReviewRow label="Admin Email" value={formData.admin_email} />
+              <ReviewRow
+                label="License"
+                value={formData.license_filename
+                  ? `${formData.license_filename} (verified for this machine)`
+                  : 'Will upload later'}
+              />
               <ReviewRow
                 label="Backup Locations"
                 value={formData.backup_locations.length > 0

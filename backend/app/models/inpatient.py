@@ -67,10 +67,31 @@ class Admission(Base):
     attending_physician_id = Column(Integer, ForeignKey("users.id"))
     bed_number = Column(String(10))  # legacy free-text field
     bed_id = Column(Integer, ForeignKey("beds.id"), nullable=True)  # structured bed reference
+    # Snapshot of the room rate at admission time. Used to bill the stay
+    # segment before the first room transfer at the rate in effect when the
+    # patient was admitted, even if the room rate (or room) changed later.
+    initial_room_charge_per_day = Column(Float, nullable=True)
     # Phase 4 — readmission tracking (populated on admission create)
     is_readmission = Column(Boolean, default=False)
     previous_admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=True)
     days_since_last_discharge = Column(Integer, nullable=True)
+    # B7 — Emergency / casualty fields (only meaningful when admission_type='emergency')
+    triage_level = Column(Integer, nullable=True)  # 1 (resuscitation) … 5 (non-urgent), per ESI/CTAS
+    chief_complaint = Column(Text, nullable=True)
+    arrival_mode = Column(String(20), nullable=True)  # walk_in, ambulance, referred, police
+    ambulance_details = Column(Text, nullable=True)  # vehicle no., paramedic name, vitals on arrival
+    is_mlc = Column(Boolean, default=False)
+    mlc_number = Column(String(50), nullable=True)
+    mlc_type = Column(String(30), nullable=True)  # rta, assault, poisoning, burn, sexual_assault, attempted_suicide, other
+    police_station_informed = Column(String(200), nullable=True)
+    mlc_informed_at = Column(DateTime(timezone=True), nullable=True)
+    # B7.6 — Observation case (≤24h, room rent skipped, lighter discharge gate)
+    is_observation = Column(Boolean, default=False, nullable=False)
+    # B7.7 — Deposit waiver (e.g. emergency cases per Supreme Court / CEA Act)
+    deposit_waived = Column(Boolean, default=False, nullable=False)
+    deposit_waiver_reason = Column(Text, nullable=True)
+    deposit_waived_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    deposit_waived_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -104,6 +125,10 @@ class DischargeRecord(Base):
     diagnosis_on_discharge = Column(Text)
     treatment_given = Column(Text)
     medications_prescribed = Column(Text)
+    # Structured take-home prescription set on discharge. Distinct from inpatient
+    # ward prescriptions (which are administered during the stay). Each item is
+    # {medicine_id?, medicine_name, dosage, frequency, duration, quantity, instructions}.
+    take_home_medications = Column(JSON, nullable=True)
     follow_up_instructions = Column(Text)
     follow_up_date = Column(DateTime)
     diet_instructions = Column(Text)
@@ -126,6 +151,51 @@ class DischargeRecord(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     admission = relationship("Admission", back_populates="discharge")
+
+
+class DAMARecord(Base):
+    """Discharge Against Medical Advice — structured liability record.
+
+    Indian context: references Section 88/92 IPC ('absolves staff of
+    consequences when patient leaves against medical advice'). Mandatory for
+    any DAMA discharge; the unsigned form has no legal weight."""
+    __tablename__ = "dama_records"
+
+    id = Column(Integer, primary_key=True, index=True)
+    discharge_id = Column(Integer, ForeignKey("discharge_records.id"), nullable=False, unique=True)
+    admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=False)
+    patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
+
+    # Clinical context
+    attending_doctor_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    medical_advice_given = Column(Text, nullable=False)
+    risks_explained = Column(Text, nullable=False)
+    language_used = Column(String(30), default="english")
+
+    # Acknowledgements (both must be True at submit-time; persisted for audit)
+    patient_acknowledges_advice = Column(Boolean, default=False, nullable=False)
+    patient_absolves_hospital = Column(Boolean, default=False, nullable=False)
+
+    # Signatures
+    signed_by = Column(String(20), default="patient")  # patient, guardian
+    guardian_name = Column(String(200), nullable=True)
+    guardian_relationship = Column(String(100), nullable=True)
+    primary_signature = Column(Text, nullable=False)  # typed name or base64 image
+    primary_signature_type = Column(String(10), default="typed")  # typed, drawn
+
+    witness_name = Column(String(200), nullable=False)
+    witness_designation = Column(String(100), nullable=True)  # 'Nurse', 'Doctor', 'Senior Resident', etc.
+    witness_signature = Column(Text, nullable=False)
+    witness_signature_type = Column(String(10), default="typed")
+
+    notes = Column(Text, nullable=True)
+
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    discharge = relationship("DischargeRecord", foreign_keys=[discharge_id])
+    admission = relationship("Admission", foreign_keys=[admission_id])
 
 
 class InpatientRateConfig(Base):
@@ -153,6 +223,16 @@ class PatientVisit(Base):
     charge_amount = Column(Numeric(10, 2), default=0.00)
     billed = Column(Boolean, default=False)            # legacy: kept for backwards compat with existing rows
     bill_id = Column(Integer, ForeignKey("bills.id"), nullable=True)  # which bill (interim or final) consumed this visit
+    auto_posted = Column(Boolean, default=False)       # True if created by the nightly daily-charges job
+    # Optional structured ward-round checklist. Free-text `notes` remains the
+    # primary clinical narrative; these checkboxes drive the "rounded today"
+    # dashboard signals and discharge-summary auto-fill.
+    vitals_reviewed = Column(Boolean, default=False)
+    labs_reviewed = Column(Boolean, default=False)
+    pain_assessed = Column(Boolean, default=False)
+    mobility_checked = Column(Boolean, default=False)
+    plan_for_today = Column(Text, nullable=True)
+    family_updated = Column(Boolean, default=False)
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -266,6 +346,118 @@ class DietOrder(Base):
     ordered_by = relationship("User", foreign_keys=[ordered_by_id])
 
 
+class CodeBlueEvent(Base):
+    """Code Blue / Rapid Response Team activation log. One row per activation,
+    reportable for monthly safety stats (NABH chapter on emergency response)."""
+    __tablename__ = "code_blue_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=True)  # may be a visitor / outpatient
+    patient_id = Column(Integer, ForeignKey("patients.id"), nullable=True)
+    event_type = Column(String(20), default="code_blue")  # code_blue, rrt
+    event_datetime = Column(DateTime(timezone=True), nullable=False)
+    location = Column(String(200), nullable=False)        # e.g. 'ICU bed 3', 'Reception waiting area'
+    activated_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    response_time_seconds = Column(Integer, nullable=True)  # from activation to first responder arrival
+    team_members = Column(Text, nullable=True)              # comma-separated names / ids
+    interventions = Column(Text, nullable=True)             # CPR, defibrillation, intubation, drugs given
+    outcome = Column(String(30), nullable=False)            # rosc, transferred_icu, expired, false_alarm
+    debrief_notes = Column(Text, nullable=True)
+
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    admission = relationship("Admission", foreign_keys=[admission_id])
+    patient = relationship("Patient", foreign_keys=[patient_id])
+    activated_by = relationship("User", foreign_keys=[activated_by_id])
+
+
+class ShiftHandover(Base):
+    """Structured nurse-to-nurse shift handover. One row per admission per
+    shift end; the incoming nurse acknowledges before her shift starts."""
+    __tablename__ = "shift_handovers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=False)
+    handover_date = Column(DateTime(timezone=True), nullable=False)
+    from_shift = Column(String(20), nullable=False)  # morning, afternoon, night
+    from_nurse_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    to_nurse_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    acknowledged_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Structured handover content
+    patient_status_summary = Column(Text, nullable=True)
+    pending_tasks = Column(Text, nullable=True)        # bullet list as text
+    alerts_to_watch = Column(Text, nullable=True)      # vital alarms, isolation, fall risk
+    family_communication = Column(Text, nullable=True) # what was said to relatives
+    on_call_contacts = Column(Text, nullable=True)
+    notes = Column(Text, nullable=True)
+
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    admission = relationship("Admission", foreign_keys=[admission_id])
+    from_nurse = relationship("User", foreign_keys=[from_nurse_id])
+    to_nurse = relationship("User", foreign_keys=[to_nurse_id])
+
+
+class LeaveOfAbsence(Base):
+    """Patient temporarily off-ward (pass-out / LOA). Bed remains held; room
+    rent is skipped for any day fully covered by an active LOA window. No
+    room rent skip is given for partial days — a patient who returns the same
+    afternoon still pays for that day's room."""
+    __tablename__ = "leave_of_absences"
+
+    id = Column(Integer, primary_key=True, index=True)
+    admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=False)
+    start_datetime = Column(DateTime(timezone=True), nullable=False)
+    expected_return_datetime = Column(DateTime(timezone=True), nullable=False)
+    actual_return_datetime = Column(DateTime(timezone=True), nullable=True)
+    reason = Column(Text, nullable=False)
+    approved_by_doctor_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    status = Column(String(20), default="active")  # active, returned, no_show, cancelled
+    notes = Column(Text, nullable=True)
+    bed_held = Column(Boolean, default=True)
+
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    admission = relationship("Admission", foreign_keys=[admission_id])
+    approved_by_doctor = relationship("User", foreign_keys=[approved_by_doctor_id])
+
+
+class DietMealLog(Base):
+    """Per-meal serving log against an active DietOrder. One row per meal
+    served (or refused/partial). Drives both the audit trail and the kitchen
+    ticket counts."""
+    __tablename__ = "diet_meal_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    diet_order_id = Column(Integer, ForeignKey("diet_orders.id"), nullable=False)
+    admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=False)
+    meal_date = Column(DateTime(timezone=True), nullable=False)
+    meal_time = Column(String(20), nullable=False)  # breakfast, lunch, dinner, snack_morning, snack_evening
+    status = Column(String(20), default="served")   # served, refused, partial, missed
+    notes = Column(Text, nullable=True)
+    served_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    diet_order = relationship("DietOrder", foreign_keys=[diet_order_id])
+    admission = relationship("Admission", foreign_keys=[admission_id])
+
+    __table_args__ = (
+        UniqueConstraint("admission_id", "meal_date", "meal_time", name="uq_diet_meal_per_admission"),
+    )
+
+
 class VitalSigns(Base):
     __tablename__ = "vital_signs"
 
@@ -325,6 +517,9 @@ class MedicationAdministration(Base):
     notes = Column(Text, nullable=True)
     is_prn = Column(Boolean, default=False, nullable=False)
     prn_indication = Column(Text, nullable=True)      # why PRN dose was given
+    # If this dose caused an adverse reaction, link to the Incident filed
+    # against it. Bidirectional with Incident.medication_administration_id.
+    incident_id = Column(Integer, ForeignKey("incidents.id"), nullable=True)
 
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -647,6 +842,10 @@ class Incident(Base):
     investigated_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     closed_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     closed_at = Column(DateTime(timezone=True), nullable=True)
+    # When this incident was filed against a specific medication administration
+    # (e.g., adverse drug reaction), link back. Bidirectional with
+    # MedicationAdministration.incident_id.
+    medication_administration_id = Column(Integer, ForeignKey("medication_administrations.id"), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
@@ -678,6 +877,11 @@ class BedTransferHistory(Base):
     accepting_doctor_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     accepting_nurse_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     accepted_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Snapshot of room rates at transfer time. Used to bill the stay segments
+    # before/after this transfer at the rate that was actually in effect.
+    from_room_charge_per_day = Column(Float, nullable=True)
+    to_room_charge_per_day = Column(Float, nullable=True)
 
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -798,3 +1002,65 @@ class BillSplit(Base):
 
     bill = relationship("Bill", back_populates="splits")
     tpa = relationship("TPACompany", foreign_keys=[tpa_id])
+
+
+# ============================================================
+# B6 — Body release / mortuary / post-mortem coordination
+# ============================================================
+class BodyReleaseRecord(Base):
+    """Tracks the body from death → mortuary → (optional autopsy) → release.
+    One row per discharge (death). Distinct from DischargeRecord so the
+    mortuary workflow can evolve without bloating discharge."""
+    __tablename__ = "body_release_records"
+
+    id = Column(Integer, primary_key=True, index=True)
+    admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=False, unique=True)
+    discharge_id = Column(Integer, ForeignKey("discharge_records.id"), nullable=False)
+
+    # Mortuary tracking
+    mortuary_slot = Column(String(20), nullable=True)
+    body_in_mortuary_at = Column(DateTime(timezone=True), nullable=True)
+    body_out_mortuary_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Embalming (required for long-distance transport / delayed handover)
+    embalming_done = Column(Boolean, default=False, nullable=False)
+    embalming_at = Column(DateTime(timezone=True), nullable=True)
+    embalmed_by = Column(String(200), nullable=True)
+
+    # Post-mortem (typically required for MLC)
+    post_mortem_required = Column(Boolean, default=False, nullable=False)
+    pm_hospital = Column(String(200), nullable=True)
+    pm_doctor = Column(String(200), nullable=True)
+    pm_referred_at = Column(DateTime(timezone=True), nullable=True)
+    pm_completed_at = Column(DateTime(timezone=True), nullable=True)
+    pm_report_received = Column(Boolean, default=False, nullable=False)
+    pm_report_number = Column(String(100), nullable=True)
+
+    # Police clearance (mandatory for MLC body release)
+    police_noc_required = Column(Boolean, default=False, nullable=False)
+    police_noc_received = Column(Boolean, default=False, nullable=False)
+    police_noc_number = Column(String(100), nullable=True)
+    police_noc_received_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Release details
+    body_released = Column(Boolean, default=False, nullable=False)
+    body_released_at = Column(DateTime(timezone=True), nullable=True)
+    released_to_name = Column(String(200), nullable=True)
+    released_to_relationship = Column(String(50), nullable=True)
+    released_to_phone = Column(String(20), nullable=True)
+    released_to_id_proof_type = Column(String(30), nullable=True)  # aadhar, voter, license, passport, other
+    released_to_id_proof_number = Column(String(50), nullable=True)
+    released_to_address = Column(Text, nullable=True)
+    witness_name = Column(String(200), nullable=True)
+    witness_phone = Column(String(20), nullable=True)
+    witness_id_proof = Column(String(100), nullable=True)
+    transport_details = Column(Text, nullable=True)  # vehicle no., ambulance, hearse
+    notes = Column(Text, nullable=True)
+    released_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    admission = relationship("Admission", foreign_keys=[admission_id])
+    discharge = relationship("DischargeRecord", foreign_keys=[discharge_id])
+    released_by = relationship("User", foreign_keys=[released_by_id])

@@ -17,6 +17,7 @@ import {
   TestTube,
   Heart,
   ClipboardList,
+  Lock,
   Menu,
   X,
 } from 'lucide-react';
@@ -1470,6 +1471,387 @@ The application stores all data in a local SQLite database. Regular backups prot
 - Store at least one backup **off-site** (external drive stored elsewhere)
 
 > **Important**: The backup copies the entire database. To restore, simply replace the main database file with a backup copy and restart the application.
+        `
+      },
+    }
+  },
+  'roles-permissions': {
+    title: 'Roles & Permissions',
+    icon: <Lock className="h-4 w-4" />,
+    sections: {
+      'roles-overview': {
+        title: 'Roles Overview',
+        content: `
+# Roles Overview
+
+KT HEALTH ERP ships with **12 system roles**, all seeded automatically on the first run and re-checked on every backend startup. You can also create custom non-system roles from the Role Permissions screen.
+
+## System roles
+
+| Role | Purpose |
+|------|---------|
+| super_admin | Full system access — manages everything (bypasses all permission checks) |
+| hospital_admin | Hospital-level admin — manages users, settings, operations (bypasses checks) |
+| doctor | Clinical access — consultations, prescriptions, lab orders, inpatient clinical work |
+| nurse | Patient care — vitals, MAR, I/O, nursing notes, housekeeping |
+| inpatient_admin | Bed/ward operations, room rates, nurse assignments, housekeeping |
+| billing_admin | Bills, finalisation, refunds, packages, TPA / insurance catalogs |
+| lab_admin | Lab module configuration — tests, rates, templates, equipment |
+| lab_technician | Lab operations — process orders and enter results |
+| pharmacy_admin | Pharmacy configuration — inventory, drug rates, suppliers |
+| pharmacist | Medication dispensing and basic inventory |
+| frontdesk | Reception duties — appointments, registration, queue, basic admissions |
+| receptionist | Reception + cash counter — registration, payments, basic admissions |
+
+## Bypass roles
+
+\`super_admin\` and \`hospital_admin\` skip permission checks at the decorator level. They still have role grants seeded so the Role Permissions admin grid renders consistently.
+
+## How a permission is checked
+
+When a user clicks anything in a module, the system checks in this order:
+
+1. Is the user **super_admin** or **hospital_admin**? → allow
+2. Is the **module enabled** (admin toggle)? → if no, deny
+3. Is the **module included in the active license**? → if no, deny
+4. Does **any of the user's roles** grant the required key? → if no, deny
+
+## Multi-role users
+
+Users can hold multiple roles via the many-to-many \`user_roles\` association. Permission grants are unioned across all roles — a user with both \`doctor\` and \`inpatient_admin\` gets the union of both grant sets.
+        `
+      },
+      'permission-catalog': {
+        title: 'Permission Catalog (All Modules)',
+        content: `
+# Permission Catalog
+
+Every permission key in the system, grouped by module.
+
+## Admin module
+
+| Key | Category | Description |
+|---|---|---|
+| manage_users | admin | Create and manage users |
+| manage_roles | admin | Create and manage roles |
+| manage_modules | admin | Enable / disable modules |
+| view_system_reports | admin | View system reports |
+| manage_settings | admin | Manage system settings |
+
+## Outpatient module
+
+| Key | Category | Description |
+|---|---|---|
+| schedule_appointments | user | Schedule patient appointments |
+| manage_schedules | admin | Manage doctor schedules |
+| register_patients | user | Register new patients |
+| manage_queues | user | Manage patient queues |
+| view_appointments | user | View appointment details |
+| cancel_appointments | user | Cancel appointments |
+
+## EHR module
+
+| Key | Category | Description |
+|---|---|---|
+| view_records | user | View patient electronic health records |
+| edit_records | user | Edit patient records |
+| create_prescriptions | user | Create prescriptions |
+| manage_templates | admin | Manage EHR templates |
+| view_history | user | View patient medical history |
+| generate_reports | user | Generate medical reports |
+
+## Laboratory module
+
+| Key | Category | Description |
+|---|---|---|
+| manage_tests | admin | Create and manage lab test types |
+| set_rates | admin | Set pricing for lab tests |
+| view_reports | user | View lab reports |
+| create_reports | user | Create lab reports |
+| manage_equipment | admin | Manage lab equipment |
+| manage_templates | admin | Create and edit report templates |
+
+## Pharmacy module
+
+| Key | Category | Description |
+|---|---|---|
+| manage_inventory | admin | Manage medication inventory |
+| set_drug_rates | admin | Set medication pricing |
+| dispense_medications | user | Dispense medications |
+| view_prescriptions | user | View patient prescriptions |
+| manage_suppliers | admin | Manage drug suppliers |
+| generate_reports | admin | Generate pharmacy reports |
+
+## Billing module
+
+| Key | Category | Description |
+|---|---|---|
+| manage_rates | admin | Manage service rates and pricing |
+| process_payments | user | Process patient payments |
+| generate_invoices | user | Generate patient invoices |
+| view_financial_reports | admin | View financial reports |
+| manage_insurance | admin | Manage insurance claims |
+| handle_refunds | admin | Process refunds |
+        `
+      },
+      'inpatient-permissions': {
+        title: 'Inpatient Permissions (58 keys)',
+        content: `
+# Inpatient Permissions
+
+The inpatient module uses 58 granular permission keys. Below is the full catalog, grouped by area of responsibility.
+
+## Read & dashboards
+
+| Key | Description |
+|---|---|
+| view_occupancy | View beds, rooms, dashboard, and admission lists |
+| view_vitals | View patient vital signs |
+| view_io | View fluid balance charts |
+| view_mar | View Medication Administration Record |
+| view_bill | View admission bills and previews |
+| view_documents | Download and list admission documents |
+| view_readmissions | View 30-day readmission reports |
+| view_mortality | View mortality records and death certificates |
+| view_roster | View the nurse shift roster |
+| view_procedures | View the procedure catalog |
+
+## Admission lifecycle
+
+| Key | Description |
+|---|---|
+| admit_patients | Create admissions |
+| update_admission | Update admission details |
+| discharge_patients | Create discharge records |
+| record_mortality | Record mortality details on death discharges |
+| transfer_beds | Change a patient's room/bed within an admission |
+| initiate_ward_transfer | Start a pending inter-ward transfer |
+| accept_ward_transfer | Accept or cancel a pending ward transfer |
+
+## Rooms, beds, wards, staffing
+
+| Key | Description |
+|---|---|
+| manage_beds | Create / update / delete rooms and beds |
+| manage_wards | Ward-level configuration |
+| set_room_rates | Set room rates and visit rate config |
+| manage_housekeeping | Change bed status (cleaning / dirty / maintenance) |
+| manage_reservations | Bed reservations CRUD + convert |
+| assign_nurses | Assign nurses to admissions per shift |
+| manage_roster | Build and edit the nurse shift roster |
+
+## Clinical documentation
+
+| Key | Description |
+|---|---|
+| record_vitals | Record patient vital signs during stay |
+| record_io | Record intake / output fluid balance entries |
+| administer_medications | Administer scheduled and PRN medications, update MAR |
+| manage_nursing_notes | Create and edit nursing notes |
+| manage_diet_orders | Create and edit diet orders |
+| manage_allergies | Record and update patient allergies |
+| record_visits | Record ward round / nurse visits |
+
+## Orders
+
+| Key | Description |
+|---|---|
+| order_labs | Order lab tests for admitted patients |
+| prescribe_medications | Create prescriptions for admitted patients |
+
+## Operating theatre
+
+| Key | Description |
+|---|---|
+| schedule_ot | Schedule OT procedures |
+| record_ot_charges | Set surgeon / anaesthetist / consumable charges on OT |
+
+## Billing
+
+| Key | Description |
+|---|---|
+| generate_interim_bill | Create interim bills during stay |
+| finalize_bill | Finalize the admission bill |
+| manage_packages | Apply or remove surgery packages |
+| manage_ancillary_charges | Add / update / delete ancillary charges |
+| receive_deposits | Record advance deposits |
+| issue_refunds | Issue refunds against deposits |
+| manage_bill_splits | Split bill across cash / insurance / TPA |
+
+## Insurance
+
+| Key | Description |
+|---|---|
+| update_claim_status | Advance the claim state machine |
+| manage_preauth | Create pre-auth requests, record decisions, expansions |
+| manage_tpa | Maintain TPA company master |
+
+## Quality & compliance
+
+| Key | Description |
+|---|---|
+| record_consent | Record signed consents |
+| withdraw_consent | Withdraw a previously signed consent |
+| report_incident | File incident reports (falls, med errors, etc.) |
+| investigate_incident | Run investigations on incidents |
+| close_incident | Close incident investigations |
+| acknowledge_critical_alert | Acknowledge / address critical lab alerts |
+
+## Catalogs
+
+| Key | Description |
+|---|---|
+| manage_ancillary_catalog | Maintain the ancillary services catalog |
+| manage_surgery_packages | Maintain surgery package catalog |
+| manage_consent_templates | Maintain consent form templates |
+| set_critical_thresholds | Configure critical lab value thresholds |
+| manage_procedures | Add, edit, and remove procedures with default rates |
+
+## Documents
+
+| Key | Description |
+|---|---|
+| upload_documents | Upload admission documents |
+| delete_documents | Delete admission documents |
+        `
+      },
+      'default-matrix': {
+        title: 'Default Role Matrix',
+        content: `
+# Default Role → Permission Matrix
+
+What every role gets out-of-box. You can override any of these in **Hospital Administration → Role Permissions**.
+
+## Outpatient
+
+| Permission | doctor | nurse | receptionist | frontdesk |
+|---|:---:|:---:|:---:|:---:|
+| schedule_appointments | ✓ |   | ✓ | ✓ |
+| register_patients | ✓ |   | ✓ | ✓ |
+| manage_queues | ✓ | ✓ | ✓ | ✓ |
+| view_appointments | ✓ | ✓ | ✓ | ✓ |
+| cancel_appointments | ✓ |   | ✓ | ✓ |
+
+## EHR
+
+| Permission | doctor | nurse | receptionist | frontdesk | inpatient_admin |
+|---|:---:|:---:|:---:|:---:|:---:|
+| view_records | ✓ | ✓ | ✓ | ✓ | ✓ |
+| edit_records | ✓ | ✓ |   |   |   |
+| create_prescriptions | ✓ |   |   |   |   |
+| view_history | ✓ | ✓ | ✓ | ✓ | ✓ |
+| generate_reports | ✓ |   |   |   |   |
+| manage_allergies |   | ✓ |   |   | ✓ |
+
+## Inpatient — clinical (nurse + doctor)
+
+| Permission | doctor | nurse |
+|---|:---:|:---:|
+| view_occupancy | ✓ | ✓ |
+| record_vitals / view_vitals | ✓ | ✓ |
+| record_io / view_io | ✓ | ✓ |
+| administer_medications / view_mar | ✓ | ✓ |
+| manage_nursing_notes | ✓ | ✓ |
+| manage_diet_orders | ✓ | ✓ |
+| manage_allergies | ✓ | ✓ |
+| record_visits | ✓ | ✓ |
+| order_labs | ✓ |   |
+| prescribe_medications | ✓ |   |
+| record_consent | ✓ | ✓ |
+| withdraw_consent | ✓ |   |
+| report_incident | ✓ | ✓ |
+| acknowledge_critical_alert | ✓ | ✓ |
+
+## Inpatient — admissions, ops, billing
+
+| Permission | doctor | inpatient_admin | billing_admin | receptionist | frontdesk | nurse |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| admit_patients | ✓ | ✓ |   | ✓ | ✓ |   |
+| update_admission | ✓ | ✓ |   | ✓ | ✓ |   |
+| discharge_patients | ✓ | ✓ |   |   |   |   |
+| record_mortality | ✓ |   |   |   |   |   |
+| transfer_beds | ✓ | ✓ |   |   |   |   |
+| accept_ward_transfer | ✓ | ✓ |   |   |   | ✓ |
+| manage_beds / manage_wards / set_room_rates |   | ✓ |   |   |   |   |
+| manage_housekeeping |   | ✓ |   |   |   | ✓ |
+| manage_reservations |   | ✓ |   | ✓ | ✓ |   |
+| assign_nurses / manage_roster |   | ✓ |   |   |   |   |
+| schedule_ot | ✓ | ✓ |   |   |   |   |
+| record_ot_charges |   | ✓ | ✓ |   |   |   |
+| view_bill | ✓ | ✓ | ✓ | ✓ | ✓ |   |
+| generate_interim_bill / finalize_bill / manage_packages |   |   | ✓ |   |   |   |
+| manage_ancillary_charges |   | ✓ | ✓ |   |   |   |
+| receive_deposits |   | ✓ | ✓ | ✓ | ✓ |   |
+| issue_refunds / manage_bill_splits |   |   | ✓ |   |   |   |
+| update_claim_status / manage_preauth |   | ✓ | ✓ |   |   |   |
+| manage_tpa |   |   | ✓ |   |   |   |
+| manage_ancillary_catalog / manage_surgery_packages |   |   | ✓ |   |   |   |
+| investigate_incident / close_incident |   | ✓ |   |   |   |   |
+| view_readmissions / view_mortality |   | ✓ |   |   |   |   |
+| view_documents | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| upload_documents | ✓ | ✓ |   | ✓ |   |   |
+| delete_documents |   | ✓ |   |   |   |   |
+
+## Lab / Pharmacy / Billing
+
+| Module access | lab_admin | lab_technician | pharmacy_admin | pharmacist | billing_admin | doctor | receptionist |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| Lab full admin | ✓ |   |   |   |   |   |   |
+| Lab — view_reports / create_reports | ✓ | ✓ |   |   |   | ✓ |   |
+| Pharmacy full admin |   |   | ✓ |   |   |   |   |
+| Pharmacy — dispense / view / inventory |   |   | ✓ | ✓ |   | view |   |
+| Billing full admin |   |   |   |   | ✓ |   |   |
+| Billing — process_payments / generate_invoices |   |   |   |   | ✓ |   | ✓ |
+        `
+      },
+      'customising-grants': {
+        title: 'Customising Role Grants',
+        content: `
+# Customising Role Grants
+
+Default grants ship with the application, but you can override them at any time without code changes.
+
+## Who can edit role permissions
+
+Only \`super_admin\` and \`hospital_admin\` can change grants.
+
+## How to edit
+
+1. Log in as \`hospital_admin\` or \`super_admin\`
+2. Go to **Hospital Administration → Role Permissions**
+3. Pick a role from the list
+4. Use the checkbox grid grouped by category (\`user\` and \`admin\`)
+5. Use **Select All** / **Clear All** within a category for bulk edits
+6. Click **Save**
+
+## When changes take effect
+
+- The change is written to the database immediately
+- The user's next API call uses the updated grants — no logout required
+- Active browser sessions reload role grants on token refresh
+
+## Audit trail
+
+Every permission save is recorded in the audit log via the \`update_role_permissions\` action. You can review it under **Settings → Audit Logs** filtered by action.
+
+## Creating custom roles
+
+Custom (non-system) roles can be created by \`super_admin\` from the Roles tab:
+
+1. Go to **Hospital Administration → Roles**
+2. Click **Add Role**
+3. Enter name and description
+4. Save — the role appears in the Role Permissions grid with no grants
+5. Switch to the Role Permissions tab and grant the keys you want
+
+System roles (the 12 seeded by the application) cannot be deleted, only re-granted.
+
+## Best practices
+
+- Start from a similar built-in role and trim down — easier than building from scratch
+- Avoid granting \`admin\` category permissions to clinical roles unless absolutely needed
+- Be careful with \`finalize_bill\`, \`issue_refunds\`, \`manage_bill_splits\` — these affect financial integrity
+- For temporary access (e.g., a doctor covering admin duties), prefer adding a second role to the user rather than expanding the doctor role globally
         `
       },
     }

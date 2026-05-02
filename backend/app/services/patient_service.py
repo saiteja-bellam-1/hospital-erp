@@ -11,21 +11,18 @@ class PatientService:
         self.db = db
     
     def create_patient(self, patient_data: Dict[str, Any]) -> Patient:
-        patient_id = str(uuid.uuid4())
-        
-        patient = Patient(
-            patient_id=patient_id,
-            first_name=patient_data["first_name"],
-            last_name=patient_data["last_name"],
-            date_of_birth=patient_data.get("date_of_birth"),
-            gender=patient_data.get("gender"),
-            blood_group=patient_data.get("blood_group"),
-            primary_phone=patient_data["primary_phone"],
-            emergency_contact_phone=patient_data.get("emergency_contact_phone"),
-            address=patient_data.get("address"),
-            hospital_id=patient_data["hospital_id"]
-        )
-        
+        allowed = {
+            "first_name", "last_name", "date_of_birth", "age", "gender",
+            "blood_group", "marital_status", "abha_id", "email",
+            "primary_phone", "emergency_contact_phone", "emergency_contact_name",
+            "emergency_contact_relation", "address_line1", "address_line2",
+            "village", "mandal", "district", "address", "referred_by",
+            "hospital_id",
+        }
+        kwargs = {k: v for k, v in patient_data.items() if k in allowed}
+        kwargs["patient_id"] = str(uuid.uuid4())
+
+        patient = Patient(**kwargs)
         self.db.add(patient)
         self.db.commit()
         self.db.refresh(patient)
@@ -192,7 +189,7 @@ class PatientService:
         patient_data = []
         for patient, total_appointments, last_appointment_date in results:
             # Calculate age
-            age = self.calculate_age(patient.date_of_birth) if patient.date_of_birth else None
+            age = self.calculate_age(patient.date_of_birth) if patient.date_of_birth else patient.age
             
             # Determine recent visit status
             recent_visit_status = None

@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
@@ -6,7 +7,12 @@ from config.database import get_db
 from app.models.user import User
 from app.models.hospital import Hospital
 from app.utils.dependencies import get_current_user
-from app.services.license_service import get_license_status, upload_license
+from app.services.license_service import (
+    get_license_status,
+    upload_license,
+    inspect_license_file,
+    get_current_license,
+)
 from app.middleware.license_middleware import invalidate_license_cache
 
 router = APIRouter()
@@ -55,6 +61,109 @@ async def license_status_public(db: Session = Depends(get_db)):
         "days_remaining": status_info["days_remaining"],
         "hospital": hospital_info,
     }
+
+
+@router.get("/rebind-request")
+async def generate_rebind_request(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Build a self-service rebind request the operator can send to the vendor.
+
+    The vendor's License Manager can verify the included signature proof
+    against the original license, then re-issue a new .lic bound to the new
+    machine ID without manual data entry. This is the fix for the "we moved
+    the .exe to a new server and now the .lic is rejected" pain.
+    """
+    _require_admin(current_user)
+
+    import hashlib
+    import json as _json
+    from datetime import datetime as _dt
+    from app.utils.machine_id import get_machine_id_full
+
+    license_record = get_current_license(db)
+    if not license_record:
+        raise HTTPException(
+            status_code=400,
+            detail="No license is currently installed. Rebind requests can only be generated when an existing license is present.",
+        )
+    if not license_record.raw_license_data:
+        raise HTTPException(
+            status_code=400,
+            detail="The current license has no stored signature data. Re-upload the original .lic first.",
+        )
+
+    machine = get_machine_id_full()
+    new_machine_id = machine["machine_id"]
+    old_machine_id = ""
+    try:
+        from app.licensing.crypto import verify_license_file
+        original = verify_license_file(license_record.raw_license_data)
+        old_machine_id = original.get("machine_id", "") or ""
+    except Exception:
+        # We still let the request go through — vendor can decide whether to honour it
+        pass
+
+    if old_machine_id and old_machine_id == new_machine_id:
+        raise HTTPException(
+            status_code=400,
+            detail="This machine already matches the licensed machine ID — no rebind needed.",
+        )
+
+    # The "signature proof" is a SHA-256 of the original signed .lic content.
+    # The vendor's License Manager can recompute it from the stored copy of
+    # the license to confirm this request really came from a holder of the
+    # original .lic and hasn't been forged from public license metadata alone.
+    proof = hashlib.sha256(license_record.raw_license_data.encode("utf-8")).hexdigest()
+
+    request_payload = {
+        "request_type": "license_rebind",
+        "request_version": 1,
+        "license_id": license_record.license_id,
+        "hospital_id": license_record.hospital_id,
+        "hospital_name": license_record.hospital_name,
+        "old_machine_id": old_machine_id,
+        "new_machine_id": new_machine_id,
+        "new_machine_hostname": machine.get("hostname"),
+        "new_machine_os": machine.get("os"),
+        "requested_by": current_user.username,
+        "requested_at": _dt.utcnow().isoformat() + "Z",
+        "license_signature_proof_sha256": proof,
+    }
+
+    try:
+        from app.services.audit_service import log_action
+        log_action(db, current_user, "generate_rebind_request", "admin", "License",
+                   license_record.id,
+                   f"Generated rebind request from {old_machine_id or '(unknown)'} -> {new_machine_id}",
+                   details=request_payload)
+    except Exception:
+        pass
+
+    safe_name = (license_record.hospital_name or "kthealth").replace(" ", "_")
+    filename = f"{safe_name}_rebind_{new_machine_id}.rebind.json"
+    body = _json.dumps(request_payload, indent=2)
+    return Response(
+        content=body,
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/validate")
+async def validate_license_file(file: UploadFile = File(...)):
+    """Dry-run validate a .lic file. Reports signature validity, license
+    metadata, and whether the machine ID matches THIS machine — without
+    persisting anything. Safe to call before login (used by the setup wizard)
+    and before clicking "Apply" on the License Management page.
+    """
+    content = await file.read()
+    try:
+        file_content = content.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="License file is not valid text/UTF-8")
+    return inspect_license_file(file_content)
 
 
 @router.post("/upload")

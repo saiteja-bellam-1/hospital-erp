@@ -32,6 +32,8 @@ async def get_audit_logs(
     user_id: Optional[int] = None,
     category: Optional[str] = None,
     action: Optional[str] = None,
+    resource_type: Optional[str] = None,
+    resource_id: Optional[str] = None,
     search: Optional[str] = None,
     page: int = 1,
     page_size: int = 50,
@@ -50,8 +52,12 @@ async def get_audit_logs(
         query = query.filter(AuditLog.user_id == user_id)
     if category and category != 'all':
         query = query.filter(AuditLog.category == category)
-    if action:
-        query = query.filter(AuditLog.action.ilike(f"%{action}%"))
+    if action and action != 'all':
+        query = query.filter(AuditLog.action == action)
+    if resource_type and resource_type != 'all':
+        query = query.filter(AuditLog.resource_type == resource_type)
+    if resource_id:
+        query = query.filter(AuditLog.resource_id == str(resource_id))
     if search:
         q = f"%{search}%"
         query = query.filter(
@@ -94,6 +100,9 @@ async def export_audit_logs(
     date_to: Optional[str] = None,
     category: Optional[str] = None,
     user_id: Optional[int] = None,
+    action: Optional[str] = None,
+    resource_type: Optional[str] = None,
+    resource_id: Optional[str] = None,
     search: Optional[str] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -109,6 +118,12 @@ async def export_audit_logs(
         query = query.filter(AuditLog.category == category)
     if user_id:
         query = query.filter(AuditLog.user_id == user_id)
+    if action and action != 'all':
+        query = query.filter(AuditLog.action == action)
+    if resource_type and resource_type != 'all':
+        query = query.filter(AuditLog.resource_type == resource_type)
+    if resource_id:
+        query = query.filter(AuditLog.resource_id == str(resource_id))
     if search:
         q = f"%{search}%"
         query = query.filter(
@@ -169,6 +184,22 @@ async def get_audit_stats(
         "active_users_today": active_users,
         "retention_days": retention,
         "categories": {cat: count for cat, count in categories if cat},
+    }
+
+
+@router.get("/distinct-values")
+async def get_distinct_values(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _require_admin(current_user)
+    cats = db.query(AuditLog.category).distinct().order_by(AuditLog.category).all()
+    actions = db.query(AuditLog.action).distinct().order_by(AuditLog.action).all()
+    rtypes = db.query(AuditLog.resource_type).distinct().order_by(AuditLog.resource_type).all()
+    return {
+        "categories": [c[0] for c in cats if c[0]],
+        "actions": [a[0] for a in actions if a[0]],
+        "resource_types": [r[0] for r in rtypes if r[0]],
     }
 
 

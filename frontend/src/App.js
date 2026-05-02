@@ -8,6 +8,7 @@ import Dashboard from './pages/Dashboard';
 import SetupWizard from './pages/SetupWizard';
 import HelpDocs from './pages/HelpDocs';
 import ProtectedRoute from './components/ProtectedRoute';
+import ForcePasswordChangeDialog from './components/ForcePasswordChangeDialog';
 
 function App() {
   const { loading, user } = useAuth();
@@ -46,7 +47,7 @@ function App() {
       <Routes>
         <Route
           path="/login"
-          element={user ? <Navigate to="/dashboard" replace /> : <Login />}
+          element={user ? <Navigate to="/dashboard/home" replace /> : <Login />}
         />
 
         <Route
@@ -69,9 +70,10 @@ function App() {
 
         <Route
           path="/"
-          element={<Navigate to={user ? "/dashboard" : "/login"} replace />}
+          element={<Navigate to={user ? "/dashboard/home" : "/login"} replace />}
         />
       </Routes>
+      {user?.must_change_password && <ForcePasswordChangeDialog />}
       <Toaster />
     </>
   );

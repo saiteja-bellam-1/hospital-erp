@@ -435,6 +435,114 @@ def renew_license(license_id: str, data: LicenseRenew):
     return {"message": "License renewed", "license_id": new_license_id}
 
 
+@app.post("/api/licenses/process-rebind")
+async def process_rebind_request(file: UploadFile = File(...)):
+    """Consume a .rebind.json request file produced by a hospital running this
+    product, verify it against the original license stored in this manager's
+    DB, then re-issue a fresh .lic for the new machine ID. The original
+    license is marked as rebound and a new license_id is created.
+
+    The request file format is documented in the hospital backend's
+    /api/license/rebind-request endpoint.
+    """
+    import hashlib
+    raw = await file.read()
+    try:
+        req = json.loads(raw.decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Rebind file is not valid JSON")
+
+    if req.get("request_type") != "license_rebind":
+        raise HTTPException(status_code=400, detail="Not a license_rebind request")
+
+    license_id = req.get("license_id")
+    new_machine_id = req.get("new_machine_id")
+    proof = req.get("license_signature_proof_sha256")
+    if not (license_id and new_machine_id and proof):
+        raise HTTPException(status_code=400, detail="Rebind request is missing required fields")
+
+    conn = get_db()
+    row = conn.execute("SELECT * FROM licenses WHERE license_id = ?", (license_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail=f"Original license {license_id} not found in this manager")
+
+    # Verify the signature proof — confirms the requester actually has the
+    # original signed .lic, not just metadata scraped from elsewhere.
+    expected_proof = hashlib.sha256((row["lic_file_content"] or "").encode("utf-8")).hexdigest()
+    if expected_proof != proof:
+        conn.close()
+        raise HTTPException(
+            status_code=403,
+            detail="Signature proof mismatch — the rebind request does not correspond to the stored license",
+        )
+
+    if row["status"] in ("rebound", "renewed"):
+        conn.close()
+        raise HTTPException(status_code=400, detail=f"License is already {row['status']} — re-issue from the new license instead")
+
+    # Re-issue a new .lic carrying over plan/features/expiry but bound to the new machine
+    now = datetime.now(timezone.utc)
+    try:
+        old_expires = datetime.fromisoformat(row["expires_at"].replace("Z", "+00:00"))
+        if old_expires.tzinfo is None:
+            old_expires = old_expires.replace(tzinfo=timezone.utc)
+    except Exception:
+        old_expires = now + timedelta(days=int(row["days"] or 365))
+
+    new_license_id = str(uuid.uuid4())
+    features = json.loads(row["features"]) if row["features"] else []
+
+    license_data = {
+        "license_id": new_license_id,
+        "hospital_id": row["hospital_id"],
+        "hospital_name": row["hospital_name"],
+        "machine_id": new_machine_id,
+        "plan": row["plan"],
+        "max_users": row["max_users"],
+        "features": features,
+        "issued_at": now.isoformat(),
+        "expires_at": old_expires.isoformat(),
+    }
+    # Carry seller_info forward if present in the original signed payload
+    try:
+        old_payload = json.loads(base64.b64decode((row["lic_file_content"] or "").split("\n")[0]).decode("utf-8"))
+        if old_payload.get("seller"):
+            license_data["seller"] = old_payload["seller"]
+    except Exception:
+        pass
+
+    new_lic = sign_license_data(license_data)
+
+    conn.execute("UPDATE licenses SET status = 'rebound' WHERE license_id = ?", (license_id,))
+    conn.execute("""
+        INSERT INTO licenses (license_id, customer_id, hospital_id, hospital_name, machine_id,
+            plan, max_users, features, modules, issued_at, expires_at, days, status,
+            lic_file_content, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+    """, (
+        new_license_id, row["customer_id"], row["hospital_id"], row["hospital_name"], new_machine_id,
+        row["plan"], row["max_users"], row["features"], row["modules"],
+        now.isoformat(), old_expires.isoformat(),
+        row["days"], new_lic,
+        f"Rebound from {license_id} (machine {req.get('old_machine_id') or 'unknown'} -> {new_machine_id})",
+    ))
+    conn.commit()
+    conn.close()
+
+    safe_name = (row["hospital_name"] or "kthealth").replace(" ", "_")
+    filename = f"{safe_name}_{new_machine_id}.lic"
+    return Response(
+        content=new_lic,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-New-License-Id": new_license_id,
+            "X-Rebound-From": license_id,
+        },
+    )
+
+
 @app.get("/api/licenses/{license_id}/download")
 def download_license(license_id: str):
     conn = get_db()

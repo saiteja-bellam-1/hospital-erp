@@ -1710,19 +1710,49 @@ class PDFService:
                         elements.append(Paragraph(line, cell_value))
 
         # ============================================================
-        # MEDICATIONS PRESCRIBED (bullet list)
+        # TAKE-HOME MEDICATIONS — structured list (preferred) or legacy text.
         # ============================================================
-        medications = discharge_data.get("medications", "")
-        if medications:
-            elements.append(Paragraph("Medications Prescribed", section_heading))
-            # Split by newline or semicolon for bullet list
-            med_lines = [m.strip() for m in medications.replace(';', '\n').split('\n') if m.strip()]
-            if len(med_lines) > 1:
-                for med in med_lines:
-                    bullet = med if med.startswith(('•', '-', '*')) else f"• {med}"
-                    elements.append(Paragraph(bullet, cell_value))
-            else:
-                elements.append(Paragraph(medications, cell_value))
+        take_home = discharge_data.get("take_home_medications") or []
+        if take_home:
+            elements.append(Paragraph("Take-Home Medications", section_heading))
+            header = ['#', 'Medicine', 'Dosage', 'Frequency', 'Duration', 'Qty', 'Instructions']
+            rows = [header]
+            for i, m in enumerate(take_home, start=1):
+                rows.append([
+                    str(i),
+                    str(m.get('medicine_name') or ''),
+                    str(m.get('dosage') or ''),
+                    str(m.get('frequency') or ''),
+                    str(m.get('duration') or ''),
+                    str(m.get('quantity') or ''),
+                    str(m.get('instructions') or ''),
+                ])
+            med_table = Table(rows, colWidths=[20, 130, 70, 70, 60, 30, 130])
+            med_table.setStyle(TableStyle([
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, -1), 8),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('LEFTPADDING', (0, 0), (-1, -1), 3),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 3),
+                ('TOPPADDING', (0, 0), (-1, -1), 3),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+            ]))
+            elements.append(med_table)
+            elements.append(Spacer(1, 4))
+        else:
+            # Legacy free-text fallback for older discharges
+            medications = discharge_data.get("medications", "")
+            if medications:
+                elements.append(Paragraph("Medications Prescribed", section_heading))
+                med_lines = [m.strip() for m in medications.replace(';', '\n').split('\n') if m.strip()]
+                if len(med_lines) > 1:
+                    for med in med_lines:
+                        bullet = med if med.startswith(('•', '-', '*')) else f"• {med}"
+                        elements.append(Paragraph(bullet, cell_value))
+                else:
+                    elements.append(Paragraph(medications, cell_value))
 
         # ============================================================
         # FOLLOW-UP INSTRUCTIONS
@@ -2090,6 +2120,863 @@ class PDFService:
         elements.append(sig_table)
         elements.append(Spacer(1, 14))
         elements.append(Paragraph(f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M:%S')}", footer_style))
+        doc.build(elements)
+        buffer.seek(0)
+        return buffer
+
+    def generate_dama_pdf(self, dama_data, hospital_info, include_header=True):
+        """Discharge Against Medical Advice — signed liability form.
+        Indian context: invokes Section 88/92 IPC ('act done in good faith for
+        the benefit of a person, with consent') in the absolves clause."""
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=30, bottomMargin=30)
+        elements = []
+        page_width = A4[0] - 80
+
+        title_style = ParagraphStyle('Title', parent=self.styles['Title'],
+            fontSize=14, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)
+        sub_style = ParagraphStyle('Sub', parent=self.styles['Normal'],
+            fontSize=9, alignment=1, fontName='Helvetica', textColor=colors.black, spaceAfter=2)
+        heading = ParagraphStyle('Heading', parent=self.styles['Normal'],
+            fontSize=11, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4, spaceBefore=8)
+        label = ParagraphStyle('Label', parent=self.styles['Normal'],
+            fontSize=9, fontName='Helvetica-Bold', textColor=colors.black)
+        value = ParagraphStyle('Value', parent=self.styles['Normal'],
+            fontSize=9, fontName='Helvetica', textColor=colors.black)
+        body = ParagraphStyle('Body', parent=self.styles['Normal'],
+            fontSize=10, fontName='Helvetica', textColor=colors.black, spaceAfter=4, leading=14)
+        footer_style = ParagraphStyle('Footer', parent=self.styles['Normal'],
+            fontSize=8, alignment=1, fontName='Helvetica', textColor=colors.black)
+
+        if include_header:
+            elements.append(Paragraph(hospital_info.get('name', 'HOSPITAL').upper(), title_style))
+            if hospital_info.get('address'):
+                elements.append(Paragraph(hospital_info['address'], sub_style))
+            elements.append(Spacer(1, 6))
+            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+        else:
+            elements.append(Spacer(1, 90))
+
+        elements.append(Spacer(1, 8))
+        elements.append(Paragraph("DISCHARGE AGAINST MEDICAL ADVICE (DAMA)",
+            ParagraphStyle('DA', parent=self.styles['Normal'],
+                fontSize=14, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=6)))
+        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
+        elements.append(Spacer(1, 10))
+
+        meta_rows = [
+            [Paragraph("Patient Name:", label), Paragraph(str(dama_data.get('patient_name', '')), value)],
+            [Paragraph("Patient ID:", label), Paragraph(str(dama_data.get('patient_id', '')), value)],
+            [Paragraph("Age / Gender:", label),
+             Paragraph(f"{dama_data.get('age', '')} / {dama_data.get('gender', '')}", value)],
+            [Paragraph("Admission No:", label), Paragraph(str(dama_data.get('admission_number', '')), value)],
+            [Paragraph("Attending Doctor:", label), Paragraph(str(dama_data.get('doctor_name', '')), value)],
+            [Paragraph("Admission Date:", label), Paragraph(str(dama_data.get('admission_date', '')), value)],
+            [Paragraph("Discharge Date/Time:", label), Paragraph(str(dama_data.get('discharge_date', '')), value)],
+            [Paragraph("Language Used:", label), Paragraph(str(dama_data.get('language_used', '')).title(), value)],
+        ]
+        meta_table = Table(meta_rows, colWidths=[page_width * 0.3, page_width * 0.7])
+        meta_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ]))
+        elements.append(meta_table)
+
+        elements.append(Paragraph("MEDICAL ADVICE GIVEN", heading))
+        elements.append(Paragraph((dama_data.get('medical_advice_given') or '').replace('\n', '<br/>'), body))
+
+        elements.append(Paragraph("RISKS EXPLAINED", heading))
+        elements.append(Paragraph((dama_data.get('risks_explained') or '').replace('\n', '<br/>'), body))
+
+        elements.append(Paragraph("DECLARATION", heading))
+        decl = (
+            "I, the undersigned, hereby declare that I have been clearly explained the medical advice and "
+            "the risks of leaving the hospital against this advice in a language I understand. I am leaving "
+            "the hospital of my own free will and accord, against the advice of the treating doctor. I "
+            "absolve the hospital, its doctors, nurses and staff of any responsibility for any consequences, "
+            "including deterioration of health or death, that may arise as a result of this decision. "
+            "(Reference: Sections 88 and 92, Indian Penal Code.)"
+        )
+        elements.append(Paragraph(decl, body))
+
+        # Signatures
+        elements.append(Spacer(1, 14))
+        signed_label = "Patient Signature" if dama_data.get('signed_by') == 'patient' else "Guardian Signature"
+        primary_sig_text = dama_data.get('primary_signature') or ''
+        if dama_data.get('primary_signature_type') == 'typed':
+            sig_para = Paragraph(f"<i>{primary_sig_text}</i>", value)
+        else:
+            sig_para = Paragraph("(signed)", value)
+
+        guardian_block = ""
+        if dama_data.get('signed_by') == 'guardian':
+            guardian_block = (
+                f"<br/>Guardian: {dama_data.get('guardian_name', '')}"
+                f"<br/>Relationship: {dama_data.get('guardian_relationship', '')}"
+            )
+
+        sig_table = Table([
+            [
+                Paragraph(f"____________________<br/><b>{signed_label}</b>{guardian_block}<br/>{sig_para.text if hasattr(sig_para, 'text') else primary_sig_text}", value),
+                Paragraph(
+                    f"____________________<br/><b>Witness</b><br/>"
+                    f"{dama_data.get('witness_name', '')}"
+                    f"{(' (' + dama_data['witness_designation'] + ')') if dama_data.get('witness_designation') else ''}",
+                    value),
+            ]
+        ], colWidths=[page_width / 2, page_width / 2])
+        sig_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('TOPPADDING', (0, 0), (-1, -1), 30),
+        ]))
+        elements.append(sig_table)
+
+        if dama_data.get('notes'):
+            elements.append(Spacer(1, 10))
+            elements.append(Paragraph("ADDITIONAL NOTES", heading))
+            elements.append(Paragraph(dama_data['notes'].replace('\n', '<br/>'), body))
+
+        elements.append(Spacer(1, 14))
+        elements.append(Paragraph(
+            f"Form signed on {dama_data.get('signed_at', '')} | Generated {datetime.now().strftime('%d/%m/%Y at %H:%M')}",
+            footer_style))
+        doc.build(elements)
+        buffer.seek(0)
+        return buffer
+
+
+    def generate_kitchen_ticket_pdf(self, items, meal_time, target_date, department,
+                                    hospital_info, include_header=True):
+        """Per-meal kitchen ticket: one row per active admission grouped by
+        ward/room/bed with diet type and allergies highlighted."""
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+        elements = []
+        page_width = A4[0] - 60
+
+        title_style = ParagraphStyle('Title', parent=self.styles['Title'],
+            fontSize=14, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)
+        sub_style = ParagraphStyle('Sub', parent=self.styles['Normal'],
+            fontSize=9, alignment=1, fontName='Helvetica', textColor=colors.black, spaceAfter=2)
+        header_meal = ParagraphStyle('Meal', parent=self.styles['Normal'],
+            fontSize=12, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=6)
+        cell = ParagraphStyle('Cell', parent=self.styles['Normal'],
+            fontSize=8, fontName='Helvetica', textColor=colors.black, leading=10)
+        cell_b = ParagraphStyle('CellB', parent=self.styles['Normal'],
+            fontSize=8, fontName='Helvetica-Bold', textColor=colors.black, leading=10)
+        warn = ParagraphStyle('Warn', parent=self.styles['Normal'],
+            fontSize=8, fontName='Helvetica-Bold', textColor=colors.red, leading=10)
+
+        if include_header:
+            elements.append(Paragraph(hospital_info.get('name', 'HOSPITAL').upper(), title_style))
+            if hospital_info.get('address'):
+                elements.append(Paragraph(hospital_info['address'], sub_style))
+            elements.append(Spacer(1, 6))
+            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+        else:
+            elements.append(Spacer(1, 60))
+
+        elements.append(Spacer(1, 6))
+        meal_label = meal_time.replace('_', ' ').upper()
+        title = f"KITCHEN TICKET — {meal_label} — {target_date}"
+        if department:
+            title += f"  ({department.upper()})"
+        elements.append(Paragraph(title, header_meal))
+        elements.append(Paragraph(f"{len(items)} meals to prepare", sub_style))
+        elements.append(Spacer(1, 8))
+
+        if not items:
+            elements.append(Paragraph("No active diet orders for this filter.",
+                ParagraphStyle('N', parent=self.styles['Normal'], fontSize=10, alignment=1)))
+        else:
+            header = [
+                Paragraph("Ward", cell_b),
+                Paragraph("Room", cell_b),
+                Paragraph("Bed", cell_b),
+                Paragraph("Patient", cell_b),
+                Paragraph("Diet Type", cell_b),
+                Paragraph("Instructions", cell_b),
+                Paragraph("Allergies", cell_b),
+            ]
+            data_rows = [header]
+            for it in items:
+                allergies_para = (Paragraph(it['allergies'], warn) if it['allergies']
+                                  else Paragraph("—", cell))
+                data_rows.append([
+                    Paragraph(it['ward'], cell),
+                    Paragraph(it['room'], cell),
+                    Paragraph(it['bed'], cell_b),
+                    Paragraph(it['patient_name'], cell),
+                    Paragraph(it['diet_type'].replace('_', ' ').title(), cell_b),
+                    Paragraph(it['instructions'] or '—', cell),
+                    allergies_para,
+                ])
+            col_widths = [
+                page_width * 0.12, page_width * 0.08, page_width * 0.06,
+                page_width * 0.20, page_width * 0.13, page_width * 0.21, page_width * 0.20,
+            ]
+            t = Table(data_rows, colWidths=col_widths, repeatRows=1)
+            t.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#e0e0e0')),
+                ('GRID', (0, 0), (-1, -1), 0.4, colors.grey),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('LEFTPADDING', (0, 0), (-1, -1), 4),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+                ('TOPPADDING', (0, 0), (-1, -1), 3),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+            ]))
+            elements.append(t)
+
+        elements.append(Spacer(1, 14))
+        elements.append(Paragraph(
+            f"Printed on {datetime.now().strftime('%d/%m/%Y at %H:%M')}",
+            ParagraphStyle('F', parent=self.styles['Normal'], fontSize=8, alignment=1)))
+        doc.build(elements)
+        buffer.seek(0)
+        return buffer
+
+
+    def generate_doctor_productivity_pdf(self, payload, hospital_info, include_header=True):
+        """Per-doctor productivity table for revenue-share / performance review."""
+        buffer = BytesIO()
+        # Landscape — many columns
+        from reportlab.lib.pagesizes import landscape
+        doc = SimpleDocTemplate(buffer, pagesize=landscape(A4),
+            rightMargin=20, leftMargin=20, topMargin=24, bottomMargin=24)
+        elements = []
+        page_width = landscape(A4)[0] - 40
+
+        title_style = ParagraphStyle('Title', parent=self.styles['Title'],
+            fontSize=13, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)
+        sub_style = ParagraphStyle('Sub', parent=self.styles['Normal'],
+            fontSize=8, alignment=1, fontName='Helvetica', textColor=colors.black, spaceAfter=2)
+        cell = ParagraphStyle('Cell', parent=self.styles['Normal'],
+            fontSize=8, fontName='Helvetica', textColor=colors.black, leading=10)
+        cell_b = ParagraphStyle('CellB', parent=self.styles['Normal'],
+            fontSize=8, fontName='Helvetica-Bold', textColor=colors.black, leading=10)
+
+        if include_header:
+            elements.append(Paragraph(hospital_info.get('name', 'HOSPITAL').upper(), title_style))
+            if hospital_info.get('address'):
+                elements.append(Paragraph(hospital_info['address'], sub_style))
+            elements.append(Spacer(1, 4))
+            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+        else:
+            elements.append(Spacer(1, 50))
+
+        elements.append(Spacer(1, 6))
+        elements.append(Paragraph(
+            f"DOCTOR PRODUCTIVITY — {payload.get('date_from', '')} to {payload.get('date_to', '')}",
+            ParagraphStyle('H', parent=self.styles['Normal'], fontSize=12, alignment=1,
+                fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=2)))
+        elements.append(Paragraph(f"{payload.get('doctor_count', 0)} doctor(s)", sub_style))
+        elements.append(Spacer(1, 6))
+
+        rows = payload.get("rows", [])
+        if not rows:
+            elements.append(Paragraph("No activity in this date range.",
+                ParagraphStyle('N', parent=self.styles['Normal'], fontSize=10, alignment=1)))
+        else:
+            header = ["Doctor", "Adm", "Dis", "Death", "Re-30d",
+                      "OT-Sur", "OT-An", "Visits", "Avg LOS",
+                      "Visit ₹", "OT Surgeon ₹", "OT Anaes ₹", "Total ₹"]
+            data_rows = [[Paragraph(h, cell_b) for h in header]]
+            for r in rows:
+                data_rows.append([
+                    Paragraph(r["doctor_name"], cell),
+                    Paragraph(str(r["admissions"]), cell),
+                    Paragraph(str(r["discharges"]), cell),
+                    Paragraph(str(r["deaths"]), cell),
+                    Paragraph(str(r["readmissions_30d"]), cell),
+                    Paragraph(str(r["ot_as_surgeon"]), cell),
+                    Paragraph(str(r["ot_as_anaesthetist"]), cell),
+                    Paragraph(str(r["visits"]), cell),
+                    Paragraph(str(r["average_los_days"]) if r["average_los_days"] is not None else "—", cell),
+                    Paragraph(f'{r["visit_fees_billed"]:,.0f}', cell),
+                    Paragraph(f'{r["ot_surgeon_fees"]:,.0f}', cell),
+                    Paragraph(f'{r["ot_anaesthetist_fees"]:,.0f}', cell),
+                    Paragraph(f'{r["total_billed_attributable"]:,.0f}', cell_b),
+                ])
+            # Column widths sized so the doctor name has room and money cols don't wrap
+            col_widths = [
+                page_width * 0.18,  # doctor
+                page_width * 0.04, page_width * 0.04, page_width * 0.04, page_width * 0.05,  # adm, dis, death, re30
+                page_width * 0.04, page_width * 0.04, page_width * 0.05,  # ot s, ot a, visits
+                page_width * 0.05,  # avg LOS
+                page_width * 0.10, page_width * 0.11, page_width * 0.11, page_width * 0.15,  # money
+            ]
+            t = Table(data_rows, colWidths=col_widths, repeatRows=1)
+            t.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#e0e0e0')),
+                ('GRID', (0, 0), (-1, -1), 0.4, colors.grey),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('ALIGN', (1, 0), (-1, -1), 'RIGHT'),
+                ('TOPPADDING', (0, 0), (-1, -1), 3),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+            ]))
+            elements.append(t)
+
+        elements.append(Spacer(1, 14))
+        elements.append(Paragraph(
+            "Total ₹ = Visit fees + OT surgeon fees (for OTs led) + OT anaesthetist fees. Outpatient consultation fees not included.",
+            ParagraphStyle('NF', parent=self.styles['Normal'], fontSize=7, alignment=0,
+                fontName='Helvetica-Oblique', textColor=colors.HexColor('#555555'))))
+        elements.append(Paragraph(
+            f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M')}",
+            ParagraphStyle('F', parent=self.styles['Normal'], fontSize=8, alignment=1)))
+        doc.build(elements)
+        buffer.seek(0)
+        return buffer
+
+    def generate_monthly_outcomes_pdf(self, payload, hospital_info, include_header=True):
+        """Monthly outcomes — mortality + readmission + LOS + occupancy."""
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+        elements = []
+        page_width = A4[0] - 60
+
+        title_style = ParagraphStyle('Title', parent=self.styles['Title'],
+            fontSize=14, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)
+        sub_style = ParagraphStyle('Sub', parent=self.styles['Normal'],
+            fontSize=9, alignment=1, fontName='Helvetica', textColor=colors.black, spaceAfter=2)
+        section = ParagraphStyle('Section', parent=self.styles['Normal'],
+            fontSize=11, fontName='Helvetica-Bold', textColor=colors.black, spaceBefore=10, spaceAfter=4)
+        cell = ParagraphStyle('Cell', parent=self.styles['Normal'],
+            fontSize=9, fontName='Helvetica', textColor=colors.black, leading=11)
+        cell_b = ParagraphStyle('CellB', parent=self.styles['Normal'],
+            fontSize=9, fontName='Helvetica-Bold', textColor=colors.black, leading=11)
+        big = ParagraphStyle('Big', parent=self.styles['Normal'],
+            fontSize=14, alignment=1, fontName='Helvetica-Bold', textColor=colors.black)
+        bigsmall = ParagraphStyle('BigSmall', parent=self.styles['Normal'],
+            fontSize=8, alignment=1, fontName='Helvetica', textColor=colors.black)
+
+        if include_header:
+            elements.append(Paragraph(hospital_info.get('name', 'HOSPITAL').upper(), title_style))
+            if hospital_info.get('address'):
+                elements.append(Paragraph(hospital_info['address'], sub_style))
+            elements.append(Spacer(1, 6))
+            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+        else:
+            elements.append(Spacer(1, 60))
+
+        elements.append(Spacer(1, 6))
+        elements.append(Paragraph(f"MONTHLY OUTCOMES — {payload.get('month', '')}",
+            ParagraphStyle('H', parent=self.styles['Normal'], fontSize=14, alignment=1,
+                fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)))
+        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
+
+        # Totals tiles
+        t = payload.get("totals", {})
+        def _tile(v, l):
+            tbl = Table([[Paragraph(str(v), big)], [Paragraph(l, bigsmall)]],
+                        colWidths=[page_width / 5 - 4])
+            tbl.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'MIDDLE')]))
+            return tbl
+
+        elements.append(Spacer(1, 8))
+        tiles_row = Table([[
+            _tile(t.get("admissions", 0), "Admissions"),
+            _tile(t.get("discharges", 0), "Discharges"),
+            _tile(t.get("deaths", 0), "Deaths"),
+            _tile(f'{t.get("mortality_rate_pct", 0)}%', "Mortality"),
+            _tile(f'{t.get("readmission_rate_pct", 0)}%', "Readmit"),
+        ]], colWidths=[page_width / 5] * 5)
+        tiles_row.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#fafafa')),
+            ('BOX', (0, 0), (-1, -1), 0.4, colors.grey),
+            ('GRID', (0, 0), (-1, -1), 0.3, colors.lightgrey),
+        ]))
+        elements.append(tiles_row)
+        elements.append(Spacer(1, 4))
+        elements.append(Paragraph(
+            f"Average daily occupancy: {t.get('average_daily_occupancy', 0)} beds "
+            f"({t.get('average_occupancy_pct', 0)}%)",
+            ParagraphStyle('OL', parent=self.styles['Normal'], fontSize=10, alignment=1,
+                fontName='Helvetica-Bold', textColor=colors.HexColor('#444444'))))
+
+        def _kv_table(title, mapping, key_label="Item"):
+            elements.append(Paragraph(title, section))
+            if not mapping:
+                elements.append(Paragraph("(none)", cell))
+                return
+            rows = [[Paragraph(key_label, cell_b), Paragraph("Count", cell_b)]]
+            for k, v in mapping.items():
+                rows.append([Paragraph(str(k), cell), Paragraph(str(v), cell)])
+            t = Table(rows, colWidths=[page_width * 0.7, page_width * 0.3], repeatRows=1)
+            t.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#e0e0e0')),
+                ('GRID', (0, 0), (-1, -1), 0.4, colors.grey),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('TOPPADDING', (0, 0), (-1, -1), 3),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+            ]))
+            elements.append(t)
+
+        # Mortality breakdown
+        m = payload.get("mortality", {})
+        elements.append(Paragraph(
+            f"MORTALITY  —  {t.get('deaths', 0)} deaths; MLC: {m.get('mlc_count', 0)}; Autopsy: {m.get('autopsy_count', 0)}",
+            section))
+        _kv_table("By department", m.get("by_department", {}), "Department")
+        _kv_table("Top diagnoses", m.get("by_diagnosis_top10", {}), "Diagnosis")
+        _kv_table("By age band", m.get("by_age_band", {}), "Age band")
+        _kv_table("By gender", m.get("by_gender", {}), "Gender")
+
+        # Readmission breakdown
+        rd = payload.get("readmissions", {})
+        elements.append(Paragraph("READMISSIONS", section))
+        _kv_table("By days-since-discharge", rd.get("by_window_days", {}), "Window")
+        _kv_table("By department", rd.get("by_department", {}), "Department")
+        _kv_table("Top diagnoses (prior discharge)", rd.get("by_diagnosis_top10", {}), "Diagnosis")
+
+        # LOS
+        los = payload.get("length_of_stay", {})
+        overall = los.get("overall", {})
+        elements.append(Paragraph("LENGTH OF STAY", section))
+        rows = [[Paragraph(h, cell_b) for h in ["Scope", "Count", "Mean", "Median", "Min", "Max"]]]
+        rows.append([Paragraph("Overall", cell), Paragraph(str(overall.get("count", 0)), cell),
+                     Paragraph(str(overall.get("mean", '—')), cell), Paragraph(str(overall.get("median", '—')), cell),
+                     Paragraph(str(overall.get("min", '—')), cell), Paragraph(str(overall.get("max", '—')), cell)])
+        for dept, s in (los.get("by_department") or {}).items():
+            rows.append([Paragraph(dept, cell), Paragraph(str(s.get("count", 0)), cell),
+                         Paragraph(str(s.get("mean", '—')), cell), Paragraph(str(s.get("median", '—')), cell),
+                         Paragraph(str(s.get("min", '—')), cell), Paragraph(str(s.get("max", '—')), cell)])
+        los_table = Table(rows, colWidths=[page_width * 0.34] + [page_width * 0.132] * 5, repeatRows=1)
+        los_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#e0e0e0')),
+            ('GRID', (0, 0), (-1, -1), 0.4, colors.grey),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING', (0, 0), (-1, -1), 3),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+        ]))
+        elements.append(los_table)
+
+        elements.append(Spacer(1, 14))
+        elements.append(Paragraph(
+            f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M')}",
+            ParagraphStyle('F', parent=self.styles['Normal'], fontSize=8, alignment=1)))
+        doc.build(elements)
+        buffer.seek(0)
+        return buffer
+
+    def generate_handover_pdf(self, payload, hospital_info, include_header=True):
+        """Nurse-to-nurse shift handover sheet."""
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=30, bottomMargin=30)
+        elements = []
+        page_width = A4[0] - 80
+
+        title_style = ParagraphStyle('Title', parent=self.styles['Title'],
+            fontSize=14, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)
+        sub_style = ParagraphStyle('Sub', parent=self.styles['Normal'],
+            fontSize=9, alignment=1, fontName='Helvetica', textColor=colors.black, spaceAfter=2)
+        section = ParagraphStyle('Section', parent=self.styles['Normal'],
+            fontSize=11, fontName='Helvetica-Bold', textColor=colors.black, spaceBefore=8, spaceAfter=3)
+        label = ParagraphStyle('Label', parent=self.styles['Normal'],
+            fontSize=9, fontName='Helvetica-Bold', textColor=colors.black)
+        value = ParagraphStyle('Value', parent=self.styles['Normal'],
+            fontSize=9, fontName='Helvetica', textColor=colors.black)
+        body = ParagraphStyle('Body', parent=self.styles['Normal'],
+            fontSize=10, fontName='Helvetica', textColor=colors.black, spaceAfter=4, leading=13)
+
+        if include_header:
+            elements.append(Paragraph(hospital_info.get('name', 'HOSPITAL').upper(), title_style))
+            if hospital_info.get('address'):
+                elements.append(Paragraph(hospital_info['address'], sub_style))
+            elements.append(Spacer(1, 6))
+            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+        else:
+            elements.append(Spacer(1, 80))
+
+        elements.append(Spacer(1, 8))
+        elements.append(Paragraph("NURSE SHIFT HANDOVER",
+            ParagraphStyle('H', parent=self.styles['Normal'], fontSize=14, alignment=1,
+                fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)))
+        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
+        elements.append(Spacer(1, 6))
+
+        meta_rows = [
+            [Paragraph("Patient:", label), Paragraph(str(payload.get('patient_name', '')), value)],
+            [Paragraph("Patient ID:", label), Paragraph(str(payload.get('patient_id', '')), value)],
+            [Paragraph("Admission No:", label), Paragraph(str(payload.get('admission_number', '')), value)],
+            [Paragraph("Room / Bed:", label),
+             Paragraph(f"{payload.get('room', '')} / {payload.get('bed', '')}", value)],
+            [Paragraph("Shift Ending:", label), Paragraph(str(payload.get('from_shift', '')).title(), value)],
+            [Paragraph("Handover At:", label), Paragraph(str(payload.get('handover_date', '')), value)],
+            [Paragraph("From Nurse:", label), Paragraph(str(payload.get('from_nurse', '')), value)],
+            [Paragraph("To Nurse:", label), Paragraph(str(payload.get('to_nurse', '') or '— (unassigned)'), value)],
+            [Paragraph("Acknowledged:", label), Paragraph(str(payload.get('acknowledged_at', '') or '— pending'), value)],
+        ]
+        meta_table = Table(meta_rows, colWidths=[page_width * 0.30, page_width * 0.70])
+        meta_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ]))
+        elements.append(meta_table)
+
+        for sec_title, key in [
+            ("Patient Status Summary", "patient_status_summary"),
+            ("Pending Tasks", "pending_tasks"),
+            ("Alerts To Watch", "alerts_to_watch"),
+            ("Family Communication", "family_communication"),
+            ("On-Call Contacts", "on_call_contacts"),
+            ("Notes", "notes"),
+        ]:
+            txt = (payload.get(key) or "").strip()
+            if not txt:
+                continue
+            elements.append(Paragraph(sec_title, section))
+            elements.append(Paragraph(txt.replace('\n', '<br/>'), body))
+
+        elements.append(Spacer(1, 20))
+        sig_table = Table([[
+            Paragraph(f"____________________<br/>Outgoing Nurse: {payload.get('from_nurse', '')}", value),
+            Paragraph(f"____________________<br/>Incoming Nurse: {payload.get('to_nurse', '') or '___________________'}", value),
+        ]], colWidths=[page_width / 2, page_width / 2])
+        sig_table.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                                       ('TOPPADDING', (0, 0), (-1, -1), 30)]))
+        elements.append(sig_table)
+
+        elements.append(Spacer(1, 14))
+        elements.append(Paragraph(
+            f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M')}",
+            ParagraphStyle('F', parent=self.styles['Normal'], fontSize=8, alignment=1)))
+        doc.build(elements)
+        buffer.seek(0)
+        return buffer
+
+    def generate_census_pdf(self, payload, hospital_info, include_header=True):
+        """Daily census report — totals + per-ward + per-room-type breakdown."""
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+        elements = []
+        page_width = A4[0] - 60
+
+        title_style = ParagraphStyle('Title', parent=self.styles['Title'],
+            fontSize=14, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)
+        sub_style = ParagraphStyle('Sub', parent=self.styles['Normal'],
+            fontSize=9, alignment=1, fontName='Helvetica', textColor=colors.black, spaceAfter=2)
+        section = ParagraphStyle('Section', parent=self.styles['Normal'],
+            fontSize=11, fontName='Helvetica-Bold', textColor=colors.black, spaceBefore=10, spaceAfter=4)
+        cell = ParagraphStyle('Cell', parent=self.styles['Normal'],
+            fontSize=9, fontName='Helvetica', textColor=colors.black, leading=11)
+        cell_b = ParagraphStyle('CellB', parent=self.styles['Normal'],
+            fontSize=9, fontName='Helvetica-Bold', textColor=colors.black, leading=11)
+        big = ParagraphStyle('Big', parent=self.styles['Normal'],
+            fontSize=14, alignment=1, fontName='Helvetica-Bold', textColor=colors.black)
+        bigsmall = ParagraphStyle('BigSmall', parent=self.styles['Normal'],
+            fontSize=8, alignment=1, fontName='Helvetica', textColor=colors.black)
+
+        if include_header:
+            elements.append(Paragraph(hospital_info.get('name', 'HOSPITAL').upper(), title_style))
+            if hospital_info.get('address'):
+                elements.append(Paragraph(hospital_info['address'], sub_style))
+            elements.append(Spacer(1, 6))
+            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+        else:
+            elements.append(Spacer(1, 60))
+
+        elements.append(Spacer(1, 6))
+        as_of = payload.get("as_of", "")
+        try:
+            as_of_h = datetime.fromisoformat(as_of.replace("Z", "+00:00")).strftime("%d/%m/%Y %H:%M")
+        except Exception:
+            as_of_h = as_of
+        elements.append(Paragraph(f"DAILY CENSUS REPORT — {as_of_h}",
+            ParagraphStyle('H', parent=self.styles['Normal'], fontSize=13, alignment=1,
+                fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)))
+        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
+
+        # Totals strip — five tiles
+        t = payload.get("totals", {})
+        tile = lambda v, l: Table([[Paragraph(str(v), big)], [Paragraph(l, bigsmall)]],
+            colWidths=[page_width / 5 - 4])
+        for tbl in (tile(t.get("total_beds", 0), "Total beds"),
+                    tile(t.get("occupied", 0), "Occupied"),
+                    tile(t.get("free", 0), "Free"),
+                    tile(t.get("cleaning", 0), "Cleaning"),
+                    tile(f'{t.get("occupancy_pct", 0)}%', "Occupancy")):
+            tbl.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#f5f5f5')),
+                ('BOX', (0, 0), (-1, -1), 0.4, colors.grey)]))
+        elements.append(Spacer(1, 8))
+        tiles_row = Table([[
+            tile(t.get("total_beds", 0), "Total beds"),
+            tile(t.get("occupied", 0), "Occupied"),
+            tile(t.get("free", 0), "Free"),
+            tile(t.get("cleaning", 0), "Cleaning"),
+            tile(f'{t.get("occupancy_pct", 0)}%', "Occupancy"),
+        ]], colWidths=[page_width / 5] * 5)
+        tiles_row.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#fafafa')),
+            ('BOX', (0, 0), (-1, -1), 0.4, colors.grey),
+            ('GRID', (0, 0), (-1, -1), 0.3, colors.lightgrey),
+        ]))
+        elements.append(tiles_row)
+
+        if t.get("on_leave", 0):
+            elements.append(Spacer(1, 4))
+            elements.append(Paragraph(f"On Leave (LOA): {t['on_leave']}",
+                ParagraphStyle('OL', parent=self.styles['Normal'], fontSize=10, alignment=1,
+                    fontName='Helvetica-Bold', textColor=colors.HexColor('#cc7700'))))
+
+        # Per-department table
+        elements.append(Paragraph("Per-ward / department", section))
+        rows = [[Paragraph(h, cell_b) for h in
+                 ["Department", "Rooms", "Total beds", "Occupied", "Free", "Cleaning", "On leave"]]]
+        for d in payload.get("by_department", []):
+            rows.append([
+                Paragraph(d["department"], cell),
+                Paragraph(str(d["rooms"]), cell),
+                Paragraph(str(d["total_beds"]), cell),
+                Paragraph(str(d["occupied"]), cell),
+                Paragraph(str(d["free"]), cell),
+                Paragraph(str(d["cleaning"]), cell),
+                Paragraph(str(d.get("on_leave", 0)), cell),
+            ])
+        dept_table = Table(rows, colWidths=[page_width * 0.30] + [page_width * 0.117] * 6, repeatRows=1)
+        dept_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#e0e0e0')),
+            ('GRID', (0, 0), (-1, -1), 0.4, colors.grey),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING', (0, 0), (-1, -1), 3),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+        ]))
+        elements.append(dept_table)
+
+        # Per-type table
+        elements.append(Paragraph("Per room type", section))
+        rows = [[Paragraph(h, cell_b) for h in
+                 ["Room type", "Total beds", "Occupied", "Free", "Cleaning"]]]
+        for ty in payload.get("by_room_type", []):
+            rows.append([
+                Paragraph(ty["room_type"], cell),
+                Paragraph(str(ty["total_beds"]), cell),
+                Paragraph(str(ty["occupied"]), cell),
+                Paragraph(str(ty["free"]), cell),
+                Paragraph(str(ty["cleaning"]), cell),
+            ])
+        type_table = Table(rows, colWidths=[page_width * 0.4] + [page_width * 0.15] * 4, repeatRows=1)
+        type_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#e0e0e0')),
+            ('GRID', (0, 0), (-1, -1), 0.4, colors.grey),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING', (0, 0), (-1, -1), 3),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+        ]))
+        elements.append(type_table)
+
+        elements.append(Spacer(1, 14))
+        elements.append(Paragraph(
+            f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M')}",
+            ParagraphStyle('F', parent=self.styles['Normal'], fontSize=8, alignment=1)))
+        doc.build(elements)
+        buffer.seek(0)
+        return buffer
+
+    def generate_mlc_register_pdf(self, mlc_data, hospital_info, include_header=True):
+        """Medico-Legal Case (MLC) register entry — printable form for the police
+        intimation copy and hospital MLC register. India: required for RTA,
+        assault, poisoning, burns, sexual assault, attempted suicide cases."""
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=30, bottomMargin=30)
+        elements = []
+        page_width = A4[0] - 80
+
+        title = ParagraphStyle('Title', parent=self.styles['Title'],
+            fontSize=14, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)
+        sub = ParagraphStyle('Sub', parent=self.styles['Normal'],
+            fontSize=9, alignment=1, fontName='Helvetica', spaceAfter=2)
+        heading = ParagraphStyle('H', parent=self.styles['Normal'],
+            fontSize=11, fontName='Helvetica-Bold', spaceAfter=4, spaceBefore=8)
+        label = ParagraphStyle('L', parent=self.styles['Normal'], fontSize=9, fontName='Helvetica-Bold')
+        value = ParagraphStyle('V', parent=self.styles['Normal'], fontSize=9, fontName='Helvetica')
+
+        if include_header:
+            elements.append(Paragraph(hospital_info.get('name', 'HOSPITAL').upper(), title))
+            if hospital_info.get('address'):
+                elements.append(Paragraph(hospital_info['address'], sub))
+            elements.append(Spacer(1, 6))
+            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+        else:
+            elements.append(Spacer(1, 90))
+
+        elements.append(Spacer(1, 8))
+        elements.append(Paragraph("MEDICO-LEGAL CASE (MLC) REGISTER ENTRY",
+            ParagraphStyle('M', parent=self.styles['Normal'],
+                fontSize=14, alignment=1, fontName='Helvetica-Bold', spaceAfter=6)))
+        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
+        elements.append(Spacer(1, 10))
+
+        mlc_type_labels = {
+            'rta': 'Road Traffic Accident', 'assault': 'Assault',
+            'poisoning': 'Poisoning', 'burn': 'Burn',
+            'sexual_assault': 'Sexual Assault',
+            'attempted_suicide': 'Attempted Suicide', 'other': 'Other',
+        }
+
+        mlc_meta = [
+            [Paragraph("MLC Number:", label), Paragraph(str(mlc_data.get('mlc_number') or '—'), value),
+             Paragraph("MLC Type:", label), Paragraph(mlc_type_labels.get(mlc_data.get('mlc_type'), mlc_data.get('mlc_type') or '—'), value)],
+            [Paragraph("Admission No:", label), Paragraph(str(mlc_data.get('admission_number', '')), value),
+             Paragraph("Admission Date:", label), Paragraph(str(mlc_data.get('admission_date', '')), value)],
+            [Paragraph("Police Informed:", label), Paragraph(str(mlc_data.get('police_station_informed') or '—'), value),
+             Paragraph("Informed At:", label), Paragraph(str(mlc_data.get('mlc_informed_at') or '—'), value)],
+        ]
+        t = Table(mlc_meta, colWidths=[page_width*0.18, page_width*0.32, page_width*0.18, page_width*0.32])
+        t.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'TOP'), ('BOTTOMPADDING', (0,0), (-1,-1), 4)]))
+        elements.append(t)
+
+        elements.append(Paragraph("PATIENT DETAILS", heading))
+        pat_meta = [
+            [Paragraph("Name:", label), Paragraph(str(mlc_data.get('patient_name', '')), value),
+             Paragraph("Age / Gender:", label), Paragraph(f"{mlc_data.get('age', '')} / {mlc_data.get('gender', '')}", value)],
+            [Paragraph("Phone:", label), Paragraph(str(mlc_data.get('phone') or '—'), value),
+             Paragraph("Address:", label), Paragraph(str(mlc_data.get('address') or '—'), value)],
+            [Paragraph("Brought By:", label), Paragraph(str(mlc_data.get('brought_by') or '—'), value),
+             Paragraph("Arrival Mode:", label), Paragraph(str(mlc_data.get('arrival_mode') or '—').replace('_', ' ').title(), value)],
+        ]
+        t = Table(pat_meta, colWidths=[page_width*0.18, page_width*0.32, page_width*0.18, page_width*0.32])
+        t.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'TOP'), ('BOTTOMPADDING', (0,0), (-1,-1), 4)]))
+        elements.append(t)
+
+        elements.append(Paragraph("CLINICAL FINDINGS ON ARRIVAL", heading))
+        body = ParagraphStyle('B', parent=self.styles['Normal'],
+            fontSize=10, fontName='Helvetica', spaceAfter=4, leading=14)
+        elements.append(Paragraph((mlc_data.get('chief_complaint') or '—').replace('\n', '<br/>'), body))
+        if mlc_data.get('ambulance_details'):
+            elements.append(Paragraph(f"<b>Ambulance:</b> {mlc_data.get('ambulance_details')}", body))
+
+        elements.append(Paragraph("ATTENDING DOCTOR", heading))
+        elements.append(Paragraph(str(mlc_data.get('doctor_name', '')), body))
+
+        # Signatures
+        elements.append(Spacer(1, 30))
+        sig = Table([
+            [Paragraph("Doctor Signature & Seal", label), Paragraph("Police Officer Signature", label)],
+            [Paragraph("Name: ____________________", value), Paragraph("Name: ____________________", value)],
+            [Paragraph("Date / Time: _____________", value), Paragraph("Designation: _____________", value)],
+        ], colWidths=[page_width*0.5, page_width*0.5])
+        sig.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'TOP'), ('BOTTOMPADDING', (0,0), (-1,-1), 12)]))
+        elements.append(sig)
+
+        elements.append(Spacer(1, 14))
+        elements.append(Paragraph(
+            f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M')}",
+            ParagraphStyle('F', parent=self.styles['Normal'], fontSize=8, alignment=1)))
+        doc.build(elements)
+        buffer.seek(0)
+        return buffer
+
+
+    def generate_body_release_pdf(self, rel, hospital_info, include_header=True):
+        """B6 — Body release / mortuary handover form. Signed receipt for the
+        family member receiving the body, witnessed by another adult."""
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=30, bottomMargin=30)
+        elements = []
+        page_width = A4[0] - 80
+
+        title = ParagraphStyle('Title', parent=self.styles['Title'],
+            fontSize=14, alignment=1, fontName='Helvetica-Bold', spaceAfter=4)
+        sub = ParagraphStyle('Sub', parent=self.styles['Normal'], fontSize=9, alignment=1, spaceAfter=2)
+        heading = ParagraphStyle('H', parent=self.styles['Normal'],
+            fontSize=11, fontName='Helvetica-Bold', spaceAfter=4, spaceBefore=8)
+        label = ParagraphStyle('L', parent=self.styles['Normal'], fontSize=9, fontName='Helvetica-Bold')
+        value = ParagraphStyle('V', parent=self.styles['Normal'], fontSize=9, fontName='Helvetica')
+        body = ParagraphStyle('B', parent=self.styles['Normal'],
+            fontSize=10, fontName='Helvetica', spaceAfter=4, leading=14)
+
+        if include_header:
+            elements.append(Paragraph(hospital_info.get('name', 'HOSPITAL').upper(), title))
+            if hospital_info.get('address'):
+                elements.append(Paragraph(hospital_info['address'], sub))
+            elements.append(Spacer(1, 6))
+            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+        else:
+            elements.append(Spacer(1, 90))
+
+        elements.append(Spacer(1, 8))
+        elements.append(Paragraph("BODY RELEASE / HANDOVER FORM",
+            ParagraphStyle('R', parent=self.styles['Normal'],
+                fontSize=14, alignment=1, fontName='Helvetica-Bold', spaceAfter=6)))
+        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
+        elements.append(Spacer(1, 10))
+
+        meta = [
+            [Paragraph("Patient Name:", label), Paragraph(str(rel.get('patient_name', '')), value),
+             Paragraph("Patient ID:", label), Paragraph(str(rel.get('patient_id', '')), value)],
+            [Paragraph("Age / Gender:", label), Paragraph(f"{rel.get('age', '')} / {rel.get('gender', '')}", value),
+             Paragraph("Admission No:", label), Paragraph(str(rel.get('admission_number', '')), value)],
+            [Paragraph("Date / Time of Death:", label), Paragraph(str(rel.get('death_date', '')), value),
+             Paragraph("Attending Doctor:", label), Paragraph(str(rel.get('doctor_name', '')), value)],
+            [Paragraph("MLC:", label), Paragraph(("Yes — " + rel.get('mlc_number', '')) if rel.get('is_mlc') else "No", value),
+             Paragraph("Mortuary Slot:", label), Paragraph(str(rel.get('mortuary_slot') or '—'), value)],
+        ]
+        t = Table(meta, colWidths=[page_width*0.18, page_width*0.32, page_width*0.18, page_width*0.32])
+        t.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'TOP'), ('BOTTOMPADDING', (0,0), (-1,-1), 4)]))
+        elements.append(t)
+
+        elements.append(Paragraph("MORTUARY / EMBALMING / POST-MORTEM", heading))
+        m = [
+            [Paragraph("Body in mortuary:", label), Paragraph(str(rel.get('body_in_at') or '—'), value),
+             Paragraph("Body out:", label), Paragraph(str(rel.get('body_out_at') or '—'), value)],
+            [Paragraph("Embalming:", label), Paragraph("Done — " + (rel.get('embalmed_by') or '') if rel.get('embalming_done') else "Not done", value),
+             Paragraph("Embalmed at:", label), Paragraph(str(rel.get('embalming_at') or '—'), value)],
+            [Paragraph("Post-mortem:", label),
+             Paragraph(("Required @ " + (rel.get('pm_hospital') or '—')) if rel.get('post_mortem_required') else "Not required", value),
+             Paragraph("PM completed:", label), Paragraph(str(rel.get('pm_completed_at') or '—'), value)],
+            [Paragraph("PM Doctor:", label), Paragraph(str(rel.get('pm_doctor') or '—'), value),
+             Paragraph("PM Report No.:", label), Paragraph(str(rel.get('pm_report_number') or '—'), value)],
+            [Paragraph("Police NOC:", label),
+             Paragraph(("Received #" + (rel.get('police_noc_number') or '')) if rel.get('police_noc_received') else "Not received", value),
+             Paragraph("NOC at:", label), Paragraph(str(rel.get('police_noc_received_at') or '—'), value)],
+        ]
+        tm = Table(m, colWidths=[page_width*0.18, page_width*0.32, page_width*0.18, page_width*0.32])
+        tm.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'TOP'), ('BOTTOMPADDING', (0,0), (-1,-1), 4)]))
+        elements.append(tm)
+
+        elements.append(Paragraph("RELEASED TO", heading))
+        r = [
+            [Paragraph("Name:", label), Paragraph(str(rel.get('released_to_name', '')), value),
+             Paragraph("Relationship:", label), Paragraph(str(rel.get('released_to_relationship', '')), value)],
+            [Paragraph("Phone:", label), Paragraph(str(rel.get('released_to_phone') or '—'), value),
+             Paragraph("ID Proof:", label),
+             Paragraph(f"{rel.get('released_to_id_proof_type', '').title()} — {rel.get('released_to_id_proof_number', '')}", value)],
+            [Paragraph("Address:", label), Paragraph(str(rel.get('released_to_address') or '—'), value),
+             Paragraph("Released at:", label), Paragraph(str(rel.get('body_released_at') or '—'), value)],
+        ]
+        tr = Table(r, colWidths=[page_width*0.18, page_width*0.32, page_width*0.18, page_width*0.32])
+        tr.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'TOP'), ('BOTTOMPADDING', (0,0), (-1,-1), 4)]))
+        elements.append(tr)
+
+        if rel.get('transport_details'):
+            elements.append(Paragraph("TRANSPORT", heading))
+            elements.append(Paragraph(str(rel.get('transport_details')), body))
+
+        elements.append(Paragraph("DECLARATION", heading))
+        elements.append(Paragraph(
+            "I, the undersigned, hereby acknowledge receipt of the deceased's body in good condition. "
+            "I have verified the identity of the deceased and confirm my relationship as stated above. "
+            "I take full responsibility for further arrangements and absolve the hospital of any further "
+            "claims regarding custody of the body.", body))
+
+        # Signature blocks
+        elements.append(Spacer(1, 24))
+        sig = Table([
+            [Paragraph("Receiver Signature", label), Paragraph("Witness Signature", label), Paragraph("Hospital Authority", label)],
+            [Paragraph("Name: ___________________", value), Paragraph("Name: ___________________", value), Paragraph("Name: ___________________", value)],
+            [Paragraph("Date / Time: __________", value), Paragraph("Phone: __________________", value), Paragraph("Designation: __________", value)],
+        ], colWidths=[page_width*0.34, page_width*0.33, page_width*0.33])
+        sig.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'TOP'), ('BOTTOMPADDING', (0,0), (-1,-1), 12)]))
+        elements.append(sig)
+
+        elements.append(Spacer(1, 12))
+        elements.append(Paragraph(
+            f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M')}",
+            ParagraphStyle('F', parent=self.styles['Normal'], fontSize=8, alignment=1)))
         doc.build(elements)
         buffer.seek(0)
         return buffer

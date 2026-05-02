@@ -29,6 +29,12 @@ class UserResponse(BaseModel):
     roles: List[str] = []  # All assigned roles
     hospital_id: Optional[int]
     is_active: bool
+    must_change_password: bool = False
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
 
 class LicenseInfo(BaseModel):
     status: str
@@ -121,7 +127,8 @@ async def login(user_credentials: UserLogin, db: Session = Depends(get_db)):
         role=user.role.name,
         roles=user.role_names,
         hospital_id=user.hospital_id,
-        is_active=user.is_active
+        is_active=user.is_active,
+        must_change_password=bool(getattr(user, "must_change_password", False)),
     )
     
     # Get license info
@@ -158,5 +165,38 @@ async def get_current_user_profile(current_user: User = Depends(get_current_user
         role=current_user.role.name,
         roles=current_user.role_names,
         hospital_id=current_user.hospital_id,
-        is_active=current_user.is_active
+        is_active=current_user.is_active,
+        must_change_password=bool(getattr(current_user, "must_change_password", False)),
     )
+
+
+@router.post("/change-password")
+async def change_password(
+    payload: ChangePasswordRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Authenticated password change. Clears the must_change_password flag.
+
+    Used both for the forced first-login change and for any user updating
+    their own password later.
+    """
+    if not verify_password(payload.current_password, current_user.password_hash):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    if len(payload.new_password) < 6:
+        raise HTTPException(status_code=400, detail="New password must be at least 6 characters")
+    if payload.new_password == payload.current_password:
+        raise HTTPException(status_code=400, detail="New password must be different from the current password")
+
+    current_user.password_hash = get_password_hash(payload.new_password)
+    current_user.must_change_password = False
+    db.commit()
+
+    try:
+        from app.services.audit_service import log_action
+        log_action(db, current_user, "change_password", "auth", "User", current_user.id,
+                   f"{current_user.username} changed their own password")
+    except Exception:
+        pass
+
+    return {"success": True, "message": "Password updated"}

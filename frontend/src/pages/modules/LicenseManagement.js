@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Badge } from '../../components/ui/badge';
-import { Upload, Shield, CheckCircle, AlertTriangle, XCircle, Clock } from 'lucide-react';
+import { Upload, Shield, CheckCircle, AlertTriangle, XCircle, Clock, Cpu, Send, Download } from 'lucide-react';
 import axios from 'axios';
 
 const LicenseManagement = () => {
@@ -11,6 +11,8 @@ const LicenseManagement = () => {
   const [uploading, setUploading] = useState(false);
   const [message, setMessage] = useState(null);
   const [machineInfo, setMachineInfo] = useState(null);
+  const [pending, setPending] = useState(null); // { file, inspect, checking }
+  const [rebinding, setRebinding] = useState(false);
 
   const fetchLicenseStatus = async () => {
     try {
@@ -36,27 +38,48 @@ const LicenseManagement = () => {
     fetchMachineId();
   }, []);
 
-  const handleFileUpload = async (e) => {
+  const handleFilePicked = async (e) => {
     const file = e.target.files[0];
+    e.target.value = '';
     if (!file) return;
-
     if (!file.name.endsWith('.lic')) {
-      setMessage({ type: 'error', text: 'Please upload a valid .lic license file' });
+      setMessage({ type: 'error', text: 'Please choose a valid .lic license file' });
       return;
     }
+    setMessage(null);
+    setPending({ file, checking: true, inspect: null });
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const res = await axios.post('/api/license/validate', fd, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      setPending({ file, checking: false, inspect: res.data });
+    } catch (err) {
+      setPending({
+        file,
+        checking: false,
+        inspect: {
+          valid_signature: false,
+          error: err.response?.data?.detail || 'Could not validate license',
+        },
+      });
+    }
+  };
 
+  const applyPending = async () => {
+    if (!pending?.file) return;
     setUploading(true);
     setMessage(null);
-
-    const formData = new FormData();
-    formData.append('file', file);
-
     try {
-      const response = await axios.post('/api/license/upload', formData, {
+      const fd = new FormData();
+      fd.append('file', pending.file);
+      const response = await axios.post('/api/license/upload', fd, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
       setMessage({ type: 'success', text: response.data.message });
       setLicense(response.data.license);
+      setPending(null);
     } catch (error) {
       setMessage({
         type: 'error',
@@ -64,7 +87,37 @@ const LicenseManagement = () => {
       });
     } finally {
       setUploading(false);
-      e.target.value = '';
+    }
+  };
+
+  const downloadRebindRequest = async () => {
+    setRebinding(true);
+    setMessage(null);
+    try {
+      const res = await axios.get('/api/license/rebind-request', { responseType: 'blob' });
+      const blob = new Blob([res.data], { type: 'application/json' });
+      const cd = res.headers['content-disposition'] || '';
+      const m = cd.match(/filename="?([^";]+)"?/);
+      const fname = m ? m[1] : 'kthealth_rebind.rebind.json';
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fname;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      setMessage({
+        type: 'success',
+        text: 'Rebind request downloaded. Send this file to your vendor — they will return a fresh .lic bound to this machine.',
+      });
+    } catch (error) {
+      setMessage({
+        type: 'error',
+        text: error.response?.data?.detail || 'Could not generate rebind request',
+      });
+    } finally {
+      setRebinding(false);
     }
   };
 
@@ -196,21 +249,23 @@ const LicenseManagement = () => {
         </Card>
       )}
 
-      {/* Upload License */}
+      {/* Upload License — verify-before-apply flow */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Upload className="h-5 w-5" />
-            Upload License
+            Upload or Renew License
           </CardTitle>
-          <CardDescription>Upload a new .lic license file to activate or renew</CardDescription>
+          <CardDescription>
+            Choose a .lic file to verify it. The license is only applied after you click Apply.
+          </CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
           <div className="flex items-center gap-4">
             <input
               type="file"
               accept=".lic"
-              onChange={handleFileUpload}
+              onChange={handleFilePicked}
               className="hidden"
               id="license-upload"
               disabled={uploading}
@@ -219,14 +274,116 @@ const LicenseManagement = () => {
               <Button asChild disabled={uploading}>
                 <span>
                   <Upload className="h-4 w-4 mr-2" />
-                  {uploading ? 'Uploading...' : 'Choose License File'}
+                  {pending?.file ? `Choose different file` : 'Choose License File'}
                 </span>
               </Button>
             </label>
-            <span className="text-sm text-gray-500">Accepts .lic files only</span>
+            {pending?.file && (
+              <span className="text-sm text-gray-600">{pending.file.name}</span>
+            )}
           </div>
+
+          {pending?.checking && (
+            <p className="text-sm text-muted-foreground">Verifying license…</p>
+          )}
+
+          {pending && !pending.checking && pending.inspect && (
+            <div className={`rounded-lg p-4 text-sm border ${
+              pending.inspect.valid_signature && pending.inspect.machine_match
+                ? 'bg-green-50 border-green-200 text-green-800'
+                : 'bg-red-50 border-red-200 text-red-800'
+            }`}>
+              {!pending.inspect.valid_signature ? (
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <div className="font-semibold">Invalid license</div>
+                    <div>{pending.inspect.error || 'Signature verification failed.'}</div>
+                  </div>
+                </div>
+              ) : !pending.inspect.machine_match ? (
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <div className="font-semibold">License is for a different machine</div>
+                    <div>
+                      License is bound to{' '}
+                      <code>{pending.inspect.license_machine_id}</code> but this
+                      machine is <code>{pending.inspect.current_machine_id}</code>.
+                    </div>
+                    <div className="text-xs">
+                      Use <strong>Generate Rebind Request</strong> below to ask your
+                      vendor to re-issue this license for this machine.
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <div className="flex items-start gap-2">
+                    <CheckCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                    <div className="space-y-0.5">
+                      <div className="font-semibold">License valid for this machine</div>
+                      <div>{pending.inspect.hospital_name} · {pending.inspect.plan} plan</div>
+                      <div>
+                        Expires {pending.inspect.expires_at
+                          ? new Date(pending.inspect.expires_at).toLocaleDateString()
+                          : 'unknown'}
+                        {' '}({pending.inspect.days_remaining} days remaining)
+                      </div>
+                      {(pending.inspect.features || []).length > 0 && (
+                        <div className="text-xs">
+                          Modules: {pending.inspect.features.join(', ')}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex gap-2 pt-2 border-t border-green-200">
+                    <Button onClick={applyPending} disabled={uploading}>
+                      {uploading ? 'Applying…' : 'Apply License'}
+                    </Button>
+                    <Button variant="outline" onClick={() => setPending(null)} disabled={uploading}>
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </CardContent>
       </Card>
+
+      {/* Rebind request — only meaningful when there's an existing license */}
+      {license?.license_id && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Send className="h-5 w-5" />
+              Move License to This Machine
+            </CardTitle>
+            <CardDescription>
+              Use this when you've moved the application to a new server / machine and the
+              old <code>.lic</code> file is no longer accepted. Generates a request file
+              your vendor can process to re-issue the license for this machine — no manual
+              data entry needed on their side.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {machineInfo && license?.license_id && (
+              <div className="text-xs text-gray-600 space-y-1">
+                <div>Current license: <code>{license.license_id}</code></div>
+                <div className="flex items-center gap-1">
+                  <Cpu className="w-3 h-3" />
+                  This machine: <code>{machineInfo.machine_id}</code>
+                </div>
+              </div>
+            )}
+            <Button onClick={downloadRebindRequest} disabled={rebinding}>
+              <Download className="w-4 h-4 mr-2" />
+              {rebinding ? 'Generating…' : 'Generate Rebind Request'}
+            </Button>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 };

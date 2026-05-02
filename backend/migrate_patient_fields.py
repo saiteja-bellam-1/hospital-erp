@@ -103,7 +103,51 @@ NEW_COLUMNS = [
     ("ot_schedules", "procedure_charge", "FLOAT DEFAULT 0.0"),
     # Sample type grouping for lab tests
     ("lab_tests", "sample_type_id", "INTEGER REFERENCES sample_types(id)"),
+    # Daily auto-post tracking on patient visits (idempotency for nightly job)
+    ("patient_visits", "auto_posted", "BOOLEAN DEFAULT 0"),
+    # Room-rate snapshots per stay segment — eliminates the bug where a
+    # mid-stay room change re-rates the entire stay at the latest rate.
+    ("admissions", "initial_room_charge_per_day", "FLOAT"),
+    ("bed_transfer_history", "from_room_charge_per_day", "FLOAT"),
+    ("bed_transfer_history", "to_room_charge_per_day", "FLOAT"),
+    # Medicine safety flags — narcotic + high-alert. Used by MAR safety wraps.
+    ("medicines", "is_narcotic", "BOOLEAN DEFAULT 0"),
+    ("medicines", "is_high_alert", "BOOLEAN DEFAULT 0"),
+    # MAR ↔ Incident bidirectional linkage (adverse drug events)
+    ("medication_administrations", "incident_id", "INTEGER REFERENCES incidents(id)"),
+    ("incidents", "medication_administration_id", "INTEGER REFERENCES medication_administrations(id)"),
+    # Doctor ward-round checklist on PatientVisit
+    ("patient_visits", "vitals_reviewed", "BOOLEAN DEFAULT 0"),
+    ("patient_visits", "labs_reviewed", "BOOLEAN DEFAULT 0"),
+    ("patient_visits", "pain_assessed", "BOOLEAN DEFAULT 0"),
+    ("patient_visits", "mobility_checked", "BOOLEAN DEFAULT 0"),
+    ("patient_visits", "plan_for_today", "TEXT"),
+    ("patient_visits", "family_updated", "BOOLEAN DEFAULT 0"),
+    # Force-change-password flag (Installer Phase 1 — security baseline)
+    ("users", "must_change_password", "BOOLEAN DEFAULT 0"),
+    # B7 — Emergency / casualty workflow
+    ("admissions", "triage_level", "INTEGER"),
+    ("admissions", "chief_complaint", "TEXT"),
+    ("admissions", "arrival_mode", "VARCHAR(20)"),
+    ("admissions", "ambulance_details", "TEXT"),
+    ("admissions", "is_mlc", "BOOLEAN DEFAULT 0"),
+    ("admissions", "mlc_number", "VARCHAR(50)"),
+    ("admissions", "mlc_type", "VARCHAR(30)"),
+    ("admissions", "police_station_informed", "VARCHAR(200)"),
+    ("admissions", "mlc_informed_at", "DATETIME"),
+    ("patients", "registration_complete", "BOOLEAN DEFAULT 1"),
+    # B7.6 — Observation cases
+    ("admissions", "is_observation", "BOOLEAN DEFAULT 0"),
+    # B7.7 — Deposit waiver
+    ("discharge_records", "take_home_medications", "JSON"),
+    ("admissions", "deposit_waived", "BOOLEAN DEFAULT 0"),
+    ("admissions", "deposit_waiver_reason", "TEXT"),
+    ("admissions", "deposit_waived_by_id", "INTEGER REFERENCES users(id)"),
+    ("admissions", "deposit_waived_at", "DATETIME"),
 ]
+
+# B6 — body release table is created via create_all on startup; no column adds.
+
 
 def migrate():
     from sqlalchemy import text

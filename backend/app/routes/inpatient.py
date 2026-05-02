@@ -1,10 +1,16 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File, Form
 from fastapi.responses import StreamingResponse, FileResponse
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func as sqlfunc, and_, cast, Date
+from sqlalchemy import func as sqlfunc, and_, cast, Date, update as sa_update
 from pydantic import BaseModel, Field
 from typing import List, Optional
-from datetime import datetime, date
+from datetime import datetime, date, timezone
+
+
+def _now_utc() -> datetime:
+    """Timezone-aware UTC 'now'. Use everywhere instead of the deprecated
+    _now_utc() (which returned a naive datetime)."""
+    return datetime.now(timezone.utc)
 import io
 import os
 import uuid
@@ -15,12 +21,12 @@ from app.models.patient import Patient
 from app.models.hospital import Hospital
 from app.models.billing import Bill, BillItem
 from app.models.inpatient import (
-    RoomManagement, Admission, DischargeRecord,
-    PatientVisit, InpatientRateConfig, OTSchedule, Bed, AdmissionDocument, NursingNote, DietOrder,
+    RoomManagement, Admission, DischargeRecord, DAMARecord,
+    PatientVisit, InpatientRateConfig, OTSchedule, Bed, AdmissionDocument, NursingNote, DietOrder, DietMealLog,
     VitalSigns, MedicationAdministration,
     AdmissionDeposit, AncillaryServiceCatalog, AdmissionAncillaryCharge, Procedure,
     SurgeryPackage, AdmissionPackage, InsurancePreAuth, InsurancePreAuthExpansion,
-    TPACompany, BillSplit,
+    TPACompany, BillSplit, LeaveOfAbsence, ShiftHandover, CodeBlueEvent, BodyReleaseRecord,
 )
 from app.models.pharmacy import Prescription, PrescriptionItem, Medicine
 from app.models.prescriptions_simple import SimplePrescription
@@ -120,6 +126,21 @@ class AdmissionCreate(BaseModel):
     attending_physician_id: Optional[int] = None
     bed_number: Optional[str] = None
     bed_id: Optional[int] = None
+    # B7 — Emergency / casualty fields
+    triage_level: Optional[int] = Field(default=None, ge=1, le=5)
+    chief_complaint: Optional[str] = None
+    arrival_mode: Optional[str] = Field(default=None, pattern="^(walk_in|ambulance|referred|police)$")
+    ambulance_details: Optional[str] = None
+    is_mlc: Optional[bool] = False
+    mlc_number: Optional[str] = None
+    mlc_type: Optional[str] = Field(default=None, pattern="^(rta|assault|poisoning|burn|sexual_assault|attempted_suicide|other)$")
+    police_station_informed: Optional[str] = None
+    mlc_informed_at: Optional[datetime] = None
+    # B7.6 — Observation cases
+    is_observation: Optional[bool] = False
+    # B7.7 — Deposit waiver (e.g. cannot-pay emergencies; soft-warns at discharge)
+    deposit_waived: Optional[bool] = False
+    deposit_waiver_reason: Optional[str] = None
 
 class AdmissionUpdate(BaseModel):
     room_id: Optional[int] = None
@@ -137,6 +158,19 @@ class AdmissionUpdate(BaseModel):
     bed_number: Optional[str] = None
     # Required when the update changes room/bed — used to populate BedTransferHistory
     transfer_reason: Optional[str] = None
+    # B7 — Emergency / casualty fields (allow update so MLC can be added later)
+    triage_level: Optional[int] = Field(default=None, ge=1, le=5)
+    chief_complaint: Optional[str] = None
+    arrival_mode: Optional[str] = Field(default=None, pattern="^(walk_in|ambulance|referred|police)$")
+    ambulance_details: Optional[str] = None
+    is_mlc: Optional[bool] = None
+    mlc_number: Optional[str] = None
+    mlc_type: Optional[str] = Field(default=None, pattern="^(rta|assault|poisoning|burn|sexual_assault|attempted_suicide|other)$")
+    police_station_informed: Optional[str] = None
+    mlc_informed_at: Optional[datetime] = None
+    is_observation: Optional[bool] = None
+    deposit_waived: Optional[bool] = None
+    deposit_waiver_reason: Optional[str] = None
 
 class ClaimStatusUpdate(BaseModel):
     claim_status: str = Field(..., pattern="^(none|draft|submitted|approved|rejected)$")
@@ -175,6 +209,21 @@ class AdmissionResponse(BaseModel):
     is_readmission: Optional[bool] = False
     previous_admission_id: Optional[int] = None
     days_since_last_discharge: Optional[int] = None
+    # B7 — Emergency / casualty fields
+    triage_level: Optional[int] = None
+    chief_complaint: Optional[str] = None
+    arrival_mode: Optional[str] = None
+    ambulance_details: Optional[str] = None
+    is_mlc: Optional[bool] = False
+    mlc_number: Optional[str] = None
+    mlc_type: Optional[str] = None
+    police_station_informed: Optional[str] = None
+    mlc_informed_at: Optional[datetime] = None
+    is_observation: Optional[bool] = False
+    deposit_waived: Optional[bool] = False
+    deposit_waiver_reason: Optional[str] = None
+    deposit_waived_at: Optional[datetime] = None
+    registration_complete: Optional[bool] = True  # from joined patient
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
     # Joined fields
@@ -200,10 +249,23 @@ class VisitCreate(BaseModel):
     visitor_id: int
     notes: Optional[str] = None
     charge_amount: Optional[float] = None  # auto-populated from rate config if not provided
+    # Optional structured ward-round checklist (only meaningful for doctor_visit)
+    vitals_reviewed: bool = False
+    labs_reviewed: bool = False
+    pain_assessed: bool = False
+    mobility_checked: bool = False
+    plan_for_today: Optional[str] = None
+    family_updated: bool = False
 
 class VisitUpdate(BaseModel):
     notes: Optional[str] = None
     charge_amount: Optional[float] = Field(default=None, ge=0)
+    vitals_reviewed: Optional[bool] = None
+    labs_reviewed: Optional[bool] = None
+    pain_assessed: Optional[bool] = None
+    mobility_checked: Optional[bool] = None
+    plan_for_today: Optional[str] = None
+    family_updated: Optional[bool] = None
 
 class VisitResponse(BaseModel):
     id: int
@@ -217,10 +279,26 @@ class VisitResponse(BaseModel):
     billed: bool
     created_at: Optional[datetime]
     visitor_name: Optional[str] = None
+    vitals_reviewed: Optional[bool] = False
+    labs_reviewed: Optional[bool] = False
+    pain_assessed: Optional[bool] = False
+    mobility_checked: Optional[bool] = False
+    plan_for_today: Optional[str] = None
+    family_updated: Optional[bool] = False
     class Config:
         from_attributes = True
 
 # --- Discharge ---
+class TakeHomeMedItem(BaseModel):
+    medicine_id: Optional[int] = None
+    medicine_name: str = Field(..., min_length=1, max_length=200)
+    dosage: Optional[str] = Field(default=None, max_length=100)
+    frequency: Optional[str] = Field(default=None, max_length=100)
+    duration: Optional[str] = Field(default=None, max_length=100)
+    quantity: Optional[int] = Field(default=None, ge=1)
+    instructions: Optional[str] = None
+
+
 class DischargeCreate(BaseModel):
     discharge_type: str = Field(..., pattern="^(normal|against_advice|transfer|death)$")
     condition_on_discharge: Optional[str] = Field(default=None, pattern="^(stable|improved|unchanged|critical)$")
@@ -228,10 +306,23 @@ class DischargeCreate(BaseModel):
     diagnosis_on_discharge: Optional[str] = None
     treatment_given: Optional[str] = None
     medications_prescribed: Optional[str] = None
+    take_home_medications: Optional[List[TakeHomeMedItem]] = None
     follow_up_instructions: Optional[str] = None
     follow_up_date: Optional[datetime] = None
     diet_instructions: Optional[str] = None
     activity_restrictions: Optional[str] = None
+    # Safety/quality gates. Each can be individually overridden but every
+    # override requires `override_reason` and is audit-logged.
+    #   - force_outstanding_balance: bypass the negative-balance check.
+    #   - force_unacknowledged_alerts: bypass the unacknowledged critical
+    #     lab alert check (patient-safety regression risk; use carefully).
+    #   - force_missing_consents: bypass the "OT performed without a
+    #     non-withdrawn surgical/anaesthesia consent" check.
+    # death and against_advice exits skip all of these gates by design.
+    force_outstanding_balance: bool = False
+    force_unacknowledged_alerts: bool = False
+    force_missing_consents: bool = False
+    override_reason: Optional[str] = None
 
 class DischargeResponse(BaseModel):
     id: int
@@ -243,6 +334,7 @@ class DischargeResponse(BaseModel):
     diagnosis_on_discharge: Optional[str]
     treatment_given: Optional[str]
     medications_prescribed: Optional[str]
+    take_home_medications: Optional[List[dict]] = None
     follow_up_instructions: Optional[str]
     follow_up_date: Optional[datetime]
     diet_instructions: Optional[str]
@@ -354,10 +446,30 @@ class DocumentResponse(BaseModel):
 
 
 # --- Nursing Notes ---
+class BillItemOverride(BaseModel):
+    """An editable bill line. `source` ties the line to one of the auto-computed
+    items so the source record's `bill_id` (or `billed` flag) is set correctly
+    when the bill is committed. `source=None` is a custom add-on line that has
+    no source record."""
+    source: Optional[str] = Field(default=None, pattern=r"^(room|visit|ot|ancillary|pharmacy_rx|lab_order|custom)$")
+    source_id: Optional[int] = None
+    item_type: str = Field(..., max_length=40)
+    item_name: str = Field(..., min_length=1, max_length=300)
+    quantity: int = Field(default=1, ge=1)
+    unit_price: float = Field(default=0.0, ge=0)
+    total_price: float = Field(default=0.0, ge=0)
+
+
 class FinalizeBillRequest(BaseModel):
     discount_type: Optional[str] = Field(default=None, pattern="^(flat|percentage)$")
     discount_value: Optional[float] = Field(default=0, ge=0)
     tax_percentage: Optional[float] = Field(default=0, ge=0, le=100)
+    # When provided, the final bill is built from these explicit lines instead
+    # of the auto-computed breakdown. Server still stamps source records'
+    # `bill_id` so they can't be re-billed; sources NOT included in the
+    # override (or included with total_price=0) are also stamped — they're
+    # explicitly waived on this bill rather than carried forward.
+    items_override: Optional[List[BillItemOverride]] = None
 
 class NursingNoteCreate(BaseModel):
     shift: str = Field(..., pattern="^(morning|afternoon|night)$")
@@ -447,7 +559,51 @@ def _admission_to_response(adm) -> dict:
         "bed_label": adm.bed.bed_label if adm.bed else None,
         "discharge_date": discharge_date,
         "stay_days": stay_days,
+        "registration_complete": bool(getattr(patient, "registration_complete", True)) if patient else True,
     }
+
+
+# ============================================================
+# Staff lookups (for admission / OT dropdowns)
+# ============================================================
+
+def _list_staff_by_role(db: Session, hospital_id: int, role_name: str):
+    users = db.query(User).join(User.role).filter(
+        User.role.has(name=role_name),
+        User.hospital_id == hospital_id,
+        User.is_active == True,
+    ).all()
+    return [
+        {
+            "id": u.id,
+            "first_name": u.first_name,
+            "last_name": u.last_name,
+            "specialization": u.specialization,
+            "inpatient_fee_inr": getattr(u, "inpatient_fee_inr", None),
+            "consultation_fee_inr": getattr(u, "consultation_fee_inr", None),
+        }
+        for u in users
+    ]
+
+
+@router.get("/doctors")
+async def list_inpatient_doctors(
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
+    db: Session = Depends(get_db),
+):
+    """Lightweight list of doctors in the current hospital for inpatient dropdowns
+    (admit, OT scheduling, etc). Gated by the same read permission as the ward
+    overview so any inpatient role can populate the picker."""
+    return _list_staff_by_role(db, current_user.hospital_id, 'doctor')
+
+
+@router.get("/nurses")
+async def list_inpatient_nurses(
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
+    db: Session = Depends(get_db),
+):
+    """Lightweight list of nurses for the Assign Nurse / shift roster pickers."""
+    return _list_staff_by_role(db, current_user.hospital_id, 'nurse')
 
 
 # ============================================================
@@ -723,6 +879,36 @@ async def delete_bed(
 # Admissions
 # ============================================================
 
+# ---- Race-safe bed allocation primitives ----------------------------------
+# Two concurrent admissions can both read available_beds=1 and both decrement,
+# producing negative counts or shared beds. We use atomic conditional UPDATEs
+# (portable across SQLite/Postgres/MySQL) plus with_for_update() row hints
+# (honored by Postgres/MySQL, no-op on SQLite). Callers must rollback and 409
+# when a claim helper returns False.
+
+def _claim_bed_atomic(db: Session, bed_id: int, room_id: int) -> bool:
+    """Atomically transition a bed from 'available' to 'occupied'.
+    Returns True if this caller won the claim, False if the bed was already
+    taken by another transaction (caller must rollback)."""
+    result = db.execute(
+        sa_update(Bed)
+        .where(Bed.id == bed_id, Bed.room_id == room_id, Bed.status == "available")
+        .values(status="occupied")
+    )
+    return result.rowcount > 0
+
+
+def _decrement_room_available_atomic(db: Session, room_id: int) -> bool:
+    """Atomically decrement RoomManagement.available_beds if > 0.
+    Returns True on success. Used only in legacy (unstructured) bed mode."""
+    result = db.execute(
+        sa_update(RoomManagement)
+        .where(RoomManagement.id == room_id, RoomManagement.available_beds > 0)
+        .values(available_beds=RoomManagement.available_beds - 1)
+    )
+    return result.rowcount > 0
+
+
 def _generate_admission_number(db: Session) -> str:
     today = datetime.now().strftime("%Y%m%d")
     prefix = f"ADM-{today}-"
@@ -752,11 +938,13 @@ async def create_admission(
     if not doctor:
         raise HTTPException(status_code=404, detail="Doctor not found")
 
-    # Validate room & bed availability
+    # Validate room & bed availability — lock the row to serialise concurrent
+    # admissions on Postgres/MySQL; on SQLite the atomic helpers below provide
+    # the actual race protection.
     room = db.query(RoomManagement).filter(
         RoomManagement.id == data.room_id,
         RoomManagement.is_active == True,
-    ).first()
+    ).with_for_update().first()
     if not room:
         raise HTTPException(status_code=404, detail="Room not found")
     if room.available_beds <= 0:
@@ -770,14 +958,20 @@ async def create_admission(
     if active:
         raise HTTPException(status_code=400, detail="Patient already has an active admission")
 
-    # Validate and assign structured bed if provided
+    # Validate and assign structured bed if provided — lock the row.
     bed_obj = None
     if data.bed_id:
-        bed_obj = db.query(Bed).filter(Bed.id == data.bed_id, Bed.room_id == data.room_id).first()
+        bed_obj = db.query(Bed).filter(
+            Bed.id == data.bed_id, Bed.room_id == data.room_id
+        ).with_for_update().first()
         if not bed_obj:
             raise HTTPException(status_code=404, detail="Bed not found in selected room")
         if bed_obj.status != "available":
             raise HTTPException(status_code=400, detail=f"Bed '{bed_obj.bed_label}' is not available")
+        # Atomic claim — fails iff another tx beat us between the read and write.
+        if not _claim_bed_atomic(db, bed_obj.id, data.room_id):
+            db.rollback()
+            raise HTTPException(status_code=409, detail="Bed was just taken; please pick another")
 
     admission_number = _generate_admission_number(db)
 
@@ -795,29 +989,46 @@ async def create_admission(
             is_readmission = True
             previous_admission_id = last_discharge.admission_id
 
+    payload = data.model_dump()
+    # B7 — auto-stamp MLC informed time when MLC flagged but timestamp not given
+    if payload.get("is_mlc") and not payload.get("mlc_informed_at"):
+        payload["mlc_informed_at"] = datetime.now()
     admission = Admission(
-        **data.model_dump(),
+        **payload,
         admission_number=admission_number,
         is_readmission=is_readmission,
         previous_admission_id=previous_admission_id,
         days_since_last_discharge=days_since,
+        # Snapshot of the room rate at admission time — protects against
+        # later rate changes silently re-rating the entire stay.
+        initial_room_charge_per_day=float(room.room_charge_per_day) if room else 0.0,
     )
+    # B7.7 — stamp deposit-waiver audit on create
+    if payload.get("deposit_waived"):
+        admission.deposit_waived_by_id = current_user.id
+        admission.deposit_waived_at = datetime.now()
+
     db.add(admission)
     db.flush()  # get admission.id
 
-    # Mark structured bed as occupied
+    # Bed status was claimed atomically above; now bind it to this admission.
     if bed_obj:
-        bed_obj.status = "occupied"
         bed_obj.current_admission_id = admission.id
         admission.bed_number = bed_obj.bed_label  # sync legacy field
 
-    # Sync room bed counts from Bed table if beds exist, otherwise use legacy decrement
+    # Sync room bed counts from Bed table if beds exist, otherwise use legacy
+    # atomic decrement (race-safe). Either branch must keep available_beds >= 0.
     room_beds = db.query(Bed).filter(Bed.room_id == room.id).count()
     if room_beds > 0:
-        room.available_beds = db.query(Bed).filter(Bed.room_id == room.id, Bed.status == "available").count()
+        room.available_beds = db.query(Bed).filter(
+            Bed.room_id == room.id, Bed.status == "available"
+        ).count()
         room.bed_count = room_beds
     else:
-        room.available_beds -= 1
+        if not _decrement_room_available_atomic(db, room.id):
+            db.rollback()
+            raise HTTPException(status_code=409, detail="No beds available; another admission took the last bed")
+        db.refresh(room)
     if room.available_beds == 0:
         room.is_occupied = True
 
@@ -837,6 +1048,123 @@ async def create_admission(
         joinedload(Admission.bed),
     ).filter(Admission.id == admission.id).first()
     return _admission_to_response(admission)
+
+
+# ---------------------------------------------------------------
+# B7 — Quick / Emergency admit
+# Creates a stub Patient (registration_complete=False) plus the
+# Admission in a single call. Use when a casualty case arrives
+# without time for full reception KYC. Reception completes the
+# patient record afterwards via the normal patient edit flow.
+# ---------------------------------------------------------------
+class QuickAdmitRequest(BaseModel):
+    # Minimal patient identity (full record completed later by reception)
+    first_name: str = Field(..., min_length=1, max_length=50)
+    last_name: Optional[str] = Field(default="UNKNOWN", max_length=50)
+    age: Optional[int] = Field(default=None, ge=0, le=150)
+    gender: Optional[str] = Field(default=None, pattern="^(male|female|other)$")
+    primary_phone: Optional[str] = Field(default="0000000000", max_length=15)
+    # Admission essentials
+    admitting_doctor_id: int
+    room_id: int
+    bed_id: Optional[int] = None
+    admission_reason: Optional[str] = None
+    condition_on_admission: Optional[str] = Field(default="critical", pattern="^(stable|critical|serious)$")
+    # Emergency-specific
+    triage_level: int = Field(..., ge=1, le=5)
+    chief_complaint: Optional[str] = None
+    arrival_mode: Optional[str] = Field(default="walk_in", pattern="^(walk_in|ambulance|referred|police)$")
+    ambulance_details: Optional[str] = None
+    is_mlc: bool = False
+    mlc_type: Optional[str] = Field(default=None, pattern="^(rta|assault|poisoning|burn|sexual_assault|attempted_suicide|other)$")
+    mlc_number: Optional[str] = None
+    police_station_informed: Optional[str] = None
+    emergency_contact: Optional[str] = None
+    # B7.6 / B7.7
+    is_observation: bool = False
+    deposit_waived: bool = False
+    deposit_waiver_reason: Optional[str] = None
+
+
+@router.post("/admissions/quick-admit", response_model=AdmissionResponse, status_code=status.HTTP_201_CREATED)
+async def quick_admit(
+    data: QuickAdmitRequest,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "admit_patients")),
+    db: Session = Depends(get_db),
+):
+    hospital = _get_hospital(db, current_user)
+
+    # Create stub patient — reception completes name, DOB, address, ID proof later.
+    patient = Patient(
+        first_name=data.first_name.strip(),
+        last_name=(data.last_name or "UNKNOWN").strip() or "UNKNOWN",
+        age=data.age,
+        gender=data.gender,
+        primary_phone=(data.primary_phone or "0000000000").strip(),
+        hospital_id=hospital.id if hospital else 1,
+        registration_complete=False,
+    )
+    db.add(patient)
+    db.flush()
+
+    # Reuse the normal admission create path so all bed-claim / readmission
+    # / rate-snapshot logic stays in one place.
+    admit_payload = AdmissionCreate(
+        patient_id=patient.id,
+        admitting_doctor_id=data.admitting_doctor_id,
+        room_id=data.room_id,
+        admission_type="emergency",
+        admission_reason=data.admission_reason,
+        condition_on_admission=data.condition_on_admission,
+        bed_id=data.bed_id,
+        emergency_contact=data.emergency_contact,
+        triage_level=data.triage_level,
+        chief_complaint=data.chief_complaint,
+        arrival_mode=data.arrival_mode,
+        ambulance_details=data.ambulance_details,
+        is_mlc=data.is_mlc,
+        mlc_type=data.mlc_type,
+        mlc_number=data.mlc_number,
+        police_station_informed=data.police_station_informed,
+        is_observation=data.is_observation,
+        deposit_waived=data.deposit_waived,
+        deposit_waiver_reason=data.deposit_waiver_reason,
+    )
+    return await create_admission(admit_payload, current_user=current_user, db=db)
+
+
+@router.get("/admissions/triage-queue")
+async def list_triage_queue(
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
+    db: Session = Depends(get_db),
+):
+    """B7.8 — Active emergency admissions sorted by triage level (1 = most urgent)
+    then by arrival time. Includes door-to-now elapsed minutes."""
+    rows = db.query(Admission).options(
+        joinedload(Admission.patient),
+        joinedload(Admission.admitting_doctor),
+        joinedload(Admission.room),
+    ).filter(
+        Admission.admission_type == "emergency",
+        Admission.status == "admitted",
+    ).order_by(
+        # NULLs last so untriaged go to bottom
+        Admission.triage_level.is_(None),
+        Admission.triage_level.asc(),
+        Admission.admission_date.asc(),
+    ).all()
+
+    out = []
+    now = datetime.now()
+    for a in rows:
+        elapsed_min = None
+        if a.admission_date:
+            ref = a.admission_date.replace(tzinfo=None) if a.admission_date.tzinfo else a.admission_date
+            elapsed_min = int((now - ref).total_seconds() / 60)
+        d = _admission_to_response(a)
+        d["elapsed_minutes"] = elapsed_min
+        out.append(d)
+    return {"items": out, "total": len(out)}
 
 
 @router.get("/admissions", response_model=PaginatedAdmissionResponse)
@@ -907,32 +1235,110 @@ async def update_admission(
     old_room_id = admission.room_id
     old_bed_id = admission.bed_id
 
-    # Handle room transfer
+    # Handle room transfer (race-safe)
     if room_changed:
         if not transfer_reason:
             raise HTTPException(status_code=400, detail="transfer_reason is required when changing room")
         new_room = db.query(RoomManagement).filter(
             RoomManagement.id == update_data["room_id"],
             RoomManagement.is_active == True,
-        ).first()
+        ).with_for_update().first()
         if not new_room:
             raise HTTPException(status_code=404, detail="New room not found")
         if new_room.available_beds <= 0:
             raise HTTPException(status_code=400, detail="No beds available in new room")
 
-        # Release old room bed
-        old_room = db.query(RoomManagement).filter(RoomManagement.id == admission.room_id).first()
+        old_room = db.query(RoomManagement).filter(
+            RoomManagement.id == admission.room_id
+        ).with_for_update().first()
+
+        # Release old structured bed if present
+        if admission.bed_id:
+            old_bed = db.query(Bed).filter(Bed.id == admission.bed_id).with_for_update().first()
+            if old_bed and old_bed.current_admission_id == admission.id:
+                old_bed.status = "cleaning"
+                old_bed.current_admission_id = None
+
+        # Sync old room (structured recompute or legacy +1)
         if old_room:
-            old_room.available_beds += 1
+            old_structured = db.query(Bed).filter(Bed.room_id == old_room.id).count()
+            if old_structured > 0:
+                old_room.available_beds = db.query(Bed).filter(
+                    Bed.room_id == old_room.id, Bed.status == "available"
+                ).count()
+            else:
+                old_room.available_beds += 1
             old_room.is_occupied = old_room.available_beds == 0
 
-        # Occupy new room bed
-        new_room.available_beds -= 1
-        if new_room.available_beds == 0:
-            new_room.is_occupied = True
+        # Claim target bed if specified
+        if update_data.get("bed_id"):
+            target_bed = db.query(Bed).filter(
+                Bed.id == update_data["bed_id"], Bed.room_id == new_room.id
+            ).with_for_update().first()
+            if not target_bed:
+                raise HTTPException(status_code=404, detail="Target bed not found in new room")
+            if target_bed.status != "available":
+                raise HTTPException(status_code=400, detail=f"Bed '{target_bed.bed_label}' is not available")
+            if not _claim_bed_atomic(db, target_bed.id, new_room.id):
+                db.rollback()
+                raise HTTPException(status_code=409, detail="Target bed was just taken; pick another")
+            target_bed.current_admission_id = admission.id
 
-    if bed_changed and not room_changed and not transfer_reason:
-        raise HTTPException(status_code=400, detail="transfer_reason is required when changing bed")
+        # Sync new room (structured recompute or atomic decrement)
+        new_structured = db.query(Bed).filter(Bed.room_id == new_room.id).count()
+        if new_structured > 0:
+            new_room.available_beds = db.query(Bed).filter(
+                Bed.room_id == new_room.id, Bed.status == "available"
+            ).count()
+        else:
+            if not _decrement_room_available_atomic(db, new_room.id):
+                db.rollback()
+                raise HTTPException(status_code=409, detail="New room ran out of beds")
+            db.refresh(new_room)
+        new_room.is_occupied = new_room.available_beds == 0
+
+    if bed_changed and not room_changed:
+        if not transfer_reason:
+            raise HTTPException(status_code=400, detail="transfer_reason is required when changing bed")
+        # Bed-only change inside the same room — release old, claim new atomically.
+        if admission.bed_id:
+            old_bed = db.query(Bed).filter(Bed.id == admission.bed_id).with_for_update().first()
+            if old_bed and old_bed.current_admission_id == admission.id:
+                old_bed.status = "cleaning"
+                old_bed.current_admission_id = None
+        if update_data.get("bed_id"):
+            target_bed = db.query(Bed).filter(
+                Bed.id == update_data["bed_id"], Bed.room_id == admission.room_id
+            ).with_for_update().first()
+            if not target_bed:
+                raise HTTPException(status_code=404, detail="Target bed not found in current room")
+            if target_bed.status != "available":
+                raise HTTPException(status_code=400, detail=f"Bed '{target_bed.bed_label}' is not available")
+            if not _claim_bed_atomic(db, target_bed.id, admission.room_id):
+                db.rollback()
+                raise HTTPException(status_code=409, detail="Target bed was just taken; pick another")
+            target_bed.current_admission_id = admission.id
+        # Recompute room availability from beds
+        same_room = db.query(RoomManagement).filter(
+            RoomManagement.id == admission.room_id
+        ).with_for_update().first()
+        if same_room:
+            same_room.available_beds = db.query(Bed).filter(
+                Bed.room_id == same_room.id, Bed.status == "available"
+            ).count()
+            same_room.is_occupied = same_room.available_beds == 0
+
+    # B7 — auto-stamp MLC informed time when toggling on without explicit timestamp
+    if update_data.get("is_mlc") and not update_data.get("mlc_informed_at") and not admission.mlc_informed_at:
+        update_data["mlc_informed_at"] = datetime.now()
+
+    # B7.7 — stamp deposit-waiver audit when toggled on
+    if update_data.get("deposit_waived") and not admission.deposit_waived:
+        admission.deposit_waived_by_id = current_user.id
+        admission.deposit_waived_at = datetime.now()
+        log_action(db, current_user, "deposit_waived", "inpatient", "admission", str(admission.id),
+                   f"Deposit waived for admission {admission.admission_number}",
+                   {"reason": update_data.get("deposit_waiver_reason")})
 
     for key, value in update_data.items():
         setattr(admission, key, value)
@@ -951,6 +1357,9 @@ async def update_admission(
         else:
             ttype = "bed_change"
 
+        # Snapshot rates so the bill calc segments by what was charged at the time.
+        from_rate = float(old_room.room_charge_per_day) if old_room else None
+        to_rate = float(new_room.room_charge_per_day) if new_room else None
         history = BedTransferHistory(
             admission_id=admission.id,
             from_room_id=old_room_id,
@@ -961,6 +1370,8 @@ async def update_admission(
             reason=transfer_reason,
             transferred_by_id=current_user.id,
             status="completed",
+            from_room_charge_per_day=from_rate,
+            to_room_charge_per_day=to_rate,
             hospital_id=hospital.id,
         )
         db.add(history)
@@ -994,6 +1405,553 @@ async def get_patient_admissions(
         Admission.patient_id == patient_id
     ).order_by(Admission.admission_date.desc()).all()
     return [_admission_to_response(a) for a in admissions]
+
+
+# ============================================================
+# Daily census report
+# ============================================================
+
+def _build_census_payload(db: Session) -> dict:
+    """Compute per-ward and per-room-type occupancy snapshot."""
+    rooms = db.query(RoomManagement).filter(RoomManagement.is_active == True).all()
+    by_dept = {}
+    by_type = {}
+    total_beds = 0
+    occupied_beds = 0
+    cleaning_beds = 0
+    free_beds = 0
+    on_leave = 0
+
+    # Count active LOAs to subtract from "occupied"
+    active_loa_admissions = {l.admission_id for l in db.query(LeaveOfAbsence).filter(
+        LeaveOfAbsence.status == "active").all()}
+
+    for r in rooms:
+        # Prefer structured Bed counts when available
+        beds_in_room = db.query(Bed).filter(Bed.room_id == r.id).all()
+        if beds_in_room:
+            r_total = len(beds_in_room)
+            r_occ = sum(1 for b in beds_in_room if b.status == "occupied")
+            r_clean = sum(1 for b in beds_in_room if b.status == "cleaning")
+            r_free = sum(1 for b in beds_in_room if b.status == "available")
+        else:
+            r_total = r.bed_count or 0
+            r_free = r.available_beds or 0
+            r_occ = max(r_total - r_free, 0)
+            r_clean = 0
+
+        # Count on-leave subset of occupied beds in this room
+        adms_in_room = db.query(Admission).filter(
+            Admission.room_id == r.id,
+            Admission.status == "admitted",
+        ).all()
+        r_on_leave = sum(1 for a in adms_in_room if a.id in active_loa_admissions)
+
+        total_beds += r_total
+        occupied_beds += r_occ
+        cleaning_beds += r_clean
+        free_beds += r_free
+        on_leave += r_on_leave
+
+        dept = r.department or "—"
+        if dept not in by_dept:
+            by_dept[dept] = {"department": dept, "rooms": 0, "total_beds": 0,
+                             "occupied": 0, "cleaning": 0, "free": 0, "on_leave": 0}
+        by_dept[dept]["rooms"] += 1
+        by_dept[dept]["total_beds"] += r_total
+        by_dept[dept]["occupied"] += r_occ
+        by_dept[dept]["cleaning"] += r_clean
+        by_dept[dept]["free"] += r_free
+        by_dept[dept]["on_leave"] += r_on_leave
+
+        rtype = r.room_type or "—"
+        if rtype not in by_type:
+            by_type[rtype] = {"room_type": rtype, "total_beds": 0,
+                              "occupied": 0, "cleaning": 0, "free": 0}
+        by_type[rtype]["total_beds"] += r_total
+        by_type[rtype]["occupied"] += r_occ
+        by_type[rtype]["cleaning"] += r_clean
+        by_type[rtype]["free"] += r_free
+
+    return {
+        "as_of": _now_utc().isoformat(),
+        "totals": {
+            "total_beds": total_beds,
+            "occupied": occupied_beds,
+            "cleaning": cleaning_beds,
+            "free": free_beds,
+            "on_leave": on_leave,
+            "occupancy_pct": round(occupied_beds * 100 / total_beds, 1) if total_beds else 0.0,
+        },
+        "by_department": sorted(by_dept.values(), key=lambda x: x["department"]),
+        "by_room_type": sorted(by_type.values(), key=lambda x: x["room_type"]),
+    }
+
+
+@router.get("/reports/census")
+async def get_census(
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
+    db: Session = Depends(get_db),
+):
+    """JSON snapshot of current occupancy across the hospital."""
+    return _build_census_payload(db)
+
+
+@router.get("/reports/census/pdf")
+async def get_census_pdf(
+    include_header: bool = True,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
+    db: Session = Depends(get_db),
+):
+    """Printable per-ward + per-type census snapshot."""
+    payload = _build_census_payload(db)
+    hospital = _get_hospital(db, current_user)
+    hospital_info = {
+        "name": hospital.name,
+        "address": hospital.address or "",
+        "phone": hospital.phone or "",
+        "email": hospital.email or "",
+        "logo_url": getattr(hospital, "logo_url", "") or "",
+        "hospital_subname": getattr(hospital, "hospital_subname", "") or "",
+    }
+    pdf_buffer = pdf_service.generate_census_pdf(payload, hospital_info, include_header=include_header)
+    return StreamingResponse(
+        pdf_buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"inline; filename=census_{date.today().isoformat()}.pdf"},
+    )
+
+
+# ============================================================
+# Leave of Absence (pass-out)
+# ============================================================
+
+class LOACreate(BaseModel):
+    start_datetime: datetime
+    expected_return_datetime: datetime
+    reason: str = Field(..., min_length=1)
+    approved_by_doctor_id: int
+    notes: Optional[str] = None
+    bed_held: bool = True
+
+
+class LOAReturn(BaseModel):
+    actual_return_datetime: Optional[datetime] = None
+    notes: Optional[str] = None
+
+
+def _loa_to_response(loa: LeaveOfAbsence, db: Session) -> dict:
+    doc = db.query(User).filter(User.id == loa.approved_by_doctor_id).first()
+    return {
+        **{c.name: getattr(loa, c.name) for c in loa.__table__.columns},
+        "approved_by_name": f"Dr. {doc.first_name} {doc.last_name}" if doc else None,
+    }
+
+
+@router.post("/admissions/{admission_id}/loa", status_code=status.HTTP_201_CREATED)
+async def create_loa(
+    admission_id: int,
+    data: LOACreate,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "update_admission")),
+    db: Session = Depends(get_db),
+):
+    """Start a Leave-of-Absence window. Patient is not discharged; the bed is
+    optionally held. Days fully covered by the LOA are excluded from room rent."""
+    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    if not admission:
+        raise HTTPException(status_code=404, detail="Admission not found")
+    if admission.status != "admitted":
+        raise HTTPException(status_code=400, detail="Patient is not currently admitted")
+    if data.expected_return_datetime <= data.start_datetime:
+        raise HTTPException(status_code=400, detail="expected_return_datetime must be after start_datetime")
+
+    overlap = db.query(LeaveOfAbsence).filter(
+        LeaveOfAbsence.admission_id == admission_id,
+        LeaveOfAbsence.status == "active",
+    ).first()
+    if overlap:
+        raise HTTPException(status_code=409, detail="Patient already has an active LOA")
+
+    hospital = _get_hospital(db, current_user)
+    rec = LeaveOfAbsence(
+        admission_id=admission_id,
+        start_datetime=data.start_datetime,
+        expected_return_datetime=data.expected_return_datetime,
+        reason=data.reason,
+        approved_by_doctor_id=data.approved_by_doctor_id,
+        notes=data.notes,
+        bed_held=data.bed_held,
+        status="active",
+        hospital_id=hospital.id,
+        created_by_id=current_user.id,
+    )
+    db.add(rec)
+    db.commit()
+    db.refresh(rec)
+    log_action(db, current_user, "create_loa", "inpatient", "LeaveOfAbsence", rec.id,
+               f"Started LOA for admission {admission.admission_number}",
+               details={"admission_id": admission_id, "expected_return": data.expected_return_datetime.isoformat()})
+    return _loa_to_response(rec, db)
+
+
+@router.get("/admissions/{admission_id}/loa")
+async def list_loas(
+    admission_id: int,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
+    db: Session = Depends(get_db),
+):
+    """All LOA records for an admission, newest first."""
+    rows = db.query(LeaveOfAbsence).filter(
+        LeaveOfAbsence.admission_id == admission_id
+    ).order_by(LeaveOfAbsence.start_datetime.desc()).all()
+    return [_loa_to_response(r, db) for r in rows]
+
+
+@router.patch("/loa/{loa_id}/return")
+async def mark_loa_returned(
+    loa_id: int,
+    data: LOAReturn,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "update_admission")),
+    db: Session = Depends(get_db),
+):
+    """Patient has returned to the ward. Closes the LOA window."""
+    rec = db.query(LeaveOfAbsence).filter(LeaveOfAbsence.id == loa_id).first()
+    if not rec:
+        raise HTTPException(status_code=404, detail="LOA not found")
+    if rec.status != "active":
+        raise HTTPException(status_code=409, detail=f"LOA is in '{rec.status}' state")
+    rec.actual_return_datetime = data.actual_return_datetime or _now_utc()
+    rec.status = "returned"
+    if data.notes:
+        rec.notes = (rec.notes + "\n" if rec.notes else "") + data.notes
+    db.commit()
+    db.refresh(rec)
+    log_action(db, current_user, "mark_loa_returned", "inpatient", "LeaveOfAbsence", rec.id,
+               f"LOA #{rec.id} returned",
+               details={"admission_id": rec.admission_id})
+    return _loa_to_response(rec, db)
+
+
+@router.patch("/loa/{loa_id}/cancel")
+async def cancel_loa(
+    loa_id: int,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "update_admission")),
+    db: Session = Depends(get_db),
+):
+    """Cancel an active LOA without recording a return — used when the LOA was
+    entered in error or the patient never actually left the ward."""
+    rec = db.query(LeaveOfAbsence).filter(LeaveOfAbsence.id == loa_id).first()
+    if not rec:
+        raise HTTPException(status_code=404, detail="LOA not found")
+    if rec.status != "active":
+        raise HTTPException(status_code=409, detail=f"LOA is in '{rec.status}' state")
+    rec.status = "cancelled"
+    db.commit()
+    db.refresh(rec)
+    return _loa_to_response(rec, db)
+
+
+@router.patch("/loa/{loa_id}/no-show")
+async def mark_loa_no_show(
+    loa_id: int,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "update_admission")),
+    db: Session = Depends(get_db),
+):
+    """Mark an LOA as no-show. Use when the patient never returned beyond a
+    grace window. The associated admission can then be discharged separately."""
+    rec = db.query(LeaveOfAbsence).filter(LeaveOfAbsence.id == loa_id).first()
+    if not rec:
+        raise HTTPException(status_code=404, detail="LOA not found")
+    if rec.status != "active":
+        raise HTTPException(status_code=409, detail=f"LOA is in '{rec.status}' state")
+    rec.status = "no_show"
+    db.commit()
+    db.refresh(rec)
+    log_action(db, current_user, "mark_loa_no_show", "inpatient", "LeaveOfAbsence", rec.id,
+               f"LOA #{rec.id} marked as no-show",
+               details={"admission_id": rec.admission_id})
+    return _loa_to_response(rec, db)
+
+
+@router.get("/loa/active")
+async def list_active_loas(
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
+    db: Session = Depends(get_db),
+):
+    """All currently active LOAs across the hospital — used by ward dashboards."""
+    rows = db.query(LeaveOfAbsence).filter(
+        LeaveOfAbsence.status == "active"
+    ).order_by(LeaveOfAbsence.expected_return_datetime).all()
+    out = []
+    for r in rows:
+        adm = db.query(Admission).filter(Admission.id == r.admission_id).first()
+        patient = db.query(Patient).filter(Patient.id == adm.patient_id).first() if adm else None
+        d = _loa_to_response(r, db)
+        d["admission_number"] = adm.admission_number if adm else None
+        d["patient_name"] = f"{patient.first_name} {patient.last_name}" if patient else None
+        out.append(d)
+    return out
+
+
+# ============================================================
+# Shift Handover (nurse-to-nurse)
+# ============================================================
+
+VALID_SHIFTS_HANDOVER = {"morning", "afternoon", "night"}
+
+
+class ShiftHandoverCreate(BaseModel):
+    handover_date: Optional[datetime] = None
+    from_shift: str = Field(..., min_length=1)
+    to_nurse_id: Optional[int] = None
+    patient_status_summary: Optional[str] = None
+    pending_tasks: Optional[str] = None
+    alerts_to_watch: Optional[str] = None
+    family_communication: Optional[str] = None
+    on_call_contacts: Optional[str] = None
+    notes: Optional[str] = None
+
+
+def _handover_to_response(h: ShiftHandover, db: Session) -> dict:
+    fn = db.query(User).filter(User.id == h.from_nurse_id).first()
+    tn = db.query(User).filter(User.id == h.to_nurse_id).first() if h.to_nurse_id else None
+    return {
+        **{c.name: getattr(h, c.name) for c in h.__table__.columns},
+        "from_nurse_name": f"{fn.first_name} {fn.last_name}" if fn else None,
+        "to_nurse_name": f"{tn.first_name} {tn.last_name}" if tn else None,
+    }
+
+
+@router.post("/admissions/{admission_id}/handover", status_code=status.HTTP_201_CREATED)
+async def create_shift_handover(
+    admission_id: int,
+    data: ShiftHandoverCreate,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_nursing_notes")),
+    db: Session = Depends(get_db),
+):
+    """File the outgoing nurse's handover note for the current shift."""
+    if data.from_shift not in VALID_SHIFTS_HANDOVER:
+        raise HTTPException(status_code=400, detail=f"from_shift must be one of {sorted(VALID_SHIFTS_HANDOVER)}")
+    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    if not admission:
+        raise HTTPException(status_code=404, detail="Admission not found")
+    hospital = _get_hospital(db, current_user)
+    rec = ShiftHandover(
+        admission_id=admission_id,
+        handover_date=data.handover_date or _now_utc(),
+        from_shift=data.from_shift,
+        from_nurse_id=current_user.id,
+        to_nurse_id=data.to_nurse_id,
+        patient_status_summary=data.patient_status_summary,
+        pending_tasks=data.pending_tasks,
+        alerts_to_watch=data.alerts_to_watch,
+        family_communication=data.family_communication,
+        on_call_contacts=data.on_call_contacts,
+        notes=data.notes,
+        hospital_id=hospital.id,
+    )
+    db.add(rec)
+    db.commit()
+    db.refresh(rec)
+    log_action(db, current_user, "create_shift_handover", "inpatient", "ShiftHandover", rec.id,
+               f"Handover filed for admission {admission.admission_number}",
+               details={"admission_id": admission_id, "from_shift": data.from_shift})
+    return _handover_to_response(rec, db)
+
+
+@router.patch("/handover/{handover_id}/acknowledge")
+async def acknowledge_handover(
+    handover_id: int,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_nursing_notes")),
+    db: Session = Depends(get_db),
+):
+    """Incoming nurse confirms they read the handover. Sets to_nurse_id +
+    acknowledged_at if they weren't pre-assigned."""
+    rec = db.query(ShiftHandover).filter(ShiftHandover.id == handover_id).first()
+    if not rec:
+        raise HTTPException(status_code=404, detail="Handover not found")
+    if rec.acknowledged_at:
+        raise HTTPException(status_code=409, detail="Handover already acknowledged")
+    if not rec.to_nurse_id:
+        rec.to_nurse_id = current_user.id
+    rec.acknowledged_at = _now_utc()
+    db.commit()
+    db.refresh(rec)
+    log_action(db, current_user, "acknowledge_handover", "inpatient", "ShiftHandover", rec.id,
+               f"Acknowledged handover for admission #{rec.admission_id}")
+    return _handover_to_response(rec, db)
+
+
+@router.get("/admissions/{admission_id}/handovers")
+async def list_handovers(
+    admission_id: int,
+    limit: int = Query(default=20, ge=1, le=100),
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
+    db: Session = Depends(get_db),
+):
+    rows = db.query(ShiftHandover).filter(
+        ShiftHandover.admission_id == admission_id
+    ).order_by(ShiftHandover.handover_date.desc()).limit(limit).all()
+    return [_handover_to_response(r, db) for r in rows]
+
+
+@router.get("/handover/{handover_id}/pdf")
+async def get_handover_pdf(
+    handover_id: int,
+    include_header: bool = True,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
+    db: Session = Depends(get_db),
+):
+    rec = db.query(ShiftHandover).filter(ShiftHandover.id == handover_id).first()
+    if not rec:
+        raise HTTPException(status_code=404, detail="Handover not found")
+    admission = db.query(Admission).filter(Admission.id == rec.admission_id).first()
+    patient = db.query(Patient).filter(Patient.id == admission.patient_id).first() if admission else None
+    fn = db.query(User).filter(User.id == rec.from_nurse_id).first()
+    tn = db.query(User).filter(User.id == rec.to_nurse_id).first() if rec.to_nurse_id else None
+    room = db.query(RoomManagement).filter(RoomManagement.id == admission.room_id).first() if admission else None
+    hospital = _get_hospital(db, current_user)
+    hospital_info = {
+        "name": hospital.name, "address": hospital.address or "", "phone": hospital.phone or "",
+        "email": hospital.email or "",
+        "logo_url": getattr(hospital, "logo_url", "") or "",
+        "hospital_subname": getattr(hospital, "hospital_subname", "") or "",
+    }
+    payload = {
+        "admission_number": admission.admission_number if admission else "",
+        "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "",
+        "patient_id": patient.patient_id if patient else "",
+        "room": room.room_number if room else "",
+        "bed": (admission.bed.bed_label if admission and admission.bed else admission.bed_number) if admission else "",
+        "from_shift": rec.from_shift,
+        "handover_date": rec.handover_date.strftime("%d/%m/%Y %H:%M") if rec.handover_date else "",
+        "from_nurse": f"{fn.first_name} {fn.last_name}" if fn else "",
+        "to_nurse": f"{tn.first_name} {tn.last_name}" if tn else "",
+        "acknowledged_at": rec.acknowledged_at.strftime("%d/%m/%Y %H:%M") if rec.acknowledged_at else "",
+        "patient_status_summary": rec.patient_status_summary or "",
+        "pending_tasks": rec.pending_tasks or "",
+        "alerts_to_watch": rec.alerts_to_watch or "",
+        "family_communication": rec.family_communication or "",
+        "on_call_contacts": rec.on_call_contacts or "",
+        "notes": rec.notes or "",
+    }
+    pdf_buffer = pdf_service.generate_handover_pdf(payload, hospital_info, include_header=include_header)
+    return StreamingResponse(
+        pdf_buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"inline; filename=handover_{rec.id}.pdf"},
+    )
+
+
+# ============================================================
+# Code Blue / Rapid Response Team event log
+# ============================================================
+
+VALID_CODE_BLUE_OUTCOMES = {"rosc", "transferred_icu", "expired", "false_alarm"}
+
+
+class CodeBlueCreate(BaseModel):
+    admission_id: Optional[int] = None
+    patient_id: Optional[int] = None
+    event_type: str = Field(default="code_blue", pattern="^(code_blue|rrt)$")
+    event_datetime: datetime
+    location: str = Field(..., min_length=1, max_length=200)
+    response_time_seconds: Optional[int] = Field(default=None, ge=0, le=3600)
+    team_members: Optional[str] = None
+    interventions: Optional[str] = None
+    outcome: str = Field(..., min_length=1)
+    debrief_notes: Optional[str] = None
+
+
+def _code_blue_to_response(c: CodeBlueEvent, db: Session) -> dict:
+    activator = db.query(User).filter(User.id == c.activated_by_id).first()
+    patient = db.query(Patient).filter(Patient.id == c.patient_id).first() if c.patient_id else None
+    return {
+        **{col.name: getattr(c, col.name) for col in c.__table__.columns},
+        "activated_by_name": f"{activator.first_name} {activator.last_name}" if activator else None,
+        "patient_name": f"{patient.first_name} {patient.last_name}" if patient else None,
+    }
+
+
+@router.post("/code-blue", status_code=status.HTTP_201_CREATED)
+async def create_code_blue(
+    data: CodeBlueCreate,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "report_incident")),
+    db: Session = Depends(get_db),
+):
+    """Log a Code Blue / Rapid Response Team activation. Records who activated,
+    response time (if measured), team, interventions, and outcome."""
+    if data.outcome not in VALID_CODE_BLUE_OUTCOMES:
+        raise HTTPException(status_code=400, detail=f"outcome must be one of {sorted(VALID_CODE_BLUE_OUTCOMES)}")
+    hospital = _get_hospital(db, current_user)
+    rec = CodeBlueEvent(
+        admission_id=data.admission_id,
+        patient_id=data.patient_id,
+        event_type=data.event_type,
+        event_datetime=data.event_datetime,
+        location=data.location,
+        activated_by_id=current_user.id,
+        response_time_seconds=data.response_time_seconds,
+        team_members=data.team_members,
+        interventions=data.interventions,
+        outcome=data.outcome,
+        debrief_notes=data.debrief_notes,
+        hospital_id=hospital.id,
+        created_by_id=current_user.id,
+    )
+    db.add(rec)
+    db.commit()
+    db.refresh(rec)
+    log_action(db, current_user, "log_code_blue", "inpatient", "CodeBlueEvent", rec.id,
+               f"{data.event_type.upper()} at {data.location} — outcome: {data.outcome}",
+               details={"admission_id": data.admission_id, "outcome": data.outcome,
+                        "response_time_seconds": data.response_time_seconds})
+    return _code_blue_to_response(rec, db)
+
+
+@router.get("/code-blue")
+async def list_code_blue(
+    days: int = Query(default=30, ge=1, le=365),
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
+    db: Session = Depends(get_db),
+):
+    """Recent code-blue / RRT events. Default window: last 30 days."""
+    from datetime import timedelta as _td
+    cutoff = _now_utc() - _td(days=days)
+    rows = db.query(CodeBlueEvent).filter(
+        CodeBlueEvent.event_datetime >= cutoff
+    ).order_by(CodeBlueEvent.event_datetime.desc()).all()
+    return [_code_blue_to_response(r, db) for r in rows]
+
+
+@router.get("/reports/code-blue")
+async def code_blue_monthly_stats(
+    days: int = Query(default=30, ge=1, le=365),
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
+    db: Session = Depends(get_db),
+):
+    """Aggregated code-blue stats for NABH safety reporting: counts by type
+    and outcome, mean response time. Window: last `days` days."""
+    from datetime import timedelta as _td
+    cutoff = _now_utc() - _td(days=days)
+    rows = db.query(CodeBlueEvent).filter(CodeBlueEvent.event_datetime >= cutoff).all()
+    by_type = {}
+    by_outcome = {}
+    response_times = []
+    for r in rows:
+        by_type[r.event_type] = by_type.get(r.event_type, 0) + 1
+        by_outcome[r.outcome] = by_outcome.get(r.outcome, 0) + 1
+        if r.response_time_seconds is not None:
+            response_times.append(r.response_time_seconds)
+    return {
+        "window_days": days,
+        "total_events": len(rows),
+        "by_type": by_type,
+        "by_outcome": by_outcome,
+        "mean_response_time_seconds": round(sum(response_times) / len(response_times), 1) if response_times else None,
+        "median_response_time_seconds": (sorted(response_times)[len(response_times) // 2]
+                                         if response_times else None),
+    }
 
 
 # ============================================================
@@ -1046,7 +2004,7 @@ async def update_claim_status(
 
     # Record submission timestamp
     if new_status == "submitted" and current_status != "submitted":
-        admission.claim_submitted_at = datetime.now()
+        admission.claim_submitted_at = _now_utc()
 
     db.commit()
 
@@ -1109,6 +2067,12 @@ async def create_visit(
         visit_type=data.visit_type,
         notes=data.notes,
         charge_amount=charge,
+        vitals_reviewed=bool(data.vitals_reviewed),
+        labs_reviewed=bool(data.labs_reviewed),
+        pain_assessed=bool(data.pain_assessed),
+        mobility_checked=bool(data.mobility_checked),
+        plan_for_today=data.plan_for_today,
+        family_updated=bool(data.family_updated),
         created_by_id=current_user.id,
         hospital_id=hospital.id,
     )
@@ -1119,6 +2083,41 @@ async def create_visit(
     result = {c.name: getattr(visit, c.name) for c in visit.__table__.columns}
     result["visitor_name"] = f"{visitor.first_name} {visitor.last_name}" if visitor else None
     return result
+
+
+@router.post("/admissions/{admission_id}/auto-post-today")
+async def auto_post_today(
+    admission_id: int,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "record_visits")),
+    db: Session = Depends(get_db),
+):
+    """Manually trigger today's auto-post for one admission. Idempotent — if a
+    doctor_visit already exists today for this admission, this is a no-op."""
+    from app.services.inpatient_daily_charges import auto_post_daily_visits_for_admission
+    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    if not admission:
+        raise HTTPException(status_code=404, detail="Admission not found")
+    if admission.status != "admitted":
+        raise HTTPException(status_code=400, detail="Admission is not currently admitted")
+    visit_id = auto_post_daily_visits_for_admission(db, admission, actor_user_id=current_user.id)
+    db.commit()
+    if visit_id is None:
+        return {"posted": False, "reason": "Already covered for today"}
+    return {"posted": True, "visit_id": visit_id}
+
+
+@router.post("/admissions/auto-post-today/all")
+async def auto_post_today_all(
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "record_visits")),
+    db: Session = Depends(get_db),
+):
+    """Manually trigger today's auto-post for every active admission.
+    Useful when the hourly daemon hasn't run yet or needs to be re-fired."""
+    from app.services.inpatient_daily_charges import auto_post_daily_visits_all
+    summary = auto_post_daily_visits_all(db)
+    log_action(db, current_user, "auto_post_daily_visits", "inpatient", "Admission", 0,
+               f"Auto-posted daily visits: {summary}", details=summary)
+    return summary
 
 
 @router.get("/admissions/{admission_id}/visits", response_model=List[VisitResponse])
@@ -1199,26 +2198,111 @@ async def discharge_patient(
     if admission.status != "admitted":
         raise HTTPException(status_code=400, detail="Patient is not currently admitted")
 
-    # Calculate stay days
-    stay_days = (datetime.now() - admission.admission_date).days
-    if stay_days == 0:
-        stay_days = 1
+    # An active LOA means the patient is off the ward. Discharge would be
+    # incoherent — close the LOA first or mark it no-show, then discharge.
+    active_loa = db.query(LeaveOfAbsence).filter(
+        LeaveOfAbsence.admission_id == admission_id,
+        LeaveOfAbsence.status == "active",
+    ).first()
+    if active_loa:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "active_loa",
+                "message": "Patient is currently on Leave of Absence. Mark the LOA as returned, no-show, or cancelled before discharging.",
+                "loa_id": active_loa.id,
+            },
+        )
 
-    # Calculate total charges (room + visits)
+    # Canonical charge breakdown — same source of truth as the final bill so
+    # the discharge summary cannot disagree with what the patient is billed.
+    charges = _compute_admission_charges(db, admission, unbilled_only=False)
+    stay_days = charges["stay_days"]
+    total_charges = float(charges.get("subtotal", 0.0))
+
+    # Outstanding-balance gate. Death and AMA exits always proceed (the
+    # remaining balance becomes a debt to settle post-exit). For normal/transfer
+    # exits with a negative balance (patient still owes), require an explicit
+    # override + reason that we audit-log.
+    balance = _admission_balance_summary(db, admission)
+    is_protected_exit = data.discharge_type in ("death", "against_advice")
+    forced_gates = []
+    if not is_protected_exit and balance["balance"] < 0:
+        # B7.7 — Deposit-waiver soft-pass. When the admission was admitted
+        # under a documented deposit waiver (cannot-pay emergency, charity
+        # case), the outstanding balance is allowed through but recorded
+        # in forced_gates for audit. No additional override flag needed.
+        if admission.deposit_waived:
+            forced_gates.append("outstanding_balance_waived")
+        elif not data.force_outstanding_balance:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "outstanding_balance",
+                    "message": "Patient has an outstanding balance. Settle bill or set force_outstanding_balance=true with override_reason.",
+                    "balance": balance["balance"],
+                    "total_billed": balance["total_billed"],
+                    "net_deposits": balance["net_deposits"],
+                },
+            )
+        else:
+            forced_gates.append("outstanding_balance")
+
+    # Patient-safety gate: any critical lab alert in the 'new' state (i.e. no
+    # clinician has even acknowledged it) blocks the discharge. Acknowledged or
+    # addressed alerts pass — those represent a recorded clinical decision.
+    if not is_protected_exit:
+        new_alerts = db.query(CriticalLabAlert).filter(
+            CriticalLabAlert.admission_id == admission_id,
+            CriticalLabAlert.status == "new",
+        ).all()
+        if new_alerts:
+            if not data.force_unacknowledged_alerts:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "unacknowledged_critical_alerts",
+                        "message": "There are unacknowledged critical lab alerts for this admission. Acknowledge them or override with force_unacknowledged_alerts=true.",
+                        "alert_count": len(new_alerts),
+                        "alert_ids": [a.id for a in new_alerts],
+                        "parameters": [a.parameter_name for a in new_alerts if a.parameter_name],
+                    },
+                )
+            forced_gates.append("unacknowledged_critical_alerts")
+
+    # Consent gate: if any OT was completed for this admission, require at
+    # least one non-withdrawn surgical or anaesthesia consent on the
+    # admission. Catches the "surgery performed without recorded consent" case.
+    if not is_protected_exit:
+        completed_ot_count = db.query(OTSchedule).filter(
+            OTSchedule.admission_id == admission_id,
+            OTSchedule.status == "completed",
+        ).count()
+        if completed_ot_count > 0:
+            valid_consent = db.query(Consent).filter(
+                Consent.admission_id == admission_id,
+                Consent.consent_type.in_(["surgical", "anaesthesia"]),
+                Consent.withdrawn_at.is_(None),
+            ).first()
+            if not valid_consent:
+                if not data.force_missing_consents:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "code": "missing_surgical_consent",
+                            "message": "Completed OT procedures exist but no non-withdrawn surgical/anaesthesia consent was recorded. Record the consent or override with force_missing_consents=true.",
+                            "completed_ot_count": completed_ot_count,
+                        },
+                    )
+                forced_gates.append("missing_surgical_consent")
+
+    if forced_gates and not (data.override_reason and data.override_reason.strip()):
+        raise HTTPException(
+            status_code=400,
+            detail=f"override_reason is required when forcing discharge gates: {', '.join(forced_gates)}",
+        )
+
     room = db.query(RoomManagement).filter(RoomManagement.id == admission.room_id).first()
-    room_charges = (room.room_charge_per_day * stay_days) if room else 0
-
-    visits = db.query(PatientVisit).filter(PatientVisit.admission_id == admission_id).all()
-    visit_charges = sum(float(v.charge_amount or 0) for v in visits)
-
-    # Pharmacy charges from dispensed prescriptions
-    pharmacy_prescriptions = db.query(Prescription).filter(
-        Prescription.admission_id == admission_id,
-        Prescription.status.in_(["dispensed", "partial"])
-    ).all()
-    pharmacy_charges = sum(float(rx.total_amount or 0) for rx in pharmacy_prescriptions)
-
-    total_charges = room_charges + visit_charges + pharmacy_charges
 
     discharge = DischargeRecord(
         admission_id=admission_id,
@@ -1228,6 +2312,7 @@ async def discharge_patient(
         diagnosis_on_discharge=data.diagnosis_on_discharge,
         treatment_given=data.treatment_given,
         medications_prescribed=data.medications_prescribed,
+        take_home_medications=([m.dict() for m in data.take_home_medications] if data.take_home_medications else None),
         follow_up_instructions=data.follow_up_instructions,
         follow_up_date=data.follow_up_date,
         diet_instructions=data.diet_instructions,
@@ -1273,9 +2358,19 @@ async def discharge_patient(
     db.refresh(discharge)
 
     patient = db.query(Patient).filter(Patient.id == admission.patient_id).first()
+    audit_details = {
+        "admission_id": admission_id,
+        "stay_days": stay_days,
+        "total_charges": total_charges,
+        "balance_at_discharge": balance["balance"],
+        "discharge_type": data.discharge_type,
+    }
+    if forced_gates:
+        audit_details["forced_gates"] = forced_gates
+        audit_details["override_reason"] = data.override_reason
     log_action(db, current_user, "discharge_patient", "inpatient", "Discharge", discharge.id,
                f"Discharged patient {patient.first_name} {patient.last_name} ({admission.admission_number})",
-               details={"admission_id": admission_id, "stay_days": stay_days, "total_charges": total_charges})
+               details=audit_details)
 
     return discharge
 
@@ -1324,6 +2419,10 @@ async def get_discharge_pdf(
         "hospital_subname": hospital.hospital_subname if hasattr(hospital, "hospital_subname") else "",
     }
 
+    # Recompute the canonical breakdown so the summary always agrees with the
+    # final bill, even if one was finalised after the discharge record was saved.
+    charges_now = _compute_admission_charges(db, admission, unbilled_only=False)
+
     discharge_data = {
         "admission_number": admission.admission_number,
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "N/A",
@@ -1339,13 +2438,17 @@ async def get_discharge_pdf(
         "diagnosis": discharge.diagnosis_on_discharge or "",
         "treatment": discharge.treatment_given or "",
         "discharge_summary": discharge.discharge_summary or "",
+        # Structured take-home prescription (preferred). Falls back to free-text
+        # medications_prescribed when no structured list was provided so older
+        # discharges still render.
+        "take_home_medications": discharge.take_home_medications or [],
         "medications": discharge.medications_prescribed or "",
         "follow_up": discharge.follow_up_instructions or "",
         "follow_up_date": discharge.follow_up_date.strftime("%d/%m/%Y") if discharge.follow_up_date else "",
         "diet_instructions": discharge.diet_instructions or "",
         "activity_restrictions": discharge.activity_restrictions or "",
-        "total_stay_days": discharge.total_stay_days or 0,
-        "total_charges": discharge.total_charges or 0,
+        "total_stay_days": charges_now.get("stay_days") or discharge.total_stay_days or 0,
+        "total_charges": float(charges_now.get("subtotal") or discharge.total_charges or 0),
     }
 
     pdf_buffer = pdf_service.generate_discharge_summary_pdf(discharge_data, hospital_info, include_header=include_header)
@@ -1455,8 +2558,112 @@ def _compute_admission_charges(db: Session, admission: Admission, unbilled_only:
     if admission.status == "discharged" and admission.discharge:
         end_date = admission.discharge.discharge_date or end_date
     stay_days = max((end_date - admission.admission_date).days, 1) if admission.admission_date else 1
+    # `room_charge_per_day` is reported as the *current* room rate for display.
+    # The actual bill total is computed by summing rate-snapshotted segments.
     room_charge_per_day = float(room.room_charge_per_day) if room else 0.0
-    full_room_total = room_charge_per_day * stay_days
+
+    # ---- Rate-snapshotted room rent computation ----------------------------
+    # Walk the stay timeline as a series of segments, each at the rate that
+    # was actually in effect during that segment. Days per segment use whole
+    # `.days` (matches the original integer-day billing convention so the
+    # stay-day arithmetic stays consistent across the codebase). The last
+    # segment absorbs any rounding so total segment days == stay_days.
+    full_room_total = 0.0
+    rate_segments = []
+    # B7.6 — Observation cases skip room rent entirely (bed used briefly,
+    # typically ≤24h). Doctor visits, drugs, labs etc. still bill normally.
+    is_observation = bool(getattr(admission, "is_observation", False))
+    if admission.admission_date and not is_observation:
+        transfers = db.query(BedTransferHistory).filter(
+            BedTransferHistory.admission_id == admission.id,
+            BedTransferHistory.status.in_(["completed", "accepted"]),
+        ).all()
+
+        def _eff_time(t):
+            return t.accepted_at or t.transferred_at or t.created_at
+
+        transfers.sort(key=lambda t: _eff_time(t) or admission.admission_date)
+
+        # Segment boundaries: admission_date → t1 → t2 → ... → end_date
+        boundaries = [admission.admission_date]
+        for t in transfers:
+            eff = _eff_time(t)
+            if eff and eff > boundaries[-1] and eff <= end_date:
+                boundaries.append(eff)
+        boundaries.append(end_date)
+
+        # Rates per segment: segment i uses the rate in effect at boundary i.
+        # First segment uses initial; subsequent uses to_room_charge_per_day
+        # of the transfer at boundary i.
+        rates = [(admission.initial_room_charge_per_day
+                  if admission.initial_room_charge_per_day is not None
+                  else room_charge_per_day)]
+        for t in transfers:
+            eff = _eff_time(t)
+            if eff and eff > admission.admission_date and eff <= end_date:
+                rates.append(t.to_room_charge_per_day
+                             if t.to_room_charge_per_day is not None
+                             else room_charge_per_day)
+
+        # Sum days per segment using `.days`; last segment absorbs remainder.
+        total_days_assigned = 0
+        n_segs = len(boundaries) - 1
+        for i in range(n_segs):
+            seg_from, seg_to = boundaries[i], boundaries[i + 1]
+            if i < n_segs - 1:
+                seg_days = max((seg_to - seg_from).days, 0)
+                total_days_assigned += seg_days
+            else:
+                # Last segment: ensure all stay_days are accounted for.
+                seg_days = max(stay_days - total_days_assigned, 0)
+                total_days_assigned += seg_days
+            seg_rate = rates[i]
+            seg_total = seg_rate * seg_days
+            full_room_total += seg_total
+            if seg_days > 0:
+                rate_segments.append({
+                    "from": seg_from.isoformat(), "to": seg_to.isoformat(),
+                    "days": seg_days, "rate": seg_rate, "total": round(seg_total, 2),
+                })
+    elif not is_observation:
+        full_room_total = room_charge_per_day * stay_days
+
+    # Subtract whole days fully covered by an LOA (returned or active).
+    # 'active' LOAs use expected_return_datetime as the end; 'returned' use
+    # actual_return_datetime; 'cancelled' / 'no_show' don't reduce billing.
+    # LOA day skip uses the *current* segment rate at LOA start time. This
+    # is a reasonable approximation; full segment-aware LOA skipping would
+    # add complexity for negligible billing impact.
+    loa_days_skipped = 0
+    loa_credit = 0.0
+    if admission.admission_date:
+        loas = db.query(LeaveOfAbsence).filter(
+            LeaveOfAbsence.admission_id == admission.id,
+            LeaveOfAbsence.status.in_(["active", "returned"]),
+        ).all()
+        for loa in loas:
+            loa_end = loa.actual_return_datetime if loa.status == "returned" else loa.expected_return_datetime
+            if not loa_end or not loa.start_datetime:
+                continue
+            from datetime import timedelta as _td
+            cur = loa.start_datetime.date() + _td(days=1)
+            while cur < loa_end.date():
+                loa_days_skipped += 1
+                # Find rate in effect on this date
+                day_dt = datetime.combine(cur, datetime.min.time(), tzinfo=loa.start_datetime.tzinfo)
+                applicable_rate = (admission.initial_room_charge_per_day
+                                   if admission.initial_room_charge_per_day is not None
+                                   else room_charge_per_day)
+                for seg in rate_segments:
+                    seg_from = datetime.fromisoformat(seg["from"])
+                    seg_to = datetime.fromisoformat(seg["to"])
+                    if seg_from <= day_dt < seg_to:
+                        applicable_rate = seg["rate"]
+                        break
+                loa_credit += applicable_rate
+                cur += _td(days=1)
+    full_room_total = max(full_room_total - loa_credit, 0.0)
+    billable_stay_days = max(stay_days - loa_days_skipped, 1)
 
     # How much room time has been billed already?
     billed_room_total = 0.0
@@ -1555,6 +2762,8 @@ def _compute_admission_charges(db: Session, admission: Admission, unbilled_only:
 
     return {
         "stay_days": stay_days,
+        "billable_stay_days": billable_stay_days,
+        "loa_days_skipped": loa_days_skipped,
         "room": {
             "room_number": room.room_number if room else "N/A",
             "room_type": room.room_type if room else "N/A",
@@ -1562,6 +2771,9 @@ def _compute_admission_charges(db: Session, admission: Admission, unbilled_only:
             "total": room_total,
             "full_total": full_room_total,
             "billed_so_far": billed_room_total,
+            "loa_days_skipped": loa_days_skipped,
+            "loa_credit": round(loa_credit, 2),
+            "rate_segments": rate_segments,
         },
         "visits": visit_summary,
         "visit_total": visit_total,
@@ -1681,14 +2893,114 @@ async def list_admission_bills(
     ]
 
 
+class CancelAdmissionBillRequest(BaseModel):
+    reason: str = Field(..., min_length=1, max_length=500)
+
+
+@router.post("/admissions/{admission_id}/bills/{bill_id}/cancel")
+async def cancel_admission_bill(
+    admission_id: int,
+    bill_id: int,
+    data: CancelAdmissionBillRequest,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "finalize_bill")),
+    db: Session = Depends(get_db),
+):
+    """Cancel an admission bill (interim or final) and release every source
+    item that was attached to it. After cancel, those items become eligible
+    to be re-billed on the next interim/final bill. Cancellation is rejected
+    if any payment has been recorded against the bill (refund first)."""
+    bill = db.query(Bill).filter(
+        Bill.id == bill_id,
+        Bill.bill_type == "admission",
+        Bill.reference_id == admission_id,
+    ).first()
+    if not bill:
+        raise HTTPException(status_code=404, detail="Bill not found for this admission")
+    if bill.status == "cancelled":
+        raise HTTPException(status_code=400, detail="Bill is already cancelled")
+
+    # Block if any payment has been recorded — operator must refund through
+    # the deposit/refund flow first to avoid silently breaking accounting.
+    paid = sum(float(p.amount_paid or 0) for p in (bill.payments or []))
+    if paid > 0:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "bill_has_payments",
+                "message": "Cannot cancel a bill with recorded payments. Refund through the deposit flow first.",
+                "amount_paid": round(paid, 2),
+            },
+        )
+
+    # Release every source row tagged with this bill_id so it can be billed again.
+    visits_q = db.query(PatientVisit).filter(PatientVisit.bill_id == bill.id)
+    visits_released = visits_q.count()
+    visits_q.update({PatientVisit.billed: False, PatientVisit.bill_id: None}, synchronize_session=False)
+
+    ot_q = db.query(OTSchedule).filter(OTSchedule.bill_id == bill.id)
+    ot_released = ot_q.count()
+    ot_q.update({OTSchedule.billed: False, OTSchedule.bill_id: None}, synchronize_session=False)
+
+    anc_q = db.query(AdmissionAncillaryCharge).filter(AdmissionAncillaryCharge.bill_id == bill.id)
+    anc_released = anc_q.count()
+    anc_q.update({AdmissionAncillaryCharge.billed: False, AdmissionAncillaryCharge.bill_id: None}, synchronize_session=False)
+
+    rx_q = db.query(Prescription).filter(Prescription.inpatient_bill_id == bill.id)
+    rx_released = rx_q.count()
+    rx_q.update({Prescription.inpatient_bill_id: None}, synchronize_session=False)
+
+    lab_q = db.query(PatientLabOrder).filter(PatientLabOrder.inpatient_bill_id == bill.id)
+    lab_released = lab_q.count()
+    lab_q.update({PatientLabOrder.inpatient_bill_id: None}, synchronize_session=False)
+
+    bill.status = "cancelled"
+    cancel_note = f"[CANCELLED by user {current_user.id} on {datetime.now().isoformat()}]: {data.reason}"
+    bill.notes = (bill.notes + "\n" if bill.notes else "") + cancel_note
+
+    db.commit()
+
+    log_action(db, current_user, "cancel_admission_bill", "inpatient", "Bill", bill.id,
+               f"Cancelled admission bill {bill.bill_number}: {data.reason}",
+               details={
+                   "admission_id": admission_id,
+                   "bill_subtype": bill.bill_subtype,
+                   "released": {
+                       "visits": visits_released,
+                       "ot": ot_released,
+                       "ancillary": anc_released,
+                       "prescriptions": rx_released,
+                       "lab_orders": lab_released,
+                   },
+               })
+
+    return {
+        "message": f"Bill {bill.bill_number} cancelled",
+        "bill_id": bill.id,
+        "released": {
+            "visits": visits_released,
+            "ot": ot_released,
+            "ancillary": anc_released,
+            "prescriptions": rx_released,
+            "lab_orders": lab_released,
+        },
+    }
+
+
 def _create_admission_bill_record(
     db: Session, admission: Admission, hospital, current_user: User,
     breakdown: dict, discount_value: float, discount_type: str, tax_percentage: float,
     bill_subtype: str,
+    items_override: Optional[List[BillItemOverride]] = None,
 ) -> Bill:
     """Persist a Bill + BillItems and tag source records with bill_id.
-    `breakdown` is the dict returned by _compute_admission_charges(... unbilled_only=True)."""
-    subtotal = breakdown["subtotal"]
+    `breakdown` is the dict returned by _compute_admission_charges(... unbilled_only=True).
+    When `items_override` is provided, the bill lines come from there (operator
+    has reviewed/edited them). Source records still get their bill_id stamped
+    from `breakdown` so they're not re-billed on a subsequent interim/final."""
+    if items_override is not None:
+        subtotal = round(sum(float(i.total_price or 0) for i in items_override), 2)
+    else:
+        subtotal = breakdown["subtotal"]
     discount_amount = 0.0
     if discount_value and discount_value > 0:
         if discount_type == "percentage":
@@ -1723,6 +3035,37 @@ def _create_admission_bill_record(
     )
     db.add(bill)
     db.flush()
+
+    # Override path: persist exactly what the operator submitted, then stamp
+    # all source records from the breakdown so they don't reappear on a future
+    # bill. Even items the operator removed/zeroed are stamped — the bill is
+    # the operator's final say on what's billable for this admission slice.
+    if items_override is not None:
+        for it in items_override:
+            db.add(BillItem(
+                bill_id=bill.id,
+                item_type=it.item_type,
+                item_name=it.item_name,
+                quantity=int(it.quantity or 1),
+                unit_price=float(it.unit_price or 0),
+                total_price=float(it.total_price or 0),
+            ))
+        for v in breakdown["_visits"]:
+            v.billed = True
+            v.bill_id = bill.id
+        for ot in breakdown["_ot"]:
+            ot.billed = True
+            ot.bill_id = bill.id
+        for c in breakdown["_ancillary"]:
+            c.billed = True
+            c.bill_id = bill.id
+        for rx in breakdown["_pharmacy_rxs"]:
+            rx.inpatient_bill_id = bill.id
+        for lo in breakdown["_lab_orders"]:
+            lo.inpatient_bill_id = bill.id
+        db.commit()
+        db.refresh(bill)
+        return bill
 
     room = breakdown["_room"]
     if breakdown["room_total"] > 0 and room:
@@ -1818,9 +3161,37 @@ async def finalize_bill(
     patient = db.query(Patient).filter(Patient.id == admission.patient_id).first()
     hospital = _get_hospital(db, current_user)
 
+    # Uniqueness guard: an admission must not have two active final bills.
+    # This blocks both concurrent finalize calls (lost update) and accidental
+    # double-clicks. Cancelled bills are explicitly excluded so a corrected
+    # final bill can be issued after a cancellation.
+    existing_final = db.query(Bill).filter(
+        Bill.bill_type == "admission",
+        Bill.reference_id == admission_id,
+        Bill.bill_subtype == "final",
+        Bill.status != "cancelled",
+    ).first()
+    if existing_final:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "final_bill_exists",
+                "message": "A final bill already exists for this admission. Cancel it first to issue a new one.",
+                "bill_id": existing_final.id,
+                "bill_number": existing_final.bill_number,
+            },
+        )
+
     breakdown = _compute_admission_charges(db, admission, unbilled_only=True)
-    if breakdown["subtotal"] <= 0:
-        raise HTTPException(status_code=400, detail="No outstanding charges to finalize")
+    items_override = data.items_override if data else None
+    # Allow finalize with NO new computed charges if the operator submitted an
+    # explicit override (e.g. waiving everything but adding a single custom
+    # line). Without an override, refuse so we don't create empty final bills.
+    if breakdown["subtotal"] <= 0 and not items_override:
+        raise HTTPException(
+            status_code=400,
+            detail="No outstanding charges to finalize. If everything is already on prior bills, cancel an interim bill first or submit an items_override.",
+        )
 
     bill = _create_admission_bill_record(
         db, admission, hospital, current_user, breakdown,
@@ -1828,6 +3199,7 @@ async def finalize_bill(
         discount_type=(data.discount_type if data else "flat") or "flat",
         tax_percentage=(data.tax_percentage if data else 0) or 0,
         bill_subtype="final",
+        items_override=items_override,
     )
 
     log_action(db, current_user, "finalize_admission_bill", "inpatient", "Bill", bill.id,
@@ -2620,6 +3992,160 @@ async def list_all_active_diet_orders(
 
 
 # ============================================================
+# Diet — per-meal log + kitchen ticket
+# ============================================================
+
+VALID_MEAL_TIMES = {"breakfast", "lunch", "dinner", "snack_morning", "snack_evening"}
+VALID_MEAL_STATUS = {"served", "refused", "partial", "missed"}
+
+
+class DietMealLogCreate(BaseModel):
+    meal_date: Optional[date] = None  # defaults to today
+    meal_time: str = Field(..., min_length=1)
+    status: str = Field(default="served")
+    notes: Optional[str] = None
+    served_by_id: Optional[int] = None
+
+
+@router.post("/diet-orders/{order_id}/meal-log", status_code=status.HTTP_201_CREATED)
+async def log_diet_meal(
+    order_id: int,
+    data: DietMealLogCreate,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_diet_orders")),
+    db: Session = Depends(get_db),
+):
+    """Record that a meal was served / refused / partial / missed against a
+    DietOrder. One row per (admission, date, meal_time) — repeat call for the
+    same slot updates instead of creating a duplicate (idempotency)."""
+    if data.meal_time not in VALID_MEAL_TIMES:
+        raise HTTPException(status_code=400, detail=f"meal_time must be one of {sorted(VALID_MEAL_TIMES)}")
+    if data.status not in VALID_MEAL_STATUS:
+        raise HTTPException(status_code=400, detail=f"status must be one of {sorted(VALID_MEAL_STATUS)}")
+
+    order = db.query(DietOrder).filter(DietOrder.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Diet order not found")
+    if not order.is_active:
+        raise HTTPException(status_code=400, detail="Cannot log meals against an inactive diet order")
+
+    hospital = _get_hospital(db, current_user)
+    target_date_naive = data.meal_date or date.today()
+    target_dt = datetime.combine(target_date_naive, datetime.min.time(), tzinfo=timezone.utc)
+
+    existing = db.query(DietMealLog).filter(
+        DietMealLog.admission_id == order.admission_id,
+        DietMealLog.meal_date == target_dt,
+        DietMealLog.meal_time == data.meal_time,
+    ).first()
+    if existing:
+        existing.status = data.status
+        existing.notes = data.notes
+        existing.served_by_id = data.served_by_id or current_user.id
+        action = "update_diet_meal_log"
+        rec = existing
+    else:
+        rec = DietMealLog(
+            diet_order_id=order.id,
+            admission_id=order.admission_id,
+            meal_date=target_dt,
+            meal_time=data.meal_time,
+            status=data.status,
+            notes=data.notes,
+            served_by_id=data.served_by_id or current_user.id,
+            hospital_id=hospital.id,
+            created_by_id=current_user.id,
+        )
+        db.add(rec)
+        action = "create_diet_meal_log"
+    db.commit()
+    db.refresh(rec)
+    log_action(db, current_user, action, "inpatient", "DietMealLog", rec.id,
+               f"Meal {data.meal_time} on {target_date_naive}: {data.status}",
+               details={"admission_id": order.admission_id})
+    return {c.name: getattr(rec, c.name) for c in rec.__table__.columns}
+
+
+@router.get("/admissions/{admission_id}/diet-meal-logs")
+async def list_diet_meal_logs(
+    admission_id: int,
+    days: int = Query(default=7, ge=1, le=60),
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_diet_orders")),
+    db: Session = Depends(get_db),
+):
+    """All meal logs for an admission within the last `days` days."""
+    from datetime import timedelta as _td
+    cutoff = datetime.combine(date.today() - _td(days=days - 1), datetime.min.time(), tzinfo=timezone.utc)
+    rows = db.query(DietMealLog).filter(
+        DietMealLog.admission_id == admission_id,
+        DietMealLog.meal_date >= cutoff,
+    ).order_by(DietMealLog.meal_date.desc(), DietMealLog.meal_time).all()
+    return [{c.name: getattr(r, c.name) for c in r.__table__.columns} for r in rows]
+
+
+@router.get("/diet/kitchen-ticket/pdf")
+async def kitchen_ticket_pdf(
+    meal_time: str = Query(..., description="breakfast | lunch | dinner | snack_morning | snack_evening"),
+    target_date: Optional[date] = Query(default=None),
+    department: Optional[str] = Query(default=None),
+    include_header: bool = True,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_diet_orders")),
+    db: Session = Depends(get_db),
+):
+    """Per-meal kitchen ticket: every active admission grouped by ward, with
+    diet type, allergies, and bed number. Optional `department` filter so a
+    single ward's kitchen ticket can be printed."""
+    if meal_time not in VALID_MEAL_TIMES:
+        raise HTTPException(status_code=400, detail=f"meal_time must be one of {sorted(VALID_MEAL_TIMES)}")
+    target = target_date or date.today()
+
+    orders = db.query(DietOrder).join(Admission).filter(
+        DietOrder.is_active == True,
+        Admission.status == "admitted",
+    ).all()
+
+    items = []
+    for o in orders:
+        adm = db.query(Admission).filter(Admission.id == o.admission_id).first()
+        if not adm:
+            continue
+        room = db.query(RoomManagement).filter(RoomManagement.id == adm.room_id).first()
+        if department and room and (room.department or "") != department:
+            continue
+        patient = db.query(Patient).filter(Patient.id == o.patient_id).first()
+        bed_label = adm.bed.bed_label if adm.bed else adm.bed_number
+        items.append({
+            "ward": (room.department if room else "") or "—",
+            "room": room.room_number if room else "—",
+            "bed": bed_label or "—",
+            "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "—",
+            "patient_id": patient.patient_id if patient else "—",
+            "diet_type": o.diet_type,
+            "instructions": o.meal_instructions or "",
+            "allergies": o.allergies or "",
+        })
+    items.sort(key=lambda x: (x["ward"], x["room"], x["bed"]))
+
+    hospital = _get_hospital(db, current_user)
+    hospital_info = {
+        "name": hospital.name,
+        "address": hospital.address or "",
+        "phone": hospital.phone or "",
+        "email": hospital.email or "",
+        "logo_url": getattr(hospital, "logo_url", "") or "",
+        "hospital_subname": getattr(hospital, "hospital_subname", "") or "",
+    }
+    pdf_buffer = pdf_service.generate_kitchen_ticket_pdf(
+        items, meal_time=meal_time, target_date=target.strftime("%d/%m/%Y"),
+        department=department, hospital_info=hospital_info, include_header=include_header,
+    )
+    return StreamingResponse(
+        pdf_buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"inline; filename=kitchen_{meal_time}_{target.isoformat()}.pdf"},
+    )
+
+
+# ============================================================
 # Vital Signs
 # ============================================================
 
@@ -2739,7 +4265,7 @@ async def record_vitals(
         admission_id=admission_id,
         patient_id=admission.patient_id,
         recorded_by_id=current_user.id,
-        recorded_at=payload.pop("recorded_at", None) or datetime.utcnow(),
+        recorded_at=payload.pop("recorded_at", None) or _now_utc(),
         is_abnormal=is_abnormal,
         abnormal_flags=flags or None,
         hospital_id=hospital.id,
@@ -2870,6 +4396,14 @@ class MARAdministerRequest(BaseModel):
     reason_if_not_given: Optional[str] = None
     notes: Optional[str] = None
     witness_id: Optional[int] = None
+    # Safety overrides (require accompanying override_reason). Each maps to a
+    # distinct 409 the backend can return so the UI can target the right gate.
+    force_allergy_override: bool = False
+    force_duplicate_dose: bool = False
+    override_reason: Optional[str] = None
+    # Minimum window in minutes between two doses of the same medicine for the
+    # same admission. 30 by default — caller can override per-PRN entry.
+    duplicate_dose_window_minutes: int = Field(default=30, ge=1, le=720)
 
 
 class MARPRNRequest(BaseModel):
@@ -3055,6 +4589,110 @@ async def list_mar_history(
     return [_mar_to_response(m, db) for m in rows]
 
 
+def _run_mar_safety_checks(db: Session, m: "MedicationAdministration", data: MARAdministerRequest,
+                           current_user: User) -> list:
+    """Run the four MAR safety wraps for a 'given' (or PRN) administration.
+    Returns the list of forced gates so the route can audit-log them. Raises
+    400/409 with structured detail for any unforced violation.
+
+    Wraps:
+      1. Allergy x-check — block if patient has an active drug allergy
+         matching the medicine name or generic name (substring, case-insensitive).
+         Override: force_allergy_override + override_reason.
+      2. Narcotic / high-alert 2nd-witness — block if Medicine.is_narcotic or
+         is_high_alert and no witness_id provided. Witness must be a different
+         user from the administering nurse. No override — must provide witness.
+      3. Duplicate-dose window — block if the same medicine was given to the
+         same admission within `duplicate_dose_window_minutes` (default 30 min).
+         Override: force_duplicate_dose + override_reason.
+    Wraps run only when data.status == 'given' (skipped for missed/refused/held).
+    """
+    if data.status != "given":
+        return []
+
+    from app.models.pharmacy import Medicine as _Medicine
+    from app.models.patient import PatientAllergy as _PatientAllergy
+
+    forced_gates = []
+    medicine = db.query(_Medicine).filter(_Medicine.id == m.medicine_id).first() if m.medicine_id else None
+
+    # 1. Allergy x-check
+    if medicine:
+        names = [n.lower() for n in [medicine.name, medicine.generic_name] if n]
+        active_drug_allergies = db.query(_PatientAllergy).filter(
+            _PatientAllergy.patient_id == m.patient_id,
+            _PatientAllergy.allergy_type == "drug",
+            _PatientAllergy.is_active == True,
+        ).all()
+        matches = [a for a in active_drug_allergies
+                   if any(a.allergen and a.allergen.lower() in n or n in a.allergen.lower()
+                          for n in names)]
+        if matches:
+            if not data.force_allergy_override:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "allergy_match",
+                        "message": "Patient has a recorded allergy matching this medication.",
+                        "medicine": medicine.name,
+                        "allergens": [a.allergen for a in matches],
+                        "max_severity": max((a.severity for a in matches),
+                                            key=lambda s: ["mild", "moderate", "severe", "anaphylaxis"].index(s)
+                                                          if s in ["mild", "moderate", "severe", "anaphylaxis"] else 0),
+                    },
+                )
+            forced_gates.append("allergy_match")
+
+    # 2. Narcotic / high-alert 2nd-witness
+    if medicine and (medicine.is_narcotic or medicine.is_high_alert):
+        if not data.witness_id:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "witness_required",
+                    "message": "Narcotic or high-alert medication requires a second-witness signature. Pass witness_id (must be a different user).",
+                    "is_narcotic": bool(medicine.is_narcotic),
+                    "is_high_alert": bool(medicine.is_high_alert),
+                },
+            )
+        if data.witness_id == current_user.id:
+            raise HTTPException(status_code=400,
+                detail="Witness must be a different user from the administering nurse.")
+
+    # 3. Duplicate-dose window
+    if m.medicine_id:
+        from datetime import timedelta as _td
+        when = data.administered_at or _now_utc()
+        window_start = when - _td(minutes=data.duplicate_dose_window_minutes)
+        recent = db.query(MedicationAdministration).filter(
+            MedicationAdministration.id != m.id,
+            MedicationAdministration.admission_id == m.admission_id,
+            MedicationAdministration.medicine_id == m.medicine_id,
+            MedicationAdministration.status == "given",
+            MedicationAdministration.administered_at >= window_start,
+            MedicationAdministration.administered_at <= when,
+        ).first()
+        if recent:
+            if not data.force_duplicate_dose:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "duplicate_dose",
+                        "message": f"Same medication was administered within the last {data.duplicate_dose_window_minutes} minutes.",
+                        "previous_administration_id": recent.id,
+                        "previous_administered_at": recent.administered_at.isoformat() if recent.administered_at else None,
+                        "window_minutes": data.duplicate_dose_window_minutes,
+                    },
+                )
+            forced_gates.append("duplicate_dose")
+
+    if forced_gates and not (data.override_reason and data.override_reason.strip()):
+        raise HTTPException(status_code=400,
+            detail=f"override_reason required when forcing safety gates: {', '.join(forced_gates)}")
+
+    return forced_gates
+
+
 @router.post("/mar/{mar_id}/administer", response_model=MARResponse)
 async def administer_dose(
     mar_id: int,
@@ -3068,9 +4706,11 @@ async def administer_dose(
     if m.status in ("given", "refused", "missed"):
         raise HTTPException(status_code=409, detail=f"Dose already {m.status}")
 
+    forced_gates = _run_mar_safety_checks(db, m, data, current_user)
+
     m.status = data.status
     m.administered_by_id = current_user.id
-    m.administered_at = data.administered_at or datetime.utcnow()
+    m.administered_at = data.administered_at or _now_utc()
     if data.dose_given:
         m.dose_given = data.dose_given
     if data.route:
@@ -3087,10 +4727,14 @@ async def administer_dose(
     db.commit()
     db.refresh(m)
 
+    audit_details = {"status": data.status, "is_prn": m.is_prn}
+    if forced_gates:
+        audit_details["forced_safety_gates"] = forced_gates
+        audit_details["override_reason"] = data.override_reason
     log_action(
         db, current_user, "administer_medication", "inpatient", "MedicationAdministration", m.id,
         f"Marked dose as '{data.status}' for admission #{m.admission_id}",
-        {"status": data.status, "is_prn": m.is_prn},
+        audit_details,
     )
     return _mar_to_response(m, db)
 
@@ -3122,7 +4766,7 @@ async def record_prn_dose(
         prescription_item_id=pi.id if pi else None,
         medicine_id=(pi.medicine_id if pi else data.medicine_id),
         scheduled_time=None,
-        administered_at=data.administered_at or datetime.utcnow(),
+        administered_at=data.administered_at or _now_utc(),
         administered_by_id=current_user.id,
         status="given",
         dose_given=data.dose_given,
@@ -3569,7 +5213,7 @@ async def record_split_payment(
     if not s:
         raise HTTPException(status_code=404, detail="Split not found")
     s.payment_status = "received"
-    s.payment_date = datetime.utcnow()
+    s.payment_date = _now_utc()
     if payment_reference:
         s.payment_reference = payment_reference
     if notes:
@@ -3777,7 +5421,7 @@ async def record_preauth_decision(
 
     p.status = data.status
     p.approved_amount = data.approved_amount or 0.0
-    p.approval_date = datetime.utcnow() if data.status == "approved" else p.approval_date
+    p.approval_date = _now_utc() if data.status == "approved" else p.approval_date
     p.validity_days = data.validity_days
     p.approval_reference = data.approval_reference
     if data.notes:
@@ -3855,7 +5499,7 @@ async def record_expansion_decision(
 
     exp.status = data.status
     exp.approved_amount = data.approved_amount or 0.0
-    exp.decided_at = datetime.utcnow()
+    exp.decided_at = _now_utc()
 
     # Roll up to parent pre-auth
     parent = db.query(InsurancePreAuth).filter(InsurancePreAuth.id == exp.preauth_id).first()
@@ -4351,7 +5995,7 @@ async def create_ancillary_charge(
         total_amount=total,
         notes=data.notes,
         performed_by_id=data.performed_by_id or current_user.id,
-        charged_at=data.charged_at or datetime.utcnow(),
+        charged_at=data.charged_at or _now_utc(),
         hospital_id=hospital.id,
         created_by_id=current_user.id,
     )
@@ -4564,6 +6208,7 @@ async def initiate_ward_transfer(
     if pending:
         raise HTTPException(status_code=409, detail="Another transfer is already pending acceptance")
 
+    from_room_for_rate = db.query(RoomManagement).filter(RoomManagement.id == admission.room_id).first()
     t = BedTransferHistory(
         admission_id=admission_id,
         from_room_id=admission.room_id,
@@ -4577,6 +6222,10 @@ async def initiate_ward_transfer(
         transferred_by_id=current_user.id,
         accepting_doctor_id=data.accepting_doctor_id,
         accepting_nurse_id=data.accepting_nurse_id,
+        # Rate snapshots — locked at initiate-time so the patient is billed
+        # by the rate that was in effect when the transfer was approved.
+        from_room_charge_per_day=float(from_room_for_rate.room_charge_per_day) if from_room_for_rate else None,
+        to_room_charge_per_day=float(new_room.room_charge_per_day) if new_room else None,
         hospital_id=hospital.id,
     )
     db.add(t)
@@ -4606,23 +6255,66 @@ async def accept_ward_transfer(
     if not admission:
         raise HTTPException(status_code=404, detail="Admission no longer exists")
 
-    new_room = db.query(RoomManagement).filter(RoomManagement.id == t.to_room_id).first()
+    # Lock target room and (if specified) target bed before claiming.
+    new_room = db.query(RoomManagement).filter(
+        RoomManagement.id == t.to_room_id
+    ).with_for_update().first()
     if not new_room or new_room.available_beds <= 0:
         raise HTTPException(status_code=400, detail="No beds available in target room")
 
-    # Move bed accounting
-    old_room = db.query(RoomManagement).filter(RoomManagement.id == admission.room_id).first()
+    target_bed = None
+    if t.to_bed_id:
+        target_bed = db.query(Bed).filter(
+            Bed.id == t.to_bed_id, Bed.room_id == t.to_room_id
+        ).with_for_update().first()
+        if not target_bed:
+            raise HTTPException(status_code=404, detail="Target bed not found")
+        if target_bed.status != "available":
+            raise HTTPException(status_code=400, detail=f"Target bed '{target_bed.bed_label}' is not available")
+        if not _claim_bed_atomic(db, target_bed.id, t.to_room_id):
+            db.rollback()
+            raise HTTPException(status_code=409, detail="Target bed was just taken; cancel and re-initiate transfer")
+
+    # Move bed accounting (only when actually changing rooms)
+    old_room = db.query(RoomManagement).filter(
+        RoomManagement.id == admission.room_id
+    ).with_for_update().first()
     if old_room and t.to_room_id != admission.room_id:
-        old_room.available_beds += 1
+        # Release old bed if structured
+        if admission.bed_id:
+            old_bed = db.query(Bed).filter(Bed.id == admission.bed_id).with_for_update().first()
+            if old_bed and old_bed.current_admission_id == admission.id:
+                old_bed.status = "cleaning"
+                old_bed.current_admission_id = None
+        # Recompute counts from Bed table where structured beds exist; else legacy +/- 1
+        old_structured = db.query(Bed).filter(Bed.room_id == old_room.id).count()
+        if old_structured > 0:
+            old_room.available_beds = db.query(Bed).filter(
+                Bed.room_id == old_room.id, Bed.status == "available"
+            ).count()
+        else:
+            old_room.available_beds += 1
         old_room.is_occupied = old_room.available_beds == 0
-        new_room.available_beds -= 1
+
+        new_structured = db.query(Bed).filter(Bed.room_id == new_room.id).count()
+        if new_structured > 0:
+            new_room.available_beds = db.query(Bed).filter(
+                Bed.room_id == new_room.id, Bed.status == "available"
+            ).count()
+        else:
+            if not _decrement_room_available_atomic(db, new_room.id):
+                db.rollback()
+                raise HTTPException(status_code=409, detail="Target room ran out of beds during accept")
+            db.refresh(new_room)
         new_room.is_occupied = new_room.available_beds == 0
 
     admission.room_id = t.to_room_id
     if t.to_bed_id:
         admission.bed_id = t.to_bed_id
+        if target_bed:
+            target_bed.current_admission_id = admission.id
     t.status = "accepted"
-    t.accepted_at = datetime.utcnow()
+    t.accepted_at = _now_utc()
     # If caller didn't pre-specify, record the accepting user based on their role
     if not t.accepting_doctor_id and not t.accepting_nurse_id:
         if "doctor" in (current_user.role_names or []):
@@ -4936,30 +6628,30 @@ async def convert_reservation_to_admission(
     if not r.patient_id:
         raise HTTPException(status_code=400, detail="Reservation has no linked patient")
 
-    # Resolve the room: prefer specific bed → specific room → any room of the matching type with availability
+    # Resolve the room: prefer specific bed → specific room → any room of the
+    # matching type with availability. Lock rows we intend to claim.
     room = None
     bed = None
     if r.bed_id:
-        bed = db.query(Bed).filter(Bed.id == r.bed_id).first()
+        bed = db.query(Bed).filter(Bed.id == r.bed_id).with_for_update().first()
         if bed:
-            room = db.query(RoomManagement).filter(RoomManagement.id == bed.room_id).first()
+            room = db.query(RoomManagement).filter(
+                RoomManagement.id == bed.room_id
+            ).with_for_update().first()
     if not room and r.room_id:
-        room = db.query(RoomManagement).filter(RoomManagement.id == r.room_id).first()
+        room = db.query(RoomManagement).filter(
+            RoomManagement.id == r.room_id
+        ).with_for_update().first()
     if not room and r.room_type:
         room = db.query(RoomManagement).filter(
             RoomManagement.room_type == r.room_type,
             RoomManagement.is_active == True,
             RoomManagement.available_beds > 0,
-        ).order_by(RoomManagement.available_beds.desc()).first()
+        ).order_by(RoomManagement.available_beds.desc()).with_for_update().first()
     if not room:
         raise HTTPException(status_code=400, detail="No matching room available")
     if room.available_beds <= 0:
         raise HTTPException(status_code=400, detail="Reserved room has no available beds")
-
-    # Reuse the create_admission machinery minus the patient-already-admitted check? Just create directly
-    hospital = _get_hospital(db, current_user)
-    now = datetime.now()
-    admission_number = f"ADM{now.strftime('%Y%m%d%H%M%S')}"
 
     active = db.query(Admission).filter(
         Admission.patient_id == r.patient_id,
@@ -4967,6 +6659,17 @@ async def convert_reservation_to_admission(
     ).first()
     if active:
         raise HTTPException(status_code=400, detail="Patient already has an active admission")
+
+    # Atomic bed claim — race-safe.
+    if bed:
+        if bed.status != "available":
+            raise HTTPException(status_code=400, detail=f"Bed '{bed.bed_label}' is not available")
+        if not _claim_bed_atomic(db, bed.id, room.id):
+            db.rollback()
+            raise HTTPException(status_code=409, detail="Reserved bed was just taken; pick another")
+
+    hospital = _get_hospital(db, current_user)
+    admission_number = _generate_admission_number(db)  # unified generator
 
     admission = Admission(
         admission_number=admission_number,
@@ -4978,14 +6681,24 @@ async def convert_reservation_to_admission(
         admission_reason=data.admission_reason,
         condition_on_admission=data.condition_on_admission,
         status="admitted",
+        initial_room_charge_per_day=float(room.room_charge_per_day) if room else 0.0,
     )
     db.add(admission)
-    room.available_beds -= 1
+
+    # Sync room counts (structured) or atomic decrement (legacy).
+    room_beds = db.query(Bed).filter(Bed.room_id == room.id).count()
+    if room_beds > 0:
+        room.available_beds = db.query(Bed).filter(
+            Bed.room_id == room.id, Bed.status == "available"
+        ).count()
+    else:
+        if not _decrement_room_available_atomic(db, room.id):
+            db.rollback()
+            raise HTTPException(status_code=409, detail="Room ran out of beds during conversion")
+        db.refresh(room)
     if room.available_beds == 0:
         room.is_occupied = True
-    if bed:
-        bed.status = "occupied"
-        bed.current_admission_id = None  # will be set after flush
+
     db.flush()
     if bed:
         bed.current_admission_id = admission.id
@@ -5378,7 +7091,7 @@ async def withdraw_consent(
         raise HTTPException(status_code=404, detail="Consent not found")
     if c.withdrawn_at:
         raise HTTPException(status_code=409, detail="Consent already withdrawn")
-    c.withdrawn_at = datetime.utcnow()
+    c.withdrawn_at = _now_utc()
     c.withdrawal_reason = data.withdrawal_reason
     db.commit()
     db.refresh(c)
@@ -5458,6 +7171,10 @@ class IncidentCreate(BaseModel):
     description: str = Field(..., min_length=1)
     immediate_action: Optional[str] = None
     witnessed_by: Optional[str] = Field(default=None, max_length=200)
+    # Optional MAR linkage — set when this incident was caused by a specific
+    # medication administration (e.g., adverse drug reaction). Bidirectional:
+    # the matching MAR row is also updated to point back at this incident.
+    medication_administration_id: Optional[int] = None
 
 
 class IncidentInvestigate(BaseModel):
@@ -5494,6 +7211,7 @@ class IncidentResponse(BaseModel):
     closed_at: Optional[datetime]
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
+    medication_administration_id: Optional[int] = None
 
     class Config:
         from_attributes = True
@@ -5518,19 +7236,75 @@ async def create_incident(
     db: Session = Depends(get_db),
 ):
     hospital = _get_hospital(db, current_user)
+    payload = data.model_dump()
+    mar_id = payload.get("medication_administration_id")
+    # Validate the MAR link, if any, before creating the incident.
+    mar_obj = None
+    if mar_id:
+        mar_obj = db.query(MedicationAdministration).filter(
+            MedicationAdministration.id == mar_id
+        ).first()
+        if not mar_obj:
+            raise HTTPException(status_code=404, detail="Linked MedicationAdministration not found")
+        # Auto-fill admission_id / patient_id from MAR if caller omitted them
+        if not payload.get("admission_id"):
+            payload["admission_id"] = mar_obj.admission_id
+        if not payload.get("patient_id"):
+            payload["patient_id"] = mar_obj.patient_id
+
     incident = Incident(
         hospital_id=hospital.id,
         reported_by_id=current_user.id,
         status="reported",
-        **data.model_dump(),
+        **payload,
     )
     db.add(incident)
+    db.flush()
+    # Mirror the back-link onto the MAR row so click-through works both ways.
+    if mar_obj:
+        mar_obj.incident_id = incident.id
     db.commit()
     db.refresh(incident)
     log_action(db, current_user, "report_incident", "inpatient", "Incident", incident.id,
-               f"Reported {data.severity} {data.incident_type} incident",
-               {"type": data.incident_type, "severity": data.severity})
+               f"Reported {data.severity} {data.incident_type} incident"
+               + (f" (linked to MAR #{mar_id})" if mar_id else ""),
+               {"type": data.incident_type, "severity": data.severity,
+                "medication_administration_id": mar_id})
     return _incident_to_response(incident, db)
+
+
+@router.get("/mar/{mar_id}/incident")
+async def get_mar_linked_incident(
+    mar_id: int,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
+    db: Session = Depends(get_db),
+):
+    """Click-through: get the Incident filed against this MAR row, if any."""
+    m = db.query(MedicationAdministration).filter(MedicationAdministration.id == mar_id).first()
+    if not m:
+        raise HTTPException(status_code=404, detail="MAR entry not found")
+    if not m.incident_id:
+        return None
+    inc = db.query(Incident).filter(Incident.id == m.incident_id).first()
+    return _incident_to_response(inc, db) if inc else None
+
+
+@router.get("/incidents/{incident_id}/mar")
+async def get_incident_linked_mar(
+    incident_id: int,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
+    db: Session = Depends(get_db),
+):
+    """Click-through: get the MAR row this Incident was filed against, if any."""
+    inc = db.query(Incident).filter(Incident.id == incident_id).first()
+    if not inc:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    if not inc.medication_administration_id:
+        return None
+    m = db.query(MedicationAdministration).filter(
+        MedicationAdministration.id == inc.medication_administration_id
+    ).first()
+    return _mar_to_response(m, db) if m else None
 
 
 @router.get("/incidents", response_model=List[IncidentResponse])
@@ -5594,7 +7368,7 @@ async def investigate_incident(
             )
         i.status = data.new_status
         if data.new_status == "closed":
-            i.closed_at = datetime.utcnow()
+            i.closed_at = _now_utc()
             i.closed_by_id = current_user.id
 
     for field in ("investigation_notes", "root_cause", "resolution",
@@ -5617,7 +7391,7 @@ async def incident_monthly_report(
 ):
     """Count by type/severity/status for last 30 days."""
     from datetime import timedelta
-    cutoff = datetime.now() - timedelta(days=30)
+    cutoff = _now_utc() - timedelta(days=30)
     rows = db.query(Incident).filter(Incident.incident_date >= cutoff).all()
     by_type = {}
     by_severity = {}
@@ -5679,6 +7453,224 @@ class MortalityUpdate(BaseModel):
     body_handover_relationship: Optional[str] = Field(default=None, max_length=100)
     body_handover_time: Optional[datetime] = None
     body_handover_id_proof: Optional[str] = Field(default=None, max_length=200)
+
+
+# ============================================================
+# DAMA — Discharge Against Medical Advice
+# ============================================================
+
+class DAMACreate(BaseModel):
+    attending_doctor_id: int
+    medical_advice_given: str = Field(..., min_length=1)
+    risks_explained: str = Field(..., min_length=1)
+    language_used: str = Field(default="english", max_length=30)
+    patient_acknowledges_advice: bool
+    patient_absolves_hospital: bool
+    signed_by: str = Field(default="patient", pattern="^(patient|guardian)$")
+    guardian_name: Optional[str] = Field(default=None, max_length=200)
+    guardian_relationship: Optional[str] = Field(default=None, max_length=100)
+    primary_signature: str = Field(..., min_length=1)
+    primary_signature_type: str = Field(default="typed", pattern="^(typed|drawn)$")
+    witness_name: str = Field(..., min_length=1, max_length=200)
+    witness_designation: Optional[str] = Field(default=None, max_length=100)
+    witness_signature: str = Field(..., min_length=1)
+    witness_signature_type: str = Field(default="typed", pattern="^(typed|drawn)$")
+    notes: Optional[str] = None
+
+
+def _dama_to_response(d: DAMARecord, db: Session) -> dict:
+    doctor = db.query(User).filter(User.id == d.attending_doctor_id).first()
+    return {
+        **{c.name: getattr(d, c.name) for c in d.__table__.columns},
+        "attending_doctor_name": f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else None,
+    }
+
+
+@router.post("/admissions/{admission_id}/dama", status_code=status.HTTP_201_CREATED)
+async def record_dama(
+    admission_id: int,
+    data: DAMACreate,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "discharge_patients")),
+    db: Session = Depends(get_db),
+):
+    """Record the Discharge Against Medical Advice form for an admission that
+    has already been discharged with discharge_type='against_advice'.
+    Both acknowledgements (advice + absolves) must be True or 400."""
+    if not (data.patient_acknowledges_advice and data.patient_absolves_hospital):
+        raise HTTPException(
+            status_code=400,
+            detail="Both acknowledgements (advice given + absolves hospital) must be checked to file a DAMA form",
+        )
+    if data.signed_by == "guardian" and not (data.guardian_name and data.guardian_name.strip()):
+        raise HTTPException(status_code=400, detail="guardian_name is required when signed_by='guardian'")
+
+    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    if not admission:
+        raise HTTPException(status_code=404, detail="Admission not found")
+    discharge = db.query(DischargeRecord).filter(DischargeRecord.admission_id == admission_id).first()
+    if not discharge:
+        raise HTTPException(status_code=400, detail="Patient is not yet discharged — create discharge first")
+    if discharge.discharge_type != "against_advice":
+        raise HTTPException(
+            status_code=400,
+            detail=f"DAMA form is only valid for against_advice discharges (current: {discharge.discharge_type})",
+        )
+    existing = db.query(DAMARecord).filter(DAMARecord.discharge_id == discharge.id).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="DAMA form already recorded for this discharge")
+
+    hospital = _get_hospital(db, current_user)
+    rec = DAMARecord(
+        discharge_id=discharge.id,
+        admission_id=admission_id,
+        patient_id=admission.patient_id,
+        attending_doctor_id=data.attending_doctor_id,
+        medical_advice_given=data.medical_advice_given,
+        risks_explained=data.risks_explained,
+        language_used=data.language_used,
+        patient_acknowledges_advice=True,
+        patient_absolves_hospital=True,
+        signed_by=data.signed_by,
+        guardian_name=data.guardian_name,
+        guardian_relationship=data.guardian_relationship,
+        primary_signature=data.primary_signature,
+        primary_signature_type=data.primary_signature_type,
+        witness_name=data.witness_name,
+        witness_designation=data.witness_designation,
+        witness_signature=data.witness_signature,
+        witness_signature_type=data.witness_signature_type,
+        notes=data.notes,
+        hospital_id=hospital.id,
+        created_by_id=current_user.id,
+    )
+    db.add(rec)
+    db.commit()
+    db.refresh(rec)
+    log_action(db, current_user, "record_dama", "inpatient", "DAMARecord", rec.id,
+               f"Recorded DAMA form for admission {admission.admission_number}",
+               details={"admission_id": admission_id, "signed_by": data.signed_by})
+    return _dama_to_response(rec, db)
+
+
+@router.get("/admissions/{admission_id}/dama")
+async def get_dama(
+    admission_id: int,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
+    db: Session = Depends(get_db),
+):
+    rec = db.query(DAMARecord).filter(DAMARecord.admission_id == admission_id).first()
+    if not rec:
+        raise HTTPException(status_code=404, detail="DAMA record not found")
+    return _dama_to_response(rec, db)
+
+
+@router.get("/admissions/{admission_id}/dama/pdf")
+async def get_dama_pdf(
+    admission_id: int,
+    include_header: bool = True,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
+    db: Session = Depends(get_db),
+):
+    rec = db.query(DAMARecord).filter(DAMARecord.admission_id == admission_id).first()
+    if not rec:
+        raise HTTPException(status_code=404, detail="DAMA record not found")
+    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    patient = db.query(Patient).filter(Patient.id == rec.patient_id).first()
+    doctor = db.query(User).filter(User.id == rec.attending_doctor_id).first()
+    discharge = db.query(DischargeRecord).filter(DischargeRecord.id == rec.discharge_id).first()
+    hospital = _get_hospital(db, current_user)
+
+    hospital_info = {
+        "name": hospital.name,
+        "address": hospital.address or "",
+        "phone": hospital.phone or "",
+        "email": hospital.email or "",
+        "logo_url": getattr(hospital, "logo_url", "") or "",
+        "hospital_subname": getattr(hospital, "hospital_subname", "") or "",
+    }
+    dama_data = {
+        "admission_number": admission.admission_number if admission else "",
+        "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "",
+        "patient_id": patient.patient_id if patient else "",
+        "age": _patient_age(patient) or "",
+        "gender": patient.gender if patient else "",
+        "doctor_name": f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else "",
+        "admission_date": admission.admission_date.strftime("%d/%m/%Y") if admission and admission.admission_date else "",
+        "discharge_date": discharge.discharge_date.strftime("%d/%m/%Y %H:%M") if discharge and discharge.discharge_date else "",
+        "medical_advice_given": rec.medical_advice_given,
+        "risks_explained": rec.risks_explained,
+        "language_used": rec.language_used,
+        "signed_by": rec.signed_by,
+        "guardian_name": rec.guardian_name or "",
+        "guardian_relationship": rec.guardian_relationship or "",
+        "primary_signature": rec.primary_signature,
+        "primary_signature_type": rec.primary_signature_type,
+        "witness_name": rec.witness_name,
+        "witness_designation": rec.witness_designation or "",
+        "witness_signature": rec.witness_signature,
+        "witness_signature_type": rec.witness_signature_type,
+        "notes": rec.notes or "",
+        "signed_at": rec.created_at.strftime("%d/%m/%Y %H:%M") if rec.created_at else "",
+    }
+    pdf_buffer = pdf_service.generate_dama_pdf(dama_data, hospital_info, include_header=include_header)
+    return StreamingResponse(
+        pdf_buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"inline; filename=DAMA_{admission.admission_number if admission else admission_id}.pdf"},
+    )
+
+
+@router.get("/admissions/{admission_id}/mlc/pdf")
+async def get_mlc_register_pdf(
+    admission_id: int,
+    include_header: bool = True,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
+    db: Session = Depends(get_db),
+):
+    """B7.5 — MLC register entry / police intimation PDF."""
+    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    if not admission:
+        raise HTTPException(status_code=404, detail="Admission not found")
+    if not admission.is_mlc:
+        raise HTTPException(status_code=400, detail="This admission is not flagged as MLC")
+    patient = db.query(Patient).filter(Patient.id == admission.patient_id).first()
+    doctor = db.query(User).filter(User.id == admission.admitting_doctor_id).first()
+    hospital = _get_hospital(db, current_user)
+
+    hospital_info = {
+        "name": hospital.name, "address": hospital.address or "",
+        "phone": hospital.phone or "", "email": hospital.email or "",
+        "logo_url": getattr(hospital, "logo_url", "") or "",
+        "hospital_subname": getattr(hospital, "hospital_subname", "") or "",
+    }
+    addr = ""
+    if patient:
+        parts = [p for p in [patient.address_line1, patient.village, patient.mandal, patient.district] if p]
+        addr = ", ".join(parts) or (patient.address or "")
+    mlc_data = {
+        "mlc_number": admission.mlc_number,
+        "mlc_type": admission.mlc_type,
+        "police_station_informed": admission.police_station_informed,
+        "mlc_informed_at": admission.mlc_informed_at.strftime("%d/%m/%Y %H:%M") if admission.mlc_informed_at else "",
+        "admission_number": admission.admission_number,
+        "admission_date": admission.admission_date.strftime("%d/%m/%Y %H:%M") if admission.admission_date else "",
+        "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "",
+        "age": _patient_age(patient) or "",
+        "gender": patient.gender if patient else "",
+        "phone": patient.primary_phone if patient else "",
+        "address": addr,
+        "brought_by": admission.emergency_contact or "",
+        "arrival_mode": admission.arrival_mode or "",
+        "ambulance_details": admission.ambulance_details or "",
+        "chief_complaint": admission.chief_complaint or admission.admission_reason or "",
+        "doctor_name": f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else "",
+    }
+    pdf_buffer = pdf_service.generate_mlc_register_pdf(mlc_data, hospital_info, include_header=include_header)
+    return StreamingResponse(
+        pdf_buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"inline; filename=MLC_{admission.admission_number}.pdf"},
+    )
 
 
 @router.put("/admissions/{admission_id}/discharge/mortality")
@@ -5746,6 +7738,503 @@ async def list_mortality(
             "death_certificate_number": d.death_certificate_number,
         })
     return result
+
+
+# ============================================================
+# E2 — Monthly outcomes (mortality + readmission + LOS + occupancy)
+# ============================================================
+
+def _age_band(age):
+    """Bucket an age (years) into NABH-friendly bands. Returns 'unknown' if None."""
+    if age is None:
+        return "unknown"
+    try:
+        a = int(age)
+    except (ValueError, TypeError):
+        return "unknown"
+    if a < 1:
+        return "<1"
+    if a <= 14:
+        return "1-14"
+    if a <= 30:
+        return "15-30"
+    if a <= 45:
+        return "31-45"
+    if a <= 60:
+        return "46-60"
+    if a <= 75:
+        return "61-75"
+    return ">75"
+
+
+def _month_window(month_str: Optional[str]):
+    """Resolve a 'YYYY-MM' string (or None → previous completed month) to a
+    naive [start, end_exclusive) datetime tuple."""
+    today = date.today()
+    if month_str:
+        try:
+            year, mo = map(int, month_str.split("-"))
+        except Exception:
+            raise HTTPException(status_code=400, detail="month must be YYYY-MM")
+        if not (1 <= mo <= 12) or year < 1900:
+            raise HTTPException(status_code=400, detail="invalid month")
+    else:
+        # Previous completed month
+        first_of_this = today.replace(day=1)
+        from datetime import timedelta as _td
+        last_of_prev = first_of_this - _td(days=1)
+        year, mo = last_of_prev.year, last_of_prev.month
+
+    start = datetime.combine(date(year, mo, 1), datetime.min.time())
+    if mo == 12:
+        end_exclusive = datetime.combine(date(year + 1, 1, 1), datetime.min.time())
+    else:
+        end_exclusive = datetime.combine(date(year, mo + 1, 1), datetime.min.time())
+    return start, end_exclusive, year, mo
+
+
+def _build_monthly_outcomes(db: Session, month_str: Optional[str]) -> dict:
+    start, end_exclusive, year, mo = _month_window(month_str)
+
+    # ---- Mortality ----
+    deaths = db.query(DischargeRecord).join(
+        Admission, Admission.id == DischargeRecord.admission_id,
+    ).filter(
+        DischargeRecord.discharge_type == "death",
+        DischargeRecord.discharge_date >= start,
+        DischargeRecord.discharge_date < end_exclusive,
+    ).all()
+
+    death_total = len(deaths)
+    death_by_dept = {}
+    death_by_diagnosis = {}
+    death_by_age_band = {}
+    death_by_gender = {}
+    mlc_count = 0
+    autopsy_count = 0
+    for d in deaths:
+        adm = db.query(Admission).filter(Admission.id == d.admission_id).first()
+        patient = db.query(Patient).filter(Patient.id == adm.patient_id).first() if adm else None
+        room = db.query(RoomManagement).filter(RoomManagement.id == adm.room_id).first() if adm else None
+        dept = (room.department if room else None) or "—"
+        death_by_dept[dept] = death_by_dept.get(dept, 0) + 1
+        diag = (d.diagnosis_on_discharge or d.cause_of_death or "Unknown").strip()[:80]
+        death_by_diagnosis[diag] = death_by_diagnosis.get(diag, 0) + 1
+        band = _age_band(_patient_age(patient))
+        death_by_age_band[band] = death_by_age_band.get(band, 0) + 1
+        g = (patient.gender if patient else None) or "unknown"
+        death_by_gender[g] = death_by_gender.get(g, 0) + 1
+        if d.mlc_required:
+            mlc_count += 1
+        if d.autopsy_done:
+            autopsy_count += 1
+
+    # ---- All discharges in the window — denominator for mortality rate + LOS stats ----
+    discharges = db.query(DischargeRecord).join(
+        Admission, Admission.id == DischargeRecord.admission_id,
+    ).filter(
+        DischargeRecord.discharge_date >= start,
+        DischargeRecord.discharge_date < end_exclusive,
+    ).all()
+    discharge_total = len(discharges)
+
+    los_per_dept = {}      # dept → list of stay_days
+    overall_los = []
+    for d in discharges:
+        if d.total_stay_days is None:
+            continue
+        overall_los.append(d.total_stay_days)
+        adm = db.query(Admission).filter(Admission.id == d.admission_id).first()
+        room = db.query(RoomManagement).filter(RoomManagement.id == adm.room_id).first() if adm else None
+        dept = (room.department if room else None) or "—"
+        los_per_dept.setdefault(dept, []).append(d.total_stay_days)
+
+    def _stats(xs):
+        if not xs:
+            return {"count": 0, "mean": None, "median": None, "min": None, "max": None}
+        s = sorted(xs)
+        n = len(s)
+        return {
+            "count": n,
+            "mean": round(sum(s) / n, 1),
+            "median": s[n // 2] if n % 2 else round((s[n // 2 - 1] + s[n // 2]) / 2, 1),
+            "min": s[0],
+            "max": s[-1],
+        }
+
+    los_overall = _stats(overall_los)
+    los_by_dept = {dept: _stats(xs) for dept, xs in los_per_dept.items()}
+
+    # ---- Readmissions: admissions in this window flagged as readmission ----
+    readmissions = db.query(Admission).filter(
+        Admission.is_readmission == True,
+        Admission.admission_date >= start,
+        Admission.admission_date < end_exclusive,
+    ).all()
+    readmission_total = len(readmissions)
+    readmission_buckets = {"<=7": 0, "8-15": 0, "16-30": 0, ">30": 0}
+    readmission_by_dept = {}
+    readmission_by_diagnosis = {}
+    for a in readmissions:
+        days = a.days_since_last_discharge
+        if days is None:
+            continue
+        if days <= 7:
+            readmission_buckets["<=7"] += 1
+        elif days <= 15:
+            readmission_buckets["8-15"] += 1
+        elif days <= 30:
+            readmission_buckets["16-30"] += 1
+        else:
+            readmission_buckets[">30"] += 1
+        room = db.query(RoomManagement).filter(RoomManagement.id == a.room_id).first()
+        dept = (room.department if room else None) or "—"
+        readmission_by_dept[dept] = readmission_by_dept.get(dept, 0) + 1
+        # Diagnosis at the prior discharge if available
+        if a.previous_admission_id:
+            prev_disch = db.query(DischargeRecord).filter(
+                DischargeRecord.admission_id == a.previous_admission_id
+            ).first()
+            if prev_disch and prev_disch.diagnosis_on_discharge:
+                diag = prev_disch.diagnosis_on_discharge.strip()[:80]
+                readmission_by_diagnosis[diag] = readmission_by_diagnosis.get(diag, 0) + 1
+
+    # Total admissions in the month — denominator for readmission rate
+    admissions_in_month = db.query(Admission).filter(
+        Admission.admission_date >= start,
+        Admission.admission_date < end_exclusive,
+    ).count()
+
+    # ---- Occupancy: average daily occupied beds across the month ----
+    # For each day in window, count admissions whose admission_date <= day < discharge_date
+    # (or still admitted). Cap at total beds for sanity.
+    from datetime import timedelta as _td
+    total_beds = sum(r.bed_count or 0 for r in db.query(RoomManagement).filter(
+        RoomManagement.is_active == True
+    ).all())
+    occupancy_samples = []
+    cur = start
+    while cur < end_exclusive:
+        next_day = cur + _td(days=1)
+        occupied = db.query(Admission).filter(
+            Admission.admission_date < next_day,
+        ).count() - db.query(Admission).join(
+            DischargeRecord, DischargeRecord.admission_id == Admission.id,
+        ).filter(
+            DischargeRecord.discharge_date < cur,
+        ).count()
+        occupancy_samples.append(min(max(occupied, 0), total_beds) if total_beds else max(occupied, 0))
+        cur = next_day
+    avg_occupancy = (sum(occupancy_samples) / len(occupancy_samples)) if occupancy_samples else 0
+    occupancy_pct = (avg_occupancy * 100 / total_beds) if total_beds else 0
+
+    return {
+        "month": f"{year:04d}-{mo:02d}",
+        "window": {"start": start.isoformat(), "end_exclusive": end_exclusive.isoformat()},
+        "totals": {
+            "admissions": admissions_in_month,
+            "discharges": discharge_total,
+            "deaths": death_total,
+            "readmissions": readmission_total,
+            "mortality_rate_pct": round(death_total * 100 / discharge_total, 2) if discharge_total else 0,
+            "readmission_rate_pct": round(readmission_total * 100 / admissions_in_month, 2) if admissions_in_month else 0,
+            "average_daily_occupancy": round(avg_occupancy, 1),
+            "average_occupancy_pct": round(occupancy_pct, 1),
+        },
+        "mortality": {
+            "by_department": death_by_dept,
+            "by_diagnosis_top10": dict(sorted(death_by_diagnosis.items(), key=lambda x: -x[1])[:10]),
+            "by_age_band": death_by_age_band,
+            "by_gender": death_by_gender,
+            "mlc_count": mlc_count,
+            "autopsy_count": autopsy_count,
+        },
+        "readmissions": {
+            "by_window_days": readmission_buckets,
+            "by_department": readmission_by_dept,
+            "by_diagnosis_top10": dict(sorted(readmission_by_diagnosis.items(), key=lambda x: -x[1])[:10]),
+        },
+        "length_of_stay": {
+            "overall": los_overall,
+            "by_department": los_by_dept,
+        },
+    }
+
+
+@router.get("/reports/monthly-outcomes")
+async def get_monthly_outcomes(
+    month: Optional[str] = Query(default=None, description="YYYY-MM; defaults to last completed month"),
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_mortality")),
+    db: Session = Depends(get_db),
+):
+    """Aggregated mortality + readmission + LOS + occupancy for a calendar month.
+    Defaults to the last completed month so the report is reproducible."""
+    return _build_monthly_outcomes(db, month)
+
+
+@router.get("/reports/monthly-outcomes/pdf")
+async def get_monthly_outcomes_pdf(
+    month: Optional[str] = Query(default=None),
+    include_header: bool = True,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_mortality")),
+    db: Session = Depends(get_db),
+):
+    payload = _build_monthly_outcomes(db, month)
+    hospital = _get_hospital(db, current_user)
+    hospital_info = {
+        "name": hospital.name, "address": hospital.address or "",
+        "phone": hospital.phone or "", "email": hospital.email or "",
+        "logo_url": getattr(hospital, "logo_url", "") or "",
+        "hospital_subname": getattr(hospital, "hospital_subname", "") or "",
+    }
+    pdf_buffer = pdf_service.generate_monthly_outcomes_pdf(payload, hospital_info, include_header=include_header)
+    return StreamingResponse(
+        pdf_buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"inline; filename=outcomes_{payload['month']}.pdf"},
+    )
+
+
+# ============================================================
+# E3 — Doctor productivity report
+# ============================================================
+
+def _build_doctor_productivity(db: Session, date_from: date, date_to: date,
+                               doctor_id: Optional[int]) -> dict:
+    """Per-doctor breakdown over [date_from, date_to] inclusive.
+    If doctor_id is given, returns one row; else returns rows for every doctor
+    that has any activity in the window."""
+    from datetime import timedelta as _td
+    start = datetime.combine(date_from, datetime.min.time())
+    end_exclusive = datetime.combine(date_to, datetime.min.time()) + _td(days=1)
+
+    # Collect candidate doctor ids: any user touching admissions/visits/OT in the window.
+    if doctor_id:
+        doctor_ids = {doctor_id}
+    else:
+        doctor_ids = set()
+        for row in db.query(Admission.admitting_doctor_id).filter(
+            Admission.admission_date >= start,
+            Admission.admission_date < end_exclusive,
+        ).all():
+            if row[0]:
+                doctor_ids.add(row[0])
+        for row in db.query(PatientVisit.visitor_id).filter(
+            PatientVisit.visit_datetime >= start,
+            PatientVisit.visit_datetime < end_exclusive,
+            PatientVisit.visit_type == "doctor_visit",
+        ).all():
+            if row[0]:
+                doctor_ids.add(row[0])
+        for row in db.query(OTSchedule.surgeon_id).filter(
+            OTSchedule.scheduled_date >= start,
+            OTSchedule.scheduled_date < end_exclusive,
+        ).all():
+            if row[0]:
+                doctor_ids.add(row[0])
+        for row in db.query(OTSchedule.anaesthetist_id).filter(
+            OTSchedule.scheduled_date >= start,
+            OTSchedule.scheduled_date < end_exclusive,
+        ).all():
+            if row[0]:
+                doctor_ids.add(row[0])
+
+    rows = []
+    for did in sorted(doctor_ids):
+        doc = db.query(User).filter(User.id == did).first()
+        if not doc:
+            continue
+
+        # Admissions where this doctor was admitting in the window
+        admissions_q = db.query(Admission).filter(
+            Admission.admitting_doctor_id == did,
+            Admission.admission_date >= start,
+            Admission.admission_date < end_exclusive,
+        )
+        admissions_count = admissions_q.count()
+
+        # Discharges in the window where this doctor was the admitting doctor
+        # (regardless of when admitted)
+        discharges_in_window = db.query(DischargeRecord).join(
+            Admission, Admission.id == DischargeRecord.admission_id,
+        ).filter(
+            Admission.admitting_doctor_id == did,
+            DischargeRecord.discharge_date >= start,
+            DischargeRecord.discharge_date < end_exclusive,
+        ).all()
+        discharges_count = len(discharges_in_window)
+
+        # Mortality + readmissions among those discharges
+        mortality_count = sum(1 for d in discharges_in_window if d.discharge_type == "death")
+        # Readmission count: admissions in the window where prior admission's
+        # admitting_doctor was this doctor.
+        readmissions = db.query(Admission).filter(
+            Admission.is_readmission == True,
+            Admission.admission_date >= start,
+            Admission.admission_date < end_exclusive,
+            Admission.previous_admission_id.isnot(None),
+        ).all()
+        readmission_count = 0
+        for r in readmissions:
+            prev = db.query(Admission).filter(Admission.id == r.previous_admission_id).first()
+            if prev and prev.admitting_doctor_id == did:
+                readmission_count += 1
+
+        # OT cases — surgeon vs anaesthetist split
+        surgeon_ot_count = db.query(OTSchedule).filter(
+            OTSchedule.surgeon_id == did,
+            OTSchedule.scheduled_date >= start,
+            OTSchedule.scheduled_date < end_exclusive,
+        ).count()
+        anaesthetist_ot_count = db.query(OTSchedule).filter(
+            OTSchedule.anaesthetist_id == did,
+            OTSchedule.scheduled_date >= start,
+            OTSchedule.scheduled_date < end_exclusive,
+        ).count()
+
+        # Visits in the window
+        visits = db.query(PatientVisit).filter(
+            PatientVisit.visitor_id == did,
+            PatientVisit.visit_datetime >= start,
+            PatientVisit.visit_datetime < end_exclusive,
+        ).all()
+        visits_count = len(visits)
+        visits_billed_total = sum(float(v.charge_amount or 0) for v in visits)
+
+        # OT fees attributable to this doctor
+        ot_surgeon_fees = sum(
+            float(o.surgeon_fee or 0)
+            for o in db.query(OTSchedule).filter(
+                OTSchedule.surgeon_id == did,
+                OTSchedule.scheduled_date >= start,
+                OTSchedule.scheduled_date < end_exclusive,
+                OTSchedule.status == "completed",
+            ).all()
+        )
+        ot_anaesthetist_fees = sum(
+            float(o.anaesthetist_fee or 0)
+            for o in db.query(OTSchedule).filter(
+                OTSchedule.anaesthetist_id == did,
+                OTSchedule.scheduled_date >= start,
+                OTSchedule.scheduled_date < end_exclusive,
+                OTSchedule.status == "completed",
+            ).all()
+        )
+
+        # Average LOS for this doctor's discharged-in-window patients
+        los_values = [d.total_stay_days for d in discharges_in_window if d.total_stay_days is not None]
+        avg_los = round(sum(los_values) / len(los_values), 1) if los_values else None
+
+        rows.append({
+            "doctor_id": did,
+            "doctor_name": f"Dr. {doc.first_name} {doc.last_name}",
+            "admissions": admissions_count,
+            "discharges": discharges_count,
+            "deaths": mortality_count,
+            "readmissions_30d": readmission_count,
+            "ot_as_surgeon": surgeon_ot_count,
+            "ot_as_anaesthetist": anaesthetist_ot_count,
+            "visits": visits_count,
+            "average_los_days": avg_los,
+            "visit_fees_billed": round(visits_billed_total, 2),
+            "ot_surgeon_fees": round(ot_surgeon_fees, 2),
+            "ot_anaesthetist_fees": round(ot_anaesthetist_fees, 2),
+            "total_billed_attributable": round(visits_billed_total + ot_surgeon_fees + ot_anaesthetist_fees, 2),
+        })
+
+    rows.sort(key=lambda x: -x["total_billed_attributable"])
+
+    return {
+        "date_from": date_from.isoformat(),
+        "date_to": date_to.isoformat(),
+        "doctor_count": len(rows),
+        "rows": rows,
+    }
+
+
+def _validate_date_range(date_from: date, date_to: date):
+    if date_to < date_from:
+        raise HTTPException(status_code=400, detail="date_to must be on or after date_from")
+    from datetime import timedelta as _td
+    if (date_to - date_from) > _td(days=366):
+        raise HTTPException(status_code=400, detail="Date range cannot exceed 366 days")
+
+
+@router.get("/reports/doctor-productivity")
+async def get_doctor_productivity(
+    date_from: date = Query(...),
+    date_to: date = Query(...),
+    doctor_id: Optional[int] = Query(default=None),
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
+    db: Session = Depends(get_db),
+):
+    """Per-doctor breakdown of admissions, discharges, OT cases, visits,
+    LOS, mortality, readmissions, and total fees attributable.
+
+    Note on attribution: total_billed_attributable = sum of this doctor's
+    PatientVisit.charge_amount + their OTSchedule.surgeon_fee (for OTs they
+    led) + their OTSchedule.anaesthetist_fee. Outpatient consultation fees
+    are NOT included (separate module). Doctors who only consulted on a
+    case via PatientVisit get credit for those visit charges only."""
+    _validate_date_range(date_from, date_to)
+    return _build_doctor_productivity(db, date_from, date_to, doctor_id)
+
+
+@router.get("/reports/doctor-productivity/csv")
+async def get_doctor_productivity_csv(
+    date_from: date = Query(...),
+    date_to: date = Query(...),
+    doctor_id: Optional[int] = Query(default=None),
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
+    db: Session = Depends(get_db),
+):
+    """CSV export of doctor productivity for revenue-share spreadsheet imports."""
+    import csv as _csv
+    _validate_date_range(date_from, date_to)
+    payload = _build_doctor_productivity(db, date_from, date_to, doctor_id)
+
+    out = io.StringIO()
+    cols = ["doctor_id", "doctor_name", "admissions", "discharges", "deaths",
+            "readmissions_30d", "ot_as_surgeon", "ot_as_anaesthetist",
+            "visits", "average_los_days", "visit_fees_billed",
+            "ot_surgeon_fees", "ot_anaesthetist_fees", "total_billed_attributable"]
+    w = _csv.DictWriter(out, fieldnames=cols)
+    w.writeheader()
+    for r in payload["rows"]:
+        w.writerow(r)
+
+    body = out.getvalue().encode("utf-8")
+    return StreamingResponse(
+        io.BytesIO(body),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=doctor_productivity_{date_from}_{date_to}.csv"},
+    )
+
+
+@router.get("/reports/doctor-productivity/pdf")
+async def get_doctor_productivity_pdf(
+    date_from: date = Query(...),
+    date_to: date = Query(...),
+    doctor_id: Optional[int] = Query(default=None),
+    include_header: bool = True,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
+    db: Session = Depends(get_db),
+):
+    _validate_date_range(date_from, date_to)
+    payload = _build_doctor_productivity(db, date_from, date_to, doctor_id)
+    hospital = _get_hospital(db, current_user)
+    hospital_info = {
+        "name": hospital.name, "address": hospital.address or "",
+        "phone": hospital.phone or "", "email": hospital.email or "",
+        "logo_url": getattr(hospital, "logo_url", "") or "",
+        "hospital_subname": getattr(hospital, "hospital_subname", "") or "",
+    }
+    pdf_buffer = pdf_service.generate_doctor_productivity_pdf(payload, hospital_info, include_header=include_header)
+    return StreamingResponse(
+        pdf_buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"inline; filename=doctor_productivity_{date_from}_{date_to}.pdf"},
+    )
 
 
 @router.get("/admissions/{admission_id}/death-certificate/pdf")
@@ -5866,7 +8355,7 @@ async def record_io(
         admission_id=admission_id,
         patient_id=admission.patient_id,
         recorded_by_id=current_user.id,
-        recorded_at=data.recorded_at or datetime.utcnow(),
+        recorded_at=data.recorded_at or _now_utc(),
         shift=data.shift,
         io_type=data.io_type,
         category=data.category,
@@ -5909,7 +8398,7 @@ async def io_balance_summary(
     """Return per-shift totals and running 24h balance for the given date (defaults to today in UTC)."""
     from datetime import timedelta
     # Default: use UTC today, since I/O entries are stored with utcnow()
-    day = target_date or datetime.utcnow().date()
+    day = target_date or _now_utc().date()
     day_start = datetime.combine(day, datetime.min.time())
     rows = db.query(FluidBalance).filter(
         FluidBalance.admission_id == admission_id,
@@ -6122,7 +8611,7 @@ async def acknowledge_critical_alert(
     if a.status in ("addressed",):
         raise HTTPException(status_code=409, detail="Alert already addressed")
     a.acknowledged_by_id = current_user.id
-    a.acknowledged_at = datetime.utcnow()
+    a.acknowledged_at = _now_utc()
     if data.addressed_notes:
         a.addressed_notes = data.addressed_notes
     a.status = "addressed" if data.mark_addressed else "acknowledged"
@@ -6507,3 +8996,250 @@ async def delete_roster_entry(
         raise HTTPException(status_code=404, detail="Roster entry not found")
     db.delete(entry)
     db.commit()
+
+
+# ============================================================
+# B6 — Body release / mortuary / post-mortem coordination
+# ============================================================
+
+class BodyReleaseUpsert(BaseModel):
+    mortuary_slot: Optional[str] = Field(default=None, max_length=20)
+    body_in_mortuary_at: Optional[datetime] = None
+    body_out_mortuary_at: Optional[datetime] = None
+    embalming_done: Optional[bool] = None
+    embalming_at: Optional[datetime] = None
+    embalmed_by: Optional[str] = Field(default=None, max_length=200)
+    post_mortem_required: Optional[bool] = None
+    pm_hospital: Optional[str] = Field(default=None, max_length=200)
+    pm_doctor: Optional[str] = Field(default=None, max_length=200)
+    pm_referred_at: Optional[datetime] = None
+    pm_completed_at: Optional[datetime] = None
+    pm_report_received: Optional[bool] = None
+    pm_report_number: Optional[str] = Field(default=None, max_length=100)
+    police_noc_required: Optional[bool] = None
+    police_noc_received: Optional[bool] = None
+    police_noc_number: Optional[str] = Field(default=None, max_length=100)
+    police_noc_received_at: Optional[datetime] = None
+    notes: Optional[str] = None
+
+
+class BodyReleaseAction(BaseModel):
+    """Final-release payload — requires release-to identity + witness."""
+    released_to_name: str = Field(..., min_length=1, max_length=200)
+    released_to_relationship: str = Field(..., min_length=1, max_length=50)
+    released_to_phone: Optional[str] = Field(default=None, max_length=20)
+    released_to_id_proof_type: str = Field(..., pattern="^(aadhar|voter|license|passport|other)$")
+    released_to_id_proof_number: str = Field(..., min_length=1, max_length=50)
+    released_to_address: Optional[str] = None
+    witness_name: str = Field(..., min_length=1, max_length=200)
+    witness_phone: Optional[str] = Field(default=None, max_length=20)
+    witness_id_proof: Optional[str] = Field(default=None, max_length=100)
+    transport_details: Optional[str] = None
+    notes: Optional[str] = None
+    # Override flags for missing prerequisites (audit-logged)
+    force_missing_noc: bool = False
+    force_missing_pm: bool = False
+    override_reason: Optional[str] = None
+
+
+def _body_release_to_response(rec: BodyReleaseRecord) -> dict:
+    return {c.name: getattr(rec, c.name) for c in rec.__table__.columns}
+
+
+def _get_or_create_body_release(db: Session, admission: Admission) -> BodyReleaseRecord:
+    rec = db.query(BodyReleaseRecord).filter(BodyReleaseRecord.admission_id == admission.id).first()
+    if rec:
+        return rec
+    if not admission.discharge or admission.discharge.discharge_type != "death":
+        raise HTTPException(status_code=400, detail="Not a mortality discharge — body release does not apply")
+    # Pre-fill defaults from admission/discharge: MLC ⇒ NOC required and PM typically required.
+    pm_required = bool(admission.is_mlc)
+    rec = BodyReleaseRecord(
+        admission_id=admission.id,
+        discharge_id=admission.discharge.id,
+        body_in_mortuary_at=admission.discharge.discharge_date or datetime.now(),
+        post_mortem_required=pm_required,
+        police_noc_required=bool(admission.is_mlc),
+    )
+    db.add(rec)
+    db.flush()
+    return rec
+
+
+@router.get("/admissions/{admission_id}/body-release")
+async def get_body_release(
+    admission_id: int,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_mortality")),
+    db: Session = Depends(get_db),
+):
+    admission = db.query(Admission).options(joinedload(Admission.discharge)).filter(
+        Admission.id == admission_id
+    ).first()
+    if not admission:
+        raise HTTPException(status_code=404, detail="Admission not found")
+    rec = _get_or_create_body_release(db, admission)
+    db.commit()
+    return _body_release_to_response(rec)
+
+
+@router.put("/admissions/{admission_id}/body-release")
+async def update_body_release(
+    admission_id: int,
+    data: BodyReleaseUpsert,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "record_mortality")),
+    db: Session = Depends(get_db),
+):
+    admission = db.query(Admission).options(joinedload(Admission.discharge)).filter(
+        Admission.id == admission_id
+    ).first()
+    if not admission:
+        raise HTTPException(status_code=404, detail="Admission not found")
+    rec = _get_or_create_body_release(db, admission)
+    if rec.body_released:
+        raise HTTPException(status_code=400, detail="Body already released — record is locked")
+
+    payload = data.model_dump(exclude_unset=True)
+    # Auto-stamp timestamps when boolean is toggled true without explicit time
+    if payload.get("embalming_done") and not payload.get("embalming_at") and not rec.embalming_at:
+        payload["embalming_at"] = datetime.now()
+    if payload.get("police_noc_received") and not payload.get("police_noc_received_at") and not rec.police_noc_received_at:
+        payload["police_noc_received_at"] = datetime.now()
+    if payload.get("pm_report_received") and not payload.get("pm_completed_at") and not rec.pm_completed_at:
+        payload["pm_completed_at"] = datetime.now()
+
+    for k, v in payload.items():
+        setattr(rec, k, v)
+    db.commit()
+    log_action(db, current_user, "update_body_release", "inpatient", "BodyReleaseRecord", str(rec.id),
+               f"Updated body release for admission {admission.admission_number}", payload)
+    return _body_release_to_response(rec)
+
+
+@router.post("/admissions/{admission_id}/body-release/release")
+async def release_body(
+    admission_id: int,
+    data: BodyReleaseAction,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "record_mortality")),
+    db: Session = Depends(get_db),
+):
+    admission = db.query(Admission).options(joinedload(Admission.discharge)).filter(
+        Admission.id == admission_id
+    ).first()
+    if not admission:
+        raise HTTPException(status_code=404, detail="Admission not found")
+    rec = _get_or_create_body_release(db, admission)
+    if rec.body_released:
+        raise HTTPException(status_code=400, detail="Body already released")
+
+    forced = []
+    # Gate 1: Police NOC required + not received → block unless forced.
+    if rec.police_noc_required and not rec.police_noc_received:
+        if not data.force_missing_noc:
+            raise HTTPException(status_code=409, detail={
+                "code": "missing_police_noc",
+                "message": "Police NOC is required for MLC body release. Receive NOC or set force_missing_noc=true with override_reason.",
+            })
+        forced.append("missing_police_noc")
+    # Gate 2: Post-mortem required + not completed → block unless forced.
+    if rec.post_mortem_required and not rec.pm_completed_at:
+        if not data.force_missing_pm:
+            raise HTTPException(status_code=409, detail={
+                "code": "missing_pm",
+                "message": "Post-mortem is required for this case. Complete PM or set force_missing_pm=true with override_reason.",
+            })
+        forced.append("missing_pm")
+    if forced and not (data.override_reason and data.override_reason.strip()):
+        raise HTTPException(status_code=400, detail="override_reason is required when forcing release without prerequisites")
+
+    rec.released_to_name = data.released_to_name.strip()
+    rec.released_to_relationship = data.released_to_relationship.strip()
+    rec.released_to_phone = data.released_to_phone
+    rec.released_to_id_proof_type = data.released_to_id_proof_type
+    rec.released_to_id_proof_number = data.released_to_id_proof_number.strip()
+    rec.released_to_address = data.released_to_address
+    rec.witness_name = data.witness_name.strip()
+    rec.witness_phone = data.witness_phone
+    rec.witness_id_proof = data.witness_id_proof
+    rec.transport_details = data.transport_details
+    if data.notes:
+        rec.notes = (rec.notes + "\n" if rec.notes else "") + data.notes
+    rec.body_released = True
+    rec.body_released_at = datetime.now()
+    rec.body_out_mortuary_at = rec.body_out_mortuary_at or rec.body_released_at
+    rec.released_by_id = current_user.id
+    db.commit()
+    log_action(db, current_user, "release_body", "inpatient", "BodyReleaseRecord", str(rec.id),
+               f"Body released for admission {admission.admission_number}",
+               {"forced_gates": forced, "override_reason": data.override_reason,
+                "released_to": rec.released_to_name, "relationship": rec.released_to_relationship})
+    return _body_release_to_response(rec)
+
+
+@router.get("/admissions/{admission_id}/body-release/pdf")
+async def get_body_release_pdf(
+    admission_id: int,
+    include_header: bool = True,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_mortality")),
+    db: Session = Depends(get_db),
+):
+    admission = db.query(Admission).options(joinedload(Admission.discharge)).filter(
+        Admission.id == admission_id
+    ).first()
+    if not admission:
+        raise HTTPException(status_code=404, detail="Admission not found")
+    rec = db.query(BodyReleaseRecord).filter(BodyReleaseRecord.admission_id == admission_id).first()
+    if not rec:
+        raise HTTPException(status_code=404, detail="No body release record")
+    patient = db.query(Patient).filter(Patient.id == admission.patient_id).first()
+    doctor = db.query(User).filter(User.id == admission.admitting_doctor_id).first()
+    hospital = _get_hospital(db, current_user)
+    hospital_info = {
+        "name": hospital.name, "address": hospital.address or "",
+        "phone": hospital.phone or "", "email": hospital.email or "",
+        "logo_url": getattr(hospital, "logo_url", "") or "",
+        "hospital_subname": getattr(hospital, "hospital_subname", "") or "",
+    }
+    discharge = admission.discharge
+    rel_data = {
+        "admission_number": admission.admission_number,
+        "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "",
+        "patient_id": patient.patient_id if patient else "",
+        "age": _patient_age(patient) or "",
+        "gender": patient.gender if patient else "",
+        "doctor_name": f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else "",
+        "death_date": discharge.discharge_date.strftime("%d/%m/%Y %H:%M") if discharge and discharge.discharge_date else "",
+        "is_mlc": admission.is_mlc,
+        "mlc_number": admission.mlc_number or "",
+        "mortuary_slot": rec.mortuary_slot or "",
+        "body_in_at": rec.body_in_mortuary_at.strftime("%d/%m/%Y %H:%M") if rec.body_in_mortuary_at else "",
+        "body_out_at": rec.body_out_mortuary_at.strftime("%d/%m/%Y %H:%M") if rec.body_out_mortuary_at else "",
+        "embalming_done": rec.embalming_done,
+        "embalmed_by": rec.embalmed_by or "",
+        "embalming_at": rec.embalming_at.strftime("%d/%m/%Y %H:%M") if rec.embalming_at else "",
+        "post_mortem_required": rec.post_mortem_required,
+        "pm_hospital": rec.pm_hospital or "",
+        "pm_doctor": rec.pm_doctor or "",
+        "pm_completed_at": rec.pm_completed_at.strftime("%d/%m/%Y %H:%M") if rec.pm_completed_at else "",
+        "pm_report_number": rec.pm_report_number or "",
+        "police_noc_received": rec.police_noc_received,
+        "police_noc_number": rec.police_noc_number or "",
+        "police_noc_received_at": rec.police_noc_received_at.strftime("%d/%m/%Y %H:%M") if rec.police_noc_received_at else "",
+        "body_released_at": rec.body_released_at.strftime("%d/%m/%Y %H:%M") if rec.body_released_at else "",
+        "released_to_name": rec.released_to_name or "",
+        "released_to_relationship": rec.released_to_relationship or "",
+        "released_to_phone": rec.released_to_phone or "",
+        "released_to_id_proof_type": rec.released_to_id_proof_type or "",
+        "released_to_id_proof_number": rec.released_to_id_proof_number or "",
+        "released_to_address": rec.released_to_address or "",
+        "witness_name": rec.witness_name or "",
+        "witness_phone": rec.witness_phone or "",
+        "witness_id_proof": rec.witness_id_proof or "",
+        "transport_details": rec.transport_details or "",
+        "notes": rec.notes or "",
+    }
+    pdf_buffer = pdf_service.generate_body_release_pdf(rel_data, hospital_info, include_header=include_header)
+    return StreamingResponse(
+        pdf_buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"inline; filename=BodyRelease_{admission.admission_number}.pdf"},
+    )

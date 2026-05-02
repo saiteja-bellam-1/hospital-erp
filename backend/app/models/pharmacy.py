@@ -33,6 +33,11 @@ class Medicine(Base):
     storage_conditions = Column(Text)
     is_active = Column(Boolean, default=True)
     requires_prescription = Column(Boolean, default=True)
+    # Patient-safety flags. Narcotics (Schedule X) require a 2nd-witness for
+    # any administration; high-alert meds (insulin, heparin, KCl) trigger
+    # additional MAR safety checks beyond the standard duplicate-dose window.
+    is_narcotic = Column(Boolean, default=False)
+    is_high_alert = Column(Boolean, default=False)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

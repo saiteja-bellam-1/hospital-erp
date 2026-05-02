@@ -38,20 +38,43 @@ def save_config(config: dict):
 def is_setup_complete():
     """
     Check if the initial setup wizard has been completed.
-    Also returns True if a database already exists (backward compatibility
-    for existing installations that pre-date the setup wizard).
+
+    Truth chain:
+      1. config.json explicitly says setup_complete=True, AND
+      2. the DB at the configured path actually contains a usable users table
+         with at least one row (sentinel-table probe).
+
+    Falling back to "DB file exists and >0 bytes" was unsafe: a half-written
+    or empty DB file would pass and the app would boot into a broken state.
+    For backward compat with pre-wizard installs (where config.json didn't
+    exist yet), the same sentinel probe at the default DB path also counts.
     """
+    import sqlite3
+
+    def _has_seeded_users(db_path: str) -> bool:
+        if not db_path or not os.path.isfile(db_path) or os.path.getsize(db_path) == 0:
+            return False
+        try:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            try:
+                cur = conn.execute("SELECT 1 FROM users LIMIT 1")
+                return cur.fetchone() is not None
+            finally:
+                conn.close()
+        except Exception:
+            return False
+
     config = load_config()
-    if config.get("setup_complete", False):
-        return True
-
-    # Backward compat: if DB file already exists, setup was done before the wizard existed
     from app.utils.paths import get_db_path
-    db_path = get_db_path()
-    if os.path.isfile(db_path) and os.path.getsize(db_path) > 0:
-        return True
 
-    return False
+    if config.get("setup_complete", False):
+        # Trust the flag only if the DB it points at is actually populated.
+        db_path = config.get("db_path") or get_db_path()
+        return _has_seeded_users(db_path)
+
+    # Backward compat: pre-wizard installs never wrote config.json, so probe
+    # the default DB path for a seeded users table.
+    return _has_seeded_users(get_db_path())
 
 
 def get_configured_db_path():
@@ -141,6 +164,12 @@ _last_mirror_sync = None
 _last_mirror_error = None
 
 
+# Per-destination mirror status — tracks last success / last failure per
+# location so the admin dashboard can show a green/red checklist instead of a
+# single global flag (item 20 of installer overhaul).
+_per_location_mirror_status: dict = {}
+
+
 def run_mirror_sync():
     """
     Sync database + uploads to all backup locations as a live mirror.
@@ -163,6 +192,10 @@ def run_mirror_sync():
     mirror_db_name = "kthealth_erp.db"
 
     for location in backup_locations:
+        loc_status = _per_location_mirror_status.setdefault(location, {
+            "last_success": None, "last_error": None, "last_attempt": None,
+        })
+        loc_status["last_attempt"] = datetime.datetime.now().isoformat()
         try:
             mirror_dir = os.path.join(location, "kthealth_erp_mirror")
             os.makedirs(mirror_dir, exist_ok=True)
@@ -180,10 +213,37 @@ def run_mirror_sync():
                 dest_uploads = os.path.join(mirror_dir, "uploads")
                 shutil.copytree(uploads_dir, dest_uploads, dirs_exist_ok=True)
 
-            _last_mirror_sync = datetime.datetime.now().isoformat()
+            now = datetime.datetime.now().isoformat()
+            _last_mirror_sync = now
             _last_mirror_error = None
+            loc_status["last_success"] = now
+            loc_status["last_error"] = None
         except Exception as e:
             _last_mirror_error = str(e)
+            loc_status["last_error"] = str(e)
+
+
+def get_per_location_status() -> dict:
+    """Per-location backup status snapshot for the admin dashboard."""
+    config = load_config()
+    out = {}
+    for loc in config.get("backup_locations", []):
+        snap = _per_location_mirror_status.get(loc, {
+            "last_success": None, "last_error": None, "last_attempt": None,
+        })
+        # Also probe writability so the operator knows the destination is alive
+        writable = False
+        try:
+            os.makedirs(loc, exist_ok=True)
+            test = os.path.join(loc, ".write_test")
+            with open(test, "w") as f:
+                f.write("t")
+            os.remove(test)
+            writable = True
+        except Exception:
+            writable = False
+        out[loc] = {**snap, "writable": writable}
+    return out
 
 
 def start_mirror_backup(interval_seconds=60):

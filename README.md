@@ -147,17 +147,78 @@ The application will be available at:
 - **Backend API**: http://localhost:8000
 - **API Documentation**: http://localhost:8000/docs
 
-## Default Login Credentials
+## First Launch — Setup Wizard
 
-After running the setup script, you can use these credentials:
+The installer no longer creates any default accounts. The first time you open
+the app in a browser (`http://localhost:3000`), the Setup Wizard runs and asks
+for your hospital details and the admin username/password you want to use. No
+hardcoded credentials ship with the product.
 
-### Super Admin
-- **Username**: `superadmin`
-- **Password**: `admin123`
+If you reset another user's password from the admin panel, that user is forced
+to choose a new password the next time they log in.
 
-### Hospital Admin (Demo Hospital)
-- **Username**: `hospitaladmin`
-- **Password**: `hospital123`
+## Upgrading In Place
+
+The Windows `.exe` distribution is designed to be replaced in place: drop the
+new `KTHEALTHERP.exe` over the old one in the install folder, double-click,
+and the launcher will:
+
+1. Detect the version bump by comparing the embedded `APP_VERSION` to
+   `data/version.txt`. Bumps are recorded in `data/.upgrade_history.json`.
+2. Boot the FastAPI server, which then runs every pending schema migration
+   under the `schema_migrations` tracker. **A failed migration aborts boot**
+   instead of silently serving a half-migrated DB — the failure is recorded
+   for the admin Diagnostics page and surfaced by the
+   `GET /api/system/health-check` endpoint.
+3. Preserve `data/` (DB, uploads, `config.json`, backups) across upgrades.
+   The Inno Setup installer also leaves `data/` untouched on uninstall and
+   asks before wiping it.
+
+For source installs: `git pull`, re-run `python3 install_and_setup.py` to
+sync deps from `requirements.lock`, then restart the backend. The same
+schema-migration runner handles the data side.
+
+To roll back: stop the app, restore `data/kthealth_erp.db` from a snapshot
+or mirror via **Dashboard → Backup Management → Restore**.
+
+## Troubleshooting
+
+**License upload says "wrong machine"** — The `.lic` file is bound to one
+machine ID. Open **Dashboard → License**, click **Generate Rebind Request**,
+send the downloaded `.rebind.json` to your vendor; they upload it to their
+License Manager and email you back a fresh `.lic` for the new machine. No
+manual data entry, signature proof verifies the request authenticity.
+
+**App won't start after an upgrade** — Migration probably failed. Check
+`data/logs/launcher.log` (also exposed via `GET /api/system/logs` once the
+backend is up) and the `schema_migrations` table in the DB. `GET
+/api/system/diagnostics` returns the migration history with error messages.
+
+**Backup destination silently stopped working** — Open **Dashboard → Backup
+Management** and look at the per-location status row. `last_error` plus a
+live `writable` probe will show which destination is dead.
+
+**Setup wizard keeps reappearing after I created the DB** — The sentinel
+check now looks for an actual seeded `users` table, not just a non-empty
+DB file. If the wizard reappears, the DB is either missing or has no user
+rows; restore from backup or re-run the wizard.
+
+**Default credentials don't work** — There aren't any. The Setup Wizard is
+the only path that creates an admin account, with the password the operator
+chose. If you've forgotten it, reset by running
+`./venv/bin/python -m app.scripts.reset_admin <username>` (TODO: not yet
+shipped — for now, restore from a backup).
+
+**Forced password change dialog won't go away** — Means the `must_change_password`
+flag is set on your user (either you were just seeded, or an admin reset
+your password). Pick a new password to clear it; the dialog disappears
+immediately on success.
+
+**Launcher fails to create a desktop shortcut on Windows** — Look at
+**Dashboard → Diagnostics** (or `GET /api/system/diagnostics`) — the
+shortcut outcome is recorded in `data/.shortcut_status.json` instead of
+being silently swallowed. Common causes: roaming profile with no Desktop
+folder, locked-down corporate machine, or PowerShell execution policy.
 
 ## Network Deployment
 

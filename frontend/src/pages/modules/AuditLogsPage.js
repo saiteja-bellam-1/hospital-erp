@@ -7,7 +7,8 @@ import { Badge } from '../../components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select';
 import axios from 'axios';
 import {
-  Search, Download, Shield, Activity, Users, Clock, ChevronLeft, ChevronRight, Settings, Loader2
+  Search, Download, Shield, Activity, Users, Clock, ChevronLeft, ChevronRight, Settings, Loader2,
+  ChevronDown, ChevronUp, X
 } from 'lucide-react';
 
 const categoryColors = {
@@ -39,6 +40,11 @@ const AuditLogsPage = () => {
   const [search, setSearch] = useState('');
   const [userFilter, setUserFilter] = useState('all');
   const [userList, setUserList] = useState([]);
+  const [actionFilter, setActionFilter] = useState('all');
+  const [resourceTypeFilter, setResourceTypeFilter] = useState('all');
+  const [resourceIdFilter, setResourceIdFilter] = useState('');
+  const [distinctValues, setDistinctValues] = useState({ categories: [], actions: [], resource_types: [] });
+  const [expandedRow, setExpandedRow] = useState(null);
 
   // Retention
   const [retention, setRetention] = useState(90);
@@ -52,6 +58,13 @@ const AuditLogsPage = () => {
     } catch {}
   };
 
+  const fetchDistinctValues = async () => {
+    try {
+      const res = await axios.get('/api/audit/distinct-values');
+      setDistinctValues(res.data || { categories: [], actions: [], resource_types: [] });
+    } catch {}
+  };
+
   const fetchLogs = useCallback(async () => {
     setLoading(true);
     try {
@@ -62,6 +75,9 @@ const AuditLogsPage = () => {
       params.set('page_size', 30);
       if (category !== 'all') params.set('category', category);
       if (userFilter !== 'all') params.set('user_id', userFilter);
+      if (actionFilter !== 'all') params.set('action', actionFilter);
+      if (resourceTypeFilter !== 'all') params.set('resource_type', resourceTypeFilter);
+      if (resourceIdFilter.trim()) params.set('resource_id', resourceIdFilter.trim());
       if (search) params.set('search', search);
 
       const res = await axios.get(`/api/audit/logs?${params}`);
@@ -70,7 +86,7 @@ const AuditLogsPage = () => {
       setTotalPages(res.data.total_pages);
     } catch {}
     finally { setLoading(false); }
-  }, [dateFrom, dateTo, category, userFilter, search, page]);
+  }, [dateFrom, dateTo, category, userFilter, actionFilter, resourceTypeFilter, resourceIdFilter, search, page]);
 
   const fetchStats = async () => {
     try {
@@ -82,7 +98,7 @@ const AuditLogsPage = () => {
   };
 
   useEffect(() => { fetchLogs(); }, [fetchLogs]);
-  useEffect(() => { fetchStats(); fetchUsers(); }, []);
+  useEffect(() => { fetchStats(); fetchUsers(); fetchDistinctValues(); }, []);
 
   const exportCSV = async () => {
     try {
@@ -91,6 +107,9 @@ const AuditLogsPage = () => {
       params.set('date_to', dateTo);
       if (category !== 'all') params.set('category', category);
       if (userFilter !== 'all') params.set('user_id', userFilter);
+      if (actionFilter !== 'all') params.set('action', actionFilter);
+      if (resourceTypeFilter !== 'all') params.set('resource_type', resourceTypeFilter);
+      if (resourceIdFilter.trim()) params.set('resource_id', resourceIdFilter.trim());
       if (search) params.set('search', search);
       const res = await axios.get(`/api/audit/logs/export?${params}`, { responseType: 'blob' });
       const url = window.URL.createObjectURL(new Blob([res.data]));
@@ -229,16 +248,40 @@ const AuditLogsPage = () => {
                 <SelectTrigger className="w-[140px] h-9"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All</SelectItem>
-                  <SelectItem value="auth">Auth</SelectItem>
-                  <SelectItem value="patient">Patient</SelectItem>
-                  <SelectItem value="appointment">Appointment</SelectItem>
-                  <SelectItem value="lab">Lab</SelectItem>
-                  <SelectItem value="prescription">Prescription</SelectItem>
-                  <SelectItem value="consultation">Consultation</SelectItem>
-                  <SelectItem value="admin">Admin</SelectItem>
-                  <SelectItem value="referral">Referral</SelectItem>
+                  {distinctValues.categories.map(c => (
+                    <SelectItem key={c} value={c} className="capitalize">{c}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
+            </div>
+            <div>
+              <Label className="text-xs">Action</Label>
+              <Select value={actionFilter} onValueChange={v => { setActionFilter(v); setPage(1); }}>
+                <SelectTrigger className="w-[160px] h-9"><SelectValue /></SelectTrigger>
+                <SelectContent className="max-h-72">
+                  <SelectItem value="all">All Actions</SelectItem>
+                  {distinctValues.actions.map(a => (
+                    <SelectItem key={a} value={a} className="capitalize">{a.replace(/_/g, ' ')}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-xs">Resource Type</Label>
+              <Select value={resourceTypeFilter} onValueChange={v => { setResourceTypeFilter(v); setPage(1); }}>
+                <SelectTrigger className="w-[160px] h-9"><SelectValue /></SelectTrigger>
+                <SelectContent className="max-h-72">
+                  <SelectItem value="all">All Types</SelectItem>
+                  {distinctValues.resource_types.map(r => (
+                    <SelectItem key={r} value={r} className="capitalize">{r.replace(/_/g, ' ')}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-xs">Resource ID</Label>
+              <Input placeholder="exact id..." value={resourceIdFilter}
+                onChange={e => { setResourceIdFilter(e.target.value); setPage(1); }} className="w-[120px] h-9" />
             </div>
             <div>
               <Label className="text-xs">User</Label>
@@ -263,6 +306,15 @@ const AuditLogsPage = () => {
               </div>
             </div>
             <p className="text-xs text-gray-400">{total} result{total !== 1 ? 's' : ''}</p>
+            {(category !== 'all' || userFilter !== 'all' || actionFilter !== 'all' || resourceTypeFilter !== 'all' || resourceIdFilter || search) && (
+              <Button variant="ghost" size="sm" className="h-9 text-xs"
+                onClick={() => {
+                  setCategory('all'); setUserFilter('all'); setActionFilter('all');
+                  setResourceTypeFilter('all'); setResourceIdFilter(''); setSearch(''); setPage(1);
+                }}>
+                <X className="h-3 w-3 mr-1" /> Clear
+              </Button>
+            )}
             <Button variant="outline" size="sm" className="h-9" onClick={exportCSV} disabled={total === 0}>
               <Download className="h-4 w-4 mr-1" /> Export CSV
             </Button>
@@ -285,32 +337,92 @@ const AuditLogsPage = () => {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b text-left text-gray-500">
+                    <th className="pb-2 pr-2 w-6"></th>
                     <th className="pb-2 pr-3">Time</th>
                     <th className="pb-2 pr-3">User</th>
                     <th className="pb-2 pr-3">Category</th>
                     <th className="pb-2 pr-3">Action</th>
+                    <th className="pb-2 pr-3">Resource</th>
                     <th className="pb-2 pr-3">Description</th>
                     <th className="pb-2">IP</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {logs.map(log => (
-                    <tr key={log.id} className="border-b hover:bg-gray-50">
-                      <td className="py-2.5 pr-3 text-xs text-gray-500 whitespace-nowrap">{formatTime(log.timestamp)}</td>
-                      <td className="py-2.5 pr-3">
-                        <p className="text-sm font-medium">{log.user_name}</p>
-                        {log.user_role && <p className="text-[10px] text-gray-400 capitalize">{log.user_role.replace('_', ' ')}</p>}
-                      </td>
-                      <td className="py-2.5 pr-3">
-                        <Badge className={`text-[10px] capitalize ${categoryColors[log.category] || 'bg-gray-100'}`}>
-                          {log.category}
-                        </Badge>
-                      </td>
-                      <td className="py-2.5 pr-3 text-xs capitalize">{log.action?.replace(/_/g, ' ')}</td>
-                      <td className="py-2.5 pr-3 text-xs text-gray-600 max-w-[300px] truncate">{log.description}</td>
-                      <td className="py-2.5 text-xs text-gray-400 font-mono">{log.ip_address}</td>
-                    </tr>
-                  ))}
+                  {logs.map(log => {
+                    const isOpen = expandedRow === log.id;
+                    let detailsObj = null;
+                    if (log.details) {
+                      try { detailsObj = JSON.parse(log.details); } catch { detailsObj = log.details; }
+                    }
+                    return (
+                      <React.Fragment key={log.id}>
+                        <tr className="border-b hover:bg-gray-50 cursor-pointer"
+                            onClick={() => setExpandedRow(isOpen ? null : log.id)}>
+                          <td className="py-2.5 pr-2 text-gray-400">
+                            {isOpen ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                          </td>
+                          <td className="py-2.5 pr-3 text-xs text-gray-500 whitespace-nowrap">{formatTime(log.timestamp)}</td>
+                          <td className="py-2.5 pr-3">
+                            <p className="text-sm font-medium">{log.user_name}</p>
+                            {log.user_role && <p className="text-[10px] text-gray-400 capitalize">{log.user_role.replace('_', ' ')}</p>}
+                          </td>
+                          <td className="py-2.5 pr-3">
+                            <Badge className={`text-[10px] capitalize ${categoryColors[log.category] || 'bg-gray-100'}`}>
+                              {log.category}
+                            </Badge>
+                          </td>
+                          <td className="py-2.5 pr-3 text-xs capitalize">{log.action?.replace(/_/g, ' ')}</td>
+                          <td className="py-2.5 pr-3 text-xs">
+                            {log.resource_type && (
+                              <>
+                                <span className="capitalize text-gray-700">{log.resource_type.replace(/_/g, ' ')}</span>
+                                {log.resource_id && <span className="text-gray-400 font-mono ml-1">#{log.resource_id}</span>}
+                              </>
+                            )}
+                          </td>
+                          <td className="py-2.5 pr-3 text-xs text-gray-600 max-w-[280px] truncate">{log.description}</td>
+                          <td className="py-2.5 text-xs text-gray-400 font-mono">{log.ip_address}</td>
+                        </tr>
+                        {isOpen && (
+                          <tr className="bg-gray-50 border-b">
+                            <td></td>
+                            <td colSpan={7} className="py-3 pr-3">
+                              <div className="space-y-2">
+                                {log.description && (
+                                  <div>
+                                    <p className="text-[10px] uppercase text-gray-400 mb-0.5">Description</p>
+                                    <p className="text-xs text-gray-700">{log.description}</p>
+                                  </div>
+                                )}
+                                {detailsObj && (
+                                  <div>
+                                    <p className="text-[10px] uppercase text-gray-400 mb-0.5">Details</p>
+                                    <pre className="text-[11px] bg-white border rounded p-2 overflow-x-auto max-h-64 font-mono text-gray-700">
+{typeof detailsObj === 'string' ? detailsObj : JSON.stringify(detailsObj, null, 2)}
+                                    </pre>
+                                  </div>
+                                )}
+                                {log.resource_type && log.resource_id && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setResourceTypeFilter(log.resource_type);
+                                      setResourceIdFilter(log.resource_id);
+                                      setPage(1);
+                                    }}
+                                    className="text-[11px] text-blue-600 hover:underline"
+                                  >
+                                    Show all activity for this {log.resource_type.replace(/_/g, ' ')} →
+                                  </button>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

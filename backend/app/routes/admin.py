@@ -624,7 +624,9 @@ async def reset_user_password(
     if 'super_admin' in user_roles and not any(r in current_user.role_names for r in ['super_admin']):
         raise HTTPException(status_code=403, detail="Only super admin can reset another super admin's password")
 
-    user.hashed_password = get_password_hash(data.new_password)
+    user.password_hash = get_password_hash(data.new_password)
+    # Force the recipient to choose their own password on next login
+    user.must_change_password = True
     db.commit()
 
     try:
@@ -861,6 +863,43 @@ class RolePermissionsResponse(BaseModel):
 class RolePermissionsUpdate(BaseModel):
     module_name: str
     permissions: List[str]
+
+
+@router.get("/me/permissions")
+async def get_my_permissions(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Effective permissions for the current user, grouped by module.
+
+    Used by the frontend to gate UI elements (hide/disable buttons the user
+    can't act on). Super_admin and hospital_admin get a wildcard `["*"]`
+    against every module, mirroring the bypass that
+    `require_feature_permission` and `require_permission` honour.
+    """
+    from app.models.permissions import RoleModulePermission
+    from app.utils.auth import UserRoles
+    user_roles = set(current_user.role_names)
+    if {UserRoles.SUPER_ADMIN, UserRoles.HOSPITAL_ADMIN} & user_roles:
+        return {"is_admin": True, "roles": list(user_roles), "modules": {"*": ["*"]}}
+
+    role_ids = [r.id for r in (current_user.roles or [])]
+    if current_user.role_id and current_user.role_id not in role_ids:
+        role_ids.append(current_user.role_id)
+
+    grants = db.query(RoleModulePermission).filter(
+        RoleModulePermission.role_id.in_(role_ids)
+    ).all()
+    modules: dict[str, set[str]] = {}
+    for g in grants:
+        if not g.permissions:
+            continue
+        modules.setdefault(g.module_name, set()).update(g.permissions)
+    return {
+        "is_admin": False,
+        "roles": list(user_roles),
+        "modules": {m: sorted(perms) for m, perms in modules.items()},
+    }
 
 
 @router.get("/module-permissions", response_model=List[ModulePermissionResponse])

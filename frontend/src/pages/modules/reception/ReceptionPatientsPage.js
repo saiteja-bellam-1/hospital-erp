@@ -754,7 +754,7 @@ const ReceptionPatientsPage = () => {
               />
             </div>
             <div>
-              <Label htmlFor="age">Age (years)</Label>
+              <Label htmlFor="age">Age (years) <span className="text-red-500">*</span></Label>
               <Input
                 id="age"
                 type="number"
@@ -898,7 +898,7 @@ const ReceptionPatientsPage = () => {
             </Button>
             <Button
               onClick={createPatient}
-              disabled={loading || !patientForm.first_name || !patientForm.last_name || !patientForm.primary_phone}
+              disabled={loading || !patientForm.first_name || !patientForm.last_name || !patientForm.primary_phone || !patientForm.age}
               className="flex-1"
             >
               {loading ? 'Registering...' : 'Register Patient'}
@@ -948,7 +948,7 @@ const ReceptionPatientsPage = () => {
               />
             </div>
             <div>
-              <Label>Age (years)</Label>
+              <Label>Age (years) <span className="text-red-500">*</span></Label>
               <Input
                 type="number"
                 min="0"
@@ -1085,7 +1085,7 @@ const ReceptionPatientsPage = () => {
             </Button>
             <Button
               onClick={handleUpdatePatient}
-              disabled={loading || !editPatientForm.first_name || !editPatientForm.last_name}
+              disabled={loading || !editPatientForm.first_name || !editPatientForm.last_name || !editPatientForm.age}
               className="flex-1"
             >
               {loading ? 'Updating...' : 'Update Patient'}

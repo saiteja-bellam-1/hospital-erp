@@ -45,6 +45,23 @@ const DoctorDashboard = () => {
   const [wardRoundAdmission, setWardRoundAdmission] = useState(null);
   const [wardRoundVisits, setWardRoundVisits] = useState([]);
   const [wardRoundNursingNotes, setWardRoundNursingNotes] = useState([]);
+  const [wardRoundVitals, setWardRoundVitals] = useState([]);
+  const [wardRoundPrescriptions, setWardRoundPrescriptions] = useState([]);
+  const [wardRoundLabOrders, setWardRoundLabOrders] = useState([]);
+  const [wardRoundAllergies, setWardRoundAllergies] = useState([]);
+  const [wardRoundTab, setWardRoundTab] = useState('overview');
+  const [showManageAdmissionDialog, setShowManageAdmissionDialog] = useState(false);
+  // Inpatient-specific Add Prescription dialog
+  const RX_BLANK_ITEM = { medicine_id: '', medicine_name: '', dosage: '', duration: '', quantity_prescribed: 1, instructions: '' };
+  const [showInpatientRxDialog, setShowInpatientRxDialog] = useState(false);
+  const [inpatientRxForm, setInpatientRxForm] = useState({ notes: '', items: [{ ...RX_BLANK_ITEM }] });
+  const [medicineSuggestions, setMedicineSuggestions] = useState([]);
+  const [medicineSuggestIdx, setMedicineSuggestIdx] = useState(null);
+  // Inpatient-specific Order Lab dialog
+  const [showInpatientLabDialog, setShowInpatientLabDialog] = useState(false);
+  const [inpatientLabForm, setInpatientLabForm] = useState({ test_ids: [], priority: 'normal', notes: '' });
+  const [inpatientLabAvailableTests, setInpatientLabAvailableTests] = useState([]);
+  const [inpatientLabSearch, setInpatientLabSearch] = useState('');
 
   // Preview state
   const [previewPrescription, setPreviewPrescription] = useState(null);
@@ -166,7 +183,8 @@ const DoctorDashboard = () => {
             setInpatientEnabled(true);
             axios.get('/api/inpatient/admissions', { params: { status: 'admitted' } })
               .then(r => {
-                const myAdmissions = (r.data || []).filter(a =>
+                const list = r.data?.items || (Array.isArray(r.data) ? r.data : []);
+                const myAdmissions = list.filter(a =>
                   a.admitting_doctor_id === userData.id || a.attending_physician_id === userData.id
                 );
                 setDoctorAdmissions(myAdmissions);
@@ -176,6 +194,116 @@ const DoctorDashboard = () => {
       }
     } catch (error) {
       console.error('Error fetching user profile:', error);
+    }
+  };
+
+  // ============================================================
+  // Inpatient ward-rounds: comprehensive admission view
+  // ============================================================
+  const openManageAdmission = async (adm) => {
+    setWardRoundAdmission(adm);
+    setWardRoundTab('overview');
+    setShowManageAdmissionDialog(true);
+    // Reset and refetch every section
+    setWardRoundVisits([]); setWardRoundNursingNotes([]); setWardRoundVitals([]);
+    setWardRoundPrescriptions([]); setWardRoundLabOrders([]); setWardRoundAllergies([]);
+    const opts = (p) => axios.get(p).then(r => r.data).catch(() => null);
+    const [v, nn, vit, rx, lo, al] = await Promise.all([
+      opts(`/api/inpatient/admissions/${adm.id}/visits`),
+      opts(`/api/inpatient/admissions/${adm.id}/nursing-notes`),
+      opts(`/api/inpatient/admissions/${adm.id}/vitals?limit=20`),
+      opts(`/api/inpatient/admissions/${adm.id}/prescriptions`),
+      opts(`/api/inpatient/admissions/${adm.id}/lab-orders`),
+      adm.patient_id ? opts(`/api/patients/${adm.patient_id}/allergies?active_only=true`) : Promise.resolve(null),
+    ]);
+    if (Array.isArray(v)) setWardRoundVisits(v);
+    if (Array.isArray(nn)) setWardRoundNursingNotes(nn);
+    if (Array.isArray(vit)) setWardRoundVitals(vit);
+    if (Array.isArray(rx)) setWardRoundPrescriptions(rx);
+    if (Array.isArray(lo)) setWardRoundLabOrders(lo);
+    if (Array.isArray(al)) setWardRoundAllergies(al);
+  };
+
+  const refreshManageAdmission = async () => {
+    if (wardRoundAdmission) await openManageAdmission(wardRoundAdmission);
+  };
+
+  const searchMedicineSuggestions = async (query, idx) => {
+    setMedicineSuggestIdx(idx);
+    if (!query || query.trim().length < 2) { setMedicineSuggestions([]); return; }
+    try {
+      const r = await axios.get('/api/medicines/', { params: { search: query.trim(), limit: 12 } });
+      setMedicineSuggestions(r.data || []);
+    } catch { setMedicineSuggestions([]); }
+  };
+
+  const handleInpatientRxSubmit = async (e) => {
+    e.preventDefault();
+    const items = inpatientRxForm.items
+      .map(it => ({
+        medicine_id: it.medicine_id ? parseInt(it.medicine_id) : null,
+        medicine_name: it.medicine_id ? null : (it.medicine_name?.trim() || null),
+        quantity_prescribed: Math.max(1, parseInt(it.quantity_prescribed) || 1),
+        dosage: it.dosage?.trim() || '',
+        duration: it.duration?.trim() || '',
+        instructions: it.instructions?.trim() || null,
+      }))
+      .filter(it => (it.medicine_id || it.medicine_name) && it.dosage && it.duration);
+    if (items.length === 0) {
+      toast({ variant: 'destructive', title: 'Error', description: 'Add at least one medicine with dosage and duration' });
+      return;
+    }
+    try {
+      await axios.post('/api/prescriptions/', {
+        patient_id: wardRoundAdmission.patient_id,
+        admission_id: wardRoundAdmission.id,
+        notes: inpatientRxForm.notes || null,
+        items,
+      });
+      toast({ title: 'Prescription created' });
+      setShowInpatientRxDialog(false);
+      setInpatientRxForm({ notes: '', items: [{ ...RX_BLANK_ITEM }] });
+      setMedicineSuggestions([]);
+      refreshManageAdmission();
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed to create prescription';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    }
+  };
+
+  const openInpatientLabDialog = async () => {
+    if (!wardRoundAdmission) return;
+    setInpatientLabForm({ test_ids: [], priority: 'normal', notes: '' });
+    setInpatientLabSearch('');
+    try {
+      const r = await axios.get(`/api/inpatient/admissions/${wardRoundAdmission.id}/lab-tests-available`);
+      setInpatientLabAvailableTests(r.data || []);
+    } catch { setInpatientLabAvailableTests([]); }
+    setShowInpatientLabDialog(true);
+  };
+
+  const handleInpatientLabSubmit = async (e) => {
+    e.preventDefault();
+    if (!inpatientLabForm.test_ids.length) {
+      toast({ variant: 'destructive', title: 'Error', description: 'Select at least one lab test' });
+      return;
+    }
+    try {
+      await axios.post('/api/lab/orders', {
+        patient_id: wardRoundAdmission.patient_id,
+        admission_id: wardRoundAdmission.id,
+        test_ids: inpatientLabForm.test_ids,
+        priority: inpatientLabForm.priority,
+        notes: inpatientLabForm.notes || null,
+        force: false,
+      });
+      toast({ title: 'Lab order created' });
+      setShowInpatientLabDialog(false);
+      refreshManageAdmission();
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      const msg = typeof detail === 'string' ? detail : (detail?.message || 'Failed to create lab order');
+      toast({ variant: 'destructive', title: 'Error', description: msg });
     }
   };
 
@@ -1418,89 +1546,24 @@ const DoctorDashboard = () => {
                 ) : (
                   <div className="space-y-3">
                     {doctorAdmissions.map(adm => {
-                      const isExpanded = wardRoundAdmission?.id === adm.id;
                       const stayDays = adm.admission_date ? Math.max(1, Math.floor((Date.now() - new Date(adm.admission_date).getTime()) / 86400000)) : 0;
                       return (
-                        <div key={adm.id} className={`border rounded-lg ${isExpanded ? 'ring-2 ring-blue-300' : ''}`}>
-                          <div className="flex items-center justify-between p-3 cursor-pointer hover:bg-gray-50" onClick={() => {
-                            if (isExpanded) { setWardRoundAdmission(null); } else {
-                              setWardRoundAdmission(adm);
-                              axios.get(`/api/inpatient/admissions/${adm.id}/visits`).then(r => setWardRoundVisits(r.data || [])).catch(() => setWardRoundVisits([]));
-                              axios.get(`/api/inpatient/admissions/${adm.id}/nursing-notes`).then(r => setWardRoundNursingNotes(r.data || [])).catch(() => setWardRoundNursingNotes([]));
-                            }
-                          }}>
-                            <div className="flex items-center gap-4">
-                              <div>
-                                <div className="font-medium text-sm">{adm.patient_name || 'N/A'}</div>
-                                <div className="text-xs text-gray-500">{adm.admission_number}</div>
-                              </div>
-                              <Badge variant="outline" className="text-xs">{adm.room_number}{adm.bed_label ? ` / ${adm.bed_label}` : adm.bed_number ? ` / ${adm.bed_number}` : ''}</Badge>
-                              <Badge variant="outline" className="text-xs">{adm.admission_type}</Badge>
-                              <span className="text-xs text-gray-500">Day {stayDays}</span>
-                              <span className="text-xs text-gray-500">{adm.condition_on_admission || ''}</span>
+                        <div key={adm.id} className="border rounded-lg p-3 flex items-center justify-between hover:bg-gray-50 cursor-pointer" onClick={() => openManageAdmission(adm)}>
+                          <div className="flex items-center gap-4 flex-wrap">
+                            <div>
+                              <div className="font-medium text-sm">{adm.patient_name || 'N/A'}</div>
+                              <div className="text-xs text-gray-500">{adm.admission_number}</div>
                             </div>
-                            <div className="flex items-center gap-2">
-                              <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); setDoctorVisitAdmission(adm); setDoctorVisitNotes(''); setShowDoctorVisitDialog(true); }}>
-                                <Plus className="h-3 w-3 mr-1" /> Record Visit
-                              </Button>
-                              <span className="text-xs text-gray-400">{isExpanded ? '▲' : '▼'}</span>
-                            </div>
+                            <Badge variant="outline" className="text-xs">{adm.room_number}{adm.bed_label ? ` / ${adm.bed_label}` : adm.bed_number ? ` / ${adm.bed_number}` : ''}</Badge>
+                            <Badge variant="outline" className="text-xs">{adm.admission_type}</Badge>
+                            <span className="text-xs text-gray-500">Day {stayDays}</span>
+                            <span className="text-xs text-gray-500">{adm.condition_on_admission || ''}</span>
                           </div>
-                          {isExpanded && (
-                            <div className="border-t p-3 bg-gray-50 space-y-4">
-                              <div className="grid grid-cols-2 gap-4">
-                                {/* Visit History */}
-                                <div>
-                                  <h4 className="text-sm font-semibold mb-2 flex items-center gap-1"><Activity className="h-4 w-4" /> Visit History</h4>
-                                  {wardRoundVisits.length === 0 ? (
-                                    <p className="text-xs text-gray-500">No visits recorded.</p>
-                                  ) : (
-                                    <div className="space-y-2 max-h-60 overflow-y-auto">
-                                      {wardRoundVisits.map(v => (
-                                        <div key={v.id} className="bg-white border rounded p-2 text-xs">
-                                          <div className="flex justify-between">
-                                            <span className="font-medium">{v.visit_type.replace('_', ' ').replace(/\b\w/g, c => c.toUpperCase())}</span>
-                                            <span className="text-gray-400">{v.visit_datetime ? new Date(v.visit_datetime).toLocaleString() : ''}</span>
-                                          </div>
-                                          <div className="text-gray-500">by {v.visitor_name || 'N/A'}</div>
-                                          {v.notes && <p className="mt-1 text-gray-700">{v.notes}</p>}
-                                        </div>
-                                      ))}
-                                    </div>
-                                  )}
-                                </div>
-                                {/* Nursing Notes */}
-                                <div>
-                                  <h4 className="text-sm font-semibold mb-2 flex items-center gap-1"><ClipboardList className="h-4 w-4" /> Nursing Notes</h4>
-                                  {wardRoundNursingNotes.length === 0 ? (
-                                    <p className="text-xs text-gray-500">No nursing notes.</p>
-                                  ) : (
-                                    <div className="space-y-2 max-h-60 overflow-y-auto">
-                                      {wardRoundNursingNotes.map(n => (
-                                        <div key={n.id} className="bg-white border rounded p-2 text-xs">
-                                          <div className="flex items-center gap-1">
-                                            <Badge className={`text-[10px] px-1 ${n.shift === 'morning' ? 'bg-yellow-100 text-yellow-800' : n.shift === 'afternoon' ? 'bg-orange-100 text-orange-800' : 'bg-indigo-100 text-indigo-800'}`}>
-                                              {n.shift}
-                                            </Badge>
-                                            <Badge variant="outline" className="text-[10px] px-1">{n.note_type}</Badge>
-                                            <span className="text-gray-400 ml-auto">{n.created_at ? new Date(n.created_at).toLocaleString() : ''}</span>
-                                          </div>
-                                          <div className="text-gray-500 mt-0.5">by {n.nurse_name || 'N/A'}</div>
-                                          <p className="mt-1 text-gray-700 whitespace-pre-wrap">{n.content}</p>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-                              {adm.admission_reason && (
-                                <div className="text-xs"><span className="font-medium">Admission Reason:</span> {adm.admission_reason}</div>
-                              )}
-                              {adm.admission_notes && (
-                                <div className="text-xs"><span className="font-medium">Notes:</span> {adm.admission_notes}</div>
-                              )}
-                            </div>
-                          )}
+                          <div className="flex items-center gap-2">
+                            <Button size="sm" onClick={(e) => { e.stopPropagation(); openManageAdmission(adm); }}>
+                              <Stethoscope className="h-3.5 w-3.5 mr-1" /> Manage
+                            </Button>
+                          </div>
                         </div>
                       );
                     })}
@@ -1511,6 +1574,384 @@ const DoctorDashboard = () => {
           </TabsContent>
         )}
       </Tabs>
+
+      {/* ============================================================ */}
+      {/* MANAGE ADMISSION POPUP — comprehensive inpatient view for doctor */}
+      {/* ============================================================ */}
+      <Dialog open={showManageAdmissionDialog} onOpenChange={(o) => { setShowManageAdmissionDialog(o); if (!o) setWardRoundAdmission(null); }}>
+        <DialogContent className="max-w-4xl max-h-[92vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Bed className="h-5 w-5" /> {wardRoundAdmission?.patient_name || 'Admission'}
+              {wardRoundAdmission && (
+                <span className="text-sm font-normal text-gray-500 ml-1">
+                  · {wardRoundAdmission.admission_number}
+                </span>
+              )}
+            </DialogTitle>
+          </DialogHeader>
+
+          {wardRoundAdmission && (
+            <div className="space-y-4">
+              {/* Summary strip */}
+              <div className="flex flex-wrap gap-2 text-xs">
+                <Badge variant="outline">Room {wardRoundAdmission.room_number}{wardRoundAdmission.bed_label ? ` / ${wardRoundAdmission.bed_label}` : wardRoundAdmission.bed_number ? ` / ${wardRoundAdmission.bed_number}` : ''}</Badge>
+                <Badge variant="outline">{wardRoundAdmission.admission_type}</Badge>
+                <Badge variant="outline">Day {wardRoundAdmission.admission_date ? Math.max(1, Math.floor((Date.now() - new Date(wardRoundAdmission.admission_date).getTime()) / 86400000)) : 0}</Badge>
+                {wardRoundAdmission.condition_on_admission && <Badge variant="outline">{wardRoundAdmission.condition_on_admission}</Badge>}
+                {wardRoundAdmission.is_mlc && <Badge className="bg-red-100 text-red-800">MLC</Badge>}
+                {wardRoundAdmission.is_readmission && <Badge className="bg-orange-100 text-orange-800">Readmission</Badge>}
+              </div>
+
+              {/* Allergies banner */}
+              {wardRoundAllergies.length > 0 && (
+                <div className="border-l-4 border-red-500 bg-red-50 p-2 rounded text-xs">
+                  <div className="font-semibold text-red-800 flex items-center gap-1 mb-1"><AlertCircle className="h-3.5 w-3.5" /> Allergies</div>
+                  <div className="flex flex-wrap gap-1">
+                    {wardRoundAllergies.map(a => (
+                      <span key={a.id} className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium ${
+                        a.severity === 'anaphylaxis' ? 'bg-red-200 text-red-900' :
+                        a.severity === 'severe' ? 'bg-red-100 text-red-800' :
+                        a.severity === 'moderate' ? 'bg-orange-100 text-orange-800' :
+                        'bg-yellow-100 text-yellow-800'
+                      }`} title={a.reaction || ''}>
+                        {a.allergen} ({a.severity})
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Quick actions */}
+              <div className="flex flex-wrap gap-2 border-y py-2">
+                <Button size="sm" onClick={() => { setDoctorVisitAdmission(wardRoundAdmission); setDoctorVisitNotes(''); setShowDoctorVisitDialog(true); }}>
+                  <Plus className="h-3.5 w-3.5 mr-1" /> Record Visit
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => {
+                  setInpatientRxForm({ notes: '', items: [{ ...RX_BLANK_ITEM }] });
+                  setMedicineSuggestions([]);
+                  setShowInpatientRxDialog(true);
+                }}>
+                  <Pill className="h-3.5 w-3.5 mr-1" /> Add Prescription
+                </Button>
+                <Button size="sm" variant="outline" onClick={openInpatientLabDialog}>
+                  <TestTube className="h-3.5 w-3.5 mr-1" /> Order Lab Test
+                </Button>
+                <Button size="sm" variant="ghost" onClick={refreshManageAdmission} className="ml-auto">
+                  <RefreshCw className="h-3.5 w-3.5 mr-1" /> Refresh
+                </Button>
+              </div>
+
+              {/* Tabs */}
+              <Tabs value={wardRoundTab} onValueChange={setWardRoundTab}>
+                <TabsList className="grid w-full grid-cols-6 text-xs">
+                  <TabsTrigger value="overview">Overview</TabsTrigger>
+                  <TabsTrigger value="visits">Visits ({wardRoundVisits.length})</TabsTrigger>
+                  <TabsTrigger value="vitals">Vitals ({wardRoundVitals.length})</TabsTrigger>
+                  <TabsTrigger value="rx">Rx ({wardRoundPrescriptions.length})</TabsTrigger>
+                  <TabsTrigger value="labs">Labs ({wardRoundLabOrders.length})</TabsTrigger>
+                  <TabsTrigger value="nursing">Nursing ({wardRoundNursingNotes.length})</TabsTrigger>
+                </TabsList>
+
+                {/* Overview */}
+                <TabsContent value="overview" className="mt-3 space-y-2 text-sm">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div><span className="text-gray-500 text-xs">Admitted on</span><div>{wardRoundAdmission.admission_date ? new Date(wardRoundAdmission.admission_date).toLocaleString() : '—'}</div></div>
+                    <div><span className="text-gray-500 text-xs">Estimated stay</span><div>{wardRoundAdmission.estimated_stay_days ? `${wardRoundAdmission.estimated_stay_days} days` : '—'}</div></div>
+                    <div className="col-span-2"><span className="text-gray-500 text-xs">Admission reason</span><div>{wardRoundAdmission.admission_reason || '—'}</div></div>
+                    <div className="col-span-2"><span className="text-gray-500 text-xs">Notes</span><div className="whitespace-pre-wrap">{wardRoundAdmission.admission_notes || '—'}</div></div>
+                    {wardRoundAdmission.admission_type === 'emergency' && (
+                      <>
+                        <div><span className="text-gray-500 text-xs">Triage</span><div>Level {wardRoundAdmission.triage_level || '—'}</div></div>
+                        <div><span className="text-gray-500 text-xs">Arrival</span><div>{wardRoundAdmission.arrival_mode || '—'}</div></div>
+                        <div className="col-span-2"><span className="text-gray-500 text-xs">Chief complaint</span><div>{wardRoundAdmission.chief_complaint || '—'}</div></div>
+                      </>
+                    )}
+                  </div>
+                </TabsContent>
+
+                {/* Visits */}
+                <TabsContent value="visits" className="mt-3">
+                  {wardRoundVisits.length === 0 ? (
+                    <p className="text-xs text-gray-500 text-center py-4">No visits recorded.</p>
+                  ) : (
+                    <div className="space-y-2 max-h-96 overflow-y-auto">
+                      {wardRoundVisits.map(v => (
+                        <div key={v.id} className="border rounded p-2 text-xs bg-white">
+                          <div className="flex justify-between">
+                            <span className="font-medium">{v.visit_type.replace('_', ' ').replace(/\b\w/g, c => c.toUpperCase())}</span>
+                            <span className="text-gray-400">{v.visit_datetime ? new Date(v.visit_datetime).toLocaleString() : ''}</span>
+                          </div>
+                          <div className="text-gray-500">by {v.visitor_name || 'N/A'}</div>
+                          {v.notes && <p className="mt-1 text-gray-700 whitespace-pre-wrap">{v.notes}</p>}
+                          {v.plan_for_today && (
+                            <p className="mt-1 text-gray-700 italic"><b>Plan:</b> {v.plan_for_today}</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </TabsContent>
+
+                {/* Vitals */}
+                <TabsContent value="vitals" className="mt-3">
+                  {wardRoundVitals.length === 0 ? (
+                    <p className="text-xs text-gray-500 text-center py-4">No vitals recorded.</p>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs border-collapse">
+                        <thead className="bg-gray-50">
+                          <tr>
+                            <th className="text-left p-1.5 border-b">When</th>
+                            <th className="p-1.5 border-b">Shift</th>
+                            <th className="p-1.5 border-b">BP</th>
+                            <th className="p-1.5 border-b">HR</th>
+                            <th className="p-1.5 border-b">RR</th>
+                            <th className="p-1.5 border-b">SpO2</th>
+                            <th className="p-1.5 border-b">Temp</th>
+                            <th className="p-1.5 border-b">Pain</th>
+                            <th className="p-1.5 border-b">By</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {wardRoundVitals.map(v => (
+                            <tr key={v.id} className={v.is_abnormal ? 'bg-red-50' : ''}>
+                              <td className="p-1.5 border-b">{v.recorded_at ? new Date(v.recorded_at).toLocaleString() : ''}</td>
+                              <td className="p-1.5 border-b text-center">{v.shift || '—'}</td>
+                              <td className="p-1.5 border-b text-center">{v.bp_systolic && v.bp_diastolic ? `${v.bp_systolic}/${v.bp_diastolic}` : '—'}</td>
+                              <td className="p-1.5 border-b text-center">{v.heart_rate || '—'}</td>
+                              <td className="p-1.5 border-b text-center">{v.respiratory_rate || '—'}</td>
+                              <td className="p-1.5 border-b text-center">{v.spo2 || '—'}</td>
+                              <td className="p-1.5 border-b text-center">{v.temperature_c ? `${v.temperature_c}°C` : '—'}</td>
+                              <td className="p-1.5 border-b text-center">{v.pain_score != null ? v.pain_score : '—'}</td>
+                              <td className="p-1.5 border-b">{v.recorded_by_name || '—'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </TabsContent>
+
+                {/* Prescriptions */}
+                <TabsContent value="rx" className="mt-3">
+                  {wardRoundPrescriptions.length === 0 ? (
+                    <p className="text-xs text-gray-500 text-center py-4">No prescriptions linked to this admission.</p>
+                  ) : (
+                    <div className="space-y-2 max-h-96 overflow-y-auto">
+                      {wardRoundPrescriptions.map(rx => (
+                        <div key={`${rx.type}-${rx.id}`} className="border rounded p-2 text-xs bg-white">
+                          <div className="flex justify-between mb-1">
+                            <span className="font-medium">{rx.prescription_number}</span>
+                            <Badge className={rx.status === 'dispensed' ? 'bg-green-100 text-green-800' : rx.status === 'pending' ? 'bg-yellow-100 text-yellow-800' : 'bg-gray-100 text-gray-800'}>{rx.status}</Badge>
+                          </div>
+                          <div className="text-gray-500">by {rx.doctor_name} · {rx.date ? new Date(rx.date).toLocaleString() : ''}</div>
+                          {rx.medicines?.length > 0 && (
+                            <div className="bg-gray-50 rounded p-2 mt-1 space-y-0.5">
+                              {rx.medicines.map((m, i) => (
+                                <div key={i} className="flex justify-between">
+                                  <span>{m.name} {m.dosage ? `· ${m.dosage}` : ''} {m.duration ? `(${m.duration})` : ''}</span>
+                                  {rx.type === 'pharmacy' && <span className="text-gray-600">₹{parseFloat(m.total_price || 0).toFixed(2)}</span>}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          {rx.notes && <p className="mt-1 text-gray-700 italic">{rx.notes}</p>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </TabsContent>
+
+                {/* Lab Orders */}
+                <TabsContent value="labs" className="mt-3">
+                  {wardRoundLabOrders.length === 0 ? (
+                    <p className="text-xs text-gray-500 text-center py-4">No lab orders for this admission.</p>
+                  ) : (
+                    <div className="space-y-2 max-h-96 overflow-y-auto">
+                      {wardRoundLabOrders.map(o => (
+                        <div key={o.id} className="border rounded p-2 text-xs bg-white">
+                          <div className="flex justify-between">
+                            <span className="font-medium">{o.test_name || o.order_number}</span>
+                            <Badge className={o.status === 'completed' ? 'bg-green-100 text-green-800' : o.status === 'pending' ? 'bg-yellow-100 text-yellow-800' : 'bg-gray-100 text-gray-800'}>{o.status}</Badge>
+                          </div>
+                          <div className="text-gray-500">{o.order_number} · {o.priority || 'normal'} · {o.created_at ? new Date(o.created_at).toLocaleString() : ''}</div>
+                          {o.notes && <p className="mt-1 text-gray-700 italic">{o.notes}</p>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </TabsContent>
+
+                {/* Nursing notes */}
+                <TabsContent value="nursing" className="mt-3">
+                  {wardRoundNursingNotes.length === 0 ? (
+                    <p className="text-xs text-gray-500 text-center py-4">No nursing notes.</p>
+                  ) : (
+                    <div className="space-y-2 max-h-96 overflow-y-auto">
+                      {wardRoundNursingNotes.map(n => (
+                        <div key={n.id} className="border rounded p-2 text-xs bg-white">
+                          <div className="flex items-center gap-1 mb-1">
+                            <Badge className={`text-[10px] px-1 ${n.shift === 'morning' ? 'bg-yellow-100 text-yellow-800' : n.shift === 'afternoon' ? 'bg-orange-100 text-orange-800' : 'bg-indigo-100 text-indigo-800'}`}>{n.shift}</Badge>
+                            <Badge variant="outline" className="text-[10px] px-1">{n.note_type}</Badge>
+                            <span className="text-gray-400 ml-auto">{n.created_at ? new Date(n.created_at).toLocaleString() : ''}</span>
+                          </div>
+                          <div className="text-gray-500">by {n.nurse_name || 'N/A'}</div>
+                          <p className="mt-1 text-gray-700 whitespace-pre-wrap">{n.content}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </TabsContent>
+              </Tabs>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Inpatient — Add Prescription dialog */}
+      <Dialog open={showInpatientRxDialog} onOpenChange={(o) => { setShowInpatientRxDialog(o); if (!o) setMedicineSuggestions([]); }}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader><DialogTitle>Add Prescription · {wardRoundAdmission?.patient_name}</DialogTitle></DialogHeader>
+          <form onSubmit={handleInpatientRxSubmit} className="space-y-3">
+            <div>
+              <Label className="text-xs">Notes (optional)</Label>
+              <Textarea rows={2} value={inpatientRxForm.notes} onChange={e => setInpatientRxForm(p => ({ ...p, notes: e.target.value }))} placeholder="e.g., After meals, review in 3 days" />
+            </div>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs">Medicines *</Label>
+                <Button type="button" size="sm" variant="outline" onClick={() => setInpatientRxForm(p => ({ ...p, items: [...p.items, { ...RX_BLANK_ITEM }] }))}>
+                  <Plus className="h-3 w-3 mr-1" /> Add Row
+                </Button>
+              </div>
+              {inpatientRxForm.items.map((it, idx) => (
+                <div key={idx} className="border rounded p-2 space-y-2 bg-gray-50">
+                  <div className="flex items-start gap-2">
+                    <div className="flex-1 relative">
+                      <Input
+                        placeholder="Medicine name (search inventory or type free-text)"
+                        value={it.medicine_name}
+                        onChange={e => {
+                          const v = e.target.value;
+                          setInpatientRxForm(p => {
+                            const next = [...p.items];
+                            next[idx] = { ...next[idx], medicine_name: v, medicine_id: '' };
+                            return { ...p, items: next };
+                          });
+                          searchMedicineSuggestions(v, idx);
+                        }}
+                      />
+                      {medicineSuggestIdx === idx && medicineSuggestions.length > 0 && !it.medicine_id && (
+                        <div className="absolute z-20 w-full bg-white border rounded shadow-lg mt-1 max-h-40 overflow-y-auto">
+                          {medicineSuggestions.map(m => (
+                            <div key={m.id} className="px-3 py-1.5 hover:bg-blue-50 cursor-pointer text-xs"
+                              onClick={() => {
+                                setInpatientRxForm(p => {
+                                  const next = [...p.items];
+                                  next[idx] = { ...next[idx], medicine_id: m.id, medicine_name: `${m.name}${m.strength ? ' ' + m.strength : ''}${m.dosage_form ? ' (' + m.dosage_form + ')' : ''}` };
+                                  return { ...p, items: next };
+                                });
+                                setMedicineSuggestions([]);
+                              }}>
+                              <span className="font-medium">{m.name}</span>
+                              {m.strength && <span className="text-gray-500"> · {m.strength}</span>}
+                              {m.dosage_form && <span className="text-gray-500"> · {m.dosage_form}</span>}
+                              <span className="text-gray-400 ml-1">₹{Number(m.unit_price || 0).toFixed(2)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <Button type="button" size="sm" variant="ghost" className="h-9 w-9 p-0" disabled={inpatientRxForm.items.length === 1}
+                      onClick={() => setInpatientRxForm(p => ({ ...p, items: p.items.filter((_, i) => i !== idx) }))}>
+                      <XCircle className="h-4 w-4 text-red-500" />
+                    </Button>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <div>
+                      <Label className="text-[10px] text-gray-500">Dosage *</Label>
+                      <Input placeholder="1 tab BD" value={it.dosage}
+                        onChange={e => setInpatientRxForm(p => { const next = [...p.items]; next[idx] = { ...next[idx], dosage: e.target.value }; return { ...p, items: next }; })} />
+                    </div>
+                    <div>
+                      <Label className="text-[10px] text-gray-500">Duration *</Label>
+                      <Input placeholder="5 days" value={it.duration}
+                        onChange={e => setInpatientRxForm(p => { const next = [...p.items]; next[idx] = { ...next[idx], duration: e.target.value }; return { ...p, items: next }; })} />
+                    </div>
+                    <div>
+                      <Label className="text-[10px] text-gray-500">Quantity</Label>
+                      <Input type="number" min="1" value={it.quantity_prescribed}
+                        onChange={e => setInpatientRxForm(p => { const next = [...p.items]; next[idx] = { ...next[idx], quantity_prescribed: e.target.value }; return { ...p, items: next }; })} />
+                    </div>
+                  </div>
+                  <div>
+                    <Label className="text-[10px] text-gray-500">Instructions (optional)</Label>
+                    <Input placeholder="After food, with water, etc." value={it.instructions}
+                      onChange={e => setInpatientRxForm(p => { const next = [...p.items]; next[idx] = { ...next[idx], instructions: e.target.value }; return { ...p, items: next }; })} />
+                  </div>
+                </div>
+              ))}
+              <p className="text-[11px] text-gray-500">Pick a medicine from the search to bill it via pharmacy. Free-text rows are advisory only.</p>
+            </div>
+            <Button type="submit" className="w-full">Create Prescription</Button>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Inpatient — Order Lab Test dialog */}
+      <Dialog open={showInpatientLabDialog} onOpenChange={setShowInpatientLabDialog}>
+        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+          <DialogHeader><DialogTitle>Order Lab Test · {wardRoundAdmission?.patient_name}</DialogTitle></DialogHeader>
+          <form onSubmit={handleInpatientLabSubmit} className="space-y-3">
+            <div>
+              <Label className="text-xs">Search</Label>
+              <Input placeholder="Filter tests by name…" value={inpatientLabSearch} onChange={e => setInpatientLabSearch(e.target.value)} />
+            </div>
+            <div className="border rounded max-h-60 overflow-y-auto">
+              {inpatientLabAvailableTests.length === 0 ? (
+                <p className="text-xs text-gray-500 text-center py-3">No tests available.</p>
+              ) : (
+                inpatientLabAvailableTests
+                  .filter(t => !inpatientLabSearch || (t.name || '').toLowerCase().includes(inpatientLabSearch.toLowerCase()))
+                  .map(t => {
+                    const checked = inpatientLabForm.test_ids.includes(t.id);
+                    return (
+                      <label key={t.id} className="flex items-center gap-2 px-2 py-1.5 hover:bg-gray-50 cursor-pointer text-xs border-b last:border-b-0">
+                        <input type="checkbox" checked={checked} onChange={() => setInpatientLabForm(p => ({
+                          ...p,
+                          test_ids: checked ? p.test_ids.filter(id => id !== t.id) : [...p.test_ids, t.id],
+                        }))} />
+                        <span className="flex-1">{t.name}</span>
+                        <span className="text-gray-500">₹{Number(t.price || 0).toFixed(2)}</span>
+                      </label>
+                    );
+                  })
+              )}
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <Label className="text-xs">Priority</Label>
+                <Select value={inpatientLabForm.priority} onValueChange={v => setInpatientLabForm(p => ({ ...p, priority: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="normal">Normal</SelectItem>
+                    <SelectItem value="urgent">Urgent</SelectItem>
+                    <SelectItem value="stat">STAT</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-xs">Notes</Label>
+                <Input value={inpatientLabForm.notes} onChange={e => setInpatientLabForm(p => ({ ...p, notes: e.target.value }))} />
+              </div>
+            </div>
+            <Button type="submit" className="w-full" disabled={inpatientLabForm.test_ids.length === 0}>
+              Order {inpatientLabForm.test_ids.length} test{inpatientLabForm.test_ids.length === 1 ? '' : 's'}
+            </Button>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       {/* Doctor Visit Dialog for Inpatient */}
       <Dialog open={showDoctorVisitDialog} onOpenChange={setShowDoctorVisitDialog}>
@@ -1528,14 +1969,18 @@ const DoctorDashboard = () => {
               });
               toast({ title: 'Success', description: 'Doctor visit recorded' });
               setShowDoctorVisitDialog(false);
-              // Refresh
+              // Refresh the admissions list and, if the manage popup is open, its sections too
               axios.get('/api/inpatient/admissions', { params: { status: 'admitted' } })
                 .then(r => {
-                  const myAdmissions = (r.data || []).filter(a =>
+                  const list = r.data?.items || (Array.isArray(r.data) ? r.data : []);
+                  const myAdmissions = list.filter(a =>
                     a.admitting_doctor_id === user.id || a.attending_physician_id === user.id
                   );
                   setDoctorAdmissions(myAdmissions);
                 }).catch(() => {});
+              if (showManageAdmissionDialog && wardRoundAdmission?.id === doctorVisitAdmission.id) {
+                refreshManageAdmission();
+              }
             } catch (err) {
               toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed to record visit' });
             }

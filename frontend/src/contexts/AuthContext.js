@@ -123,6 +123,13 @@ export const AuthProvider = ({ children }) => {
     checkAuth();
   }, []);
 
+  const clearMustChangePassword = () => {
+    if (!user) return;
+    const updated = { ...user, must_change_password: false };
+    setUser(updated);
+    localStorage.setItem('user', JSON.stringify(updated));
+  };
+
   const value = {
     user,
     token,
@@ -131,6 +138,7 @@ export const AuthProvider = ({ children }) => {
     loading,
     licenseStatus,
     setLicenseStatus,
+    clearMustChangePassword,
   };
 
   return (
