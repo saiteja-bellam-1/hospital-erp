@@ -86,8 +86,11 @@ Built once and committed under `installer/bin/` (or built fresh by `build_instal
 - [x] **C2.** No code change needed — the wizard is already gated by `/api/setup/status` which uses the sentinel users-table probe (`is_setup_complete()`). When bootstrap_from_seed creates the admin row, the wizard never renders.
 - [x] **C3.** Bootstrap status is already exposed at `data/.bootstrap_status.json` for the existing Diagnostics endpoint to surface (no extra wiring needed; the file is written by `_write_status` in `bootstrap_from_seed.py`).
 
-### Phase D — GitHub Actions Windows build ⏸ deferred
-Pending GitHub auth on this machine. Plan unchanged from the original draft below.
+### Phase D — GitHub Actions Windows build ✅
+- [x] **D1.** `.github/workflows/windows-build.yml` shipped. Triggers: push to `main`, PRs against `main`, `workflow_dispatch`, and tag pushes `v*`. Steps: checkout → derive version → patch APP_VERSION → setup Python 3.11 + Node 20 → install Inno Setup via Chocolatey → `build_exe.bat` → `installer\build_dbcheck.bat` → `build_installer.bat` → upload artifact (and create GitHub Release on tag pushes). Caching: pip + npm via setup-* `cache:`.
+- [x] **Versioning rule.** Tag `v1.2.3` → version `1.2.3` (also publishes a Release). Any other trigger → `<MAJOR.MINOR>.<github.run_number>` where `<MAJOR.MINOR>` is parsed from `backend/launcher.py`'s `APP_VERSION`. The patched `APP_VERSION` flows through to the launcher's diagnostics page and the installer filename, so all three are guaranteed in sync.
+- [x] **Code signing stub.** Workflow notes how to wire `SIGNING_CERT_BASE64` + `SIGNING_PASS` once a cert is available. Skipped silently until then.
+- [x] **First green run:** [#6](https://github.com/saiteja-bellam-1/hospital-erp/actions/runs/25471601823) → `KTHEALTHERP_Setup_1.1.6.exe` (75 MB). Took 4 commits to land — issues fixed along the way: `wmic` removed in Server 2025, `uvloop` has no Windows wheels, CRA `CI=true` lint-as-error, Inno Setup preprocessor mistaking `#8:` Pascal char literal for a directive, `TNewEdit.Password` is `PasswordChar`.
 
 ### Phase E — Docs ✅
 - [x] **E1.** `installer/README.md` rewritten with new wizard flow + smoke-test checklist.
