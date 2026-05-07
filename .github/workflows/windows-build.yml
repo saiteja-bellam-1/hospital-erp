@@ -29,9 +29,15 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
 
+    env:
+      # Force Node 24 for JavaScript-based actions ahead of GitHub's
+      # June 2026 cutover. Silences the Node 20 deprecation annotation
+      # GitHub now adds to every run.
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # ----- version resolution -----
       - name: Resolve version
@@ -65,7 +71,7 @@ jobs:
 
       # ----- toolchains -----
       - name: Setup Python 3.11
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
           cache: 'pip'
@@ -74,7 +80,7 @@ jobs:
             backend/requirements.txt
 
       - name: Setup Node 20
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '20'
           cache: 'npm'
@@ -130,7 +136,7 @@ jobs:
 
       # ----- upload -----
       - name: Upload installer artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: KTHEALTHERP_Setup_${{ steps.ver.outputs.version }}
           path: ${{ steps.artifact.outputs.path }}
