@@ -798,19 +798,20 @@ begin
   for i := 1 to Length(S) do
   begin
     C := S[i];
-    case C of
-      '\': Result := Result + '\\';
-      '"': Result := Result + '\"';
-      #8:  Result := Result + '\b';
-      #9:  Result := Result + '\t';
-      #10: Result := Result + '\n';
-      #13: Result := Result + '\r';
+    // Avoid `#N` at line start — Inno Setup's preprocessor treats `#` as a
+    // directive marker when it's the first non-whitespace token on a line,
+    // so a Pascal character literal like `#8:` triggers a fake directive
+    // error. Chr(N) is unambiguous.
+    if C = '\' then Result := Result + '\\'
+    else if C = '"' then Result := Result + '\"'
+    else if C = Chr(8) then Result := Result + '\b'
+    else if C = Chr(9) then Result := Result + '\t'
+    else if C = Chr(10) then Result := Result + '\n'
+    else if C = Chr(13) then Result := Result + '\r'
+    else if Ord(C) < 32 then
+      Result := Result + '\u00' + Format('%.2x', [Ord(C)])
     else
-      if Ord(C) < 32 then
-        Result := Result + '\u00' + Format('%.2x', [Ord(C)])
-      else
-        Result := Result + C;
-    end;
+      Result := Result + C;
   end;
 end;
 
