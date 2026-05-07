@@ -549,7 +549,7 @@ begin
   EdAdminPwd := TNewEdit.Create(AdminPage.Surface);
   EdAdminPwd.Parent := AdminPage.Surface;
   EdAdminPwd.Top := 114; EdAdminPwd.Width := AdminPage.SurfaceWidth;
-  EdAdminPwd.Password := True;
+  EdAdminPwd.PasswordChar := '*';
 
   Lbl := TNewStaticText.Create(AdminPage.Surface);
   Lbl.Parent := AdminPage.Surface;
@@ -557,7 +557,7 @@ begin
   EdAdminPwdConfirm := TNewEdit.Create(AdminPage.Surface);
   EdAdminPwdConfirm.Parent := AdminPage.Surface;
   EdAdminPwdConfirm.Top := 162; EdAdminPwdConfirm.Width := AdminPage.SurfaceWidth;
-  EdAdminPwdConfirm.Password := True;
+  EdAdminPwdConfirm.PasswordChar := '*';
 
   LblAdminError := TNewStaticText.Create(AdminPage.Surface);
   LblAdminError.Parent := AdminPage.Surface;
