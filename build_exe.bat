@@ -39,9 +39,9 @@ echo.
 echo [2/5] Building React frontend...
 pushd frontend
 call npm ci > "..\!LOG_DIR!\02a_npm_ci.log" 2>&1
-if %ERRORLEVEL% neq 0 ( popd & call :FAIL "npm ci" "!LOG_DIR!\02a_npm_ci.log" )
+if %ERRORLEVEL% neq 0 ( popd & call :FAIL_AND_EXIT "npm ci" "!LOG_DIR!\02a_npm_ci.log" )
 call npm run build > "..\!LOG_DIR!\02b_npm_build.log" 2>&1
-if %ERRORLEVEL% neq 0 ( popd & call :FAIL "npm run build" "!LOG_DIR!\02b_npm_build.log" )
+if %ERRORLEVEL% neq 0 ( popd & call :FAIL_AND_EXIT "npm run build" "!LOG_DIR!\02b_npm_build.log" )
 popd
 if not exist "frontend\build\index.html" (
     echo ERROR: frontend\build\index.html not found after build!
@@ -62,9 +62,9 @@ if exist "requirements.lock" (
     echo   requirements.lock missing — installing from requirements.txt
     pip install -r requirements.txt > "..\!LOG_DIR!\03a_pip_requirements.log" 2>&1
 )
-if %ERRORLEVEL% neq 0 ( popd & call :FAIL "pip install" "!LOG_DIR!\03a_pip_requirements.log" )
+if %ERRORLEVEL% neq 0 ( popd & call :FAIL_AND_EXIT "pip install" "!LOG_DIR!\03a_pip_requirements.log" )
 pip install pyinstaller > "..\!LOG_DIR!\03b_pip_pyinstaller.log" 2>&1
-if %ERRORLEVEL% neq 0 ( popd & call :FAIL "pip install pyinstaller" "!LOG_DIR!\03b_pip_pyinstaller.log" )
+if %ERRORLEVEL% neq 0 ( popd & call :FAIL_AND_EXIT "pip install pyinstaller" "!LOG_DIR!\03b_pip_pyinstaller.log" )
 popd
 echo Dependencies installed.
 echo.
@@ -73,7 +73,7 @@ echo.
 echo [4/5] Building KTHEALTHERP.exe...
 pushd backend
 pyinstaller hospital_erp.spec --clean --noconfirm > "..\!LOG_DIR!\04_pyinstaller.log" 2>&1
-if %ERRORLEVEL% neq 0 ( popd & call :FAIL "pyinstaller" "!LOG_DIR!\04_pyinstaller.log" )
+if %ERRORLEVEL% neq 0 ( popd & call :FAIL_AND_EXIT "pyinstaller" "!LOG_DIR!\04_pyinstaller.log" )
 popd
 if not exist "backend\dist\KTHEALTHERP.exe" (
     echo ERROR: KTHEALTHERP.exe was not created!
@@ -89,7 +89,7 @@ if "%SIGNING_CERT%"=="" (
     if not defined SIGNING_TIMESTAMP set SIGNING_TIMESTAMP=http://timestamp.digicert.com
     echo   Signing with %SIGNING_CERT%
     signtool sign /f "%SIGNING_CERT%" /p "%SIGNING_PASS%" /tr "%SIGNING_TIMESTAMP%" /td sha256 /fd sha256 "backend\dist\KTHEALTHERP.exe" > "!LOG_DIR!\05_signtool.log" 2>&1
-    if !ERRORLEVEL! neq 0 ( call :FAIL "signtool" "!LOG_DIR!\05_signtool.log" )
+    if !ERRORLEVEL! neq 0 ( call :FAIL_AND_EXIT "signtool" "!LOG_DIR!\05_signtool.log" )
     signtool verify /pa "backend\dist\KTHEALTHERP.exe" >> "!LOG_DIR!\05_signtool.log" 2>&1
     if !ERRORLEVEL! neq 0 ( call :FAIL "signtool verify" "!LOG_DIR!\05_signtool.log" )
     echo   Signed and verified.
@@ -118,18 +118,19 @@ exit /b 0
 
 
 :: ---------------------------------------------------------------
-:: :FAIL "<step name>" "<log file>"
-:: Tails the last 50 lines of the failed step's log and exits 1.
+:: :FAIL_AND_EXIT — used by step handlers. Tails the failed step's log,
+:: then halts the entire script. Plain `exit /b 1` from a `call`'d label
+:: only ends the subroutine, not the parent — `exit 1` (no /b) terminates
+:: the whole cmd.exe invocation, which is what we want.
 :: ---------------------------------------------------------------
-:FAIL
+:FAIL_AND_EXIT
 echo.
 echo ============================================
 echo  BUILD FAILED at step: %~1
 echo  Full log:  %~2
 echo ============================================
 echo  --- Last 50 lines of %~1 log ---
-powershell -NoProfile -Command "Get-Content -Path '%~2' -Tail 50"
+if exist "%~2" powershell -NoProfile -Command "Get-Content -Path '%~2' -Tail 50"
 echo  --- end of log tail ---
 echo.
-pause
-exit /b 1
+exit 1
