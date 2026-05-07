@@ -1,0 +1,155 @@
+name: Windows installer build
+
+# Builds KTHEALTHERP_Setup_<version>.exe.
+#
+# Versioning rules:
+#   * tag push `vMAJOR.MINOR.PATCH` -> version = MAJOR.MINOR.PATCH (also creates a Release).
+#   * any other trigger             -> version = <base>.<github.run_number>
+#                                       where <base> is the MAJOR.MINOR read out of
+#                                       backend/launcher.py's APP_VERSION constant
+#                                       (so build #42 on `1.1.x` becomes `1.1.42`).
+#
+# Both APP_VERSION (in launcher.py) and INSTALLER_VERSION (passed to Inno
+# Setup) are patched to the resolved value before building so the launcher's
+# diagnostics page, the .exe metadata, and the installer filename all match.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to upload to a Release on tag push
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ----- version resolution -----
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -like 'refs/tags/v*') {
+            $version = $env:GITHUB_REF -replace '^refs/tags/v',''
+            $isRelease = 'true'
+          } else {
+            # Pull the MAJOR.MINOR off APP_VERSION = "X.Y.Z" in launcher.py
+            $line = Select-String -Path 'backend\launcher.py' -Pattern 'APP_VERSION\s*=\s*"([0-9]+\.[0-9]+)' | Select-Object -First 1
+            if (-not $line) { Write-Error "Could not parse APP_VERSION from launcher.py"; exit 1 }
+            $base = $line.Matches[0].Groups[1].Value
+            $version = "$base.$env:GITHUB_RUN_NUMBER"
+            $isRelease = 'false'
+          }
+          Write-Host "Resolved version: $version (release=$isRelease)"
+          "version=$version"     | Out-File $env:GITHUB_OUTPUT -Append
+          "is_release=$isRelease" | Out-File $env:GITHUB_OUTPUT -Append
+
+      - name: Patch APP_VERSION in launcher.py
+        shell: pwsh
+        run: |
+          $v = '${{ steps.ver.outputs.version }}'
+          $path = 'backend\launcher.py'
+          (Get-Content $path) `
+            -replace 'APP_VERSION\s*=\s*"[^"]+"', ('APP_VERSION = "{0}"' -f $v) `
+            | Set-Content $path -Encoding UTF8
+          Select-String -Path $path -Pattern 'APP_VERSION' | Select-Object -First 1
+
+      # ----- toolchains -----
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: |
+            backend/requirements.lock
+            backend/requirements.txt
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          # Make sure ISCC.exe is on PATH for downstream steps
+          "$env:ProgramFiles (x86)\Inno Setup 6" | Out-File $env:GITHUB_PATH -Append
+          "$env:ProgramFiles\Inno Setup 6"      | Out-File $env:GITHUB_PATH -Append
+
+      # ----- build the .exe -----
+      # build_exe.bat installs backend deps (incl. pyinstaller) into the
+      # system Python via plain `pip install`, builds the React bundle, and
+      # produces backend\dist\KTHEALTHERP.exe. We redirect from NUL so the
+      # `pause` at the end of the script does not block the runner.
+      - name: Build KTHEALTHERP.exe
+        shell: cmd
+        run: build_exe.bat < NUL
+
+      - name: Build dbcheck.exe (wizard helper)
+        shell: cmd
+        run: installer\build_dbcheck.bat
+
+      - name: Build Windows installer
+        shell: cmd
+        env:
+          INSTALLER_VERSION: ${{ steps.ver.outputs.version }}
+        run: build_installer.bat < NUL
+
+      # ----- collect + verify -----
+      - name: Locate installer artifact
+        id: artifact
+        shell: pwsh
+        run: |
+          $v = '${{ steps.ver.outputs.version }}'
+          $path = "backend\dist\installer\KTHEALTHERP_Setup_$v.exe"
+          if (-not (Test-Path $path)) {
+            Write-Error "Installer not found at $path"
+            Get-ChildItem backend\dist\installer -ErrorAction SilentlyContinue
+            exit 1
+          }
+          $size = (Get-Item $path).Length
+          Write-Host "Installer: $path ($size bytes)"
+          "path=$path" | Out-File $env:GITHUB_OUTPUT -Append
+
+      # ----- upload -----
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KTHEALTHERP_Setup_${{ steps.ver.outputs.version }}
+          path: ${{ steps.artifact.outputs.path }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Create GitHub Release
+        if: steps.ver.outputs.is_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $tag = "v${{ steps.ver.outputs.version }}"
+          $title = "KT HEALTH ERP ${{ steps.ver.outputs.version }}"
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --title "$title" --notes "Automated build from commit $env:GITHUB_SHA"
+          }
+          gh release upload $tag '${{ steps.artifact.outputs.path }}' --clobber
+
+      # ----- (stub) code signing -----
+      # When SIGNING_CERT_BASE64 is configured as a secret, we'd decode it
+      # to a temp .pfx, set SIGNING_CERT/SIGNING_PASS env vars BEFORE the
+      # build_exe.bat / build_installer.bat steps, and signtool would run
+      # automatically (logic already in those scripts). Until the cert is
+      # provisioned, the build is unsigned and SmartScreen will warn end
+      # users on first install. See installer/README.md.

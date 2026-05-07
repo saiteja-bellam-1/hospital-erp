@@ -1,13 +1,24 @@
 ; KT HEALTH ERP — Inno Setup script
-; Wraps the PyInstaller .exe in a proper Windows installer with Start Menu /
-; Desktop entries and an uninstaller registered in Apps & Features.
 ;
-; To compile this script, install Inno Setup 6+ (https://jrsoftware.org/isinfo.php)
-; and run build_installer.bat from the repo root after build_exe.bat completes.
+; Unified installation wizard. Beyond the usual file-copy + shortcuts an Inno
+; Setup script does, this one collects everything the React Setup Wizard used
+; to ask for (hospital info, admin credentials, optional license, optional
+; existing data folder, backup destinations) and writes the answers to
+;
+;   <data-dir>\install_seed.json
+;   <data-dir>\.install_seed.pwd     (NTFS-locked: SYSTEM + Administrators)
+;
+; On first launch, backend\launcher.py -> app.services.bootstrap_from_seed
+; consumes both files and seeds the DB exactly the way the React wizard does.
+; If the operator chooses "Use existing data folder", we skip the hospital /
+; admin / license pages and let the bootstrap rebind config.json instead.
+;
+; Build with build_installer.bat after build_exe.bat + build_dbcheck.bat.
 
 #define AppName        "KT HEALTH ERP"
 #define AppPublisher   "KT Health Soft"
 #define AppExeName     "KTHEALTHERP.exe"
+#define DbCheckExe     "dbcheck.exe"
 #define AppId          "{{8BC2E1C5-7DBA-4F4D-9B1E-6A3F2A4D0001}"
 #ifndef AppVersion
   #define AppVersion   "1.1.0"
@@ -46,7 +57,12 @@ Name: "firewall"; Description: "Allow LAN access through Windows Firewall (recom
 [Files]
 Source: "..\backend\dist\{#AppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\backend\assets\icon.ico";    DestDir: "{app}\assets"; Flags: ignoreversion
-; data\ is intentionally NOT shipped — it is created on first launch by launcher.py
+; dbcheck.exe is used by the wizard pages at install time. We extract it to
+; {tmp} on demand via ExtractTemporaryFile (dontcopy), AND drop an installed
+; copy into {app} so an admin can re-run checks later from the install dir.
+Source: "bin\{#DbCheckExe}"; Flags: dontcopy
+Source: "bin\{#DbCheckExe}"; DestDir: "{app}"; Flags: ignoreversion
+; data\ is intentionally NOT shipped — it is created by the wizard / launcher
 ; so backups and DBs survive reinstall/upgrade.
 
 [Icons]
@@ -68,6 +84,827 @@ Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""KT HEALT
 Type: files; Name: "{app}\assets\icon.ico"
 
 [Code]
+// ============================================================================
+//   KT HEALTH ERP — wizard pages
+// ============================================================================
+// Order:
+//   wpWelcome -> wpSelectDir -> [DataFolderPage] -> [DbCheckPage]
+//   -> [LicensePage] -> [HospitalPage] -> [AdminPage] -> [BackupPage]
+//   -> wpSelectTasks -> wpReady -> wpInstalling -> wpFinished
+//
+// Pages prefixed with [Hospital/Admin/License] are skipped when the operator
+// picks "Use existing data folder" on DataFolderPage — that branch only needs
+// the data folder + (optional) backup destinations.
+// ============================================================================
+
+const
+  MODE_FRESH    = 0;
+  MODE_EXISTING = 1;
+  MIN_PWD_LEN   = 8;
+
+var
+  // DataFolderPage
+  DataFolderPage:    TWizardPage;
+  RbFresh:           TNewRadioButton;
+  RbExisting:        TNewRadioButton;
+  EdNewDataDir:      TNewEdit;
+  BtnBrowseNewData:  TNewButton;
+  EdExistingDataDir: TNewEdit;
+  BtnBrowseExisting: TNewButton;
+  LblDataIntro:      TNewStaticText;
+
+  // DbCheckPage (only shown for MODE_EXISTING)
+  DbCheckPage:       TWizardPage;
+  DbCheckMemo:       TNewMemo;
+  DbCheckOk:         Boolean;
+
+  // LicensePage
+  LicensePage:       TWizardPage;
+  LblMachineId:      TNewStaticText;
+  EdMachineId:       TNewEdit;
+  EdLicensePath:     TNewEdit;
+  BtnBrowseLicense:  TNewButton;
+  BtnVerifyLicense:  TNewButton;
+  LblLicenseStatus:  TNewStaticText;
+  LicenseValid:      Boolean;
+
+  // HospitalPage
+  HospitalPage:      TWizardPage;
+  EdHospName:        TNewEdit;
+  EdHospAddr:        TNewEdit;
+  EdHospPhone:       TNewEdit;
+  EdHospEmail:       TNewEdit;
+
+  // AdminPage
+  AdminPage:         TWizardPage;
+  EdAdminUser:       TNewEdit;
+  EdAdminEmail:      TNewEdit;
+  EdAdminPwd:        TNewEdit;
+  EdAdminPwdConfirm: TNewEdit;
+  LblAdminError:     TNewStaticText;
+
+  // BackupPage
+  BackupPage:        TWizardPage;
+  EdBackup1:         TNewEdit;
+  EdBackup2:         TNewEdit;
+  EdBackup3:         TNewEdit;
+  BtnBackup1:        TNewButton;
+  BtnBackup2:        TNewButton;
+  BtnBackup3:        TNewButton;
+
+// ----------------------------------------------------------------------------
+//   helpers
+// ----------------------------------------------------------------------------
+
+function GetMode: Integer;
+begin
+  if RbExisting.Checked then
+    Result := MODE_EXISTING
+  else
+    Result := MODE_FRESH;
+end;
+
+function DbCheckExePath: String;
+begin
+  // While the wizard is running, ExtractTemporaryFile makes the file available
+  // at {tmp}\dbcheck.exe. We extract on first use.
+  Result := ExpandConstant('{tmp}\') + '{#DbCheckExe}';
+end;
+
+procedure EnsureDbCheckExtracted;
+begin
+  if not FileExists(DbCheckExePath) then
+    ExtractTemporaryFile('{#DbCheckExe}');
+end;
+
+function RunDbCheck(const Args: String; out Output: String): Boolean;
+var
+  TmpFile, Cmd: String;
+  ResultCode: Integer;
+  Lines: TStringList;
+begin
+  Result := False;
+  Output := '';
+  EnsureDbCheckExtracted;
+  TmpFile := ExpandConstant('{tmp}\dbcheck_out.txt');
+  Cmd := '/C """' + DbCheckExePath + '" ' + Args + ' > "' + TmpFile + '" 2>&1"';
+  if not Exec(ExpandConstant('{cmd}'), Cmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Exit;
+  Lines := TStringList.Create;
+  try
+    if FileExists(TmpFile) then
+    begin
+      Lines.LoadFromFile(TmpFile);
+      Output := Lines.Text;
+    end;
+  finally
+    Lines.Free;
+  end;
+  Result := (ResultCode = 0);
+end;
+
+function JsonHasOkTrue(const S: String): Boolean;
+begin
+  // Tiny JSON probe — dbcheck.exe always emits {"ok": true|false, ...} as the
+  // first thing on stdout. We avoid pulling in a real JSON lib in Pascal.
+  Result := (Pos('"ok": true', S) > 0) or (Pos('"ok":true', S) > 0);
+end;
+
+function ExtractJsonError(const S: String): String;
+var
+  P, Q: Integer;
+  Tag: String;
+begin
+  Result := '';
+  Tag := '"error":';
+  P := Pos(Tag, S);
+  if P = 0 then Exit;
+  P := P + Length(Tag);
+  while (P <= Length(S)) and (S[P] = ' ') do Inc(P);
+  if (P > Length(S)) or (S[P] <> '"') then Exit;
+  Inc(P);
+  Q := P;
+  while (Q <= Length(S)) and (S[Q] <> '"') do Inc(Q);
+  if Q > P then Result := Copy(S, P, Q - P);
+end;
+
+function PickFolder(Default: String): String;
+var
+  Selected: String;
+begin
+  Selected := Default;
+  if BrowseForFolder('Select a folder', Selected, True) then
+    Result := Selected
+  else
+    Result := Default;
+end;
+
+function PickFile(const Filter, Default: String): String;
+var
+  Selected: String;
+begin
+  Selected := Default;
+  if GetOpenFileName('Select a file', Selected, '', Filter, '') then
+    Result := Selected
+  else
+    Result := Default;
+end;
+
+function StrIsEmpty(const S: String): Boolean;
+begin
+  Result := Trim(S) = '';
+end;
+
+function HasWhitespace(const S: String): Boolean;
+var
+  i: Integer;
+begin
+  Result := False;
+  for i := 1 to Length(S) do
+    if (S[i] = ' ') or (S[i] = #9) then
+    begin
+      Result := True;
+      Exit;
+    end;
+end;
+
+// ----------------------------------------------------------------------------
+//   page constructors
+// ----------------------------------------------------------------------------
+
+procedure OnBrowseNewData(Sender: TObject);
+begin
+  EdNewDataDir.Text := PickFolder(EdNewDataDir.Text);
+end;
+
+procedure OnBrowseExisting(Sender: TObject);
+begin
+  EdExistingDataDir.Text := PickFolder(EdExistingDataDir.Text);
+end;
+
+procedure OnRadioChange(Sender: TObject);
+begin
+  EdNewDataDir.Enabled       := RbFresh.Checked;
+  BtnBrowseNewData.Enabled   := RbFresh.Checked;
+  EdExistingDataDir.Enabled  := RbExisting.Checked;
+  BtnBrowseExisting.Enabled  := RbExisting.Checked;
+end;
+
+procedure CreateDataFolderPage;
+begin
+  DataFolderPage := CreateCustomPage(wpSelectDir,
+    'Data folder',
+    'Choose where the database, uploads, and configuration live.');
+
+  LblDataIntro := TNewStaticText.Create(DataFolderPage.Surface);
+  LblDataIntro.Parent := DataFolderPage.Surface;
+  LblDataIntro.Top := 0;
+  LblDataIntro.Width := DataFolderPage.SurfaceWidth;
+  LblDataIntro.AutoSize := False;
+  LblDataIntro.Height := 30;
+  LblDataIntro.WordWrap := True;
+  LblDataIntro.Caption :=
+    'Pick "Create a new data folder" for a fresh hospital install. ' +
+    'Pick "Use existing data folder" if you are reinstalling and want to keep your existing database.';
+
+  RbFresh := TNewRadioButton.Create(DataFolderPage.Surface);
+  RbFresh.Parent := DataFolderPage.Surface;
+  RbFresh.Top := 40;
+  RbFresh.Width := DataFolderPage.SurfaceWidth;
+  RbFresh.Caption := 'Create a new data folder (fresh install)';
+  RbFresh.Checked := True;
+  RbFresh.OnClick := @OnRadioChange;
+
+  EdNewDataDir := TNewEdit.Create(DataFolderPage.Surface);
+  EdNewDataDir.Parent := DataFolderPage.Surface;
+  EdNewDataDir.Top := 65;
+  EdNewDataDir.Left := 24;
+  EdNewDataDir.Width := DataFolderPage.SurfaceWidth - 110;
+  EdNewDataDir.Text := ExpandConstant('{autopf}\KTHEALTHERP\data');
+
+  BtnBrowseNewData := TNewButton.Create(DataFolderPage.Surface);
+  BtnBrowseNewData.Parent := DataFolderPage.Surface;
+  BtnBrowseNewData.Top := 63;
+  BtnBrowseNewData.Left := DataFolderPage.SurfaceWidth - 80;
+  BtnBrowseNewData.Width := 80;
+  BtnBrowseNewData.Height := 23;
+  BtnBrowseNewData.Caption := 'Browse...';
+  BtnBrowseNewData.OnClick := @OnBrowseNewData;
+
+  RbExisting := TNewRadioButton.Create(DataFolderPage.Surface);
+  RbExisting.Parent := DataFolderPage.Surface;
+  RbExisting.Top := 110;
+  RbExisting.Width := DataFolderPage.SurfaceWidth;
+  RbExisting.Caption := 'Use existing data folder (keep my existing database)';
+  RbExisting.OnClick := @OnRadioChange;
+
+  EdExistingDataDir := TNewEdit.Create(DataFolderPage.Surface);
+  EdExistingDataDir.Parent := DataFolderPage.Surface;
+  EdExistingDataDir.Top := 135;
+  EdExistingDataDir.Left := 24;
+  EdExistingDataDir.Width := DataFolderPage.SurfaceWidth - 110;
+  EdExistingDataDir.Enabled := False;
+
+  BtnBrowseExisting := TNewButton.Create(DataFolderPage.Surface);
+  BtnBrowseExisting.Parent := DataFolderPage.Surface;
+  BtnBrowseExisting.Top := 133;
+  BtnBrowseExisting.Left := DataFolderPage.SurfaceWidth - 80;
+  BtnBrowseExisting.Width := 80;
+  BtnBrowseExisting.Height := 23;
+  BtnBrowseExisting.Caption := 'Browse...';
+  BtnBrowseExisting.Enabled := False;
+  BtnBrowseExisting.OnClick := @OnBrowseExisting;
+end;
+
+procedure CreateDbCheckPage;
+begin
+  DbCheckPage := CreateCustomPage(DataFolderPage.ID,
+    'Database integrity check',
+    'Verifying the existing data folder before we connect to it.');
+
+  DbCheckMemo := TNewMemo.Create(DbCheckPage.Surface);
+  DbCheckMemo.Parent := DbCheckPage.Surface;
+  DbCheckMemo.Top := 0;
+  DbCheckMemo.Width := DbCheckPage.SurfaceWidth;
+  DbCheckMemo.Height := DbCheckPage.SurfaceHeight;
+  DbCheckMemo.ReadOnly := True;
+  DbCheckMemo.ScrollBars := ssVertical;
+  DbCheckMemo.Text := '';
+end;
+
+procedure OnBrowseLicense(Sender: TObject);
+begin
+  EdLicensePath.Text := PickFile('License files (*.lic)|*.lic|All files|*.*', EdLicensePath.Text);
+end;
+
+procedure OnVerifyLicense(Sender: TObject);
+var
+  Output, Err: String;
+begin
+  LicenseValid := False;
+  if StrIsEmpty(EdLicensePath.Text) then
+  begin
+    LblLicenseStatus.Caption := 'No license selected. You can skip this step and upload one from the app later.';
+    Exit;
+  end;
+  if not FileExists(EdLicensePath.Text) then
+  begin
+    LblLicenseStatus.Caption := 'File not found: ' + EdLicensePath.Text;
+    Exit;
+  end;
+
+  LblLicenseStatus.Caption := 'Verifying...';
+  RunDbCheck('validate-license "' + EdLicensePath.Text + '"', Output);
+  if JsonHasOkTrue(Output) then
+  begin
+    LicenseValid := True;
+    LblLicenseStatus.Caption := 'License OK — signature valid and bound to this machine.';
+  end
+  else
+  begin
+    Err := ExtractJsonError(Output);
+    if Err = '' then Err := 'Unknown error. See ' + ExpandConstant('{tmp}\dbcheck_out.txt');
+    LblLicenseStatus.Caption := 'License rejected: ' + Err;
+  end;
+end;
+
+procedure CreateLicensePage;
+var
+  Output: String;
+  MachineId: String;
+  P, Q: Integer;
+begin
+  LicensePage := CreateCustomPage(DbCheckPage.ID,
+    'License (optional)',
+    'You can apply a .lic file now, or skip and upload it from the app later.');
+
+  LblMachineId := TNewStaticText.Create(LicensePage.Surface);
+  LblMachineId.Parent := LicensePage.Surface;
+  LblMachineId.Top := 0;
+  LblMachineId.Caption := 'This machine''s ID (give this to your vendor when buying a license):';
+
+  EdMachineId := TNewEdit.Create(LicensePage.Surface);
+  EdMachineId.Parent := LicensePage.Surface;
+  EdMachineId.Top := 18;
+  EdMachineId.Width := LicensePage.SurfaceWidth;
+  EdMachineId.ReadOnly := True;
+  EdMachineId.Text := '(detecting...)';
+
+  // Detect machine ID — runs at page-create time so the value is visible up front.
+  if RunDbCheck('machine-id', Output) and JsonHasOkTrue(Output) then
+  begin
+    P := Pos('"machine_id":', Output);
+    if P > 0 then
+    begin
+      P := P + Length('"machine_id":');
+      while (P <= Length(Output)) and (Output[P] = ' ') do Inc(P);
+      if Output[P] = '"' then
+      begin
+        Inc(P);
+        Q := P;
+        while (Q <= Length(Output)) and (Output[Q] <> '"') do Inc(Q);
+        MachineId := Copy(Output, P, Q - P);
+        EdMachineId.Text := MachineId;
+      end;
+    end;
+  end
+  else
+    EdMachineId.Text := '(unavailable)';
+
+  EdLicensePath := TNewEdit.Create(LicensePage.Surface);
+  EdLicensePath.Parent := LicensePage.Surface;
+  EdLicensePath.Top := 60;
+  EdLicensePath.Width := LicensePage.SurfaceWidth - 200;
+
+  BtnBrowseLicense := TNewButton.Create(LicensePage.Surface);
+  BtnBrowseLicense.Parent := LicensePage.Surface;
+  BtnBrowseLicense.Top := 58;
+  BtnBrowseLicense.Left := LicensePage.SurfaceWidth - 190;
+  BtnBrowseLicense.Width := 90;
+  BtnBrowseLicense.Height := 23;
+  BtnBrowseLicense.Caption := 'Browse .lic';
+  BtnBrowseLicense.OnClick := @OnBrowseLicense;
+
+  BtnVerifyLicense := TNewButton.Create(LicensePage.Surface);
+  BtnVerifyLicense.Parent := LicensePage.Surface;
+  BtnVerifyLicense.Top := 58;
+  BtnVerifyLicense.Left := LicensePage.SurfaceWidth - 95;
+  BtnVerifyLicense.Width := 95;
+  BtnVerifyLicense.Height := 23;
+  BtnVerifyLicense.Caption := 'Verify';
+  BtnVerifyLicense.OnClick := @OnVerifyLicense;
+
+  LblLicenseStatus := TNewStaticText.Create(LicensePage.Surface);
+  LblLicenseStatus.Parent := LicensePage.Surface;
+  LblLicenseStatus.Top := 95;
+  LblLicenseStatus.Width := LicensePage.SurfaceWidth;
+  LblLicenseStatus.AutoSize := False;
+  LblLicenseStatus.Height := 40;
+  LblLicenseStatus.WordWrap := True;
+  LblLicenseStatus.Caption := 'Leave empty to skip; otherwise click Verify before continuing.';
+end;
+
+procedure CreateHospitalPage;
+var
+  Lbl: TNewStaticText;
+begin
+  HospitalPage := CreateCustomPage(LicensePage.ID,
+    'Hospital details',
+    'These appear on prescriptions, bills, and reports.');
+
+  Lbl := TNewStaticText.Create(HospitalPage.Surface);
+  Lbl.Parent := HospitalPage.Surface;
+  Lbl.Top := 0;  Lbl.Caption := 'Hospital name *';
+  EdHospName := TNewEdit.Create(HospitalPage.Surface);
+  EdHospName.Parent := HospitalPage.Surface;
+  EdHospName.Top := 18; EdHospName.Width := HospitalPage.SurfaceWidth;
+
+  Lbl := TNewStaticText.Create(HospitalPage.Surface);
+  Lbl.Parent := HospitalPage.Surface;
+  Lbl.Top := 50; Lbl.Caption := 'Address';
+  EdHospAddr := TNewEdit.Create(HospitalPage.Surface);
+  EdHospAddr.Parent := HospitalPage.Surface;
+  EdHospAddr.Top := 68; EdHospAddr.Width := HospitalPage.SurfaceWidth;
+
+  Lbl := TNewStaticText.Create(HospitalPage.Surface);
+  Lbl.Parent := HospitalPage.Surface;
+  Lbl.Top := 100; Lbl.Caption := 'Phone';
+  EdHospPhone := TNewEdit.Create(HospitalPage.Surface);
+  EdHospPhone.Parent := HospitalPage.Surface;
+  EdHospPhone.Top := 118; EdHospPhone.Width := HospitalPage.SurfaceWidth;
+
+  Lbl := TNewStaticText.Create(HospitalPage.Surface);
+  Lbl.Parent := HospitalPage.Surface;
+  Lbl.Top := 150; Lbl.Caption := 'Email';
+  EdHospEmail := TNewEdit.Create(HospitalPage.Surface);
+  EdHospEmail.Parent := HospitalPage.Surface;
+  EdHospEmail.Top := 168; EdHospEmail.Width := HospitalPage.SurfaceWidth;
+end;
+
+procedure CreateAdminPage;
+var
+  Lbl: TNewStaticText;
+begin
+  AdminPage := CreateCustomPage(HospitalPage.ID,
+    'Administrator account',
+    'This is the first user that can sign in. You can add more from the app afterwards.');
+
+  Lbl := TNewStaticText.Create(AdminPage.Surface);
+  Lbl.Parent := AdminPage.Surface;
+  Lbl.Top := 0; Lbl.Caption := 'Username * (no spaces)';
+  EdAdminUser := TNewEdit.Create(AdminPage.Surface);
+  EdAdminUser.Parent := AdminPage.Surface;
+  EdAdminUser.Top := 18; EdAdminUser.Width := AdminPage.SurfaceWidth;
+
+  Lbl := TNewStaticText.Create(AdminPage.Surface);
+  Lbl.Parent := AdminPage.Surface;
+  Lbl.Top := 48; Lbl.Caption := 'Email';
+  EdAdminEmail := TNewEdit.Create(AdminPage.Surface);
+  EdAdminEmail.Parent := AdminPage.Surface;
+  EdAdminEmail.Top := 66; EdAdminEmail.Width := AdminPage.SurfaceWidth;
+
+  Lbl := TNewStaticText.Create(AdminPage.Surface);
+  Lbl.Parent := AdminPage.Surface;
+  Lbl.Top := 96; Lbl.Caption := 'Password * (min ' + IntToStr(MIN_PWD_LEN) + ' characters)';
+  EdAdminPwd := TNewEdit.Create(AdminPage.Surface);
+  EdAdminPwd.Parent := AdminPage.Surface;
+  EdAdminPwd.Top := 114; EdAdminPwd.Width := AdminPage.SurfaceWidth;
+  EdAdminPwd.Password := True;
+
+  Lbl := TNewStaticText.Create(AdminPage.Surface);
+  Lbl.Parent := AdminPage.Surface;
+  Lbl.Top := 144; Lbl.Caption := 'Confirm password *';
+  EdAdminPwdConfirm := TNewEdit.Create(AdminPage.Surface);
+  EdAdminPwdConfirm.Parent := AdminPage.Surface;
+  EdAdminPwdConfirm.Top := 162; EdAdminPwdConfirm.Width := AdminPage.SurfaceWidth;
+  EdAdminPwdConfirm.Password := True;
+
+  LblAdminError := TNewStaticText.Create(AdminPage.Surface);
+  LblAdminError.Parent := AdminPage.Surface;
+  LblAdminError.Top := 195; LblAdminError.Width := AdminPage.SurfaceWidth;
+  LblAdminError.AutoSize := False; LblAdminError.Height := 30; LblAdminError.WordWrap := True;
+  LblAdminError.Caption := '';
+end;
+
+procedure OnBrowseBackup1(Sender: TObject); begin EdBackup1.Text := PickFolder(EdBackup1.Text); end;
+procedure OnBrowseBackup2(Sender: TObject); begin EdBackup2.Text := PickFolder(EdBackup2.Text); end;
+procedure OnBrowseBackup3(Sender: TObject); begin EdBackup3.Text := PickFolder(EdBackup3.Text); end;
+
+procedure CreateBackupPage;
+var
+  Lbl: TNewStaticText;
+begin
+  BackupPage := CreateCustomPage(AdminPage.ID,
+    'Backup destinations (optional)',
+    'Folders the app will mirror the database into every minute. Leave blank to configure later.');
+
+  Lbl := TNewStaticText.Create(BackupPage.Surface);
+  Lbl.Parent := BackupPage.Surface;
+  Lbl.Top := 0; Lbl.Caption := 'Backup folder 1';
+  EdBackup1 := TNewEdit.Create(BackupPage.Surface);
+  EdBackup1.Parent := BackupPage.Surface;
+  EdBackup1.Top := 18; EdBackup1.Width := BackupPage.SurfaceWidth - 90;
+  BtnBackup1 := TNewButton.Create(BackupPage.Surface);
+  BtnBackup1.Parent := BackupPage.Surface;
+  BtnBackup1.Top := 16; BtnBackup1.Left := BackupPage.SurfaceWidth - 80;
+  BtnBackup1.Width := 80; BtnBackup1.Height := 23;
+  BtnBackup1.Caption := 'Browse...'; BtnBackup1.OnClick := @OnBrowseBackup1;
+
+  Lbl := TNewStaticText.Create(BackupPage.Surface);
+  Lbl.Parent := BackupPage.Surface;
+  Lbl.Top := 50; Lbl.Caption := 'Backup folder 2';
+  EdBackup2 := TNewEdit.Create(BackupPage.Surface);
+  EdBackup2.Parent := BackupPage.Surface;
+  EdBackup2.Top := 68; EdBackup2.Width := BackupPage.SurfaceWidth - 90;
+  BtnBackup2 := TNewButton.Create(BackupPage.Surface);
+  BtnBackup2.Parent := BackupPage.Surface;
+  BtnBackup2.Top := 66; BtnBackup2.Left := BackupPage.SurfaceWidth - 80;
+  BtnBackup2.Width := 80; BtnBackup2.Height := 23;
+  BtnBackup2.Caption := 'Browse...'; BtnBackup2.OnClick := @OnBrowseBackup2;
+
+  Lbl := TNewStaticText.Create(BackupPage.Surface);
+  Lbl.Parent := BackupPage.Surface;
+  Lbl.Top := 100; Lbl.Caption := 'Backup folder 3';
+  EdBackup3 := TNewEdit.Create(BackupPage.Surface);
+  EdBackup3.Parent := BackupPage.Surface;
+  EdBackup3.Top := 118; EdBackup3.Width := BackupPage.SurfaceWidth - 90;
+  BtnBackup3 := TNewButton.Create(BackupPage.Surface);
+  BtnBackup3.Parent := BackupPage.Surface;
+  BtnBackup3.Top := 116; BtnBackup3.Left := BackupPage.SurfaceWidth - 80;
+  BtnBackup3.Width := 80; BtnBackup3.Height := 23;
+  BtnBackup3.Caption := 'Browse...'; BtnBackup3.OnClick := @OnBrowseBackup3;
+end;
+
+procedure InitializeWizard;
+begin
+  CreateDataFolderPage;
+  CreateDbCheckPage;
+  CreateLicensePage;
+  CreateHospitalPage;
+  CreateAdminPage;
+  CreateBackupPage;
+  DbCheckOk := False;
+  LicenseValid := False;
+end;
+
+// ----------------------------------------------------------------------------
+//   navigation gates
+// ----------------------------------------------------------------------------
+
+procedure RunDbIntegrityCheck;
+var
+  Output, Err: String;
+begin
+  DbCheckOk := False;
+  DbCheckMemo.Lines.Clear;
+  DbCheckMemo.Lines.Add('Checking ' + EdExistingDataDir.Text + ' ...');
+
+  if RunDbCheck('check-db "' + EdExistingDataDir.Text + '"', Output) and JsonHasOkTrue(Output) then
+  begin
+    DbCheckOk := True;
+    DbCheckMemo.Lines.Add('');
+    DbCheckMemo.Lines.Add('OK — folder contains a valid KT HEALTH ERP database.');
+    DbCheckMemo.Lines.Add('');
+    DbCheckMemo.Lines.Add(Output);
+  end
+  else
+  begin
+    Err := ExtractJsonError(Output);
+    if Err = '' then Err := '(see raw output below)';
+    DbCheckMemo.Lines.Add('');
+    DbCheckMemo.Lines.Add('Database check FAILED: ' + Err);
+    DbCheckMemo.Lines.Add('');
+    DbCheckMemo.Lines.Add(Output);
+  end;
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  PathOk: Boolean;
+  Output: String;
+begin
+  Result := True;
+
+  if CurPageID = DataFolderPage.ID then
+  begin
+    if GetMode = MODE_FRESH then
+    begin
+      if StrIsEmpty(EdNewDataDir.Text) then
+      begin
+        MsgBox('Please choose a data folder.', mbError, MB_OK);
+        Result := False; Exit;
+      end;
+      // probe writability
+      PathOk := RunDbCheck('check-writable "' + EdNewDataDir.Text + '"', Output) and JsonHasOkTrue(Output);
+      if not PathOk then
+      begin
+        MsgBox('Cannot write to that folder:'#13#10 + ExtractJsonError(Output), mbError, MB_OK);
+        Result := False;
+      end;
+    end
+    else
+    begin
+      if StrIsEmpty(EdExistingDataDir.Text) then
+      begin
+        MsgBox('Please pick the existing data folder.', mbError, MB_OK);
+        Result := False;
+      end;
+    end;
+    Exit;
+  end;
+
+  if CurPageID = DbCheckPage.ID then
+  begin
+    if not DbCheckOk then
+    begin
+      MsgBox('Database check failed. Fix the issue or pick a different folder before continuing.', mbError, MB_OK);
+      Result := False;
+    end;
+    Exit;
+  end;
+
+  if CurPageID = LicensePage.ID then
+  begin
+    // License is optional. If a path was entered, require a successful Verify.
+    if (not StrIsEmpty(EdLicensePath.Text)) and (not LicenseValid) then
+    begin
+      if MsgBox('You picked a license file but did not click Verify (or the verify failed). ' +
+                'Click Yes to skip it for now (you can upload from the app later) or No to go back and verify.',
+                mbConfirmation, MB_YESNO) = IDNO then
+      begin
+        Result := False;
+        Exit;
+      end;
+      // If they say yes, drop the license path so it isn't carried forward
+      EdLicensePath.Text := '';
+    end;
+    Exit;
+  end;
+
+  if CurPageID = HospitalPage.ID then
+  begin
+    if StrIsEmpty(EdHospName.Text) then
+    begin
+      MsgBox('Hospital name is required.', mbError, MB_OK);
+      Result := False;
+    end;
+    Exit;
+  end;
+
+  if CurPageID = AdminPage.ID then
+  begin
+    LblAdminError.Caption := '';
+    if StrIsEmpty(EdAdminUser.Text) then
+    begin
+      LblAdminError.Caption := 'Username is required.';
+      Result := False; Exit;
+    end;
+    if HasWhitespace(EdAdminUser.Text) then
+    begin
+      LblAdminError.Caption := 'Username cannot contain spaces.';
+      Result := False; Exit;
+    end;
+    if Length(EdAdminPwd.Text) < MIN_PWD_LEN then
+    begin
+      LblAdminError.Caption := 'Password must be at least ' + IntToStr(MIN_PWD_LEN) + ' characters.';
+      Result := False; Exit;
+    end;
+    if EdAdminPwd.Text <> EdAdminPwdConfirm.Text then
+    begin
+      LblAdminError.Caption := 'Passwords do not match.';
+      Result := False; Exit;
+    end;
+    Exit;
+  end;
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  // ShouldSkipPage handles MODE_FRESH/EXISTING fork, but Inno Setup needs
+  // the explicit ShouldSkipPage callback below — this proc is only used for
+  // page-specific side effects.
+  if CurPageID = DbCheckPage.ID then
+    RunDbIntegrityCheck;
+end;
+
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+  Result := False;
+  if GetMode = MODE_EXISTING then
+  begin
+    // adopt-existing: skip license/hospital/admin (they live in the existing DB)
+    if (PageID = LicensePage.ID) or
+       (PageID = HospitalPage.ID) or
+       (PageID = AdminPage.ID) then
+      Result := True;
+  end
+  else
+  begin
+    if PageID = DbCheckPage.ID then
+      Result := True;
+  end;
+end;
+
+// ----------------------------------------------------------------------------
+//   write the seed file at the end of the install
+// ----------------------------------------------------------------------------
+
+function JsonEscape(const S: String): String;
+var
+  i: Integer;
+  C: Char;
+begin
+  Result := '';
+  for i := 1 to Length(S) do
+  begin
+    C := S[i];
+    case C of
+      '\': Result := Result + '\\';
+      '"': Result := Result + '\"';
+      #8:  Result := Result + '\b';
+      #9:  Result := Result + '\t';
+      #10: Result := Result + '\n';
+      #13: Result := Result + '\r';
+    else
+      if Ord(C) < 32 then
+        Result := Result + '\u00' + Format('%.2x', [Ord(C)])
+      else
+        Result := Result + C;
+    end;
+  end;
+end;
+
+procedure WriteSeedFile;
+var
+  DataDir, SeedPath, PwdPath, Json: String;
+  Mode: Integer;
+  Lines: TStringList;
+  ResultCode: Integer;
+begin
+  Mode := GetMode;
+  if Mode = MODE_FRESH then
+    DataDir := EdNewDataDir.Text
+  else
+    DataDir := EdExistingDataDir.Text;
+
+  // launcher.py looks for the seed under <exe-dir>\data — when the exe is in
+  // {app}, that's {app}\data. The data folder the operator chose is captured
+  // INSIDE the seed JSON (the launcher then rebinds config.json to it).
+  ForceDirectories(ExpandConstant('{app}\data'));
+  SeedPath := ExpandConstant('{app}\data\install_seed.json');
+  PwdPath  := ExpandConstant('{app}\data\.install_seed.pwd');
+
+  if Mode = MODE_FRESH then
+  begin
+    Json :=
+      '{' + #13#10 +
+      '  "mode": "fresh",' + #13#10 +
+      '  "data_dir": "' + JsonEscape(DataDir) + '",' + #13#10 +
+      '  "hospital_name": "' + JsonEscape(EdHospName.Text) + '",' + #13#10 +
+      '  "hospital_address": "' + JsonEscape(EdHospAddr.Text) + '",' + #13#10 +
+      '  "hospital_phone": "' + JsonEscape(EdHospPhone.Text) + '",' + #13#10 +
+      '  "hospital_email": "' + JsonEscape(EdHospEmail.Text) + '",' + #13#10 +
+      '  "admin_username": "' + JsonEscape(EdAdminUser.Text) + '",' + #13#10 +
+      '  "admin_email": "' + JsonEscape(EdAdminEmail.Text) + '",' + #13#10 +
+      '  "license_path": "' + JsonEscape(EdLicensePath.Text) + '",' + #13#10 +
+      '  "backup_locations": [' + #13#10 +
+      '    "' + JsonEscape(EdBackup1.Text) + '",' + #13#10 +
+      '    "' + JsonEscape(EdBackup2.Text) + '",' + #13#10 +
+      '    "' + JsonEscape(EdBackup3.Text) + '"' + #13#10 +
+      '  ]' + #13#10 +
+      '}';
+  end
+  else
+  begin
+    Json :=
+      '{' + #13#10 +
+      '  "mode": "adopt_existing",' + #13#10 +
+      '  "data_dir": "' + JsonEscape(DataDir) + '",' + #13#10 +
+      '  "backup_locations": [' + #13#10 +
+      '    "' + JsonEscape(EdBackup1.Text) + '",' + #13#10 +
+      '    "' + JsonEscape(EdBackup2.Text) + '",' + #13#10 +
+      '    "' + JsonEscape(EdBackup3.Text) + '"' + #13#10 +
+      '  ]' + #13#10 +
+      '}';
+  end;
+
+  Lines := TStringList.Create;
+  try
+    Lines.Text := Json;
+    Lines.SaveToFile(SeedPath);
+  finally
+    Lines.Free;
+  end;
+
+  if Mode = MODE_FRESH then
+  begin
+    Lines := TStringList.Create;
+    try
+      Lines.Add(EdAdminPwd.Text);
+      Lines.SaveToFile(PwdPath);
+    finally
+      Lines.Free;
+    end;
+    // Lock down ACL: SYSTEM + Administrators only. icacls /inheritance:r drops
+    // inherited entries; /grant adds the two principals back. Best-effort —
+    // even if it fails the file is in {app}, which on Program Files already
+    // requires admin rights to read.
+    Exec(ExpandConstant('{cmd}'),
+      '/C icacls "' + PwdPath + '" /inheritance:r /grant SYSTEM:F /grant *S-1-5-32-544:F',
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    WriteSeedFile;
+end;
+
+// ----------------------------------------------------------------------------
+//   uninstall — keep the data-preservation prompt from the previous version
+// ----------------------------------------------------------------------------
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   DataDir: String;

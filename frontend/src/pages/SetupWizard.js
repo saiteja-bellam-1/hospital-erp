@@ -215,6 +215,12 @@ const SetupWizard = ({ onComplete }) => {
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-sm text-blue-800 max-w-md mx-auto">
               This setup runs only once. All settings can be updated later from the admin panel.
             </div>
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800 max-w-md mx-auto">
+              You're seeing this wizard because the Windows installer's setup pages were
+              skipped (typical for source installs and recovery). On a normal installer-based
+              install, the same questions are asked during installation and the app boots
+              straight into login.
+            </div>
           </div>
         );
 

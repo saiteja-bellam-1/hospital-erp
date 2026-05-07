@@ -273,6 +273,22 @@ def main():
 
         # Create desktop shortcut on first launch
         create_desktop_shortcut()
+
+        # Apply installer-collected seed (hospital, admin, license, backups)
+        # if the wizard left one behind. Idempotent: a no-op when no seed
+        # file exists. Failures are logged + recorded; we let the app boot
+        # so the React fallback wizard can still take over.
+        try:
+            from app.services.bootstrap_from_seed import consume_seed_if_present
+            seed_status = consume_seed_if_present(exe_dir)
+            if seed_status is None:
+                log.info("No installer seed file present")
+            elif seed_status.get("applied"):
+                log.info("Installer seed applied successfully")
+            else:
+                log.error("Installer seed apply failed: %s", seed_status.get("error"))
+        except Exception:
+            log.exception("Bootstrap from seed raised; continuing to fallback wizard")
     else:
         # Dev mode: change to backend directory
         backend_dir = os.path.dirname(os.path.abspath(__file__))

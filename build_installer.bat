@@ -14,6 +14,18 @@ if not exist "backend\dist\KTHEALTHERP.exe" (
     pause & exit /b 1
 )
 
+:: Build the wizard's pre-install helper if it isn't already in installer\bin.
+:: dbcheck.exe is shelled out by the Inno Setup [Code] section to do the
+:: machine-id readout, license dry-run, DB integrity check, and writability probes.
+if not exist "installer\bin\dbcheck.exe" (
+    echo installer\bin\dbcheck.exe not found — building...
+    call installer\build_dbcheck.bat
+    if errorlevel 1 (
+        echo ERROR: dbcheck.exe build failed
+        pause & exit /b 1
+    )
+)
+
 set ISCC=
 where ISCC.exe >nul 2>&1 && set ISCC=ISCC.exe
 if "%ISCC%"=="" if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" set ISCC="%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
