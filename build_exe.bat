@@ -19,8 +19,9 @@ echo.
 :: ---------------------------------------------------------------
 
 if not exist "build_logs" mkdir "build_logs"
-for /f "tokens=2 delims==" %%I in ('"wmic os get localdatetime /value 2^>nul"') do set TS=%%I
-set TS=!TS:~0,8!_!TS:~8,6!
+:: wmic was removed from Windows 11 / Server 2025. Use PowerShell for the
+:: timestamp instead — works on every supported Windows version.
+for /f "usebackq tokens=*" %%I in (`powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss"`) do set TS=%%I
 set LOG_DIR=build_logs\!TS!
 mkdir "!LOG_DIR!" 2>nul
 echo Build logs: !LOG_DIR!\
