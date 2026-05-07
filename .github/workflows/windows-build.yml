@@ -95,6 +95,11 @@ jobs:
       # `pause` at the end of the script does not block the runner.
       - name: Build KTHEALTHERP.exe
         shell: cmd
+        env:
+          # GitHub Actions sets CI=true, which makes Create React App treat
+          # ESLint warnings as build errors. Locally devs run with CI unset
+          # so the build passes. Override here so CI matches dev behavior.
+          CI: 'false'
         run: build_exe.bat < NUL
 
       - name: Build dbcheck.exe (wizard helper)
