@@ -1,5 +1,5 @@
 from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image, HRFlowable
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image, HRFlowable, XPreformatted
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 from reportlab.lib.units import inch
@@ -1121,11 +1121,27 @@ class PDFService:
         # ============================================================
         # INTERPRETATION
         # ============================================================
+        literal_style = ParagraphStyle('LabLiteral', parent=normal_text,
+            fontName='Helvetica', fontSize=9, leading=12, spaceAfter=0)
+
+        def _escape_literal(s):
+            return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
         interpretation = report_data.get('interpretation')
         if interpretation:
             elements.append(Paragraph("<b>Interpretation:</b>", cell_label))
             elements.append(Spacer(1, 4))
-            elements.append(Paragraph(interpretation, normal_text))
+            elements.append(XPreformatted(_escape_literal(interpretation), literal_style))
+            elements.append(Spacer(1, 10))
+
+        # ============================================================
+        # REFERENCE INFORMATION (from LabTest.description, strictly literal)
+        # ============================================================
+        test_description = report_data.get('test_description')
+        if test_description and test_description.strip():
+            elements.append(Paragraph("<b>Reference Information:</b>", cell_label))
+            elements.append(Spacer(1, 4))
+            elements.append(XPreformatted(_escape_literal(test_description), literal_style))
             elements.append(Spacer(1, 10))
 
         # ============================================================
@@ -1489,13 +1505,27 @@ class PDFService:
             results_table.setStyle(TableStyle(table_style_cmds))
             elements.append(results_table)
 
-            # Interpretation (per test, if any)
+            # Interpretation (per test, if any) — strictly literal (preserve whitespace + newlines)
+            literal_style = ParagraphStyle('CLabLiteral', parent=normal_text,
+                fontName='Helvetica', fontSize=9, leading=12, spaceAfter=0)
+
+            def _escape_literal(s):
+                return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
             interpretation = report_data.get('interpretation')
             if interpretation:
                 elements.append(Spacer(1, 4))
                 elements.append(Paragraph(f"<b>Interpretation ({test_name}):</b>", cell_label))
                 elements.append(Spacer(1, 2))
-                elements.append(Paragraph(interpretation, normal_text))
+                elements.append(XPreformatted(_escape_literal(interpretation), literal_style))
+
+            # Reference Information (per test, from LabTest.description) — strictly literal
+            test_description = report_data.get('test_description')
+            if test_description and test_description.strip():
+                elements.append(Spacer(1, 4))
+                elements.append(Paragraph(f"<b>Reference Information ({test_name}):</b>", cell_label))
+                elements.append(Spacer(1, 2))
+                elements.append(XPreformatted(_escape_literal(test_description), literal_style))
 
         # ============================================================
         # SIGNATURES (once at the end)

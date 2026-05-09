@@ -110,6 +110,65 @@ def cmd_validate_license(args) -> int:
     return _emit({"ok": ok, "report": report}, ok)
 
 
+def cmd_validate_backup_db(args) -> int:
+    """Validate a single .db file the operator wants to restore from.
+
+    The installer's "Restore from a backup database file" path calls this.
+    Same shape of checks as cmd_check_db, minus the lock-file probe — the
+    backup file is expected to be a static copy from another machine.
+    """
+    path = os.path.abspath(args.path)
+    details = {
+        "path": path,
+        "exists": os.path.isfile(path),
+        "size_bytes": 0,
+        "has_users_table": False,
+        "user_count": 0,
+        "integrity": "unknown",
+    }
+
+    if not details["exists"]:
+        return _emit({"ok": False, "error": "Backup file not found", "details": details}, False)
+
+    details["size_bytes"] = os.path.getsize(path)
+    if details["size_bytes"] == 0:
+        return _emit({"ok": False, "error": "Backup file is empty", "details": details}, False)
+
+    try:
+        with open(path, "rb") as f:
+            header = f.read(16)
+    except Exception as e:
+        return _emit({"ok": False, "error": f"Cannot read file: {e}", "details": details}, False)
+    if not header.startswith(b"SQLite format 3"):
+        return _emit({"ok": False, "error": "File is not a valid SQLite database", "details": details}, False)
+
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            row = conn.execute("PRAGMA integrity_check").fetchone()
+            details["integrity"] = row[0] if row else "unknown"
+            if details["integrity"] != "ok":
+                return _emit({"ok": False,
+                              "error": f"Database integrity check failed: {details['integrity']}",
+                              "details": details}, False)
+
+            row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users'").fetchone()
+            details["has_users_table"] = row is not None
+            if row is not None:
+                details["user_count"] = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError as e:
+        return _emit({"ok": False, "error": f"Not a valid SQLite database: {e}", "details": details}, False)
+
+    if not details["has_users_table"]:
+        return _emit({"ok": False, "error": "Backup is missing the 'users' table — not a KT HEALTH ERP database", "details": details}, False)
+    if details["user_count"] == 0:
+        return _emit({"ok": False, "error": "Backup database has no users", "details": details}, False)
+
+    return _emit({"ok": True, "details": details}, True)
+
+
 def cmd_check_writable(args) -> int:
     folder = os.path.abspath(args.folder)
     try:
@@ -141,6 +200,9 @@ def main(argv=None) -> int:
     p_w = sub.add_parser("check-writable", help="Confirm a folder is creatable + writable")
     p_w.add_argument("folder")
 
+    p_b = sub.add_parser("validate-backup-db", help="Validate a single .db backup file")
+    p_b.add_argument("path")
+
     args = parser.parse_args(argv)
 
     if args.cmd == "machine-id":
@@ -151,6 +213,8 @@ def main(argv=None) -> int:
         return cmd_validate_license(args)
     if args.cmd == "check-writable":
         return cmd_check_writable(args)
+    if args.cmd == "validate-backup-db":
+        return cmd_validate_backup_db(args)
     return _emit({"ok": False, "error": f"unknown command {args.cmd!r}"}, False)
 
 

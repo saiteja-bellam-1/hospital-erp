@@ -9,7 +9,7 @@ import axios from 'axios';
 import { Badge } from '../../components/ui/badge';
 import {
   FolderSync, FolderOpen, Plus, X, Play, CheckCircle2, AlertCircle, Loader2, RefreshCw,
-  Database, HardDrive, MapPin, ShieldCheck, Image, FileText, Settings, Clock, Timer, RotateCcw, AlertTriangle, Cloud
+  Database, HardDrive, MapPin, ShieldCheck, Image, FileText, Settings, Clock, Timer, RotateCcw, AlertTriangle, Cloud, Upload
 } from 'lucide-react';
 
 const BackupManagement = () => {
@@ -32,6 +32,9 @@ const BackupManagement = () => {
   const [showRestoreDialog, setShowRestoreDialog] = useState(false);
   const [selectedRestore, setSelectedRestore] = useState(null);
   const [restoring, setRestoring] = useState(false);
+  const [uploadFile, setUploadFile] = useState(null);
+  const [showUploadDialog, setShowUploadDialog] = useState(false);
+  const [uploadingRestore, setUploadingRestore] = useState(false);
   const { toast } = useToast();
 
   const fetchSnapshotStatus = async () => {
@@ -544,13 +547,19 @@ const BackupManagement = () => {
             <CardTitle className="flex items-center gap-2 text-base">
               <RotateCcw className="w-4 h-4 text-amber-600" /> Restore Database
             </CardTitle>
-            <Button size="sm" variant="outline" className="h-7 text-xs" onClick={fetchRestorePoints}>
-              <RefreshCw className="w-3 h-3 mr-1" /> Refresh
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button size="sm" variant="outline" className="h-7 text-xs"
+                onClick={() => { setUploadFile(null); setShowUploadDialog(true); }}>
+                <Upload className="w-3 h-3 mr-1" /> Upload .db file
+              </Button>
+              <Button size="sm" variant="outline" className="h-7 text-xs" onClick={fetchRestorePoints}>
+                <RefreshCw className="w-3 h-3 mr-1" /> Refresh
+              </Button>
+            </div>
           </div>
         </CardHeader>
         <CardContent className="space-y-3">
-          <p className="text-sm text-gray-600">Restore your database from a previous backup. A safety backup is created automatically before restoring.</p>
+          <p className="text-sm text-gray-600">Restore your database from a previous backup, or upload a .db backup file from disk. A safety backup is created automatically before restoring.</p>
           {restorePoints.length > 0 ? (
             <div className="max-h-48 overflow-y-auto space-y-1.5">
               {restorePoints.map((rp, i) => (
@@ -639,6 +648,58 @@ const BackupManagement = () => {
                   } finally { setRestoring(false); }
                 }}>
                 {restoring ? <><Loader2 className="w-4 h-4 mr-1 animate-spin" /> Restoring...</> : 'Restore Database'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Upload .db Restore Dialog */}
+      <Dialog open={showUploadDialog} onOpenChange={(open) => { if (!uploadingRestore) setShowUploadDialog(open); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Upload className="h-5 w-5 text-amber-500" /> Restore from uploaded .db file
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-800">
+              <p className="font-semibold">This will replace ALL current data.</p>
+              <p className="mt-1 text-xs">A pre-restore backup is saved automatically before the swap. All users will be logged out after restore.</p>
+            </div>
+            <div className="space-y-2">
+              <Label className="text-xs">Backup database file (.db)</Label>
+              <Input type="file" accept=".db,application/octet-stream"
+                onChange={(e) => setUploadFile(e.target.files?.[0] || null)} disabled={uploadingRestore} />
+              {uploadFile && (
+                <div className="text-xs text-gray-600 bg-gray-50 rounded p-2">
+                  <div className="font-mono truncate">{uploadFile.name}</div>
+                  <div className="text-gray-400">{(uploadFile.size / (1024 * 1024)).toFixed(2)} MB</div>
+                </div>
+              )}
+            </div>
+            <div className="flex justify-end gap-2 pt-2 border-t">
+              <Button variant="outline" disabled={uploadingRestore} onClick={() => setShowUploadDialog(false)}>Cancel</Button>
+              <Button variant="destructive" disabled={!uploadFile || uploadingRestore}
+                onClick={async () => {
+                  if (!uploadFile) return;
+                  setUploadingRestore(true);
+                  try {
+                    const fd = new FormData();
+                    fd.append('file', uploadFile);
+                    const res = await axios.post('/api/backup/restore-upload', fd, {
+                      headers: { 'Content-Type': 'multipart/form-data' },
+                    });
+                    setShowUploadDialog(false);
+                    alert(`${res.data.message}\n\nPre-restore backup: ${res.data.pre_restore_backup || 'none'}\nUploads restored: ${res.data.uploads_restored ? 'Yes' : 'No'}\n\nYou will be logged out now.`);
+                    localStorage.clear();
+                    window.location.href = '/';
+                  } catch (err) {
+                    const detail = err.response?.data?.detail;
+                    alert(typeof detail === 'string' ? detail : 'Restore from upload failed');
+                  } finally { setUploadingRestore(false); }
+                }}>
+                {uploadingRestore ? <><Loader2 className="w-4 h-4 mr-1 animate-spin" /> Uploading & Restoring...</> : 'Upload & Restore'}
               </Button>
             </div>
           </div>

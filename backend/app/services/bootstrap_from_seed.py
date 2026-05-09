@@ -87,6 +87,8 @@ def consume_seed_if_present(exe_dir: str) -> Optional[dict]:
             _apply_fresh(seed, password)
         elif mode == "adopt_existing":
             _apply_adopt(seed)
+        elif mode == "restore_backup":
+            _apply_restore(seed)
         else:
             raise ValueError(f"Unknown seed mode: {mode!r}")
 
@@ -208,6 +210,60 @@ def _apply_fresh(seed: dict, password: str) -> None:
                     log.warning("License install failed: %s", result.get("error"))
             except Exception as e:
                 log.warning("License install raised %s — operator can upload from Dashboard", e)
+
+
+def _apply_restore(seed: dict) -> None:
+    """Operator picked a single .db backup file at install time. We copy it
+    into the target data folder using the SQLite backup API, then rebind
+    config.json + the engine to it. Migrations run so the restored DB picks
+    up any newer columns introduced by this build.
+    """
+    import sqlite3
+    from app.utils.config import save_config
+
+    data_dir = (seed.get("data_dir") or "").strip()
+    backup_file = (seed.get("backup_file_path") or "").strip()
+    if not data_dir:
+        raise ValueError("restore_backup seed missing data_dir")
+    if not backup_file:
+        raise ValueError("restore_backup seed missing backup_file_path")
+    if not os.path.isfile(backup_file):
+        raise ValueError(f"backup file not found: {backup_file}")
+
+    os.makedirs(data_dir, exist_ok=True)
+    db_path = os.path.join(data_dir, "kthealth_erp.db")
+    if os.path.isfile(db_path) and os.path.getsize(db_path) > 0:
+        raise ValueError(f"target DB already exists at {db_path} — refusing to overwrite during install")
+
+    backup_locations = _validate_backup_locations(seed.get("backup_locations"))
+
+    # Copy via SQLite backup API (safe even if the source is a hot copy).
+    src = sqlite3.connect(f"file:{backup_file}?mode=ro", uri=True)
+    try:
+        dst = sqlite3.connect(db_path)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
+
+    config = {
+        "setup_complete": True,
+        "db_path": db_path,
+        "backup_locations": backup_locations,
+    }
+    save_config(config)
+
+    from config.database import reinitialize_engine
+    reinitialize_engine()
+
+    # Bring schema forward in case the restored DB came from an older build.
+    try:
+        from migrate_patient_fields import migrate
+        migrate()
+    except Exception:
+        log.warning("Post-restore migrate() failed; non-fatal", exc_info=True)
 
 
 def _apply_adopt(seed: dict) -> None:

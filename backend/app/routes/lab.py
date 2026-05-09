@@ -574,6 +574,7 @@ def _build_report_response(report: LabReport, db: Session) -> dict:
         "test_id": test.id if test else 0,
         "test_name": test.name if test else "Unknown",
         "test_code": test.test_code if test else "",
+        "test_description": test.description if test else None,
         "method": test.method if test else None,
         "doctor_name": f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else None,
         "referral_label": referral_label,

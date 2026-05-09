@@ -100,6 +100,7 @@ Type: files; Name: "{app}\assets\icon.ico"
 const
   MODE_FRESH    = 0;
   MODE_EXISTING = 1;
+  MODE_RESTORE  = 2;
   MIN_PWD_LEN   = 8;
 
 var
@@ -107,10 +108,15 @@ var
   DataFolderPage:    TWizardPage;
   RbFresh:           TNewRadioButton;
   RbExisting:        TNewRadioButton;
+  RbRestore:         TNewRadioButton;
   EdNewDataDir:      TNewEdit;
   BtnBrowseNewData:  TNewButton;
   EdExistingDataDir: TNewEdit;
   BtnBrowseExisting: TNewButton;
+  EdRestoreDataDir:  TNewEdit;
+  BtnBrowseRestoreDir: TNewButton;
+  EdRestoreFile:     TNewEdit;
+  BtnBrowseRestoreFile: TNewButton;
   LblDataIntro:      TNewStaticText;
 
   // DbCheckPage (only shown for MODE_EXISTING)
@@ -160,6 +166,8 @@ function GetMode: Integer;
 begin
   if RbExisting.Checked then
     Result := MODE_EXISTING
+  else if RbRestore.Checked then
+    Result := MODE_RESTORE
   else
     Result := MODE_FRESH;
 end;
@@ -282,12 +290,26 @@ begin
   EdExistingDataDir.Text := PickFolder(EdExistingDataDir.Text);
 end;
 
+procedure OnBrowseRestoreDir(Sender: TObject);
+begin
+  EdRestoreDataDir.Text := PickFolder(EdRestoreDataDir.Text);
+end;
+
+procedure OnBrowseRestoreFile(Sender: TObject);
+begin
+  EdRestoreFile.Text := PickFile('Database files (*.db)|*.db|All files|*.*', EdRestoreFile.Text);
+end;
+
 procedure OnRadioChange(Sender: TObject);
 begin
-  EdNewDataDir.Enabled       := RbFresh.Checked;
-  BtnBrowseNewData.Enabled   := RbFresh.Checked;
-  EdExistingDataDir.Enabled  := RbExisting.Checked;
-  BtnBrowseExisting.Enabled  := RbExisting.Checked;
+  EdNewDataDir.Enabled         := RbFresh.Checked;
+  BtnBrowseNewData.Enabled     := RbFresh.Checked;
+  EdExistingDataDir.Enabled    := RbExisting.Checked;
+  BtnBrowseExisting.Enabled    := RbExisting.Checked;
+  EdRestoreDataDir.Enabled     := RbRestore.Checked;
+  BtnBrowseRestoreDir.Enabled  := RbRestore.Checked;
+  EdRestoreFile.Enabled        := RbRestore.Checked;
+  BtnBrowseRestoreFile.Enabled := RbRestore.Checked;
 end;
 
 procedure CreateDataFolderPage;
@@ -304,8 +326,9 @@ begin
   LblDataIntro.Height := 30;
   LblDataIntro.WordWrap := True;
   LblDataIntro.Caption :=
-    'Pick "Create a new data folder" for a fresh hospital install. ' +
-    'Pick "Use existing data folder" if you are reinstalling and want to keep your existing database.';
+    'Pick "Create a new data folder" for a fresh install, "Use existing data folder" to ' +
+    'reinstall on top of an existing database, or "Restore from a backup database file" ' +
+    'to bring up a hospital from a single .db backup file.';
 
   RbFresh := TNewRadioButton.Create(DataFolderPage.Surface);
   RbFresh.Parent := DataFolderPage.Surface;
@@ -354,6 +377,49 @@ begin
   BtnBrowseExisting.Caption := 'Browse...';
   BtnBrowseExisting.Enabled := False;
   BtnBrowseExisting.OnClick := @OnBrowseExisting;
+
+  // ----- Option 3: Restore from a single .db backup file -----
+  RbRestore := TNewRadioButton.Create(DataFolderPage.Surface);
+  RbRestore.Parent := DataFolderPage.Surface;
+  RbRestore.Top := 175;
+  RbRestore.Width := DataFolderPage.SurfaceWidth;
+  RbRestore.Caption := 'Restore from a backup database file (.db)';
+  RbRestore.OnClick := @OnRadioChange;
+
+  EdRestoreDataDir := TNewEdit.Create(DataFolderPage.Surface);
+  EdRestoreDataDir.Parent := DataFolderPage.Surface;
+  EdRestoreDataDir.Top := 200;
+  EdRestoreDataDir.Left := 24;
+  EdRestoreDataDir.Width := DataFolderPage.SurfaceWidth - 110;
+  EdRestoreDataDir.Text := ExpandConstant('{autopf}\KTHEALTHERP\data');
+  EdRestoreDataDir.Enabled := False;
+
+  BtnBrowseRestoreDir := TNewButton.Create(DataFolderPage.Surface);
+  BtnBrowseRestoreDir.Parent := DataFolderPage.Surface;
+  BtnBrowseRestoreDir.Top := 198;
+  BtnBrowseRestoreDir.Left := DataFolderPage.SurfaceWidth - 80;
+  BtnBrowseRestoreDir.Width := 80;
+  BtnBrowseRestoreDir.Height := 23;
+  BtnBrowseRestoreDir.Caption := 'Browse...';
+  BtnBrowseRestoreDir.Enabled := False;
+  BtnBrowseRestoreDir.OnClick := @OnBrowseRestoreDir;
+
+  EdRestoreFile := TNewEdit.Create(DataFolderPage.Surface);
+  EdRestoreFile.Parent := DataFolderPage.Surface;
+  EdRestoreFile.Top := 228;
+  EdRestoreFile.Left := 24;
+  EdRestoreFile.Width := DataFolderPage.SurfaceWidth - 110;
+  EdRestoreFile.Enabled := False;
+
+  BtnBrowseRestoreFile := TNewButton.Create(DataFolderPage.Surface);
+  BtnBrowseRestoreFile.Parent := DataFolderPage.Surface;
+  BtnBrowseRestoreFile.Top := 226;
+  BtnBrowseRestoreFile.Left := DataFolderPage.SurfaceWidth - 80;
+  BtnBrowseRestoreFile.Width := 80;
+  BtnBrowseRestoreFile.Height := 23;
+  BtnBrowseRestoreFile.Caption := 'Browse .db';
+  BtnBrowseRestoreFile.Enabled := False;
+  BtnBrowseRestoreFile.OnClick := @OnBrowseRestoreFile;
 end;
 
 procedure CreateDbCheckPage;
@@ -682,6 +748,40 @@ begin
         Result := False;
       end;
     end
+    else if GetMode = MODE_RESTORE then
+    begin
+      if StrIsEmpty(EdRestoreDataDir.Text) then
+      begin
+        MsgBox('Please choose a target data folder.', mbError, MB_OK);
+        Result := False; Exit;
+      end;
+      if StrIsEmpty(EdRestoreFile.Text) then
+      begin
+        MsgBox('Please select the .db backup file to restore.', mbError, MB_OK);
+        Result := False; Exit;
+      end;
+      // target folder must be writable
+      PathOk := RunDbCheck('check-writable "' + EdRestoreDataDir.Text + '"', Output) and JsonHasOkTrue(Output);
+      if not PathOk then
+      begin
+        MsgBox('Cannot write to target folder:'#13#10 + ExtractJsonError(Output), mbError, MB_OK);
+        Result := False; Exit;
+      end;
+      // target folder must not already contain a kthealth_erp.db
+      if FileExists(AddBackslash(EdRestoreDataDir.Text) + 'kthealth_erp.db') then
+      begin
+        MsgBox('Target folder already contains a kthealth_erp.db. Pick an empty folder ' +
+               'or choose "Use existing data folder" instead.', mbError, MB_OK);
+        Result := False; Exit;
+      end;
+      // backup file must be a valid KT HEALTH ERP database
+      PathOk := RunDbCheck('validate-backup-db "' + EdRestoreFile.Text + '"', Output) and JsonHasOkTrue(Output);
+      if not PathOk then
+      begin
+        MsgBox('Backup file rejected:'#13#10 + ExtractJsonError(Output), mbError, MB_OK);
+        Result := False;
+      end;
+    end
     else
     begin
       if StrIsEmpty(EdExistingDataDir.Text) then
@@ -768,14 +868,22 @@ begin
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
+var
+  Mode: Integer;
 begin
   Result := False;
-  if GetMode = MODE_EXISTING then
+  Mode := GetMode;
+  if (Mode = MODE_EXISTING) or (Mode = MODE_RESTORE) then
   begin
-    // adopt-existing: skip license/hospital/admin (they live in the existing DB)
+    // Skip license/hospital/admin — they live in the existing/backup DB.
+    // Skip the dedicated DbCheckPage too: MODE_EXISTING uses it for an
+    // existing folder, MODE_RESTORE validates the .db file inline on
+    // the DataFolderPage Next click.
     if (PageID = LicensePage.ID) or
        (PageID = HospitalPage.ID) or
        (PageID = AdminPage.ID) then
+      Result := True;
+    if (Mode = MODE_RESTORE) and (PageID = DbCheckPage.ID) then
       Result := True;
   end
   else
@@ -825,6 +933,8 @@ begin
   Mode := GetMode;
   if Mode = MODE_FRESH then
     DataDir := EdNewDataDir.Text
+  else if Mode = MODE_RESTORE then
+    DataDir := EdRestoreDataDir.Text
   else
     DataDir := EdExistingDataDir.Text;
 
@@ -848,6 +958,20 @@ begin
       '  "admin_username": "' + JsonEscape(EdAdminUser.Text) + '",' + #13#10 +
       '  "admin_email": "' + JsonEscape(EdAdminEmail.Text) + '",' + #13#10 +
       '  "license_path": "' + JsonEscape(EdLicensePath.Text) + '",' + #13#10 +
+      '  "backup_locations": [' + #13#10 +
+      '    "' + JsonEscape(EdBackup1.Text) + '",' + #13#10 +
+      '    "' + JsonEscape(EdBackup2.Text) + '",' + #13#10 +
+      '    "' + JsonEscape(EdBackup3.Text) + '"' + #13#10 +
+      '  ]' + #13#10 +
+      '}';
+  end
+  else if Mode = MODE_RESTORE then
+  begin
+    Json :=
+      '{' + #13#10 +
+      '  "mode": "restore_backup",' + #13#10 +
+      '  "data_dir": "' + JsonEscape(DataDir) + '",' + #13#10 +
+      '  "backup_file_path": "' + JsonEscape(EdRestoreFile.Text) + '",' + #13#10 +
       '  "backup_locations": [' + #13#10 +
       '    "' + JsonEscape(EdBackup1.Text) + '",' + #13#10 +
       '    "' + JsonEscape(EdBackup2.Text) + '",' + #13#10 +

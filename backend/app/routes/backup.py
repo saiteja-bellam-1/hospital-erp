@@ -1,10 +1,11 @@
 """
 Backup management API endpoints.
 """
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from pydantic import BaseModel, Field
 from typing import List
 import os
+import tempfile
 from app.models.user import User
 from app.utils.dependencies import get_current_user
 
@@ -490,13 +491,35 @@ async def list_restore_points(current_user: User = Depends(get_current_user)):
     return {"restore_points": restore_points}
 
 
-@router.post("/restore")
-async def restore_database(
-    data: RestoreRequest,
-    current_user: User = Depends(get_current_user)
-):
-    """Restore database from a backup file."""
-    _require_admin(current_user)
+def _validate_backup_db_file(backup_path: str, current_db: str, allow_same_path: bool = False) -> None:
+    """Raises HTTPException on any problem. Same checks as the original
+    inline validation in /restore."""
+    import sqlite3
+
+    if not os.path.isfile(backup_path):
+        raise HTTPException(status_code=400, detail="Backup file not found")
+    if (not allow_same_path) and os.path.abspath(backup_path) == os.path.abspath(current_db):
+        raise HTTPException(status_code=400, detail="Cannot restore from the active database file")
+    if os.path.getsize(backup_path) == 0:
+        raise HTTPException(status_code=400, detail="Backup file is empty")
+    with open(backup_path, "rb") as f:
+        header = f.read(16)
+    if not header.startswith(b"SQLite format 3"):
+        raise HTTPException(status_code=400, detail="File is not a valid SQLite database")
+    try:
+        conn = sqlite3.connect(backup_path)
+        result = conn.execute("PRAGMA integrity_check").fetchone()
+        conn.close()
+        if result[0] != "ok":
+            raise HTTPException(status_code=400, detail=f"Backup file integrity check failed: {result[0]}")
+    except sqlite3.Error as e:
+        raise HTTPException(status_code=400, detail=f"Cannot read backup file: {e}")
+
+
+def _run_restore_from_path(backup_path: str, backup_type: str, current_user: User) -> dict:
+    """Shared restore mechanics used by both /restore (path-based) and
+    /restore-upload (multipart upload). Caller must have already passed
+    `_validate_backup_db_file`."""
     import sqlite3
     import shutil
     import time
@@ -509,130 +532,156 @@ async def restore_database(
     )
     from app.utils.paths import get_uploads_dir
 
+    current_db = get_configured_db_path()
+
+    # --- 1. Pause background threads ---
+    mirror_was_running = get_mirror_status()["running"]
+    snapshot_was_running = get_snapshot_status()["running"]
+    if mirror_was_running:
+        stop_mirror_backup()
+    if snapshot_was_running:
+        stop_snapshot_backup()
+    time.sleep(1)
+
+    # --- 2. Pre-restore safety backup ---
+    backup_locations = get_backup_locations()
+    pre_restore_name = f"pre_restore_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+    pre_restore_saved = False
+    if backup_locations and os.path.isfile(current_db):
+        pre_restore_dir = os.path.join(backup_locations[0], "kthealth_erp_pre_restore")
+        try:
+            os.makedirs(pre_restore_dir, exist_ok=True)
+            pre_restore_path = os.path.join(pre_restore_dir, pre_restore_name)
+            src = sqlite3.connect(current_db)
+            dst = sqlite3.connect(pre_restore_path)
+            src.backup(dst)
+            dst.close()
+            src.close()
+            pre_restore_saved = True
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to create pre-restore backup: {e}")
+
+    # --- 3. Restore DB using SQLite backup API ---
+    try:
+        src = sqlite3.connect(backup_path)
+        dst = sqlite3.connect(current_db)
+        src.backup(dst)
+        dst.close()
+        src.close()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database restore failed: {e}")
+
+    # --- 4. Restore uploads if available ---
+    uploads_restored = False
+    backup_uploads = os.path.join(os.path.dirname(backup_path), "uploads")
+    if os.path.isdir(backup_uploads):
+        try:
+            uploads_dir = get_uploads_dir()
+            shutil.copytree(backup_uploads, uploads_dir, dirs_exist_ok=True)
+            uploads_restored = True
+        except Exception:
+            pass
+
+    # --- 5. Reinitialize engine + run migrations ---
+    from config.database import reinitialize_engine
+    reinitialize_engine()
+    try:
+        from migrate_patient_fields import migrate
+        migrate()
+    except Exception:
+        pass
+
+    # --- 6. Restart background threads ---
+    config = load_config()
+    if mirror_was_running and backup_locations:
+        start_mirror_backup(interval_seconds=60)
+    if snapshot_was_running and backup_locations:
+        snap_interval = config.get("snapshot_interval_minutes", 30)
+        start_snapshot_backup(interval_minutes=snap_interval)
+
+    # --- 7. Audit log ---
+    try:
+        from config.database import get_db
+        from app.services.audit_service import log_action
+        db = next(get_db())
+        log_action(db, current_user, "restore_database", "admin", "Database", None,
+            f"Restored database from {backup_type} backup: {os.path.basename(backup_path)}",
+            details={"backup_path": backup_path, "backup_type": backup_type,
+                     "pre_restore_backup": pre_restore_name if pre_restore_saved else None})
+        db.close()
+    except Exception:
+        pass
+
+    return {
+        "message": "Database restored successfully",
+        "backup_used": os.path.basename(backup_path),
+        "backup_type": backup_type,
+        "pre_restore_backup": pre_restore_name if pre_restore_saved else None,
+        "uploads_restored": uploads_restored,
+        "force_logout": True,
+    }
+
+
+@router.post("/restore")
+async def restore_database(
+    data: RestoreRequest,
+    current_user: User = Depends(get_current_user)
+):
+    """Restore database from a backup file."""
+    _require_admin(current_user)
+    from app.utils.config import get_configured_db_path
+
     global _restore_in_progress
     if _restore_in_progress:
         raise HTTPException(status_code=409, detail="A restore is already in progress")
 
     backup_path = data.backup_path
     current_db = get_configured_db_path()
+    _validate_backup_db_file(backup_path, current_db)
 
-    # --- Validations ---
-    if not os.path.isfile(backup_path):
-        raise HTTPException(status_code=400, detail="Backup file not found")
-
-    if os.path.abspath(backup_path) == os.path.abspath(current_db):
-        raise HTTPException(status_code=400, detail="Cannot restore from the active database file")
-
-    if os.path.getsize(backup_path) == 0:
-        raise HTTPException(status_code=400, detail="Backup file is empty")
-
-    # SQLite header check
-    with open(backup_path, "rb") as f:
-        header = f.read(16)
-    if not header.startswith(b"SQLite format 3"):
-        raise HTTPException(status_code=400, detail="File is not a valid SQLite database")
-
-    # Integrity check
     try:
-        conn = sqlite3.connect(backup_path)
-        result = conn.execute("PRAGMA integrity_check").fetchone()
-        conn.close()
-        if result[0] != "ok":
-            raise HTTPException(status_code=400, detail=f"Backup file integrity check failed: {result[0]}")
-    except sqlite3.Error as e:
-        raise HTTPException(status_code=400, detail=f"Cannot read backup file: {e}")
-
-    _restore_in_progress = True
-    try:
-        # --- 1. Pause background threads ---
-        mirror_was_running = get_mirror_status()["running"]
-        snapshot_was_running = get_snapshot_status()["running"]
-        if mirror_was_running:
-            stop_mirror_backup()
-        if snapshot_was_running:
-            stop_snapshot_backup()
-        time.sleep(1)  # Let threads finish current cycle
-
-        # --- 2. Pre-restore safety backup ---
-        backup_locations = get_backup_locations()
-        pre_restore_name = f"pre_restore_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
-        pre_restore_saved = False
-
-        if backup_locations and os.path.isfile(current_db):
-            pre_restore_dir = os.path.join(backup_locations[0], "kthealth_erp_pre_restore")
-            try:
-                os.makedirs(pre_restore_dir, exist_ok=True)
-                pre_restore_path = os.path.join(pre_restore_dir, pre_restore_name)
-                src = sqlite3.connect(current_db)
-                dst = sqlite3.connect(pre_restore_path)
-                src.backup(dst)
-                dst.close()
-                src.close()
-                pre_restore_saved = True
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=f"Failed to create pre-restore backup: {e}")
-
-        # --- 3. Restore DB using SQLite backup API ---
-        try:
-            src = sqlite3.connect(backup_path)
-            dst = sqlite3.connect(current_db)
-            src.backup(dst)
-            dst.close()
-            src.close()
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Database restore failed: {e}")
-
-        # --- 4. Restore uploads if available ---
-        backup_folder = os.path.dirname(backup_path)
-        backup_uploads = os.path.join(backup_folder, "uploads")
-        uploads_restored = False
-        if os.path.isdir(backup_uploads):
-            try:
-                uploads_dir = get_uploads_dir()
-                shutil.copytree(backup_uploads, uploads_dir, dirs_exist_ok=True)
-                uploads_restored = True
-            except Exception:
-                pass  # Non-critical — DB is already restored
-
-        # --- 5. Reinitialize engine + run migrations ---
-        from config.database import reinitialize_engine
-        reinitialize_engine()
-
-        try:
-            from migrate_patient_fields import migrate
-            migrate()
-        except Exception:
-            pass
-
-        # --- 6. Restart background threads ---
-        config = load_config()
-        if mirror_was_running and backup_locations:
-            start_mirror_backup(interval_seconds=60)
-        if snapshot_was_running and backup_locations:
-            snap_interval = config.get("snapshot_interval_minutes", 30)
-            start_snapshot_backup(interval_minutes=snap_interval)
-
-        # --- 7. Audit log (to restored DB) ---
-        try:
-            from config.database import get_db
-            from app.services.audit_service import log_action
-            db = next(get_db())
-            log_action(db, current_user, "restore_database", "admin", "Database", None,
-                f"Restored database from {data.backup_type} backup: {os.path.basename(backup_path)}",
-                details={"backup_path": backup_path, "backup_type": data.backup_type,
-                         "pre_restore_backup": pre_restore_name if pre_restore_saved else None})
-            db.close()
-        except Exception:
-            pass
-
-        return {
-            "message": "Database restored successfully",
-            "backup_used": os.path.basename(backup_path),
-            "backup_type": data.backup_type,
-            "pre_restore_backup": pre_restore_name if pre_restore_saved else None,
-            "uploads_restored": uploads_restored,
-            "force_logout": True,
-        }
-
+        return _run_restore_from_path(backup_path, data.backup_type, current_user)
     finally:
         _restore_in_progress = False
+
+
+@router.post("/restore-upload")
+async def restore_database_from_upload(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+):
+    """Restore the database from an uploaded .db file (e.g. one received over
+    USB / cloud sync). Same safety steps as /restore: validates the upload,
+    snapshots the current DB to pre-restore, then swaps it in."""
+    _require_admin(current_user)
+    from app.utils.config import get_configured_db_path
+
+    global _restore_in_progress
+    if _restore_in_progress:
+        raise HTTPException(status_code=409, detail="A restore is already in progress")
+
+    # Stream the upload to a temp file so we can validate it on disk.
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".db", prefix="kthealth_upload_")
+    os.close(tmp_fd)
+    try:
+        with open(tmp_path, "wb") as out:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                out.write(chunk)
+
+        current_db = get_configured_db_path()
+        _validate_backup_db_file(tmp_path, current_db, allow_same_path=True)
+
+        _restore_in_progress = True
+        try:
+            return _run_restore_from_path(tmp_path, "upload", current_user)
+        finally:
+            _restore_in_progress = False
+    finally:
+        try:
+            if os.path.isfile(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
