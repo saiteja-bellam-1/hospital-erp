@@ -18,10 +18,31 @@ import sys
 import tempfile
 
 
+_OUT_PATH: "str | None" = None
+
+
 def _emit(payload: dict, ok: bool) -> int:
-    sys.stdout.write(json.dumps(payload))
-    sys.stdout.write("\n")
-    sys.stdout.flush()
+    data = json.dumps(payload)
+    # When --out is supplied, write JSON to that file instead of stdout.
+    # The Inno Setup wizard uses this so it doesn't have to wrap dbcheck
+    # in `cmd /C ... > file 2>&1`, which is fragile under Windows
+    # command-line quoting (a trailing backslash on a folder path escapes
+    # the closing quote and silently breaks the redirection).
+    if _OUT_PATH:
+        try:
+            with open(_OUT_PATH, "w", encoding="utf-8") as f:
+                f.write(data)
+                f.write("\n")
+        except Exception:
+            # Fall back to stdout if the out file is unwritable so the
+            # caller still sees something.
+            sys.stdout.write(data)
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+    else:
+        sys.stdout.write(data)
+        sys.stdout.write("\n")
+        sys.stdout.flush()
     return 0 if ok else 1
 
 
@@ -39,21 +60,55 @@ def cmd_check_db(args) -> int:
     """Probe an existing DB folder. The wizard's "use existing data folder"
     page calls this to confirm the chosen folder actually holds a working
     install.
+
+    The hard failures are: no DB file, empty file, not-a-SQLite file, or
+    missing core schema. WAL/SHM sidecars and an empty users table are
+    surfaced as warnings (not failures) because both are legitimate states
+    for a DB the operator wants to keep — a stale -wal lingers after an
+    unclean shutdown, and a freshly-created DB whose setup wizard was
+    interrupted has zero users but is still the right file to reuse.
     """
-    folder = os.path.abspath(args.folder)
-    db_path = os.path.join(folder, "kthealth_erp.db")
+    # Trim accidental trailing separators before normalising. Belt-and-braces
+    # — the wizard now strips them before calling us, but a hand-rolled
+    # invocation (e.g. an admin debugging on the install dir) shouldn't
+    # quietly target the wrong folder.
+    folder_raw = (args.folder or "").rstrip("\\/").strip()
+    folder = os.path.abspath(folder_raw) if folder_raw else os.path.abspath(".")
+
+    # Prefer the current filename; fall back to the legacy one for installs
+    # that pre-date the rename.
+    candidates = [
+        ("kthealth_erp.db", False),
+        ("hospital_erp.db", True),  # legacy
+    ]
+    db_path = ""
+    legacy = False
+    for name, is_legacy in candidates:
+        path = os.path.join(folder, name)
+        if os.path.isfile(path):
+            db_path = path
+            legacy = is_legacy
+            break
+
     details = {
         "folder": folder,
         "db_path": db_path,
-        "exists": os.path.isfile(db_path),
+        "db_filename": os.path.basename(db_path) if db_path else "",
+        "legacy_filename": legacy,
+        "exists": bool(db_path),
         "size_bytes": 0,
         "has_users_table": False,
         "user_count": 0,
         "has_locks": False,
+        "warnings": [],
     }
 
-    if not details["exists"]:
-        return _emit({"ok": False, "error": "kthealth_erp.db not found in folder", "details": details}, False)
+    if not db_path:
+        return _emit({
+            "ok": False,
+            "error": "No KT HEALTH ERP database found (looked for kthealth_erp.db and legacy hospital_erp.db)",
+            "details": details,
+        }, False)
 
     details["size_bytes"] = os.path.getsize(db_path)
 
@@ -79,12 +134,27 @@ def cmd_check_db(args) -> int:
     except sqlite3.DatabaseError as e:
         return _emit({"ok": False, "error": f"Not a valid SQLite database: {e}", "details": details}, False)
 
+    # Hard failure: schema is wrong — definitely not a KT HEALTH ERP DB.
     if not details["has_users_table"]:
-        return _emit({"ok": False, "error": "Database is missing the 'users' table — not a KT HEALTH ERP database", "details": details}, False)
+        return _emit({
+            "ok": False,
+            "error": "Database is missing the 'users' table — not a KT HEALTH ERP database",
+            "details": details,
+        }, False)
+
+    # Soft warnings — proceed, but tell the operator.
+    if legacy:
+        details["warnings"].append(
+            "Legacy database filename detected (hospital_erp.db). The app will continue to use it."
+        )
     if details["user_count"] == 0:
-        return _emit({"ok": False, "error": "Database has no users — setup never finished on this folder", "details": details}, False)
+        details["warnings"].append(
+            "Database has the right schema but no users yet — setup may not have finished previously. The wizard will let you reuse this DB."
+        )
     if details["has_locks"]:
-        return _emit({"ok": False, "error": "Database has lock sidecar files (-journal/-wal/-shm). Close the running app before installing.", "details": details}, False)
+        details["warnings"].append(
+            "A -journal/-wal/-shm sidecar is present. If the app is running, close it before reinstalling; otherwise the sidecar is harmless."
+        )
 
     return _emit({"ok": True, "details": details}, True)
 
@@ -187,6 +257,11 @@ def cmd_check_writable(args) -> int:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="dbcheck")
+    parser.add_argument(
+        "--out",
+        default=None,
+        help="Write JSON result to this file instead of stdout. Used by the Inno Setup wizard to avoid cmd-shell quoting hazards.",
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("machine-id", help="Print the current machine ID")
@@ -204,6 +279,10 @@ def main(argv=None) -> int:
     p_b.add_argument("path")
 
     args = parser.parse_args(argv)
+
+    global _OUT_PATH
+    if getattr(args, "out", None):
+        _OUT_PATH = args.out
 
     if args.cmd == "machine-id":
         return cmd_machine_id(args)

@@ -185,9 +185,35 @@ begin
     ExtractTemporaryFile('{#DbCheckExe}');
 end;
 
+function StripTrailingSlash(const S: String): String;
+var
+  L: Integer;
+begin
+  Result := Trim(S);
+  L := Length(Result);
+  while (L > 0) and ((Result[L] = '\') or (Result[L] = '/')) do
+  begin
+    // Don't eat the lone backslash of a drive root ("C:\") — without it
+    // the path is meaningless. Same for UNC roots ("\\server\share").
+    if (L = 3) and (Result[2] = ':') then
+      Break;
+    SetLength(Result, L - 1);
+    L := L - 1;
+  end;
+end;
+
+function QuoteArg(const S: String): String;
+begin
+  // Wrap in double quotes. We're calling Exec() directly (no cmd shell),
+  // so this single layer of quoting is all that's needed and there's no
+  // backslash-escapes-quote hazard provided callers strip trailing
+  // separators first via StripTrailingSlash.
+  Result := '"' + S + '"';
+end;
+
 function RunDbCheck(const Args: String; out Output: String): Boolean;
 var
-  TmpFile, Cmd: String;
+  TmpFile, Params: String;
   ResultCode: Integer;
   Lines: TStringList;
 begin
@@ -195,9 +221,19 @@ begin
   Output := '';
   EnsureDbCheckExtracted;
   TmpFile := ExpandConstant('{tmp}\dbcheck_out.txt');
-  Cmd := '/C """' + DbCheckExePath + '" ' + Args + ' > "' + TmpFile + '" 2>&1"';
-  if not Exec(ExpandConstant('{cmd}'), Cmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+
+  // Wipe any prior output so we don't read stale JSON from a previous run.
+  if FileExists(TmpFile) then
+    DeleteFile(TmpFile);
+
+  // Call dbcheck.exe directly (no `cmd /C` wrapper). dbcheck writes its
+  // JSON to TmpFile via --out, which dodges Windows command-line quoting
+  // bugs entirely (a path ending in `\` would otherwise escape the
+  // closing quote and corrupt the redirection).
+  Params := '--out ' + QuoteArg(TmpFile) + ' ' + Args;
+  if not Exec(DbCheckExePath, Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
     Exit;
+
   Lines := TStringList.Create;
   try
     if FileExists(TmpFile) then
@@ -208,7 +244,11 @@ begin
   finally
     Lines.Free;
   end;
-  Result := (ResultCode = 0);
+
+  // Treat a successful Exec + populated output as a successful invocation.
+  // The caller still inspects "ok": true/false in the JSON to decide
+  // whether the underlying check passed.
+  Result := (Output <> '') or (ResultCode = 0);
 end;
 
 function JsonHasOkTrue(const S: String): Boolean;
@@ -234,6 +274,32 @@ begin
   Q := P;
   while (Q <= Length(S)) and (S[Q] <> '"') do Inc(Q);
   if Q > P then Result := Copy(S, P, Q - P);
+end;
+
+function DescribeFailure(const S: String): String;
+var
+  Err: String;
+begin
+  // Caller-friendly failure summary. Prefer the JSON `error` field; fall
+  // back to a tail of the raw output so a malformed-output bug never
+  // shows up as a blank message box.
+  Err := ExtractJsonError(S);
+  if Err <> '' then
+  begin
+    Result := Err;
+    Exit;
+  end;
+  if Trim(S) = '' then
+  begin
+    Result := '(dbcheck.exe produced no output. Log: ' +
+              ExpandConstant('{tmp}\dbcheck_out.txt') + ')';
+    Exit;
+  end;
+  // Truncate to keep the MsgBox readable.
+  if Length(S) > 400 then
+    Result := Copy(S, 1, 400) + '...'
+  else
+    Result := S;
 end;
 
 function PickFolder(Default: String): String;
@@ -343,7 +409,11 @@ begin
   EdNewDataDir.Top := 65;
   EdNewDataDir.Left := 24;
   EdNewDataDir.Width := DataFolderPage.SurfaceWidth - 110;
-  EdNewDataDir.Text := ExpandConstant('{autopf}\KTHEALTHERP\data');
+  // Default to ProgramData, NOT Program Files. Storing a SQLite DB under
+  // Program Files is fragile (UAC virtualisation, AV interference, blown
+  // away on uninstall) and previously caused "Cannot write to this folder"
+  // when the wizard wasn't elevated.
+  EdNewDataDir.Text := ExpandConstant('{commonappdata}\KTHEALTHERP\data');
 
   BtnBrowseNewData := TNewButton.Create(DataFolderPage.Surface);
   BtnBrowseNewData.Parent := DataFolderPage.Surface;
@@ -366,6 +436,9 @@ begin
   EdExistingDataDir.Top := 135;
   EdExistingDataDir.Left := 24;
   EdExistingDataDir.Width := DataFolderPage.SurfaceWidth - 110;
+  // Pre-fill with the same default the fresh-install path uses, so that
+  // re-running the installer over a previous install just needs Next.
+  EdExistingDataDir.Text := ExpandConstant('{commonappdata}\KTHEALTHERP\data');
   EdExistingDataDir.Enabled := False;
 
   BtnBrowseExisting := TNewButton.Create(DataFolderPage.Surface);
@@ -391,7 +464,7 @@ begin
   EdRestoreDataDir.Top := 200;
   EdRestoreDataDir.Left := 24;
   EdRestoreDataDir.Width := DataFolderPage.SurfaceWidth - 110;
-  EdRestoreDataDir.Text := ExpandConstant('{autopf}\KTHEALTHERP\data');
+  EdRestoreDataDir.Text := ExpandConstant('{commonappdata}\KTHEALTHERP\data');
   EdRestoreDataDir.Enabled := False;
 
   BtnBrowseRestoreDir := TNewButton.Create(DataFolderPage.Surface);
@@ -460,7 +533,7 @@ begin
   end;
 
   LblLicenseStatus.Caption := 'Verifying...';
-  RunDbCheck('validate-license "' + EdLicensePath.Text + '"', Output);
+  RunDbCheck('validate-license ' + QuoteArg(StripTrailingSlash(EdLicensePath.Text)), Output);
   if JsonHasOkTrue(Output) then
   begin
     LicenseValid := True;
@@ -699,13 +772,15 @@ end;
 
 procedure RunDbIntegrityCheck;
 var
-  Output, Err: String;
+  Output, Err, Folder: String;
 begin
   DbCheckOk := False;
   DbCheckMemo.Lines.Clear;
-  DbCheckMemo.Lines.Add('Checking ' + EdExistingDataDir.Text + ' ...');
+  Folder := StripTrailingSlash(EdExistingDataDir.Text);
+  EdExistingDataDir.Text := Folder;
+  DbCheckMemo.Lines.Add('Checking ' + Folder + ' ...');
 
-  if RunDbCheck('check-db "' + EdExistingDataDir.Text + '"', Output) and JsonHasOkTrue(Output) then
+  if RunDbCheck('check-db ' + QuoteArg(Folder), Output) and JsonHasOkTrue(Output) then
   begin
     DbCheckOk := True;
     DbCheckMemo.Lines.Add('');
@@ -716,11 +791,20 @@ begin
   else
   begin
     Err := ExtractJsonError(Output);
-    if Err = '' then Err := '(see raw output below)';
+    if Err = '' then
+    begin
+      if Output = '' then
+        Err := '(dbcheck.exe produced no output — see ' + ExpandConstant('{tmp}\dbcheck_out.txt') + ')'
+      else
+        Err := '(see raw output below)';
+    end;
     DbCheckMemo.Lines.Add('');
     DbCheckMemo.Lines.Add('Database check FAILED: ' + Err);
     DbCheckMemo.Lines.Add('');
-    DbCheckMemo.Lines.Add(Output);
+    if Output <> '' then
+      DbCheckMemo.Lines.Add(Output)
+    else
+      DbCheckMemo.Lines.Add('(no output captured)');
   end;
 end;
 
@@ -740,11 +824,14 @@ begin
         MsgBox('Please choose a data folder.', mbError, MB_OK);
         Result := False; Exit;
       end;
+      // Normalise once, then write back so the rest of the wizard sees
+      // the cleaned-up value.
+      EdNewDataDir.Text := StripTrailingSlash(EdNewDataDir.Text);
       // probe writability
-      PathOk := RunDbCheck('check-writable "' + EdNewDataDir.Text + '"', Output) and JsonHasOkTrue(Output);
+      PathOk := RunDbCheck('check-writable ' + QuoteArg(EdNewDataDir.Text), Output) and JsonHasOkTrue(Output);
       if not PathOk then
       begin
-        MsgBox('Cannot write to that folder:'#13#10 + ExtractJsonError(Output), mbError, MB_OK);
+        MsgBox('Cannot write to that folder:' + Chr(13) + Chr(10) + DescribeFailure(Output), mbError, MB_OK);
         Result := False;
       end;
     end
@@ -760,11 +847,13 @@ begin
         MsgBox('Please select the .db backup file to restore.', mbError, MB_OK);
         Result := False; Exit;
       end;
+      EdRestoreDataDir.Text := StripTrailingSlash(EdRestoreDataDir.Text);
+      EdRestoreFile.Text    := StripTrailingSlash(EdRestoreFile.Text);
       // target folder must be writable
-      PathOk := RunDbCheck('check-writable "' + EdRestoreDataDir.Text + '"', Output) and JsonHasOkTrue(Output);
+      PathOk := RunDbCheck('check-writable ' + QuoteArg(EdRestoreDataDir.Text), Output) and JsonHasOkTrue(Output);
       if not PathOk then
       begin
-        MsgBox('Cannot write to target folder:'#13#10 + ExtractJsonError(Output), mbError, MB_OK);
+        MsgBox('Cannot write to target folder:' + Chr(13) + Chr(10) + DescribeFailure(Output), mbError, MB_OK);
         Result := False; Exit;
       end;
       // target folder must not already contain a kthealth_erp.db
@@ -775,10 +864,10 @@ begin
         Result := False; Exit;
       end;
       // backup file must be a valid KT HEALTH ERP database
-      PathOk := RunDbCheck('validate-backup-db "' + EdRestoreFile.Text + '"', Output) and JsonHasOkTrue(Output);
+      PathOk := RunDbCheck('validate-backup-db ' + QuoteArg(EdRestoreFile.Text), Output) and JsonHasOkTrue(Output);
       if not PathOk then
       begin
-        MsgBox('Backup file rejected:'#13#10 + ExtractJsonError(Output), mbError, MB_OK);
+        MsgBox('Backup file rejected:' + Chr(13) + Chr(10) + DescribeFailure(Output), mbError, MB_OK);
         Result := False;
       end;
     end
@@ -787,8 +876,9 @@ begin
       if StrIsEmpty(EdExistingDataDir.Text) then
       begin
         MsgBox('Please pick the existing data folder.', mbError, MB_OK);
-        Result := False;
+        Result := False; Exit;
       end;
+      EdExistingDataDir.Text := StripTrailingSlash(EdExistingDataDir.Text);
     end;
     Exit;
   end;

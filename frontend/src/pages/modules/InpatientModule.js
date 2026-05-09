@@ -212,6 +212,13 @@ const InpatientModule = () => {
   const [docUploading, setDocUploading] = useState(false);
   const [billDiscount, setBillDiscount] = useState({ type: 'flat', value: 0 });
   const [billTaxPct, setBillTaxPct] = useState(0);
+  // Review & Edit Final Bill — operator-editable line items + discount/tax.
+  // `source` ties each line back to the auto-computed source so the backend
+  // can stamp source records' bill_id and prevent double-billing.
+  const [showReviewBillDialog, setShowReviewBillDialog] = useState(false);
+  const [reviewBillItems, setReviewBillItems] = useState([]);
+  const [reviewBillDiscount, setReviewBillDiscount] = useState({ type: 'flat', value: 0 });
+  const [reviewBillTaxPct, setReviewBillTaxPct] = useState(0);
   const [nursingNotes, setNursingNotes] = useState([]);
   const [dietOrders, setDietOrders] = useState([]);
   const [showDietDialog, setShowDietDialog] = useState(false);
@@ -1306,6 +1313,174 @@ const InpatientModule = () => {
         ? prev.test_ids.filter(id => id !== testId)
         : [...prev.test_ids, testId],
     }));
+  };
+
+  // ============================================================
+  // Review & Edit Final Bill — opens after discharge with the auto-computed
+  // breakdown loaded as editable lines. Operator can add/remove/edit lines,
+  // apply flat or percentage discount + tax, and commit the final bill.
+  // ============================================================
+  const openReviewBillDialog = async () => {
+    if (!activityAdmission) return;
+    try {
+      const safeFetch = (path, params) => axios.get(path, params ? { params } : undefined).then(r => r.data).catch(() => null);
+      const [billPayload, rxList, labList] = await Promise.all([
+        safeFetch(`/api/inpatient/admissions/${activityAdmission.id}/bill`, { unbilled_only: true }),
+        safeFetch(`/api/inpatient/admissions/${activityAdmission.id}/prescriptions`),
+        safeFetch(`/api/inpatient/admissions/${activityAdmission.id}/lab-orders`),
+      ]);
+      const b = billPayload || {};
+      const items = [];
+
+      // Room
+      if (b.room_total > 0 && b.room) {
+        const rate = b.room?.charge_per_day || 0;
+        const days = rate ? +(b.room_total / rate).toFixed(2) : 1;
+        items.push({
+          source: 'room', source_id: null,
+          item_type: 'room_charge',
+          item_name: `Room ${b.room.room_number || ''} (${b.room.room_type || ''}) — ${days} day${days === 1 ? '' : 's'}`,
+          quantity: Math.max(1, Math.round(days)),
+          unit_price: rate,
+          total_price: b.room_total,
+        });
+      }
+
+      // Visits — backend returns visit_summary as {visit_type: {count, total, items: [...]}}
+      const visitsObj = b.visits || {};
+      Object.entries(visitsObj).forEach(([vtype, group]) => {
+        (group.items || []).forEach(v => {
+          if (v.billed) return;
+          items.push({
+            source: 'visit', source_id: v.id,
+            item_type: vtype,
+            item_name: `${vtype.replace('_', ' ').replace(/\b\w/g, c => c.toUpperCase())}${v.visitor ? ' - ' + v.visitor : ''}`,
+            quantity: 1,
+            unit_price: parseFloat(v.amount || 0),
+            total_price: parseFloat(v.amount || 0),
+          });
+        });
+      });
+
+      // OT
+      (b.ot_entries || []).forEach(o => {
+        if (o.billed) return;
+        items.push({
+          source: 'ot', source_id: o.id,
+          item_type: 'ot_procedure',
+          item_name: `OT: ${o.procedure || ''}`,
+          quantity: 1,
+          unit_price: parseFloat(o.total || 0),
+          total_price: parseFloat(o.total || 0),
+        });
+      });
+
+      // Ancillary
+      (b.ancillary_entries || []).forEach(a => {
+        if (a.billed) return;
+        items.push({
+          source: 'ancillary', source_id: a.id,
+          item_type: 'ancillary',
+          item_name: `${a.service_name || 'Service'}${a.category ? ' (' + a.category + ')' : ''}`,
+          quantity: parseInt(a.quantity || 1),
+          unit_price: parseFloat(a.unit_price || 0),
+          total_price: parseFloat(a.total_amount || 0),
+        });
+      });
+
+      // Pharmacy — flatten per-medicine line for unbilled pharmacy prescriptions only
+      (rxList || []).forEach(rx => {
+        if (rx.type !== 'pharmacy') return;
+        if (rx.inpatient_bill_id) return; // already on a bill
+        if (rx.status === 'pending') return; // not dispensed yet — not billable
+        (rx.medicines || []).forEach(m => {
+          const total = parseFloat(m.total_price || 0);
+          if (total <= 0) return;
+          items.push({
+            source: 'pharmacy_rx', source_id: rx.id,
+            item_type: 'pharmacy',
+            item_name: `Rx: ${m.name || 'Medicine'}${m.dosage ? ' (' + m.dosage + ')' : ''}`,
+            quantity: parseInt(m.quantity || 1),
+            unit_price: parseFloat(m.unit_price || 0),
+            total_price: total,
+          });
+        });
+      });
+
+      // Lab orders
+      (labList || []).forEach(l => {
+        if (l.inpatient_bill_id) return;
+        if (l.status === 'cancelled') return;
+        items.push({
+          source: 'lab_order', source_id: l.id,
+          item_type: 'lab_test',
+          item_name: `Lab: ${l.test_name || 'Test'}${l.order_number ? ' (' + l.order_number + ')' : ''}`,
+          quantity: 1,
+          unit_price: parseFloat(l.amount || 0),
+          total_price: parseFloat(l.amount || 0),
+        });
+      });
+
+      setReviewBillItems(items);
+      setReviewBillDiscount({ type: billDiscount.type || 'flat', value: billDiscount.value || 0 });
+      setReviewBillTaxPct(billTaxPct || 0);
+      setShowReviewBillDialog(true);
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed to load bill items';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    }
+  };
+
+  const reviewBillSubtotal = reviewBillItems.reduce((s, it) => s + (parseFloat(it.total_price) || 0), 0);
+  const reviewBillDiscountAmount = (() => {
+    const v = parseFloat(reviewBillDiscount.value) || 0;
+    if (v <= 0) return 0;
+    if (reviewBillDiscount.type === 'percentage') return Math.round(reviewBillSubtotal * v) / 100;
+    return Math.min(v, reviewBillSubtotal);
+  })();
+  const reviewBillAfterDiscount = Math.max(0, reviewBillSubtotal - reviewBillDiscountAmount);
+  const reviewBillTaxAmount = (() => {
+    const t = parseFloat(reviewBillTaxPct) || 0;
+    if (t <= 0) return 0;
+    return Math.round(reviewBillAfterDiscount * t) / 100;
+  })();
+  const reviewBillGrandTotal = +(reviewBillAfterDiscount + reviewBillTaxAmount).toFixed(2);
+
+  const handleSubmitReviewedBill = async () => {
+    if (!activityAdmission) return;
+    if (reviewBillItems.length === 0) {
+      toast({ variant: 'destructive', title: 'Error', description: 'At least one bill line is required' });
+      return;
+    }
+    setLoading(true);
+    try {
+      const payload = {
+        items_override: reviewBillItems.map(it => ({
+          source: it.source || 'custom',
+          source_id: it.source_id || null,
+          item_type: it.item_type || 'custom',
+          item_name: it.item_name || '',
+          quantity: Math.max(1, parseInt(it.quantity) || 1),
+          unit_price: parseFloat(it.unit_price) || 0,
+          total_price: parseFloat(it.total_price) || 0,
+        })),
+      };
+      if (parseFloat(reviewBillDiscount.value) > 0) {
+        payload.discount_type = reviewBillDiscount.type;
+        payload.discount_value = parseFloat(reviewBillDiscount.value);
+      }
+      if (parseFloat(reviewBillTaxPct) > 0) {
+        payload.tax_percentage = parseFloat(reviewBillTaxPct);
+      }
+      const res = await axios.post(`/api/inpatient/admissions/${activityAdmission.id}/bill/finalize`, payload);
+      toast({ title: 'Bill finalized', description: `${res.data.bill_number} — ₹${res.data.total_amount}` });
+      setShowReviewBillDialog(false);
+      fetchBill(activityAdmission.id);
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      const msg = typeof detail === 'string' ? detail : (detail?.message || 'Failed to finalize bill');
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally { setLoading(false); }
   };
 
   // Finalize bill
@@ -2935,8 +3110,20 @@ const InpatientModule = () => {
       const res = await axios.get(`/api/inpatient/admissions/${admissionId}/bill/pdf`, { responseType: 'blob' });
       const url = URL.createObjectURL(res.data);
       printPdfFromUrl(url);
-    } catch {
-      toast({ variant: 'destructive', title: 'Error', description: 'Failed to generate bill PDF' });
+    } catch (err) {
+      // Blob responses hide the JSON detail — read it back as text.
+      let msg = 'Failed to generate bill PDF';
+      try {
+        if (err.response?.data instanceof Blob) {
+          const text = await err.response.data.text();
+          const json = JSON.parse(text);
+          if (typeof json.detail === 'string') msg = json.detail;
+          else if (json.detail?.message) msg = json.detail.message;
+        } else if (typeof err.response?.data?.detail === 'string') {
+          msg = err.response.data.detail;
+        }
+      } catch { /* keep default msg */ }
+      toast({ variant: 'destructive', title: 'Error', description: msg });
     }
   };
 
@@ -3787,8 +3974,13 @@ const InpatientModule = () => {
 
                             <div className="flex gap-2 flex-wrap">
                               {ip('finalize_bill') && (
-                                <Button size="sm" onClick={handleFinalizeBill} disabled={loading}>
-                                  {loading ? 'Finalizing...' : 'Finalize Bill'}
+                                <Button size="sm" onClick={openReviewBillDialog} disabled={loading}>
+                                  <Receipt className="h-4 w-4 mr-1" /> Review & Generate Final Bill
+                                </Button>
+                              )}
+                              {ip('finalize_bill') && (
+                                <Button size="sm" variant="outline" onClick={handleFinalizeBill} disabled={loading} title="Finalize directly using the auto-computed breakdown without review">
+                                  {loading ? 'Finalizing...' : 'Quick Finalize'}
                                 </Button>
                               )}
                               {ip('generate_interim_bill') && (
@@ -8653,6 +8845,139 @@ const InpatientModule = () => {
               {loading ? 'Ordering...' : `Order ${labOrderForm.test_ids.length} Test(s)`}
             </Button>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Review & Edit Final Bill Dialog */}
+      <Dialog open={showReviewBillDialog} onOpenChange={setShowReviewBillDialog}>
+        <DialogContent className="max-w-4xl max-h-[92vh] overflow-y-auto">
+          <DialogHeader><DialogTitle>Review & Generate Final Bill — {activityAdmission?.patient_name || ''}</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <p className="text-xs text-gray-500">
+              All currently unbilled charges are loaded below. Edit qty / unit price / item name, remove lines you don't want
+              to bill, or add a custom line. Changes are recorded once you generate the final bill.
+            </p>
+            <div className="border rounded">
+              <table className="w-full text-xs">
+                <thead className="bg-gray-50 border-b">
+                  <tr>
+                    <th className="text-left px-2 py-1.5">Item</th>
+                    <th className="text-right px-2 py-1.5 w-16">Qty</th>
+                    <th className="text-right px-2 py-1.5 w-28">Unit ₹</th>
+                    <th className="text-right px-2 py-1.5 w-28">Total ₹</th>
+                    <th className="w-8"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {reviewBillItems.length === 0 ? (
+                    <tr><td colSpan={5} className="text-center text-gray-500 py-3 italic">No bill lines. Click "Add Line" to start.</td></tr>
+                  ) : reviewBillItems.map((it, idx) => (
+                    <tr key={idx} className="border-b last:border-b-0">
+                      <td className="px-2 py-1">
+                        <Input
+                          className="h-7 text-xs"
+                          value={it.item_name}
+                          onChange={e => setReviewBillItems(arr => { const n = [...arr]; n[idx] = { ...n[idx], item_name: e.target.value }; return n; })}
+                        />
+                        {it.source && it.source !== 'custom' && (
+                          <span className="text-[10px] text-gray-400">{it.source}{it.source_id ? ` #${it.source_id}` : ''}</span>
+                        )}
+                      </td>
+                      <td className="px-2 py-1">
+                        <Input type="number" min="1" className="h-7 text-xs text-right"
+                          value={it.quantity}
+                          onChange={e => setReviewBillItems(arr => {
+                            const n = [...arr];
+                            const q = Math.max(1, parseInt(e.target.value) || 1);
+                            const up = parseFloat(n[idx].unit_price) || 0;
+                            n[idx] = { ...n[idx], quantity: q, total_price: +(q * up).toFixed(2) };
+                            return n;
+                          })} />
+                      </td>
+                      <td className="px-2 py-1">
+                        <Input type="number" min="0" step="0.01" className="h-7 text-xs text-right"
+                          value={it.unit_price}
+                          onChange={e => setReviewBillItems(arr => {
+                            const n = [...arr];
+                            const up = parseFloat(e.target.value) || 0;
+                            const q = parseInt(n[idx].quantity) || 1;
+                            n[idx] = { ...n[idx], unit_price: up, total_price: +(q * up).toFixed(2) };
+                            return n;
+                          })} />
+                      </td>
+                      <td className="px-2 py-1">
+                        <Input type="number" min="0" step="0.01" className="h-7 text-xs text-right"
+                          value={it.total_price}
+                          onChange={e => setReviewBillItems(arr => {
+                            const n = [...arr];
+                            n[idx] = { ...n[idx], total_price: parseFloat(e.target.value) || 0 };
+                            return n;
+                          })} />
+                      </td>
+                      <td className="px-1 py-1 text-center">
+                        <Button type="button" size="sm" variant="ghost" className="h-7 w-7 p-0"
+                          onClick={() => setReviewBillItems(arr => arr.filter((_, i) => i !== idx))}>
+                          <Trash2 className="h-3.5 w-3.5 text-red-500" />
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <Button type="button" size="sm" variant="outline" onClick={() => setReviewBillItems(arr => [...arr, {
+              source: 'custom', source_id: null, item_type: 'custom', item_name: '', quantity: 1, unit_price: 0, total_price: 0,
+            }])}>
+              <Plus className="h-3.5 w-3.5 mr-1" /> Add Custom Line
+            </Button>
+
+            {/* Discount + Tax */}
+            <div className="border rounded p-3 bg-gray-50 space-y-2">
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <Label className="text-xs">Discount Type</Label>
+                  <Select value={reviewBillDiscount.type} onValueChange={v => setReviewBillDiscount(p => ({ ...p, type: v }))}>
+                    <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="flat">Flat ₹</SelectItem>
+                      <SelectItem value="percentage">Percentage %</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label className="text-xs">Discount Value</Label>
+                  <Input type="number" min="0" step="0.01" className="h-8 text-xs"
+                    value={reviewBillDiscount.value}
+                    onChange={e => setReviewBillDiscount(p => ({ ...p, value: e.target.value }))} />
+                </div>
+                <div>
+                  <Label className="text-xs">Tax %</Label>
+                  <Input type="number" min="0" max="100" step="0.01" className="h-8 text-xs"
+                    value={reviewBillTaxPct}
+                    onChange={e => setReviewBillTaxPct(e.target.value)} />
+                </div>
+              </div>
+            </div>
+
+            {/* Totals */}
+            <div className="border-t pt-2 text-sm space-y-0.5">
+              <div className="flex justify-between"><span>Subtotal</span><span>₹{reviewBillSubtotal.toFixed(2)}</span></div>
+              {reviewBillDiscountAmount > 0 && (
+                <div className="flex justify-between text-gray-600"><span>Discount{reviewBillDiscount.type === 'percentage' ? ` (${reviewBillDiscount.value}%)` : ''}</span><span>– ₹{reviewBillDiscountAmount.toFixed(2)}</span></div>
+              )}
+              {reviewBillTaxAmount > 0 && (
+                <div className="flex justify-between text-gray-600"><span>Tax ({reviewBillTaxPct}%)</span><span>+ ₹{reviewBillTaxAmount.toFixed(2)}</span></div>
+              )}
+              <div className="flex justify-between font-semibold text-base pt-1 border-t mt-1"><span>Grand Total</span><span>₹{reviewBillGrandTotal.toFixed(2)}</span></div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button type="button" variant="outline" onClick={() => setShowReviewBillDialog(false)}>Cancel</Button>
+              <Button type="button" onClick={handleSubmitReviewedBill} disabled={loading || reviewBillItems.length === 0}>
+                {loading ? 'Generating…' : 'Generate Final Bill'}
+              </Button>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
 
