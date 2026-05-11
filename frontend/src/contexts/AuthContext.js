@@ -31,6 +31,8 @@ export const AuthProvider = ({ children }) => {
   // Global 401 interceptor — auto-logout on expired/invalid token
   // Skip the interceptor for the login endpoint itself to avoid clearing a
   // non-existent session when login credentials are wrong.
+  // Also handle 503 with `maintenance: true` body by surfacing a global
+  // event the App-level modal can subscribe to.
   useEffect(() => {
     const interceptor = axios.interceptors.response.use(
       (response) => response,
@@ -45,6 +47,16 @@ export const AuthProvider = ({ children }) => {
           localStorage.removeItem('user');
           localStorage.removeItem('licenseStatus');
           delete axios.defaults.headers.common['Authorization'];
+        }
+        if (error.response?.status === 503 && error.response?.data?.maintenance) {
+          // Broadcast so a top-level modal can render and auto-dismiss.
+          try {
+            window.dispatchEvent(new CustomEvent('app:maintenance', {
+              detail: error.response.data,
+            }));
+          } catch {
+            // Older browsers without CustomEvent constructor — ignore.
+          }
         }
         return Promise.reject(error);
       }

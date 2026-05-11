@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Date
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Date, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from config.database import Base
@@ -6,9 +6,13 @@ import uuid
 
 class Patient(Base):
     __tablename__ = "patients"
+    __table_args__ = (
+        UniqueConstraint("hospital_id", "mrn", name="uq_patient_mrn_per_hospital"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     patient_id = Column(String(36), unique=True, default=lambda: str(uuid.uuid4()), nullable=False)
+    mrn = Column(String(32), nullable=True, index=True)
     first_name = Column(String(50), nullable=False)
     last_name = Column(String(50), nullable=False)
     date_of_birth = Column(Date)

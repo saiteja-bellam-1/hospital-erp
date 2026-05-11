@@ -10,7 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../componen
 import { Textarea } from '../../components/ui/textarea';
 import {
   Receipt, Search, Download, Filter, DollarSign, TrendingUp, Clock,
-  CheckCircle2, AlertCircle, Loader2, CalendarDays, XCircle, Ban
+  CheckCircle2, AlertCircle, Loader2, CalendarDays, XCircle, Ban, Eye, FileText
 } from 'lucide-react';
 
 const BillingDashboard = () => {
@@ -33,6 +33,12 @@ const BillingDashboard = () => {
   const [cancelling, setCancelling] = useState(false);
   const [doctors, setDoctors] = useState([]);
   const [referrals, setReferrals] = useState([]);
+  // Bill preview dialog: bill row currently being viewed, blob URL of the
+  // most recently fetched PDF, and whether the header is included.
+  const [previewBill, setPreviewBill] = useState(null);
+  const [previewPdfUrl, setPreviewPdfUrl] = useState(null);
+  const [previewIncludeHeader, setPreviewIncludeHeader] = useState(true);
+  const [previewLoading, setPreviewLoading] = useState(false);
 
   const fetchBills = useCallback(async () => {
     setLoading(true);
@@ -65,6 +71,80 @@ const BillingDashboard = () => {
     if (!d) return '-';
     try { return new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }); }
     catch { return d; }
+  };
+
+  // Build the right endpoint URL per bill type. Lab bills with a group id
+  // hit the combined-bill endpoint; ungrouped legacy lab orders fall back
+  // to the per-order endpoint so they're still viewable.
+  const buildBillPdfUrl = (bill, includeHeader) => {
+    const h = includeHeader ? 'true' : 'false';
+    if (bill.type === 'lab') {
+      return bill.lab_bill_group_id
+        ? `/api/lab/bills/${bill.lab_bill_group_id}/pdf?include_header=${h}`
+        : `/api/lab/orders/${bill.bill_id}/bill?include_header=${h}`;
+    }
+    if (bill.type === 'consultation') {
+      return `/api/appointments/${bill.bill_id}/bill/download?include_header=${h}`;
+    }
+    if (bill.type === 'admission') {
+      return `/api/inpatient/admissions/${bill.bill_id}/bill/pdf?include_header=${h}`;
+    }
+    return '';
+  };
+
+  const fetchBillBlobUrl = async (bill, includeHeader) => {
+    const url = buildBillPdfUrl(bill, includeHeader);
+    if (!url) return null;
+    const res = await axios.get(url, { responseType: 'blob' });
+    return URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+  };
+
+  const openBillPreview = async (bill) => {
+    setPreviewBill(bill);
+    setPreviewIncludeHeader(true);
+    setPreviewPdfUrl(null);
+    setPreviewLoading(true);
+    try {
+      const blobUrl = await fetchBillBlobUrl(bill, true);
+      setPreviewPdfUrl(blobUrl);
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      alert(typeof detail === 'string' ? detail : 'Could not load bill PDF');
+      setPreviewBill(null);
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const togglePreviewHeader = async (newVal) => {
+    if (!previewBill) return;
+    setPreviewIncludeHeader(newVal);
+    setPreviewLoading(true);
+    try {
+      if (previewPdfUrl) URL.revokeObjectURL(previewPdfUrl);
+      const blobUrl = await fetchBillBlobUrl(previewBill, newVal);
+      setPreviewPdfUrl(blobUrl);
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      alert(typeof detail === 'string' ? detail : 'Could not reload bill PDF');
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const downloadFromPreview = () => {
+    if (!previewBill || !previewPdfUrl) return;
+    const a = document.createElement('a');
+    a.href = previewPdfUrl;
+    a.download = `bill_${previewBill.reference || previewBill.id}.pdf`;
+    a.click();
+  };
+
+  const closeBillPreview = () => {
+    if (previewPdfUrl) URL.revokeObjectURL(previewPdfUrl);
+    setPreviewPdfUrl(null);
+    setPreviewBill(null);
+    setPreviewIncludeHeader(true);
   };
 
   const downloadCSV = () => {
@@ -289,12 +369,21 @@ const BillingDashboard = () => {
                       </td>
                       <td className="py-2.5 pr-3 text-xs text-gray-500 capitalize">{bill.payment_method || '-'}</td>
                       <td className="py-2.5">
-                        {bill.payment_status !== 'cancelled' && bill.payment_status !== 'pending' && (
-                          <Button size="sm" variant="ghost" className="h-6 text-[10px] text-red-500 hover:text-red-700 hover:bg-red-50 px-2"
-                            onClick={() => { setCancelBill(bill); setCancelReason(''); }}>
-                            <Ban className="w-3 h-3 mr-0.5" /> Cancel
-                          </Button>
-                        )}
+                        <div className="flex items-center gap-1">
+                          {bill.payment_status !== 'cancelled' && (
+                            <Button size="sm" variant="ghost" className="h-6 text-[10px] px-2"
+                              onClick={() => openBillPreview(bill)}
+                              title="View bill PDF">
+                              <Eye className="w-3 h-3 mr-0.5" /> View
+                            </Button>
+                          )}
+                          {bill.payment_status !== 'cancelled' && bill.payment_status !== 'pending' && (
+                            <Button size="sm" variant="ghost" className="h-6 text-[10px] text-red-500 hover:text-red-700 hover:bg-red-50 px-2"
+                              onClick={() => { setCancelBill(bill); setCancelReason(''); }}>
+                              <Ban className="w-3 h-3 mr-0.5" /> Cancel
+                            </Button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -340,6 +429,52 @@ const BillingDashboard = () => {
                   } finally { setCancelling(false); }
                 }}>
                 {cancelling ? 'Cancelling...' : 'Cancel Bill'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bill Preview Dialog — same iframe + header-toggle pattern used
+          everywhere else in the app for printable artifacts. */}
+      <Dialog open={!!previewBill} onOpenChange={(open) => { if (!open) closeBillPreview(); }}>
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-hidden">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileText className="h-5 w-5" />
+              {previewBill ? `${previewBill.type === 'lab' ? 'Lab' : previewBill.type === 'consultation' ? 'Consultation' : 'Admission'} Bill` : 'Bill'}
+              {previewBill?.reference && (
+                <span className="text-xs font-mono text-gray-500 font-normal">— {previewBill.reference}</span>
+              )}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col space-y-4">
+            <div className="flex-1 min-h-[500px] border rounded-lg overflow-hidden bg-gray-50 relative">
+              {previewLoading && (
+                <div className="absolute inset-0 flex items-center justify-center bg-white/70 z-10">
+                  <Loader2 className="h-6 w-6 animate-spin text-gray-400" />
+                </div>
+              )}
+              {previewPdfUrl && (
+                <iframe src={previewPdfUrl} className="w-full h-[60vh] border-0" title="Bill Preview" />
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  id="bill-include-header"
+                  checked={previewIncludeHeader}
+                  onChange={(e) => togglePreviewHeader(e.target.checked)}
+                  disabled={previewLoading}
+                  className="w-4 h-4"
+                />
+                <Label htmlFor="bill-include-header" className="text-sm cursor-pointer">Include header</Label>
+              </div>
+              <div className="flex-1" />
+              <Button variant="outline" onClick={closeBillPreview}>Close</Button>
+              <Button onClick={downloadFromPreview} disabled={!previewPdfUrl || previewLoading}>
+                <Download className="h-4 w-4 mr-2" /> Download
               </Button>
             </div>
           </div>

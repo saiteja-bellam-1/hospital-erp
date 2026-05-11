@@ -51,6 +51,7 @@ import ConsultationPage from './modules/ConsultationPage';
 import LicenseManagement from './modules/LicenseManagement';
 import BackupManagement from './modules/BackupManagement';
 import LicenseBanner from '../components/LicenseBanner';
+import BackupHealthBanner from '../components/BackupHealthBanner';
 import { useNavigationSections } from '../hooks/useNavigationSections';
 import HomeGrid from './modules/HomeGrid';
 
@@ -396,6 +397,7 @@ const Dashboard = () => {
       <div className="flex-1 flex flex-col min-w-0">
         {/* License Banner */}
         <LicenseBanner licenseStatus={licenseStatus} />
+        <BackupHealthBanner />
 
         {/* Mobile menu button */}
         <div className="lg:hidden flex items-center h-12 px-4 flex-shrink-0 bg-white border-b border-border">

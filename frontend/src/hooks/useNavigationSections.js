@@ -47,6 +47,10 @@ export function useNavigationSections({ roles, enabledModules }) {
     add(items, make('Referrals', Share2, '/dashboard/reception/referrals'));
     if (enabledModules.billing) {
       add(items, make('Billing', Receipt, '/dashboard/billing'));
+      // Centralised view of all generated bills (consultation, lab, admission)
+      // with PDF download for each. Backend already authorises receptionist
+      // for /api/hospital/billing.
+      add(items, make('Bills History', BarChart3, '/dashboard/billing-dashboard'));
     }
     if (enabledModules.outpatient) {
       add(items, make('Reports', TrendingUp, '/dashboard/reception/reports'));

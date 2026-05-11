@@ -1,417 +1,30 @@
+"""Database seeding helpers.
+
+These used to live inside `app.routes.setup` and were called by the React
+Setup Wizard. With the Inno Setup installer as the single install path, the
+wizard route has been removed; the helpers live here so the Inno Setup seed
+applier (`app.services.bootstrap_from_seed`) and the existing column-
+migration / restore paths can keep using them.
+
+Public surface:
+    init_database_and_seed(seed, db_path) — full first-install seed
+    store_license(content, db_path)       — persist a .lic file
+    apply_additive_migrations(db_path)    — idempotent column ALTERs
+    upsert_modules_and_permissions(db_path) — additive heal on imported DBs
+
+Helpers prefixed with `_` are private to this module.
 """
-Setup wizard API endpoints.
-These are only accessible before the initial setup is complete.
-"""
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
-from typing import List, Optional
-import os
+from __future__ import annotations
+
+import base64
 import uuid
-
-router = APIRouter()
-
-
-class SetupStatusResponse(BaseModel):
-    setup_complete: bool
+from typing import Mapping
 
 
-class SetupRequest(BaseModel):
-    # Hospital info
-    hospital_name: str
-    hospital_address: Optional[str] = ""
-    hospital_phone: Optional[str] = ""
-    hospital_email: Optional[str] = ""
+# ----------------------------------------------------------------------------
+# Canonical role + permission catalog
+# ----------------------------------------------------------------------------
 
-    # Database
-    db_location: Optional[str] = ""  # Empty = use default
-
-    # Admin credentials
-    admin_username: str
-    admin_email: str
-    admin_password: str
-    admin_first_name: Optional[str] = "System"
-    admin_last_name: Optional[str] = "Administrator"
-
-    # License file content (base64 or empty)
-    license_file_content: Optional[str] = ""
-
-    # Backup locations
-    backup_locations: List[str] = []
-
-
-@router.get("/status")
-async def get_setup_status():
-    """Check if initial setup has been completed."""
-    from app.utils.config import is_setup_complete
-    return {"setup_complete": is_setup_complete()}
-
-
-@router.get("/debug-permissions")
-async def debug_permissions():
-    """Diagnostic endpoint to check role permissions state."""
-    from config.database import SessionLocal
-    from app.models.permissions import RoleModulePermission
-    from app.models.user import UserRole
-    from app.models.system import SystemModule
-
-    db = SessionLocal()
-    try:
-        roles = db.query(UserRole).all()
-        role_perms = db.query(RoleModulePermission).all()
-        modules = db.query(SystemModule).all()
-
-        return {
-            "roles": [{"id": r.id, "name": r.name} for r in roles],
-            "role_permissions_count": len(role_perms),
-            "role_permissions": [
-                {
-                    "role_id": rp.role_id,
-                    "module": rp.module_name,
-                    "permissions": rp.permissions,
-                }
-                for rp in role_perms
-            ],
-            "modules": [
-                {
-                    "name": m.module_name,
-                    "enabled": m.is_enabled,
-                    "always_enabled": m.is_always_enabled,
-                }
-                for m in modules
-            ],
-        }
-    finally:
-        db.close()
-
-
-@router.get("/browse-folder")
-async def browse_folder():
-    """Open a native OS folder picker dialog and return the selected path."""
-    import subprocess
-    import sys
-    import platform
-
-    folder = ""
-
-    try:
-        if platform.system() == "Darwin":
-            # macOS: use AppleScript — activate Finder to bring dialog to front
-            script = (
-                'tell application "Finder"\n'
-                '  activate\n'
-                'end tell\n'
-                'set theFolder to choose folder with prompt "Select Folder"\n'
-                'return POSIX path of theFolder'
-            )
-            proc = subprocess.run(
-                ["osascript", "-e", script],
-                capture_output=True, text=True, timeout=120,
-            )
-            if proc.returncode == 0 and proc.stdout.strip():
-                folder = proc.stdout.strip().rstrip("/")
-
-        elif platform.system() == "Windows":
-            # Windows: create a hidden topmost form as dialog owner so it appears in front
-            ps_script = (
-                'Add-Type -AssemblyName System.Windows.Forms; '
-                '[System.Windows.Forms.Application]::EnableVisualStyles(); '
-                '$top = New-Object System.Windows.Forms.Form; '
-                '$top.TopMost = $true; '
-                '$top.MinimizeBox = $false; '
-                '$top.MaximizeBox = $false; '
-                '$top.Width = 0; $top.Height = 0; '
-                '$top.StartPosition = "Manual"; '
-                '$top.Location = New-Object System.Drawing.Point(-1000,-1000); '
-                '$top.Show(); $top.BringToFront(); '
-                '$f = New-Object System.Windows.Forms.FolderBrowserDialog; '
-                '$f.Description = "Select Folder"; '
-                '$f.ShowNewFolderButton = $true; '
-                '$result = $f.ShowDialog($top); '
-                '$top.Close(); '
-                'if ($result -eq [System.Windows.Forms.DialogResult]::OK) { '
-                '  $f.SelectedPath '
-                '}'
-            )
-            proc = subprocess.run(
-                ["powershell", "-NoProfile", "-STA", "-Command", ps_script],
-                capture_output=True, text=True, timeout=120,
-            )
-            if proc.returncode == 0 and proc.stdout.strip():
-                folder = proc.stdout.strip()
-
-        else:
-            # Linux: try zenity, then kdialog, then tkinter as fallback
-            for cmd in [
-                ["zenity", "--file-selection", "--directory", "--title=Select Folder"],
-                ["kdialog", "--getexistingdirectory", "."],
-            ]:
-                try:
-                    proc = subprocess.run(
-                        cmd, capture_output=True, text=True, timeout=120,
-                    )
-                    if proc.returncode == 0 and proc.stdout.strip():
-                        folder = proc.stdout.strip()
-                        break
-                except FileNotFoundError:
-                    continue
-
-    except (subprocess.TimeoutExpired, Exception):
-        pass
-
-    return {"path": folder}
-
-
-@router.post("/validate-path")
-async def validate_path(data: dict):
-    """Validate that a directory path exists and is writable."""
-    path = data.get("path", "").strip()
-    if not path:
-        return {"valid": False, "message": "Path is empty"}
-
-    # Expand user home dir
-    path = os.path.expanduser(path)
-
-    try:
-        os.makedirs(path, exist_ok=True)
-        # Test write access
-        test_file = os.path.join(path, ".write_test")
-        with open(test_file, "w") as f:
-            f.write("test")
-        os.remove(test_file)
-        return {"valid": True, "message": "Path is valid and writable", "resolved_path": path}
-    except PermissionError:
-        return {"valid": False, "message": "Permission denied. Cannot write to this location."}
-    except Exception as e:
-        return {"valid": False, "message": str(e)}
-
-
-@router.post("/complete")
-async def complete_setup(setup_data: SetupRequest):
-    """
-    Complete the initial setup:
-    1. Save config.json with DB path and backup locations
-    2. Initialize the database at the chosen location
-    3. Create roles, hospital, and super admin user
-    4. Optionally store the license
-    """
-    from app.utils.config import is_setup_complete, save_config, load_config
-    from app.utils.paths import get_data_dir, get_db_path
-
-    if is_setup_complete():
-        raise HTTPException(status_code=400, detail="Setup has already been completed")
-
-    # Validate admin password
-    if len(setup_data.admin_password) < 6:
-        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
-
-    # Determine DB path
-    db_path = ""
-    if setup_data.db_location and setup_data.db_location.strip():
-        db_dir = os.path.expanduser(setup_data.db_location.strip())
-        try:
-            os.makedirs(db_dir, exist_ok=True)
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Cannot create database directory: {e}")
-        db_path = os.path.join(db_dir, "kthealth_erp.db")
-    else:
-        db_path = os.path.join(get_data_dir(), "kthealth_erp.db")
-
-    # Validate backup locations
-    valid_backup_locations = []
-    failed_backup_locations = []
-    for loc in setup_data.backup_locations:
-        loc = loc.strip()
-        if loc:
-            expanded = os.path.expanduser(loc)
-            try:
-                os.makedirs(expanded, exist_ok=True)
-                valid_backup_locations.append(expanded)
-            except Exception as e:
-                failed_backup_locations.append({"path": loc, "error": str(e)})
-
-    # Save config FIRST (so DB path is available for database.py)
-    config = {
-        "setup_complete": True,
-        "db_path": db_path,
-        "backup_locations": valid_backup_locations,
-        "hospital_name": setup_data.hospital_name,
-    }
-    save_config(config)
-
-    # Now reinitialize the database engine with the new path
-    try:
-        _init_database_and_seed(setup_data, db_path)
-    except Exception as e:
-        # Rollback config if DB init fails
-        config["setup_complete"] = False
-        save_config(config)
-        # Delete the partially-written DB file so the next attempt starts clean.
-        # Without this, a half-initialized DB lingers on disk and a future call
-        # to is_setup_complete() could be misled by it.
-        try:
-            if os.path.isfile(db_path):
-                os.remove(db_path)
-        except Exception:
-            pass
-        # Best-effort cleanup of SQLite sidecar files (-journal, -wal, -shm)
-        for suffix in ("-journal", "-wal", "-shm"):
-            try:
-                sidecar = db_path + suffix
-                if os.path.isfile(sidecar):
-                    os.remove(sidecar)
-            except Exception:
-                pass
-        raise HTTPException(status_code=500, detail=f"Database initialization failed: {e}")
-
-    # Reinitialize the global DB engine to point at the new path
-    from config.database import reinitialize_engine
-    reinitialize_engine()
-
-    # Handle license file if provided
-    license_result = None
-    if setup_data.license_file_content:
-        try:
-            license_result = _store_license(setup_data.license_file_content, db_path)
-        except Exception as e:
-            license_result = {"stored": False, "error": str(e)}
-
-    return {
-        "success": True,
-        "message": "Setup completed successfully",
-        "db_path": db_path,
-        "backup_locations": valid_backup_locations,
-        "failed_backup_locations": failed_backup_locations,
-        "license_result": license_result,
-    }
-
-
-def _init_database_and_seed(setup_data: SetupRequest, db_path: str):
-    """Initialize DB at the given path and seed with roles, hospital, admin user."""
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import sessionmaker
-    from config.database import Base
-
-    # Import ALL models so Base.metadata knows about them
-    from app.models.user import User, UserRole, UserPermission  # noqa
-    from app.models.permissions import ModulePermission, RoleModulePermission, HospitalSettings, ModuleTemplate, ModuleRates  # noqa
-    from app.models.system import SystemModule, SystemSettings  # noqa
-    from app.models.hospital import Hospital, HospitalModule  # noqa
-    from app.models.prescriptions_simple import SimplePrescription  # noqa
-    from app.models.doctor_availability import DoctorAvailability, DoctorSpecialSchedule, DoctorAvailabilityStatus  # noqa
-    from app.models.license import License  # noqa
-    from app.models.lab import LabTestCategory, LabTest, LabTestParameter, LabReport, PatientLabOrder  # noqa
-    from app.models.lab import LabTestPackageCategory, LabTestPackage  # noqa
-    from app.models.billing import PaymentMethod, Bill, BillItem, Payment  # noqa
-    from app.models.ehr import Consultation  # noqa
-    from app.models.outpatient import Appointment  # noqa
-    from app.models.patient import Patient  # noqa
-    from app.models.referral import Referral  # noqa
-
-    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
-    Base.metadata.create_all(bind=engine)
-
-    # Run column migrations for any new columns added after initial table creation
-    try:
-        from sqlalchemy import text
-        from migrate_patient_fields import NEW_COLUMNS
-        with engine.connect() as conn:
-            for table, col, col_type in NEW_COLUMNS:
-                result = conn.execute(text(f"PRAGMA table_info({table})"))
-                existing = {row[1] for row in result.fetchall()}
-                if col not in existing:
-                    try:
-                        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"))
-                    except Exception:
-                        pass
-            conn.commit()
-    except Exception:
-        pass  # Migrations are best-effort during setup
-
-    Session = sessionmaker(bind=engine)
-    db = Session()
-
-    try:
-        # 1. Create default roles
-        _seed_roles(db, UserRole)
-        db.flush()
-
-        # 1b. Seed the module-permission catalog (used by Role Permissions admin UI)
-        from app.models.permissions import ModulePermission as _ModulePermission
-        _seed_module_permissions(db, _ModulePermission)
-        db.flush()
-
-        # 2. Create system modules
-        modules = [
-            ("outpatient", "Outpatient", True, False),       # Enabled by default, toggleable
-            ("inpatient", "Inpatient", False, False),         # Disabled by default, toggleable
-            ("lab", "Laboratory", False, False),              # Disabled by default, toggleable
-            ("pharmacy", "Pharmacy", False, False),           # Disabled by default, toggleable
-            ("ehr", "Electronic Health Records", True, False),# Enabled by default, toggleable
-            ("billing", "Billing", True, True),               # Always enabled
-            ("admin", "Administration", True, True),          # Always enabled
-        ]
-        for mod_name, display, enabled, always in modules:
-            if not db.query(SystemModule).filter(SystemModule.module_name == mod_name).first():
-                db.add(SystemModule(
-                    module_name=mod_name,
-                    display_name=display,
-                    description=f"{display} management",
-                    is_enabled=enabled,
-                    is_always_enabled=always,
-                ))
-        db.flush()
-
-        # 3. Create hospital
-        from app.services.super_admin_service import generate_hospital_code
-        hospital = db.query(Hospital).first()
-        if not hospital:
-            hospital = Hospital(
-                hospital_id=generate_hospital_code(),
-                name=setup_data.hospital_name,
-                address=setup_data.hospital_address or "",
-                phone=setup_data.hospital_phone or "",
-                email=setup_data.hospital_email or "",
-                license_number="SETUP001",
-                is_active=True,
-            )
-            db.add(hospital)
-            db.flush()
-
-        # 4. Create super admin user
-        from app.utils.auth import get_password_hash
-        admin_role = db.query(UserRole).filter(UserRole.name == "super_admin").first()
-        existing_by_name = db.query(User).filter(User.username == setup_data.admin_username).first()
-        existing_by_email = db.query(User).filter(User.email == setup_data.admin_email).first()
-        if not existing_by_name and not existing_by_email:
-            admin = User(
-                user_id=str(uuid.uuid4()),
-                username=setup_data.admin_username,
-                email=setup_data.admin_email,
-                password_hash=get_password_hash(setup_data.admin_password),
-                first_name=setup_data.admin_first_name or "System",
-                last_name=setup_data.admin_last_name or "Administrator",
-                role_id=admin_role.id,
-                hospital_id=hospital.id,
-                is_active=True,
-            )
-            db.add(admin)
-            db.flush()  # Flush now before seeding permissions to avoid autoflush issues
-
-        # 5. Create role-module permissions for all roles
-        with db.no_autoflush:
-            _seed_role_permissions(db, UserRole, RoleModulePermission)
-
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        raise e
-    finally:
-        db.close()
-        engine.dispose()
-
-
-# Canonical list of system roles seeded on every install / startup.
-# Keep this in sync with backend/CLAUDE.md role list and the permission matrix below.
 SYSTEM_ROLES = [
     ("super_admin", "Super Administrator with full system access"),
     ("hospital_admin", "Hospital Administrator with full hospital access"),
@@ -428,8 +41,34 @@ SYSTEM_ROLES = [
 ]
 
 
+# Full inpatient permission set — super_admin and hospital_admin bypass checks
+# at the decorator level, but we seed the grid so the admin UI shows them.
+_INPATIENT_ALL = [
+    "view_occupancy", "admit_patients", "update_admission", "discharge_patients", "record_mortality",
+    "manage_beds", "manage_wards", "set_room_rates",
+    "transfer_beds", "initiate_ward_transfer", "accept_ward_transfer",
+    "manage_housekeeping", "manage_reservations", "assign_nurses",
+    "record_vitals", "view_vitals", "record_io", "view_io",
+    "administer_medications", "view_mar",
+    "manage_nursing_notes", "manage_diet_orders", "manage_allergies", "record_visits",
+    "order_labs", "prescribe_medications",
+    "schedule_ot", "record_ot_charges",
+    "view_bill", "generate_interim_bill", "finalize_bill",
+    "manage_packages", "manage_ancillary_charges",
+    "receive_deposits", "issue_refunds", "manage_bill_splits",
+    "update_claim_status", "manage_preauth", "manage_tpa",
+    "record_consent", "withdraw_consent",
+    "report_incident", "investigate_incident", "close_incident",
+    "view_readmissions", "view_mortality", "acknowledge_critical_alert",
+    "manage_ancillary_catalog", "manage_surgery_packages",
+    "manage_consent_templates", "set_critical_thresholds",
+    "view_procedures", "manage_procedures",
+    "manage_roster", "view_roster",
+    "upload_documents", "view_documents", "delete_documents",
+]
+
+
 def _seed_roles(db, UserRole):
-    """Idempotently create system roles. Promotes existing rows to is_system_role=True."""
     for name, desc in SYSTEM_ROLES:
         existing = db.query(UserRole).filter(UserRole.name == name).first()
         if not existing:
@@ -442,7 +81,6 @@ def _seed_roles(db, UserRole):
 
 
 def _seed_module_permissions(db, ModulePermission):
-    """Idempotently seed the module-permission catalog used by the Role Permissions admin UI."""
     permissions_data = [
         # Lab
         {"module_name": "lab", "permission_name": "manage_tests", "permission_description": "Create and manage lab test types", "category": "admin"},
@@ -472,7 +110,7 @@ def _seed_module_permissions(db, ModulePermission):
         {"module_name": "outpatient", "permission_name": "manage_queues", "permission_description": "Manage patient queues", "category": "user"},
         {"module_name": "outpatient", "permission_name": "view_appointments", "permission_description": "View appointment details", "category": "user"},
         {"module_name": "outpatient", "permission_name": "cancel_appointments", "permission_description": "Cancel appointments", "category": "user"},
-        # Inpatient — granular keys (~58)
+        # Inpatient
         {"module_name": "inpatient", "permission_name": "view_occupancy", "permission_description": "View beds, rooms, dashboard, and admission lists", "category": "user"},
         {"module_name": "inpatient", "permission_name": "admit_patients", "permission_description": "Create admissions", "category": "user"},
         {"module_name": "inpatient", "permission_name": "update_admission", "permission_description": "Update admission details", "category": "user"},
@@ -554,35 +192,7 @@ def _seed_module_permissions(db, ModulePermission):
             db.add(ModulePermission(**perm))
 
 
-# Full inpatient permission set — used for super_admin and hospital_admin (who bypass
-# checks at the decorator level, but we seed the grid so the admin UI shows it correctly).
-_INPATIENT_ALL = [
-    "view_occupancy", "admit_patients", "update_admission", "discharge_patients", "record_mortality",
-    "manage_beds", "manage_wards", "set_room_rates",
-    "transfer_beds", "initiate_ward_transfer", "accept_ward_transfer",
-    "manage_housekeeping", "manage_reservations", "assign_nurses",
-    "record_vitals", "view_vitals", "record_io", "view_io",
-    "administer_medications", "view_mar",
-    "manage_nursing_notes", "manage_diet_orders", "manage_allergies", "record_visits",
-    "order_labs", "prescribe_medications",
-    "schedule_ot", "record_ot_charges",
-    "view_bill", "generate_interim_bill", "finalize_bill",
-    "manage_packages", "manage_ancillary_charges",
-    "receive_deposits", "issue_refunds", "manage_bill_splits",
-    "update_claim_status", "manage_preauth", "manage_tpa",
-    "record_consent", "withdraw_consent",
-    "report_incident", "investigate_incident", "close_incident",
-    "view_readmissions", "view_mortality", "acknowledge_critical_alert",
-    "manage_ancillary_catalog", "manage_surgery_packages",
-    "manage_consent_templates", "set_critical_thresholds",
-    "view_procedures", "manage_procedures",
-    "manage_roster", "view_roster",
-    "upload_documents", "view_documents", "delete_documents",
-]
-
-
 def _seed_role_permissions(db, UserRole, RoleModulePermission):
-    """Create RoleModulePermission records so each role can access its modules."""
     role_permissions_map = {
         "super_admin": {
             "admin": ["manage_users", "manage_roles", "manage_modules", "view_system_reports", "manage_settings"],
@@ -723,24 +333,211 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
                 ))
 
 
-def _store_license(license_content: str, db_path: str) -> dict:
-    """Parse, verify, and persist a license file as part of the setup wizard.
+# ----------------------------------------------------------------------------
+# Public seeding entry points
+# ----------------------------------------------------------------------------
 
-    Returns the resulting license status dict on success, or {"stored": False,
-    "error": "..."} if anything fails. The caller decides whether to surface
-    the failure — setup itself does not abort if the license is invalid,
-    because the operator can always upload one later from the Dashboard.
+def apply_additive_migrations(db_path: str) -> None:
+    """Run NEW_COLUMNS additive migrations against the given DB path."""
+    from sqlalchemy import create_engine, text
+    try:
+        from migrate_patient_fields import NEW_COLUMNS
+    except Exception:
+        return
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    try:
+        with engine.connect() as conn:
+            for table, col, col_type in NEW_COLUMNS:
+                try:
+                    result = conn.execute(text(f"PRAGMA table_info({table})"))
+                    existing = {row[1] for row in result.fetchall()}
+                    if col not in existing:
+                        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"))
+                except Exception:
+                    continue
+            conn.commit()
+    finally:
+        engine.dispose()
+
+
+def upsert_modules_and_permissions(db_path: str) -> None:
+    """Idempotently upsert the module-permission catalog and system modules
+    on an imported DB so a restored install matches what this app build
+    expects. Does not touch hospital or user rows."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from config.database import Base
+    from app.models.permissions import ModulePermission, RoleModulePermission  # noqa
+    from app.models.user import UserRole  # noqa
+    from app.models.system import SystemModule  # noqa
+    from app.utils.schema_version import stamp_schema_version
+
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+    db = Session()
+    try:
+        _seed_roles(db, UserRole)
+        db.flush()
+        _seed_module_permissions(db, ModulePermission)
+        db.flush()
+        canonical = [
+            ("outpatient", "Outpatient", True, False),
+            ("inpatient", "Inpatient", False, False),
+            ("lab", "Laboratory", False, False),
+            ("pharmacy", "Pharmacy", False, False),
+            ("ehr", "Electronic Health Records", True, False),
+            ("billing", "Billing", True, True),
+            ("admin", "Administration", True, True),
+        ]
+        for mod_name, display, enabled, always in canonical:
+            if not db.query(SystemModule).filter(SystemModule.module_name == mod_name).first():
+                db.add(SystemModule(
+                    module_name=mod_name, display_name=display,
+                    description=f"{display} management",
+                    is_enabled=enabled, is_always_enabled=always,
+                ))
+        db.flush()
+        stamp_schema_version(db)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def init_database_and_seed(seed: Mapping, db_path: str) -> None:
+    """Initialize DB at the given path and seed it with roles, hospital,
+    admin user, system modules, schema_version. Idempotent: re-running on
+    a populated DB is a no-op for already-present rows.
+
+    Required keys in `seed`:
+        hospital_name, admin_username, admin_email, admin_password
+    Optional keys:
+        hospital_address, hospital_phone, hospital_email, mrn_prefix,
+        admin_first_name, admin_last_name
     """
-    import base64
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from config.database import Base
+
+    # Import ALL models so Base.metadata knows about them
+    from app.models.user import User, UserRole, UserPermission  # noqa
+    from app.models.permissions import ModulePermission, RoleModulePermission, HospitalSettings, ModuleTemplate, ModuleRates  # noqa
+    from app.models.system import SystemModule, SystemSettings  # noqa
+    from app.models.hospital import Hospital, HospitalModule  # noqa
+    from app.models.prescriptions_simple import SimplePrescription  # noqa
+    from app.models.doctor_availability import DoctorAvailability, DoctorSpecialSchedule, DoctorAvailabilityStatus  # noqa
+    from app.models.license import License  # noqa
+    from app.models.lab import LabTestCategory, LabTest, LabTestParameter, LabReport, PatientLabOrder  # noqa
+    from app.models.lab import LabTestPackageCategory, LabTestPackage  # noqa
+    from app.models.billing import PaymentMethod, Bill, BillItem, Payment  # noqa
+    from app.models.ehr import Consultation  # noqa
+    from app.models.outpatient import Appointment  # noqa
+    from app.models.patient import Patient  # noqa
+    from app.models.referral import Referral  # noqa
+
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+
+    apply_additive_migrations(db_path)
+
+    Session = sessionmaker(bind=engine)
+    db = Session()
+
+    try:
+        _seed_roles(db, UserRole)
+        db.flush()
+
+        _seed_module_permissions(db, ModulePermission)
+        db.flush()
+
+        modules = [
+            ("outpatient", "Outpatient", True, False),
+            ("inpatient", "Inpatient", False, False),
+            ("lab", "Laboratory", False, False),
+            ("pharmacy", "Pharmacy", False, False),
+            ("ehr", "Electronic Health Records", True, False),
+            ("billing", "Billing", True, True),
+            ("admin", "Administration", True, True),
+        ]
+        for mod_name, display, enabled, always in modules:
+            if not db.query(SystemModule).filter(SystemModule.module_name == mod_name).first():
+                db.add(SystemModule(
+                    module_name=mod_name,
+                    display_name=display,
+                    description=f"{display} management",
+                    is_enabled=enabled,
+                    is_always_enabled=always,
+                ))
+        db.flush()
+
+        from app.services.super_admin_service import generate_hospital_code
+        hospital = db.query(Hospital).first()
+        if not hospital:
+            hospital = Hospital(
+                hospital_id=generate_hospital_code(),
+                name=seed.get("hospital_name", ""),
+                address=seed.get("hospital_address", "") or "",
+                phone=seed.get("hospital_phone", "") or "",
+                email=seed.get("hospital_email", "") or "",
+                mrn_prefix=(seed.get("mrn_prefix") or "KTH"),
+                license_number="SETUP001",
+                is_active=True,
+            )
+            db.add(hospital)
+            db.flush()
+
+        from app.utils.auth import get_password_hash
+        admin_role = db.query(UserRole).filter(UserRole.name == "super_admin").first()
+        admin_username = seed.get("admin_username", "")
+        admin_email = seed.get("admin_email", "")
+        existing_by_name = db.query(User).filter(User.username == admin_username).first() if admin_username else None
+        existing_by_email = db.query(User).filter(User.email == admin_email).first() if admin_email else None
+        if admin_username and admin_email and not existing_by_name and not existing_by_email:
+            admin = User(
+                user_id=str(uuid.uuid4()),
+                username=admin_username,
+                email=admin_email,
+                password_hash=get_password_hash(seed["admin_password"]),
+                first_name=seed.get("admin_first_name") or "System",
+                last_name=seed.get("admin_last_name") or "Administrator",
+                role_id=admin_role.id,
+                hospital_id=hospital.id,
+                is_active=True,
+            )
+            db.add(admin)
+            db.flush()
+
+        with db.no_autoflush:
+            _seed_role_permissions(db, UserRole, RoleModulePermission)
+
+        from app.utils.schema_version import stamp_schema_version
+        stamp_schema_version(db)
+
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def store_license(license_content: str, db_path: str) -> dict:
+    """Parse, verify, and persist a .lic file. Returns
+    `{"stored": True, "license": ...}` on success or
+    `{"stored": False, "error": "..."}` on failure.
+    """
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
     from app.services.license_service import upload_license
 
-    # Accept either raw .lic content or base64-encoded
+    # Accept either raw .lic content or base64-encoded.
     try:
         content = base64.b64decode(license_content).decode("utf-8")
-        # Heuristic: a real .lic file is "<b64>\n<b64>" — if the decode
-        # produced something that looks line-broken, it was double-encoded.
         if "\n" not in content:
             content = license_content
     except Exception:

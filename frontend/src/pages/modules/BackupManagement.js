@@ -83,7 +83,7 @@ const BackupManagement = () => {
   const browseFolder = async (callback) => {
     setBrowsing(true);
     try {
-      const res = await fetch('/api/setup/browse-folder');
+      const res = await fetch('/api/backup/browse-folder');
       const data = await res.json();
       if (data.path) callback(data.path);
     } catch {} finally { setBrowsing(false); }
@@ -728,7 +728,7 @@ const BackupManagement = () => {
                 <Input value={migratePath} onChange={(e) => setMigratePath(e.target.value)} placeholder="D:\KTHealthData" />
                 <Button variant="outline" onClick={async () => {
                   setMigrateBrowsing(true);
-                  try { const res = await fetch('/api/setup/browse-folder'); const data = await res.json(); if (data.path) setMigratePath(data.path); } catch {} finally { setMigrateBrowsing(false); }
+                  try { const res = await fetch('/api/backup/browse-folder'); const data = await res.json(); if (data.path) setMigratePath(data.path); } catch {} finally { setMigrateBrowsing(false); }
                 }} disabled={migrateBrowsing}>
                   <FolderOpen className="w-4 h-4 mr-1" /> {migrateBrowsing ? '...' : 'Browse'}
                 </Button>

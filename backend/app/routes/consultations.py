@@ -1204,6 +1204,7 @@ async def download_bill_pdf(
         "bill_number": bill.bill_number,
         "bill_date": bill.bill_date.isoformat(),
         "patient_name": f"{patient.first_name} {patient.last_name}",
+        "mrn": patient.mrn or "",
         "doctor_name": f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else "Unknown",
         "status": payment_status,
         "subtotal": bill.subtotal,

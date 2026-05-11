@@ -79,6 +79,11 @@ NEW_COLUMNS = [
     ("ot_schedules", "bill_id", "INTEGER REFERENCES bills(id)"),
     ("prescriptions", "inpatient_bill_id", "INTEGER REFERENCES bills(id)"),
     ("patient_lab_orders", "inpatient_bill_id", "INTEGER REFERENCES bills(id)"),
+    # Outpatient lab bill grouping — shared across all orders on the same
+    # combined bill so the Billing dashboard can render one row per bill
+    # instead of one row per test.
+    ("patient_lab_orders", "lab_bill_group_id", "VARCHAR(64)"),
+    ("patient_lab_orders", "lab_bill_number", "VARCHAR(64)"),
     # Phase 3 — no new columns on existing tables; new tables created via create_all
     # Phase 4 — compliance & quality
     ("admissions", "is_readmission", "BOOLEAN DEFAULT 0"),
@@ -144,6 +149,9 @@ NEW_COLUMNS = [
     ("admissions", "deposit_waiver_reason", "TEXT"),
     ("admissions", "deposit_waived_by_id", "INTEGER REFERENCES users(id)"),
     ("admissions", "deposit_waived_at", "DATETIME"),
+    # MRN — human-readable patient identifier (PREFIX-YYYY-NNNNN)
+    ("patients", "mrn", "VARCHAR(32)"),
+    ("hospitals", "mrn_prefix", "VARCHAR(8)"),
 ]
 
 # B6 — body release table is created via create_all on startup; no column adds.
@@ -261,7 +269,93 @@ def migrate():
             print(f"  Note (sample_id index): {e}")
 
         conn.commit()
+
+    # MRN backfill — assign human-readable IDs to any patient where mrn IS NULL.
+    # Idempotent: only touches rows that don't yet have an MRN.
+    try:
+        backfill_patient_mrns()
+    except Exception as e:
+        print(f"  Note (mrn backfill): {e}")
+
     print("Migration complete.")
+
+
+def backfill_patient_mrns():
+    """Assign MRNs to patients with mrn IS NULL.
+
+    Format: {hospital.mrn_prefix or 'KTH'}-{YYYY}-{NNNNN}
+    Sequence is per (hospital_id, year), based on registration year (created_at).
+    Patients are processed in id-ascending order within each (hospital, year).
+    """
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        # Verify both columns exist (older DBs without the migration won't have hospitals.mrn_prefix yet)
+        try:
+            conn.execute(text("SELECT mrn FROM patients LIMIT 0"))
+            conn.execute(text("SELECT mrn_prefix FROM hospitals LIMIT 0"))
+        except Exception:
+            return  # columns missing — nothing to backfill
+
+        hospitals = conn.execute(text("SELECT id, mrn_prefix FROM hospitals")).fetchall()
+        for h_id, h_prefix in hospitals:
+            prefix = (h_prefix or "KTH").strip().upper() or "KTH"
+
+            # Find the highest existing sequence per year for this hospital, so
+            # backfill picks up where any prior partial run left off.
+            existing = conn.execute(text(
+                """
+                SELECT mrn FROM patients
+                WHERE hospital_id = :hid AND mrn IS NOT NULL
+                """
+            ), {"hid": h_id}).fetchall()
+            year_seq = {}
+            for (m,) in existing:
+                try:
+                    parts = m.rsplit("-", 2)
+                    if len(parts) >= 2:
+                        y = int(parts[-2])
+                        s = int(parts[-1])
+                        if y not in year_seq or s > year_seq[y]:
+                            year_seq[y] = s
+                except Exception:
+                    continue
+
+            # Process unassigned patients in id-ascending order
+            rows = conn.execute(text(
+                """
+                SELECT id, created_at FROM patients
+                WHERE hospital_id = :hid AND (mrn IS NULL OR mrn = '')
+                ORDER BY id ASC
+                """
+            ), {"hid": h_id}).fetchall()
+
+            for pid, created_at in rows:
+                # Derive year from created_at; fall back to current year on bad data
+                year = None
+                if isinstance(created_at, str):
+                    try:
+                        year = int(created_at[:4])
+                    except Exception:
+                        year = None
+                elif hasattr(created_at, "year"):
+                    year = created_at.year
+                if not year:
+                    from datetime import datetime as _dt
+                    year = _dt.now().year
+
+                next_seq = year_seq.get(year, 0) + 1
+                year_seq[year] = next_seq
+                mrn = f"{prefix}-{year}-{next_seq:05d}"
+
+                conn.execute(text(
+                    "UPDATE patients SET mrn = :mrn WHERE id = :pid"
+                ), {"mrn": mrn, "pid": pid})
+
+            if rows:
+                print(f"  MRN backfill: assigned {len(rows)} MRN(s) for hospital_id={h_id} (prefix={prefix})")
+
+        conn.commit()
+
 
 if __name__ == "__main__":
     migrate()

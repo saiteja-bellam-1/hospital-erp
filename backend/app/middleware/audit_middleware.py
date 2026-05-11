@@ -14,7 +14,7 @@ EXPLICIT_LOGGED = {
     "/api/backup/run", "/api/referrals",
 }
 
-SKIP_PATHS = {"/profile", "/api/setup/status", "/api/license/status",
+SKIP_PATHS = {"/profile", "/api/license/status",
               "/api/license/machine-id", "/api/system/enabled-modules",
               "/api/audit/"}
 

@@ -1202,6 +1202,7 @@ async def download_appointment_bill(
         "patient_name": f"{appointment.patient.first_name} {appointment.patient.last_name}",
         "patient_phone": appointment.patient.primary_phone or "",
         "patient_id": appointment.patient.patient_id or "",
+        "mrn": appointment.patient.mrn or "",
         "patient_age": "",
         "patient_gender": appointment.patient.gender or "",
         "reg_no": appointment.appointment_number,

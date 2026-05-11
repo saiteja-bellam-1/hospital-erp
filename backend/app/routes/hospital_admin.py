@@ -15,7 +15,7 @@ from app.models.permissions import HospitalSettings
 from app.models.patient import Patient
 from app.models.outpatient import Appointment
 from app.models.ehr import Consultation
-from app.models.lab import PatientLabOrder, LabTest, LabTestCategory
+from app.models.lab import PatientLabOrder, LabTest, LabTestCategory, LabTestPackage
 from app.models.billing import Bill, BillItem, Payment
 from app.models.inpatient import Admission
 from app.utils.dependencies import get_current_user
@@ -46,7 +46,11 @@ class HospitalInfoResponse(BaseModel):
     logo_url: Optional[str]
     description: Optional[str]
     established_date: Optional[datetime]
+    mrn_prefix: Optional[str] = None
     is_active: bool
+
+    class Config:
+        from_attributes = True
 
 class HospitalInfoUpdateRequest(BaseModel):
     name: Optional[str]
@@ -147,6 +151,7 @@ class HospitalInfoPartialUpdateRequest(BaseModel):
     logo_url: Optional[str] = None
     description: Optional[str] = None
     established_date: Optional[datetime] = None
+    mrn_prefix: Optional[str] = None
 
 @router.put("/info", response_model=HospitalInfoResponse)
 async def update_hospital_info(
@@ -195,7 +200,18 @@ async def update_hospital_info(
         hospital.description = hospital_data.description
     if hospital_data.established_date is not None:
         hospital.established_date = hospital_data.established_date
-    
+    if hospital_data.mrn_prefix is not None:
+        import re
+        new_prefix = (hospital_data.mrn_prefix or "").strip().upper()
+        if new_prefix and not re.fullmatch(r"[A-Z]{2,8}", new_prefix):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="MRN prefix must be 2-8 uppercase letters (A-Z only)",
+            )
+        # Note: prefix change is non-retroactive — existing MRNs are immutable.
+        # Only patients registered after this point use the new prefix.
+        hospital.mrn_prefix = new_prefix or None
+
     db.commit()
     db.refresh(hospital)
     return hospital
@@ -885,7 +901,89 @@ async def get_all_bills(
     if referred_by:
         lab_query = lab_query.filter(PatientLabOrder.referred_by.ilike(f"%{referred_by}%"))
 
-    for lo in lab_query.order_by(PatientLabOrder.order_date.desc()).all():
+    # Coalesce lab orders by lab_bill_group_id so each real bill renders as
+    # ONE row. Orders with no group (legacy rows from before the grouping
+    # columns existed) keep the historical one-row-per-test behavior.
+    lab_orders_all = lab_query.order_by(PatientLabOrder.order_date.desc()).all()
+    grouped: dict = {}
+    ungrouped: list = []
+    for lo in lab_orders_all:
+        gid = getattr(lo, "lab_bill_group_id", None)
+        if gid:
+            grouped.setdefault(gid, []).append(lo)
+        else:
+            ungrouped.append(lo)
+
+    def _row_for_group(group_orders):
+        first = group_orders[0]
+        p = db.query(Patient).filter(Patient.id == first.patient_id).first()
+        lab_doctor = db.query(User).filter(User.id == first.doctor_id).first() if first.doctor_id else None
+        lab_cancelled_by = db.query(User).filter(User.id == first.bill_cancelled_by).first() if getattr(first, 'bill_cancelled_by', None) else None
+        # Description: package name if all orders share the same package,
+        # otherwise a comma-joined list of test names (truncated).
+        pkg_ids = {o.package_id for o in group_orders if o.package_id}
+        items_text = ""
+        if len(pkg_ids) == 1 and None not in pkg_ids:
+            pkg_obj = db.query(LabTestPackage).filter(LabTestPackage.id == first.package_id).first()
+            if pkg_obj:
+                items_text = f"{pkg_obj.name} (Package, {len(group_orders)} test{'s' if len(group_orders) > 1 else ''})"
+        if not items_text:
+            test_names = []
+            for o in group_orders[:3]:
+                t = db.query(LabTest).filter(LabTest.id == o.test_id).first()
+                if t:
+                    test_names.append(t.name)
+            items_text = ", ".join(test_names)
+            if len(group_orders) > 3:
+                items_text += f" +{len(group_orders) - 3} more"
+        # Subtotal/amount: package mode shows package_price; otherwise sum.
+        subtotal = sum((o.amount or 0) for o in group_orders)
+        amount = subtotal
+        discount = 0
+        # Status: paid only if every order in the group is paid; cancelled
+        # if every order is cancelled.
+        statuses = {o.payment_status for o in group_orders}
+        if statuses == {"paid"}:
+            payment_status = "paid"
+        elif statuses == {"cancelled"}:
+            payment_status = "cancelled"
+        elif "pending" in statuses:
+            payment_status = "pending"
+        else:
+            payment_status = "partial"
+        # Reference / source label.
+        source = "Package" if any(o.package_id for o in group_orders) else (
+            "Appointment" if any(o.appointment_id for o in group_orders) else "Direct"
+        )
+        return {
+            "id": f"LBG-{first.lab_bill_group_id}",
+            "bill_id": first.id,
+            "lab_bill_group_id": first.lab_bill_group_id,
+            "type": "lab",
+            "date": first.order_date.isoformat() if first.order_date else "",
+            "patient_name": f"{p.first_name} {p.last_name}" if p else "Unknown",
+            "patient_phone": p.primary_phone if p else "",
+            "patient_id": p.patient_id if p else "",
+            "_doctor_id": first.doctor_id,
+            "doctor_name": f"Dr. {lab_doctor.first_name} {lab_doctor.last_name}" if lab_doctor else "",
+            "reference": first.lab_bill_number or first.order_number,
+            "items": f"{items_text} ({source})",
+            "subtotal": subtotal,
+            "discount": discount,
+            "amount": amount,
+            "payment_status": payment_status,
+            "payment_method": first.payment_method or "",
+            "referred_by": first.referred_by or "",
+            "cancel_reason": getattr(first, 'bill_cancelled_reason', None) or "",
+            "cancelled_by": f"{lab_cancelled_by.first_name} {lab_cancelled_by.last_name}" if lab_cancelled_by else "",
+            "cancelled_at": first.bill_cancelled_at.isoformat() if getattr(first, 'bill_cancelled_at', None) else "",
+        }
+
+    for gid, group_orders in grouped.items():
+        bills.append(_row_for_group(group_orders))
+
+    # Backward-compat: legacy ungrouped orders still surface as one row each.
+    for lo in ungrouped:
         p = db.query(Patient).filter(Patient.id == lo.patient_id).first()
         test = db.query(LabTest).filter(LabTest.id == lo.test_id).first()
         lab_doctor = db.query(User).filter(User.id == lo.doctor_id).first() if lo.doctor_id else None
@@ -894,6 +992,7 @@ async def get_all_bills(
         bills.append({
             "id": f"LAB-{lo.id}",
             "bill_id": lo.id,
+            "lab_bill_group_id": None,
             "type": "lab",
             "date": lo.order_date.isoformat() if lo.order_date else "",
             "patient_name": f"{p.first_name} {p.last_name}" if p else "Unknown",

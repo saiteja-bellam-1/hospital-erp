@@ -10,7 +10,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/ta
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../components/ui/dialog';
 import {
   TestTube, Clock, CheckCircle, AlertCircle, RefreshCw, Loader2,
-  User, FileText, Activity, Search, Beaker, Package, Printer, Download, Eye
+  User, FileText, Activity, Search, Beaker, Package, Printer, Eye
 } from 'lucide-react';
 import axios from 'axios';
 import { format } from 'date-fns';
@@ -48,10 +48,9 @@ const LabTechDashboard = () => {
   const [reportPreviewId, setReportPreviewId] = useState(null);
 
   // Bill print preview
-  const [showBillPrintPreview, setShowBillPrintPreview] = useState(false);
-  const [billPdfUrl, setBillPdfUrl] = useState(null);
-  const [billPreviewHeader, setBillPreviewHeader] = useState(true);
-  const [billPreviewOrderId, setBillPreviewOrderId] = useState(null);
+  // Bill preview dialog has been removed in favour of the centralised
+  // Billing dashboard, which renders one row per actual bill (multi-test
+  // or package) and lets the user download the original combined PDF.
 
   // Stats
   const [stats, setStats] = useState(null);
@@ -316,37 +315,6 @@ const LabTechDashboard = () => {
     }
   };
 
-  const downloadOrderBill = async (orderId) => {
-    try {
-      setBillPreviewOrderId(orderId);
-      setBillPreviewHeader(true);
-      const res = await axios.get(`/api/lab/orders/${orderId}/bill?include_header=true`, { responseType: 'blob' });
-      if (billPdfUrl) window.URL.revokeObjectURL(billPdfUrl);
-      const url = window.URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
-      setBillPdfUrl(url);
-      setShowBillPrintPreview(true);
-    } catch {
-      showFeedback('Failed to load bill', 'error');
-    }
-  };
-
-  const refetchBillPdf = async (withHeader) => {
-    if (!billPreviewOrderId) return;
-    try {
-      const res = await axios.get(`/api/lab/orders/${billPreviewOrderId}/bill?include_header=${withHeader}`, { responseType: 'blob' });
-      if (billPdfUrl) window.URL.revokeObjectURL(billPdfUrl);
-      setBillPdfUrl(window.URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' })));
-    } catch {
-      showFeedback('Failed to reload bill', 'error');
-    }
-  };
-
-  const closeBillPreview = () => {
-    if (billPdfUrl) { window.URL.revokeObjectURL(billPdfUrl); setBillPdfUrl(null); }
-    setShowBillPrintPreview(false);
-    setBillPreviewOrderId(null);
-  };
-
   const printReport = async (reportId, withHeader = true) => {
     try {
       setReportPreviewId(reportId);
@@ -569,11 +537,9 @@ const LabTechDashboard = () => {
             </div>
           </div>
           <div className="flex flex-wrap gap-1.5 ml-4 items-center">
-            {order.payment_status === 'paid' && (
-              <Button size="sm" variant="ghost" className="h-7 text-xs text-gray-500" onClick={() => downloadOrderBill(order.id)}>
-                <Download className="h-3 w-3 mr-1" /> Bill
-              </Button>
-            )}
+            {/* Bill download moved to Billing dashboard so the user gets the
+                full combined bill (all tests on one bill) instead of a
+                per-test slice. See /dashboard → Billing. */}
             {order.status === 'ordered' && (
               <Button size="sm" variant="outline" onClick={() => handleUpdateStatus(order.id, 'collected')}>
                 Mark Collected
@@ -648,11 +614,6 @@ const LabTechDashboard = () => {
                   </div>
                 </div>
                 <div className="flex gap-2 ml-4">
-                  {order.payment_status === 'paid' && (
-                    <Button size="sm" variant="ghost" className="h-7 text-xs text-gray-500" onClick={() => downloadOrderBill(order.id)}>
-                      <Download className="h-3 w-3 mr-1" /> Bill
-                    </Button>
-                  )}
                   {order.status === 'ordered' && (
                     <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => handleUpdateStatus(order.id, 'collected')}>
                       Mark Collected
@@ -733,11 +694,6 @@ const LabTechDashboard = () => {
                 </div>
               </div>
               <div className="flex gap-2 ml-4">
-                {order.payment_status === 'paid' && (
-                  <Button size="sm" variant="ghost" className="h-7 text-xs text-gray-500" onClick={() => downloadOrderBill(order.id)}>
-                    <Download className="h-3 w-3 mr-1" /> Bill
-                  </Button>
-                )}
                 {order.status === 'ordered' && (
                   <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => handleUpdateStatus(order.id, 'collected')}>
                     Mark Collected
@@ -1273,50 +1229,6 @@ const LabTechDashboard = () => {
         </DialogContent>
       </Dialog>
 
-      {/* Bill Print Preview Dialog */}
-      <Dialog open={showBillPrintPreview} onOpenChange={closeBillPreview}>
-        <DialogContent className="max-w-4xl max-h-[90vh] overflow-hidden">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <FileText className="h-5 w-5" /> Lab Bill Preview
-            </DialogTitle>
-          </DialogHeader>
-          <div className="flex flex-col space-y-4">
-            <div className="flex-1 min-h-[400px] border rounded-lg overflow-hidden">
-              {billPdfUrl && (
-                <iframe src={billPdfUrl} className="w-full h-full min-h-[400px] border-0" title="Bill Preview" />
-              )}
-            </div>
-            <div className="flex items-center gap-3">
-              <div className="flex items-center space-x-2">
-                <input type="checkbox" id="bill-preview-header" checked={billPreviewHeader}
-                  onChange={async (e) => {
-                    const newVal = e.target.checked;
-                    setBillPreviewHeader(newVal);
-                    await refetchBillPdf(newVal);
-                  }}
-                  className="w-4 h-4" />
-                <Label htmlFor="bill-preview-header" className="text-sm">Include header</Label>
-              </div>
-              <Button variant="outline" onClick={closeBillPreview} className="flex-1">Close</Button>
-              <Button onClick={() => {
-                if (billPdfUrl) {
-                  const iframe = document.createElement('iframe');
-                  iframe.style.display = 'none';
-                  document.body.appendChild(iframe);
-                  iframe.src = billPdfUrl;
-                  iframe.onload = () => {
-                    iframe.contentWindow.print();
-                    setTimeout(() => document.body.removeChild(iframe), 1000);
-                  };
-                }
-              }} className="flex-1 bg-blue-600 hover:bg-blue-700">
-                <Printer className="h-4 w-4 mr-2" /> Print Bill
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 };

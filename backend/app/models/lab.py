@@ -172,6 +172,14 @@ class PatientLabOrder(Base):
     bill_cancelled_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     bill_cancelled_at = Column(DateTime, nullable=True)
     inpatient_bill_id = Column(Integer, ForeignKey("bills.id"), nullable=True)  # which admission bill consumed this lab order
+    # Outpatient/reception bill grouping. Orders that were billed together
+    # (e.g. all tests on one reception booking, all tests in a package, all
+    # pending orders on a patient-level "pay all") share the same
+    # lab_bill_group_id and lab_bill_number. This is what lets the Billing
+    # dashboard render ONE row per real bill, and what lets the regenerate
+    # endpoint reconstruct the original combined PDF.
+    lab_bill_group_id = Column(String(64), nullable=True, index=True)
+    lab_bill_number = Column(String(64), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     patient = relationship("Patient", back_populates="lab_orders")

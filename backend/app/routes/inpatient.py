@@ -3302,6 +3302,7 @@ async def get_bill_pdf(
         "patient_gender": patient.gender if patient else "",
         "patient_phone": patient.primary_phone if patient else "",
         "patient_id": patient.patient_id if patient else "N/A",
+        "mrn": patient.mrn if patient else "",
         "items": [
             {
                 "description": item.item_name,

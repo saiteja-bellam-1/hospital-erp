@@ -1,15 +1,44 @@
 import uuid
 from sqlalchemy.orm import Session
 from sqlalchemy import func, case
+from sqlalchemy.exc import IntegrityError
 from app.models.patient import Patient, PatientContact, PatientMedicalHistory
+from app.models.hospital import Hospital
 from app.models.outpatient import Appointment
 from typing import Optional, List, Dict, Any, Tuple
 from datetime import date, datetime, timedelta
 
+
+def _next_mrn_for(db: Session, hospital_id: int) -> str:
+    """Compute the next MRN for a hospital.
+
+    Format: {prefix}-{YYYY}-{NNNNN} where prefix comes from Hospital.mrn_prefix
+    (defaulting to 'KTH'). Counter resets each calendar year, scoped per hospital.
+    """
+    hospital = db.query(Hospital).filter(Hospital.id == hospital_id).first()
+    prefix = (getattr(hospital, "mrn_prefix", None) or "KTH").strip().upper() or "KTH"
+    year = datetime.now().year
+    pattern = f"{prefix}-{year}-%"
+
+    last = (
+        db.query(Patient.mrn)
+        .filter(Patient.hospital_id == hospital_id, Patient.mrn.like(pattern))
+        .order_by(Patient.mrn.desc())
+        .first()
+    )
+    next_seq = 1
+    if last and last[0]:
+        try:
+            next_seq = int(last[0].rsplit("-", 1)[-1]) + 1
+        except Exception:
+            next_seq = 1
+    return f"{prefix}-{year}-{next_seq:05d}"
+
+
 class PatientService:
     def __init__(self, db: Session):
         self.db = db
-    
+
     def create_patient(self, patient_data: Dict[str, Any]) -> Patient:
         allowed = {
             "first_name", "last_name", "date_of_birth", "age", "gender",
@@ -22,10 +51,22 @@ class PatientService:
         kwargs = {k: v for k, v in patient_data.items() if k in allowed}
         kwargs["patient_id"] = str(uuid.uuid4())
 
-        patient = Patient(**kwargs)
-        self.db.add(patient)
-        self.db.commit()
-        self.db.refresh(patient)
+        # Generate MRN with one retry on the unique-constraint to handle the
+        # race when two patients are created simultaneously (SQLite has no
+        # SELECT ... FOR UPDATE so we rely on the constraint as the source of truth).
+        for attempt in range(3):
+            kwargs["mrn"] = _next_mrn_for(self.db, kwargs["hospital_id"])
+            patient = Patient(**kwargs)
+            self.db.add(patient)
+            try:
+                self.db.commit()
+                self.db.refresh(patient)
+                return patient
+            except IntegrityError:
+                self.db.rollback()
+                if attempt == 2:
+                    raise
+        # Unreachable
         return patient
     
     def get_patient_by_phone(self, phone: str) -> Optional[Patient]:
@@ -97,7 +138,8 @@ class PatientService:
             (Patient.first_name.ilike(f"%{search_term}%") |
              Patient.last_name.ilike(f"%{search_term}%") |
              Patient.primary_phone.ilike(f"%{search_term}%") |
-             Patient.patient_id.ilike(f"%{search_term}%"))
+             Patient.patient_id.ilike(f"%{search_term}%") |
+             Patient.mrn.ilike(f"%{search_term}%"))
         ).all()
     
     def calculate_age(self, date_of_birth: date) -> int:
@@ -129,7 +171,8 @@ class PatientService:
                 (Patient.first_name.ilike(f"%{search_term}%") |
                  Patient.last_name.ilike(f"%{search_term}%") |
                  Patient.primary_phone.ilike(f"%{search_term}%") |
-                 Patient.patient_id.ilike(f"%{search_term}%"))
+                 Patient.patient_id.ilike(f"%{search_term}%") |
+                 Patient.mrn.ilike(f"%{search_term}%"))
             )
         
         # Apply age filters
@@ -211,6 +254,7 @@ class PatientService:
             patient_data.append({
                 'id': patient.id,
                 'patient_id': patient.patient_id,
+                'mrn': patient.mrn,
                 'first_name': patient.first_name,
                 'last_name': patient.last_name,
                 'date_of_birth': patient.date_of_birth,

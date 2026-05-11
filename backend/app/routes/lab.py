@@ -569,6 +569,7 @@ def _build_report_response(report: LabReport, db: Session) -> dict:
         "patient_uuid": patient.patient_id if patient else "",
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "Unknown",
         "patient_phone": patient.primary_phone if patient else "",
+        "mrn": (patient.mrn or "") if patient else "",
         "patient_gender": patient.gender if patient else None,
         "patient_age": age,
         "test_id": test.id if test else 0,
@@ -1215,6 +1216,8 @@ async def reception_book_lab_tests(
     now = datetime.now()
     orders = []
     total = 0.0
+    bill_group_id = str(uuid.uuid4())
+    bill_number = f"LB-{now.strftime('%Y%m%d%H%M%S')}-{data.patient_id}"
 
     for test_id in data.test_ids:
         test = db.query(LabTest).filter(
@@ -1238,6 +1241,8 @@ async def reception_book_lab_tests(
             payment_status="paid",
             payment_method=data.payment_method,
             payment_date=now,
+            lab_bill_group_id=bill_group_id,
+            lab_bill_number=bill_number,
         )
         db.add(order)
         orders.append(order)
@@ -1266,12 +1271,13 @@ async def reception_book_lab_tests(
     age = _patient_age(patient)
 
     bill_data = {
-        "bill_number": f"LB-{now.strftime('%Y%m%d%H%M%S')}-{data.patient_id}",
+        "bill_number": bill_number,
         "bill_date": now.isoformat(),
         "patient_name": f"{patient.first_name} {patient.last_name}",
         "patient_age": age,
         "patient_gender": patient.gender,
         "patient_phone": patient.primary_phone or "",
+        "mrn": patient.mrn or "",
         "patient_id": patient.patient_id,
         "reg_no": patient.patient_id,
         "doctor_name": "",
@@ -1470,6 +1476,7 @@ async def download_order_bill(
         "patient_age": age,
         "patient_gender": patient.gender if patient else "",
         "patient_phone": patient.primary_phone if patient else "",
+        "mrn": (patient.mrn or "") if patient else "",
         "patient_id": patient.patient_id if patient else "",
         "doctor_name": doctor_name,
         "referred_by": referred_by,
@@ -1548,6 +1555,7 @@ async def regenerate_lab_bill(
         "patient_age": age,
         "patient_gender": patient.gender if patient else "",
         "patient_phone": patient.primary_phone if patient else "",
+        "mrn": (patient.mrn or "") if patient else "",
         "patient_id": patient.patient_id if patient else "",
         "reg_no": patient.patient_id if patient else "",
         "doctor_name": doctor_name,
@@ -1566,6 +1574,111 @@ async def regenerate_lab_bill(
     pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, include_header=data.include_header)
     return StreamingResponse(pdf_buffer, media_type="application/pdf",
         headers={"Content-Disposition": f"attachment; filename=lab_bill.pdf"})
+
+
+@router.get("/bills/{group_id}/pdf")
+async def download_grouped_lab_bill(
+    group_id: str,
+    include_header: bool = True,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Re-render the combined lab bill PDF for every order that shares a
+    lab_bill_group_id. This is what the centralised Billing dashboard's
+    Download button calls — it reproduces the originally-issued bill
+    (multi-test or package) without any payment side effects.
+    """
+    orders = db.query(PatientLabOrder).join(Patient).filter(
+        PatientLabOrder.lab_bill_group_id == group_id,
+        Patient.hospital_id == current_user.hospital_id,
+    ).order_by(PatientLabOrder.id.asc()).all()
+    if not orders:
+        raise HTTPException(status_code=404, detail="Bill not found")
+
+    patient = db.query(Patient).filter(Patient.id == orders[0].patient_id).first()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
+    hospital = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
+    hospital_info = _get_lab_hospital_info(db, hospital)
+    age = _patient_age(patient)
+
+    # Doctor / referral come from the first order that has them — same
+    # heuristic the original bill generators use.
+    doctor_name = ""
+    referred_by = ""
+    for o in orders:
+        if not doctor_name and o.doctor_id:
+            doc = db.query(User).filter(User.id == o.doctor_id).first()
+            if doc:
+                doctor_name = f"Dr. {doc.first_name} {doc.last_name}"
+        if not referred_by and o.referred_by:
+            referred_by = o.referred_by
+
+    # If every order in the group came from the same package, render the
+    # bill the way book_package() did — single line with package pricing
+    # and the actual_price/package_price gap as discount. Otherwise it's a
+    # multi-test bill with one item per order.
+    pkg = None
+    pkg_ids = {o.package_id for o in orders if o.package_id}
+    if len(pkg_ids) == 1 and None not in pkg_ids:
+        pkg = db.query(LabTestPackage).filter(LabTestPackage.id == orders[0].package_id).first()
+
+    if pkg:
+        items = [{
+            "item_name": pkg.name,
+            "item_code": pkg.package_code,
+            "total_price": pkg.actual_price,
+        }]
+        subtotal = pkg.actual_price
+        discount = round(pkg.actual_price - pkg.package_price, 2)
+        amount_paid = pkg.package_price
+    else:
+        items = []
+        subtotal = 0.0
+        for o in orders:
+            test = db.query(LabTest).filter(LabTest.id == o.test_id).first()
+            items.append({
+                "item_name": test.name if test else "Lab Test",
+                "item_code": test.test_code if test else "",
+                "total_price": o.amount or 0.0,
+            })
+            subtotal += o.amount or 0.0
+        discount = 0.0
+        amount_paid = round(subtotal, 2)
+
+    bill_date = orders[0].payment_date or orders[0].order_date or datetime.now()
+    bill_number = orders[0].lab_bill_number or f"LB-GROUP-{group_id[:8]}"
+
+    bill_data = {
+        "bill_number": bill_number,
+        "bill_date": bill_date.isoformat() if hasattr(bill_date, "isoformat") else str(bill_date),
+        "patient_name": f"{patient.first_name} {patient.last_name}",
+        "patient_age": age,
+        "patient_gender": patient.gender,
+        "patient_phone": patient.primary_phone or "",
+        "mrn": patient.mrn or "",
+        "patient_id": patient.patient_id,
+        "reg_no": patient.patient_id,
+        "doctor_name": doctor_name,
+        "referred_by": referred_by,
+        "payment_method": (orders[0].payment_method or "cash").capitalize(),
+        "items": items,
+        "subtotal": subtotal,
+        "discount_amount": discount,
+        "amount_paid": amount_paid,
+        "balance_due": 0,
+        "prepared_by": "",
+    }
+    if pkg:
+        bill_data["package_name"] = pkg.name
+
+    from app.utils.pdf_service import pdf_service
+    from fastapi.responses import StreamingResponse
+    pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, include_header=include_header)
+    filename = f"lab_bill_{bill_number}.pdf"
+    return StreamingResponse(pdf_buffer, media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={filename}"})
 
 
 class LabPaymentUpdate(BaseModel):
@@ -1596,9 +1709,16 @@ async def update_order_payment(
     if order.payment_status == 'paid':
         raise HTTPException(status_code=400, detail="Payment already collected")
 
+    now = datetime.now()
     order.payment_status = "paid"
     order.payment_method = data.payment_method
-    order.payment_date = datetime.now()
+    order.payment_date = now
+    # Single-order payment still gets a bill grouping so the Billing
+    # dashboard can render it as one row and the regenerate endpoint can
+    # reproduce a bill PDF for it.
+    if not order.lab_bill_group_id:
+        order.lab_bill_group_id = str(uuid.uuid4())
+        order.lab_bill_number = f"LB-{now.strftime('%Y%m%d%H%M%S')}-{order.patient_id}"
 
     db.commit()
 
@@ -1645,11 +1765,18 @@ async def generate_lab_bill(
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
 
-    # Mark all orders as paid
+    # Mark all orders as paid and stamp them with a shared bill grouping
+    # so the Billing dashboard collapses them into one row and the bill PDF
+    # can be regenerated later from the group id.
+    now = datetime.now()
+    bill_group_id = str(uuid.uuid4())
+    bill_number = f"LB-{now.strftime('%Y%m%d%H%M%S')}-{patient_id}"
     for order in orders:
         order.payment_status = "paid"
         order.payment_method = data.payment_method
-        order.payment_date = datetime.now()
+        order.payment_date = now
+        order.lab_bill_group_id = bill_group_id
+        order.lab_bill_number = bill_number
 
     db.commit()
 
@@ -1675,7 +1802,9 @@ async def generate_lab_bill(
     # Calculate patient age
     age = _patient_age(patient)
 
-    bill_number = f"LB-{datetime.now().strftime('%Y%m%d%H%M%S')}-{patient_id}"
+    # bill_number was assigned above when the orders were stamped with their
+    # shared lab_bill_group_id. Reuse it here so the PDF carries the same
+    # number that's persisted on every order in the group.
 
     # Determine referral info from orders
     referral_name = ""
@@ -1691,11 +1820,12 @@ async def generate_lab_bill(
 
     bill_data = {
         "bill_number": bill_number,
-        "bill_date": datetime.now().isoformat(),
+        "bill_date": now.isoformat(),
         "patient_name": f"{patient.first_name} {patient.last_name}",
         "patient_age": age,
         "patient_gender": patient.gender,
         "patient_phone": patient.primary_phone or "",
+        "mrn": patient.mrn or "",
         "patient_id": patient.patient_id,
         "reg_no": patient.patient_id,
         "doctor_name": doctor_name,
@@ -2451,6 +2581,8 @@ async def book_package(
     # Proportional discount distribution
     booking_id = f"PKG-{str(uuid.uuid4())[:8].upper()}"
     now = datetime.now()
+    bill_group_id = str(uuid.uuid4())
+    bill_number = f"PKG-{now.strftime('%Y%m%d%H%M%S')}-{data.patient_id}"
     orders = []
     distributed_total = 0.0
 
@@ -2477,6 +2609,8 @@ async def book_package(
             payment_status="paid",
             payment_method=data.payment_method,
             payment_date=now,
+            lab_bill_group_id=bill_group_id,
+            lab_bill_number=bill_number,
         )
         db.add(order)
         orders.append(order)
@@ -2496,7 +2630,8 @@ async def book_package(
     age = _patient_age(patient)
 
     discount = round(pkg.actual_price - pkg.package_price, 2)
-    bill_number = f"PKG-{now.strftime('%Y%m%d%H%M%S')}-{data.patient_id}"
+    # bill_number was set above when stamping the orders so the persisted
+    # number matches the PDF.
 
     bill_data = {
         "bill_number": bill_number,
@@ -2505,6 +2640,7 @@ async def book_package(
         "patient_age": age,
         "patient_gender": patient.gender,
         "patient_phone": patient.primary_phone or "",
+        "mrn": patient.mrn or "",
         "reg_no": patient.patient_id,
         "doctor_name": "",
         "payment_method": data.payment_method.capitalize(),

@@ -1,8 +1,8 @@
 """Apply an installer-collected seed file on first launch.
 
-The Inno Setup wizard collects all the inputs the operator used to type into
-the React Setup Wizard (hospital info, admin credentials, license, backup
-paths, optional pre-existing data folder) and writes them to:
+The Inno Setup wizard is the ONLY install path. It collects hospital info,
+admin credentials, license, backup paths, optional pre-existing data folder,
+and writes:
 
   <data-dir>/install_seed.json
   <data-dir>/.install_seed.pwd      (password only, ACL-locked)
@@ -10,7 +10,7 @@ paths, optional pre-existing data folder) and writes them to:
 On first launch the launcher calls :func:`consume_seed_if_present`. We:
 
   * read both files,
-  * run the same DB seeding path the React wizard runs (`_init_database_and_seed`),
+  * run the DB seeding path (`app.services.db_seed.init_database_and_seed`),
   * apply the license if one was selected,
   * persist backup destinations to ``config.json``,
   * delete the seed files on success (so a re-launch is a no-op).
@@ -19,8 +19,9 @@ If anything fails we log the traceback to ``data/.bootstrap_status.json`` and
 **leave the seed files in place** so the operator can fix the problem (e.g.
 remove a bad ``.lic`` reference) and re-launch.
 
-The React ``SetupWizard`` is kept as the fallback path: if no seed file is
-present the app behaves exactly as before.
+If no seed file is present and `setup_complete` is false in ``config.json``,
+the app boots into a state with no admin user; the operator must run the
+installer (Windows) or supply an `install_seed.json` manually (dev/source).
 """
 from __future__ import annotations
 
@@ -145,7 +146,7 @@ def _apply_fresh(seed: dict, password: str) -> None:
     if len(password) < MIN_PASSWORD_LEN:
         raise ValueError(f"password too short (min {MIN_PASSWORD_LEN} chars)")
 
-    from app.routes.setup import SetupRequest, _init_database_and_seed, _store_license
+    from app.services.db_seed import init_database_and_seed, store_license
     from app.utils.config import save_config
     from app.utils.paths import get_data_dir
 
@@ -163,23 +164,21 @@ def _apply_fresh(seed: dict, password: str) -> None:
     }
     save_config(config)
 
-    req = SetupRequest(
-        hospital_name=seed.get("hospital_name", ""),
-        hospital_address=seed.get("hospital_address", "") or "",
-        hospital_phone=seed.get("hospital_phone", "") or "",
-        hospital_email=seed.get("hospital_email", "") or "",
-        db_location="",  # already resolved
-        admin_username=seed["admin_username"],
-        admin_email=seed.get("admin_email") or f"{seed['admin_username']}@local",
-        admin_password=password,
-        admin_first_name=seed.get("admin_first_name") or "System",
-        admin_last_name=seed.get("admin_last_name") or "Administrator",
-        license_file_content="",
-        backup_locations=backup_locations,
-    )
+    seed_dict = {
+        "hospital_name": seed.get("hospital_name", ""),
+        "hospital_address": seed.get("hospital_address", "") or "",
+        "hospital_phone": seed.get("hospital_phone", "") or "",
+        "hospital_email": seed.get("hospital_email", "") or "",
+        "mrn_prefix": (seed.get("mrn_prefix") or "KTH"),
+        "admin_username": seed["admin_username"],
+        "admin_email": seed.get("admin_email") or f"{seed['admin_username']}@local",
+        "admin_password": password,
+        "admin_first_name": seed.get("admin_first_name") or "System",
+        "admin_last_name": seed.get("admin_last_name") or "Administrator",
+    }
 
     try:
-        _init_database_and_seed(req, db_path)
+        init_database_and_seed(seed_dict, db_path)
     except Exception:
         # Roll the setup_complete flag back so a retry isn't blocked.
         config["setup_complete"] = False
@@ -205,7 +204,7 @@ def _apply_fresh(seed: dict, password: str) -> None:
             try:
                 with open(license_path, "r", encoding="utf-8") as f:
                     content = f.read()
-                result = _store_license(content, db_path)
+                result = store_license(content, db_path)
                 if not result.get("stored"):
                     log.warning("License install failed: %s", result.get("error"))
             except Exception as e:

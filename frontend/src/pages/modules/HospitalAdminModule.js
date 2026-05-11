@@ -45,7 +45,8 @@ const HospitalAdminModule = () => {
     registration_number: '',
     tax_id: '',
     logo_url: '',
-    description: ''
+    description: '',
+    mrn_prefix: ''
   });
 
   // Role permissions state
@@ -495,6 +496,21 @@ const HospitalAdminModule = () => {
                     placeholder="TAX-123456789"
                   />
                 </div>
+              </div>
+
+              <div>
+                <Label htmlFor="mrn_prefix">Patient ID (MRN) Prefix</Label>
+                <Input
+                  id="mrn_prefix"
+                  value={hospitalInfo.mrn_prefix || ''}
+                  onChange={(e) => setHospitalInfo({ ...hospitalInfo, mrn_prefix: e.target.value.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 8) })}
+                  placeholder="KTH"
+                  maxLength={8}
+                  className="max-w-xs"
+                />
+                <p className="text-xs text-amber-700 mt-1">
+                  Used for new patient IDs like <span className="font-mono">{(hospitalInfo.mrn_prefix || 'KTH')}-2026-00001</span>. Changing the prefix only affects patients registered <strong>after</strong> the change — existing patient IDs are not modified.
+                </p>
               </div>
 
               <div>

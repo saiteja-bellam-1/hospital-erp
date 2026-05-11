@@ -22,6 +22,11 @@ const LicenseBanner = ({ licenseStatus }) => {
       text: 'text-red-900',
       icon: <XCircle className="h-4 w-4 text-red-700" />,
     },
+    machine_mismatch: {
+      bg: 'bg-red-100 border-red-500',
+      text: 'text-red-900',
+      icon: <XCircle className="h-4 w-4 text-red-700" />,
+    },
   };
 
   const config = configs[licenseStatus.status];

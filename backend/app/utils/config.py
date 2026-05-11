@@ -39,15 +39,15 @@ def is_setup_complete():
     """
     Check if the initial setup wizard has been completed.
 
-    Truth chain:
-      1. config.json explicitly says setup_complete=True, AND
-      2. the DB at the configured path actually contains a usable users table
+    Truth chain (no backward-compat fallback):
+      1. config.json must exist AND explicitly say setup_complete=True, AND
+      2. the DB at the configured path must contain a usable users table
          with at least one row (sentinel-table probe).
 
-    Falling back to "DB file exists and >0 bytes" was unsafe: a half-written
-    or empty DB file would pass and the app would boot into a broken state.
-    For backward compat with pre-wizard installs (where config.json didn't
-    exist yet), the same sentinel probe at the default DB path also counts.
+    The pre-wizard "DB at default path → skip wizard" fallback was removed
+    deliberately. Every install must run the wizard at least once so an
+    operator either picks Fresh (creates an admin) or Restore (imports an
+    existing DB) — the wizard is the single source of truth.
     """
     import sqlite3
 
@@ -65,16 +65,12 @@ def is_setup_complete():
             return False
 
     config = load_config()
+    if not config.get("setup_complete", False):
+        return False
+
     from app.utils.paths import get_db_path
-
-    if config.get("setup_complete", False):
-        # Trust the flag only if the DB it points at is actually populated.
-        db_path = config.get("db_path") or get_db_path()
-        return _has_seeded_users(db_path)
-
-    # Backward compat: pre-wizard installs never wrote config.json, so probe
-    # the default DB path for a seeded users table.
-    return _has_seeded_users(get_db_path())
+    db_path = config.get("db_path") or get_db_path()
+    return _has_seeded_users(db_path)
 
 
 def get_configured_db_path():
@@ -119,14 +115,14 @@ def run_backup():
     backup_folder_name = f"kthealth_erp_backup_{timestamp}"
     backup_db_name = f"kthealth_erp.db"
 
+    from app.utils.backup_verify import verify_backup_artifact
+
     for location in backup_locations:
-        entry = {"path": location, "success": False, "message": ""}
+        entry = {"path": location, "success": False, "message": "", "verified": False}
         try:
-            # Create a timestamped backup folder
             backup_dir = os.path.join(location, backup_folder_name)
             os.makedirs(backup_dir, exist_ok=True)
 
-            # 1. Backup database using SQLite backup API (safe while in use)
             dest_db = os.path.join(backup_dir, backup_db_name)
             source_conn = sqlite3.connect(db_path)
             dest_conn = sqlite3.connect(dest_db)
@@ -134,13 +130,21 @@ def run_backup():
             dest_conn.close()
             source_conn.close()
 
-            # 2. Backup uploads folder (logos, signatures, etc.)
             if os.path.isdir(uploads_dir):
                 dest_uploads = os.path.join(backup_dir, "uploads")
                 shutil.copytree(uploads_dir, dest_uploads, dirs_exist_ok=True)
 
-            entry["success"] = True
-            entry["message"] = f"Backed up to {backup_dir}"
+            # Verify the freshly-written backup before declaring success.
+            verify = verify_backup_artifact(dest_db, full_check=True, source_db_path=db_path)
+            entry["verified"] = verify["ok"]
+            entry["integrity"] = verify["integrity"]
+            entry["sha256"] = verify["sha256"]
+            if not verify["ok"]:
+                entry["success"] = False
+                entry["message"] = f"Backup written but verification failed: {verify.get('error') or verify.get('integrity')}"
+            else:
+                entry["success"] = True
+                entry["message"] = f"Backed up to {backup_dir}"
         except Exception as e:
             entry["message"] = str(e)
         results.append(entry)
@@ -190,17 +194,20 @@ def run_mirror_sync():
         return
 
     mirror_db_name = "kthealth_erp.db"
+    from app.utils.backup_verify import verify_backup_artifact
+    from app.services.backup_audit import record_location_transition
 
     for location in backup_locations:
         loc_status = _per_location_mirror_status.setdefault(location, {
             "last_success": None, "last_error": None, "last_attempt": None,
+            "last_verified": None, "verified_sha256": None,
         })
+        prev_state = "ok" if loc_status.get("last_success") and not loc_status.get("last_error") else ("error" if loc_status.get("last_error") else "new")
         loc_status["last_attempt"] = datetime.datetime.now().isoformat()
         try:
             mirror_dir = os.path.join(location, "kthealth_erp_mirror")
             os.makedirs(mirror_dir, exist_ok=True)
 
-            # Mirror database
             dest_db = os.path.join(mirror_dir, mirror_db_name)
             source_conn = sqlite3.connect(db_path)
             dest_conn = sqlite3.connect(dest_db)
@@ -208,19 +215,30 @@ def run_mirror_sync():
             dest_conn.close()
             source_conn.close()
 
-            # Mirror uploads
             if os.path.isdir(uploads_dir):
                 dest_uploads = os.path.join(mirror_dir, "uploads")
                 shutil.copytree(uploads_dir, dest_uploads, dirs_exist_ok=True)
+
+            # Mirror runs every 60s — quick_check (header+structure) instead
+            # of full table scan keeps the per-tick cost bounded.
+            verify = verify_backup_artifact(dest_db, full_check=False, source_db_path=db_path)
+            if not verify["ok"]:
+                raise RuntimeError(f"Mirror verification failed: {verify.get('error') or verify.get('integrity')}")
 
             now = datetime.datetime.now().isoformat()
             _last_mirror_sync = now
             _last_mirror_error = None
             loc_status["last_success"] = now
             loc_status["last_error"] = None
+            loc_status["last_verified"] = verify["written_at"]
+            loc_status["verified_sha256"] = verify["sha256"]
+            if prev_state == "error":
+                record_location_transition("mirror", location, "recovered", message="Mirror recovered after failures")
         except Exception as e:
             _last_mirror_error = str(e)
             loc_status["last_error"] = str(e)
+            if prev_state == "ok" or prev_state == "new":
+                record_location_transition("mirror", location, "failed", message=str(e))
 
 
 def get_per_location_status() -> dict:
@@ -295,35 +313,55 @@ SNAPSHOT_FOLDER = "kthealth_erp_snapshots"
 
 
 def run_snapshot():
-    """Take a timestamped snapshot of the DB to all backup locations, then cleanup old ones."""
+    """Take a timestamped snapshot of the DB + uploads to all backup locations,
+    verify the written DB, then cleanup old snapshots.
+
+    Snapshots are folders (not loose files) so they can carry uploads alongside
+    the DB. Layout: `<location>/kthealth_erp_snapshots/snapshot_YYYYMMDD_HHMMSS/
+    {kthealth_erp.db, kthealth_erp.db.verified.json, uploads/}`.
+    """
     import sqlite3
+    import shutil
+    from app.utils.paths import get_uploads_dir
+    from app.utils.backup_verify import verify_backup_artifact
     global _last_snapshot_time, _last_snapshot_error
 
     db_path = get_configured_db_path()
+    uploads_dir = get_uploads_dir()
     config = load_config()
     backup_locations = config.get("backup_locations", [])
-    retention_hours = config.get("snapshot_retention_hours", 72)
+    retention_days = _resolve_snapshot_retention_days(config)
 
     if not os.path.isfile(db_path) or not backup_locations:
         return
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"snapshot_{timestamp}.db"
+    snap_name = f"snapshot_{timestamp}"
 
     for location in backup_locations:
         try:
-            snap_dir = os.path.join(location, SNAPSHOT_FOLDER)
+            snap_root = os.path.join(location, SNAPSHOT_FOLDER)
+            snap_dir = os.path.join(snap_root, snap_name)
             os.makedirs(snap_dir, exist_ok=True)
 
-            dest_db = os.path.join(snap_dir, filename)
+            dest_db = os.path.join(snap_dir, "kthealth_erp.db")
             source_conn = sqlite3.connect(db_path)
             dest_conn = sqlite3.connect(dest_db)
             source_conn.backup(dest_conn)
             dest_conn.close()
             source_conn.close()
 
-            # Cleanup old snapshots
-            _cleanup_snapshots(snap_dir, retention_hours)
+            if os.path.isdir(uploads_dir):
+                shutil.copytree(uploads_dir, os.path.join(snap_dir, "uploads"), dirs_exist_ok=True)
+
+            verify = verify_backup_artifact(dest_db, full_check=True, source_db_path=db_path)
+            if not verify["ok"]:
+                # Snapshot is broken — wipe it so it can't be picked as a
+                # restore point and the next tick has a clean slate.
+                shutil.rmtree(snap_dir, ignore_errors=True)
+                raise RuntimeError(f"Snapshot verification failed: {verify.get('error') or verify.get('integrity')}")
+
+            _cleanup_snapshots(snap_root, retention_days)
 
             _last_snapshot_time = datetime.datetime.now().isoformat()
             _last_snapshot_error = None
@@ -331,45 +369,98 @@ def run_snapshot():
             _last_snapshot_error = str(e)
 
 
-def _cleanup_snapshots(snap_dir, retention_hours):
-    """Delete snapshot files older than retention_hours."""
-    cutoff = datetime.datetime.now() - datetime.timedelta(hours=retention_hours)
-    for fname in os.listdir(snap_dir):
-        if not fname.startswith("snapshot_") or not fname.endswith(".db"):
+def _resolve_snapshot_retention_days(config: dict) -> int:
+    """Translate the configured retention into days. Backward-compat: older
+    installs may still have `snapshot_retention_hours` set."""
+    days = config.get("snapshot_retention_days")
+    if days is not None:
+        try:
+            return max(1, int(days))
+        except (TypeError, ValueError):
+            pass
+    legacy_hours = config.get("snapshot_retention_hours")
+    if legacy_hours is not None:
+        try:
+            return max(1, int(legacy_hours) // 24 or 1)
+        except (TypeError, ValueError):
+            pass
+    return 7
+
+
+def _cleanup_snapshots(snap_root, retention_days):
+    """Delete snapshot folders (and legacy loose files) older than retention_days."""
+    import shutil
+    cutoff = datetime.datetime.now() - datetime.timedelta(days=retention_days)
+    if not os.path.isdir(snap_root):
+        return
+    for fname in os.listdir(snap_root):
+        fpath = os.path.join(snap_root, fname)
+        # Only touch entries we own
+        if not fname.startswith("snapshot_"):
             continue
-        fpath = os.path.join(snap_dir, fname)
         try:
             mtime = datetime.datetime.fromtimestamp(os.path.getmtime(fpath))
             if mtime < cutoff:
-                os.remove(fpath)
+                if os.path.isdir(fpath):
+                    shutil.rmtree(fpath, ignore_errors=True)
+                elif os.path.isfile(fpath):
+                    os.remove(fpath)
         except Exception:
             pass
 
 
 def get_snapshot_info(backup_locations):
-    """Get snapshot stats across all backup locations."""
+    """Get snapshot stats across all backup locations.
+
+    Handles both the new folder-based snapshots and legacy loose-file
+    snapshots so older installs keep showing the right counts post-upgrade.
+    """
+    from app.utils.backup_verify import read_sidecar
+
     total_count = 0
     total_size_mb = 0.0
     snapshots = []
 
+    def _push(filename, location, db_path, has_uploads, created):
+        nonlocal total_count, total_size_mb
+        size = os.path.getsize(db_path)
+        total_count += 1
+        total_size_mb += size / (1024 * 1024)
+        if len(snapshots) < 10:
+            sidecar = read_sidecar(db_path) or {}
+            snapshots.append({
+                "filename": filename,
+                "location": location,
+                "size_mb": round(size / (1024 * 1024), 2),
+                "created": created,
+                "has_uploads": has_uploads,
+                "verified": bool(sidecar.get("ok")),
+                "integrity": sidecar.get("integrity"),
+            })
+
     for location in backup_locations:
-        snap_dir = os.path.join(location, SNAPSHOT_FOLDER)
-        if not os.path.isdir(snap_dir):
+        snap_root = os.path.join(location, SNAPSHOT_FOLDER)
+        if not os.path.isdir(snap_root):
             continue
-        for fname in sorted(os.listdir(snap_dir), reverse=True):
-            if not fname.startswith("snapshot_") or not fname.endswith(".db"):
-                continue
-            fpath = os.path.join(snap_dir, fname)
-            size = os.path.getsize(fpath)
-            total_count += 1
-            total_size_mb += size / (1024 * 1024)
-            if len(snapshots) < 10:  # Return last 10
-                snapshots.append({
-                    "filename": fname,
-                    "location": location,
-                    "size_mb": round(size / (1024 * 1024), 2),
-                    "created": datetime.datetime.fromtimestamp(os.path.getmtime(fpath)).isoformat(),
-                })
+        for entry in sorted(os.listdir(snap_root), reverse=True):
+            entry_path = os.path.join(snap_root, entry)
+            # Folder layout (new)
+            if os.path.isdir(entry_path) and entry.startswith("snapshot_"):
+                db_path = os.path.join(entry_path, "kthealth_erp.db")
+                if not os.path.isfile(db_path):
+                    continue
+                _push(
+                    entry, location, db_path,
+                    os.path.isdir(os.path.join(entry_path, "uploads")),
+                    datetime.datetime.fromtimestamp(os.path.getmtime(db_path)).isoformat(),
+                )
+            # Loose file (legacy)
+            elif entry.startswith("snapshot_") and entry.endswith(".db") and os.path.isfile(entry_path):
+                _push(
+                    entry, location, entry_path,
+                    False,
+                    datetime.datetime.fromtimestamp(os.path.getmtime(entry_path)).isoformat(),
+                )
 
     return {
         "total_count": total_count,
@@ -408,12 +499,15 @@ def stop_snapshot_backup():
 
 def get_snapshot_status():
     config = load_config()
+    retention_days = _resolve_snapshot_retention_days(config)
     return {
         "running": _snapshot_running,
         "last_snapshot": _last_snapshot_time,
         "last_error": _last_snapshot_error,
         "interval_minutes": config.get("snapshot_interval_minutes", 30),
-        "retention_hours": config.get("snapshot_retention_hours", 72),
+        "retention_days": retention_days,
+        # Legacy field — kept so older frontends don't break.
+        "retention_hours": retention_days * 24,
     }
 
 
@@ -478,9 +572,28 @@ def run_gdrive_backup():
         dest_conn.close()
         source_conn.close()
 
+        # Verify the temp copy before uploading — never ship a corrupt backup
+        # to off-site storage.
+        from app.utils.backup_verify import verify_backup_artifact
+        verify = verify_backup_artifact(tmp_path, full_check=True, source_db_path=db_path)
+        if not verify["ok"]:
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+            err = verify.get("error") or verify.get("integrity") or "unknown"
+            _gdrive_last_error = f"Pre-upload verification failed: {err}"
+            config["gdrive_last_error"] = _gdrive_last_error
+            save_config(config)
+            return
+
         with open(tmp_path, "rb") as f:
             compressed = gzip.compress(f.read())
         os.remove(tmp_path)
+        try:
+            os.remove(tmp_path + ".verified.json")
+        except Exception:
+            pass
 
         # Upload using the full gdrive config (supports both service account and OAuth)
         from app.utils.gdrive import upload_backup, cleanup_old_backups

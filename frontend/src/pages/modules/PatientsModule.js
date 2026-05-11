@@ -162,9 +162,16 @@ const PatientsModule = () => {
               {patients.map((patient) => (
                 <div key={patient.patient_id} className="flex items-center justify-between py-3 hover:bg-gray-50 px-2 rounded">
                   <div className="flex-1 min-w-0">
-                    <p className="font-medium text-gray-900">
-                      {patient.first_name} {patient.last_name}
-                    </p>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {patient.mrn && (
+                        <span className="font-mono text-xs px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200">
+                          {patient.mrn}
+                        </span>
+                      )}
+                      <p className="font-medium text-gray-900">
+                        {patient.first_name} {patient.last_name}
+                      </p>
+                    </div>
                     <div className="flex items-center gap-4 text-sm text-gray-500 mt-0.5">
                       <span className="flex items-center gap-1">
                         <Phone className="h-3 w-3" />
@@ -351,7 +358,7 @@ const PatientsModule = () => {
                 <div><span className="text-gray-500">Gender:</span> <span className="font-medium">{selectedPatient.gender || '-'}</span></div>
                 <div><span className="text-gray-500">DOB:</span> <span className="font-medium">{selectedPatient.date_of_birth || '-'}</span></div>
                 <div><span className="text-gray-500">Blood Group:</span> <span className="font-medium">{selectedPatient.blood_group || '-'}</span></div>
-                <div><span className="text-gray-500">Patient ID:</span> <span className="font-mono text-xs">{selectedPatient.patient_id}</span></div>
+                <div><span className="text-gray-500">MRN:</span> <span className="font-mono text-xs">{selectedPatient.mrn || '-'}</span></div>
                 {selectedPatient.email && <div><span className="text-gray-500">Email:</span> <span className="font-medium">{selectedPatient.email}</span></div>}
                 {selectedPatient.abha_id && <div><span className="text-gray-500">ABHA ID:</span> <span className="font-medium">{selectedPatient.abha_id}</span></div>}
               </div>

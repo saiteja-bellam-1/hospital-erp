@@ -40,6 +40,7 @@ class PatientCreate(BaseModel):
 class PatientResponse(BaseModel):
     id: int
     patient_id: str
+    mrn: Optional[str] = None
     first_name: str
     last_name: str
     date_of_birth: Optional[date]
@@ -68,6 +69,7 @@ class PatientResponse(BaseModel):
 class PatientSearchResponse(BaseModel):
     id: int
     patient_id: str
+    mrn: Optional[str] = None
     first_name: str
     last_name: str
     date_of_birth: Optional[date]

@@ -34,9 +34,10 @@ from app.models.inpatient import (
 from app.models.patient import PatientAllergy
 
 # Import route modules
-from app.routes import auth, patients, admin, system, module_admin, hospital_admin, appointments, prescriptions, medicines, consultations, prescriptions_simple, doctor_availability, lab, ehr, license, setup, backup, referrals, audit, inpatient
+from app.routes import auth, patients, admin, system, module_admin, hospital_admin, appointments, prescriptions, medicines, consultations, prescriptions_simple, doctor_availability, lab, ehr, license, backup, referrals, audit, inpatient
 from app.middleware.license_middleware import LicenseMiddleware
 from app.middleware.audit_middleware import AuditMiddleware
+from app.middleware.maintenance import MaintenanceMiddleware
 
 app = FastAPI(
     title=settings.app_name,
@@ -54,9 +55,11 @@ app.add_middleware(
     expose_headers=["X-License-Status"],
 )
 
-# License middleware
+# Middleware. Order matters: MaintenanceMiddleware runs first so writes get
+# blocked before the audit middleware records them.
 app.add_middleware(LicenseMiddleware)
 app.add_middleware(AuditMiddleware)
+app.add_middleware(MaintenanceMiddleware)
 
 security = HTTPBearer()
 
@@ -141,7 +144,7 @@ async def startup_event():
         except Exception as e:
             print(f"Daily-charges note: {e}")
     else:
-        print("Setup not complete — waiting for setup wizard")
+        print("Setup not complete — first launch will apply install_seed.json via bootstrap_from_seed")
 
 
 def _ensure_role_permissions():
@@ -149,7 +152,7 @@ def _ensure_role_permissions():
     from config.database import SessionLocal
     from app.models.permissions import RoleModulePermission, ModulePermission
     from app.models.user import UserRole
-    from app.routes.setup import _seed_role_permissions, _seed_roles, _seed_module_permissions
+    from app.services.db_seed import _seed_role_permissions, _seed_roles, _seed_module_permissions
     db = SessionLocal()
     try:
         # Ensure all system roles exist (heals pre-existing DBs that lack inpatient_admin etc.)
@@ -257,7 +260,6 @@ app.include_router(lab.router, prefix="/api/lab", tags=["Laboratory"])
 # app.include_router(billing.router, prefix="/api/billing", tags=["Billing"])
 app.include_router(ehr.router, prefix="/api/ehr", tags=["EHR"])
 app.include_router(license.router, prefix="/api/license", tags=["License"])
-app.include_router(setup.router, prefix="/api/setup", tags=["Setup Wizard"])
 app.include_router(backup.router, prefix="/api/backup", tags=["Backup"])
 app.include_router(referrals.router, prefix="/api/referrals", tags=["Referrals"])
 app.include_router(audit.router, prefix="/api/audit", tags=["Audit Logs"])

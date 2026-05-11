@@ -189,7 +189,7 @@ class PDFService:
                 age_sex = gender
 
         phone = bill_data.get('patient_phone', '')
-        patient_id = bill_data.get('patient_id', bill_data.get('reg_no', ''))
+        patient_id = bill_data.get('mrn') or bill_data.get('patient_id', bill_data.get('reg_no', ''))
         doctor = bill_data.get('doctor_name', '')
         referred_by = bill_data.get('referred_by', '')
         pay_category = bill_data.get('payment_method', 'Cash')
@@ -212,7 +212,7 @@ class PDFService:
             [lv('Name', patient_name), lv('Bill No', bill_no)],
             [lv('Age / Gender', age_sex), lv('Bill Date', bill_date_str)],
             [lv('Phone', phone), lv('Print Date', print_date_str)],
-            [lv('Patient ID', patient_id), lv('Pay Mode', pay_category)],
+            [lv('MRN', patient_id), lv('Pay Mode', pay_category)],
             [lv(ref_label, ref_value), Paragraph('', cell_value)],
         ]
 
@@ -497,7 +497,7 @@ class PDFService:
         patient_gender = prescription_data.get('patient_gender', '')
         patient_blood_group = prescription_data.get('patient_blood_group', '')
         patient_phone = prescription_data.get('patient_phone', '')
-        patient_id = prescription_data.get('patient_id_display', prescription_data.get('patient_id', ''))
+        patient_id = prescription_data.get('mrn') or prescription_data.get('patient_id_display', prescription_data.get('patient_id', ''))
 
         age_sex = f"{patient_age} Years" if patient_age is not None and patient_age != '' else ''
         if patient_gender:
@@ -512,7 +512,7 @@ class PDFService:
             [Paragraph(f"<b>Name</b> :  {patient_name}", cell_val), Paragraph(f"<b>Prescribed By</b> :  {doctor_display}", cell_val)],
             [Paragraph(f"<b>Age / Gender</b> :  {age_sex}", cell_val), Paragraph(f"<b>Reg. No.</b> :  {doctor_reg or '—'}", cell_val)],
             [Paragraph(f"<b>Phone</b> :  {patient_phone}", cell_val), Paragraph(f"<b>Date</b> :  {rx_date}", cell_val)],
-            [Paragraph(f"<b>Patient ID</b> :  {patient_id}", cell_val), Paragraph(f"<b>Blood Group</b> :  {patient_blood_group or '—'}", cell_val)],
+            [Paragraph(f"<b>MRN</b> :  {patient_id}", cell_val), Paragraph(f"<b>Blood Group</b> :  {patient_blood_group or '—'}", cell_val)],
         ]
 
         info_table = Table(info_data, colWidths=[col_w, col_w])
@@ -974,7 +974,7 @@ class PDFService:
             [lv('Age / Gender', age_sex), lv('Collection Date', collection_date_str)],
             [lv('Phone', patient_phone), lv('Report Date', report_date_str)],
             [lv(referral_label, referral_name), lv('Sample ID', report_data.get('sample_id', ''))],
-            [lv('Patient ID', report_data.get('patient_uuid', '')), lv('Report ID', report_data.get('order_number', ''))],
+            [lv('MRN', report_data.get('mrn') or report_data.get('patient_uuid', '')), lv('Report ID', report_data.get('order_number', ''))],
         ]
 
         info_table = Table(info_data, colWidths=[col_w, col_w])
@@ -1377,7 +1377,7 @@ class PDFService:
             [lv('Age / Gender', age_sex), lv('Collection Date', _fmt_dt(first_report.get('collection_date')))],
             [lv('Phone', patient_phone), lv('Report Date', _fmt_dt(first_report.get('report_date')))],
             [lv(referral_label, referral_name), lv('Report Status', first_report.get('report_status', 'Final'))],
-            [lv('Patient ID', first_report.get('patient_uuid', '')), Paragraph('', cell_value)],
+            [lv('MRN', first_report.get('mrn') or first_report.get('patient_uuid', '')), Paragraph('', cell_value)],
         ]
 
         info_table = Table(info_data, colWidths=[col_w, col_w])
@@ -1698,7 +1698,7 @@ class PDFService:
         col_w = page_width / 2
         patient_info_data = [
             [lv('Patient', discharge_data.get('patient_name', '')),
-             lv('Patient ID', discharge_data.get('patient_id', ''))],
+             lv('MRN', discharge_data.get('mrn') or discharge_data.get('patient_id', ''))],
             [lv('Age / Gender', age_gender),
              lv('Doctor', discharge_data.get('doctor_name', ''))],
             [lv('Admission No', discharge_data.get('admission_number', '')),
@@ -1908,7 +1908,7 @@ class PDFService:
             [Paragraph("Receipt No:", label_style), Paragraph(str(deposit_data.get('deposit_number', '')), value_style),
              Paragraph("Date:", label_style), Paragraph(str(deposit_data.get('received_at', '')), value_style)],
             [Paragraph("Patient:", label_style), Paragraph(str(deposit_data.get('patient_name', '')), value_style),
-             Paragraph("Patient ID:", label_style), Paragraph(str(deposit_data.get('patient_id', '')), value_style)],
+             Paragraph("MRN:", label_style), Paragraph(str(deposit_data.get('mrn') or deposit_data.get('patient_id', '')), value_style)],
             [Paragraph("Admission #:", label_style), Paragraph(str(deposit_data.get('admission_number', '')), value_style),
              Paragraph("Type:", label_style), Paragraph(str(deposit_data.get('deposit_type', '')).title(), value_style)],
             [Paragraph("Payment Method:", label_style), Paragraph(str(deposit_data.get('payment_method', '')).title(), value_style),
@@ -2000,7 +2000,7 @@ class PDFService:
         # Patient/admission meta
         meta_rows = [
             [Paragraph("Patient:", label_small), Paragraph(str(consent_data.get('patient_name', '')), body),
-             Paragraph("Patient ID:", label_small), Paragraph(str(consent_data.get('patient_id', '')), body)],
+             Paragraph("MRN:", label_small), Paragraph(str(consent_data.get('mrn') or consent_data.get('patient_id', '')), body)],
             [Paragraph("Admission #:", label_small), Paragraph(str(consent_data.get('admission_number', '')), body),
              Paragraph("Doctor:", label_small), Paragraph(str(consent_data.get('doctor_name', '')), body)],
         ]
@@ -2101,7 +2101,7 @@ class PDFService:
         rows = [
             [Paragraph("Name of Deceased:", label), Paragraph(str(cert_data.get('patient_name', '')), value)],
             [Paragraph("Age / Gender:", label), Paragraph(f"{cert_data.get('age', '')} Years / {cert_data.get('gender', '')}" if cert_data.get('age') else cert_data.get('gender', ''), value)],
-            [Paragraph("Patient ID:", label), Paragraph(str(cert_data.get('patient_id', '')), value)],
+            [Paragraph("MRN:", label), Paragraph(str(cert_data.get('mrn') or cert_data.get('patient_id', '')), value)],
             [Paragraph("Admission No:", label), Paragraph(str(cert_data.get('admission_number', '')), value)],
             [Paragraph("Admitted On:", label), Paragraph(str(cert_data.get('admission_date', '')), value)],
             [Paragraph("Date of Death:", label), Paragraph(str(cert_data.get('discharge_date', '')), value)],
@@ -2196,7 +2196,7 @@ class PDFService:
 
         meta_rows = [
             [Paragraph("Patient Name:", label), Paragraph(str(dama_data.get('patient_name', '')), value)],
-            [Paragraph("Patient ID:", label), Paragraph(str(dama_data.get('patient_id', '')), value)],
+            [Paragraph("MRN:", label), Paragraph(str(dama_data.get('mrn') or dama_data.get('patient_id', '')), value)],
             [Paragraph("Age / Gender:", label),
              Paragraph(f"{dama_data.get('age', '')} / {dama_data.get('gender', '')}", value)],
             [Paragraph("Admission No:", label), Paragraph(str(dama_data.get('admission_number', '')), value)],
@@ -2628,7 +2628,7 @@ class PDFService:
 
         meta_rows = [
             [Paragraph("Patient:", label), Paragraph(str(payload.get('patient_name', '')), value)],
-            [Paragraph("Patient ID:", label), Paragraph(str(payload.get('patient_id', '')), value)],
+            [Paragraph("MRN:", label), Paragraph(str(payload.get('mrn') or payload.get('patient_id', '')), value)],
             [Paragraph("Admission No:", label), Paragraph(str(payload.get('admission_number', '')), value)],
             [Paragraph("Room / Bed:", label),
              Paragraph(f"{payload.get('room', '')} / {payload.get('bed', '')}", value)],
@@ -2937,7 +2937,7 @@ class PDFService:
 
         meta = [
             [Paragraph("Patient Name:", label), Paragraph(str(rel.get('patient_name', '')), value),
-             Paragraph("Patient ID:", label), Paragraph(str(rel.get('patient_id', '')), value)],
+             Paragraph("MRN:", label), Paragraph(str(rel.get('mrn') or rel.get('patient_id', '')), value)],
             [Paragraph("Age / Gender:", label), Paragraph(f"{rel.get('age', '')} / {rel.get('gender', '')}", value),
              Paragraph("Admission No:", label), Paragraph(str(rel.get('admission_number', '')), value)],
             [Paragraph("Date / Time of Death:", label), Paragraph(str(rel.get('death_date', '')), value),

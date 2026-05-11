@@ -22,9 +22,40 @@ def _build_gdrive_config(license_data: dict):
         }
     return None
 STATUS_NO_LICENSE = "no_license"
+STATUS_MACHINE_MISMATCH = "machine_mismatch"
 
 EXPIRING_SOON_DAYS = 30
 GRACE_PERIOD_DAYS = 15
+
+
+def verify_license_machine_binding(license_record) -> tuple[bool, str, str]:
+    """Re-verify the stored license is bound to THIS machine.
+
+    Returns (ok, license_machine_id, current_machine_id). `ok` is True when:
+      - license has no machine_id (legacy/unbound license), or
+      - the signed machine_id matches the current host's machine ID.
+
+    Re-parsing the raw signed payload (rather than trusting any DB column) is
+    deliberate — the signature is what we trust, not the row.
+    """
+    from app.utils.machine_id import get_machine_id
+    from app.licensing.crypto import verify_license_file
+
+    current_machine_id = get_machine_id()
+    if not license_record or not license_record.raw_license_data:
+        return True, "", current_machine_id
+
+    try:
+        license_data = verify_license_file(license_record.raw_license_data)
+    except Exception:
+        # Signature broken / tampered — treat as mismatch so non-admin users
+        # are blocked, and admins are forced to re-upload.
+        return False, "", current_machine_id
+
+    license_machine_id = license_data.get("machine_id") or ""
+    if not license_machine_id:
+        return True, "", current_machine_id
+    return (license_machine_id == current_machine_id), license_machine_id, current_machine_id
 
 
 def compute_license_status(expires_at: datetime) -> str:
@@ -63,6 +94,12 @@ def get_license_status(db: Session) -> dict:
     status = compute_license_status(license_record.expires_at)
     days_remaining = (license_record.expires_at - datetime.utcnow()).days
 
+    # Re-verify machine binding at runtime — catches "DB copied to a new
+    # machine" scenarios that the upload-time check can't see.
+    binding_ok, license_machine_id, current_machine_id = verify_license_machine_binding(license_record)
+    if not binding_ok:
+        status = STATUS_MACHINE_MISMATCH
+
     # Update status in DB if changed
     if license_record.status != status:
         license_record.status = status
@@ -80,6 +117,9 @@ def get_license_status(db: Session) -> dict:
         "license_id": license_record.license_id,
         "issued_at": license_record.issued_at.isoformat(),
         "seller_info": license_record.seller_info,
+        "machine_match": binding_ok,
+        "license_machine_id": license_machine_id,
+        "current_machine_id": current_machine_id,
     }
 
 
@@ -243,6 +283,14 @@ def is_license_valid_for_login(db: Session, role_name: str) -> tuple[bool, str]:
     if status == STATUS_EXPIRED:
         return False, "License has expired. Contact your administrator to renew."
 
+    binding_ok, _, _ = verify_license_machine_binding(license_record)
+    if not binding_ok:
+        return False, (
+            "This database appears to have been moved to a different computer. "
+            "The installed license is not valid for this machine. "
+            "Contact your administrator to request a license rebind."
+        )
+
     return True, ""
 
 
@@ -254,5 +302,10 @@ def _status_message(status: str, days_remaining: int) -> str:
     elif status == STATUS_GRACE_PERIOD:
         grace_left = GRACE_PERIOD_DAYS + days_remaining  # days_remaining is negative
         return f"License expired! Grace period: {grace_left} days remaining. Renew immediately."
+    elif status == STATUS_MACHINE_MISMATCH:
+        return (
+            "License is not valid for this machine. The database appears to have been "
+            "moved to a different computer. Request a rebind license from your vendor."
+        )
     else:
         return "License has expired. System access is restricted."
