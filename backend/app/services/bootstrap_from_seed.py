@@ -54,6 +54,55 @@ def _paths(exe_dir: str):
     )
 
 
+def _read_pwd_file(pwd_path: str) -> str:
+    """Read the installer-supplied password file.
+
+    The Inno Setup wizard used to icacls the file down to SYSTEM +
+    Administrators after writing it (for "defence in depth" on the plaintext
+    password). But the [Run] block then relaunches the .exe as the invoking
+    USER token (not elevated), so the very process that needs to consume
+    this file gets PermissionError. The lockdown has since been dropped in
+    new installers, but already-broken installs still have the bad ACL on
+    disk. To make those self-recover, on PermissionError we try once to
+    reset inheritance via icacls and re-read.
+    """
+    try:
+        with open(pwd_path) as f:
+            return f.read().rstrip("\r\n")
+    except PermissionError as e:
+        log.warning("PermissionError reading %s — attempting icacls self-heal", pwd_path)
+        if not _try_unlock_pwd_file(pwd_path):
+            raise PermissionError(
+                f"Cannot read {pwd_path}: {e}. The installer locked this file to "
+                f"Administrators only and the launcher is not running elevated. "
+                f"Run icacls \"{pwd_path}\" /reset, or right-click KTHEALTHERP.exe "
+                f"and 'Run as administrator' once to complete first-launch setup."
+            )
+        with open(pwd_path) as f:
+            return f.read().rstrip("\r\n")
+
+
+def _try_unlock_pwd_file(pwd_path: str) -> bool:
+    """Best-effort icacls /reset so an already-locked .pwd file becomes
+    readable by the current process. Returns True only if a subsequent
+    open() can read the file.
+    """
+    import subprocess
+    try:
+        subprocess.run(
+            ["icacls", pwd_path, "/reset"],
+            capture_output=True, timeout=10, check=False,
+        )
+    except Exception:
+        return False
+    try:
+        with open(pwd_path) as f:
+            f.read(1)
+        return True
+    except Exception:
+        return False
+
+
 def _write_status(status_path: str, payload: dict) -> None:
     try:
         os.makedirs(os.path.dirname(status_path), exist_ok=True)
@@ -80,8 +129,7 @@ def consume_seed_if_present(exe_dir: str) -> Optional[dict]:
 
         password = ""
         if os.path.isfile(pwd_path):
-            with open(pwd_path) as f:
-                password = f.read().rstrip("\r\n")
+            password = _read_pwd_file(pwd_path)
 
         mode = seed.get("mode", "fresh")
         if mode == "fresh":

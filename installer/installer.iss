@@ -6,7 +6,7 @@
 ; existing data folder, backup destinations) and writes the answers to
 ;
 ;   <data-dir>\install_seed.json
-;   <data-dir>\.install_seed.pwd     (NTFS-locked: SYSTEM + Administrators)
+;   <data-dir>\.install_seed.pwd     (plaintext, short-lived — deleted after first-launch consume)
 ;
 ; On first launch, backend\launcher.py -> app.services.bootstrap_from_seed
 ; consumes both files and seeds the DB exactly the way the React wizard does.
@@ -313,12 +313,39 @@ begin
     Result := Default;
 end;
 
-function PickFile(const Filter, Default: String): String;
+function ParentDir(const Path: String): String;
 var
-  Selected: String;
+  i: Integer;
+begin
+  Result := '';
+  for i := Length(Path) downto 1 do
+    if (Path[i] = '\') or (Path[i] = '/') then
+    begin
+      Result := Copy(Path, 1, i - 1);
+      Exit;
+    end;
+end;
+
+function PickFile(const Filter, Default, InitialDir: String): String;
+var
+  Selected, StartDir: String;
 begin
   Selected := Default;
-  if GetOpenFileName('Select a file', Selected, '', Filter, '') then
+  // Choose a sensible starting folder so the dialog doesn't open in
+  // Inno Setup's temp dir (where no .db / .lic files exist) — which is
+  // what causes the "Browse only shows folders, no files" symptom.
+  // Preference order:
+  //   1. The directory of the previously-picked file (if any),
+  //   2. The InitialDir hint passed by the caller,
+  //   3. The user's Documents folder as a last resort.
+  if (Default <> '') and DirExists(ParentDir(Default)) then
+    StartDir := ParentDir(Default)
+  else if (InitialDir <> '') and DirExists(InitialDir) then
+    StartDir := InitialDir
+  else
+    StartDir := ExpandConstant('{userdocs}');
+
+  if GetOpenFileName('Select a file', Selected, StartDir, Filter, '') then
     Result := Selected
   else
     Result := Default;
@@ -363,7 +390,14 @@ end;
 
 procedure OnBrowseRestoreFile(Sender: TObject);
 begin
-  EdRestoreFile.Text := PickFile('Database files (*.db)|*.db|All files|*.*', EdRestoreFile.Text);
+  // Filter: accept the common KT HEALTH ERP backup extensions, plus generic
+  // SQLite variants. Semicolons let one filter entry list multiple patterns.
+  // Falls back to "All files" so the operator can still pick an oddly-named
+  // backup if needed.
+  EdRestoreFile.Text := PickFile(
+    'KT HEALTH ERP backups (*.db;*.db.bak;*.sqlite;*.sqlite3)|*.db;*.db.bak;*.sqlite;*.sqlite3|All files (*.*)|*.*',
+    EdRestoreFile.Text,
+    EdRestoreDataDir.Text);
 end;
 
 procedure OnRadioChange(Sender: TObject);
@@ -513,7 +547,10 @@ end;
 
 procedure OnBrowseLicense(Sender: TObject);
 begin
-  EdLicensePath.Text := PickFile('License files (*.lic)|*.lic|All files|*.*', EdLicensePath.Text);
+  EdLicensePath.Text := PickFile(
+    'License files (*.lic)|*.lic|All files (*.*)|*.*',
+    EdLicensePath.Text,
+    ExpandConstant('{userdocs}'));
 end;
 
 procedure OnVerifyLicense(Sender: TObject);
@@ -1100,13 +1137,17 @@ begin
     finally
       Lines.Free;
     end;
-    // Lock down ACL: SYSTEM + Administrators only. icacls /inheritance:r drops
-    // inherited entries; /grant adds the two principals back. Best-effort —
-    // even if it fails the file is in {app}, which on Program Files already
-    // requires admin rights to read.
-    Exec(ExpandConstant('{cmd}'),
-      '/C icacls "' + PwdPath + '" /inheritance:r /grant SYSTEM:F /grant *S-1-5-32-544:F',
-      '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    // Intentionally NOT locking the ACL with `icacls /inheritance:r`.
+    // The pwd file lives in {app}\data, which on Program Files installs is
+    // already restricted to admins for write and to local users for read by
+    // the default NTFS ACL. Stripping inheritance and granting only SYSTEM +
+    // Administrators (as the previous version of this installer did) breaks
+    // the [Run] step below: that step relaunches KTHEALTHERP.exe with the
+    // INVOKING user token (UAC is dropped for postinstall flags), so a
+    // strict-admin-only ACL gives the launcher PermissionError when it
+    // tries to read the file and seeding silently fails — no admin user is
+    // ever created. The file is short-lived: bootstrap deletes it on first
+    // successful launch.
   end;
 end;
 
