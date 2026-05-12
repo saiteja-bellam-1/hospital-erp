@@ -22,7 +22,7 @@ a = Analysis(
     datas=[],
     hiddenimports=[
         "app.utils.machine_id",
-        "app.services.license_service",
+        "app.services.license_inspect",
         "app.licensing.crypto",
         "cryptography",
         "cryptography.hazmat.primitives",

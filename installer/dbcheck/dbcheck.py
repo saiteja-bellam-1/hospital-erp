@@ -171,13 +171,33 @@ def cmd_validate_license(args) -> int:
         return _emit({"ok": False, "error": f"Cannot read license file: {e}"}, False)
 
     try:
-        from app.services.license_service import inspect_license_file
+        # Use the SQLAlchemy-free helper module so dbcheck.exe (which excludes
+        # sqlalchemy in its PyInstaller spec) doesn't crash on import.
+        from app.services.license_inspect import inspect_license_file
         report = inspect_license_file(content)
     except Exception as e:
         return _emit({"ok": False, "error": f"License inspection failed: {e}"}, False)
 
-    ok = bool(report.get("valid_signature")) and bool(report.get("machine_match"))
-    return _emit({"ok": ok, "report": report}, ok)
+    if not report.get("valid_signature"):
+        return _emit({
+            "ok": False,
+            "error": report.get("error") or "Invalid license signature.",
+            "report": report,
+        }, False)
+
+    if not report.get("machine_match"):
+        lic_mid = report.get("license_machine_id") or "(none)"
+        cur_mid = report.get("current_machine_id") or "(unknown)"
+        return _emit({
+            "ok": False,
+            "error": (
+                f"License is bound to machine '{lic_mid}' but this machine is "
+                f"'{cur_mid}'. Ask your vendor to re-issue the license for this machine."
+            ),
+            "report": report,
+        }, False)
+
+    return _emit({"ok": True, "report": report}, True)
 
 
 def cmd_validate_backup_db(args) -> int:

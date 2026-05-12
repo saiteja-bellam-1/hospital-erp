@@ -95,8 +95,24 @@ These four systems shape how every feature behaves; understand them before addin
 - Auth state lives in `contexts/AuthContext.js` — token + user + licenseStatus stored in `localStorage`, with a global axios 401 interceptor that logs out on token expiry.
 - Module pages live in `frontend/src/pages/modules/`; reception sub-pages live in `frontend/src/pages/modules/reception/`.
 
-### Setup wizard
-On first launch (no `backend/config.json`), the frontend renders `SetupWizard` instead of the login screen. Wizard endpoints: `/api/setup/status` and `/api/setup/complete` (`backend/app/routes/setup.py`). Backward compat: if a DB file already exists, `is_setup_complete()` returns true and the wizard is skipped. After the wizard, the hospital admin uploads a `.lic` via Dashboard → License.
+### Installation / setup wizard
+**There is no React Setup Wizard anymore** — the route (`/api/setup/*`) and the frontend component were removed when the Inno Setup installer became the single install path. Any older mention of `SetupWizard.js` or `/api/setup/complete` in docs is stale. The only first-install flow is:
+
+1. Windows operator runs `installer/installer.iss` (built into `KTHEALTHERP_Setup_<ver>.exe`). The wizard collects: data folder mode (fresh / adopt-existing / restore-backup), optional license, hospital details, admin account, backup folders.
+2. On the wizard's last step (`ssPostInstall`), `WriteSeedFile` (installer.iss:1016) writes `{app}\data\install_seed.json` plus, for fresh installs, `{app}\data\.install_seed.pwd` (ACL-locked to SYSTEM + Administrators).
+3. `backend/launcher.py:282` calls `app.services.bootstrap_from_seed.consume_seed_if_present(exe_dir)` on first launch. That function dispatches by `mode`:
+   - `fresh` → `init_database_and_seed` (db_seed.py) creates the hospital, super_admin, roles, modules, then `store_license` if a `.lic` was selected.
+   - `adopt_existing` → just rebinds `config.json` + the engine to the existing DB.
+   - `restore_backup` → SQLite `.backup()` from the chosen `.db` into the target folder, then runs `migrate_patient_fields` to bring schema forward.
+4. On success it deletes the two seed files. On failure it writes `data/.bootstrap_status.json` and **leaves the seed in place** so a retry is possible.
+
+**Pre-install validation is performed by `installer/bin/dbcheck.exe`** (PyInstaller-built from `installer/dbcheck/dbcheck.py`). The Inno Setup Pascal code shells out to it for: `machine-id`, `check-db`, `check-writable`, `validate-license`, `validate-backup-db`. Each command writes a single JSON line.
+
+**Source-mode (macOS / Linux dev) has no install flow.** `python main.py` with no `config.json` simply prints "Setup not complete" and exits the startup work — `consume_seed_if_present` is **only** called from `launcher.py` (the Windows-bundled launcher). To bootstrap a dev DB you either need to hand-write `install_seed.json` and drop it into `data/`, or call `db_seed.init_database_and_seed(seed, db_path)` directly from a Python shell.
+
+**dbcheck.exe is built with `sqlalchemy` excluded** (`dbcheck.spec:42`). Anything it imports from the backend must therefore avoid `sqlalchemy.orm` at module-import time. `app.services.license_service` currently violates that (top-level `from sqlalchemy.orm import Session`), so `validate-license` raises `ModuleNotFoundError: No module named 'sqlalchemy'` and the wizard surfaces "License rejected: No module named sqlalchemy". Fix is to keep pure-verification helpers (`inspect_license_file`, `verify_license_machine_binding`, `compute_license_status`) in a Session-free module that both license_service and dbcheck can import.
+
+After the wizard, the hospital admin can upload or replace a `.lic` via Dashboard → License Management.
 
 ### Backup
 SQLite `.backup()` API (not `shutil.copy2`) for safe online copies. A background thread mirrors to configured destination(s) every 60 seconds. Configuration lives in `backend/config.json`.
@@ -105,6 +121,6 @@ SQLite `.backup()` API (not `shutil.copy2`) for safe online copies. A background
 
 - **Brand vs display name**: `KTHEALTHERP` (brand, used in filenames/exe), `KT HEALTH ERP` (display, used in UI strings). README still says "Hospital ERP System" — that is outdated branding.
 - **Two databases visible in `backend/`**: `hospital_erp.db` (legacy) and `kthealth_erp.db` (current). The current code uses `kthealth_erp.db`; the legacy file is kept for old installations.
-- **Default credentials** (from `setup_initial_data.py`): superadmin/admin123 and hospitaladmin/hospital123. Change these for any non-dev use.
+- **No default credentials are shipped** — the very first super_admin is created by the Inno Setup wizard (fresh mode) from the operator-typed username + password. `setup_initial_data.py` and any other "default admin/admin123" docs are historical and no longer wired in.
 - **CORS is `*` and the server binds `0.0.0.0`** — intentional for LAN access. Do not "harden" this without understanding the deployment model.
 - **TODO_*.md files at the repo root are historical planning notes**, not living documentation. Do not treat them as authoritative for current behavior — read the code.
