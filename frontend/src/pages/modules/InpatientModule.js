@@ -13,6 +13,14 @@ import { ConfirmDialog } from '../../components/ui/confirm-dialog';
 import { useToast } from '../../hooks/use-toast';
 import { useAuth } from '../../contexts/AuthContext';
 import { printPdfFromUrl } from '../../utils/printPdf';
+import AdmitPatientWizard from './inpatient/AdmitPatientWizard';
+import PendingAcceptanceList from './inpatient/PendingAcceptanceList';
+import AdmissionDetailHeader from './inpatient/AdmissionDetailHeader';
+import VisitDialog from './inpatient/VisitDialog';
+import DoctorRosterTab, { OnDutyNowPanel } from './inpatient/DoctorRosterTab';
+import GatePassTab from './inpatient/GatePassTab';
+import DischargeWizard from './inpatient/DischargeWizard';
+import PaymentCollectionTab from './inpatient/PaymentCollectionTab';
 import {
   Plus, Search, Edit2, Trash2, Bed, Activity, Clock, User, Users,
   FileText, Loader2, X, ChevronLeft, ChevronRight, DollarSign, Stethoscope,
@@ -64,7 +72,6 @@ const TAB_TO_PATH = {
   reservations: 'reservations',
   roster: 'duty-roster',
   housekeeping: 'housekeeping',
-  incidents: 'incidents',
   quality: 'quality',
   rooms: 'rooms',
   setup: 'billing-setup',
@@ -85,7 +92,14 @@ const InpatientModule = () => {
   // Clinical-only roles (nurse, doctor) are intentionally excluded.
   const userRoles = useMemo(() => {
     if (!user) return [];
-    return user.role_names || [user.role?.name].filter(Boolean);
+    // Backend `UserResponse` ships `role: string` (primary) and `roles: string[]`.
+    // The `role_names` / `role.name` paths are legacy and never populated, so
+    // without this we'd silently see every role check as `false`.
+    if (Array.isArray(user.roles) && user.roles.length) return user.roles;
+    if (Array.isArray(user.role_names) && user.role_names.length) return user.role_names;
+    if (typeof user.role === 'string') return [user.role];
+    if (user.role?.name) return [user.role.name];
+    return [];
   }, [user]);
   const canViewBilling = useMemo(() => {
     const billingRoles = ['super_admin', 'hospital_admin', 'billing_admin', 'receptionist', 'frontdesk', 'inpatient_admin'];
@@ -146,6 +160,9 @@ const InpatientModule = () => {
   const [triageQueue, setTriageQueue] = useState([]);
   const [triageLoading, setTriageLoading] = useState(false);
   const [admissionSearch, setAdmissionSearch] = useState('');
+  const [admissionSubTab, setAdmissionSubTab] = useState('active');  // 'active' | 'pending'
+  const [pendingCount, setPendingCount] = useState(0);
+  const [showAdmitWizard, setShowAdmitWizard] = useState(false);
   const [showAdmissionDialog, setShowAdmissionDialog] = useState(false);
   const [admissionForm, setAdmissionForm] = useState({
     patient_id: '', admitting_doctor_id: '', room_id: '', admission_type: 'elective',
@@ -179,7 +196,7 @@ const InpatientModule = () => {
   const [visits, setVisits] = useState([]);
   const [billData, setBillData] = useState(null);
   const [showVisitDialog, setShowVisitDialog] = useState(false);
-  const [visitForm, setVisitForm] = useState({ visit_type: defaultVisitType, visitor_id: '', notes: '', vitals_reviewed: false, labs_reviewed: false, pain_assessed: false, mobility_checked: false, plan_for_today: '', family_updated: false });
+  const [visitForm, setVisitForm] = useState({ visit_type: defaultVisitType, visitor_id: '', notes: '', vitals_reviewed: false, labs_reviewed: false, pain_assessed: false, mobility_checked: false, plan_for_today: '', family_updated: false, bypass_roster_check: false });
   const [admissionMedications, setAdmissionMedications] = useState([]);
   const [admissionLabOrders, setAdmissionLabOrders] = useState([]);
   const [availableLabTests, setAvailableLabTests] = useState([]);
@@ -220,13 +237,6 @@ const InpatientModule = () => {
   const [reviewBillDiscount, setReviewBillDiscount] = useState({ type: 'flat', value: 0 });
   const [reviewBillTaxPct, setReviewBillTaxPct] = useState(0);
   const [nursingNotes, setNursingNotes] = useState([]);
-  const [dietOrders, setDietOrders] = useState([]);
-  const [showDietDialog, setShowDietDialog] = useState(false);
-  const [dietForm, setDietForm] = useState({ diet_type: 'regular', meal_instructions: '', allergies: '', notes: '' });
-  // Per-meal log dialog
-  const [mealLogDialog, setMealLogDialog] = useState({ open: false, orderId: null, meal_time: 'lunch', status: 'served', notes: '' });
-  // Kitchen ticket print dialog
-  const [kitchenTicketDialog, setKitchenTicketDialog] = useState({ open: false, meal_time: 'lunch', department: '' });
   // LOA dialog state
   const [loaDialog, setLoaDialog] = useState({ open: false, admissionId: null,
     start_datetime: '', expected_return_datetime: '', reason: '',
@@ -383,16 +393,6 @@ const InpatientModule = () => {
   const [withdrawingConsent, setWithdrawingConsent] = useState(null);
   const [withdrawReason, setWithdrawReason] = useState('');
 
-  // Phase 4: Incidents
-  const [incidents, setIncidents] = useState([]);
-  const [incidentFilter, setIncidentFilter] = useState({ status: '', severity: '', incident_type: '' });
-  const [incidentReport, setIncidentReport] = useState(null);
-  const [showIncidentDialog, setShowIncidentDialog] = useState(false);
-  const [incidentForm, setIncidentForm] = useState({ incident_type: 'fall', severity: 'medium', incident_date: new Date().toISOString().slice(0, 16), admission_id: '', patient_id: '', location: '', description: '', immediate_action: '', witnessed_by: '' });
-  const [showInvestigateDialog, setShowInvestigateDialog] = useState(false);
-  const [investigatingIncident, setInvestigatingIncident] = useState(null);
-  const [investigateForm, setInvestigateForm] = useState({ investigation_notes: '', root_cause: '', resolution: '', corrective_actions: '', preventive_measures: '', new_status: '' });
-
   // Phase 4: Readmissions
   const [readmissions, setReadmissions] = useState([]);
 
@@ -417,6 +417,8 @@ const InpatientModule = () => {
     today.setHours(0, 0, 0, 0);
     return today;
   });
+  const [rosterRole, setRosterRole] = useState('nurse');  // 'nurse' | 'doctor'
+  const [dischargeSubTab, setDischargeSubTab] = useState('history');  // 'history' | 'pending-settlement' | 'gate-pass'
   const [rosterGrid, setRosterGrid] = useState(null);
   const [rosterCoverage, setRosterCoverage] = useState([]);
   const [rosterMinPerShift, setRosterMinPerShift] = useState(2);
@@ -829,24 +831,6 @@ const InpatientModule = () => {
     } catch { setConsentTemplates([]); }
   }, []);
 
-  const fetchIncidents = useCallback(async () => {
-    try {
-      const params = {};
-      if (incidentFilter.status) params.status = incidentFilter.status;
-      if (incidentFilter.severity) params.severity = incidentFilter.severity;
-      if (incidentFilter.incident_type) params.incident_type = incidentFilter.incident_type;
-      const res = await axios.get('/api/inpatient/incidents', { params });
-      setIncidents(res.data || []);
-    } catch { setIncidents([]); }
-  }, [incidentFilter]);
-
-  const fetchIncidentReport = useCallback(async () => {
-    try {
-      const res = await axios.get('/api/inpatient/incidents/reports/monthly');
-      setIncidentReport(res.data);
-    } catch { setIncidentReport(null); }
-  }, []);
-
   const fetchReadmissions = useCallback(async () => {
     try {
       const res = await axios.get('/api/inpatient/reports/readmissions');
@@ -999,10 +983,6 @@ const InpatientModule = () => {
       fetchReservations();
       fetchAvailableRooms();
     }
-    if (activeTab === 'incidents') {
-      fetchIncidents();
-      fetchIncidentReport();
-    }
     if (activeTab === 'quality') {
       fetchReadmissions();
       fetchMortalityList();
@@ -1019,7 +999,7 @@ const InpatientModule = () => {
     }
     if (activeTab === 'procedures') fetchProcedures(false);
     if (activeTab === 'ot') fetchProcedures(true);  // OT scheduling needs the active catalog
-  }, [activeTab, admissionsPage, dischargePage, fetchAdmissions, fetchRooms, fetchDashboard, fetchAvailableRooms, fetchOTSchedules, fetchPreauths, fetchAncillaryServices, fetchPackages, fetchTpaList, fetchCleaningBeds, fetchTurnoverStats, fetchPendingTransfers, fetchReservations, fetchIncidents, fetchIncidentReport, fetchReadmissions, fetchMortalityList, fetchRosterGrid, fetchRosterCoverage, fetchNursesList, fetchProcedures, fetchTriageQueue]);
+  }, [activeTab, admissionsPage, dischargePage, fetchAdmissions, fetchRooms, fetchDashboard, fetchAvailableRooms, fetchOTSchedules, fetchPreauths, fetchAncillaryServices, fetchPackages, fetchTpaList, fetchCleaningBeds, fetchTurnoverStats, fetchPendingTransfers, fetchReservations, fetchReadmissions, fetchMortalityList, fetchRosterGrid, fetchRosterCoverage, fetchNursesList, fetchProcedures, fetchTriageQueue]);
 
   // ============================================================
   // Patient search typeahead
@@ -1157,7 +1137,6 @@ const InpatientModule = () => {
     fetchLabOrders(admission.id);
     fetchAdmissionDocs(admission.id);
     fetchNursingNotes(admission.id);
-    fetchDietOrders(admission.id);
     fetchVitals(admission.id);
     fetchAdmissionAllergies(admission.patient_id);
     fetchMAR(admission.id, marDate);
@@ -1191,7 +1170,7 @@ const InpatientModule = () => {
     e.preventDefault();
     setLoading(true);
     try {
-      await axios.post(`/api/inpatient/admissions/${activityAdmission.id}/visits`, {
+      const res = await axios.post(`/api/inpatient/admissions/${activityAdmission.id}/visits`, {
         visit_type: visitForm.visit_type,
         visitor_id: parseInt(visitForm.visitor_id),
         notes: visitForm.notes || null,
@@ -1202,10 +1181,18 @@ const InpatientModule = () => {
         mobility_checked: !!visitForm.mobility_checked,
         plan_for_today: visitForm.plan_for_today || null,
         family_updated: !!visitForm.family_updated,
+        // B4 — explicit off-roster acknowledgement (only meaningful for
+        // duty_doctor_visit). Backend logs the bypass via audit.
+        bypass_roster_check: !!visitForm.bypass_roster_check,
       });
-      toast({ title: 'Success', description: 'Visit recorded' });
+      toast({
+        title: 'Success',
+        description: res.data?.roster_bypassed
+          ? 'Off-roster duty visit recorded (audit logged).'
+          : 'Visit recorded',
+      });
       setShowVisitDialog(false);
-      setVisitForm({ visit_type: defaultVisitType, visitor_id: '', notes: '', vitals_reviewed: false, labs_reviewed: false, pain_assessed: false, mobility_checked: false, plan_for_today: '', family_updated: false });
+      setVisitForm({ visit_type: defaultVisitType, visitor_id: '', notes: '', vitals_reviewed: false, labs_reviewed: false, pain_assessed: false, mobility_checked: false, plan_for_today: '', family_updated: false, bypass_roster_check: false });
       fetchVisits(activityAdmission.id);
       fetchBill(activityAdmission.id);
     } catch (err) {
@@ -1476,6 +1463,7 @@ const InpatientModule = () => {
       toast({ title: 'Bill finalized', description: `${res.data.bill_number} — ₹${res.data.total_amount}` });
       setShowReviewBillDialog(false);
       fetchBill(activityAdmission.id);
+      fetchBalance(activityAdmission.id);
     } catch (err) {
       const detail = err.response?.data?.detail;
       const msg = typeof detail === 'string' ? detail : (detail?.message || 'Failed to finalize bill');
@@ -1499,6 +1487,7 @@ const InpatientModule = () => {
       const res = await axios.post(`/api/inpatient/admissions/${activityAdmission.id}/bill/finalize`, payload);
       toast({ title: 'Success', description: `Bill ${res.data.bill_number} finalized — Total: ₹${res.data.total_amount}` });
       fetchBill(activityAdmission.id);
+      fetchBalance(activityAdmission.id);
     } catch (err) {
       toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed to finalize bill' });
     } finally { setLoading(false); }
@@ -1522,17 +1511,38 @@ const InpatientModule = () => {
 
   // Discharge
   const openDischargeDialog = async (admission) => {
+    // The new 3-step DischargeWizard owns its own form state; we just hand
+    // it the admission and let it run.
     setDischargeAdmission(admission);
-    // Discharge medications are NOT auto-filled from inpatient prescriptions —
-    // ward drugs and take-home prescriptions are separate clinical concepts.
-    // Doctor builds the take-home list explicitly.
-    setDischargeForm({ discharge_type: 'normal', condition_on_discharge: 'stable', discharge_summary: '',
-      diagnosis_on_discharge: '', treatment_given: '', medications_prescribed: '',
-      take_home_medications: [],
-      follow_up_instructions: '', follow_up_date: '', diet_instructions: '', activity_restrictions: '' });
-    setDischargeBlockers([]);
-    setOverrideReason('');
     setShowDischargeDialog(true);
+  };
+
+  // Handler invoked by DischargeWizard after a successful discharge POST.
+  // - Refreshes admission lists.
+  // - If death, prompts mortality details dialog.
+  // - Navigates the slide-over to the Billing tab so finalising the bill
+  //   is the obvious next click.
+  const handleDischarged = ({ wasDeath, admissionId }) => {
+    fetchAdmissions('admitted');
+    fetchDashboard();
+    if (activityAdmission?.id === admissionId) {
+      // Reload the admission so its status flips to 'discharged' in the slide-over
+      axios.get(`/api/inpatient/admissions/${admissionId}`)
+        .then(r => setActivityAdmission(r.data))
+        .catch(() => setActivityAdmission(null));
+      setActivityTab('bill');
+    }
+    if (wasDeath) {
+      setMortalityAdmission({ id: admissionId, discharge: {} });
+      setMortalityForm({
+        cause_of_death: '', time_of_death: new Date().toISOString().slice(0, 16),
+        death_certificate_number: '', mlc_required: false, mlc_number: '',
+        autopsy_done: false, autopsy_findings: '',
+        body_handed_over_to: '', body_handover_relationship: '',
+        body_handover_time: '', body_handover_id_proof: '',
+      });
+      setShowMortalityDialog(true);
+    }
   };
 
   const handleDischarge = async (e) => {
@@ -1653,6 +1663,8 @@ const InpatientModule = () => {
       setCancelBillDialog({ open: false, bill: null, reason: '' });
       if (admId) {
         fetchAdmissionBills(admId);
+        // Refresh balance so the credit header reflects the released items
+        fetchBalance(admId);
         // Refresh bill preview if the activity panel is showing it
         try { await axios.get(`/api/inpatient/admissions/${admId}/bill`); } catch { /* ignore */ }
       }
@@ -1833,73 +1845,6 @@ const InpatientModule = () => {
     }
   };
 
-  // Diet Orders
-  const fetchDietOrders = async (admissionId) => {
-    try {
-      const res = await axios.get(`/api/inpatient/admissions/${admissionId}/diet-orders`);
-      setDietOrders(res.data);
-    } catch { setDietOrders([]); }
-  };
-
-  const handleCreateDietOrder = async (e) => {
-    e.preventDefault();
-    setLoading(true);
-    try {
-      await axios.post(`/api/inpatient/admissions/${activityAdmission.id}/diet-orders`, dietForm);
-      toast({ title: 'Success', description: 'Diet order created' });
-      setShowDietDialog(false);
-      setDietForm({ diet_type: 'regular', meal_instructions: '', allergies: '', notes: '' });
-      fetchDietOrders(activityAdmission.id);
-    } catch (err) {
-      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed to create diet order';
-      toast({ variant: 'destructive', title: 'Error', description: msg });
-    } finally { setLoading(false); }
-  };
-
-  const handleToggleDietOrder = async (orderId, isActive) => {
-    try {
-      await axios.put(`/api/inpatient/diet-orders/${orderId}`, { is_active: !isActive });
-      toast({ title: 'Success', description: isActive ? 'Diet order deactivated' : 'Diet order reactivated' });
-      fetchDietOrders(activityAdmission.id);
-    } catch {
-      toast({ variant: 'destructive', title: 'Error', description: 'Failed to update diet order' });
-    }
-  };
-
-  const handleDeleteDietOrder = async (orderId) => {
-    try {
-      await axios.delete(`/api/inpatient/diet-orders/${orderId}`);
-      toast({ title: 'Success', description: 'Diet order deleted' });
-      fetchDietOrders(activityAdmission.id);
-    } catch {
-      toast({ variant: 'destructive', title: 'Error', description: 'Failed to delete diet order' });
-    }
-  };
-
-  const handleLogMeal = async () => {
-    if (!mealLogDialog.orderId) return;
-    setLoading(true);
-    try {
-      await axios.post(`/api/inpatient/diet-orders/${mealLogDialog.orderId}/meal-log`, {
-        meal_time: mealLogDialog.meal_time,
-        status: mealLogDialog.status,
-        notes: mealLogDialog.notes || null,
-      });
-      toast({ title: 'Meal logged', description: `${mealLogDialog.meal_time}: ${mealLogDialog.status}` });
-      setMealLogDialog({ open: false, orderId: null, meal_time: 'lunch', status: 'served', notes: '' });
-    } catch (err) {
-      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed to log meal';
-      toast({ variant: 'destructive', title: 'Error', description: msg });
-    } finally { setLoading(false); }
-  };
-
-  const handlePrintKitchenTicket = async () => {
-    const params = { meal_time: kitchenTicketDialog.meal_time, include_header: true };
-    if (kitchenTicketDialog.department.trim()) params.department = kitchenTicketDialog.department.trim();
-    setKitchenTicketDialog({ open: false, meal_time: 'lunch', department: '' });
-    await printPdfFromUrl(`/api/inpatient/diet/kitchen-ticket/pdf`, params);
-  };
-
   const fetchLoaList = useCallback(async (admissionId) => {
     if (!admissionId) return;
     try {
@@ -2071,7 +2016,7 @@ const InpatientModule = () => {
     e.preventDefault();
     setLoading(true);
     try {
-      await axios.post(`/api/inpatient/admissions/${activityAdmission.id}/deposits`, {
+      const dep = await axios.post(`/api/inpatient/admissions/${activityAdmission.id}/deposits`, {
         amount: parseFloat(depositForm.amount),
         payment_method: depositForm.payment_method,
         deposit_type: depositForm.deposit_type,
@@ -2083,6 +2028,10 @@ const InpatientModule = () => {
       setDepositForm({ amount: '', payment_method: 'cash', deposit_type: 'topup', reference_number: '', notes: '' });
       fetchDeposits(activityAdmission.id);
       fetchBalance(activityAdmission.id);
+      // Auto-print the receipt so it can be handed to the patient
+      if (dep.data?.id) {
+        try { await handlePrintDepositReceipt(dep.data.id); } catch (_) { /* best-effort */ }
+      }
     } catch (err) {
       const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed to record deposit';
       toast({ variant: 'destructive', title: 'Error', description: msg });
@@ -2111,7 +2060,17 @@ const InpatientModule = () => {
   };
 
   const handlePrintDepositReceipt = async (depositId) => {
-    await printPdfFromUrl(`/api/inpatient/deposits/${depositId}/receipt/pdf`, { include_header: true });
+    try {
+      const res = await axios.get(
+        `/api/inpatient/deposits/${depositId}/receipt/pdf?include_header=true`,
+        { responseType: 'blob' },
+      );
+      const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+      printPdfFromUrl(url);
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Could not load receipt' });
+    }
   };
 
   // Phase 2: Ancillary charge
@@ -2673,50 +2632,6 @@ const InpatientModule = () => {
     } catch { toast({ variant: 'destructive', title: 'Error', description: 'Failed' }); }
   };
 
-  // Phase 4: Incidents
-  const handleCreateIncident = async (e) => {
-    e.preventDefault();
-    setLoading(true);
-    try {
-      const payload = {
-        incident_type: incidentForm.incident_type,
-        severity: incidentForm.severity,
-        incident_date: new Date(incidentForm.incident_date).toISOString(),
-        description: incidentForm.description,
-        immediate_action: incidentForm.immediate_action || null,
-        location: incidentForm.location || null,
-        witnessed_by: incidentForm.witnessed_by || null,
-      };
-      if (incidentForm.admission_id) payload.admission_id = parseInt(incidentForm.admission_id);
-      if (incidentForm.patient_id) payload.patient_id = parseInt(incidentForm.patient_id);
-      await axios.post('/api/inpatient/incidents', payload);
-      toast({ title: 'Incident reported' });
-      setShowIncidentDialog(false);
-      setIncidentForm({ incident_type: 'fall', severity: 'medium', incident_date: new Date().toISOString().slice(0, 16), admission_id: '', patient_id: '', location: '', description: '', immediate_action: '', witnessed_by: '' });
-      fetchIncidents();
-      fetchIncidentReport();
-    } catch (err) {
-      toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed' });
-    } finally { setLoading(false); }
-  };
-
-  const handleInvestigateIncident = async (e) => {
-    e.preventDefault();
-    setLoading(true);
-    try {
-      const payload = { ...investigateForm };
-      if (!payload.new_status) delete payload.new_status;
-      await axios.post(`/api/inpatient/incidents/${investigatingIncident.id}/investigate`, payload);
-      toast({ title: 'Investigation updated' });
-      setShowInvestigateDialog(false);
-      setInvestigatingIncident(null);
-      fetchIncidents();
-      fetchIncidentReport();
-    } catch (err) {
-      toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed' });
-    } finally { setLoading(false); }
-  };
-
   // Phase 4: Mortality
   const openMortalityDialog = (admission) => {
     setMortalityAdmission(admission);
@@ -3127,14 +3042,22 @@ const InpatientModule = () => {
     }
   };
 
-  // Filtered admissions
+  // Filtered admissions — sub-tab also hides pending-acceptance rows from
+  // the Active sub-tab so they only appear under Pending Acceptance.
   const filteredAdmissions = admissions.filter(a => {
+    if (a.acceptance_status === 'pending') return false;
     if (!admissionSearch) return true;
     const q = admissionSearch.toLowerCase();
     return (a.patient_name || '').toLowerCase().includes(q) ||
            (a.admission_number || '').toLowerCase().includes(q) ||
            (a.room_number || '').toLowerCase().includes(q);
   });
+
+  // Keep pendingCount in sync with the loaded admissions list. Pending rows
+  // are returned alongside accepted ones; we just count them for the tab badge.
+  useEffect(() => {
+    setPendingCount(admissions.filter(a => a.acceptance_status === 'pending').length);
+  }, [admissions]);
 
   const filteredDischarged = dischargedAdmissions.filter(a => {
     if (!dischargeSearch) return true;
@@ -3170,7 +3093,7 @@ const InpatientModule = () => {
         <div className="border-b bg-white px-6 py-3 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2">
             {ip('admit_patients') && (
-              <Button size="sm" onClick={() => { resetAdmissionForm(); fetchAvailableRooms(); setShowAdmissionDialog(true); }}>
+              <Button size="sm" onClick={() => setShowAdmitWizard(true)}>
                 <Plus className="h-4 w-4 mr-1" /> Admit Patient
               </Button>
             )}
@@ -3319,6 +3242,45 @@ const InpatientModule = () => {
             <div className="flex h-full">
               {/* Left: Admissions list */}
               <div className={`${activityAdmission ? 'w-1/2 border-r' : 'w-full'} overflow-y-auto p-6 transition-all space-y-4`}>
+                {/* Sub-tabs: Active vs. Pending Acceptance */}
+                <div className="flex items-center gap-1 border-b">
+                  <button
+                    className={`px-3 py-2 text-sm font-medium border-b-2 transition ${
+                      admissionSubTab === 'active'
+                        ? 'border-blue-500 text-blue-600'
+                        : 'border-transparent text-gray-600 hover:text-gray-800'
+                    }`}
+                    onClick={() => setAdmissionSubTab('active')}
+                  >
+                    Active
+                  </button>
+                  <button
+                    className={`px-3 py-2 text-sm font-medium border-b-2 transition flex items-center gap-2 ${
+                      admissionSubTab === 'pending'
+                        ? 'border-amber-500 text-amber-700'
+                        : 'border-transparent text-gray-600 hover:text-gray-800'
+                    }`}
+                    onClick={() => setAdmissionSubTab('pending')}
+                  >
+                    Pending Acceptance
+                    {pendingCount > 0 && (
+                      <Badge className="bg-amber-500 text-white text-[10px] h-5 px-1.5">
+                        {pendingCount}
+                      </Badge>
+                    )}
+                  </button>
+                </div>
+
+                {admissionSubTab === 'pending' ? (
+                  <PendingAcceptanceList
+                    doctorsList={doctorsList}
+                    canAccept={isAdminLike || ip('accept_admission') || isDoctorRole}
+                    currentUserId={user?.id}
+                    onChanged={() => { fetchAdmissions('admitted', admissionsPage); fetchDashboard(); }}
+                    onOpenDetail={(adm) => openActivity(adm)}
+                  />
+                ) : (
+                <>
                 <div className="relative max-w-sm">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
                   <Input placeholder="Search by name, ID, room..." value={admissionSearch} onChange={e => setAdmissionSearch(e.target.value)} className="pl-10" />
@@ -3419,6 +3381,8 @@ const InpatientModule = () => {
                     )}
                   </div>
                 )}
+                </>
+                )}
               </div>
 
               {/* Right: Patient detail (inline) */}
@@ -3459,6 +3423,29 @@ const InpatientModule = () => {
                       <Button variant="ghost" size="sm" onClick={() => setActivityAdmission(null)}><X className="h-4 w-4" /></Button>
                     </div>
                   </div>
+
+                  {/* New header strip: doctors row + payer chip + acceptance banner + change payer */}
+                  <AdmissionDetailHeader
+                    admission={activityAdmission}
+                    doctorsList={doctorsList}
+                    canAccept={
+                      isAdminLike ||
+                      ip('accept_admission') ||
+                      isDoctorRole ||
+                      (user?.id && (
+                        activityAdmission?.admitting_doctor_id === user.id ||
+                        activityAdmission?.attending_physician_id === user.id
+                      ))
+                    }
+                    canConvertPayer={ip('convert_payer')}
+                    onChanged={() => {
+                      fetchAdmissions('admitted', admissionsPage);
+                      // Re-open the same admission with refreshed data
+                      axios.get(`/api/inpatient/admissions/${activityAdmission.id}`)
+                        .then(r => setActivityAdmission(r.data))
+                        .catch(() => {});
+                    }}
+                  />
 
                   {/* Critical lab value alerts banner */}
                   {admissionCriticalAlerts.filter(a => a.status === 'new').length > 0 && (
@@ -3526,7 +3513,6 @@ const InpatientModule = () => {
                           { v: 'mar', l: 'MAR' },
                           { v: 'io', l: 'I/O' },
                           { v: 'nursing', l: 'Nursing' },
-                          { v: 'diet', l: 'Diet' },
                           { v: 'allergies', l: 'Allergies' },
                           { v: 'consents', l: 'Consents' },
                         ]},
@@ -3546,6 +3532,11 @@ const InpatientModule = () => {
                           { v: 'staff', l: 'Staff' },
                           { v: 'docs', l: 'Docs' },
                         ]},
+                        ...((canViewBilling || ip('view_bill') || ip('receive_deposits')) ? {
+                          payments: { label: 'Payments', tabs: [
+                            { v: 'payments', l: 'Deposits & Payments' },
+                          ]},
+                        } : {}),
                       };
                       const groupOf = (tab) => Object.entries(TAB_GROUPS).find(([, g]) => g.tabs.some(t => t.v === tab))?.[0] || 'clinical';
                       const currentGroup = groupOf(activityTab);
@@ -3673,61 +3664,6 @@ const InpatientModule = () => {
                             </div>
                           );
                         })()}
-                      </TabsContent>
-
-                      {/* Diet sub-tab */}
-                      <TabsContent value="diet" className="space-y-3 mt-3">
-                        <div className="flex items-center gap-2">
-                          <Button size="sm" onClick={() => {
-                            setDietForm({ diet_type: 'regular', meal_instructions: '', allergies: '', notes: '' });
-                            setShowDietDialog(true);
-                          }}>
-                            <Plus className="h-4 w-4 mr-1" /> New Diet Order
-                          </Button>
-                          <Button size="sm" variant="outline" onClick={() => setKitchenTicketDialog({ open: true, meal_time: 'lunch', department: '' })}>
-                            <Printer className="h-4 w-4 mr-1" /> Kitchen Ticket
-                          </Button>
-                        </div>
-                        {dietOrders.length === 0 ? (
-                          <p className="text-sm text-gray-500 text-center py-4">No diet orders.</p>
-                        ) : (
-                          <div className="space-y-2">
-                            {dietOrders.map(d => (
-                              <div key={d.id} className={`border rounded-lg p-3 text-sm ${!d.is_active ? 'opacity-50' : ''}`}>
-                                <div className="flex items-center justify-between">
-                                  <div className="flex items-center gap-2">
-                                    <Badge className={d.is_active ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600'}>
-                                      {d.diet_type.replace('_', ' ').toUpperCase()}
-                                    </Badge>
-                                    {d.is_active && <Badge className="bg-blue-100 text-blue-800 text-xs">Active</Badge>}
-                                    <span className="text-gray-500 text-xs">by {d.ordered_by_name || 'N/A'}</span>
-                                  </div>
-                                  <div className="flex items-center gap-1">
-                                    {d.is_active && (
-                                      <Button variant="outline" size="sm" className="h-6 text-xs px-2"
-                                        onClick={() => setMealLogDialog({ open: true, orderId: d.id, meal_time: 'lunch', status: 'served', notes: '' })}>
-                                        Log meal
-                                      </Button>
-                                    )}
-                                    <Button variant="ghost" size="sm" className="h-6 text-xs px-2"
-                                      onClick={() => handleToggleDietOrder(d.id, d.is_active)}>
-                                      {d.is_active ? 'Deactivate' : 'Reactivate'}
-                                    </Button>
-                                    <Button variant="ghost" size="sm" className="text-red-500 h-6 w-6 p-0"
-                                      onClick={() => setConfirmState({ open: true, title: 'Delete Diet Order', message: 'Delete this diet order?',
-                                        onConfirm: () => { setConfirmState({ open: false }); handleDeleteDietOrder(d.id); } })}>
-                                      <Trash2 className="h-3 w-3" />
-                                    </Button>
-                                  </div>
-                                </div>
-                                <p className="text-xs text-gray-400 mt-1">{d.created_at ? new Date(d.created_at).toLocaleString() : ''}</p>
-                                {d.meal_instructions && <p className="text-xs mt-1"><span className="font-medium">Meals:</span> {d.meal_instructions}</p>}
-                                {d.allergies && <p className="text-xs mt-1 text-red-600"><span className="font-medium">Allergies:</span> {d.allergies}</p>}
-                                {d.notes && <p className="text-xs mt-1 text-gray-600">{d.notes}</p>}
-                              </div>
-                            ))}
-                          </div>
-                        )}
                       </TabsContent>
 
                       {/* Lab Orders sub-tab */}
@@ -3998,76 +3934,91 @@ const InpatientModule = () => {
                         )}
                       </TabsContent>
 
-                      {/* Deposits sub-tab */}
-                      <TabsContent value="deposits" className="space-y-3 mt-3">
-                        {balance && (
-                          <div className="border rounded p-3 bg-gray-50 text-sm">
-                            <div className="grid grid-cols-2 gap-2">
-                              <div><span className="text-gray-500">Collected:</span> <span className="font-semibold">₹{balance.total_collected.toFixed(2)}</span></div>
-                              <div><span className="text-gray-500">Refunded:</span> <span className="font-semibold">₹{balance.total_refunded.toFixed(2)}</span></div>
-                              <div><span className="text-gray-500">Net deposits:</span> <span className="font-semibold">₹{balance.net_deposits.toFixed(2)}</span></div>
-                              <div><span className="text-gray-500">Total billed:</span> <span className="font-semibold">₹{balance.total_billed.toFixed(2)}</span></div>
+                      {/* Deposits & Payments sub-tab — shared between Billing and Operations groups */}
+                      {(() => {
+                        const depositsPanel = (
+                          <div className="space-y-3 mt-3">
+                            {balance && (
+                              <div className="border rounded p-3 bg-gray-50 text-sm">
+                                <div className="grid grid-cols-2 gap-2">
+                                  <div><span className="text-gray-500">Collected:</span> <span className="font-semibold">₹{balance.total_collected.toFixed(2)}</span></div>
+                                  <div><span className="text-gray-500">Refunded:</span> <span className="font-semibold">₹{balance.total_refunded.toFixed(2)}</span></div>
+                                  <div><span className="text-gray-500">Net deposits:</span> <span className="font-semibold">₹{balance.net_deposits.toFixed(2)}</span></div>
+                                  <div><span className="text-gray-500">Total billed:</span> <span className="font-semibold">₹{balance.total_billed.toFixed(2)}</span></div>
+                                </div>
+                                <div className={`mt-2 pt-2 border-t font-semibold ${balance.balance > 0 ? 'text-green-700' : balance.balance < 0 ? 'text-red-700' : ''}`}>
+                                  Balance: ₹{balance.balance.toFixed(2)}
+                                  <span className="text-xs font-normal ml-2 text-gray-500">
+                                    {balance.balance > 0 ? '(patient credit / refund due)' :
+                                     balance.balance < 0 ? '(patient owes)' : ''}
+                                  </span>
+                                </div>
+                                <button type="button"
+                                  className="text-[11px] text-blue-600 hover:underline mt-1"
+                                  onClick={() => fetchBalance(activityAdmission.id)}>
+                                  Refresh
+                                </button>
+                              </div>
+                            )}
+                            <div className="flex gap-2">
+                              {ip('receive_deposits') && (
+                                <Button size="sm" onClick={() => { setDepositForm({ amount: '', payment_method: 'cash', deposit_type: deposits.length === 0 ? 'initial' : 'topup', reference_number: '', notes: '' }); setShowDepositDialog(true); }}>
+                                  <Plus className="h-4 w-4 mr-1" /> Receive Deposit
+                                </Button>
+                              )}
+                              {balance && balance.balance > 0 && ip('issue_refunds') && (
+                                <Button size="sm" variant="outline" onClick={() => { setRefundForm({ amount: balance.balance.toFixed(2), payment_method: 'cash', reference_number: '', notes: '' }); setShowRefundDialog(true); }}>
+                                  <Wallet className="h-4 w-4 mr-1" /> Issue Refund
+                                </Button>
+                              )}
                             </div>
-                            <div className={`mt-2 pt-2 border-t font-semibold ${balance.balance > 0 ? 'text-green-700' : balance.balance < 0 ? 'text-red-700' : ''}`}>
-                              Balance: ₹{balance.balance.toFixed(2)}
-                              <span className="text-xs font-normal ml-2 text-gray-500">
-                                {balance.balance > 0 ? '(patient credit / refund due)' :
-                                 balance.balance < 0 ? '(patient owes)' : ''}
-                              </span>
-                            </div>
+                            {deposits.length === 0 ? (
+                              <div className="text-center text-sm text-gray-500 py-8">No deposits recorded for this admission.</div>
+                            ) : (
+                              <div className="border rounded overflow-hidden">
+                                <table className="w-full text-xs">
+                                  <thead className="bg-gray-50">
+                                    <tr className="text-left">
+                                      <th className="px-2 py-2">Receipt</th>
+                                      <th className="px-2 py-2">Date</th>
+                                      <th className="px-2 py-2">Type</th>
+                                      <th className="px-2 py-2">Method</th>
+                                      <th className="px-2 py-2 text-right">Amount</th>
+                                      <th className="px-2 py-2">By</th>
+                                      <th className="px-2 py-2"></th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {deposits.map(d => (
+                                      <tr key={d.id} className={`border-t ${d.deposit_type === 'refund' ? 'bg-orange-50' : ''}`}>
+                                        <td className="px-2 py-1.5 font-mono">{d.deposit_number}</td>
+                                        <td className="px-2 py-1.5">{new Date(d.received_at).toLocaleString()}</td>
+                                        <td className="px-2 py-1.5"><Badge variant="outline" className="text-xs">{d.deposit_type}</Badge></td>
+                                        <td className="px-2 py-1.5">{d.payment_method}</td>
+                                        <td className={`px-2 py-1.5 text-right font-semibold ${d.deposit_type === 'refund' ? 'text-orange-700' : ''}`}>
+                                          {d.deposit_type === 'refund' ? '-' : ''}₹{d.amount.toFixed(2)}
+                                        </td>
+                                        <td className="px-2 py-1.5">{d.received_by_name || '–'}</td>
+                                        <td className="px-2 py-1.5">
+                                          <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => handlePrintDepositReceipt(d.id)}>
+                                            <FileText className="h-3.5 w-3.5" />
+                                          </Button>
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
                           </div>
-                        )}
-                        <div className="flex gap-2">
-                          {ip('receive_deposits') && (
-                            <Button size="sm" onClick={() => { setDepositForm({ amount: '', payment_method: 'cash', deposit_type: deposits.length === 0 ? 'initial' : 'topup', reference_number: '', notes: '' }); setShowDepositDialog(true); }}>
-                              <Plus className="h-4 w-4 mr-1" /> Receive Deposit
-                            </Button>
-                          )}
-                          {balance && balance.balance > 0 && ip('issue_refunds') && (
-                            <Button size="sm" variant="outline" onClick={() => { setRefundForm({ amount: balance.balance.toFixed(2), payment_method: 'cash', reference_number: '', notes: '' }); setShowRefundDialog(true); }}>
-                              <Wallet className="h-4 w-4 mr-1" /> Issue Refund
-                            </Button>
-                          )}
-                        </div>
-                        {deposits.length === 0 ? (
-                          <div className="text-center text-sm text-gray-500 py-8">No deposits recorded for this admission.</div>
-                        ) : (
-                          <div className="border rounded overflow-hidden">
-                            <table className="w-full text-xs">
-                              <thead className="bg-gray-50">
-                                <tr className="text-left">
-                                  <th className="px-2 py-2">Receipt</th>
-                                  <th className="px-2 py-2">Date</th>
-                                  <th className="px-2 py-2">Type</th>
-                                  <th className="px-2 py-2">Method</th>
-                                  <th className="px-2 py-2 text-right">Amount</th>
-                                  <th className="px-2 py-2">By</th>
-                                  <th className="px-2 py-2"></th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {deposits.map(d => (
-                                  <tr key={d.id} className={`border-t ${d.deposit_type === 'refund' ? 'bg-orange-50' : ''}`}>
-                                    <td className="px-2 py-1.5 font-mono">{d.deposit_number}</td>
-                                    <td className="px-2 py-1.5">{new Date(d.received_at).toLocaleString()}</td>
-                                    <td className="px-2 py-1.5"><Badge variant="outline" className="text-xs">{d.deposit_type}</Badge></td>
-                                    <td className="px-2 py-1.5">{d.payment_method}</td>
-                                    <td className={`px-2 py-1.5 text-right font-semibold ${d.deposit_type === 'refund' ? 'text-orange-700' : ''}`}>
-                                      {d.deposit_type === 'refund' ? '-' : ''}₹{d.amount.toFixed(2)}
-                                    </td>
-                                    <td className="px-2 py-1.5">{d.received_by_name || '–'}</td>
-                                    <td className="px-2 py-1.5">
-                                      <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => handlePrintDepositReceipt(d.id)}>
-                                        <FileText className="h-3.5 w-3.5" />
-                                      </Button>
-                                    </td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                        )}
-                      </TabsContent>
+                        );
+                        return (
+                          <>
+                            <TabsContent value="deposits">{depositsPanel}</TabsContent>
+                            <TabsContent value="payments">{depositsPanel}</TabsContent>
+                          </>
+                        );
+                      })()}
 
                       {/* Consents sub-tab */}
                       <TabsContent value="consents" className="space-y-3 mt-3">
@@ -4807,9 +4758,48 @@ const InpatientModule = () => {
             </div>
           )}
 
-          {/* ============ DISCHARGE HISTORY ============ */}
+          {/* ============ DISCHARGE HISTORY + GATE PASS ============ */}
           {activeTab === 'discharge' && (
             <div className="p-6 overflow-y-auto h-full space-y-4">
+              <div className="flex items-center gap-1 border-b">
+                <button
+                  className={`px-3 py-2 text-sm font-medium border-b-2 transition ${
+                    dischargeSubTab === 'history'
+                      ? 'border-blue-500 text-blue-600'
+                      : 'border-transparent text-gray-600 hover:text-gray-800'
+                  }`}
+                  onClick={() => setDischargeSubTab('history')}
+                >History</button>
+                <button
+                  className={`px-3 py-2 text-sm font-medium border-b-2 transition ${
+                    dischargeSubTab === 'pending-settlement'
+                      ? 'border-blue-500 text-blue-600'
+                      : 'border-transparent text-gray-600 hover:text-gray-800'
+                  }`}
+                  onClick={() => setDischargeSubTab('pending-settlement')}
+                >Pending Settlement</button>
+                <button
+                  className={`px-3 py-2 text-sm font-medium border-b-2 transition ${
+                    dischargeSubTab === 'gate-pass'
+                      ? 'border-blue-500 text-blue-600'
+                      : 'border-transparent text-gray-600 hover:text-gray-800'
+                  }`}
+                  onClick={() => setDischargeSubTab('gate-pass')}
+                >Ready for Gate Pass</button>
+              </div>
+
+              {dischargeSubTab === 'pending-settlement' && (
+                <PaymentCollectionTab
+                  canCollect={ip('receive_deposits')}
+                  canOpenBill={ip('view_bill')}
+                />
+              )}
+
+              {dischargeSubTab === 'gate-pass' && (
+                <GatePassTab canIssue={ip('issue_gate_pass')} />
+              )}
+
+              {dischargeSubTab === 'history' && (<>
           <div className="relative max-w-sm">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
             <Input placeholder="Search discharged patients..." value={dischargeSearch} onChange={e => setDischargeSearch(e.target.value)} className="pl-10" />
@@ -4871,6 +4861,7 @@ const InpatientModule = () => {
               )}
             </div>
           )}
+              </>)}
           </div>
           )}
 
@@ -5066,6 +5057,40 @@ const InpatientModule = () => {
           {/* ============ DUTY ROSTER ============ */}
           {activeTab === 'roster' && (
             <div className="p-6 overflow-y-auto h-full space-y-4">
+              <h2 className="text-lg font-semibold flex items-center gap-2"><CalendarRange className="h-5 w-5" /> Duty Roster</h2>
+              {/* Role sub-tabs */}
+              <div className="flex items-center gap-1 border-b">
+                <button
+                  className={`px-3 py-2 text-sm font-medium border-b-2 transition ${
+                    rosterRole === 'nurse'
+                      ? 'border-blue-500 text-blue-600'
+                      : 'border-transparent text-gray-600 hover:text-gray-800'
+                  }`}
+                  onClick={() => setRosterRole('nurse')}
+                >Nurses</button>
+                <button
+                  className={`px-3 py-2 text-sm font-medium border-b-2 transition ${
+                    rosterRole === 'doctor'
+                      ? 'border-blue-500 text-blue-600'
+                      : 'border-transparent text-gray-600 hover:text-gray-800'
+                  }`}
+                  onClick={() => setRosterRole('doctor')}
+                >Doctors</button>
+              </div>
+
+              {rosterRole === 'doctor' && (
+                <div className="grid grid-cols-1 lg:grid-cols-[1fr_240px] gap-4">
+                  <DoctorRosterTab
+                    doctorsList={doctorsList}
+                    weekStart={rosterWeekStart}
+                    onShiftWeek={shiftWeek}
+                    canManage={ip('manage_roster')}
+                  />
+                  <OnDutyNowPanel />
+                </div>
+              )}
+
+              {rosterRole === 'nurse' && (<>
               <div className="flex items-center justify-between flex-wrap gap-2">
                 <h2 className="text-lg font-semibold flex items-center gap-2"><CalendarRange className="h-5 w-5" /> Nurse Duty Roster</h2>
                 <div className="flex items-center gap-2">
@@ -5205,6 +5230,7 @@ const InpatientModule = () => {
                   </table>
                 </div>
               )}
+              </>)}
             </div>
           )}
 
@@ -5334,115 +5360,6 @@ const InpatientModule = () => {
                       </CardContent>
                     </Card>
                   ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* ============ INCIDENTS ============ */}
-          {activeTab === 'incidents' && (
-            <div className="p-6 overflow-y-auto h-full space-y-4">
-              <div className="flex items-center justify-between">
-                <h2 className="text-lg font-semibold">Incident Reporting</h2>
-                <Button onClick={() => { setIncidentForm({ incident_type: 'fall', severity: 'medium', incident_date: new Date().toISOString().slice(0, 16), admission_id: '', patient_id: '', location: '', description: '', immediate_action: '', witnessed_by: '' }); setShowIncidentDialog(true); }}>
-                  <Plus className="h-4 w-4 mr-2" /> Report Incident
-                </Button>
-              </div>
-
-              {/* Monthly stats */}
-              {incidentReport && (
-                <div className="grid grid-cols-4 gap-3">
-                  <Card><CardContent className="py-4">
-                    <div className="text-xs text-gray-500">Last 30 days</div>
-                    <div className="text-2xl font-semibold">{incidentReport.total}</div>
-                  </CardContent></Card>
-                  {['low', 'medium', 'high', 'critical'].map(sev => (
-                    <Card key={sev}><CardContent className="py-4">
-                      <div className="text-xs text-gray-500 capitalize">{sev}</div>
-                      <div className={`text-2xl font-semibold ${sev === 'critical' ? 'text-red-700' : sev === 'high' ? 'text-orange-700' : ''}`}>
-                        {incidentReport.by_severity?.[sev] || 0}
-                      </div>
-                    </CardContent></Card>
-                  ))}
-                </div>
-              )}
-
-              {/* Filters */}
-              <div className="flex gap-2 flex-wrap">
-                <Select value={incidentFilter.status || 'all'} onValueChange={v => setIncidentFilter(p => ({ ...p, status: v === 'all' ? '' : v }))}>
-                  <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All statuses</SelectItem>
-                    <SelectItem value="reported">Reported</SelectItem>
-                    <SelectItem value="investigating">Investigating</SelectItem>
-                    <SelectItem value="resolved">Resolved</SelectItem>
-                    <SelectItem value="closed">Closed</SelectItem>
-                  </SelectContent>
-                </Select>
-                <Select value={incidentFilter.severity || 'all'} onValueChange={v => setIncidentFilter(p => ({ ...p, severity: v === 'all' ? '' : v }))}>
-                  <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All severities</SelectItem>
-                    <SelectItem value="low">Low</SelectItem>
-                    <SelectItem value="medium">Medium</SelectItem>
-                    <SelectItem value="high">High</SelectItem>
-                    <SelectItem value="critical">Critical</SelectItem>
-                  </SelectContent>
-                </Select>
-                <Select value={incidentFilter.incident_type || 'all'} onValueChange={v => setIncidentFilter(p => ({ ...p, incident_type: v === 'all' ? '' : v }))}>
-                  <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All types</SelectItem>
-                    <SelectItem value="fall">Fall</SelectItem>
-                    <SelectItem value="medication_error">Medication Error</SelectItem>
-                    <SelectItem value="pressure_ulcer">Pressure Ulcer</SelectItem>
-                    <SelectItem value="needle_stick">Needle Stick</SelectItem>
-                    <SelectItem value="infection">Infection</SelectItem>
-                    <SelectItem value="equipment_failure">Equipment Failure</SelectItem>
-                    <SelectItem value="documentation_error">Documentation Error</SelectItem>
-                    <SelectItem value="wrong_patient">Wrong Patient</SelectItem>
-                    <SelectItem value="other">Other</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {incidents.length === 0 ? (
-                <Card><CardContent className="py-12 text-center text-gray-500">No incidents match the filter.</CardContent></Card>
-              ) : (
-                <div className="space-y-2">
-                  {incidents.map(i => {
-                    const statusColor = { reported: 'bg-blue-100 text-blue-800', investigating: 'bg-yellow-100 text-yellow-800', resolved: 'bg-green-100 text-green-800', closed: 'bg-gray-100 text-gray-700' }[i.status] || 'bg-gray-100';
-                    const sevColor = { low: 'bg-gray-100', medium: 'bg-yellow-100 text-yellow-800', high: 'bg-orange-100 text-orange-800', critical: 'bg-red-100 text-red-800' }[i.severity] || 'bg-gray-100';
-                    return (
-                      <Card key={i.id}>
-                        <CardContent className="py-3">
-                          <div className="flex justify-between items-start gap-3">
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <span className="font-semibold text-sm">{i.incident_type.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</span>
-                                <Badge className={`text-xs ${sevColor}`}>{i.severity}</Badge>
-                                <Badge className={`text-xs ${statusColor}`}>{i.status}</Badge>
-                                <span className="text-xs text-gray-500">{new Date(i.incident_date).toLocaleString()}</span>
-                              </div>
-                              {i.location && <p className="text-xs text-gray-500 mt-0.5">Location: {i.location}</p>}
-                              {i.patient_name && <p className="text-xs text-gray-500">Patient: {i.patient_name} ({i.admission_number || '—'})</p>}
-                              <p className="text-sm text-gray-700 mt-1">{i.description}</p>
-                              {i.root_cause && <p className="text-xs text-gray-600 mt-1"><b>Root cause:</b> {i.root_cause}</p>}
-                              {i.corrective_actions && <p className="text-xs text-gray-600"><b>Corrective actions:</b> {i.corrective_actions}</p>}
-                              <p className="text-xs text-gray-400 mt-1">Reported by {i.reported_by_name}</p>
-                            </div>
-                            {i.status !== 'closed' && (
-                              <Button size="sm" variant="outline" onClick={() => {
-                                setInvestigatingIncident(i);
-                                setInvestigateForm({ investigation_notes: i.investigation_notes || '', root_cause: i.root_cause || '', resolution: i.resolution || '', corrective_actions: i.corrective_actions || '', preventive_measures: i.preventive_measures || '', new_status: '' });
-                                setShowInvestigateDialog(true);
-                              }}>Investigate</Button>
-                            )}
-                          </div>
-                        </CardContent>
-                      </Card>
-                    );
-                  })}
                 </div>
               )}
             </div>
@@ -5948,7 +5865,15 @@ const InpatientModule = () => {
       {/* DIALOGS */}
       {/* ============================================================ */}
 
-      {/* Admission Dialog */}
+      {/* New 3-step Admit Patient wizard */}
+      <AdmitPatientWizard
+        open={showAdmitWizard}
+        onClose={() => setShowAdmitWizard(false)}
+        onCreated={() => { fetchAdmissions('admitted'); fetchDashboard(); fetchAvailableRooms(); }}
+        doctorsList={doctorsList}
+      />
+
+      {/* Legacy Admission Dialog — kept for backwards compatibility / quick fallback */}
       <Dialog open={showAdmissionDialog} onOpenChange={setShowAdmissionDialog}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader><DialogTitle>New Admission</DialogTitle></DialogHeader>
@@ -6424,77 +6349,19 @@ const InpatientModule = () => {
         </DialogContent>
       </Dialog>
 
-      {/* Visit Dialog */}
-      <Dialog open={showVisitDialog} onOpenChange={setShowVisitDialog}>
-        <DialogContent className="max-w-md">
-          <DialogHeader><DialogTitle>Record Visit</DialogTitle></DialogHeader>
-          <form onSubmit={handleCreateVisit} className="space-y-4">
-            <div>
-              <Label>Visit Type *</Label>
-              <Select value={visitForm.visit_type} onValueChange={v => setVisitForm(p => ({ ...p, visit_type: v, visitor_id: '' }))}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {!isNurseOnly && <SelectItem value="doctor_visit">Doctor Visit</SelectItem>}
-                  <SelectItem value="nurse_visit">Nurse Visit</SelectItem>
-                  {!isNurseOnly && <SelectItem value="procedure">Procedure</SelectItem>}
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <Label>Visitor (Staff) *</Label>
-              <Select value={visitForm.visitor_id ? String(visitForm.visitor_id) : ''} onValueChange={v => setVisitForm(p => ({ ...p, visitor_id: v }))}>
-                <SelectTrigger><SelectValue placeholder="Select staff" /></SelectTrigger>
-                <SelectContent>
-                  {(visitForm.visit_type === 'nurse_visit' ? nursesList : doctorsList).map(d => (
-                    <SelectItem key={d.id} value={String(d.id)}>{d.first_name} {d.last_name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            {visitForm.visitor_id && (visitForm.visit_type === 'doctor_visit' || visitForm.visit_type === 'nurse_visit') && (() => {
-              const visitor = [...(doctorsList || []), ...(nursesList || [])]
-                .find(u => String(u.id) === String(visitForm.visitor_id));
-              const fee = visitor?.inpatient_fee_inr;
-              return (
-                <p className="text-xs text-gray-500">
-                  Auto-charge: {fee ? `₹${Number(fee).toFixed(2)}` : 'no fee set on this user'} (from selected staff member's inpatient fee)
-                </p>
-              );
-            })()}
-            <div>
-              <Label>Notes</Label>
-              <Textarea value={visitForm.notes} onChange={e => setVisitForm(p => ({ ...p, notes: e.target.value }))} rows={3} />
-            </div>
-            {visitForm.visit_type === 'doctor_visit' && (
-              <div className="border rounded p-2 space-y-1 bg-gray-50">
-                <p className="text-xs font-semibold text-gray-700">Ward-round checklist (optional)</p>
-                {[
-                  ['vitals_reviewed', 'Vitals reviewed'],
-                  ['labs_reviewed', 'Labs reviewed'],
-                  ['pain_assessed', 'Pain assessed'],
-                  ['mobility_checked', 'Mobility checked'],
-                  ['family_updated', 'Family updated'],
-                ].map(([key, lbl]) => (
-                  <label key={key} className="flex items-center gap-2 text-sm cursor-pointer">
-                    <input type="checkbox" checked={!!visitForm[key]}
-                      onChange={e => setVisitForm(p => ({ ...p, [key]: e.target.checked }))} />
-                    {lbl}
-                  </label>
-                ))}
-                <div>
-                  <Label className="text-xs">Plan for today</Label>
-                  <Textarea rows={2} value={visitForm.plan_for_today}
-                    placeholder="e.g., 'Continue IV antibiotics; repeat CBC tomorrow.'"
-                    onChange={e => setVisitForm(p => ({ ...p, plan_for_today: e.target.value }))} />
-                </div>
-              </div>
-            )}
-            <Button type="submit" className="w-full" disabled={loading || !visitForm.visitor_id}>
-              {loading ? 'Saving...' : 'Record Visit'}
-            </Button>
-          </form>
-        </DialogContent>
-      </Dialog>
+      {/* Visit Dialog (3 visit-type cards: consultant / duty doctor / nurse) */}
+      <VisitDialog
+        open={showVisitDialog}
+        onOpenChange={setShowVisitDialog}
+        form={visitForm}
+        setForm={setVisitForm}
+        doctorsList={doctorsList}
+        nursesList={nursesList}
+        isNurseOnly={isNurseOnly}
+        loading={loading}
+        onSubmit={handleCreateVisit}
+      />
+
 
       {/* Nursing Note Dialog */}
       <Dialog open={showNursingNoteDialog} onOpenChange={(open) => { setShowNursingNoteDialog(open); if (!open) setEditingNursingNote(null); }}>
@@ -6534,95 +6401,6 @@ const InpatientModule = () => {
               {loading ? 'Saving...' : editingNursingNote ? 'Update Note' : 'Add Note'}
             </Button>
           </form>
-        </DialogContent>
-      </Dialog>
-
-      {/* Diet Order Dialog */}
-      <Dialog open={showDietDialog} onOpenChange={setShowDietDialog}>
-        <DialogContent className="max-w-md">
-          <DialogHeader><DialogTitle>New Diet Order</DialogTitle></DialogHeader>
-          <form onSubmit={handleCreateDietOrder} className="space-y-4">
-            <div>
-              <Label>Diet Type *</Label>
-              <Select value={dietForm.diet_type} onValueChange={v => setDietForm(p => ({ ...p, diet_type: v }))}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="regular">Regular</SelectItem>
-                  <SelectItem value="diabetic">Diabetic</SelectItem>
-                  <SelectItem value="liquid">Liquid</SelectItem>
-                  <SelectItem value="soft">Soft</SelectItem>
-                  <SelectItem value="npo">NPO (Nothing by Mouth)</SelectItem>
-                  <SelectItem value="low_salt">Low Salt</SelectItem>
-                  <SelectItem value="renal">Renal</SelectItem>
-                  <SelectItem value="cardiac">Cardiac</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <Label>Meal Instructions</Label>
-              <Textarea value={dietForm.meal_instructions} onChange={e => setDietForm(p => ({ ...p, meal_instructions: e.target.value }))} rows={2} placeholder="e.g. Small frequent meals, no breakfast before surgery..." />
-            </div>
-            <div>
-              <Label>Allergies</Label>
-              <Input value={dietForm.allergies} onChange={e => setDietForm(p => ({ ...p, allergies: e.target.value }))} placeholder="e.g. Peanuts, shellfish, dairy..." />
-            </div>
-            <div>
-              <Label>Notes</Label>
-              <Textarea value={dietForm.notes} onChange={e => setDietForm(p => ({ ...p, notes: e.target.value }))} rows={2} placeholder="Additional dietary notes..." />
-            </div>
-            <p className="text-xs text-gray-500">Creating a new diet order will deactivate any previous active order.</p>
-            <Button type="submit" className="w-full" disabled={loading}>
-              {loading ? 'Saving...' : 'Create Diet Order'}
-            </Button>
-          </form>
-        </DialogContent>
-      </Dialog>
-
-      {/* Meal Log Dialog */}
-      <Dialog open={mealLogDialog.open} onOpenChange={(o) => !o && setMealLogDialog(p => ({ ...p, open: false }))}>
-        <DialogContent className="max-w-md">
-          <DialogHeader><DialogTitle>Log meal served</DialogTitle></DialogHeader>
-          <div className="space-y-3">
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <Label>Meal *</Label>
-                <Select value={mealLogDialog.meal_time}
-                  onValueChange={v => setMealLogDialog(p => ({ ...p, meal_time: v }))}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="breakfast">Breakfast</SelectItem>
-                    <SelectItem value="snack_morning">Mid-morning snack</SelectItem>
-                    <SelectItem value="lunch">Lunch</SelectItem>
-                    <SelectItem value="snack_evening">Evening snack</SelectItem>
-                    <SelectItem value="dinner">Dinner</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label>Status *</Label>
-                <Select value={mealLogDialog.status}
-                  onValueChange={v => setMealLogDialog(p => ({ ...p, status: v }))}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="served">Served (full)</SelectItem>
-                    <SelectItem value="partial">Partial</SelectItem>
-                    <SelectItem value="refused">Refused</SelectItem>
-                    <SelectItem value="missed">Missed (NPO/asleep)</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-            <div>
-              <Label>Notes (optional)</Label>
-              <Textarea rows={2} value={mealLogDialog.notes}
-                onChange={e => setMealLogDialog(p => ({ ...p, notes: e.target.value }))} />
-            </div>
-            <p className="text-xs text-gray-500">If a log already exists for this meal slot today, it will be updated.</p>
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setMealLogDialog({ open: false, orderId: null, meal_time: 'lunch', status: 'served', notes: '' })}>Cancel</Button>
-              <Button onClick={handleLogMeal} disabled={loading}>{loading ? 'Saving…' : 'Save'}</Button>
-            </div>
-          </div>
         </DialogContent>
       </Dialog>
 
@@ -6707,42 +6485,6 @@ const InpatientModule = () => {
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => setLoaDialog(p => ({ ...p, open: false }))}>Close</Button>
               <Button onClick={handleCreateLoa} disabled={loading}>{loading ? 'Saving…' : 'Start LOA'}</Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      {/* Kitchen Ticket Print Dialog */}
-      <Dialog open={kitchenTicketDialog.open} onOpenChange={(o) => !o && setKitchenTicketDialog(p => ({ ...p, open: false }))}>
-        <DialogContent className="max-w-md">
-          <DialogHeader><DialogTitle>Print kitchen ticket</DialogTitle></DialogHeader>
-          <div className="space-y-3">
-            <div>
-              <Label>Meal *</Label>
-              <Select value={kitchenTicketDialog.meal_time}
-                onValueChange={v => setKitchenTicketDialog(p => ({ ...p, meal_time: v }))}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="breakfast">Breakfast</SelectItem>
-                  <SelectItem value="snack_morning">Mid-morning snack</SelectItem>
-                  <SelectItem value="lunch">Lunch</SelectItem>
-                  <SelectItem value="snack_evening">Evening snack</SelectItem>
-                  <SelectItem value="dinner">Dinner</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <Label>Department / Ward filter (optional)</Label>
-              <Input value={kitchenTicketDialog.department}
-                placeholder="e.g., Medical Ward A — leave blank for all wards"
-                onChange={e => setKitchenTicketDialog(p => ({ ...p, department: e.target.value }))} />
-            </div>
-            <p className="text-xs text-gray-500">The ticket lists every patient currently admitted with an active diet order, sorted by ward → room → bed.</p>
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setKitchenTicketDialog({ open: false, meal_time: 'lunch', department: '' })}>Cancel</Button>
-              <Button onClick={handlePrintKitchenTicket}>
-                <Printer className="h-4 w-4 mr-1" /> Print
-              </Button>
             </div>
           </div>
         </DialogContent>
@@ -7645,119 +7387,6 @@ const InpatientModule = () => {
             </div>
             <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Saving…' : 'Save Template'}</Button>
           </form>
-        </DialogContent>
-      </Dialog>
-
-      {/* Incident Report Dialog */}
-      <Dialog open={showIncidentDialog} onOpenChange={setShowIncidentDialog}>
-        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
-          <DialogHeader><DialogTitle>Report Incident</DialogTitle></DialogHeader>
-          <form onSubmit={handleCreateIncident} className="space-y-3">
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <Label>Type *</Label>
-                <Select value={incidentForm.incident_type} onValueChange={v => setIncidentForm(p => ({ ...p, incident_type: v }))}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="fall">Fall</SelectItem>
-                    <SelectItem value="medication_error">Medication Error</SelectItem>
-                    <SelectItem value="pressure_ulcer">Pressure Ulcer</SelectItem>
-                    <SelectItem value="needle_stick">Needle Stick</SelectItem>
-                    <SelectItem value="infection">Infection</SelectItem>
-                    <SelectItem value="equipment_failure">Equipment Failure</SelectItem>
-                    <SelectItem value="documentation_error">Documentation Error</SelectItem>
-                    <SelectItem value="wrong_patient">Wrong Patient</SelectItem>
-                    <SelectItem value="other">Other</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label>Severity *</Label>
-                <Select value={incidentForm.severity} onValueChange={v => setIncidentForm(p => ({ ...p, severity: v }))}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="low">Low</SelectItem>
-                    <SelectItem value="medium">Medium</SelectItem>
-                    <SelectItem value="high">High</SelectItem>
-                    <SelectItem value="critical">Critical</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label>Date / Time *</Label>
-                <Input type="datetime-local" value={incidentForm.incident_date} onChange={e => setIncidentForm(p => ({ ...p, incident_date: e.target.value }))} required />
-              </div>
-              <div>
-                <Label>Location</Label>
-                <Input value={incidentForm.location} onChange={e => setIncidentForm(p => ({ ...p, location: e.target.value }))} placeholder="e.g. Ward A, Bed 3" />
-              </div>
-              <div>
-                <Label>Admission #</Label>
-                <Input value={incidentForm.admission_id} onChange={e => setIncidentForm(p => ({ ...p, admission_id: e.target.value }))} placeholder="Optional (numeric ID)" />
-              </div>
-              <div>
-                <Label>Witnessed By</Label>
-                <Input value={incidentForm.witnessed_by} onChange={e => setIncidentForm(p => ({ ...p, witnessed_by: e.target.value }))} placeholder="Name(s)" />
-              </div>
-            </div>
-            <div>
-              <Label>Description *</Label>
-              <Textarea value={incidentForm.description} onChange={e => setIncidentForm(p => ({ ...p, description: e.target.value }))} rows={4} required placeholder="What happened?" />
-            </div>
-            <div>
-              <Label>Immediate Action</Label>
-              <Textarea value={incidentForm.immediate_action} onChange={e => setIncidentForm(p => ({ ...p, immediate_action: e.target.value }))} rows={2} placeholder="Actions taken at the time" />
-            </div>
-            <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Saving…' : 'Submit Report'}</Button>
-          </form>
-        </DialogContent>
-      </Dialog>
-
-      {/* Investigate Incident Dialog */}
-      <Dialog open={showInvestigateDialog} onOpenChange={setShowInvestigateDialog}>
-        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
-          <DialogHeader><DialogTitle>Investigate Incident</DialogTitle></DialogHeader>
-          {investigatingIncident && (
-            <form onSubmit={handleInvestigateIncident} className="space-y-3">
-              <div className="bg-gray-50 p-3 rounded text-sm">
-                <div><b>{investigatingIncident.incident_type.replace(/_/g, ' ')}</b> ({investigatingIncident.severity}) · currently <b>{investigatingIncident.status}</b></div>
-                <p className="text-xs text-gray-600 mt-1">{investigatingIncident.description}</p>
-              </div>
-              <div>
-                <Label>Change status to</Label>
-                <Select value={investigateForm.new_status || 'none'} onValueChange={v => setInvestigateForm(p => ({ ...p, new_status: v === 'none' ? '' : v }))}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">(keep current)</SelectItem>
-                    <SelectItem value="investigating">Investigating</SelectItem>
-                    <SelectItem value="resolved">Resolved</SelectItem>
-                    <SelectItem value="closed">Closed</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label>Investigation Notes</Label>
-                <Textarea value={investigateForm.investigation_notes} onChange={e => setInvestigateForm(p => ({ ...p, investigation_notes: e.target.value }))} rows={3} />
-              </div>
-              <div>
-                <Label>Root Cause</Label>
-                <Textarea value={investigateForm.root_cause} onChange={e => setInvestigateForm(p => ({ ...p, root_cause: e.target.value }))} rows={2} />
-              </div>
-              <div>
-                <Label>Resolution</Label>
-                <Textarea value={investigateForm.resolution} onChange={e => setInvestigateForm(p => ({ ...p, resolution: e.target.value }))} rows={2} />
-              </div>
-              <div>
-                <Label>Corrective Actions</Label>
-                <Textarea value={investigateForm.corrective_actions} onChange={e => setInvestigateForm(p => ({ ...p, corrective_actions: e.target.value }))} rows={2} />
-              </div>
-              <div>
-                <Label>Preventive Measures</Label>
-                <Textarea value={investigateForm.preventive_measures} onChange={e => setInvestigateForm(p => ({ ...p, preventive_measures: e.target.value }))} rows={2} />
-              </div>
-              <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Saving…' : 'Update Investigation'}</Button>
-            </form>
-          )}
         </DialogContent>
       </Dialog>
 
@@ -8981,8 +8610,16 @@ const InpatientModule = () => {
         </DialogContent>
       </Dialog>
 
-      {/* Discharge Dialog */}
-      <Dialog open={showDischargeDialog} onOpenChange={setShowDischargeDialog}>
+      {/* Discharge Wizard (3 steps: Clinical → Take-home Rx → Declarations) */}
+      <DischargeWizard
+        open={showDischargeDialog}
+        admission={dischargeAdmission}
+        onClose={() => { setShowDischargeDialog(false); setDischargeAdmission(null); }}
+        onDischarged={handleDischarged}
+      />
+
+      {/* Legacy Discharge Dialog (no longer reachable — kept for fallback). */}
+      <Dialog open={false} onOpenChange={() => {}}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader><DialogTitle>Discharge Patient - {dischargeAdmission?.patient_name}</DialogTitle></DialogHeader>
           <form onSubmit={handleDischarge} className="space-y-4">

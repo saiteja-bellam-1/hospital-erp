@@ -49,6 +49,12 @@ NEW_COLUMNS = [
     ("payments", "insurance_provider", "VARCHAR(200)"),
     ("payments", "policy_number", "VARCHAR(100)"),
     ("payments", "claim_reference", "VARCHAR(100)"),
+    ("payments", "parent_payment_id", "INTEGER REFERENCES payments(id)"),
+    ("payments", "reversed_by_id", "INTEGER REFERENCES users(id)"),
+    ("payments", "reversed_at", "DATETIME"),
+    ("payments", "reversal_reason", "TEXT"),
+    ("bills", "parent_bill_id", "INTEGER REFERENCES bills(id)"),
+    ("bills", "referred_by", "VARCHAR(100)"),
     ("prescriptions", "admission_id", "INTEGER"),
     ("prescriptions_simple", "admission_id", "INTEGER"),
     ("admissions", "insurance_provider", "VARCHAR(200)"),
@@ -118,9 +124,6 @@ NEW_COLUMNS = [
     # Medicine safety flags — narcotic + high-alert. Used by MAR safety wraps.
     ("medicines", "is_narcotic", "BOOLEAN DEFAULT 0"),
     ("medicines", "is_high_alert", "BOOLEAN DEFAULT 0"),
-    # MAR ↔ Incident bidirectional linkage (adverse drug events)
-    ("medication_administrations", "incident_id", "INTEGER REFERENCES incidents(id)"),
-    ("incidents", "medication_administration_id", "INTEGER REFERENCES medication_administrations(id)"),
     # Doctor ward-round checklist on PatientVisit
     ("patient_visits", "vitals_reviewed", "BOOLEAN DEFAULT 0"),
     ("patient_visits", "labs_reviewed", "BOOLEAN DEFAULT 0"),
@@ -152,6 +155,23 @@ NEW_COLUMNS = [
     # MRN — human-readable patient identifier (PREFIX-YYYY-NNNNN)
     ("patients", "mrn", "VARCHAR(32)"),
     ("hospitals", "mrn_prefix", "VARCHAR(8)"),
+    # B1 — Payer scheme on admission
+    ("admissions", "payer_scheme_id", "INTEGER REFERENCES payer_schemes(id)"),
+    ("admissions", "payer_type", "VARCHAR(30)"),
+    ("admissions", "scheme_member_id", "VARCHAR(100)"),
+    ("admissions", "scheme_approval_status", "VARCHAR(20) DEFAULT 'none'"),
+    ("admissions", "scheme_approval_ref", "VARCHAR(100)"),
+    ("admissions", "scheme_approval_amount", "FLOAT"),
+    # B3 — Referring doctor + accept handshake. acceptance_status defaults to
+    # 'accepted' so any pre-existing admissions remain editable.
+    ("admissions", "referring_doctor_id", "INTEGER REFERENCES users(id)"),
+    ("admissions", "referring_external_name", "VARCHAR(200)"),
+    ("admissions", "acceptance_status", "VARCHAR(20) DEFAULT 'accepted'"),
+    ("admissions", "accepted_by_doctor_id", "INTEGER REFERENCES users(id)"),
+    ("admissions", "accepted_at", "DATETIME"),
+    ("admissions", "rejection_reason", "TEXT"),
+    # B4 — Duty-doctor visit rate (separate from consultant per-visit fee)
+    ("inpatient_rate_configs", "duty_visit_rate", "NUMERIC(10, 2) DEFAULT 0.00"),
 ]
 
 # B6 — body release table is created via create_all on startup; no column adds.

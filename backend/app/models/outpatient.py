@@ -80,3 +80,21 @@ class OutpatientVisit(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     
     appointment = relationship("Appointment", back_populates="visits")
+
+class OutpatientProcedure(Base):
+    """Catalog of procedures / day-care services billable per patient visit.
+    Used by day-care centres and OPD desks to maintain a price list rather
+    than typing each service free-form every time."""
+    __tablename__ = "outpatient_procedures"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(200), nullable=False)
+    code = Column(String(50), nullable=True)
+    category = Column(String(80), nullable=True)
+    default_price = Column(Float, nullable=False, default=0.0)
+    description = Column(Text, nullable=True)
+    is_active = Column(Boolean, default=True, nullable=False)
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())

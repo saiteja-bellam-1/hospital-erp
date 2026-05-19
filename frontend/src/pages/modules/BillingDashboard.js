@@ -87,9 +87,12 @@ const BillingDashboard = () => {
       return `/api/appointments/${bill.bill_id}/bill/download?include_header=${h}`;
     }
     if (bill.type === 'admission') {
-      return `/api/inpatient/admissions/${bill.bill_id}/bill/pdf?include_header=${h}`;
+      // bill.bill_id is the Bill table PK; the PDF endpoint takes admission_id.
+      const aid = bill.admission_id || bill.bill_id;
+      return `/api/inpatient/admissions/${aid}/bill/pdf?include_header=${h}`;
     }
-    return '';
+    // Day-care / procedure / consolidated bills — generic Bill PDF endpoint.
+    return `/api/hospital/billing/bills/${bill.bill_id}/pdf?include_header=${h}`;
   };
 
   const fetchBillBlobUrl = async (bill, includeHeader) => {
@@ -97,6 +100,24 @@ const BillingDashboard = () => {
     if (!url) return null;
     const res = await axios.get(url, { responseType: 'blob' });
     return URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+  };
+
+  const extractBlobError = async (err) => {
+    // axios with responseType:'blob' wraps the error body as a Blob.
+    // Read it as text and try to parse for the FastAPI detail.
+    try {
+      if (err.response?.data instanceof Blob) {
+        const text = await err.response.data.text();
+        try {
+          const j = JSON.parse(text);
+          return typeof j.detail === 'string' ? j.detail
+            : (j.detail?.message || text || `HTTP ${err.response.status}`);
+        } catch {
+          return text || `HTTP ${err.response.status}`;
+        }
+      }
+    } catch { /* ignore */ }
+    return err.response?.data?.detail || `HTTP ${err.response?.status || 'error'}`;
   };
 
   const openBillPreview = async (bill) => {
@@ -108,8 +129,8 @@ const BillingDashboard = () => {
       const blobUrl = await fetchBillBlobUrl(bill, true);
       setPreviewPdfUrl(blobUrl);
     } catch (err) {
-      const detail = err.response?.data?.detail;
-      alert(typeof detail === 'string' ? detail : 'Could not load bill PDF');
+      const msg = await extractBlobError(err);
+      alert(`Could not load bill PDF: ${msg}`);
       setPreviewBill(null);
     } finally {
       setPreviewLoading(false);
@@ -125,8 +146,8 @@ const BillingDashboard = () => {
       const blobUrl = await fetchBillBlobUrl(previewBill, newVal);
       setPreviewPdfUrl(blobUrl);
     } catch (err) {
-      const detail = err.response?.data?.detail;
-      alert(typeof detail === 'string' ? detail : 'Could not reload bill PDF');
+      const msg = await extractBlobError(err);
+      alert(`Could not reload bill PDF: ${msg}`);
     } finally {
       setPreviewLoading(false);
     }
@@ -377,7 +398,11 @@ const BillingDashboard = () => {
                               <Eye className="w-3 h-3 mr-0.5" /> View
                             </Button>
                           )}
-                          {bill.payment_status !== 'cancelled' && bill.payment_status !== 'pending' && (
+                          {bill.payment_status !== 'cancelled' && (
+                            bill.type === 'admission'
+                              ? bill.admission_id
+                              : bill.payment_status !== 'pending'
+                          ) && (
                             <Button size="sm" variant="ghost" className="h-6 text-[10px] text-red-500 hover:text-red-700 hover:bg-red-50 px-2"
                               onClick={() => { setCancelBill(bill); setCancelReason(''); }}>
                               <Ban className="w-3 h-3 mr-0.5" /> Cancel
@@ -421,11 +446,23 @@ const BillingDashboard = () => {
                 onClick={async () => {
                   setCancelling(true);
                   try {
-                    await axios.post(`/api/hospital/billing/cancel/${cancelBill.type}/${cancelBill.bill_id}`, { reason: cancelReason.trim() });
+                    if (cancelBill.type === 'admission') {
+                      await axios.post(
+                        `/api/inpatient/admissions/${cancelBill.admission_id}/bills/${cancelBill.bill_id}/cancel`,
+                        { reason: cancelReason.trim() }
+                      );
+                    } else {
+                      await axios.post(`/api/hospital/billing/cancel/${cancelBill.type}/${cancelBill.bill_id}`, { reason: cancelReason.trim() });
+                    }
                     setCancelBill(null);
                     fetchBills();
                   } catch (err) {
-                    alert(err.response?.data?.detail || 'Cancel failed');
+                    const detail = err.response?.data?.detail;
+                    if (detail && typeof detail === 'object' && detail.code === 'bill_has_payments') {
+                      alert(`${detail.message}\n\nAmount already paid: ₹${detail.amount_paid}\nUse the deposit refund flow first, then retry.`);
+                    } else {
+                      alert(typeof detail === 'string' ? detail : 'Cancel failed');
+                    }
                   } finally { setCancelling(false); }
                 }}>
                 {cancelling ? 'Cancelling...' : 'Cancel Bill'}
@@ -442,7 +479,13 @@ const BillingDashboard = () => {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <FileText className="h-5 w-5" />
-              {previewBill ? `${previewBill.type === 'lab' ? 'Lab' : previewBill.type === 'consultation' ? 'Consultation' : 'Admission'} Bill` : 'Bill'}
+              {previewBill ? `${
+                previewBill.type === 'lab' ? 'Lab'
+                  : previewBill.type === 'consultation' ? 'Consultation'
+                  : previewBill.type === 'admission' ? 'Admission'
+                  : previewBill.type === 'day_care' ? 'Day Care'
+                  : (previewBill.type || 'Bill').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+              } Bill` : 'Bill'}
               {previewBill?.reference && (
                 <span className="text-xs font-mono text-gray-500 font-normal">— {previewBill.reference}</span>
               )}

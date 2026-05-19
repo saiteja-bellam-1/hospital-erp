@@ -1332,9 +1332,14 @@ async def list_orders(
     if current_user.has_role('doctor'):
         query = query.filter(PatientLabOrder.doctor_id == current_user.id)
 
-    # Lab technicians only see paid orders (payment gate)
+    # Lab technicians only see paid orders (payment gate).
+    # IPD orders bypass this gate — they're billed on the admission account
+    # and stay 'pending' until the IPD bill is settled.
     if current_user.has_role('lab_technician'):
-        query = query.filter(PatientLabOrder.payment_status == 'paid')
+        query = query.filter(
+            (PatientLabOrder.payment_status == 'paid')
+            | (PatientLabOrder.admission_id.isnot(None))
+        )
 
     orders = query.order_by(PatientLabOrder.order_date.desc()).limit(200).all()
     return [_build_order_response(o, db) for o in orders]

@@ -54,6 +54,429 @@ class PDFService:
             textColor=colors.darkgrey
         ))
 
+    def generate_inpatient_bill_pdf(self, bill_data, hospital_info, include_header=True):
+        """Inpatient bill — mirrors the OPD receipt layout so both bills feel
+        consistent. Adds an Admission Details box for IP-specific fields, and
+        the Payment Summary lists every deposit received before the balance.
+
+        Expected `bill_data` keys:
+          - bill_number, bill_date, status, bill_subtype
+          - patient: {name, mrn, patient_id, age, gender, phone, address, referred_by}
+          - admission: {admission_number, ward, room_number, bed_label,
+                        admitted_at, discharged_at, length_of_stay, payer,
+                        payer_status, scheme_member_id,
+                        admitting_doctor, attending_doctor, referring_doctor}
+          - items: [{description, code, qty, rate, amount}]
+          - subtotal, discount, tax, total
+          - deposits: [{date, method, reference, amount}]   (each receipt)
+          - deposits_total, balance_due
+          - prepared_by_name
+        """
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(
+            buffer, pagesize=A4,
+            rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=20,
+        )
+        elements = []
+        page_width = A4[0] - 60
+
+        # --- Styles (black & white to match OPD bill) ---
+        title_style = ParagraphStyle('BillTitle', parent=self.styles['Title'],
+            fontSize=16, alignment=1, fontName='Helvetica-Bold',
+            textColor=colors.black, spaceAfter=2)
+        subtitle_style = ParagraphStyle('BillSubtitle', parent=self.styles['Normal'],
+            fontSize=9, alignment=1, fontName='Helvetica',
+            textColor=colors.black, spaceAfter=2)
+        receipt_title_style = ParagraphStyle('ReceiptTitle', parent=self.styles['Normal'],
+            fontSize=12, alignment=1, fontName='Helvetica-Bold',
+            textColor=colors.black, spaceAfter=4)
+        cell_label = ParagraphStyle('CellLabel', parent=self.styles['Normal'],
+            fontSize=8, fontName='Helvetica-Bold', textColor=colors.black)
+        cell_value = ParagraphStyle('CellValue', parent=self.styles['Normal'],
+            fontSize=8, fontName='Helvetica', textColor=colors.black)
+        cell_value_sm = ParagraphStyle('CellValueSm', parent=self.styles['Normal'],
+            fontSize=7, fontName='Helvetica', textColor=colors.black)
+        cell_value_right = ParagraphStyle('CellValueRight', parent=cell_value_sm, alignment=2)
+
+        def lv(label, value):
+            return Paragraph(f"<b>{label}</b> :  {value}",
+                             ParagraphStyle('LV', parent=cell_value, leading=11))
+
+        def lv_sm(label, value):
+            return Paragraph(f"<b>{label}</b> :  {value}", cell_value_sm)
+
+        # --- Parse dates ---
+        try:
+            bd = datetime.fromisoformat(bill_data.get('bill_date', ''))
+            bill_date_str = bd.strftime('%d/%m/%Y')
+        except Exception:
+            bill_date_str = bill_data.get('bill_date') or datetime.now().strftime('%d/%m/%Y')
+        print_date_str = datetime.now().strftime('%d/%m/%Y  %I:%M:%S%p')
+
+        # ============================================================
+        # HEADER — identical pattern to OPD generate_bill_pdf
+        # ============================================================
+        if include_header:
+            logo_path = hospital_info.get('logo_url', '')
+            uploads_base = _get_uploads_base()
+            has_logo = False
+            full_logo_path = ''
+            if logo_path:
+                relative = logo_path.lstrip('/')
+                if relative.startswith('uploads/'):
+                    relative = relative[len('uploads/'):]
+                full_logo_path = os.path.join(uploads_base, relative)
+                has_logo = os.path.exists(full_logo_path)
+
+            hospital_name = hospital_info.get('name', 'HOSPITAL').upper()
+            hospital_subname = hospital_info.get('hospital_subname', '')
+            address = hospital_info.get('address', '')
+            contact_parts = []
+            if hospital_info.get('email'):
+                contact_parts.append(f"Email: {hospital_info['email']}")
+            if hospital_info.get('phone'):
+                contact_parts.append(f"Phone: {hospital_info['phone']}")
+
+            header_text_elems = [Paragraph(hospital_name, title_style)]
+            if hospital_subname:
+                header_text_elems.append(Paragraph(hospital_subname, subtitle_style))
+            if address:
+                header_text_elems.append(Paragraph(address, subtitle_style))
+            if contact_parts:
+                header_text_elems.append(Paragraph("  |  ".join(contact_parts), subtitle_style))
+
+            if has_logo:
+                try:
+                    logo_img = Image(full_logo_path, width=60, height=60)
+                    logo_img.hAlign = 'CENTER'
+                    header_table = Table(
+                        [[logo_img, header_text_elems]],
+                        colWidths=[75, page_width - 75],
+                    )
+                    header_table.setStyle(TableStyle([
+                        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+                        ('TOPPADDING', (0, 0), (-1, -1), 0),
+                        ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+                    ]))
+                    elements.append(header_table)
+                except Exception:
+                    for el in header_text_elems:
+                        elements.append(el)
+            else:
+                for el in header_text_elems:
+                    elements.append(el)
+
+            elements.append(Spacer(1, 6))
+            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+        else:
+            elements.append(Spacer(1, 100))
+
+        elements.append(Spacer(1, 4))
+        bill_subtype = (bill_data.get('bill_subtype') or 'final').upper()
+        elements.append(Paragraph(f"INPATIENT BILL — {bill_subtype}", receipt_title_style))
+        elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+        elements.append(Spacer(1, 6))
+
+        # ============================================================
+        # PATIENT INFO BOX (left) + BILL INFO (right) — bordered
+        # ============================================================
+        p = bill_data.get('patient') or {}
+        a = bill_data.get('admission') or {}
+        age_sex = ''
+        if p.get('age') not in (None, ''):
+            age_sex = f"{p.get('age')} Years"
+        if p.get('gender'):
+            g = str(p['gender']).upper()
+            age_sex = f"{age_sex} / {g}" if age_sex else g
+
+        ref_value = (a.get('referring_doctor')
+                     or p.get('referred_by')
+                     or 'Self')
+        payer_str = a.get('payer') or 'Cash'
+        if a.get('payer_status') and a.get('payer_status') != 'none':
+            payer_str = f"{payer_str} ({a['payer_status']})"
+
+        col_w = page_width / 2
+        info_data = [
+            [lv('Name', p.get('name', '')),                 lv('Bill No',    bill_data.get('bill_number', ''))],
+            [lv('Age / Gender', age_sex),                   lv('Bill Date',  bill_date_str)],
+            [lv('Phone', p.get('phone', '')),               lv('Print Date', print_date_str)],
+            [lv('MRN',   p.get('mrn') or p.get('patient_id', '')),
+             lv('Pay Mode',   payer_str)],
+            [lv('Referred By', ref_value),                  Paragraph('', cell_value)],
+        ]
+        info_table = Table(info_data, colWidths=[col_w, col_w])
+        info_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING', (0, 0), (-1, -1), 3),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+            ('LEFTPADDING', (0, 0), (-1, -1), 8),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+            ('BOX', (0, 0), (-1, -1), 1, colors.black),
+        ]))
+        elements.append(info_table)
+        elements.append(Spacer(1, 6))
+
+        # ============================================================
+        # ADMISSION INFO BOX (inpatient-specific)
+        # ============================================================
+        ward_room_bed = ' / '.join(filter(None, [
+            a.get('ward'), a.get('room_number'), a.get('bed_label')
+        ])) or '—'
+        doctors_line = ' / '.join(filter(None, [
+            a.get('admitting_doctor'), a.get('attending_doctor')
+        ])) or '—'
+
+        adm_data = [
+            [lv('Admission No', a.get('admission_number', '')),
+             lv('Ward / Room / Bed', ward_room_bed)],
+            [lv('Admitted', a.get('admitted_at') or '—'),
+             lv('Discharged', a.get('discharged_at') or '—')],
+            [lv('Length of Stay', f"{a.get('length_of_stay') or 0} day(s)"),
+             lv('Admitting / Attending', doctors_line)],
+        ]
+        if a.get('payer') and a.get('scheme_member_id'):
+            adm_data.append([
+                lv('Scheme Member ID', a.get('scheme_member_id')),
+                Paragraph('', cell_value),
+            ])
+        adm_table = Table(adm_data, colWidths=[col_w, col_w])
+        adm_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING', (0, 0), (-1, -1), 3),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+            ('LEFTPADDING', (0, 0), (-1, -1), 8),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+            ('BOX', (0, 0), (-1, -1), 1, colors.black),
+        ]))
+        elements.append(adm_table)
+        elements.append(Spacer(1, 6))
+
+        # ============================================================
+        # ITEMS TABLE — Sno | Description | Code | Rate (same as OPD)
+        # ============================================================
+        sno_w = 0.4 * inch
+        code_w = 1.0 * inch
+        rate_w = 1.2 * inch
+        desc_w = page_width - sno_w - code_w - rate_w
+
+        items_header = [
+            Paragraph('<b>Sno</b>', cell_label),
+            Paragraph('<b>Description</b>', cell_label),
+            Paragraph('<b>Qty</b>', cell_label),
+            Paragraph('<b>Rate</b>', ParagraphStyle('R', parent=cell_label, alignment=2)),
+        ]
+        items_data = [items_header]
+        items = bill_data.get('items') or []
+        for idx, it in enumerate(items, start=1):
+            items_data.append([
+                Paragraph(str(idx), cell_value),
+                Paragraph(it.get('description', ''), cell_value),
+                Paragraph(str(it.get('qty', '')) or '—', cell_value),
+                Paragraph(
+                    f"{float(it.get('amount') or 0):,.2f}",
+                    ParagraphStyle('R', parent=cell_value, alignment=2),
+                ),
+            ])
+        if len(items_data) == 1:
+            items_data.append([
+                Paragraph('—', cell_value),
+                Paragraph('No itemised charges', cell_value),
+                Paragraph('—', cell_value),
+                Paragraph('0.00',
+                    ParagraphStyle('R', parent=cell_value, alignment=2)),
+            ])
+        items_table = Table(items_data, colWidths=[sno_w, desc_w, code_w, rate_w])
+        items_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('LEFTPADDING', (0, 0), (-1, -1), 6),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('LINEBELOW', (0, 0), (-1, 0), 1, colors.black),
+        ]))
+        elements.append(items_table)
+        elements.append(Spacer(1, 6))
+
+        # ============================================================
+        # DEPOSITS — itemised receipts before the payment summary
+        # ============================================================
+        deposits = bill_data.get('deposits') or []
+        if deposits:
+            elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.grey))
+            elements.append(Spacer(1, 2))
+            elements.append(Paragraph("<b>Deposits / Payments Received</b>", cell_label))
+            elements.append(Spacer(1, 2))
+            dep_header = [
+                Paragraph('<b>Sno</b>', cell_label),
+                Paragraph('<b>Date</b>', cell_label),
+                Paragraph('<b>Method</b>', cell_label),
+                Paragraph('<b>Reference</b>', cell_label),
+                Paragraph('<b>Amount</b>',
+                    ParagraphStyle('R', parent=cell_label, alignment=2)),
+            ]
+            dep_rows = [dep_header]
+            for idx, d in enumerate(deposits, start=1):
+                dep_rows.append([
+                    Paragraph(str(idx), cell_value),
+                    Paragraph(d.get('date') or '—', cell_value),
+                    Paragraph(str(d.get('method') or '—').title(), cell_value),
+                    Paragraph(d.get('reference') or '—', cell_value),
+                    Paragraph(
+                        f"{float(d.get('amount') or 0):,.2f}",
+                        ParagraphStyle('R', parent=cell_value, alignment=2)),
+                ])
+            dep_table = Table(
+                dep_rows,
+                colWidths=[sno_w, 1.2 * inch,
+                           1.0 * inch,
+                           page_width - sno_w - 1.2 * inch - 1.0 * inch - rate_w,
+                           rate_w],
+            )
+            dep_table.setStyle(TableStyle([
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('TOPPADDING', (0, 0), (-1, -1), 3),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                ('LEFTPADDING', (0, 0), (-1, -1), 6),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+                ('LINEBELOW', (0, 0), (-1, 0), 0.5, colors.black),
+            ]))
+            elements.append(dep_table)
+            elements.append(Spacer(1, 6))
+
+        # ============================================================
+        # PAYMENT SUMMARY — same column geometry as OPD
+        # ============================================================
+        subtotal = float(bill_data.get('subtotal') or 0)
+        discount = float(bill_data.get('discount') or 0)
+        tax = float(bill_data.get('tax') or 0)
+        total = float(bill_data.get('total') or (subtotal - discount + tax))
+        deposits_total = float(bill_data.get('deposits_total') or 0)
+        balance = float(bill_data.get('balance_due')
+                        if bill_data.get('balance_due') is not None
+                        else (total - deposits_total))
+
+        summary_label_w = page_width - code_w - rate_w
+        payment_data = [
+            [lv_sm('Paymode', payer_str),
+             Paragraph('<b>Sub Total</b>', cell_value_sm),
+             Paragraph(f"{subtotal:,.2f}", cell_value_right)],
+        ]
+        if discount > 0:
+            payment_data.append([
+                Paragraph('', cell_value_sm),
+                Paragraph('<b>Discount</b>', cell_value_sm),
+                Paragraph(f"- {discount:,.2f}", cell_value_right),
+            ])
+        if tax > 0:
+            payment_data.append([
+                Paragraph('', cell_value_sm),
+                Paragraph('<b>Tax</b>', cell_value_sm),
+                Paragraph(f"+ {tax:,.2f}", cell_value_right),
+            ])
+        payment_data.extend([
+            [Paragraph('', cell_value_sm),
+             Paragraph('<b>Total Amt</b>', cell_value_sm),
+             Paragraph(f"{total:,.2f}", cell_value_right)],
+            [Paragraph('', cell_value_sm),
+             Paragraph('<b>Deposits</b>', cell_value_sm),
+             Paragraph(f"{deposits_total:,.2f}", cell_value_right)],
+            [Paragraph('', cell_value_sm),
+             Paragraph('<b>Balance</b>'
+                       if balance > 0 else
+                       '<b>Refund Due</b>' if balance < -0.01 else
+                       '<b>Balance</b>', cell_value_sm),
+             Paragraph(
+                f"{abs(balance):,.2f}" if abs(balance) > 0.01 else "0.00",
+                ParagraphStyle('Bal', parent=cell_value_right,
+                    fontName='Helvetica-Bold'))],
+        ])
+        payment_table = Table(payment_data, colWidths=[summary_label_w, code_w, rate_w])
+        payment_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING', (0, 0), (-1, -1), 3),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+            ('LEFTPADDING', (0, 0), (-1, -1), 6),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+            ('LINEABOVE', (1, -1), (-1, -1), 1, colors.black),
+        ]))
+        elements.append(payment_table)
+        elements.append(Spacer(1, 4))
+
+        # ============================================================
+        # Amount in words — uses the balance the patient sees
+        # ============================================================
+        def amount_to_words(amount):
+            try:
+                ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven',
+                        'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve', 'Thirteen',
+                        'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen']
+                tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty',
+                        'Sixty', 'Seventy', 'Eighty', 'Ninety']
+                num = int(amount)
+                if num == 0:
+                    return "Zero"
+                def two_digits(n):
+                    if n < 20: return ones[n]
+                    return tens[n // 10] + (' ' + ones[n % 10] if n % 10 else '')
+                def three_digits(n):
+                    if n >= 100:
+                        return ones[n // 100] + ' Hundred' + (
+                            ' and ' + two_digits(n % 100) if n % 100 else '')
+                    return two_digits(n)
+                parts = []
+                if num >= 10000000:
+                    parts.append(two_digits(num // 10000000) + ' Crore')
+                    num %= 10000000
+                if num >= 100000:
+                    parts.append(two_digits(num // 100000) + ' Lakh')
+                    num %= 100000
+                if num >= 1000:
+                    parts.append(two_digits(num // 1000) + ' Thousand')
+                    num %= 1000
+                if num > 0:
+                    parts.append(three_digits(num))
+                return ' '.join(parts) + ' Only'
+            except Exception:
+                return str(amount)
+
+        words_text = f"Rupees {amount_to_words(total)}"
+        words_data = [[lv('In words', words_text)]]
+        words_table = Table(words_data, colWidths=[page_width])
+        words_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING', (0, 0), (-1, -1), 3),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+            ('LEFTPADDING', (0, 0), (-1, -1), 6),
+        ]))
+        elements.append(words_table)
+        elements.append(Spacer(1, 8))
+
+        # ============================================================
+        # FOOTER — prepared by / printed by (same as OPD)
+        # ============================================================
+        prepared_by = bill_data.get('prepared_by_name', '')
+        footer_data = [[
+            lv('Prepared by', prepared_by),
+            lv('Printed by', prepared_by),
+        ]]
+        footer_table = Table(footer_data, colWidths=[page_width / 2, page_width / 2])
+        footer_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING', (0, 0), (-1, -1), 3),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+            ('LEFTPADDING', (0, 0), (-1, -1), 6),
+        ]))
+        elements.append(footer_table)
+
+        doc.build(elements)
+        buffer.seek(0)
+        return buffer
+
+
     def generate_bill_pdf(self, bill_data, hospital_info, include_header=True):
         """Generate PDF for bill/receipt in tabular format"""
         buffer = BytesIO()
@@ -271,8 +694,17 @@ class PDFService:
         # ============================================================
         total_amt = bill_data.get('subtotal', 0)
         discount = bill_data.get('discount_amount', 0)
+        tax_amt = bill_data.get('tax_amount', 0)
         paid_amt = bill_data.get('amount_paid', 0)
         balance = bill_data.get('balance_due', 0)
+        # Net (post-discount, post-tax) bill amount — used for the amount-in-words
+        # line so an unpaid bill still reads the actual sum due, not "Zero".
+        net_total = bill_data.get('total_amount')
+        if net_total is None:
+            net_total = round((total_amt or 0) + (tax_amt or 0) - (discount or 0), 2)
+        # Some callers (e.g. procedure / unpaid receipts) don't want the
+        # Paid/Balance lines on the printed bill at all.
+        hide_payment_summary = bool(bill_data.get('hide_payment_summary'))
 
         # Convert amount to words
         def amount_to_words(amount):
@@ -321,9 +753,21 @@ class PDFService:
         payment_data = [
             [lv_sm('Paymode', pay_category), Paragraph('<b>Total Amt</b>', cell_value_sm), Paragraph(f"{total_amt:.2f}", cell_value_right)],
             [Paragraph('', cell_value_sm), Paragraph('<b>Discount</b>', cell_value_sm), Paragraph(f"{discount:.2f}", cell_value_right)],
-            [Paragraph('', cell_value_sm), Paragraph('<b>Paid Amt</b>', cell_value_sm), Paragraph(f"{paid_amt:.2f}", cell_value_right)],
-            [Paragraph('', cell_value_sm), Paragraph('<b>Balance</b>', cell_value_sm), Paragraph(f"{balance:.2f}", cell_value_right)],
         ]
+        if tax_amt:
+            payment_data.append(
+                [Paragraph('', cell_value_sm), Paragraph('<b>Tax</b>', cell_value_sm), Paragraph(f"{tax_amt:.2f}", cell_value_right)]
+            )
+        payment_data.append(
+            [Paragraph('', cell_value_sm), Paragraph('<b>Net Total</b>', cell_value_sm), Paragraph(f"{net_total:.2f}", cell_value_right)]
+        )
+        if not hide_payment_summary:
+            payment_data.append(
+                [Paragraph('', cell_value_sm), Paragraph('<b>Paid Amt</b>', cell_value_sm), Paragraph(f"{paid_amt:.2f}", cell_value_right)]
+            )
+            payment_data.append(
+                [Paragraph('', cell_value_sm), Paragraph('<b>Balance</b>', cell_value_sm), Paragraph(f"{balance:.2f}", cell_value_right)]
+            )
 
         payment_table = Table(payment_data, colWidths=[summary_label_w, code_w, rate_w])
         payment_table.setStyle(TableStyle([
@@ -336,8 +780,9 @@ class PDFService:
         elements.append(payment_table)
         elements.append(Spacer(1, 4))
 
-        # Amount in words
-        words_text = f"Rupees {amount_to_words(paid_amt)}"
+        # Amount in words — use the net total so an unpaid bill still reads
+        # the actual sum due (paid_amt would be 0 for a fresh procedure bill).
+        words_text = f"Rupees {amount_to_words(net_total)}"
         words_data = [[lv('In words', words_text)]]
         words_table = Table(words_data, colWidths=[page_width])
         words_table.setStyle(TableStyle([
@@ -347,7 +792,21 @@ class PDFService:
             ('LEFTPADDING', (0, 0), (-1, -1), 6),
         ]))
         elements.append(words_table)
-        elements.append(Spacer(1, 8))
+        elements.append(Spacer(1, 4))
+
+        # Notes (free-text on the bill — surfaced for procedure bills etc.)
+        notes_text = (bill_data.get('notes') or '').strip()
+        if notes_text:
+            notes_table = Table([[lv('Notes', notes_text)]], colWidths=[page_width])
+            notes_table.setStyle(TableStyle([
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('TOPPADDING', (0, 0), (-1, -1), 3),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                ('LEFTPADDING', (0, 0), (-1, -1), 6),
+            ]))
+            elements.append(notes_table)
+            elements.append(Spacer(1, 4))
+        elements.append(Spacer(1, 4))
 
         # ============================================================
         # FOOTER: prepared by / printed by
@@ -1852,7 +2311,279 @@ class PDFService:
         return buffer
 
     def generate_deposit_receipt_pdf(self, deposit_data, hospital_info, include_header=True):
-        """Compact A5-ish advance deposit / refund receipt."""
+        """Advance deposit / refund receipt — mirrors the OPD bill layout
+        (logo+hospital header, bordered patient/receipt info box, single-line
+        item table, payment summary, amount-in-words, prepared-by footer)."""
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(
+            buffer, pagesize=A4,
+            rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=20,
+        )
+        elements = []
+        page_width = A4[0] - 60
+
+        title_style = ParagraphStyle('DRTitle', parent=self.styles['Title'],
+            fontSize=16, alignment=1, fontName='Helvetica-Bold',
+            textColor=colors.black, spaceAfter=2)
+        subtitle_style = ParagraphStyle('DRSubtitle', parent=self.styles['Normal'],
+            fontSize=9, alignment=1, fontName='Helvetica',
+            textColor=colors.black, spaceAfter=2)
+        receipt_title_style = ParagraphStyle('DRReceiptTitle', parent=self.styles['Normal'],
+            fontSize=12, alignment=1, fontName='Helvetica-Bold',
+            textColor=colors.black, spaceAfter=4)
+        cell_label = ParagraphStyle('DRCellLabel', parent=self.styles['Normal'],
+            fontSize=8, fontName='Helvetica-Bold', textColor=colors.black)
+        cell_value = ParagraphStyle('DRCellValue', parent=self.styles['Normal'],
+            fontSize=8, fontName='Helvetica', textColor=colors.black)
+        cell_value_sm = ParagraphStyle('DRCellValueSm', parent=self.styles['Normal'],
+            fontSize=7, fontName='Helvetica', textColor=colors.black)
+        cell_value_right = ParagraphStyle('DRCellValueRight', parent=cell_value_sm, alignment=2)
+
+        def lv(label, value):
+            return Paragraph(f"<b>{label}</b> :  {value}", cell_value)
+
+        def lv_sm(label, value):
+            return Paragraph(f"<b>{label}</b> :  {value}", cell_value_sm)
+
+        is_refund = deposit_data.get('deposit_type') == 'refund'
+        amount = float(deposit_data.get('amount', 0))
+        receipt_no = deposit_data.get('deposit_number', '')
+        receipt_date = deposit_data.get('received_at', '') or datetime.now().strftime('%d/%m/%Y %H:%M')
+        print_date_str = datetime.now().strftime('%d/%m/%Y  %I:%M:%S%p')
+
+        # ============================================================
+        # HEADER — identical to generate_bill_pdf
+        # ============================================================
+        if include_header:
+            logo_path = hospital_info.get('logo_url', '')
+            uploads_base = _get_uploads_base()
+            has_logo = False
+            full_logo_path = ''
+            if logo_path:
+                relative = logo_path.lstrip('/')
+                if relative.startswith('uploads/'):
+                    relative = relative[len('uploads/'):]
+                full_logo_path = os.path.join(uploads_base, relative)
+                has_logo = os.path.exists(full_logo_path)
+
+            hospital_name = hospital_info.get('name', 'HOSPITAL').upper()
+            hospital_subname = hospital_info.get('hospital_subname', '')
+            address = hospital_info.get('address', '')
+            contact_parts = []
+            if hospital_info.get('email'):
+                contact_parts.append(f"Email: {hospital_info['email']}")
+            if hospital_info.get('phone'):
+                contact_parts.append(f"Phone: {hospital_info['phone']}")
+
+            header_text_elems = [Paragraph(hospital_name, title_style)]
+            if hospital_subname:
+                header_text_elems.append(Paragraph(hospital_subname, subtitle_style))
+            if address:
+                header_text_elems.append(Paragraph(address, subtitle_style))
+            if contact_parts:
+                header_text_elems.append(Paragraph("  |  ".join(contact_parts), subtitle_style))
+
+            if has_logo:
+                try:
+                    logo_img = Image(full_logo_path, width=60, height=60)
+                    logo_img.hAlign = 'CENTER'
+                    header_table = Table([[logo_img, header_text_elems]], colWidths=[75, page_width - 75])
+                    header_table.setStyle(TableStyle([
+                        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+                        ('TOPPADDING', (0, 0), (-1, -1), 0),
+                        ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+                    ]))
+                    elements.append(header_table)
+                except Exception:
+                    for el in header_text_elems:
+                        elements.append(el)
+            else:
+                for el in header_text_elems:
+                    elements.append(el)
+
+            elements.append(Spacer(1, 6))
+            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+        else:
+            elements.append(Spacer(1, 100))
+
+        elements.append(Spacer(1, 4))
+        elements.append(Paragraph(
+            "REFUND RECEIPT" if is_refund else "ADVANCE DEPOSIT RECEIPT",
+            receipt_title_style,
+        ))
+        elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+        elements.append(Spacer(1, 6))
+
+        # ============================================================
+        # PATIENT + RECEIPT INFO — bordered box, two-column
+        # ============================================================
+        deposit_type_label = str(deposit_data.get('deposit_type', '')).title() or '-'
+        pay_method = str(deposit_data.get('payment_method', '')).title() or 'Cash'
+        col_w = page_width / 2
+        info_data = [
+            [lv('Name', deposit_data.get('patient_name', '')),
+             lv('Receipt No', receipt_no)],
+            [lv('Phone', deposit_data.get('patient_phone', '')),
+             lv('Date', receipt_date)],
+            [lv('MRN', deposit_data.get('patient_id', '')),
+             lv('Print Date', print_date_str)],
+            [lv('Admission No', deposit_data.get('admission_number', '')),
+             lv('Pay Mode', pay_method)],
+            [lv('Type', deposit_type_label),
+             lv('Reference', deposit_data.get('reference_number') or '-')],
+        ]
+        info_table = Table(info_data, colWidths=[col_w, col_w])
+        info_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING', (0, 0), (-1, -1), 3),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+            ('LEFTPADDING', (0, 0), (-1, -1), 8),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+            ('BOX', (0, 0), (-1, -1), 1, colors.black),
+        ]))
+        elements.append(info_table)
+        elements.append(Spacer(1, 6))
+
+        # ============================================================
+        # ITEMS — single row describing the deposit
+        # ============================================================
+        sno_w = 0.4 * inch
+        code_w = 1.0 * inch
+        rate_w = 1.0 * inch
+        desc_w = page_width - sno_w - code_w - rate_w
+
+        item_description = (
+            "Refund of advance deposit" if is_refund
+            else f"Advance deposit — {deposit_type_label} ({pay_method})"
+        )
+        items_data = [
+            [Paragraph('<b>Sno</b>', cell_label),
+             Paragraph('<b>Description</b>', cell_label),
+             Paragraph('<b>Code</b>', cell_label),
+             Paragraph('<b>Amount</b>', cell_label)],
+            [Paragraph('1', cell_value),
+             Paragraph(item_description, cell_value),
+             Paragraph(receipt_no, cell_value),
+             Paragraph(f"{abs(amount):.2f}", cell_value)],
+        ]
+        items_table = Table(items_data, colWidths=[sno_w, desc_w, code_w, rate_w])
+        items_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('LEFTPADDING', (0, 0), (-1, -1), 6),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('LINEBELOW', (0, 0), (-1, 0), 1, colors.black),
+        ]))
+        elements.append(items_table)
+        elements.append(Spacer(1, 6))
+
+        # ============================================================
+        # PAYMENT SUMMARY — right aligned, mirrors bill layout
+        # ============================================================
+        paid_label = 'Refunded Amt' if is_refund else 'Received Amt'
+        summary_label_w = page_width - code_w - rate_w
+        payment_data = [
+            [lv_sm('Paymode', pay_method),
+             Paragraph('<b>Total Amt</b>', cell_value_sm),
+             Paragraph(f"{abs(amount):.2f}", cell_value_right)],
+            [Paragraph('', cell_value_sm),
+             Paragraph(f"<b>{paid_label}</b>", cell_value_sm),
+             Paragraph(f"{abs(amount):.2f}", cell_value_right)],
+            [Paragraph('', cell_value_sm),
+             Paragraph('<b>Balance</b>', cell_value_sm),
+             Paragraph("0.00", cell_value_right)],
+        ]
+        payment_table = Table(payment_data, colWidths=[summary_label_w, code_w, rate_w])
+        payment_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING', (0, 0), (-1, -1), 3),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+            ('LEFTPADDING', (0, 0), (-1, -1), 6),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+        ]))
+        elements.append(payment_table)
+        elements.append(Spacer(1, 4))
+
+        # ----- Amount in words (same inline routine as generate_bill_pdf) -----
+        def _amount_to_words(num):
+            try:
+                ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven',
+                        'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve', 'Thirteen',
+                        'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen']
+                tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty',
+                        'Sixty', 'Seventy', 'Eighty', 'Ninety']
+                num = int(num)
+                if num == 0:
+                    return "Zero"
+                def two(n):
+                    return ones[n] if n < 20 else tens[n // 10] + ((' ' + ones[n % 10]) if n % 10 else '')
+                def three(n):
+                    if n >= 100:
+                        return ones[n // 100] + ' Hundred' + (' and ' + two(n % 100) if n % 100 else '')
+                    return two(n)
+                parts = []
+                if num >= 10000000:
+                    parts.append(two(num // 10000000) + ' Crore'); num %= 10000000
+                if num >= 100000:
+                    parts.append(two(num // 100000) + ' Lakh'); num %= 100000
+                if num >= 1000:
+                    parts.append(two(num // 1000) + ' Thousand'); num %= 1000
+                if num > 0:
+                    parts.append(three(num))
+                return ' '.join(parts) + ' Only'
+            except Exception:
+                return str(num)
+
+        words_text = f"Rupees {_amount_to_words(abs(amount))}"
+        words_data = [[lv('In words', words_text)]]
+        words_table = Table(words_data, colWidths=[page_width])
+        words_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING', (0, 0), (-1, -1), 3),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+            ('LEFTPADDING', (0, 0), (-1, -1), 6),
+        ]))
+        elements.append(words_table)
+        elements.append(Spacer(1, 8))
+
+        # Notes (optional)
+        if deposit_data.get('notes'):
+            elements.append(Paragraph(f"<b>Notes:</b> {deposit_data['notes']}", cell_value))
+            elements.append(Spacer(1, 8))
+
+        # ============================================================
+        # FOOTER — prepared by / printed by (matches bill PDF)
+        # ============================================================
+        received_by_name = deposit_data.get('received_by_name', '-') or '-'
+        footer_data = [[
+            lv('Prepared by', received_by_name),
+            lv('Printed by', received_by_name),
+        ]]
+        footer_table = Table(footer_data, colWidths=[page_width / 2, page_width / 2])
+        footer_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING', (0, 0), (-1, -1), 3),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+            ('LEFTPADDING', (0, 0), (-1, -1), 6),
+        ]))
+        elements.append(footer_table)
+        elements.append(Spacer(1, 4))
+        elements.append(Paragraph(
+            f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M:%S')}",
+            ParagraphStyle('DRFootMeta', parent=self.styles['Normal'],
+                fontSize=7, fontName='Helvetica-Oblique', alignment=1, textColor=colors.grey),
+        ))
+
+        doc.build(elements)
+        buffer.seek(0)
+        return buffer
+
+    def generate_refund_receipt_pdf(self, refund_data, hospital_info, include_header=True):
+        """Refund receipt for a reversed bill payment (Payment row with negative amount)."""
         buffer = BytesIO()
         doc = SimpleDocTemplate(
             buffer, pagesize=A4,
@@ -1866,22 +2597,18 @@ class PDFService:
         sub_style = ParagraphStyle('Sub', parent=self.styles['Normal'],
             fontSize=9, alignment=1, fontName='Helvetica', textColor=colors.black, spaceAfter=2)
         receipt_title_style = ParagraphStyle('RT', parent=self.styles['Normal'],
-            fontSize=12, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=6)
+            fontSize=12, alignment=1, fontName='Helvetica-Bold', textColor=colors.red, spaceAfter=6)
         label_style = ParagraphStyle('Label', parent=self.styles['Normal'],
             fontSize=10, fontName='Helvetica-Bold', textColor=colors.black)
         value_style = ParagraphStyle('Value', parent=self.styles['Normal'],
             fontSize=10, fontName='Helvetica', textColor=colors.black)
         amount_style = ParagraphStyle('Amount', parent=self.styles['Normal'],
-            fontSize=14, fontName='Helvetica-Bold', alignment=1, textColor=colors.black, spaceAfter=4)
+            fontSize=14, fontName='Helvetica-Bold', alignment=1, textColor=colors.red, spaceAfter=4)
         footer_style = ParagraphStyle('Footer', parent=self.styles['Normal'],
             fontSize=8, alignment=1, fontName='Helvetica', textColor=colors.black)
 
-        # Header
         if include_header:
-            name = hospital_info.get('name', 'HOSPITAL').upper()
-            elements.append(Paragraph(name, title_style))
-            if hospital_info.get('hospital_subname'):
-                elements.append(Paragraph(hospital_info['hospital_subname'], sub_style))
+            elements.append(Paragraph(hospital_info.get('name', 'HOSPITAL').upper(), title_style))
             if hospital_info.get('address'):
                 elements.append(Paragraph(hospital_info['address'], sub_style))
             contact = []
@@ -1895,50 +2622,37 @@ class PDFService:
             elements.append(Spacer(1, 90))
 
         elements.append(Spacer(1, 8))
-        is_refund = deposit_data.get('deposit_type') == 'refund'
-        elements.append(Paragraph(
-            "REFUND RECEIPT" if is_refund else "ADVANCE DEPOSIT RECEIPT",
-            receipt_title_style,
-        ))
+        elements.append(Paragraph("REFUND RECEIPT", receipt_title_style))
         elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
         elements.append(Spacer(1, 10))
 
-        # Meta block — two columns
         rows = [
-            [Paragraph("Receipt No:", label_style), Paragraph(str(deposit_data.get('deposit_number', '')), value_style),
-             Paragraph("Date:", label_style), Paragraph(str(deposit_data.get('received_at', '')), value_style)],
-            [Paragraph("Patient:", label_style), Paragraph(str(deposit_data.get('patient_name', '')), value_style),
-             Paragraph("MRN:", label_style), Paragraph(str(deposit_data.get('mrn') or deposit_data.get('patient_id', '')), value_style)],
-            [Paragraph("Admission #:", label_style), Paragraph(str(deposit_data.get('admission_number', '')), value_style),
-             Paragraph("Type:", label_style), Paragraph(str(deposit_data.get('deposit_type', '')).title(), value_style)],
-            [Paragraph("Payment Method:", label_style), Paragraph(str(deposit_data.get('payment_method', '')).title(), value_style),
-             Paragraph("Reference:", label_style), Paragraph(str(deposit_data.get('reference_number', '') or '-'), value_style)],
+            [Paragraph("Refund No:", label_style), Paragraph(str(refund_data.get('refund_number', '')), value_style),
+             Paragraph("Date:", label_style), Paragraph(str(refund_data.get('refund_date', '')), value_style)],
+            [Paragraph("Patient:", label_style), Paragraph(str(refund_data.get('patient_name', '')), value_style),
+             Paragraph("Phone:", label_style), Paragraph(str(refund_data.get('patient_phone', '')), value_style)],
+            [Paragraph("Bill No:", label_style), Paragraph(str(refund_data.get('bill_number', '')), value_style),
+             Paragraph("Method:", label_style), Paragraph(str(refund_data.get('payment_method', '')).title(), value_style)],
+            [Paragraph("Original Payment:", label_style), Paragraph(str(refund_data.get('original_payment_number', '')), value_style),
+             Paragraph("Original Amt:", label_style), Paragraph(f"Rs. {float(refund_data.get('original_amount', 0)):,.2f}", value_style)],
         ]
-        meta_table = Table(rows, colWidths=[page_width * 0.18, page_width * 0.32, page_width * 0.18, page_width * 0.32])
-        meta_table.setStyle(TableStyle([
-            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-        ]))
+        meta_table = Table(rows, colWidths=[page_width * 0.20, page_width * 0.30, page_width * 0.18, page_width * 0.32])
+        meta_table.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'TOP'), ('BOTTOMPADDING', (0, 0), (-1, -1), 6)]))
         elements.append(meta_table)
         elements.append(Spacer(1, 14))
 
-        # Amount box
-        amount = float(deposit_data.get('amount', 0))
-        amount_label = "AMOUNT REFUNDED" if is_refund else "AMOUNT RECEIVED"
-        elements.append(Paragraph(amount_label, label_style))
+        elements.append(Paragraph("AMOUNT REFUNDED", label_style))
         elements.append(Spacer(1, 4))
-        elements.append(Paragraph(f"Rs. {abs(amount):,.2f}", amount_style))
-        elements.append(Spacer(1, 14))
+        elements.append(Paragraph(f"Rs. {float(refund_data.get('amount', 0)):,.2f}", amount_style))
+        elements.append(Spacer(1, 10))
 
-        # Notes
-        if deposit_data.get('notes'):
-            elements.append(Paragraph("<b>Notes:</b>", label_style))
-            elements.append(Paragraph(str(deposit_data['notes']), value_style))
+        if refund_data.get('reason'):
+            elements.append(Paragraph("<b>Reason:</b>", label_style))
+            elements.append(Paragraph(str(refund_data['reason']), value_style))
             elements.append(Spacer(1, 10))
 
-        # Signatures
         sig_table = Table(
-            [[Paragraph("____________________<br/>Received By", value_style),
+            [[Paragraph("____________________<br/>Refunded By", value_style),
               Paragraph("____________________<br/>Patient / Attendant", value_style)]],
             colWidths=[page_width / 2, page_width / 2],
         )
@@ -1949,6 +2663,118 @@ class PDFService:
             ('TOPPADDING', (0, 0), (-1, -1), 30),
         ]))
         elements.append(sig_table)
+        elements.append(Spacer(1, 16))
+        elements.append(Paragraph(
+            f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M:%S')}",
+            footer_style,
+        ))
+
+        doc.build(elements)
+        buffer.seek(0)
+        return buffer
+
+    def generate_credit_note_pdf(self, cn_data, hospital_info, include_header=True):
+        """Credit note PDF — reduces patient liability against a parent bill."""
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(
+            buffer, pagesize=A4,
+            rightMargin=40, leftMargin=40, topMargin=30, bottomMargin=30,
+        )
+        elements = []
+        page_width = A4[0] - 80
+
+        title_style = ParagraphStyle('Title', parent=self.styles['Title'],
+            fontSize=15, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)
+        sub_style = ParagraphStyle('Sub', parent=self.styles['Normal'],
+            fontSize=9, alignment=1, fontName='Helvetica', textColor=colors.black, spaceAfter=2)
+        cn_title_style = ParagraphStyle('CT', parent=self.styles['Normal'],
+            fontSize=13, alignment=1, fontName='Helvetica-Bold', textColor=colors.HexColor('#b91c1c'), spaceAfter=6)
+        label_style = ParagraphStyle('Label', parent=self.styles['Normal'],
+            fontSize=10, fontName='Helvetica-Bold', textColor=colors.black)
+        value_style = ParagraphStyle('Value', parent=self.styles['Normal'],
+            fontSize=10, fontName='Helvetica', textColor=colors.black)
+        amount_style = ParagraphStyle('Amount', parent=self.styles['Normal'],
+            fontSize=14, fontName='Helvetica-Bold', alignment=1, textColor=colors.HexColor('#b91c1c'), spaceAfter=4)
+        footer_style = ParagraphStyle('Footer', parent=self.styles['Normal'],
+            fontSize=8, alignment=1, fontName='Helvetica', textColor=colors.black)
+
+        if include_header:
+            elements.append(Paragraph(hospital_info.get('name', 'HOSPITAL').upper(), title_style))
+            if hospital_info.get('address'):
+                elements.append(Paragraph(hospital_info['address'], sub_style))
+            contact = []
+            if hospital_info.get('phone'): contact.append(f"Phone: {hospital_info['phone']}")
+            if hospital_info.get('email'): contact.append(f"Email: {hospital_info['email']}")
+            if contact:
+                elements.append(Paragraph("  |  ".join(contact), sub_style))
+            elements.append(Spacer(1, 6))
+            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+        else:
+            elements.append(Spacer(1, 90))
+
+        elements.append(Spacer(1, 8))
+        elements.append(Paragraph("CREDIT NOTE", cn_title_style))
+        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
+        elements.append(Spacer(1, 10))
+
+        rows = [
+            [Paragraph("Credit Note No:", label_style), Paragraph(str(cn_data.get('credit_note_number', '')), value_style),
+             Paragraph("Date:", label_style), Paragraph(str(cn_data.get('credit_note_date', '')), value_style)],
+            [Paragraph("Patient:", label_style), Paragraph(str(cn_data.get('patient_name', '')), value_style),
+             Paragraph("Phone:", label_style), Paragraph(str(cn_data.get('patient_phone', '')), value_style)],
+            [Paragraph("Original Bill:", label_style), Paragraph(str(cn_data.get('parent_bill_number', '')), value_style),
+             Paragraph("Bill Total:", label_style), Paragraph(f"Rs. {float(cn_data.get('parent_bill_total', 0)):,.2f}", value_style)],
+        ]
+        meta = Table(rows, colWidths=[page_width * 0.20, page_width * 0.30, page_width * 0.18, page_width * 0.32])
+        meta.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'TOP'), ('BOTTOMPADDING', (0, 0), (-1, -1), 6)]))
+        elements.append(meta)
+        elements.append(Spacer(1, 10))
+
+        # Line items
+        items = cn_data.get('items') or []
+        if items:
+            head = [Paragraph("<b>Item</b>", value_style), Paragraph("<b>Qty</b>", value_style),
+                    Paragraph("<b>Unit ₹</b>", value_style), Paragraph("<b>Total ₹</b>", value_style)]
+            body = [head]
+            for it in items:
+                body.append([
+                    Paragraph(str(it.get('name', '')), value_style),
+                    Paragraph(str(it.get('qty', '')), value_style),
+                    Paragraph(f"{float(it.get('unit_price', 0)):,.2f}", value_style),
+                    Paragraph(f"{float(it.get('total', 0)):,.2f}", value_style),
+                ])
+            t = Table(body, colWidths=[page_width * 0.55, page_width * 0.10, page_width * 0.17, page_width * 0.18])
+            t.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#fee2e2')),
+                ('GRID', (0, 0), (-1, -1), 0.4, colors.grey),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+            ]))
+            elements.append(t)
+            elements.append(Spacer(1, 12))
+
+        elements.append(Paragraph("TOTAL CREDITED", label_style))
+        elements.append(Spacer(1, 4))
+        elements.append(Paragraph(f"Rs. {float(cn_data.get('amount', 0)):,.2f}", amount_style))
+        elements.append(Spacer(1, 10))
+
+        if cn_data.get('reason'):
+            elements.append(Paragraph("<b>Reason:</b>", label_style))
+            elements.append(Paragraph(str(cn_data['reason']), value_style))
+            elements.append(Spacer(1, 10))
+
+        sig = Table(
+            [[Paragraph("____________________<br/>Issued By", value_style),
+              Paragraph("____________________<br/>Patient / Attendant", value_style)]],
+            colWidths=[page_width / 2, page_width / 2],
+        )
+        sig.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('ALIGN', (0, 0), (0, 0), 'LEFT'),
+            ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
+            ('TOPPADDING', (0, 0), (-1, -1), 30),
+        ]))
+        elements.append(sig)
         elements.append(Spacer(1, 16))
         elements.append(Paragraph(
             f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M:%S')}",
@@ -2275,92 +3101,189 @@ class PDFService:
         return buffer
 
 
-    def generate_kitchen_ticket_pdf(self, items, meal_time, target_date, department,
-                                    hospital_info, include_header=True):
-        """Per-meal kitchen ticket: one row per active admission grouped by
-        ward/room/bed with diet type and allergies highlighted."""
+    def generate_gate_pass_pdf(self, payload, hospital_info, include_header=True):
+        """Printable gate pass — shown to security at exit. One half-page slip.
+        Header matches the bill / lab report layout (logo + hospital name +
+        subname + address + contact). Footer matches with Issued-by / Printed-by
+        line plus a 'Generated on' timestamp."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+        doc = SimpleDocTemplate(buffer, pagesize=A4,
+            rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=20)
         elements = []
         page_width = A4[0] - 60
 
-        title_style = ParagraphStyle('Title', parent=self.styles['Title'],
-            fontSize=14, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)
-        sub_style = ParagraphStyle('Sub', parent=self.styles['Normal'],
-            fontSize=9, alignment=1, fontName='Helvetica', textColor=colors.black, spaceAfter=2)
-        header_meal = ParagraphStyle('Meal', parent=self.styles['Normal'],
-            fontSize=12, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=6)
-        cell = ParagraphStyle('Cell', parent=self.styles['Normal'],
-            fontSize=8, fontName='Helvetica', textColor=colors.black, leading=10)
-        cell_b = ParagraphStyle('CellB', parent=self.styles['Normal'],
-            fontSize=8, fontName='Helvetica-Bold', textColor=colors.black, leading=10)
-        warn = ParagraphStyle('Warn', parent=self.styles['Normal'],
-            fontSize=8, fontName='Helvetica-Bold', textColor=colors.red, leading=10)
+        title_style = ParagraphStyle('GPTitle', parent=self.styles['Title'],
+            fontSize=16, alignment=1, fontName='Helvetica-Bold',
+            textColor=colors.black, spaceAfter=2)
+        subtitle_style = ParagraphStyle('GPSubtitle', parent=self.styles['Normal'],
+            fontSize=9, alignment=1, fontName='Helvetica',
+            textColor=colors.black, spaceAfter=2)
+        receipt_title_style = ParagraphStyle('GPReceiptTitle', parent=self.styles['Normal'],
+            fontSize=12, alignment=1, fontName='Helvetica-Bold',
+            textColor=colors.black, spaceAfter=4)
+        label = ParagraphStyle('GPLbl', parent=self.styles['Normal'],
+            fontSize=9, fontName='Helvetica-Bold', textColor=colors.black)
+        value = ParagraphStyle('GPVal', parent=self.styles['Normal'],
+            fontSize=10, fontName='Helvetica', textColor=colors.black)
+        small = ParagraphStyle('GPSm', parent=self.styles['Normal'],
+            fontSize=8, fontName='Helvetica', textColor=colors.black)
+        warn = ParagraphStyle('GPWarn', parent=self.styles['Normal'],
+            fontSize=9, fontName='Helvetica-Bold', textColor=colors.red)
+        footer_meta = ParagraphStyle('GPFootMeta', parent=self.styles['Normal'],
+            fontSize=7, fontName='Helvetica-Oblique', alignment=1, textColor=colors.grey)
 
+        def lv(lbl, val):
+            return Paragraph(f"<b>{lbl}</b> :  {val}",
+                             ParagraphStyle('GPLV', parent=value, leading=11))
+
+        # ============================================================
+        # HEADER — same layout as generate_bill_pdf / inpatient bill
+        # ============================================================
         if include_header:
-            elements.append(Paragraph(hospital_info.get('name', 'HOSPITAL').upper(), title_style))
-            if hospital_info.get('address'):
-                elements.append(Paragraph(hospital_info['address'], sub_style))
+            logo_path = hospital_info.get('logo_url', '')
+            uploads_base = _get_uploads_base()
+            has_logo = False
+            full_logo_path = ''
+            if logo_path:
+                relative = logo_path.lstrip('/')
+                if relative.startswith('uploads/'):
+                    relative = relative[len('uploads/'):]
+                full_logo_path = os.path.join(uploads_base, relative)
+                has_logo = os.path.exists(full_logo_path)
+
+            hospital_name = hospital_info.get('name', 'HOSPITAL').upper()
+            hospital_subname = hospital_info.get('hospital_subname', '')
+            address = hospital_info.get('address', '')
+            contact_parts = []
+            if hospital_info.get('email'):
+                contact_parts.append(f"Email: {hospital_info['email']}")
+            if hospital_info.get('phone'):
+                contact_parts.append(f"Phone: {hospital_info['phone']}")
+
+            header_text_elems = [Paragraph(hospital_name, title_style)]
+            if hospital_subname:
+                header_text_elems.append(Paragraph(hospital_subname, subtitle_style))
+            if address:
+                header_text_elems.append(Paragraph(address, subtitle_style))
+            if contact_parts:
+                header_text_elems.append(Paragraph("  |  ".join(contact_parts), subtitle_style))
+
+            if has_logo:
+                try:
+                    logo_img = Image(full_logo_path, width=60, height=60)
+                    logo_img.hAlign = 'CENTER'
+                    header_table = Table(
+                        [[logo_img, header_text_elems]],
+                        colWidths=[75, page_width - 75],
+                    )
+                    header_table.setStyle(TableStyle([
+                        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+                        ('TOPPADDING', (0, 0), (-1, -1), 0),
+                        ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+                    ]))
+                    elements.append(header_table)
+                except Exception:
+                    for el in header_text_elems:
+                        elements.append(el)
+            else:
+                for el in header_text_elems:
+                    elements.append(el)
+
             elements.append(Spacer(1, 6))
             elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
         else:
-            elements.append(Spacer(1, 60))
+            elements.append(Spacer(1, 100))
 
         elements.append(Spacer(1, 6))
-        meal_label = meal_time.replace('_', ' ').upper()
-        title = f"KITCHEN TICKET — {meal_label} — {target_date}"
-        if department:
-            title += f"  ({department.upper()})"
-        elements.append(Paragraph(title, header_meal))
-        elements.append(Paragraph(f"{len(items)} meals to prepare", sub_style))
+        elements.append(Paragraph("GATE PASS / DISCHARGE EXIT SLIP", receipt_title_style))
+        elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
         elements.append(Spacer(1, 8))
 
-        if not items:
-            elements.append(Paragraph("No active diet orders for this filter.",
-                ParagraphStyle('N', parent=self.styles['Normal'], fontSize=10, alignment=1)))
-        else:
-            header = [
-                Paragraph("Ward", cell_b),
-                Paragraph("Room", cell_b),
-                Paragraph("Bed", cell_b),
-                Paragraph("Patient", cell_b),
-                Paragraph("Diet Type", cell_b),
-                Paragraph("Instructions", cell_b),
-                Paragraph("Allergies", cell_b),
-            ]
-            data_rows = [header]
-            for it in items:
-                allergies_para = (Paragraph(it['allergies'], warn) if it['allergies']
-                                  else Paragraph("—", cell))
-                data_rows.append([
-                    Paragraph(it['ward'], cell),
-                    Paragraph(it['room'], cell),
-                    Paragraph(it['bed'], cell_b),
-                    Paragraph(it['patient_name'], cell),
-                    Paragraph(it['diet_type'].replace('_', ' ').title(), cell_b),
-                    Paragraph(it['instructions'] or '—', cell),
-                    allergies_para,
-                ])
-            col_widths = [
-                page_width * 0.12, page_width * 0.08, page_width * 0.06,
-                page_width * 0.20, page_width * 0.13, page_width * 0.21, page_width * 0.20,
-            ]
-            t = Table(data_rows, colWidths=col_widths, repeatRows=1)
-            t.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#e0e0e0')),
-                ('GRID', (0, 0), (-1, -1), 0.4, colors.grey),
-                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-                ('LEFTPADDING', (0, 0), (-1, -1), 4),
-                ('RIGHTPADDING', (0, 0), (-1, -1), 4),
-                ('TOPPADDING', (0, 0), (-1, -1), 3),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
-            ]))
-            elements.append(t)
+        # Detail table
+        rows = [
+            [Paragraph("Pass Number", label), Paragraph(payload.get('pass_number', '-'), value),
+             Paragraph("Issued at", label), Paragraph(payload.get('issued_at', '-'), value)],
+            [Paragraph("Admission No", label), Paragraph(payload.get('admission_number', '-'), value),
+             Paragraph("Patient ID", label), Paragraph(payload.get('patient_id', '-'), value)],
+            [Paragraph("Patient Name", label), Paragraph(payload.get('patient_name', '-'), value),
+             Paragraph("Attendant", label), Paragraph(payload.get('attendant_name', '-'), value)],
+            [Paragraph("Vehicle No.", label), Paragraph(payload.get('vehicle_no', '-'), value),
+             Paragraph("Relationship", label), Paragraph(payload.get('attendant_relationship', '-'), value)],
+        ]
+        t = Table(rows, colWidths=[page_width * 0.18, page_width * 0.32,
+                                   page_width * 0.18, page_width * 0.32])
+        t.setStyle(TableStyle([
+            ('GRID', (0, 0), (-1, -1), 0.4, colors.grey),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 6),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+            ('TOPPADDING', (0, 0), (-1, -1), 6),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+        ]))
+        elements.append(t)
+        elements.append(Spacer(1, 12))
 
+        # Outstanding-balance line (use Rs. — the ₹ glyph is missing from the
+        # default Helvetica font and renders as a tofu square).
+        if payload.get('override_balance'):
+            elements.append(Paragraph(
+                f"OVERRIDE issued with Rs. {float(payload.get('outstanding_at_issue') or 0):,.2f} outstanding",
+                warn))
+            if payload.get('override_reason'):
+                elements.append(Paragraph(f"Reason: {payload['override_reason']}", value))
+            elements.append(Spacer(1, 10))
+        else:
+            elements.append(Paragraph("Bill cleared — outstanding balance Rs. 0.00", value))
+            elements.append(Spacer(1, 10))
+
+        if payload.get('notes'):
+            elements.append(Paragraph(f"<b>Notes:</b> {payload['notes']}", value))
+            elements.append(Spacer(1, 10))
+
+        elements.append(Paragraph(f"QR Token: {payload.get('qr_token', '-')}",
+            ParagraphStyle('GPQR', parent=self.styles['Normal'],
+                fontSize=7, fontName='Courier', textColor=colors.grey, alignment=1)))
+
+        elements.append(Spacer(1, 36))
+        sig_rows = [[
+            Paragraph("Security Signature", label),
+            Paragraph("Attendant Signature", label),
+        ]]
+        sig = Table(sig_rows, colWidths=[page_width * 0.5, page_width * 0.5])
+        sig.setStyle(TableStyle([
+            ('LINEABOVE', (0, 0), (-1, 0), 0.5, colors.black),
+            ('TOPPADDING', (0, 0), (-1, -1), 6),
+        ]))
+        elements.append(sig)
+
+        # ============================================================
+        # FOOTER — Issued by / Printed by + generation timestamp,
+        # matches the bill PDFs' bottom block.
+        # ============================================================
         elements.append(Spacer(1, 14))
+        elements.append(HRFlowable(width="100%", thickness=0.4, color=colors.grey))
+        elements.append(Spacer(1, 4))
+        issued_by = payload.get('issued_by_name', '-') or '-'
+        footer_data = [[
+            lv('Issued by', issued_by),
+            lv('Printed by', issued_by),
+        ]]
+        footer_table = Table(footer_data, colWidths=[page_width / 2, page_width / 2])
+        footer_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING', (0, 0), (-1, -1), 3),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+            ('LEFTPADDING', (0, 0), (-1, -1), 6),
+        ]))
+        elements.append(footer_table)
+        elements.append(Spacer(1, 4))
         elements.append(Paragraph(
-            f"Printed on {datetime.now().strftime('%d/%m/%Y at %H:%M')}",
-            ParagraphStyle('F', parent=self.styles['Normal'], fontSize=8, alignment=1)))
+            f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M:%S')}",
+            footer_meta,
+        ))
+
         doc.build(elements)
         buffer.seek(0)
         return buffer

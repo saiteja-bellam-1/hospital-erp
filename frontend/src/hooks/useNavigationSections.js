@@ -2,8 +2,8 @@ import React from 'react';
 import {
   Home, Users, Calendar, CalendarClock, Package, Share2, Receipt, TrendingUp,
   FileText, TestTube, LayoutDashboard, BedDouble, Scissors, FileCheck,
-  CalendarDays, CalendarRange, Sparkles, AlertOctagon, RotateCcw, Building2,
-  BarChart3, ClipboardList, Shield, Database, ScrollText, Activity,
+  CalendarDays, CalendarRange, Sparkles, RotateCcw, Building2,
+  BarChart3, ClipboardList, Shield, Database, ScrollText, Activity, Stethoscope,
 } from 'lucide-react';
 
 const I = (Icon) => <Icon className="h-[18px] w-[18px]" />;
@@ -33,8 +33,11 @@ export function useNavigationSections({ roles, enabledModules }) {
   addedPaths.add('/dashboard');
   sections.push({ label: '', items: homeItems });
 
-  // ── RECEPTION ──
-  if (hasRole('receptionist')) {
+  // ── OUTPATIENT ── (visible to receptionist + hospital/super admin)
+  // Front-desk operations: patients, appointments, packages, day-care services,
+  // referrals, and the central billing views. Admins see the same items so they
+  // can manage OPD operations without needing a receptionist role.
+  if (hasAnyRole('receptionist', 'hospital_admin', 'super_admin')) {
     const items = [];
     add(items, make('Patients', Users, '/dashboard/reception/patients'));
     if (enabledModules.outpatient) {
@@ -44,18 +47,16 @@ export function useNavigationSections({ roles, enabledModules }) {
     if (enabledModules.lab) {
       add(items, make('Lab Packages', Package, '/dashboard/reception/packages'));
     }
+    add(items, make('Day Care', Stethoscope, '/dashboard/reception/procedures'));
     add(items, make('Referrals', Share2, '/dashboard/reception/referrals'));
-    if (enabledModules.billing) {
-      add(items, make('Billing', Receipt, '/dashboard/billing'));
-      // Centralised view of all generated bills (consultation, lab, admission)
-      // with PDF download for each. Backend already authorises receptionist
-      // for /api/hospital/billing.
-      add(items, make('Bills History', BarChart3, '/dashboard/billing-dashboard'));
-    }
+    // Billing + Bills History are always available — billing is an always-on
+    // module and the backend already authorises receptionist/admin for it.
+    add(items, make('Billing', Receipt, '/dashboard/billing'));
+    add(items, make('Bills History', BarChart3, '/dashboard/billing-dashboard'));
     if (enabledModules.outpatient) {
       add(items, make('Reports', TrendingUp, '/dashboard/reception/reports'));
     }
-    if (items.length > 0) sections.push({ label: 'Reception', items });
+    if (items.length > 0) sections.push({ label: 'Outpatient', items });
   }
 
   // ── DOCTOR ──
@@ -65,6 +66,7 @@ export function useNavigationSections({ roles, enabledModules }) {
     if (enabledModules.ehr) {
       add(items, make('EHR', FileText, '/dashboard/ehr'));
     }
+    add(items, make('Day Care', Stethoscope, '/dashboard/reception/procedures'));
     if (items.length > 0) sections.push({ label: 'Doctor', items });
   }
 
@@ -106,9 +108,6 @@ export function useNavigationSections({ roles, enabledModules }) {
     if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'nurse')) {
       add(items, make('Housekeeping', Sparkles, '/dashboard/inpatient/housekeeping'));
     }
-    if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'doctor', 'nurse')) {
-      add(items, make('Incidents', AlertOctagon, '/dashboard/inpatient/incidents'));
-    }
     if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'doctor')) {
       add(items, make('Quality Reports', RotateCcw, '/dashboard/inpatient/quality'));
     }
@@ -128,9 +127,10 @@ export function useNavigationSections({ roles, enabledModules }) {
   }
 
   // ── ADMIN ──
+  // Billing dashboard and Day Care live under the Outpatient group above for
+  // admins, so they're omitted here to avoid duplicates.
   if (hasAnyRole('super_admin', 'hospital_admin')) {
     const items = [];
-    add(items, make('Billing', BarChart3, '/dashboard/billing-dashboard'));
     add(items, make('Users & Roles', ClipboardList, '/dashboard/admin'));
     add(items, make('Hospital Config', Building2, '/dashboard/hospital-admin'));
     add(items, make('License', Shield, '/dashboard/license'));

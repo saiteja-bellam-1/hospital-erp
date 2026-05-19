@@ -107,7 +107,7 @@ def require_permission(module: str, action: str):
                               'admit_patients', 'discharge_patients', 'manage_tests', 'set_rates',
                               'manage_inventory', 'manage_templates', 'manage_equipment', 'generate_reports',
                               'record_vitals', 'administer_medications', 'manage_nursing_notes',
-                              'manage_diet_orders', 'manage_allergies'],
+                              'manage_allergies'],
                     'delete': ['cancel_appointments', 'schedule_appointments', 'delete',
                                'handle_refunds', 'manage_tests', 'manage_inventory'],
                     'admin': ['manage_schedules', 'admin', 'manage_users', 'manage_roles',

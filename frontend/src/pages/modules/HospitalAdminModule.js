@@ -18,10 +18,12 @@ import {
   X,
   Receipt,
   ShieldCheck,
-  Loader2
+  Loader2,
+  CreditCard
 } from 'lucide-react';
 import axios from 'axios';
 import ModuleConfigForm from './ModuleConfigForm';
+import PayerSchemesAdmin from './inpatient/PayerSchemesAdmin';
 
 const HospitalAdminModule = () => {
   const { user } = useAuth();
@@ -408,7 +410,21 @@ const HospitalAdminModule = () => {
           <ShieldCheck className="h-4 w-4 mr-2" />
           Role Permissions
         </Button>
+        <Button
+          variant="ghost"
+          className={`px-4 py-2 ${
+            activeTab === 'payer-schemes'
+              ? 'border-b-2 border-blue-500 text-blue-600'
+              : 'text-gray-600 hover:text-gray-800'
+          }`}
+          onClick={() => setActiveTab('payer-schemes')}
+        >
+          <CreditCard className="h-4 w-4 mr-2" />
+          Payer Schemes
+        </Button>
       </div>
+
+      {activeTab === 'payer-schemes' && <PayerSchemesAdmin />}
 
       {/* Hospital Information Tab */}
       {activeTab === 'hospital-info' && (

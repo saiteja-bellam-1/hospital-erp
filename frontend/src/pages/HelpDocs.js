@@ -1648,7 +1648,6 @@ The inpatient module uses 58 granular permission keys. Below is the full catalog
 | record_io | Record intake / output fluid balance entries |
 | administer_medications | Administer scheduled and PRN medications, update MAR |
 | manage_nursing_notes | Create and edit nursing notes |
-| manage_diet_orders | Create and edit diet orders |
 | manage_allergies | Record and update patient allergies |
 | record_visits | Record ward round / nurse visits |
 
@@ -1692,9 +1691,6 @@ The inpatient module uses 58 granular permission keys. Below is the full catalog
 |---|---|
 | record_consent | Record signed consents |
 | withdraw_consent | Withdraw a previously signed consent |
-| report_incident | File incident reports (falls, med errors, etc.) |
-| investigate_incident | Run investigations on incidents |
-| close_incident | Close incident investigations |
 | acknowledge_critical_alert | Acknowledge / address critical lab alerts |
 
 ## Catalogs
@@ -1752,14 +1748,12 @@ What every role gets out-of-box. You can override any of these in **Hospital Adm
 | record_io / view_io | ✓ | ✓ |
 | administer_medications / view_mar | ✓ | ✓ |
 | manage_nursing_notes | ✓ | ✓ |
-| manage_diet_orders | ✓ | ✓ |
 | manage_allergies | ✓ | ✓ |
 | record_visits | ✓ | ✓ |
 | order_labs | ✓ |   |
 | prescribe_medications | ✓ |   |
 | record_consent | ✓ | ✓ |
 | withdraw_consent | ✓ |   |
-| report_incident | ✓ | ✓ |
 | acknowledge_critical_alert | ✓ | ✓ |
 
 ## Inpatient — admissions, ops, billing
@@ -1786,7 +1780,6 @@ What every role gets out-of-box. You can override any of these in **Hospital Adm
 | update_claim_status / manage_preauth |   | ✓ | ✓ |   |   |   |
 | manage_tpa |   |   | ✓ |   |   |   |
 | manage_ancillary_catalog / manage_surgery_packages |   |   | ✓ |   |   |   |
-| investigate_incident / close_incident |   | ✓ |   |   |   |   |
 | view_readmissions / view_mortality |   | ✓ |   |   |   |   |
 | view_documents | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | upload_documents | ✓ | ✓ |   | ✓ |   |   |

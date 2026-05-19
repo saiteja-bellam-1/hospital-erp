@@ -92,11 +92,35 @@ class Admission(Base):
     deposit_waiver_reason = Column(Text, nullable=True)
     deposit_waived_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     deposit_waived_at = Column(DateTime(timezone=True), nullable=True)
+    # B1 — Payer scheme (Cash / Aarogyasri / Teachers / Govt Employee / Private Insurance / TPA).
+    # payer_type is denormalised from PayerScheme.scheme_type so bill splits + reports
+    # can filter without a join. Both nullable for back-compat with rows created before
+    # this column existed.
+    payer_scheme_id = Column(Integer, ForeignKey("payer_schemes.id"), nullable=True)
+    payer_type = Column(String(30), nullable=True)
+    scheme_member_id = Column(String(100), nullable=True)
+    scheme_approval_status = Column(String(20), default="none", nullable=False)
+    # none, pending, approved, rejected, disconnected
+    scheme_approval_ref = Column(String(100), nullable=True)
+    scheme_approval_amount = Column(Float, nullable=True)
+    # B3 — Referring doctor (may be internal user or external free-text name)
+    # and IP doctor acceptance handshake. Existing admissions get acceptance_status
+    # 'accepted' by default so back-compat is preserved.
+    referring_doctor_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    referring_external_name = Column(String(200), nullable=True)
+    acceptance_status = Column(String(20), default="accepted", nullable=False)
+    # pending, accepted, rejected
+    accepted_by_doctor_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    accepted_at = Column(DateTime(timezone=True), nullable=True)
+    rejection_reason = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     patient = relationship("Patient", back_populates="admissions")
     admitting_doctor = relationship("User", foreign_keys=[admitting_doctor_id])
+    referring_doctor = relationship("User", foreign_keys=[referring_doctor_id])
+    accepted_by_doctor = relationship("User", foreign_keys=[accepted_by_doctor_id])
+    payer_scheme = relationship("PayerScheme", foreign_keys=[payer_scheme_id])
     bed = relationship("Bed", foreign_keys=[bed_id])
     room = relationship("RoomManagement", back_populates="admissions")
     discharge = relationship("DischargeRecord", back_populates="admission", uselist=False)
@@ -105,7 +129,6 @@ class Admission(Base):
     lab_orders = relationship("PatientLabOrder", back_populates="admission")
     documents = relationship("AdmissionDocument", back_populates="admission")
     nursing_notes = relationship("NursingNote", back_populates="admission")
-    diet_orders = relationship("DietOrder", back_populates="admission")
     vital_signs = relationship("VitalSigns", back_populates="admission")
     medication_administrations = relationship("MedicationAdministration", back_populates="admission")
     deposits = relationship("AdmissionDeposit", back_populates="admission", cascade="all, delete-orphan")
@@ -204,6 +227,9 @@ class InpatientRateConfig(Base):
     id = Column(Integer, primary_key=True, index=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
     doctor_visit_rate = Column(Numeric(10, 2), default=0.00)
+    # B4 — duty-doctor (covering doctor on the floor) round fee. Separate from
+    # the consultant's per-visit fee. Falls back to doctor_visit_rate if zero.
+    duty_visit_rate = Column(Numeric(10, 2), default=0.00)
     nurse_visit_rate = Column(Numeric(10, 2), default=0.00)
     procedure_rate = Column(Numeric(10, 2), default=0.00)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -326,26 +352,6 @@ class NursingNote(Base):
     nurse = relationship("User", foreign_keys=[nurse_id])
 
 
-class DietOrder(Base):
-    __tablename__ = "diet_orders"
-
-    id = Column(Integer, primary_key=True, index=True)
-    admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=False)
-    patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
-    diet_type = Column(String(30), nullable=False)  # regular, diabetic, liquid, soft, npo, low_salt, renal, cardiac
-    meal_instructions = Column(Text, nullable=True)  # specific meal-time instructions
-    allergies = Column(Text, nullable=True)
-    notes = Column(Text, nullable=True)
-    is_active = Column(Boolean, default=True)
-    ordered_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-    admission = relationship("Admission", back_populates="diet_orders")
-    ordered_by = relationship("User", foreign_keys=[ordered_by_id])
-
-
 class CodeBlueEvent(Base):
     """Code Blue / Rapid Response Team activation log. One row per activation,
     reportable for monthly safety stats (NABH chapter on emergency response)."""
@@ -431,33 +437,6 @@ class LeaveOfAbsence(Base):
     approved_by_doctor = relationship("User", foreign_keys=[approved_by_doctor_id])
 
 
-class DietMealLog(Base):
-    """Per-meal serving log against an active DietOrder. One row per meal
-    served (or refused/partial). Drives both the audit trail and the kitchen
-    ticket counts."""
-    __tablename__ = "diet_meal_logs"
-
-    id = Column(Integer, primary_key=True, index=True)
-    diet_order_id = Column(Integer, ForeignKey("diet_orders.id"), nullable=False)
-    admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=False)
-    meal_date = Column(DateTime(timezone=True), nullable=False)
-    meal_time = Column(String(20), nullable=False)  # breakfast, lunch, dinner, snack_morning, snack_evening
-    status = Column(String(20), default="served")   # served, refused, partial, missed
-    notes = Column(Text, nullable=True)
-    served_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-
-    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-    diet_order = relationship("DietOrder", foreign_keys=[diet_order_id])
-    admission = relationship("Admission", foreign_keys=[admission_id])
-
-    __table_args__ = (
-        UniqueConstraint("admission_id", "meal_date", "meal_time", name="uq_diet_meal_per_admission"),
-    )
-
-
 class VitalSigns(Base):
     __tablename__ = "vital_signs"
 
@@ -517,9 +496,6 @@ class MedicationAdministration(Base):
     notes = Column(Text, nullable=True)
     is_prn = Column(Boolean, default=False, nullable=False)
     prn_indication = Column(Text, nullable=True)      # why PRN dose was given
-    # If this dose caused an adverse reaction, link to the Incident filed
-    # against it. Bidirectional with Incident.medication_administration_id.
-    incident_id = Column(Integer, ForeignKey("incidents.id"), nullable=True)
 
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -813,44 +789,6 @@ class Consent(Base):
     template = relationship("ConsentTemplate", foreign_keys=[template_id])
 
 
-class Incident(Base):
-    __tablename__ = "incidents"
-
-    id = Column(Integer, primary_key=True, index=True)
-    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=True)
-    patient_id = Column(Integer, ForeignKey("patients.id"), nullable=True)
-    incident_type = Column(String(40), nullable=False)
-    # fall, medication_error, pressure_ulcer, needle_stick, infection,
-    # equipment_failure, documentation_error, wrong_patient, other
-    severity = Column(String(20), nullable=False)  # low, medium, high, critical
-    incident_date = Column(DateTime(timezone=True), nullable=False)
-    location = Column(String(200), nullable=True)
-    description = Column(Text, nullable=False)
-    immediate_action = Column(Text, nullable=True)
-    witnessed_by = Column(String(200), nullable=True)  # free-text — can be multiple names
-
-    status = Column(String(20), default="reported", nullable=False)
-    # reported, investigating, resolved, closed
-    investigation_notes = Column(Text, nullable=True)
-    root_cause = Column(Text, nullable=True)
-    resolution = Column(Text, nullable=True)
-    corrective_actions = Column(Text, nullable=True)
-    preventive_measures = Column(Text, nullable=True)
-
-    reported_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    investigated_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    closed_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    closed_at = Column(DateTime(timezone=True), nullable=True)
-    # When this incident was filed against a specific medication administration
-    # (e.g., adverse drug reaction), link back. Bidirectional with
-    # MedicationAdministration.incident_id.
-    medication_administration_id = Column(Integer, ForeignKey("medication_administrations.id"), nullable=True)
-
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-
 # ======================================================================
 # Phase 3 — Operational workflow
 # ======================================================================
@@ -1064,3 +1002,120 @@ class BodyReleaseRecord(Base):
     admission = relationship("Admission", foreign_keys=[admission_id])
     discharge = relationship("DischargeRecord", foreign_keys=[discharge_id])
     released_by = relationship("User", foreign_keys=[released_by_id])
+
+# ======================================================================
+# B1 — Payer scheme master + B2 — payer change history
+# ======================================================================
+
+class PayerScheme(Base):
+    """Catalog of payer schemes the hospital accepts: Cash, private insurance,
+    TPAs, and government schemes (Aarogyasri, Teachers' Health Scheme, Govt
+    Employee Health Scheme, etc.). The hospital admin can edit this list."""
+    __tablename__ = "payer_schemes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+    code = Column(String(40), nullable=False)
+    name = Column(String(200), nullable=False)
+    scheme_type = Column(String(20), nullable=False)
+    # cash, private_insurance, tpa, govt_scheme
+    active = Column(Boolean, default=True, nullable=False)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("hospital_id", "code", name="uq_payer_scheme_code_per_hospital"),
+    )
+
+
+class AdmissionPayerChange(Base):
+    """Audit log of payer-mode conversions during an admission. Each row
+    captures one transition (e.g., Aarogyasri rejected → Cash)."""
+    __tablename__ = "admission_payer_changes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=False)
+    from_scheme_id = Column(Integer, ForeignKey("payer_schemes.id"), nullable=True)
+    to_scheme_id = Column(Integer, ForeignKey("payer_schemes.id"), nullable=False)
+    from_payer_type = Column(String(30), nullable=True)
+    to_payer_type = Column(String(30), nullable=False)
+    reason = Column(Text, nullable=False)
+    changed_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    changed_at = Column(DateTime(timezone=True), server_default=func.now())
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+
+    admission = relationship("Admission", foreign_keys=[admission_id])
+    from_scheme = relationship("PayerScheme", foreign_keys=[from_scheme_id])
+    to_scheme = relationship("PayerScheme", foreign_keys=[to_scheme_id])
+    changed_by = relationship("User", foreign_keys=[changed_by_id])
+
+
+# ======================================================================
+# B6 — Gate pass (printable security artifact on discharge)
+# ======================================================================
+
+class GatePass(Base):
+    """Printable gate pass issued after discharge. Guard at the exit checks
+    this. Normally only issued when outstanding balance is zero; supports
+    an override with documented reason for edge cases (insurance pending,
+    etc.)."""
+    __tablename__ = "gate_passes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=False)
+    pass_number = Column(String(50), nullable=False)
+    generated_at = Column(DateTime(timezone=True), server_default=func.now())
+    generated_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    vehicle_no = Column(String(40), nullable=True)
+    attendant_name = Column(String(200), nullable=True)
+    attendant_relationship = Column(String(50), nullable=True)
+    notes = Column(Text, nullable=True)
+    # Set when balance > 0 at issue time
+    override_balance = Column(Boolean, default=False, nullable=False)
+    override_reason = Column(Text, nullable=True)
+    outstanding_at_issue = Column(Float, default=0.0)
+    qr_token = Column(String(64), nullable=True)
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+
+    admission = relationship("Admission", foreign_keys=[admission_id])
+    generated_by = relationship("User", foreign_keys=[generated_by_id])
+
+    __table_args__ = (
+        UniqueConstraint("admission_id", name="uq_gate_pass_per_admission"),
+    )
+
+
+# ======================================================================
+# B4 — Doctor duty roster (identifies duty doctors per shift)
+# ======================================================================
+
+class DoctorDutyRoster(Base):
+    """Per-shift duty roster for doctors. Mirrors NurseShiftRoster.
+    Used to identify the duty doctor on the floor at any moment — visits
+    flagged as `duty_doctor_visit` are only accepted from a doctor whose
+    roster entry covers the visit time."""
+    __tablename__ = "doctor_duty_roster"
+
+    id = Column(Integer, primary_key=True, index=True)
+    doctor_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    roster_date = Column(DateTime(timezone=True), nullable=False)  # date-only; time part unused
+    shift = Column(String(20), nullable=False)  # morning, afternoon, night
+    status = Column(String(20), default="working", nullable=False)
+    # working — scheduled on duty
+    # on_call — available if called, can record duty visits
+    # leave — approved leave, blocks duty visits
+    # off — rest day, blocks duty visits
+    ward = Column(String(100), nullable=True)
+    notes = Column(Text, nullable=True)
+    assigned_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    doctor = relationship("User", foreign_keys=[doctor_id])
+    assigned_by = relationship("User", foreign_keys=[assigned_by_id])
+
+    __table_args__ = (
+        UniqueConstraint("doctor_id", "roster_date", "shift", name="uq_doctor_shift_per_date"),
+    )

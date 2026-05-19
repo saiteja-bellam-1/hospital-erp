@@ -1299,7 +1299,7 @@ class TestInpatientPhase3:
 
 
 # ======================================================================
-# Phase 4: Consents, incidents, readmission, mortality
+# Phase 4: Consents, readmission, mortality
 # ======================================================================
 
 _phase4: dict = {}
@@ -1442,69 +1442,6 @@ class TestInpatientPhase4:
         assert r.status_code == 200
         assert r.headers["content-type"] == "application/pdf"
         assert len(r.content) > 1000  # real PDF, not empty
-
-    # ------------------------------------------------------------------
-    # Incidents
-    # ------------------------------------------------------------------
-    def test_report_incident(self, client, auth_headers):
-        from datetime import datetime
-        r = client.post("/api/inpatient/incidents",
-            json={"incident_type": "fall", "severity": "medium",
-                  "incident_date": datetime.utcnow().isoformat(),
-                  "admission_id": _phase4["admission_id"],
-                  "description": "Patient slipped near bathroom",
-                  "immediate_action": "Examined, no injuries",
-                  "location": "Ward A bathroom"},
-            headers=auth_headers)
-        assert r.status_code == 201, r.text
-        _phase4["incident_id"] = r.json()["id"]
-        assert r.json()["status"] == "reported"
-
-    def test_list_incidents_filters(self, client, auth_headers):
-        r = client.get("/api/inpatient/incidents",
-            params={"severity": "medium", "incident_type": "fall"},
-            headers=auth_headers)
-        assert r.status_code == 200
-        assert any(i["id"] == _phase4["incident_id"] for i in r.json())
-
-    def test_investigate_incident_state_machine(self, client, auth_headers):
-        # reported → investigating
-        r1 = client.post(f"/api/inpatient/incidents/{_phase4['incident_id']}/investigate",
-            json={"new_status": "investigating",
-                  "investigation_notes": "Reviewing CCTV"},
-            headers=auth_headers)
-        assert r1.status_code == 200
-        assert r1.json()["status"] == "investigating"
-
-        # investigating → resolved with root cause
-        r2 = client.post(f"/api/inpatient/incidents/{_phase4['incident_id']}/investigate",
-            json={"new_status": "resolved",
-                  "root_cause": "Wet floor, no signage",
-                  "corrective_actions": "Added anti-slip mat and warning sign"},
-            headers=auth_headers)
-        assert r2.status_code == 200
-        assert r2.json()["status"] == "resolved"
-        assert r2.json()["root_cause"] == "Wet floor, no signage"
-
-        # resolved → closed (final)
-        r3 = client.post(f"/api/inpatient/incidents/{_phase4['incident_id']}/investigate",
-            json={"new_status": "closed"},
-            headers=auth_headers)
-        assert r3.status_code == 200
-        assert r3.json()["closed_at"] is not None
-
-        # closed → anything fails
-        r4 = client.post(f"/api/inpatient/incidents/{_phase4['incident_id']}/investigate",
-            json={"new_status": "investigating"},
-            headers=auth_headers)
-        assert r4.status_code == 400
-
-    def test_incident_monthly_report(self, client, auth_headers):
-        r = client.get("/api/inpatient/incidents/reports/monthly", headers=auth_headers)
-        assert r.status_code == 200
-        data = r.json()
-        assert data["total"] >= 1
-        assert data["by_type"].get("fall", 0) >= 1
 
     # ------------------------------------------------------------------
     # Mortality (discharge with type='death')
@@ -1969,77 +1906,6 @@ class TestCodeBlueAndHandover:
 
 
 # ======================================================================
-# Diet — meal log + kitchen ticket
-# ======================================================================
-
-_diet: dict = {}
-
-
-class TestDietMealLog:
-    def test_setup_admission_and_diet_order(self, client, auth_headers, seed_data):
-        existing = client.get(f"/api/inpatient/admissions/patient/{seed_data['patient_id']}",
-            headers=auth_headers)
-        if existing.status_code == 200:
-            for adm in existing.json():
-                if adm.get("status") == "admitted":
-                    client.post(f"/api/inpatient/admissions/{adm['id']}/discharge",
-                        json={"discharge_type": "normal", "condition_on_discharge": "stable",
-                              "discharge_summary": "diet setup",
-                              "force_outstanding_balance": True, "force_unacknowledged_alerts": True,
-                              "force_missing_consents": True, "override_reason": "test"},
-                        headers=auth_headers)
-        r_room = client.post("/api/inpatient/rooms",
-            json={"room_number": "DIET-1", "room_type": "general", "bed_count": 1,
-                  "room_charge_per_day": 800.0, "department": "Medical Ward A"},
-            headers=auth_headers)
-        assert r_room.status_code == 201
-        r_adm = client.post("/api/inpatient/admissions",
-            json={"patient_id": seed_data["patient_id"],
-                  "admitting_doctor_id": seed_data["doctor_user_id"],
-                  "room_id": r_room.json()["id"], "admission_type": "elective",
-                  "admission_reason": "Diet test"},
-            headers=auth_headers)
-        assert r_adm.status_code == 201, r_adm.text
-        _diet["admission_id"] = r_adm.json()["id"]
-        # Order a diabetic diet
-        r_order = client.post(
-            f"/api/inpatient/admissions/{_diet['admission_id']}/diet-orders",
-            json={"diet_type": "diabetic", "meal_instructions": "Low sugar; 4 meals/day",
-                  "allergies": "Peanuts"},
-            headers=auth_headers)
-        assert r_order.status_code == 201, r_order.text
-        _diet["order_id"] = r_order.json()["id"]
-
-    def test_log_meal_creates_then_idempotent(self, client, auth_headers):
-        # First call creates
-        r1 = client.post(f"/api/inpatient/diet-orders/{_diet['order_id']}/meal-log",
-            json={"meal_time": "lunch", "status": "served", "notes": "Ate well"},
-            headers=auth_headers)
-        assert r1.status_code == 201, r1.text
-        first_id = r1.json()["id"]
-        # Same slot updates instead of duplicating
-        r2 = client.post(f"/api/inpatient/diet-orders/{_diet['order_id']}/meal-log",
-            json={"meal_time": "lunch", "status": "partial", "notes": "Ate half"},
-            headers=auth_headers)
-        assert r2.status_code == 201
-        assert r2.json()["id"] == first_id
-        assert r2.json()["status"] == "partial"
-
-    def test_invalid_meal_time_rejected(self, client, auth_headers):
-        r = client.post(f"/api/inpatient/diet-orders/{_diet['order_id']}/meal-log",
-            json={"meal_time": "midnight_snack", "status": "served"},
-            headers=auth_headers)
-        assert r.status_code == 400
-
-    def test_kitchen_ticket_pdf_renders(self, client, auth_headers):
-        r = client.get("/api/inpatient/diet/kitchen-ticket/pdf?meal_time=lunch",
-            headers=auth_headers)
-        assert r.status_code == 200, r.text
-        assert r.headers["content-type"] == "application/pdf"
-        assert len(r.content) > 1000
-
-
-# ======================================================================
 # ICU add-ons: I/O fluid balance + critical lab alerts
 # ======================================================================
 
@@ -2231,8 +2097,8 @@ def boundary_setup(TestSessionLocal, seed_data):
         "nurse": [
             "view_occupancy", "record_vitals", "view_vitals", "record_io", "view_io",
             "administer_medications", "view_mar",
-            "manage_nursing_notes", "manage_diet_orders", "manage_allergies", "record_visits",
-            "record_consent", "report_incident", "acknowledge_critical_alert",
+            "manage_nursing_notes", "manage_allergies", "record_visits",
+            "record_consent", "acknowledge_critical_alert",
             "accept_ward_transfer", "manage_housekeeping", "view_roster", "view_documents",
         ],
         "billing_admin": [
@@ -2247,11 +2113,11 @@ def boundary_setup(TestSessionLocal, seed_data):
             "view_occupancy", "admit_patients", "update_admission", "discharge_patients",
             "record_mortality", "record_vitals", "view_vitals", "record_io", "view_io",
             "administer_medications", "view_mar",
-            "manage_nursing_notes", "manage_diet_orders", "manage_allergies", "record_visits",
+            "manage_nursing_notes", "manage_allergies", "record_visits",
             "order_labs", "prescribe_medications", "schedule_ot",
             "record_consent", "withdraw_consent",
             "transfer_beds", "initiate_ward_transfer", "accept_ward_transfer",
-            "report_incident", "acknowledge_critical_alert",
+            "acknowledge_critical_alert",
             "view_bill", "view_readmissions", "view_mortality",
             "upload_documents", "view_documents",
         ],
@@ -2382,24 +2248,6 @@ class TestRoleBoundaries:
                   "force_outstanding_balance": True, "force_unacknowledged_alerts": True, "force_missing_consents": True, "override_reason": "test"},
             headers=boundary_setup["nurse_headers"],
         )
-        assert r.status_code == 403
-
-    def test_nurse_cannot_close_incident(self, client, boundary_setup):
-        # First get an incident id — nurse can report, so let's use that to get one
-        from datetime import datetime
-        r_report = client.post("/api/inpatient/incidents",
-            json={"incident_type": "fall", "severity": "low",
-                  "incident_date": datetime.utcnow().isoformat(),
-                  "description": "Test fall",
-                  "admission_id": boundary_setup["admission_id"]},
-            headers=boundary_setup["nurse_headers"])
-        assert r_report.status_code == 201, r_report.text
-        incident_id = r_report.json()["id"]
-
-        # Nurse cannot investigate
-        r = client.post(f"/api/inpatient/incidents/{incident_id}/investigate",
-            json={"new_status": "closed"},
-            headers=boundary_setup["nurse_headers"])
         assert r.status_code == 403
 
     # ----- Billing admin -----

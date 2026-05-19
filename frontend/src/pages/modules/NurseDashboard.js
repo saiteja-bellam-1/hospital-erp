@@ -48,7 +48,6 @@ const NurseDashboard = () => {
   const [showNurseVisitDialog, setShowNurseVisitDialog] = useState(false);
   const [nurseVisitAdmission, setNurseVisitAdmission] = useState(null);
   const [nurseVisitNotes, setNurseVisitNotes] = useState('');
-  const [activeDietOrders, setActiveDietOrders] = useState([]);
   const [myPatientsOnly, setMyPatientsOnly] = useState(false);
   const [myPatients, setMyPatients] = useState([]);
   const [myPatientsShift, setMyPatientsShift] = useState('');
@@ -80,9 +79,6 @@ const NurseDashboard = () => {
         setInpatientEnabled(true);
         axios.get('/api/inpatient/admissions', { params: { status: 'admitted' } })
           .then(r => setWardAdmissions(Array.isArray(r.data) ? r.data : (r.data?.items || [])))
-          .catch(() => {});
-        axios.get('/api/inpatient/diet-orders/active')
-          .then(r => setActiveDietOrders(r.data))
           .catch(() => {});
       }
     }).catch(() => {});
@@ -594,49 +590,6 @@ const NurseDashboard = () => {
               </CardContent>
             </Card>
 
-            {/* Active Diet Orders */}
-            {activeDietOrders.length > 0 && (
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2 text-base">
-                    <Activity className="h-5 w-5" /> Active Diet Orders
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="overflow-x-auto">
-                    <table className="w-full border-collapse">
-                      <thead>
-                        <tr className="border-b">
-                          <th className="text-left py-2 text-sm">Patient</th>
-                          <th className="text-left py-2 text-sm">Room / Bed</th>
-                          <th className="text-left py-2 text-sm">Diet Type</th>
-                          <th className="text-left py-2 text-sm">Allergies</th>
-                          <th className="text-left py-2 text-sm">Instructions</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {activeDietOrders.map(d => (
-                          <tr key={d.id} className="border-b hover:bg-gray-50">
-                            <td className="py-2">
-                              <div className="font-medium text-sm">{d.patient_name || 'N/A'}</div>
-                              <div className="text-xs text-gray-500">{d.admission_number || ''}</div>
-                            </td>
-                            <td className="py-2 text-sm">{d.room_number || '-'}{d.bed_label ? ` / ${d.bed_label}` : ''}</td>
-                            <td className="py-2">
-                              <Badge className={d.diet_type === 'npo' ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'}>
-                                {d.diet_type.replace('_', ' ').toUpperCase()}
-                              </Badge>
-                            </td>
-                            <td className="py-2 text-sm text-red-600">{d.allergies || '-'}</td>
-                            <td className="py-2 text-sm text-gray-600">{d.meal_instructions || d.notes || '-'}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </CardContent>
-              </Card>
-            )}
           </TabsContent>
         )}
       </Tabs>

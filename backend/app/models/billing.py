@@ -21,7 +21,7 @@ class Bill(Base):
     id = Column(Integer, primary_key=True, index=True)
     bill_number = Column(String(50), unique=True, nullable=False)
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
-    bill_type = Column(String(20), nullable=False)  # consultation, lab, pharmacy, admission, outpatient
+    bill_type = Column(String(20), nullable=False)  # consultation, lab, pharmacy, admission, outpatient, credit_note
     bill_subtype = Column(String(20), default="final")  # final, interim, advance_receipt
     reference_id = Column(Integer)  # ID of the source record (consultation_id, lab_order_id, etc.)
     subtotal = Column(Float, nullable=False, default=0.0)
@@ -34,6 +34,13 @@ class Bill(Base):
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     notes = Column(Text)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+
+    # Credit notes: parent_bill_id points to the bill the credit note offsets.
+    parent_bill_id = Column(Integer, ForeignKey("bills.id"), nullable=True)
+    # Free-text referral source (matches the `referred_by` convention on
+    # Appointment + PatientLabOrder). Populated by procedure / day-care bills
+    # and surfaced in the central billing dashboard + the printed PDF.
+    referred_by = Column(String(100), nullable=True)
 
     patient = relationship("Patient", back_populates="bills")
     items = relationship("BillItem", back_populates="bill")
@@ -69,6 +76,14 @@ class Payment(Base):
     transaction_reference = Column(String(100))
     notes = Column(Text)
     received_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    
+
+    # Reversal / refund tracking. A refund row is a Payment with negative
+    # amount_paid and parent_payment_id pointing to the original. The original
+    # row gets reversed_* populated when fully reversed.
+    parent_payment_id = Column(Integer, ForeignKey("payments.id"), nullable=True)
+    reversed_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    reversed_at = Column(DateTime(timezone=True), nullable=True)
+    reversal_reason = Column(Text, nullable=True)
+
     bill = relationship("Bill", back_populates="payments")
     payment_method = relationship("PaymentMethod", back_populates="payments")

@@ -43,6 +43,7 @@ import ReceptionAppointmentsPage from './modules/reception/ReceptionAppointments
 import DoctorAvailabilityPage from './modules/reception/DoctorAvailabilityPage';
 import ReceptionReportsPage from './modules/reception/ReceptionReportsPage';
 import ReceptionPackagesPage from './modules/reception/ReceptionPackagesPage';
+import ProceduresBillingPage from './modules/reception/ProceduresBillingPage';
 import ReferralManagementPage from './modules/reception/ReferralManagementPage';
 import NurseDashboard from './modules/NurseDashboard';
 import AvailabilityModule from './modules/AvailabilityModule';
@@ -88,8 +89,11 @@ const Dashboard = () => {
   const navigate = useNavigate();
 
   // Sidebar section collapse state — persisted per user in localStorage.
-  // Map of { [sectionLabel]: boolean (true = collapsed) }. Sections not in the map default to expanded.
-  const SIDEBAR_STATE_KEY = 'sidebar_section_state_v1';
+  // Map of { [sectionLabel]: boolean }. true => collapsed, false => user expanded.
+  // Default behaviour: sections are *collapsed* unless explicitly opened by the
+  // user OR the user navigates to a page inside the section (auto-open below).
+  // Bumped key to v2 to ignore any stale all-expanded state in old browsers.
+  const SIDEBAR_STATE_KEY = 'sidebar_section_state_v2';
   const [collapsedSections, setCollapsedSections] = useState(() => {
     try {
       const raw = localStorage.getItem(SIDEBAR_STATE_KEY);
@@ -102,7 +106,12 @@ const Dashboard = () => {
     try { localStorage.setItem(SIDEBAR_STATE_KEY, JSON.stringify(collapsedSections)); } catch { /* ignore */ }
   }, [collapsedSections]);
   const toggleSection = (label) => {
-    setCollapsedSections(prev => ({ ...prev, [label]: !prev[label] }));
+    // Treat anything not explicitly `false` as currently collapsed, so the
+    // first click should expand (set to false), not collapse-again.
+    setCollapsedSections(prev => ({
+      ...prev,
+      [label]: prev[label] === false ? true : false,
+    }));
   };
 
   useEffect(() => {
@@ -113,6 +122,11 @@ const Dashboard = () => {
         response.data.forEach(module => {
           moduleMap[module.module_name] = module.is_enabled;
         });
+        // billing + admin aren't toggleable — they're always on. If the API
+        // didn't include them as rows, treat them as enabled so nav items
+        // gated on enabledModules.billing don't silently disappear.
+        if (moduleMap.billing === undefined) moduleMap.billing = true;
+        if (moduleMap.admin === undefined) moduleMap.admin = true;
         setEnabledModules(moduleMap);
       } catch (error) {
         console.error('Failed to fetch enabled modules:', error);
@@ -180,7 +194,10 @@ const Dashboard = () => {
     const activeSectionLabel = navigationSections.find(sec =>
       sec.items.some(item => isActive(item.path))
     )?.label;
-    if (activeSectionLabel && collapsedSections[activeSectionLabel]) {
+    // Sections are collapsed by default (anything not explicitly `false`).
+    // When the user lands on a page inside a section, mark that section
+    // expanded so they can see siblings.
+    if (activeSectionLabel && collapsedSections[activeSectionLabel] !== false) {
       setCollapsedSections(prev => ({ ...prev, [activeSectionLabel]: false }));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -230,7 +247,10 @@ const Dashboard = () => {
           {navigationSections.map((section, sIdx) => {
             // Sections without a label (e.g. Home) stay flat — no header, always visible.
             const isCollapsible = !!section.label;
-            const isCollapsed = isCollapsible && !!collapsedSections[section.label];
+            // Default to collapsed: only explicit `false` means user expanded it.
+            // The auto-open-active-section effect below sets the active section to
+            // `false` (expanded) on every route change.
+            const isCollapsed = isCollapsible && collapsedSections[section.label] !== false;
             return (
               <div key={section.label || `section-${sIdx}`} className={sIdx > 0 ? 'mt-3' : ''}>
                 {isCollapsible && (
@@ -456,6 +476,7 @@ const Dashboard = () => {
             <Route path="/reception/doctor-availability" element={<DoctorAvailabilityPage />} />
             <Route path="/reception/reports" element={<ReceptionReportsPage />} />
             <Route path="/reception/packages" element={<ReceptionPackagesPage />} />
+            <Route path="/reception/procedures" element={<ProceduresBillingPage />} />
             <Route path="/reception/referrals" element={<ReferralManagementPage />} />
             <Route path="/patients/*" element={<PatientsModule />} />
             <Route path="/lab/*" element={<LabModule />} />

@@ -23,18 +23,18 @@ from app.models.doctor_availability import DoctorAvailability, DoctorSpecialSche
 from app.models.license import License
 from app.models.inpatient import (
     RoomManagement, Admission, DischargeRecord, PatientVisit, InpatientRateConfig,
-    OTSchedule, Bed, AdmissionDocument, NursingNote, DietOrder, VitalSigns, MedicationAdministration,
+    OTSchedule, Bed, AdmissionDocument, NursingNote, VitalSigns, MedicationAdministration,
     AdmissionDeposit, AncillaryServiceCatalog, AdmissionAncillaryCharge, Procedure,
     SurgeryPackage, AdmissionPackage, InsurancePreAuth, InsurancePreAuthExpansion,
     TPACompany, BillSplit,
     BedTransferHistory, BedTurnoverLog, BedReservation, NurseAssignment, NurseShiftRoster,
-    ConsentTemplate, Consent, Incident,
+    ConsentTemplate, Consent,
     FluidBalance, CriticalLabAlert,
 )
 from app.models.patient import PatientAllergy
 
 # Import route modules
-from app.routes import auth, patients, admin, system, module_admin, hospital_admin, appointments, prescriptions, medicines, consultations, prescriptions_simple, doctor_availability, lab, ehr, license, backup, referrals, audit, inpatient
+from app.routes import auth, patients, admin, system, module_admin, hospital_admin, appointments, prescriptions, medicines, consultations, prescriptions_simple, doctor_availability, lab, ehr, license, backup, referrals, audit, inpatient, outpatient_procedures
 from app.middleware.license_middleware import LicenseMiddleware
 from app.middleware.audit_middleware import AuditMiddleware
 from app.middleware.maintenance import MaintenanceMiddleware
@@ -90,10 +90,38 @@ async def startup_event():
             raise RuntimeError(
                 f"Schema migration migrate_inpatient_indexes failed — refusing to boot. Error: {e}"
             )
+        try:
+            from migrate_drop_incidents_diet import migrate_drop_incidents_diet as _drop_migrate
+            run_migration(_engine, "migrate_drop_incidents_diet",
+                          lambda: _drop_migrate(_engine))
+        except Exception as e:
+            raise RuntimeError(
+                f"Schema migration migrate_drop_incidents_diet failed — refusing to boot. Error: {e}"
+            )
         # Ensure role permissions exist (for installations that pre-date the wizard)
         _ensure_role_permissions()
         # Ensure all modules exist (add missing ones for upgrades)
         _ensure_modules()
+        # Seed default payer schemes (Cash, Aarogyasri, Teachers, Govt Employee, Private Insurance, TPA)
+        _ensure_payer_schemes()
+        # Heal existing rows from the old `bill_type='procedure'` label to the
+        # current `day_care` value, so the central billing dashboard groups them
+        # under the right type after the rename.
+        try:
+            from config.database import get_db as _get_db
+            from sqlalchemy import text as _sql_text
+            _db = next(_get_db())
+            res = _db.execute(_sql_text(
+                "UPDATE bills SET bill_type = 'day_care' WHERE bill_type = 'procedure'"
+            ))
+            if res.rowcount:
+                print(f"Renamed {res.rowcount} legacy 'procedure' bills to 'day_care'")
+            _db.commit()
+            _db.close()
+        except Exception as _e:
+            print(f"Warning: could not rename legacy procedure bills: {_e}")
+        # Seed face-sheet + case-sheet consent templates with placeholder content
+        _ensure_admission_consent_templates()
         # Cleanup old audit logs based on retention config
         try:
             from app.services.audit_service import cleanup_old_logs, get_retention_days
@@ -174,6 +202,148 @@ def _ensure_role_permissions():
             print("Updated outpatient module: now toggleable")
     except Exception as e:
         print(f"Warning: Could not seed role permissions: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+def _ensure_payer_schemes():
+    """Seed default payer schemes per hospital, if missing. Idempotent."""
+    from config.database import SessionLocal
+    from app.models.inpatient import PayerScheme
+    from app.models.hospital import Hospital
+    defaults = [
+        ("CASH",      "Cash",                          "cash"),
+        ("PRIVATE",   "Private Insurance",             "private_insurance"),
+        ("TPA",       "TPA (Third Party Administrator)", "tpa"),
+        ("AAROGYASRI","Aarogyasri",                    "govt_scheme"),
+        ("TEACHERS",  "Teachers' Health Scheme",       "govt_scheme"),
+        ("EJHS",      "Employee Health Scheme",        "govt_scheme"),
+    ]
+    db = SessionLocal()
+    try:
+        hospitals = db.query(Hospital).all()
+        for hospital in hospitals:
+            for code, name, scheme_type in defaults:
+                existing = db.query(PayerScheme).filter(
+                    PayerScheme.hospital_id == hospital.id,
+                    PayerScheme.code == code,
+                ).first()
+                if not existing:
+                    db.add(PayerScheme(
+                        hospital_id=hospital.id,
+                        code=code, name=name, scheme_type=scheme_type,
+                        active=True,
+                    ))
+        db.commit()
+    except Exception as e:
+        print(f"Warning: Could not seed payer schemes: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+_FACE_SHEET_PLACEHOLDER = """\
+FACE SHEET — ADMISSION IDENTIFICATION
+
+[PLACEHOLDER CONTENT — replace via Consent Templates admin once final wording is approved.]
+
+Patient: {{patient_name}}              Age / Sex: {{age}} / {{gender}}
+Admission No: {{admission_number}}     Admission Date: {{admission_date}}
+Ward / Room / Bed: {{ward}} / {{room}} / {{bed}}
+Admitting Doctor: {{admitting_doctor}}
+Referring Doctor: {{referring_doctor}}
+Diagnosis on Admission: {{admission_reason}}
+
+Responsible person (attendant):
+Name: ____________________________________________
+Relationship to patient: __________________________
+Address: __________________________________________
+Phone: ____________________________________________
+ID Proof type / number: ___________________________
+
+Declaration:
+I confirm that the identification details above are correct to the best of
+my knowledge and that I am the person responsible for this patient's stay
+at the hospital.
+
+Signature of patient / attendant: __________________   Date: __________
+Signature of admitting officer:   __________________   Date: __________
+"""
+
+_CASE_SHEET_PLACEHOLDER = """\
+CASE SHEET — DECLARATION & GENERAL CONSENT FOR TREATMENT
+
+[PLACEHOLDER CONTENT — replace via Consent Templates admin once final wording is approved.]
+
+I, ______________________________________________ (patient / guardian),
+admitted under Dr. ______________________________________ on
+___________________ at this hospital, hereby acknowledge and declare:
+
+ 1. I have been informed in a language I understand about the patient's
+    current condition, the proposed plan of care, the expected duration
+    of admission, and the anticipated costs.
+
+ 2. I authorise the doctors, nurses, and other hospital staff to carry
+    out such examinations, investigations, treatments, procedures, and
+    administration of medicines/anaesthetics as they consider necessary
+    during this admission.
+
+ 3. I understand that medicine is not an exact science and that no
+    guarantee has been given to me regarding the outcome of treatment.
+    Despite the best efforts of the treating team, complications may
+    arise that are beyond anyone's control.
+
+ 4. I take responsibility for safekeeping of personal belongings,
+    valuables, money, and electronic devices brought into the hospital.
+    The hospital is not responsible for loss or damage to these items.
+
+ 5. I understand that the hospital follows infection-control, visiting,
+    and safety protocols and I agree to abide by them.
+
+ 6. I agree to settle hospital dues as per the tariff communicated to
+    me at the time of admission and as updated during the stay.
+
+Patient signature: __________________________   Date: __________
+Guardian signature (if patient is unable to sign): __________________________
+Guardian relationship: __________________   ID proof: __________________
+Witness signature: __________________________   Name: ________________
+Counter-signed by admitting officer: __________________________
+"""
+
+
+def _ensure_admission_consent_templates():
+    """Seed the face-sheet and case-sheet declaration templates per hospital.
+    Idempotent — only creates rows when matching consent_type is missing.
+    Content is placeholder; admin updates via the existing templates UI."""
+    from config.database import SessionLocal
+    from app.models.inpatient import ConsentTemplate
+    from app.models.hospital import Hospital
+    defaults = [
+        ("face_sheet", "Face Sheet — Admission Identification", _FACE_SHEET_PLACEHOLDER),
+        ("case_sheet_declaration", "Case Sheet — General Consent / Declaration", _CASE_SHEET_PLACEHOLDER),
+    ]
+    db = SessionLocal()
+    try:
+        hospitals = db.query(Hospital).all()
+        for hospital in hospitals:
+            for ctype, name, content in defaults:
+                existing = db.query(ConsentTemplate).filter(
+                    ConsentTemplate.hospital_id == hospital.id,
+                    ConsentTemplate.consent_type == ctype,
+                ).first()
+                if not existing:
+                    db.add(ConsentTemplate(
+                        hospital_id=hospital.id,
+                        consent_type=ctype,
+                        template_name=name,
+                        content=content,
+                        language="english",
+                        is_active=True,
+                    ))
+        db.commit()
+    except Exception as e:
+        print(f"Warning: Could not seed admission consent templates: {e}")
         db.rollback()
     finally:
         db.close()
@@ -265,6 +435,7 @@ app.include_router(referrals.router, prefix="/api/referrals", tags=["Referrals"]
 app.include_router(audit.router, prefix="/api/audit", tags=["Audit Logs"])
 # app.include_router(outpatient.router, prefix="/api/outpatient", tags=["Outpatient"])
 app.include_router(inpatient.router, prefix="/api/inpatient", tags=["Inpatient"])
+app.include_router(outpatient_procedures.router, prefix="/api/outpatient", tags=["Outpatient Procedures"])
 
 # Serve uploaded files
 _uploads_dir = get_uploads_dir()
