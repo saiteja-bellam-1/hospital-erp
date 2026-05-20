@@ -45,6 +45,11 @@ WizardStyle=modern
 PrivilegesRequired=admin
 ArchitecturesInstallIn64BitMode=x64
 MinVersion=10.0.17763
+; Self-update support: when a newer installer runs over an existing install,
+; let Setup close the running KTHEALTHERP.exe (via Restart Manager) so the
+; binary can be replaced. RestartApplications=no — we relaunch in [Run] instead.
+CloseApplications=yes
+RestartApplications=no
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -71,9 +76,13 @@ Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 Name: "{commondesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\assets\icon.ico"; Tasks: desktopicon
 
 [Run]
-; Open firewall port range used by launcher.find_free_port (8000-8020) for LAN access
-Filename: "netsh"; Parameters: "advfirewall firewall add rule name=""KT HEALTH ERP"" dir=in action=allow protocol=TCP localport=8000-8020"; Flags: runhidden; Tasks: firewall
-Filename: "{app}\{#AppExeName}"; Description: "Launch {#AppName} now"; Flags: nowait postinstall skipifsilent
+; Open firewall port range used by launcher.find_free_port (8000-8020) for LAN
+; access. Fresh install only — the rule persists across upgrades.
+Filename: "netsh"; Parameters: "advfirewall firewall add rule name=""KT HEALTH ERP"" dir=in action=allow protocol=TCP localport=8000-8020"; Flags: runhidden; Tasks: firewall; Check: GetIsFreshInstall
+; Fresh install: offer "Launch now" on the Finished page (interactive only).
+Filename: "{app}\{#AppExeName}"; Description: "Launch {#AppName} now"; Flags: nowait postinstall skipifsilent; Check: GetIsFreshInstall
+; Upgrade / self-update: always relaunch, including under /VERYSILENT.
+Filename: "{app}\{#AppExeName}"; Flags: nowait postinstall; Check: GetIsUpgrade
 
 [UninstallRun]
 Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""KT HEALTH ERP"""; Flags: runhidden
@@ -102,8 +111,14 @@ const
   MODE_EXISTING = 1;
   MODE_RESTORE  = 2;
   MIN_PWD_LEN   = 8;
+  // Inno's uninstall registry key for this AppId (raw GUID + _is1 suffix).
+  UNINST_KEY    = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{8BC2E1C5-7DBA-4F4D-9B1E-6A3F2A4D0001}_is1';
 
 var
+  // Self-update: InitializeSetup sets these when an existing install is found.
+  // On upgrade the wizard skips every custom page and writes no seed file.
+  IsUpgrade:         Boolean;
+  ExistingAppDir:    String;
   // DataFolderPage
   DataFolderPage:    TWizardPage;
   RbFresh:           TNewRadioButton;
@@ -804,6 +819,79 @@ begin
 end;
 
 // ----------------------------------------------------------------------------
+//   self-update — detect an existing install and upgrade in place
+// ----------------------------------------------------------------------------
+
+function InitializeSetup: Boolean;
+var
+  Loc: String;
+begin
+  Result := True;
+  IsUpgrade := False;
+  ExistingAppDir := '';
+  // Inno records the install directory under the AppId uninstall key. A 64-bit
+  // install writes it to the 64-bit registry view; probe both to be safe.
+  if RegQueryStringValue(HKLM64, UNINST_KEY, 'InstallLocation', Loc) and (Loc <> '') then
+  begin
+    IsUpgrade := True;
+    ExistingAppDir := RemoveBackslash(Loc);
+  end
+  else if RegQueryStringValue(HKLM32, UNINST_KEY, 'InstallLocation', Loc) and (Loc <> '') then
+  begin
+    IsUpgrade := True;
+    ExistingAppDir := RemoveBackslash(Loc);
+  end;
+end;
+
+function GetIsUpgrade: Boolean;
+begin
+  Result := IsUpgrade;
+end;
+
+function GetIsFreshInstall: Boolean;
+begin
+  Result := not IsUpgrade;
+end;
+
+function FileIsLocked(const FileName: String): Boolean;
+var
+  TmpName: String;
+begin
+  // No direct lock API in Inno Pascal — probe by renaming the file aside and
+  // straight back. A file held open by a running process cannot be renamed.
+  TmpName := FileName + '.lockprobe';
+  if RenameFile(FileName, TmpName) then
+  begin
+    RenameFile(TmpName, FileName);
+    Result := False;
+  end
+  else
+    Result := True;
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ExePath: String;
+  Waited: Integer;
+begin
+  Result := '';
+  if not IsUpgrade then
+    Exit;
+  // The self-update flow exits the running backend just before launching this
+  // installer. Wait for the .exe lock to clear so the file copy doesn't race
+  // the dying process; CloseApplications=yes is the backstop if it doesn't.
+  ExePath := AddBackslash(ExistingAppDir) + 'KTHEALTHERP.exe';
+  if not FileExists(ExePath) then
+    Exit;
+  Waited := 0;
+  while (Waited < 30000) and FileIsLocked(ExePath) do
+  begin
+    Sleep(500);
+    Waited := Waited + 500;
+  end;
+end;
+
+// ----------------------------------------------------------------------------
 //   navigation gates
 // ----------------------------------------------------------------------------
 
@@ -999,6 +1087,16 @@ var
   Mode: Integer;
 begin
   Result := False;
+  // Upgrade / self-update: skip every custom page. The existing data folder +
+  // config.json already bind everything; no seed is written (CurStepChanged).
+  if IsUpgrade then
+  begin
+    if (PageID = DataFolderPage.ID) or (PageID = DbCheckPage.ID) or
+       (PageID = LicensePage.ID) or (PageID = HospitalPage.ID) or
+       (PageID = AdminPage.ID) or (PageID = BackupPage.ID) then
+      Result := True;
+    Exit;
+  end;
   Mode := GetMode;
   if (Mode = MODE_EXISTING) or (Mode = MODE_RESTORE) then
   begin
@@ -1153,7 +1251,10 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
-  if CurStep = ssPostInstall then
+  // On upgrade, never write a seed — the existing data folder + config.json
+  // already bind the DB; launcher.consume_seed_if_present() then no-ops and
+  // startup migrations bring the schema forward.
+  if (CurStep = ssPostInstall) and (not IsUpgrade) then
     WriteSeedFile;
 end;
 

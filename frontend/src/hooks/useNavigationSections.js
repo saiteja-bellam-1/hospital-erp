@@ -4,6 +4,7 @@ import {
   FileText, TestTube, LayoutDashboard, BedDouble, Scissors, FileCheck,
   CalendarDays, CalendarRange, Sparkles, RotateCcw, Building2,
   BarChart3, ClipboardList, Shield, Database, ScrollText, Activity, Stethoscope,
+  DownloadCloud,
 } from 'lucide-react';
 
 const I = (Icon) => <Icon className="h-[18px] w-[18px]" />;
@@ -135,6 +136,7 @@ export function useNavigationSections({ roles, enabledModules }) {
     add(items, make('Hospital Config', Building2, '/dashboard/hospital-admin'));
     add(items, make('License', Shield, '/dashboard/license'));
     add(items, make('Database', Database, '/dashboard/backup'));
+    add(items, make('Software Update', DownloadCloud, '/dashboard/software-update'));
     add(items, make('Audit Logs', ScrollText, '/dashboard/audit'));
     sections.push({ label: 'Admin', items });
   }

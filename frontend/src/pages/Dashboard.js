@@ -51,6 +51,7 @@ import LabTechDashboard from './modules/LabTechDashboard';
 import ConsultationPage from './modules/ConsultationPage';
 import LicenseManagement from './modules/LicenseManagement';
 import BackupManagement from './modules/BackupManagement';
+import SoftwareUpdate from './modules/SoftwareUpdate';
 import LicenseBanner from '../components/LicenseBanner';
 import BackupHealthBanner from '../components/BackupHealthBanner';
 import { useNavigationSections } from '../hooks/useNavigationSections';
@@ -491,6 +492,7 @@ const Dashboard = () => {
             <Route path="/hospital-admin/*" element={<HospitalAdminModule />} />
             <Route path="/license" element={<LicenseManagement />} />
             <Route path="/backup" element={<BackupManagement />} />
+            <Route path="/software-update" element={<SoftwareUpdate />} />
             <Route path="/billing-dashboard" element={<BillingDashboard />} />
             <Route path="/audit" element={<AuditLogsPage />} />
             <Route path="/support-contact" element={

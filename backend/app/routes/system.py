@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from fastapi.responses import Response
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -299,3 +299,70 @@ async def get_app_icon():
             )
 
     raise HTTPException(status_code=404, detail="Icon not found")
+
+
+# ============================================================
+# In-app self-update
+# ============================================================
+
+def _require_admin(current_user: User):
+    if not any(r in current_user.role_names for r in ("super_admin", "hospital_admin")):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+
+@router.get("/update/check")
+async def update_check(current_user: User = Depends(get_current_user)):
+    """Check GitHub Releases for a newer signed build. Admin only."""
+    _require_admin(current_user)
+    from app.services import update_service
+    result = update_service.check_for_update()
+    # Drop internal keys (e.g. the cached _manifest) before returning.
+    return {k: v for k, v in result.items() if not k.startswith("_")}
+
+
+@router.post("/update/download")
+async def update_download(current_user: User = Depends(get_current_user)):
+    """Start a background download of the latest installer. Admin only.
+    Poll GET /update/status for progress."""
+    _require_admin(current_user)
+    from app.services import update_service
+    return update_service.start_download()
+
+
+@router.get("/update/status")
+async def update_status(current_user: User = Depends(get_current_user)):
+    """Current download/staging state — idle | downloading | verifying | ready | error."""
+    _require_admin(current_user)
+    from app.services import update_service
+    return update_service.get_download_status()
+
+
+@router.post("/update/apply")
+async def update_apply(current_user: User = Depends(get_current_user)):
+    """Launch the staged installer (one UAC prompt) and exit so it can replace
+    the running binary. Windows + bundled only. Admin only."""
+    _require_admin(current_user)
+    from app.services import update_service
+    try:
+        return update_service.apply_update()
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/update/upload")
+async def update_upload(
+    installer: UploadFile = File(...),
+    manifest: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+):
+    """Offline update path for air-gapped sites: upload an installer .exe plus
+    its signed manifest.json. The manifest signature and the installer SHA-256
+    are verified exactly as in the online flow. Admin only."""
+    _require_admin(current_user)
+    from app.services import update_service
+    installer_bytes = await installer.read()
+    manifest_text = (await manifest.read()).decode("utf-8", errors="replace")
+    try:
+        return update_service.stage_offline_update(installer_bytes, manifest_text)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))

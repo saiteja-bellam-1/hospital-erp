@@ -37,7 +37,14 @@ if "%ISCC%"=="" (
     pause & exit /b 1
 )
 
-:: Default version — override with: set INSTALLER_VERSION=1.2.0 before running
+:: Version — single source of truth is backend\app\version.py (APP_VERSION).
+:: Read it so the installer filename + AppVersion always match the .exe build.
+:: Override with: set INSTALLER_VERSION=1.2.0 before running.
+if not defined INSTALLER_VERSION (
+    for /f "tokens=2 delims== " %%V in ('findstr /b "APP_VERSION" backend\app\version.py') do (
+        set INSTALLER_VERSION=%%~V
+    )
+)
 if not defined INSTALLER_VERSION set INSTALLER_VERSION=1.1.0
 
 echo Using ISCC: %ISCC%

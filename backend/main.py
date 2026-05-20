@@ -12,6 +12,7 @@ from app.utils.paths import get_uploads_dir, get_frontend_dir, is_bundled
 from config.database import get_db, create_tables
 from config.settings import settings
 from app.utils.dependencies import get_current_user
+from app.version import APP_VERSION
 
 # Import all models to ensure proper relationship setup
 from app.models.user import User, UserRole, UserPermission
@@ -42,7 +43,7 @@ from app.middleware.maintenance import MaintenanceMiddleware
 app = FastAPI(
     title=settings.app_name,
     description="Complete KT HEALTH ERP System",
-    version="1.1.0"
+    version=APP_VERSION
 )
 
 # CORS middleware

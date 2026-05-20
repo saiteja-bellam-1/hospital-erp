@@ -44,6 +44,58 @@ def verify_license_file(file_content: str, public_key_pem: str = None) -> dict:
         raise ValueError(f"License verification failed: {str(e)}")
 
 
+def _verify_signed_payload(file_content: str, public_key_pem: str = None) -> dict:
+    """Verify a 2-line base64 blob (payload line + signature line) and return
+    the decoded JSON dict. Raises on a bad format or a tampered signature.
+    This is the shared core behind .lic verification and update-manifest
+    verification — same Ed25519 scheme, same embedded public key."""
+    lines = file_content.strip().split("\n")
+    if len(lines) != 2:
+        raise ValueError("Invalid signed file format (expected 2 lines)")
+
+    payload_bytes = base64.b64decode(lines[0])
+    signature = base64.b64decode(lines[1])
+
+    public_key = load_public_key(public_key_pem)
+    # Raises cryptography.exceptions.InvalidSignature if tampered.
+    public_key.verify(signature, payload_bytes)
+
+    return json.loads(payload_bytes.decode("utf-8"))
+
+
+def verify_signed_manifest(file_content: str, public_key_pem: str = None) -> dict:
+    """Parse + verify a signed self-update manifest. Returns the manifest dict.
+
+    The manifest uses the same 2-line base64 (payload + Ed25519 signature)
+    format as a .lic file, so a manifest that was not signed with KT's private
+    key — e.g. one swapped in by a compromised release host or a MITM — is
+    rejected here before any installer is downloaded or run.
+    """
+    try:
+        return _verify_signed_payload(file_content, public_key_pem)
+    except Exception as e:
+        raise ValueError(f"Update manifest verification failed: {str(e)}")
+
+
+def sign_manifest_data(manifest: dict, private_key_pem: str) -> str:
+    """Sign an update manifest dict with KT's private key. Returns the 2-line
+    base64 file content (payload + signature). Used by the release tooling."""
+    private_key = serialization.load_pem_private_key(
+        private_key_pem.strip().encode(), password=None
+    )
+    if not isinstance(private_key, Ed25519PrivateKey):
+        raise ValueError("Invalid key type: expected Ed25519 private key")
+
+    payload_json = json.dumps(manifest, sort_keys=True, default=str)
+    payload_bytes = payload_json.encode("utf-8")
+    signature = private_key.sign(payload_bytes)
+
+    return (
+        base64.b64encode(payload_bytes).decode("utf-8") + "\n" +
+        base64.b64encode(signature).decode("utf-8")
+    )
+
+
 def sign_license_data(license_data: dict, private_key_pem: str) -> str:
     """Sign license data with private key. Returns .lic file content."""
     private_key = serialization.load_pem_private_key(

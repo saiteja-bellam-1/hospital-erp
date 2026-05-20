@@ -698,8 +698,10 @@ class TestInpatientPhase2:
         assert r.status_code == 200
         b = r.json()
         assert b["net_deposits"] == 10000.0
-        assert b["total_billed"] == 0.0
-        assert b["balance"] == 10000.0
+        # total_billed folds in unbilled computed charges (1 day @ Rs.1500 room),
+        # not just finalized Bill rows — balance = net_deposits - total_billed.
+        assert b["total_billed"] == 1500.0
+        assert b["balance"] == 8500.0
 
     def test_top_up_deposit(self, client, auth_headers):
         r = client.post(
@@ -1762,10 +1764,14 @@ class TestLOAFlow:
         r1 = client.patch(f"/api/inpatient/loa/{_loa['loa_id']}/return",
             json={}, headers=auth_headers)
         assert r1.status_code == 200, r1.text
-        # Now discharge succeeds (no bills → balance is zero, no outstanding gate)
+        # LOA is cleared, so discharge proceeds. The unbilled room charge makes
+        # balance negative, so force the outstanding-balance gate explicitly —
+        # this test is about the LOA gate, not the billing gate.
         r2 = client.post(f"/api/inpatient/admissions/{_loa['admission_id']}/discharge",
             json={"discharge_type": "normal", "condition_on_discharge": "stable",
-                  "discharge_summary": "Returned from LOA, ready to go home"},
+                  "discharge_summary": "Returned from LOA, ready to go home",
+                  "force_outstanding_balance": True,
+                  "override_reason": "Room charge to be settled at front desk"},
             headers=auth_headers)
         assert r2.status_code == 201, r2.text
 

@@ -17,11 +17,19 @@ import logging
 from logging.handlers import RotatingFileHandler
 
 
-# Embedded build version. Bumped when a release ships. Used by the
-# upgrade-in-place detector below — when this differs from data/version.txt
-# we know the operator just dropped in a newer .exe, so we can run any
-# one-shot upgrade migrations and persist the new version.
-APP_VERSION = "1.1.0"
+# Embedded build version — single source of truth in app/version.py. Used by the
+# upgrade-in-place detector below: when this differs from data/version.txt we
+# know the operator just dropped in a newer .exe, so we can run any one-shot
+# upgrade migrations and persist the new version. The guarded fallback covers
+# the rare case where app/ is not yet importable at this point in startup.
+try:
+    from app.version import APP_VERSION
+except Exception:  # pragma: no cover - defensive: keep launcher bootable
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    try:
+        from app.version import APP_VERSION
+    except Exception:
+        APP_VERSION = "1.1.0"
 
 
 def setup_logging(exe_dir):

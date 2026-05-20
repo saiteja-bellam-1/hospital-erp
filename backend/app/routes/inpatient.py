@@ -2388,10 +2388,15 @@ async def discharge_patient(
                     )
                 forced_gates.append("missing_surgical_consent")
 
-    if forced_gates and not (data.override_reason and data.override_reason.strip()):
+    # An override_reason is required when forcing discharge gates — except for
+    # "outstanding_balance_waived", which is a soft-pass recorded for audit
+    # only. The deposit waiver carries its own deposit_waiver_reason, so it is
+    # already justified and must not demand a second reason here.
+    gates_needing_reason = [g for g in forced_gates if g != "outstanding_balance_waived"]
+    if gates_needing_reason and not (data.override_reason and data.override_reason.strip()):
         raise HTTPException(
             status_code=400,
-            detail=f"override_reason is required when forcing discharge gates: {', '.join(forced_gates)}",
+            detail=f"override_reason is required when forcing discharge gates: {', '.join(gates_needing_reason)}",
         )
 
     room = db.query(RoomManagement).filter(RoomManagement.id == admission.room_id).first()
