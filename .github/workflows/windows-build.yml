@@ -6,12 +6,14 @@ name: Windows installer build
 #   * tag push `vMAJOR.MINOR.PATCH` -> version = MAJOR.MINOR.PATCH (also creates a Release).
 #   * any other trigger             -> version = <base>.<github.run_number>
 #                                       where <base> is the MAJOR.MINOR read out of
-#                                       backend/launcher.py's APP_VERSION constant
+#                                       backend/app/version.py's APP_VERSION constant
 #                                       (so build #42 on `1.1.x` becomes `1.1.42`).
 #
-# Both APP_VERSION (in launcher.py) and INSTALLER_VERSION (passed to Inno
-# Setup) are patched to the resolved value before building so the launcher's
-# diagnostics page, the .exe metadata, and the installer filename all match.
+# APP_VERSION (in app/version.py) is patched to the resolved value before
+# building so the runtime version, .exe metadata, and installer filename match.
+# INSTALLER_VERSION (passed to Inno Setup) is set from the same resolved value.
+# On tagged releases a signed manifest.json is also built and uploaded alongside
+# the installer so the in-app self-update feature can find it.
 
 on:
   push:
@@ -48,9 +50,9 @@ jobs:
             $version = $env:GITHUB_REF -replace '^refs/tags/v',''
             $isRelease = 'true'
           } else {
-            # Pull the MAJOR.MINOR off APP_VERSION = "X.Y.Z" in launcher.py
-            $line = Select-String -Path 'backend\launcher.py' -Pattern 'APP_VERSION\s*=\s*"([0-9]+\.[0-9]+)' | Select-Object -First 1
-            if (-not $line) { Write-Error "Could not parse APP_VERSION from launcher.py"; exit 1 }
+            # Pull MAJOR.MINOR from APP_VERSION in app/version.py (single source of truth)
+            $line = Select-String -Path 'backend\app\version.py' -Pattern 'APP_VERSION\s*=\s*"([0-9]+\.[0-9]+)' | Select-Object -First 1
+            if (-not $line) { Write-Error "Could not parse APP_VERSION from app/version.py"; exit 1 }
             $base = $line.Matches[0].Groups[1].Value
             $version = "$base.$env:GITHUB_RUN_NUMBER"
             $isRelease = 'false'
@@ -59,11 +61,11 @@ jobs:
           "version=$version"     | Out-File $env:GITHUB_OUTPUT -Append
           "is_release=$isRelease" | Out-File $env:GITHUB_OUTPUT -Append
 
-      - name: Patch APP_VERSION in launcher.py
+      - name: Patch APP_VERSION in app/version.py
         shell: pwsh
         run: |
           $v = '${{ steps.ver.outputs.version }}'
-          $path = 'backend\launcher.py'
+          $path = 'backend\app\version.py'
           (Get-Content $path) `
             -replace 'APP_VERSION\s*=\s*"[^"]+"', ('APP_VERSION = "{0}"' -f $v) `
             | Set-Content $path -Encoding UTF8
@@ -134,12 +136,41 @@ jobs:
           Write-Host "Installer: $path ($size bytes)"
           "path=$path" | Out-File $env:GITHUB_OUTPUT -Append
 
+      # ----- sign update manifest (releases only) -----
+      # Produces manifest.json signed with the same Ed25519 key the app uses
+      # to verify .lic files. The app fetches this from releases/latest/download/
+      # to decide whether a self-update is available.
+      - name: Build signed update manifest
+        if: steps.ver.outputs.is_release == 'true'
+        id: manifest
+        shell: pwsh
+        run: |
+          $v = '${{ steps.ver.outputs.version }}'
+          $installer = '${{ steps.artifact.outputs.path }}'
+          $out = 'backend\dist\installer\manifest.json'
+          python backend\tools\build_release_manifest.py `
+            --installer "$installer" `
+            --version "$v" `
+            --private-key 'backend\tools\private_key.pem' `
+            --output "$out"
+          if ($LASTEXITCODE -ne 0) { Write-Error "Manifest build failed"; exit 1 }
+          "path=$out" | Out-File $env:GITHUB_OUTPUT -Append
+
       # ----- upload -----
       - name: Upload installer artifact
         uses: actions/upload-artifact@v5
         with:
           name: KTHEALTHERP_Setup_${{ steps.ver.outputs.version }}
           path: ${{ steps.artifact.outputs.path }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload manifest artifact
+        if: steps.ver.outputs.is_release == 'true'
+        uses: actions/upload-artifact@v5
+        with:
+          name: manifest_${{ steps.ver.outputs.version }}
+          path: ${{ steps.manifest.outputs.path }}
           if-no-files-found: error
           retention-days: 30
 
@@ -156,6 +187,7 @@ jobs:
             gh release create $tag --title "$title" --notes "Automated build from commit $env:GITHUB_SHA"
           }
           gh release upload $tag '${{ steps.artifact.outputs.path }}' --clobber
+          gh release upload $tag '${{ steps.manifest.outputs.path }}' --clobber
 
       # ----- (stub) code signing -----
       # When SIGNING_CERT_BASE64 is configured as a secret, we'd decode it
