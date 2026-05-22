@@ -28,6 +28,7 @@ from app.models.inpatient import (
     SurgeryPackage, AdmissionPackage, InsurancePreAuth, InsurancePreAuthExpansion,
     TPACompany, BillSplit, LeaveOfAbsence, ShiftHandover, CodeBlueEvent, BodyReleaseRecord,
     PayerScheme, AdmissionPayerChange, GatePass, DoctorDutyRoster, RoomMaintenance,
+    RoomTypeRateConfig, DoctorRoomTypeRate,
 )
 from app.models.pharmacy import Prescription, PrescriptionItem, Medicine
 from app.models.prescriptions_simple import SimplePrescription
@@ -170,6 +171,31 @@ class MaintenanceResponse(BaseModel):
     room_number: Optional[str] = None
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
+    class Config:
+        from_attributes = True
+
+# --- Room-Type Rate Config (nursing charge layer 1) ---
+class RoomTypeRateUpsert(BaseModel):
+    nursing_charge_per_visit: Optional[float] = Field(default=None, ge=0)
+
+class RoomTypeRateResponse(BaseModel):
+    id: Optional[int] = None
+    room_type: str
+    nursing_charge_per_visit: Optional[float] = None
+    class Config:
+        from_attributes = True
+
+# --- Doctor Room-Type Rate Override ---
+class DoctorRoomRateUpsert(BaseModel):
+    doctor_id: int
+    room_type: str
+    visit_rate: float = Field(..., ge=0)
+
+class DoctorRoomRateResponse(BaseModel):
+    id: int
+    doctor_id: int
+    room_type: str
+    visit_rate: float
     class Config:
         from_attributes = True
 
@@ -996,6 +1022,151 @@ async def update_maintenance(
     result["reported_by_name"] = f"{mr.reported_by.first_name} {mr.reported_by.last_name}" if mr.reported_by else None
     result["room_number"] = mr.room.room_number if mr.room else None
     return result
+
+
+# ============================================================
+# Room-Type Rate Config (nursing charge layer 1)
+# ============================================================
+
+@router.get("/room-type-rates")
+async def get_room_type_rates(
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "set_room_rates")),
+    db: Session = Depends(get_db),
+):
+    hospital = _get_hospital(db, current_user)
+    existing = {
+        r.room_type: r
+        for r in db.query(RoomTypeRateConfig).filter(
+            RoomTypeRateConfig.hospital_id == hospital.id
+        ).all()
+    }
+    result = []
+    for room_type in ROOM_TYPES.keys():
+        row = existing.get(room_type)
+        result.append({
+            "room_type": room_type,
+            "room_type_label": ROOM_TYPES[room_type],
+            "nursing_charge_per_visit": float(row.nursing_charge_per_visit) if row and row.nursing_charge_per_visit is not None else None,
+            "id": row.id if row else None,
+        })
+    return result
+
+
+@router.put("/room-type-rates/{room_type}")
+async def upsert_room_type_rate(
+    room_type: str,
+    data: RoomTypeRateUpsert,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "set_room_rates")),
+    db: Session = Depends(get_db),
+):
+    if room_type not in ROOM_TYPES:
+        raise HTTPException(status_code=400, detail="Invalid room type")
+    hospital = _get_hospital(db, current_user)
+    row = db.query(RoomTypeRateConfig).filter(
+        RoomTypeRateConfig.hospital_id == hospital.id,
+        RoomTypeRateConfig.room_type == room_type,
+    ).first()
+    if row:
+        row.nursing_charge_per_visit = data.nursing_charge_per_visit
+    else:
+        row = RoomTypeRateConfig(
+            hospital_id=hospital.id,
+            room_type=room_type,
+            nursing_charge_per_visit=data.nursing_charge_per_visit,
+        )
+        db.add(row)
+    db.commit()
+    db.refresh(row)
+    return {
+        "room_type": row.room_type,
+        "room_type_label": ROOM_TYPES[row.room_type],
+        "nursing_charge_per_visit": float(row.nursing_charge_per_visit) if row.nursing_charge_per_visit is not None else None,
+        "id": row.id,
+    }
+
+
+# ============================================================
+# Doctor Room-Type Rate Overrides
+# ============================================================
+
+@router.get("/doctor-room-rates")
+async def get_doctor_room_rates(
+    doctor_id: Optional[int] = Query(default=None),
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "set_room_rates")),
+    db: Session = Depends(get_db),
+):
+    hospital = _get_hospital(db, current_user)
+    q = db.query(DoctorRoomTypeRate).filter(
+        DoctorRoomTypeRate.hospital_id == hospital.id
+    )
+    if doctor_id:
+        q = q.filter(DoctorRoomTypeRate.doctor_id == doctor_id)
+    rows = q.all()
+    return [
+        {
+            "id": r.id,
+            "doctor_id": r.doctor_id,
+            "room_type": r.room_type,
+            "room_type_label": ROOM_TYPES.get(r.room_type, r.room_type),
+            "visit_rate": float(r.visit_rate),
+        }
+        for r in rows
+    ]
+
+
+@router.post("/doctor-room-rates", status_code=status.HTTP_201_CREATED)
+async def upsert_doctor_room_rate(
+    data: DoctorRoomRateUpsert,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "set_room_rates")),
+    db: Session = Depends(get_db),
+):
+    if data.room_type not in ROOM_TYPES:
+        raise HTTPException(status_code=400, detail="Invalid room type")
+    hospital = _get_hospital(db, current_user)
+    doctor = db.query(User).filter(User.id == data.doctor_id).first()
+    if not doctor:
+        raise HTTPException(status_code=404, detail="Doctor not found")
+    row = db.query(DoctorRoomTypeRate).filter(
+        DoctorRoomTypeRate.hospital_id == hospital.id,
+        DoctorRoomTypeRate.doctor_id == data.doctor_id,
+        DoctorRoomTypeRate.room_type == data.room_type,
+    ).first()
+    if row:
+        row.visit_rate = data.visit_rate
+    else:
+        row = DoctorRoomTypeRate(
+            hospital_id=hospital.id,
+            doctor_id=data.doctor_id,
+            room_type=data.room_type,
+            visit_rate=data.visit_rate,
+        )
+        db.add(row)
+    db.commit()
+    db.refresh(row)
+    return {
+        "id": row.id,
+        "doctor_id": row.doctor_id,
+        "room_type": row.room_type,
+        "room_type_label": ROOM_TYPES.get(row.room_type, row.room_type),
+        "visit_rate": float(row.visit_rate),
+    }
+
+
+@router.delete("/doctor-room-rates/{rate_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_doctor_room_rate(
+    rate_id: int,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "set_room_rates")),
+    db: Session = Depends(get_db),
+):
+    hospital = _get_hospital(db, current_user)
+    row = db.query(DoctorRoomTypeRate).filter(
+        DoctorRoomTypeRate.id == rate_id,
+        DoctorRoomTypeRate.hospital_id == hospital.id,
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Rate not found")
+    db.delete(row)
+    db.commit()
 
 
 # ============================================================
@@ -2302,15 +2473,16 @@ async def create_visit(
         else:
             _require_duty_doctor(db, hospital.id, visitor.id, datetime.now())
 
-    # Auto-populate charge_amount from the visit type:
-    #   - nurse_visit: room's nursing_charge_per_visit → global InpatientRateConfig.nurse_visit_rate → 0
-    #   - doctor_visit: visitor's User.inpatient_fee_inr (consultant fee)
-    #   - duty_doctor_visit: hospital-wide InpatientRateConfig.duty_visit_rate
-    #   - procedure: 0 (OT charges flow through ot_schedules)
+    # Auto-populate charge_amount from the visit type.
+    # Resolution chains (most-specific → least-specific):
+    #   nurse_visit:       per-room → room-type RoomTypeRateConfig → global nurse_visit_rate → 0
+    #   doctor_visit:      DoctorRoomTypeRate (doctor+room_type) → doctor.inpatient_fee_inr → global → 0
+    #   duty_doctor_visit: hospital-wide InpatientRateConfig.duty_visit_rate → 0
+    #   procedure:         0 (OT charges flow through ot_schedules)
     charge = data.charge_amount
     if charge is None:
         if data.visit_type == "nurse_visit":
-            # Room-specific nursing charge takes priority over global rate
+            # 1. Per-room specific override
             room_nursing = None
             if admission.room and admission.room.nursing_charge_per_visit:
                 try:
@@ -2320,13 +2492,30 @@ async def create_visit(
             if room_nursing and room_nursing > 0:
                 charge = room_nursing
             else:
-                rc = db.query(InpatientRateConfig).filter(
-                    InpatientRateConfig.hospital_id == hospital.id
-                ).first()
-                try:
-                    charge = float(rc.nurse_visit_rate) if rc and rc.nurse_visit_rate else 0
-                except (ValueError, TypeError):
-                    charge = 0
+                # 2. Room-type level (layer 1)
+                room_type = admission.room.room_type if admission.room else None
+                rt_rate = None
+                if room_type:
+                    rtrc = db.query(RoomTypeRateConfig).filter(
+                        RoomTypeRateConfig.hospital_id == hospital.id,
+                        RoomTypeRateConfig.room_type == room_type,
+                    ).first()
+                    if rtrc and rtrc.nursing_charge_per_visit is not None:
+                        try:
+                            rt_rate = float(rtrc.nursing_charge_per_visit)
+                        except (ValueError, TypeError):
+                            rt_rate = None
+                if rt_rate is not None and rt_rate > 0:
+                    charge = rt_rate
+                else:
+                    # 3. Global fallback
+                    rc = db.query(InpatientRateConfig).filter(
+                        InpatientRateConfig.hospital_id == hospital.id
+                    ).first()
+                    try:
+                        charge = float(rc.nurse_visit_rate) if rc and rc.nurse_visit_rate else 0
+                    except (ValueError, TypeError):
+                        charge = 0
         elif data.visit_type == "duty_doctor_visit":
             rc = db.query(InpatientRateConfig).filter(
                 InpatientRateConfig.hospital_id == hospital.id
@@ -2336,10 +2525,26 @@ async def create_visit(
             except (ValueError, TypeError):
                 charge = 0
         elif visitor and data.visit_type == "doctor_visit":
-            try:
-                charge = float(visitor.inpatient_fee_inr) if visitor.inpatient_fee_inr else 0
-            except (ValueError, TypeError):
-                charge = 0
+            # 1. Per-doctor, per-room-type override
+            room_type = admission.room.room_type if admission.room else None
+            drtr = None
+            if room_type:
+                drtr = db.query(DoctorRoomTypeRate).filter(
+                    DoctorRoomTypeRate.hospital_id == hospital.id,
+                    DoctorRoomTypeRate.doctor_id == visitor.id,
+                    DoctorRoomTypeRate.room_type == room_type,
+                ).first()
+            if drtr:
+                try:
+                    charge = float(drtr.visit_rate)
+                except (ValueError, TypeError):
+                    charge = 0
+            else:
+                # 2. Doctor base inpatient fee (layer 1)
+                try:
+                    charge = float(visitor.inpatient_fee_inr) if visitor.inpatient_fee_inr else 0
+                except (ValueError, TypeError):
+                    charge = 0
         else:
             charge = 0
 

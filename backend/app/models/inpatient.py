@@ -1158,3 +1158,42 @@ class DoctorDutyRoster(Base):
     __table_args__ = (
         UniqueConstraint("doctor_id", "roster_date", "shift", name="uq_doctor_shift_per_date"),
     )
+
+
+class RoomTypeRateConfig(Base):
+    """Per-hospital, per-room-type nursing charge configuration.
+    Sits between per-room nursing_charge_per_visit and the global
+    InpatientRateConfig.nurse_visit_rate in the charge resolution chain."""
+    __tablename__ = "room_type_rate_configs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+    room_type = Column(String(30), nullable=False)
+    nursing_charge_per_visit = Column(Numeric(10, 2), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("hospital_id", "room_type", name="uq_room_type_rate_per_hospital"),
+    )
+
+
+class DoctorRoomTypeRate(Base):
+    """Per-doctor, per-room-type visit rate override.
+    When a doctor visits a patient, the charge resolution is:
+      explicit amount → this table → doctor.inpatient_fee_inr → global rate → 0"""
+    __tablename__ = "doctor_room_type_rates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+    doctor_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    room_type = Column(String(30), nullable=False)
+    visit_rate = Column(Numeric(10, 2), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    doctor = relationship("User", foreign_keys=[doctor_id])
+
+    __table_args__ = (
+        UniqueConstraint("hospital_id", "doctor_id", "room_type", name="uq_doctor_room_type_rate"),
+    )

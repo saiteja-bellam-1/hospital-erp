@@ -65,6 +65,28 @@ const AdminModule = () => {
     description: ''
   });
 
+  // Doctor room-type rate overrides
+  const [doctorRoomRates, setDoctorRoomRates] = useState([]);
+  const [doctorRoomRatesEdits, setDoctorRoomRatesEdits] = useState({});
+  const [doctorRoomRatesSaving, setDoctorRoomRatesSaving] = useState({});
+
+  const ROOM_TYPES = [
+    { value: 'general',      label: 'General Ward' },
+    { value: 'semi_private', label: 'Semi-Private' },
+    { value: 'private',      label: 'Private' },
+    { value: 'suite',        label: 'Suite / Deluxe' },
+    { value: 'icu',          label: 'ICU' },
+    { value: 'hdu',          label: 'HDU / Step-Down' },
+    { value: 'nicu',         label: 'NICU' },
+    { value: 'picu',         label: 'PICU' },
+    { value: 'isolation',    label: 'Isolation' },
+    { value: 'labour',       label: 'Labour & Delivery' },
+    { value: 'recovery',     label: 'Post-Op Recovery' },
+    { value: 'daycare',      label: 'Day Care' },
+    { value: 'emergency',    label: 'Emergency / Casualty' },
+    { value: 'operation',    label: 'Operation Theatre' },
+  ];
+
   useEffect(() => {
     if (hasRole('super_admin') || hasRole('hospital_admin')) {
       if (hasRole('super_admin')) {
@@ -328,7 +350,7 @@ const AdminModule = () => {
     });
   };
 
-  const editUser = (user) => {
+  const editUser = async (user) => {
     setEditingUser(user);
     const userRoleIds = (user.user_roles || []).map(r => r.id);
     setUserForm({
@@ -349,6 +371,21 @@ const AdminModule = () => {
       qualification: user.qualification || '',
       experience_years: user.experience_years || ''
     });
+    // Load doctor room-type rates if this user has a doctor role
+    const isDoctor = (user.user_roles || []).some(r => r.name === 'doctor') ||
+                     user.user_role?.name === 'doctor';
+    setDoctorRoomRates([]);
+    setDoctorRoomRatesEdits({});
+    if (isDoctor) {
+      try {
+        const res = await axios.get('/api/inpatient/doctor-room-rates', { params: { doctor_id: user.id } });
+        const rates = res.data || [];
+        setDoctorRoomRates(rates);
+        const edits = {};
+        rates.forEach(r => { edits[r.room_type] = String(r.visit_rate); });
+        setDoctorRoomRatesEdits(edits);
+      } catch { /* non-fatal */ }
+    }
     setShowUserForm(true);
   };
 
@@ -662,6 +699,98 @@ const AdminModule = () => {
                         <Label>Emergency Fee</Label>
                         <Input value={userForm.emergency_fee_inr} onChange={(e) => setUserForm({ ...userForm, emergency_fee_inr: e.target.value })} placeholder="₹5000" />
                       </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Doctor room-type visit rate overrides — only shown when editing an existing doctor */}
+                {isDoctorRole() && editingUser && (
+                  <div className="space-y-3 border-t pt-3">
+                    <div>
+                      <p className="text-sm font-semibold text-gray-700">Room-Type Visit Rates</p>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        Override the base inpatient fee per room type. Leave blank to use the base fee (₹{userForm.inpatient_fee_inr || '—'}).
+                      </p>
+                    </div>
+                    <div className="border rounded overflow-hidden">
+                      <table className="w-full text-xs">
+                        <thead className="bg-gray-50">
+                          <tr>
+                            <th className="px-3 py-1.5 text-left font-medium">Room Type</th>
+                            <th className="px-3 py-1.5 text-left font-medium">Visit Rate (₹)</th>
+                            <th className="px-3 py-1.5"></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {ROOM_TYPES.map(rt => {
+                            const existing = doctorRoomRates.find(r => r.room_type === rt.value);
+                            const editVal = doctorRoomRatesEdits[rt.value] ?? '';
+                            return (
+                              <tr key={rt.value} className="border-t">
+                                <td className="px-3 py-1.5">{rt.label}</td>
+                                <td className="px-3 py-1.5">
+                                  <Input
+                                    type="number"
+                                    min="0"
+                                    step="0.01"
+                                    className="h-7 w-28 text-xs"
+                                    placeholder={`${userForm.inpatient_fee_inr || '—'}`}
+                                    value={editVal}
+                                    onChange={e => setDoctorRoomRatesEdits(prev => ({ ...prev, [rt.value]: e.target.value }))}
+                                  />
+                                </td>
+                                <td className="px-3 py-1.5 flex gap-1">
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-6 text-xs px-2"
+                                    disabled={!!doctorRoomRatesSaving[rt.value]}
+                                    onClick={async () => {
+                                      const val = doctorRoomRatesEdits[rt.value];
+                                      if (!val || val === '') {
+                                        // Delete override if exists
+                                        if (existing) {
+                                          setDoctorRoomRatesSaving(prev => ({ ...prev, [rt.value]: true }));
+                                          try {
+                                            await axios.delete(`/api/inpatient/doctor-room-rates/${existing.id}`);
+                                            setDoctorRoomRates(prev => prev.filter(r => r.room_type !== rt.value));
+                                            toast({ title: 'Cleared', description: `${rt.label} override removed.` });
+                                          } catch (err) {
+                                            toast({ title: 'Error', description: err.response?.data?.detail || 'Failed', variant: 'destructive' });
+                                          } finally {
+                                            setDoctorRoomRatesSaving(prev => ({ ...prev, [rt.value]: false }));
+                                          }
+                                        }
+                                        return;
+                                      }
+                                      setDoctorRoomRatesSaving(prev => ({ ...prev, [rt.value]: true }));
+                                      try {
+                                        const res = await axios.post('/api/inpatient/doctor-room-rates', {
+                                          doctor_id: editingUser.id,
+                                          room_type: rt.value,
+                                          visit_rate: parseFloat(val),
+                                        });
+                                        setDoctorRoomRates(prev => {
+                                          const filtered = prev.filter(r => r.room_type !== rt.value);
+                                          return [...filtered, res.data];
+                                        });
+                                        toast({ title: 'Saved', description: `${rt.label} rate set to ₹${val}.` });
+                                      } catch (err) {
+                                        toast({ title: 'Error', description: err.response?.data?.detail || 'Failed', variant: 'destructive' });
+                                      } finally {
+                                        setDoctorRoomRatesSaving(prev => ({ ...prev, [rt.value]: false }));
+                                      }
+                                    }}
+                                  >
+                                    {doctorRoomRatesSaving[rt.value] ? '...' : existing ? 'Update' : 'Set'}
+                                  </Button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
                     </div>
                   </div>
                 )}

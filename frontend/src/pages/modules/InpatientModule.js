@@ -337,6 +337,11 @@ const InpatientModule = () => {
   const [editingTpa, setEditingTpa] = useState(null);
   const [tpaForm, setTpaForm] = useState({ tpa_name: '', tpa_code: '', address: '', phone: '', email: '', default_discount_percent: 0, contract_details: '' });
 
+  // Room-type rates and doctor room-type rates
+  const [roomTypeRates, setRoomTypeRates] = useState([]);
+  const [roomTypeRatesSaving, setRoomTypeRatesSaving] = useState({});
+  const [roomTypeRatesEdits, setRoomTypeRatesEdits] = useState({});
+
   // Phase 2: Pre-authorisations
   const [preauths, setPreauths] = useState([]);
   const [preauthSearch, setPreauthSearch] = useState('');
@@ -789,6 +794,18 @@ const InpatientModule = () => {
     } catch { setTpaList([]); }
   }, []);
 
+  const fetchRoomTypeRates = useCallback(async () => {
+    try {
+      const res = await axios.get('/api/inpatient/room-type-rates');
+      const edits = {};
+      (res.data || []).forEach(r => {
+        edits[r.room_type] = r.nursing_charge_per_visit != null ? String(r.nursing_charge_per_visit) : '';
+      });
+      setRoomTypeRates(res.data || []);
+      setRoomTypeRatesEdits(edits);
+    } catch { setRoomTypeRates([]); }
+  }, []);
+
   // Phase 3 fetchers
   const fetchTransferHistory = useCallback(async (admissionId) => {
     try {
@@ -1002,6 +1019,7 @@ const InpatientModule = () => {
       fetchAncillaryServices();
       fetchPackages();
       fetchTpaList();
+      fetchRoomTypeRates();
     }
     if (activeTab === 'housekeeping') {
       fetchCleaningBeds();
@@ -1028,7 +1046,7 @@ const InpatientModule = () => {
     }
     if (activeTab === 'procedures') fetchProcedures(false);
     if (activeTab === 'ot') fetchProcedures(true);  // OT scheduling needs the active catalog
-  }, [activeTab, admissionsPage, dischargePage, fetchAdmissions, fetchRooms, fetchDashboard, fetchAvailableRooms, fetchOTSchedules, fetchPreauths, fetchAncillaryServices, fetchPackages, fetchTpaList, fetchCleaningBeds, fetchTurnoverStats, fetchPendingTransfers, fetchReservations, fetchReadmissions, fetchMortalityList, fetchRosterGrid, fetchRosterCoverage, fetchNursesList, fetchProcedures, fetchTriageQueue]);
+  }, [activeTab, admissionsPage, dischargePage, fetchAdmissions, fetchRooms, fetchDashboard, fetchAvailableRooms, fetchOTSchedules, fetchPreauths, fetchAncillaryServices, fetchPackages, fetchTpaList, fetchRoomTypeRates, fetchCleaningBeds, fetchTurnoverStats, fetchPendingTransfers, fetchReservations, fetchReadmissions, fetchMortalityList, fetchRosterGrid, fetchRosterCoverage, fetchNursesList, fetchProcedures, fetchTriageQueue]);
 
   // ============================================================
   // Patient search typeahead
@@ -5835,11 +5853,12 @@ const InpatientModule = () => {
           {activeTab === 'setup' && (
             <div className="p-6 overflow-y-auto h-full space-y-4">
               <h2 className="text-lg font-semibold">Billing Setup</h2>
-              <Tabs value={setupSubTab} onValueChange={(v) => { setSetupSubTab(v); if (v === 'consent-templates') fetchConsentTemplates(); }}>
+              <Tabs value={setupSubTab} onValueChange={(v) => { setSetupSubTab(v); if (v === 'consent-templates') fetchConsentTemplates(); if (v === 'room-type-rates') fetchRoomTypeRates(); }}>
                 <TabsList>
                   <TabsTrigger value="ancillary">Ancillary Services</TabsTrigger>
                   <TabsTrigger value="packages">Surgery Packages</TabsTrigger>
                   <TabsTrigger value="tpa">TPA Companies</TabsTrigger>
+                  <TabsTrigger value="room-type-rates">Room Type Rates</TabsTrigger>
                   <TabsTrigger value="consent-templates">Consent Templates</TabsTrigger>
                 </TabsList>
 
@@ -5981,6 +6000,70 @@ const InpatientModule = () => {
                           </CardContent>
                         </Card>
                       ))}
+                    </div>
+                  )}
+                </TabsContent>
+
+                <TabsContent value="room-type-rates" className="space-y-3 mt-3">
+                  <p className="text-sm text-gray-500">
+                    Set nursing charge per visit for each room type. This is the "layer 1" rate — applied when a room does not have its own nursing charge set.
+                    Doctor visit rates per room type are configured in Admin → Users (doctor profile).
+                  </p>
+                  {roomTypeRates.length === 0 ? (
+                    <Card><CardContent className="py-8 text-center text-gray-500 text-sm">Loading...</CardContent></Card>
+                  ) : (
+                    <div className="border rounded overflow-hidden">
+                      <table className="w-full text-sm">
+                        <thead className="bg-gray-50">
+                          <tr>
+                            <th className="px-4 py-2 text-left font-medium">Room Type</th>
+                            <th className="px-4 py-2 text-left font-medium">Nursing Charge / Visit (₹)</th>
+                            <th className="px-4 py-2 text-left font-medium"></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {roomTypeRates.map(r => (
+                            <tr key={r.room_type} className="border-t">
+                              <td className="px-4 py-2 font-medium">{r.room_type_label}</td>
+                              <td className="px-4 py-2">
+                                <Input
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  className="h-8 w-36 text-sm"
+                                  placeholder="—"
+                                  value={roomTypeRatesEdits[r.room_type] ?? ''}
+                                  onChange={e => setRoomTypeRatesEdits(prev => ({ ...prev, [r.room_type]: e.target.value }))}
+                                />
+                              </td>
+                              <td className="px-4 py-2">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  disabled={!!roomTypeRatesSaving[r.room_type]}
+                                  onClick={async () => {
+                                    const val = roomTypeRatesEdits[r.room_type];
+                                    setRoomTypeRatesSaving(prev => ({ ...prev, [r.room_type]: true }));
+                                    try {
+                                      await axios.put(`/api/inpatient/room-type-rates/${r.room_type}`, {
+                                        nursing_charge_per_visit: val !== '' && val != null ? parseFloat(val) : null,
+                                      });
+                                      toast({ title: 'Saved', description: `${r.room_type_label} nursing rate updated.` });
+                                      fetchRoomTypeRates();
+                                    } catch (err) {
+                                      toast({ title: 'Error', description: err.response?.data?.detail || 'Save failed', variant: 'destructive' });
+                                    } finally {
+                                      setRoomTypeRatesSaving(prev => ({ ...prev, [r.room_type]: false }));
+                                    }
+                                  }}
+                                >
+                                  {roomTypeRatesSaving[r.room_type] ? 'Saving...' : 'Save'}
+                                </Button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
                     </div>
                   )}
                 </TabsContent>
