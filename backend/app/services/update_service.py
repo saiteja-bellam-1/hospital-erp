@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # GitHub repo that hosts the Releases (manifest.json + installer .exe assets).
 # Releases must be publicly downloadable. Override per-deployment with the
 # "update_repo" key in config.json.
-DEFAULT_UPDATE_REPO = "saiteja-bellam-1/hospital-erp"
+DEFAULT_UPDATE_REPO = "saiteja-bellam-1/KTH-releases"
 
 MANIFEST_ASSET = "manifest.json"
 HTTP_TIMEOUT = 20  # seconds for the manifest fetch

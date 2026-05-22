@@ -177,17 +177,18 @@ jobs:
       - name: Create GitHub Release
         if: steps.ver.outputs.is_release == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
         shell: pwsh
         run: |
           $tag = "v${{ steps.ver.outputs.version }}"
           $title = "KT HEALTH ERP ${{ steps.ver.outputs.version }}"
-          gh release view $tag 2>$null
+          $repo = "saiteja-bellam-1/KTH-releases"
+          gh release view $tag --repo $repo 2>$null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $tag --title "$title" --notes "Automated build from commit $env:GITHUB_SHA"
+            gh release create $tag --repo $repo --title "$title" --notes "Automated build from commit $env:GITHUB_SHA"
           }
-          gh release upload $tag '${{ steps.artifact.outputs.path }}' --clobber
-          gh release upload $tag '${{ steps.manifest.outputs.path }}' --clobber
+          gh release upload $tag --repo $repo '${{ steps.artifact.outputs.path }}' --clobber
+          gh release upload $tag --repo $repo '${{ steps.manifest.outputs.path }}' --clobber
 
       # ----- (stub) code signing -----
       # When SIGNING_CERT_BASE64 is configured as a secret, we'd decode it
