@@ -15,6 +15,7 @@ import {
   Mail,
   X as XIcon,
   LayoutGrid,
+  Wifi,
 } from 'lucide-react';
 import axios from 'axios';
 
@@ -75,6 +76,7 @@ const Dashboard = () => {
   const [showSupportPopup, setShowSupportPopup] = useState(false);
   const [pwaInstallPrompt, setPwaInstallPrompt] = useState(null);
   const [appVersion, setAppVersion] = useState('');
+  const [networkInfo, setNetworkInfo] = useState(null);
 
   // Capture the PWA install prompt
   useEffect(() => {
@@ -157,6 +159,12 @@ const Dashboard = () => {
       axios.get('/api/system/version').then(r => setAppVersion(r.data.version)).catch(() => {});
     }
   }, [user]);
+
+  useEffect(() => {
+    if (showSupportPopup && !networkInfo) {
+      axios.get('/api/system/network-info').then(r => setNetworkInfo(r.data)).catch(() => {});
+    }
+  }, [showSupportPopup, networkInfo]);
 
   // Close sidebar on route change (mobile)
   useEffect(() => {
@@ -589,6 +597,24 @@ const Dashboard = () => {
                     </div>
                   </div>
                 </div>
+
+                {/* Network Access */}
+                {networkInfo?.ips?.length > 0 && (
+                  <div className="space-y-2.5">
+                    <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Network Access</p>
+                    <div className="bg-blue-50 rounded-xl p-3.5 space-y-1.5">
+                      <p className="text-xs text-gray-500 mb-2">Other devices on this network can open the app at:</p>
+                      {networkInfo.ips.map(ip => (
+                        <div key={ip} className="flex items-center gap-2">
+                          <Wifi className="h-3.5 w-3.5 text-blue-500 flex-shrink-0" />
+                          <code className="text-xs font-mono font-semibold text-blue-700 select-all">
+                            http://{ip}:{networkInfo.port}
+                          </code>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 {/* Version */}
                 {appVersion && (

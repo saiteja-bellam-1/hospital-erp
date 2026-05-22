@@ -55,6 +55,33 @@ async def get_app_version():
     return {"version": _app.version}
 
 
+@router.get("/network-info")
+async def get_network_info(current_user: User = Depends(get_current_user)):
+    """Return LAN IP addresses other users can use to reach this server."""
+    import socket
+    ips = []
+    try:
+        # One reliable method: open a UDP socket towards a public address
+        # (no packet actually sent) — the OS picks the outbound interface IP.
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            ips.append(s.getsockname()[0])
+    except Exception:
+        pass
+
+    # Also enumerate all interface addresses to catch multi-homed machines.
+    try:
+        hostname = socket.gethostname()
+        for addr in socket.getaddrinfo(hostname, None, socket.AF_INET):
+            ip = addr[4][0]
+            if not ip.startswith("127.") and ip not in ips:
+                ips.append(ip)
+    except Exception:
+        pass
+
+    return {"ips": ips, "port": 8000}
+
+
 @router.get("/diagnostics")
 async def get_install_diagnostics(current_user: User = Depends(get_current_user)):
     """Installer-side diagnostics: desktop-shortcut outcome + schema migration
