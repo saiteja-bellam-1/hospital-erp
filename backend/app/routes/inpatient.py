@@ -63,8 +63,10 @@ class RoomCreate(BaseModel):
     room_type: str = Field(..., pattern="^(general|private|icu|emergency|operation)$")
     floor: Optional[str] = None
     department: Optional[str] = None
+    ward: Optional[str] = None
     bed_count: int = Field(default=1, ge=1)
     room_charge_per_day: float = Field(..., ge=0)
+    nursing_charge_per_visit: Optional[float] = Field(default=0.0, ge=0)
     amenities: Optional[str] = None
 
 class RoomUpdate(BaseModel):
@@ -72,8 +74,10 @@ class RoomUpdate(BaseModel):
     room_type: Optional[str] = None
     floor: Optional[str] = None
     department: Optional[str] = None
+    ward: Optional[str] = None
     bed_count: Optional[int] = Field(default=None, ge=1)
     room_charge_per_day: Optional[float] = Field(default=None, ge=0)
+    nursing_charge_per_visit: Optional[float] = Field(default=None, ge=0)
     amenities: Optional[str] = None
 
 class RoomResponse(BaseModel):
@@ -82,9 +86,11 @@ class RoomResponse(BaseModel):
     room_type: str
     floor: Optional[str]
     department: Optional[str]
+    ward: Optional[str]
     bed_count: int
     available_beds: int
     room_charge_per_day: float
+    nursing_charge_per_visit: Optional[float] = 0.0
     amenities: Optional[str]
     is_active: bool
     is_occupied: bool
@@ -2081,7 +2087,9 @@ async def create_visit(
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "record_visits")),
     db: Session = Depends(get_db),
 ):
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    admission = db.query(Admission).options(
+        joinedload(Admission.room)
+    ).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
     if admission.status != "admitted":
@@ -2106,13 +2114,31 @@ async def create_visit(
             _require_duty_doctor(db, hospital.id, visitor.id, datetime.now())
 
     # Auto-populate charge_amount from the visit type:
-    #   - doctor_visit / nurse_visit: visitor's User.inpatient_fee_inr (consultant fee)
+    #   - nurse_visit: room's nursing_charge_per_visit → global InpatientRateConfig.nurse_visit_rate → 0
+    #   - doctor_visit: visitor's User.inpatient_fee_inr (consultant fee)
     #   - duty_doctor_visit: hospital-wide InpatientRateConfig.duty_visit_rate
-    #     (institutional fixed fee, independent of who is on duty)
     #   - procedure: 0 (OT charges flow through ot_schedules)
     charge = data.charge_amount
     if charge is None:
-        if data.visit_type == "duty_doctor_visit":
+        if data.visit_type == "nurse_visit":
+            # Room-specific nursing charge takes priority over global rate
+            room_nursing = None
+            if admission.room and admission.room.nursing_charge_per_visit:
+                try:
+                    room_nursing = float(admission.room.nursing_charge_per_visit)
+                except (ValueError, TypeError):
+                    room_nursing = None
+            if room_nursing and room_nursing > 0:
+                charge = room_nursing
+            else:
+                rc = db.query(InpatientRateConfig).filter(
+                    InpatientRateConfig.hospital_id == hospital.id
+                ).first()
+                try:
+                    charge = float(rc.nurse_visit_rate) if rc and rc.nurse_visit_rate else 0
+                except (ValueError, TypeError):
+                    charge = 0
+        elif data.visit_type == "duty_doctor_visit":
             rc = db.query(InpatientRateConfig).filter(
                 InpatientRateConfig.hospital_id == hospital.id
             ).first()
@@ -2120,7 +2146,7 @@ async def create_visit(
                 charge = float(rc.duty_visit_rate) if rc and rc.duty_visit_rate else 0
             except (ValueError, TypeError):
                 charge = 0
-        elif visitor and data.visit_type in ("doctor_visit", "nurse_visit"):
+        elif visitor and data.visit_type == "doctor_visit":
             try:
                 charge = float(visitor.inpatient_fee_inr) if visitor.inpatient_fee_inr else 0
             except (ValueError, TypeError):

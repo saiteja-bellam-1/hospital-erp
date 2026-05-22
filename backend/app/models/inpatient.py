@@ -14,6 +14,8 @@ class RoomManagement(Base):
     bed_count = Column(Integer, default=1)
     available_beds = Column(Integer, default=1)
     room_charge_per_day = Column(Float, nullable=False)
+    ward = Column(String(100))
+    nursing_charge_per_visit = Column(Numeric(10, 2), default=0.00)
     amenities = Column(Text)  # JSON or comma-separated list
     is_active = Column(Boolean, default=True)
     is_occupied = Column(Boolean, default=False)

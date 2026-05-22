@@ -215,7 +215,7 @@ const InpatientModule = () => {
   const [showRoomDialog, setShowRoomDialog] = useState(false);
   const [editingRoom, setEditingRoom] = useState(null);
   const [roomForm, setRoomForm] = useState({
-    room_number: '', room_type: 'general', floor: '', department: '',
+    room_number: '', room_type: 'general', floor: '', department: '', ward: '', nursing_charge_per_visit: '',
     bed_count: 1, room_charge_per_day: '',  amenities: '',
   });
 
@@ -1683,7 +1683,7 @@ const InpatientModule = () => {
     e.preventDefault();
     setLoading(true);
     try {
-      const payload = { ...roomForm, bed_count: parseInt(roomForm.bed_count), room_charge_per_day: parseFloat(roomForm.room_charge_per_day) };
+      const payload = { ...roomForm, bed_count: parseInt(roomForm.bed_count), room_charge_per_day: parseFloat(roomForm.room_charge_per_day), nursing_charge_per_visit: parseFloat(roomForm.nursing_charge_per_visit) || 0 };
       if (editingRoom) {
         await axios.put(`/api/inpatient/rooms/${editingRoom.id}`, payload);
         toast({ title: 'Success', description: 'Room updated' });
@@ -1701,12 +1701,13 @@ const InpatientModule = () => {
     } finally { setLoading(false); }
   };
 
-  const resetRoomForm = () => setRoomForm({ room_number: '', room_type: 'general', floor: '', department: '', bed_count: 1, room_charge_per_day: '', amenities: '' });
+  const resetRoomForm = () => setRoomForm({ room_number: '', room_type: 'general', floor: '', department: '', ward: '', bed_count: 1, room_charge_per_day: '', nursing_charge_per_visit: '', amenities: '' });
 
   const handleEditRoom = (room) => {
     setEditingRoom(room);
     setRoomForm({ room_number: room.room_number, room_type: room.room_type, floor: room.floor || '', department: room.department || '',
-      bed_count: room.bed_count, room_charge_per_day: room.room_charge_per_day, amenities: room.amenities || '' });
+      ward: room.ward || '', bed_count: room.bed_count, room_charge_per_day: room.room_charge_per_day,
+      nursing_charge_per_visit: room.nursing_charge_per_visit || '', amenities: room.amenities || '' });
     setShowRoomDialog(true);
   };
 
@@ -4662,10 +4663,14 @@ const InpatientModule = () => {
                     </div>
                   </div>
                   <div className="text-sm text-gray-600 space-y-1">
+                    {room.ward && <p className="font-medium text-blue-700">Ward: {room.ward}</p>}
                     {room.floor && <p>Floor: {room.floor}</p>}
                     {room.department && <p>Dept: {room.department}</p>}
                     <p>Beds: {room.available_beds}/{room.bed_count} available</p>
-                    <p>Charge: ₹{room.room_charge_per_day}/day</p>
+                    <p>Room charge: ₹{room.room_charge_per_day}/day</p>
+                    {room.nursing_charge_per_visit > 0 && (
+                      <p className="text-purple-700 font-medium">Nursing: ₹{room.nursing_charge_per_visit}/visit</p>
+                    )}
                   </div>
                   <div className="w-full bg-gray-200 rounded-full h-2 mt-2">
                     <div className={`h-2 rounded-full ${room.available_beds === 0 ? 'bg-red-500' : 'bg-green-500'}`}
@@ -8816,12 +8821,18 @@ const InpatientModule = () => {
               </div>
             </div>
             <div className="grid grid-cols-2 gap-4">
+              <div><Label>Ward</Label><Input value={roomForm.ward} onChange={e => setRoomForm(p => ({ ...p, ward: e.target.value }))} placeholder="e.g. Cardiology, ICU-A" /></div>
               <div><Label>Floor</Label><Input value={roomForm.floor} onChange={e => setRoomForm(p => ({ ...p, floor: e.target.value }))} /></div>
-              <div><Label>Department</Label><Input value={roomForm.department} onChange={e => setRoomForm(p => ({ ...p, department: e.target.value }))} /></div>
             </div>
+            <div><Label>Department</Label><Input value={roomForm.department} onChange={e => setRoomForm(p => ({ ...p, department: e.target.value }))} /></div>
             <div className="grid grid-cols-2 gap-4">
               <div><Label>Bed Count *</Label><Input type="number" min="1" required value={roomForm.bed_count} onChange={e => setRoomForm(p => ({ ...p, bed_count: e.target.value }))} /></div>
-              <div><Label>Charge / Day (₹) *</Label><Input type="number" min="0" step="0.01" required value={roomForm.room_charge_per_day} onChange={e => setRoomForm(p => ({ ...p, room_charge_per_day: e.target.value }))} /></div>
+              <div><Label>Room Charge / Day (₹) *</Label><Input type="number" min="0" step="0.01" required value={roomForm.room_charge_per_day} onChange={e => setRoomForm(p => ({ ...p, room_charge_per_day: e.target.value }))} /></div>
+            </div>
+            <div>
+              <Label>Nursing Charge / Visit (₹)</Label>
+              <Input type="number" min="0" step="0.01" value={roomForm.nursing_charge_per_visit} onChange={e => setRoomForm(p => ({ ...p, nursing_charge_per_visit: e.target.value }))} placeholder="0.00 — overrides global nursing rate" />
+              <p className="text-xs text-gray-500 mt-1">Applied per nurse visit for patients in this room. Leave blank to use the global nursing rate.</p>
             </div>
             <div><Label>Amenities</Label><Input value={roomForm.amenities} onChange={e => setRoomForm(p => ({ ...p, amenities: e.target.value }))} placeholder="AC, TV, Attached Bath..." /></div>
             <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Saving...' : editingRoom ? 'Update Room' : 'Create Room'}</Button>

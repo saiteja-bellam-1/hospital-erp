@@ -172,6 +172,9 @@ NEW_COLUMNS = [
     ("admissions", "rejection_reason", "TEXT"),
     # B4 — Duty-doctor visit rate (separate from consultant per-visit fee)
     ("inpatient_rate_configs", "duty_visit_rate", "NUMERIC(10, 2) DEFAULT 0.00"),
+    # Room-level ward assignment and per-room nursing charge
+    ("room_management", "ward", "VARCHAR(100)"),
+    ("room_management", "nursing_charge_per_visit", "NUMERIC(10, 2) DEFAULT 0.00"),
 ]
 
 # B6 — body release table is created via create_all on startup; no column adds.
