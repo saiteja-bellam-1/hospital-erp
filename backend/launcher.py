@@ -235,7 +235,97 @@ def create_desktop_shortcut():
         print(f"Note: Could not create desktop shortcut: {e}")
 
 
+# --- Console / windowless-mode handling -------------------------------------
+# The bundled exe is built console=False (GUI subsystem), so it runs windowless
+# by default and we pipe stdout/stderr into a log file. Launched with --debug it
+# attaches a real console so an operator can watch logs live. None of this
+# applies in dev mode (python launcher.py) — there a normal terminal exists.
+
+_instance_mutex = None  # kept alive for the process lifetime so the lock holds
+
+
+def _is_debug_requested():
+    """True when the operator wants a visible log console."""
+    if any(a in ("--debug", "-d") for a in sys.argv[1:]):
+        return True
+    return os.environ.get("KTHEALTH_DEBUG", "").strip() in ("1", "true", "True")
+
+
+def _enable_debug_console():
+    """Attach a real console to this GUI-subsystem process so logs are visible.
+
+    Attaches to the parent terminal when launched from cmd/PowerShell; otherwise
+    allocates a fresh console window. Caller redirects to a log file if this
+    leaves stdout unusable. No-op outside frozen Windows.
+    """
+    if not getattr(sys, "frozen", False) or os.name != "nt":
+        return
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        ATTACH_PARENT_PROCESS = -1
+        if not kernel32.AttachConsole(ATTACH_PARENT_PROCESS):
+            kernel32.AllocConsole()
+        sys.stdout = open("CONOUT$", "w", buffering=1, encoding="utf-8", errors="replace")
+        sys.stderr = open("CONOUT$", "w", buffering=1, encoding="utf-8", errors="replace")
+        try:
+            sys.stdin = open("CONIN$", "r", encoding="utf-8")
+        except Exception:
+            pass
+    except Exception:
+        pass  # caller falls back to log-file redirection
+
+
+def _redirect_output_to_logfile(exe_dir):
+    """Windowless mode: a console=False exe has no usable stdout/stderr. Point
+    them at data/logs/server.log so print() AND uvicorn output are captured.
+    uvicorn resolves ext://sys.stdout at uvicorn.run() time, after this swap.
+    Rotates once when the file grows past ~2 MB."""
+    logs_dir = os.path.join(exe_dir, "data", "logs")
+    try:
+        os.makedirs(logs_dir, exist_ok=True)
+        log_path = os.path.join(logs_dir, "server.log")
+        if os.path.isfile(log_path) and os.path.getsize(log_path) > 2_000_000:
+            os.replace(log_path, log_path + ".old")
+        f = open(log_path, "a", buffering=1, encoding="utf-8", errors="replace")
+        sys.stdout = f
+        sys.stderr = f
+    except Exception:
+        pass
+
+
+def _acquire_single_instance(exe_dir):
+    """Return True if this is the only instance. If the app is already running,
+    open the browser to it and return False so the caller can exit. Returns True
+    (does not block startup) outside frozen Windows or on any failure."""
+    global _instance_mutex
+    if not getattr(sys, "frozen", False) or os.name != "nt":
+        return True
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        ERROR_ALREADY_EXISTS = 183
+        _instance_mutex = kernel32.CreateMutexW(None, False, "KTHEALTHERP_SingleInstance")
+        if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+            port = 8000
+            try:
+                with open(os.path.join(exe_dir, "data", ".runtime_port")) as f:
+                    port = int(f.read().strip())
+            except Exception:
+                pass
+            try:
+                webbrowser.open(f"http://localhost:{port}")
+            except Exception:
+                pass
+            return False
+        return True
+    except Exception:
+        return True
+
+
 def main():
+    debug_mode = _is_debug_requested()
+
     # If running as PyInstaller bundle, set up paths before importing app
     if getattr(sys, 'frozen', False):
         # Change working directory to where the .exe lives
@@ -246,6 +336,17 @@ def main():
         data_dir = os.path.join(exe_dir, "data")
         os.makedirs(data_dir, exist_ok=True)
         os.makedirs(os.path.join(data_dir, "uploads"), exist_ok=True)
+
+        # Decide console mode BEFORE anything prints — a console=False exe has
+        # no usable stdout until we attach a console or redirect to a log file.
+        if debug_mode:
+            _enable_debug_console()
+        if not debug_mode or sys.stdout is None:
+            _redirect_output_to_logfile(exe_dir)
+
+        # Single-instance guard: if the app is already running, focus it and exit.
+        if not _acquire_single_instance(exe_dir):
+            return
 
         # Copy icon to accessible location (outside the temp _MEIPASS dir)
         assets_dir = os.path.join(exe_dir, "assets")
@@ -307,6 +408,16 @@ def main():
     port = find_free_port()
     local_ip = get_local_ip()
 
+    # Record the live port so a duplicate launch can focus this instance.
+    if getattr(sys, 'frozen', False):
+        try:
+            runtime_port_file = os.path.join(
+                os.path.dirname(sys.executable), "data", ".runtime_port")
+            with open(runtime_port_file, "w") as f:
+                f.write(str(port))
+        except Exception:
+            pass
+
     print()
     print("=" * 50)
     print("  KT HEALTH ERP Server")
@@ -330,7 +441,7 @@ def main():
             host="0.0.0.0",
             port=port,
             reload=False,
-            log_level="info",
+            log_level="debug" if debug_mode else "info",
         )
     except KeyboardInterrupt:
         print("\nShutting down KT HEALTH ERP...")

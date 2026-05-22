@@ -114,18 +114,26 @@ async def get_install_diagnostics(current_user: User = Depends(get_current_user)
 @router.get("/logs")
 async def get_recent_logs(
     lines: int = 200,
+    source: str = "launcher",
     current_user: User = Depends(get_current_user),
 ):
-    """Return the last N lines of data/logs/launcher.log. Admin only.
+    """Return the last N lines of a server log file. Admin only.
     Used by the Diagnostics page for in-app log inspection without sshing
-    into the box."""
+    into the box.
+
+    source:
+      'launcher' -> data/logs/launcher.log  (launcher's own logging calls)
+      'server'   -> data/logs/server.log    (stdout/stderr captured when the
+                    bundled exe runs windowless)
+    """
     if not any(r in current_user.role_names for r in ("super_admin", "hospital_admin")):
         raise HTTPException(status_code=403, detail="Admin access required")
 
     from app.utils.paths import get_base_dir
-    log_path = os.path.join(get_base_dir(), "data", "logs", "launcher.log")
+    filename = "server.log" if source == "server" else "launcher.log"
+    log_path = os.path.join(get_base_dir(), "data", "logs", filename)
     if not os.path.isfile(log_path):
-        return {"path": log_path, "exists": False, "lines": []}
+        return {"path": log_path, "source": source, "exists": False, "lines": []}
 
     # Cap the request so an unbounded `lines=999999` can't OOM the box
     lines = max(10, min(lines, 5000))
@@ -133,7 +141,7 @@ async def get_recent_logs(
         # Read tail efficiently for typical log sizes (<10MB)
         with open(log_path, "r", encoding="utf-8", errors="replace") as f:
             tail = f.readlines()[-lines:]
-        return {"path": log_path, "exists": True, "lines": tail}
+        return {"path": log_path, "source": source, "exists": True, "lines": tail}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not read log: {e}")
 
@@ -366,3 +374,25 @@ async def update_upload(
         return update_service.stage_offline_update(installer_bytes, manifest_text)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/shutdown")
+async def shutdown_server(current_user: User = Depends(get_current_user)):
+    """Stop the server process. Admin only.
+
+    The bundled exe runs windowless (no console window to close), so operators
+    need an in-app way to stop it. Returns 200 immediately, then hard-exits
+    ~1s later — the same handoff pattern as the self-update flow. SQLite is
+    safe to stop this way: each request commits its own transaction and the
+    mirror-backup thread uses the atomic .backup() API."""
+    _require_admin(current_user)
+
+    import threading
+    import logging as _logging
+    _logging.getLogger("launcher").warning(
+        "Server shutdown requested by user '%s'",
+        getattr(current_user, "username", "?"),
+    )
+
+    threading.Timer(1.0, lambda: os._exit(0)).start()
+    return {"shutting_down": True}

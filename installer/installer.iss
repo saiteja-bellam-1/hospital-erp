@@ -72,6 +72,8 @@ Source: "bin\{#DbCheckExe}"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#AppName}";   Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\assets\icon.ico"; Tasks: startmenuicon
+; Debug shortcut: runs the app with a visible log console for troubleshooting.
+Name: "{group}\{#AppName} (Debug Mode)"; Filename: "{app}\{#AppExeName}"; Parameters: "--debug"; IconFilename: "{app}\assets\icon.ico"; Comment: "Run {#AppName} with a visible log console for troubleshooting"; Tasks: startmenuicon
 Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 Name: "{commondesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\assets\icon.ico"; Tasks: desktopicon
 

@@ -6,7 +6,7 @@ import { useToast } from '../../hooks/use-toast';
 import axios from 'axios';
 import {
   DownloadCloud, RefreshCw, CheckCircle2, AlertTriangle, Loader2,
-  Upload, Rocket, ShieldCheck,
+  Upload, Rocket, ShieldCheck, PowerOff,
 } from 'lucide-react';
 
 const fmtBytes = (n) => {
@@ -23,6 +23,8 @@ const SoftwareUpdate = () => {
   const [status, setStatus] = useState(null);     // /update/status result
   const [applying, setApplying] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [shutdownConfirm, setShutdownConfirm] = useState(false);
+  const [shuttingDown, setShuttingDown] = useState(false);
 
   // Offline path
   const [offInstaller, setOffInstaller] = useState(null);
@@ -138,6 +140,17 @@ const SoftwareUpdate = () => {
     }
   };
 
+  const shutdownServer = async () => {
+    setShutdownConfirm(false);
+    setShuttingDown(true);
+    try {
+      await axios.post('/api/system/shutdown');
+      // Backend hard-exits ~1s later; the connection drops shortly after.
+    } catch {
+      // The process may exit before the response arrives — expected.
+    }
+  };
+
   const st = status?.state || 'idle';
   const isReady = st === 'ready';
   const isDownloading = st === 'downloading' || st === 'verifying';
@@ -153,6 +166,23 @@ const SoftwareUpdate = () => {
             <p className="text-sm text-gray-600">
               The application will close and restart automatically. This page will
               lose its connection — wait about a minute, then reload it.
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  if (shuttingDown) {
+    return (
+      <div className="max-w-2xl mx-auto p-6">
+        <Card>
+          <CardContent className="py-12 text-center space-y-3">
+            <PowerOff className="h-10 w-10 mx-auto text-red-600" />
+            <h2 className="text-lg font-semibold">Server is shutting down…</h2>
+            <p className="text-sm text-gray-600">
+              KT HEALTH ERP has stopped. To use it again, start it from the
+              desktop or Start Menu icon on the server computer.
             </p>
           </CardContent>
         </Card>
@@ -339,6 +369,53 @@ const SoftwareUpdate = () => {
           )}
         </CardContent>
       </Card>
+
+      {/* Shut down server */}
+      <Card className="border-red-200">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <PowerOff className="h-5 w-5 text-red-600" /> Shut down server
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-xs text-gray-500">
+            Stops the KT HEALTH ERP server. Everyone on the network loses
+            access until it is started again from the desktop or Start Menu
+            icon on the server computer.
+          </p>
+          <Button variant="destructive" size="sm" onClick={() => setShutdownConfirm(true)}>
+            <PowerOff className="h-4 w-4 mr-1" /> Shut Down Server
+          </Button>
+        </CardContent>
+      </Card>
+
+      {/* Shutdown confirm dialog (inline) */}
+      {shutdownConfirm && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+          <Card className="max-w-md mx-4">
+            <CardHeader>
+              <CardTitle className="text-base">Shut down the server?</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm">
+              <p>
+                This stops the server for <strong>everyone</strong> on the
+                network. The app must be restarted from the desktop or Start
+                Menu icon on the server computer.
+              </p>
+              <p className="text-amber-800 bg-amber-50 border border-amber-200 rounded p-2 text-xs">
+                Make sure no one is mid-entry (billing, admissions) before
+                continuing.
+              </p>
+              <div className="flex justify-end gap-2 pt-1">
+                <Button variant="outline" onClick={() => setShutdownConfirm(false)}>Cancel</Button>
+                <Button variant="destructive" onClick={shutdownServer}>
+                  <PowerOff className="h-4 w-4 mr-1" /> Shut Down
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
     </div>
   );
 };
