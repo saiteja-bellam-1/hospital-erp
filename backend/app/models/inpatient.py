@@ -5,26 +5,32 @@ from config.database import Base
 
 class RoomManagement(Base):
     __tablename__ = "room_management"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     room_number = Column(String(20), nullable=False)
-    room_type = Column(String(30), nullable=False)  # general, private, icu, emergency, operation
+    # Expanded room types — see ROOM_TYPES in routes/inpatient.py for full list
+    room_type = Column(String(30), nullable=False)
     floor = Column(String(10))
     department = Column(String(50))
+    ward = Column(String(100))
     bed_count = Column(Integer, default=1)
     available_beds = Column(Integer, default=1)
     room_charge_per_day = Column(Float, nullable=False)
-    ward = Column(String(100))
     nursing_charge_per_visit = Column(Numeric(10, 2), default=0.00)
-    amenities = Column(Text)  # JSON or comma-separated list
+    # Structured amenities — JSON list of strings, e.g. ["ac","tv","oxygen_point"]
+    amenities = Column(Text)
+    # Clinical flags
+    is_isolation = Column(Boolean, default=False)   # negative-pressure / infection-control room
+    gender_policy = Column(String(10), default="mixed")  # mixed | male | female
     is_active = Column(Boolean, default=True)
     is_occupied = Column(Boolean, default=False)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    
+
     admissions = relationship("Admission", back_populates="room")
     beds = relationship("Bed", back_populates="room")
+    maintenance_requests = relationship("RoomMaintenance", back_populates="room", foreign_keys="RoomMaintenance.room_id")
 
 
 class Bed(Base):
@@ -847,6 +853,37 @@ class BedTurnoverLog(Base):
 
     bed = relationship("Bed", foreign_keys=[bed_id])
     changed_by = relationship("User", foreign_keys=[changed_by_id])
+
+
+class RoomMaintenance(Base):
+    """Tracks maintenance issues reported against a room or specific bed."""
+    __tablename__ = "room_maintenance"
+
+    id = Column(Integer, primary_key=True, index=True)
+    room_id = Column(Integer, ForeignKey("room_management.id"), nullable=False)
+    bed_id = Column(Integer, ForeignKey("beds.id"), nullable=True)   # None = whole room
+    # Issue classification
+    issue_type = Column(String(30), nullable=False)  # electrical, plumbing, hvac, equipment, structural, cleaning, other
+    priority = Column(String(10), default="routine")  # routine | urgent | emergency
+    title = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+    # Workflow
+    status = Column(String(20), default="open")   # open | in_progress | completed | deferred
+    assigned_to = Column(String(200), nullable=True)   # free-text staff name / team
+    scheduled_date = Column(DateTime(timezone=True), nullable=True)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+    resolution_notes = Column(Text, nullable=True)
+    # Audit
+    reported_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    updated_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    room = relationship("RoomManagement", back_populates="maintenance_requests", foreign_keys=[room_id])
+    bed = relationship("Bed", foreign_keys=[bed_id])
+    reported_by = relationship("User", foreign_keys=[reported_by_id])
+    updated_by = relationship("User", foreign_keys=[updated_by_id])
 
 
 class BedReservation(Base):

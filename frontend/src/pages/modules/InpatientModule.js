@@ -27,7 +27,7 @@ import {
   ClipboardList, LayoutDashboard, Scissors, Shield, Upload, Download, Paperclip,
   HeartPulse, Pill, AlertTriangle, Check, XCircle, Wallet, Package, Receipt, FileCheck, Building2,
   Sparkles, CalendarDays, ArrowRightLeft, UserPlus, FileSignature, AlertOctagon, RotateCcw, Skull,
-  CalendarRange, Printer
+  CalendarRange, Printer, Wrench
 } from 'lucide-react';
 import axios from 'axios';
 
@@ -215,9 +215,18 @@ const InpatientModule = () => {
   const [showRoomDialog, setShowRoomDialog] = useState(false);
   const [editingRoom, setEditingRoom] = useState(null);
   const [roomForm, setRoomForm] = useState({
-    room_number: '', room_type: 'general', floor: '', department: '', ward: '', nursing_charge_per_visit: '',
-    bed_count: 1, room_charge_per_day: '',  amenities: '',
+    room_number: '', room_type: 'general', floor: '', department: '', ward: '',
+    nursing_charge_per_visit: '', bed_count: 1, room_charge_per_day: '',
+    amenities: [], is_isolation: false, gender_policy: 'mixed',
   });
+  const [roomTypes, setRoomTypes] = useState([]);
+  const [amenityOptions, setAmenityOptions] = useState([]);
+  // Maintenance
+  const [maintenanceList, setMaintenanceList] = useState([]);
+  const [showMaintenanceDialog, setShowMaintenanceDialog] = useState(false);
+  const [maintenanceRoom, setMaintenanceRoom] = useState(null);
+  const [maintenanceForm, setMaintenanceForm] = useState({ issue_type: 'equipment', priority: 'routine', title: '', description: '', assigned_to: '' });
+  const [maintenanceFilter, setMaintenanceFilter] = useState('open');
 
   // Bed Management
   const [selectedRoomForBeds, setSelectedRoomForBeds] = useState(null);
@@ -540,6 +549,26 @@ const InpatientModule = () => {
       setRooms(res.data);
     } catch { /* silent */ }
   }, []);
+
+  const fetchRoomMeta = useCallback(async () => {
+    try {
+      const [typesRes, amenitiesRes] = await Promise.all([
+        axios.get('/api/inpatient/room-types'),
+        axios.get('/api/inpatient/amenity-options'),
+      ]);
+      setRoomTypes(typesRes.data);
+      setAmenityOptions(amenitiesRes.data);
+    } catch { /* silent */ }
+  }, []);
+
+  const fetchMaintenance = useCallback(async () => {
+    try {
+      const params = {};
+      if (maintenanceFilter && maintenanceFilter !== 'all') params.status_filter = maintenanceFilter;
+      const res = await axios.get('/api/inpatient/maintenance', { params });
+      setMaintenanceList(res.data);
+    } catch { /* silent */ }
+  }, [maintenanceFilter]);
 
   const fetchDoctors = useCallback(async () => {
     try {
@@ -964,7 +993,7 @@ const InpatientModule = () => {
   useEffect(() => {
     if (activeTab === 'admissions') { fetchAdmissions('admitted', admissionsPage); fetchAvailableRooms(); }
     if (activeTab === 'triage') { fetchTriageQueue(); }
-    if (activeTab === 'rooms') { fetchRooms(); }
+    if (activeTab === 'rooms') { fetchRooms(); fetchRoomMeta(); fetchMaintenance(); }
     if (activeTab === 'discharge') fetchAdmissions('discharged', dischargePage);
     if (activeTab === 'ot') fetchOTSchedules();
     if (activeTab === 'dashboard') fetchDashboard();
@@ -1701,13 +1730,21 @@ const InpatientModule = () => {
     } finally { setLoading(false); }
   };
 
-  const resetRoomForm = () => setRoomForm({ room_number: '', room_type: 'general', floor: '', department: '', ward: '', bed_count: 1, room_charge_per_day: '', nursing_charge_per_visit: '', amenities: '' });
+  const resetRoomForm = () => setRoomForm({ room_number: '', room_type: 'general', floor: '', department: '', ward: '', bed_count: 1, room_charge_per_day: '', nursing_charge_per_visit: '', amenities: [], is_isolation: false, gender_policy: 'mixed' });
 
   const handleEditRoom = (room) => {
     setEditingRoom(room);
-    setRoomForm({ room_number: room.room_number, room_type: room.room_type, floor: room.floor || '', department: room.department || '',
-      ward: room.ward || '', bed_count: room.bed_count, room_charge_per_day: room.room_charge_per_day,
-      nursing_charge_per_visit: room.nursing_charge_per_visit || '', amenities: room.amenities || '' });
+    let amenities = room.amenities;
+    if (typeof amenities === 'string') {
+      try { amenities = JSON.parse(amenities); } catch { amenities = amenities ? amenities.split(',').map(s => s.trim()) : []; }
+    }
+    setRoomForm({
+      room_number: room.room_number, room_type: room.room_type, floor: room.floor || '',
+      department: room.department || '', ward: room.ward || '', bed_count: room.bed_count,
+      room_charge_per_day: room.room_charge_per_day, nursing_charge_per_visit: room.nursing_charge_per_visit || '',
+      amenities: Array.isArray(amenities) ? amenities : [], is_isolation: room.is_isolation || false,
+      gender_policy: room.gender_policy || 'mixed',
+    });
     setShowRoomDialog(true);
   };
 
@@ -1718,6 +1755,32 @@ const InpatientModule = () => {
       fetchRooms();
     } catch (err) {
       toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed to delete room' });
+    }
+  };
+
+  // Maintenance
+  const handleReportMaintenance = async (e) => {
+    e.preventDefault();
+    if (!maintenanceRoom) return;
+    setLoading(true);
+    try {
+      await axios.post('/api/inpatient/maintenance', { ...maintenanceForm, room_id: maintenanceRoom.id });
+      toast({ title: 'Reported', description: 'Maintenance issue submitted' });
+      setShowMaintenanceDialog(false);
+      setMaintenanceForm({ issue_type: 'equipment', priority: 'routine', title: '', description: '', assigned_to: '' });
+      fetchMaintenance();
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed to report issue' });
+    } finally { setLoading(false); }
+  };
+
+  const handleUpdateMaintenance = async (id, patch) => {
+    try {
+      await axios.patch(`/api/inpatient/maintenance/${id}`, patch);
+      fetchMaintenance();
+      toast({ title: 'Updated', description: 'Maintenance status updated' });
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed to update' });
     }
   };
 
@@ -4643,15 +4706,26 @@ const InpatientModule = () => {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {rooms.map(room => (
+            {rooms.map(room => {
+              let amenities = room.amenities;
+              if (typeof amenities === 'string') { try { amenities = JSON.parse(amenities); } catch { amenities = []; } }
+              const roomTypeDisplay = roomTypes.find(t => t.value === room.room_type)?.label || roomTypeLabel[room.room_type] || room.room_type;
+              const openIssues = maintenanceList.filter(m => m.room_id === room.id && m.status !== 'completed' && m.status !== 'deferred').length;
+              return (
               <Card key={room.id} className={!room.is_active ? 'opacity-50' : ''}>
                 <CardContent className="pt-4">
                   <div className="flex items-center justify-between mb-2">
-                    <div>
+                    <div className="flex items-center gap-2 flex-wrap">
                       <h3 className="font-semibold">{room.room_number}</h3>
-                      <Badge className="mt-1">{roomTypeLabel[room.room_type] || room.room_type}</Badge>
+                      <Badge className="mt-1">{roomTypeDisplay}</Badge>
+                      {room.is_isolation && <Badge className="mt-1 bg-yellow-100 text-yellow-800 border-yellow-300">Isolation</Badge>}
+                      {room.gender_policy !== 'mixed' && <Badge className="mt-1 bg-indigo-100 text-indigo-800 border-indigo-300 capitalize">{room.gender_policy}</Badge>}
                     </div>
-                    <div className="flex gap-1">
+                    <div className="flex gap-1 flex-shrink-0">
+                      <Button variant="ghost" size="sm" title="Report maintenance issue" onClick={() => { setMaintenanceRoom(room); setShowMaintenanceDialog(true); }}>
+                        <Wrench className="h-4 w-4 text-orange-500" />
+                        {openIssues > 0 && <span className="ml-1 text-xs text-orange-600 font-bold">{openIssues}</span>}
+                      </Button>
                       <Button variant="ghost" size="sm" onClick={() => openBedManager(room)} title="Manage Beds"><Bed className="h-4 w-4" /></Button>
                       <Button variant="ghost" size="sm" onClick={() => handleEditRoom(room)}><Edit2 className="h-4 w-4" /></Button>
                       {room.is_active && (
@@ -4671,6 +4745,14 @@ const InpatientModule = () => {
                     {room.nursing_charge_per_visit > 0 && (
                       <p className="text-purple-700 font-medium">Nursing: ₹{room.nursing_charge_per_visit}/visit</p>
                     )}
+                    {Array.isArray(amenities) && amenities.length > 0 && (
+                      <div className="flex flex-wrap gap-1 pt-1">
+                        {amenities.map(a => {
+                          const opt = amenityOptions.find(o => o.value === a);
+                          return <span key={a} className="text-[10px] bg-gray-100 rounded px-1.5 py-0.5">{opt?.label || a}</span>;
+                        })}
+                      </div>
+                    )}
                   </div>
                   <div className="w-full bg-gray-200 rounded-full h-2 mt-2">
                     <div className={`h-2 rounded-full ${room.available_beds === 0 ? 'bg-red-500' : 'bg-green-500'}`}
@@ -4678,7 +4760,50 @@ const InpatientModule = () => {
                   </div>
                 </CardContent>
               </Card>
-            ))}
+              );
+            })}
+          </div>
+
+          {/* Maintenance issues panel */}
+          <div className="mt-6">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-semibold text-base flex items-center gap-2"><Wrench className="h-4 w-4 text-orange-500" /> Maintenance Issues</h3>
+              <div className="flex gap-2">
+                {['open','in_progress','completed','all'].map(f => (
+                  <button key={f} onClick={() => { setMaintenanceFilter(f); }} className={`text-xs px-2.5 py-1 rounded-full border capitalize ${maintenanceFilter === f ? 'bg-orange-500 text-white border-orange-500' : 'bg-white text-gray-600 border-gray-200'}`}>
+                    {f === 'in_progress' ? 'In Progress' : f === 'all' ? 'All' : f.charAt(0).toUpperCase() + f.slice(1)}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {maintenanceList.length === 0 ? (
+              <p className="text-sm text-gray-400 text-center py-4">No maintenance issues</p>
+            ) : (
+              <div className="space-y-2">
+                {maintenanceList.map(m => (
+                  <div key={m.id} className="flex items-start gap-3 bg-white border rounded-xl p-3">
+                    <div className={`mt-0.5 h-2.5 w-2.5 rounded-full flex-shrink-0 ${m.priority === 'emergency' ? 'bg-red-500' : m.priority === 'urgent' ? 'bg-orange-400' : 'bg-gray-300'}`} />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="font-medium text-sm">{m.title}</p>
+                        <Badge className="text-[10px]">{m.room_number}</Badge>
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${m.status === 'completed' ? 'bg-green-100 text-green-700' : m.status === 'in_progress' ? 'bg-blue-100 text-blue-700' : m.status === 'deferred' ? 'bg-gray-100 text-gray-600' : 'bg-orange-100 text-orange-700'}`}>{m.status.replace('_',' ')}</span>
+                        <span className="text-[10px] text-gray-400">{m.issue_type}</span>
+                      </div>
+                      {m.description && <p className="text-xs text-gray-500 mt-0.5 truncate">{m.description}</p>}
+                      {m.assigned_to && <p className="text-xs text-gray-400">Assigned: {m.assigned_to}</p>}
+                    </div>
+                    {m.status !== 'completed' && (
+                      <div className="flex gap-1 flex-shrink-0">
+                        {m.status === 'open' && <button onClick={() => handleUpdateMaintenance(m.id, { status: 'in_progress' })} className="text-xs px-2 py-1 bg-blue-50 text-blue-600 rounded hover:bg-blue-100">Start</button>}
+                        {m.status === 'in_progress' && <button onClick={() => handleUpdateMaintenance(m.id, { status: 'completed' })} className="text-xs px-2 py-1 bg-green-50 text-green-600 rounded hover:bg-green-100">Complete</button>}
+                        <button onClick={() => handleUpdateMaintenance(m.id, { status: 'deferred' })} className="text-xs px-2 py-1 bg-gray-50 text-gray-500 rounded hover:bg-gray-100">Defer</button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           </div>
@@ -8800,7 +8925,7 @@ const InpatientModule = () => {
       <Dialog open={showRoomDialog} onOpenChange={setShowRoomDialog}>
         <DialogContent className="max-w-md">
           <DialogHeader><DialogTitle>{editingRoom ? 'Edit Room' : 'Add Room'}</DialogTitle></DialogHeader>
-          <form onSubmit={handleSaveRoom} className="space-y-4">
+          <form onSubmit={handleSaveRoom} className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <Label>Room Number *</Label>
@@ -8811,11 +8936,24 @@ const InpatientModule = () => {
                 <Select value={roomForm.room_type} onValueChange={v => setRoomForm(p => ({ ...p, room_type: v }))}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="general">General</SelectItem>
-                    <SelectItem value="private">Private</SelectItem>
-                    <SelectItem value="icu">ICU</SelectItem>
-                    <SelectItem value="emergency">Emergency</SelectItem>
-                    <SelectItem value="operation">Operation</SelectItem>
+                    {roomTypes.length > 0 ? roomTypes.map(t => (
+                      <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
+                    )) : <>
+                      <SelectItem value="general">General Ward</SelectItem>
+                      <SelectItem value="semi_private">Semi-Private</SelectItem>
+                      <SelectItem value="private">Private</SelectItem>
+                      <SelectItem value="suite">Suite / Deluxe</SelectItem>
+                      <SelectItem value="icu">ICU</SelectItem>
+                      <SelectItem value="hdu">HDU / Step-Down</SelectItem>
+                      <SelectItem value="nicu">NICU</SelectItem>
+                      <SelectItem value="picu">PICU</SelectItem>
+                      <SelectItem value="isolation">Isolation</SelectItem>
+                      <SelectItem value="labour">Labour &amp; Delivery</SelectItem>
+                      <SelectItem value="recovery">Post-Op Recovery</SelectItem>
+                      <SelectItem value="daycare">Day Care</SelectItem>
+                      <SelectItem value="emergency">Emergency / Casualty</SelectItem>
+                      <SelectItem value="operation">Operation Theatre</SelectItem>
+                    </>}
                   </SelectContent>
                 </Select>
               </div>
@@ -8831,11 +8969,108 @@ const InpatientModule = () => {
             </div>
             <div>
               <Label>Nursing Charge / Visit (₹)</Label>
-              <Input type="number" min="0" step="0.01" value={roomForm.nursing_charge_per_visit} onChange={e => setRoomForm(p => ({ ...p, nursing_charge_per_visit: e.target.value }))} placeholder="0.00 — overrides global nursing rate" />
-              <p className="text-xs text-gray-500 mt-1">Applied per nurse visit for patients in this room. Leave blank to use the global nursing rate.</p>
+              <Input type="number" min="0" step="0.01" value={roomForm.nursing_charge_per_visit} onChange={e => setRoomForm(p => ({ ...p, nursing_charge_per_visit: e.target.value }))} placeholder="0.00 — overrides global rate" />
+              <p className="text-xs text-gray-500 mt-1">Leave blank to use the global nursing rate.</p>
             </div>
-            <div><Label>Amenities</Label><Input value={roomForm.amenities} onChange={e => setRoomForm(p => ({ ...p, amenities: e.target.value }))} placeholder="AC, TV, Attached Bath..." /></div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label>Gender Policy</Label>
+                <Select value={roomForm.gender_policy} onValueChange={v => setRoomForm(p => ({ ...p, gender_policy: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="mixed">Mixed</SelectItem>
+                    <SelectItem value="male">Male Only</SelectItem>
+                    <SelectItem value="female">Female Only</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex flex-col justify-center gap-1 pt-5">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={roomForm.is_isolation} onChange={e => setRoomForm(p => ({ ...p, is_isolation: e.target.checked }))} className="rounded" />
+                  <span className="text-sm font-medium">Isolation Room</span>
+                </label>
+                <p className="text-xs text-gray-400">Infection control / negative pressure</p>
+              </div>
+            </div>
+            <div>
+              <Label>Amenities</Label>
+              <div className="grid grid-cols-3 gap-1.5 mt-1.5">
+                {(amenityOptions.length > 0 ? amenityOptions : [
+                  {value:'ac',label:'Air Conditioning'},{value:'tv',label:'Television'},{value:'wifi',label:'Wi-Fi'},
+                  {value:'attached_bath',label:'Attached Bathroom'},{value:'refrigerator',label:'Refrigerator'},{value:'locker',label:'Locker'},
+                  {value:'oxygen_point',label:'Oxygen Point'},{value:'suction_point',label:'Suction Point'},{value:'call_bell',label:'Call Bell'},
+                  {value:'visitor_chair',label:'Visitor Chair'},{value:'cardiac_monitor',label:'Cardiac Monitor'},{value:'pulse_oximeter',label:'Pulse Oximeter'},
+                  {value:'ventilator_support',label:'Ventilator Support'},{value:'infusion_pump',label:'Infusion Pump'},{value:'dialysis_point',label:'Dialysis Point'},
+                ]).map(opt => (
+                  <label key={opt.value} className="flex items-center gap-1.5 cursor-pointer text-xs">
+                    <input type="checkbox"
+                      checked={Array.isArray(roomForm.amenities) && roomForm.amenities.includes(opt.value)}
+                      onChange={e => setRoomForm(p => ({
+                        ...p,
+                        amenities: e.target.checked
+                          ? [...(Array.isArray(p.amenities) ? p.amenities : []), opt.value]
+                          : (Array.isArray(p.amenities) ? p.amenities : []).filter(a => a !== opt.value)
+                      }))}
+                      className="rounded" />
+                    {opt.label}
+                  </label>
+                ))}
+              </div>
+            </div>
             <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Saving...' : editingRoom ? 'Update Room' : 'Create Room'}</Button>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Maintenance Report Dialog */}
+      <Dialog open={showMaintenanceDialog} onOpenChange={setShowMaintenanceDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Report Maintenance Issue{maintenanceRoom ? ` — Room ${maintenanceRoom.room_number}` : ''}</DialogTitle>
+          </DialogHeader>
+          <form onSubmit={handleReportMaintenance} className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label>Issue Type *</Label>
+                <Select value={maintenanceForm.issue_type} onValueChange={v => setMaintenanceForm(p => ({ ...p, issue_type: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="electrical">Electrical</SelectItem>
+                    <SelectItem value="plumbing">Plumbing</SelectItem>
+                    <SelectItem value="hvac">HVAC / AC</SelectItem>
+                    <SelectItem value="equipment">Equipment</SelectItem>
+                    <SelectItem value="structural">Structural</SelectItem>
+                    <SelectItem value="cleaning">Deep Cleaning</SelectItem>
+                    <SelectItem value="other">Other</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Priority *</Label>
+                <Select value={maintenanceForm.priority} onValueChange={v => setMaintenanceForm(p => ({ ...p, priority: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="routine">Routine</SelectItem>
+                    <SelectItem value="urgent">Urgent</SelectItem>
+                    <SelectItem value="emergency">Emergency</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div>
+              <Label>Title *</Label>
+              <Input required value={maintenanceForm.title} onChange={e => setMaintenanceForm(p => ({ ...p, title: e.target.value }))} placeholder="e.g. AC not cooling, leaking tap..." />
+            </div>
+            <div>
+              <Label>Description</Label>
+              <textarea value={maintenanceForm.description} onChange={e => setMaintenanceForm(p => ({ ...p, description: e.target.value }))}
+                className="w-full border rounded-md px-3 py-2 text-sm min-h-[72px] resize-none" placeholder="Additional details..." />
+            </div>
+            <div>
+              <Label>Assign To</Label>
+              <Input value={maintenanceForm.assigned_to} onChange={e => setMaintenanceForm(p => ({ ...p, assigned_to: e.target.value }))} placeholder="Staff name or team (optional)" />
+            </div>
+            <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Submitting...' : 'Submit Issue'}</Button>
           </form>
         </DialogContent>
       </Dialog>

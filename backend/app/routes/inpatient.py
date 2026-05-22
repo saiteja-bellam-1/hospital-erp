@@ -3,7 +3,7 @@ from fastapi.responses import StreamingResponse, FileResponse
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func as sqlfunc, and_, cast, Date, update as sa_update
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Any
 from datetime import datetime, date, timezone
 
 
@@ -27,7 +27,7 @@ from app.models.inpatient import (
     AdmissionDeposit, AncillaryServiceCatalog, AdmissionAncillaryCharge, Procedure,
     SurgeryPackage, AdmissionPackage, InsurancePreAuth, InsurancePreAuthExpansion,
     TPACompany, BillSplit, LeaveOfAbsence, ShiftHandover, CodeBlueEvent, BodyReleaseRecord,
-    PayerScheme, AdmissionPayerChange, GatePass, DoctorDutyRoster,
+    PayerScheme, AdmissionPayerChange, GatePass, DoctorDutyRoster, RoomMaintenance,
 )
 from app.models.pharmacy import Prescription, PrescriptionItem, Medicine
 from app.models.prescriptions_simple import SimplePrescription
@@ -58,27 +58,60 @@ def _patient_age(patient):
 # ============================================================
 
 # --- Room ---
+ROOM_TYPES = {
+    # Standard ward types
+    "general":      "General Ward",
+    "semi_private": "Semi-Private",
+    "private":      "Private",
+    "suite":        "Suite / Deluxe",
+    # Critical care
+    "icu":          "ICU",
+    "hdu":          "HDU / Step-Down",
+    "nicu":         "NICU",
+    "picu":         "PICU",
+    # Specialised
+    "isolation":    "Isolation",
+    "labour":       "Labour & Delivery",
+    "recovery":     "Post-Op Recovery",
+    "daycare":      "Day Care",
+    # Procedural
+    "emergency":    "Emergency / Casualty",
+    "operation":    "Operation Theatre",
+}
+ROOM_TYPE_PATTERN = "^(" + "|".join(ROOM_TYPES.keys()) + ")$"
+
+AMENITY_OPTIONS = [
+    "ac", "tv", "wifi", "attached_bath", "refrigerator", "locker",
+    "oxygen_point", "suction_point", "call_bell", "visitor_chair",
+    "cardiac_monitor", "pulse_oximeter", "ventilator_support",
+    "infusion_pump", "dialysis_point",
+]
+
 class RoomCreate(BaseModel):
     room_number: str = Field(..., max_length=20)
-    room_type: str = Field(..., pattern="^(general|private|icu|emergency|operation)$")
+    room_type: str = Field(..., pattern=ROOM_TYPE_PATTERN)
     floor: Optional[str] = None
     department: Optional[str] = None
     ward: Optional[str] = None
     bed_count: int = Field(default=1, ge=1)
     room_charge_per_day: float = Field(..., ge=0)
     nursing_charge_per_visit: Optional[float] = Field(default=0.0, ge=0)
-    amenities: Optional[str] = None
+    amenities: Optional[List[str]] = None   # list of AMENITY_OPTIONS keys
+    is_isolation: bool = False
+    gender_policy: str = Field(default="mixed", pattern="^(mixed|male|female)$")
 
 class RoomUpdate(BaseModel):
     room_number: Optional[str] = None
-    room_type: Optional[str] = None
+    room_type: Optional[str] = Field(default=None, pattern=ROOM_TYPE_PATTERN)
     floor: Optional[str] = None
     department: Optional[str] = None
     ward: Optional[str] = None
     bed_count: Optional[int] = Field(default=None, ge=1)
     room_charge_per_day: Optional[float] = Field(default=None, ge=0)
     nursing_charge_per_visit: Optional[float] = Field(default=None, ge=0)
-    amenities: Optional[str] = None
+    amenities: Optional[List[str]] = None
+    is_isolation: Optional[bool] = None
+    gender_policy: Optional[str] = Field(default=None, pattern="^(mixed|male|female)$")
 
 class RoomResponse(BaseModel):
     id: int
@@ -91,9 +124,50 @@ class RoomResponse(BaseModel):
     available_beds: int
     room_charge_per_day: float
     nursing_charge_per_visit: Optional[float] = 0.0
-    amenities: Optional[str]
+    amenities: Optional[Any] = None   # list or legacy string
+    is_isolation: bool = False
+    gender_policy: str = "mixed"
     is_active: bool
     is_occupied: bool
+    created_at: Optional[datetime]
+    updated_at: Optional[datetime]
+    class Config:
+        from_attributes = True
+
+# --- Maintenance ---
+class MaintenanceCreate(BaseModel):
+    room_id: int
+    bed_id: Optional[int] = None
+    issue_type: str = Field(..., pattern="^(electrical|plumbing|hvac|equipment|structural|cleaning|other)$")
+    priority: str = Field(default="routine", pattern="^(routine|urgent|emergency)$")
+    title: str = Field(..., max_length=200)
+    description: Optional[str] = None
+    assigned_to: Optional[str] = None
+    scheduled_date: Optional[datetime] = None
+
+class MaintenanceUpdate(BaseModel):
+    status: Optional[str] = Field(default=None, pattern="^(open|in_progress|completed|deferred)$")
+    assigned_to: Optional[str] = None
+    scheduled_date: Optional[datetime] = None
+    resolution_notes: Optional[str] = None
+    priority: Optional[str] = Field(default=None, pattern="^(routine|urgent|emergency)$")
+
+class MaintenanceResponse(BaseModel):
+    id: int
+    room_id: int
+    bed_id: Optional[int]
+    issue_type: str
+    priority: str
+    title: str
+    description: Optional[str]
+    status: str
+    assigned_to: Optional[str]
+    scheduled_date: Optional[datetime]
+    resolved_at: Optional[datetime]
+    resolution_notes: Optional[str]
+    reported_by_id: int
+    reported_by_name: Optional[str] = None
+    room_number: Optional[str] = None
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
     class Config:
@@ -634,6 +708,24 @@ async def list_inpatient_nurses(
 
 
 # ============================================================
+# Room metadata helpers
+@router.get("/room-types")
+async def get_room_types(current_user: User = Depends(get_current_user)):
+    return [{"value": k, "label": v} for k, v in ROOM_TYPES.items()]
+
+@router.get("/amenity-options")
+async def get_amenity_options(current_user: User = Depends(get_current_user)):
+    labels = {
+        "ac": "Air Conditioning", "tv": "Television", "wifi": "Wi-Fi",
+        "attached_bath": "Attached Bathroom", "refrigerator": "Refrigerator",
+        "locker": "Locker", "oxygen_point": "Oxygen Point",
+        "suction_point": "Suction Point", "call_bell": "Call Bell",
+        "visitor_chair": "Visitor Chair", "cardiac_monitor": "Cardiac Monitor",
+        "pulse_oximeter": "Pulse Oximeter", "ventilator_support": "Ventilator Support",
+        "infusion_pump": "Infusion Pump", "dialysis_point": "Dialysis Point",
+    }
+    return [{"value": k, "label": labels.get(k, k)} for k in AMENITY_OPTIONS]
+
 # Room Management
 # ============================================================
 
@@ -669,8 +761,12 @@ async def create_room(
     if existing:
         raise HTTPException(status_code=400, detail="Room number already exists")
 
+    import json as _json
+    data = room.model_dump()
+    if data.get("amenities") is not None:
+        data["amenities"] = _json.dumps(data["amenities"])
     db_room = RoomManagement(
-        **room.model_dump(),
+        **data,
         available_beds=room.bed_count,
         hospital_id=hospital.id,
     )
@@ -693,7 +789,11 @@ async def update_room(
     if not db_room:
         raise HTTPException(status_code=404, detail="Room not found")
 
+    import json as _json
     update_data = room.model_dump(exclude_unset=True)
+
+    if "amenities" in update_data and update_data["amenities"] is not None:
+        update_data["amenities"] = _json.dumps(update_data["amenities"])
 
     # If bed_count changes, adjust available_beds proportionally
     if "bed_count" in update_data:
@@ -807,6 +907,95 @@ async def update_rate_config(
     log_action(db, current_user, "update_rate_config", "inpatient", "RateConfig", config.id,
                "Updated inpatient rate configuration")
     return config
+
+
+# ============================================================
+# Maintenance
+# ============================================================
+
+@router.post("/maintenance", response_model=MaintenanceResponse, status_code=status.HTTP_201_CREATED)
+async def report_maintenance(
+    data: MaintenanceCreate,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_housekeeping")),
+    db: Session = Depends(get_db),
+):
+    hospital = _get_hospital(db, current_user)
+    room = db.query(RoomManagement).filter(RoomManagement.id == data.room_id, RoomManagement.hospital_id == hospital.id).first()
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
+
+    mr = RoomMaintenance(
+        **data.model_dump(),
+        reported_by_id=current_user.id,
+        hospital_id=hospital.id,
+    )
+    db.add(mr)
+    db.commit()
+    db.refresh(mr)
+    log_action(db, current_user, "report_maintenance", "inpatient", "RoomMaintenance", mr.id,
+               f"Reported {mr.priority} maintenance issue for room {room.room_number}: {mr.title}")
+    result = {c.name: getattr(mr, c.name) for c in mr.__table__.columns}
+    result["reported_by_name"] = f"{current_user.first_name} {current_user.last_name}"
+    result["room_number"] = room.room_number
+    return result
+
+
+@router.get("/maintenance", response_model=List[MaintenanceResponse])
+async def list_maintenance(
+    status_filter: Optional[str] = None,
+    priority: Optional[str] = None,
+    room_id: Optional[int] = None,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_housekeeping")),
+    db: Session = Depends(get_db),
+):
+    hospital = _get_hospital(db, current_user)
+    q = db.query(RoomMaintenance).filter(RoomMaintenance.hospital_id == hospital.id)
+    if status_filter:
+        q = q.filter(RoomMaintenance.status == status_filter)
+    if priority:
+        q = q.filter(RoomMaintenance.priority == priority)
+    if room_id:
+        q = q.filter(RoomMaintenance.room_id == room_id)
+    items = q.order_by(
+        RoomMaintenance.priority.desc(),
+        RoomMaintenance.created_at.desc()
+    ).all()
+    results = []
+    for mr in items:
+        row = {c.name: getattr(mr, c.name) for c in mr.__table__.columns}
+        row["reported_by_name"] = f"{mr.reported_by.first_name} {mr.reported_by.last_name}" if mr.reported_by else None
+        row["room_number"] = mr.room.room_number if mr.room else None
+        results.append(row)
+    return results
+
+
+@router.patch("/maintenance/{issue_id}", response_model=MaintenanceResponse)
+async def update_maintenance(
+    issue_id: int,
+    data: MaintenanceUpdate,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_housekeeping")),
+    db: Session = Depends(get_db),
+):
+    hospital = _get_hospital(db, current_user)
+    mr = db.query(RoomMaintenance).filter(
+        RoomMaintenance.id == issue_id,
+        RoomMaintenance.hospital_id == hospital.id,
+    ).first()
+    if not mr:
+        raise HTTPException(status_code=404, detail="Maintenance issue not found")
+
+    update_data = data.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(mr, key, value)
+    if data.status == "completed" and not mr.resolved_at:
+        mr.resolved_at = datetime.now()
+    mr.updated_by_id = current_user.id
+    db.commit()
+    db.refresh(mr)
+    result = {c.name: getattr(mr, c.name) for c in mr.__table__.columns}
+    result["reported_by_name"] = f"{mr.reported_by.first_name} {mr.reported_by.last_name}" if mr.reported_by else None
+    result["room_number"] = mr.room.room_number if mr.room else None
+    return result
 
 
 # ============================================================

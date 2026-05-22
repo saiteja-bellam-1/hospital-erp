@@ -175,6 +175,9 @@ NEW_COLUMNS = [
     # Room-level ward assignment and per-room nursing charge
     ("room_management", "ward", "VARCHAR(100)"),
     ("room_management", "nursing_charge_per_visit", "NUMERIC(10, 2) DEFAULT 0.00"),
+    # Expanded room metadata: infection-control flag and gender policy
+    ("room_management", "is_isolation", "BOOLEAN DEFAULT 0"),
+    ("room_management", "gender_policy", "VARCHAR(10) DEFAULT 'mixed'"),
 ]
 
 # B6 — body release table is created via create_all on startup; no column adds.
