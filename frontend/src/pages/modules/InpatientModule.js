@@ -1364,29 +1364,34 @@ const InpatientModule = () => {
     if (!activityAdmission) return;
     try {
       const safeFetch = (path, params) => axios.get(path, params ? { params } : undefined).then(r => r.data).catch(() => null);
-      const [billPayload, rxList, labList] = await Promise.all([
+      // Fetch all charges (for billed flags on visits/OT/ancillary) AND unbilled-only
+      // (for the correct remaining room amount after prior bills).
+      const [billAll, billUnbilled, rxList, labList] = await Promise.all([
+        safeFetch(`/api/inpatient/admissions/${activityAdmission.id}/bill`),
         safeFetch(`/api/inpatient/admissions/${activityAdmission.id}/bill`, { unbilled_only: true }),
         safeFetch(`/api/inpatient/admissions/${activityAdmission.id}/prescriptions`),
         safeFetch(`/api/inpatient/admissions/${activityAdmission.id}/lab-orders`),
       ]);
-      const b = billPayload || {};
+      const b = billAll || {};
+      const bu = billUnbilled || {};
       const items = [];
 
-      // Room
-      if (b.room_total > 0 && b.room) {
+      // Room — use the unbilled amount so prior bills aren't double-charged
+      const unbilledRoomTotal = bu.room_total || 0;
+      if (unbilledRoomTotal > 0 && b.room) {
         const rate = b.room?.charge_per_day || 0;
-        const days = rate ? +(b.room_total / rate).toFixed(2) : 1;
+        const days = rate ? +(unbilledRoomTotal / rate).toFixed(2) : 1;
         items.push({
           source: 'room', source_id: null,
           item_type: 'room_charge',
           item_name: `Room ${b.room.room_number || ''} (${b.room.room_type || ''}) — ${days} day${days === 1 ? '' : 's'}`,
           quantity: Math.max(1, Math.round(days)),
           unit_price: rate,
-          total_price: b.room_total,
+          total_price: unbilledRoomTotal,
         });
       }
 
-      // Visits — backend returns visit_summary as {visit_type: {count, total, items: [...]}}
+      // Visits — use all-charges view so billed flag is present for filtering
       const visitsObj = b.visits || {};
       Object.entries(visitsObj).forEach(([vtype, group]) => {
         (group.items || []).forEach(v => {
@@ -1431,8 +1436,8 @@ const InpatientModule = () => {
       // Pharmacy — flatten per-medicine line for unbilled pharmacy prescriptions only
       (rxList || []).forEach(rx => {
         if (rx.type !== 'pharmacy') return;
-        if (rx.inpatient_bill_id) return; // already on a bill
-        if (rx.status === 'pending') return; // not dispensed yet — not billable
+        if (rx.inpatient_bill_id) return;
+        if (rx.status === 'pending') return;
         (rx.medicines || []).forEach(m => {
           const total = parseFloat(m.total_price || 0);
           if (total <= 0) return;
@@ -1488,10 +1493,8 @@ const InpatientModule = () => {
 
   const handleSubmitReviewedBill = async () => {
     if (!activityAdmission) return;
-    if (reviewBillItems.length === 0) {
-      toast({ variant: 'destructive', title: 'Error', description: 'At least one bill line is required' });
-      return;
-    }
+    // 0 items is allowed — means everything is on prior interim bills; we
+    // create a ₹0 final bill to formally close the admission.
     setLoading(true);
     try {
       const payload = {
@@ -8716,7 +8719,11 @@ const InpatientModule = () => {
                 </thead>
                 <tbody>
                   {reviewBillItems.length === 0 ? (
-                    <tr><td colSpan={5} className="text-center text-gray-500 py-3 italic">No bill lines. Click "Add Line" to start.</td></tr>
+                    <tr><td colSpan={5} className="text-center text-gray-500 py-4 italic text-xs">
+                      All charges are captured in prior interim bills.<br />
+                      Generating the final bill will create a ₹0 balance record to formally close this admission.<br />
+                      You can still add custom lines below if needed.
+                    </td></tr>
                   ) : reviewBillItems.map((it, idx) => (
                     <tr key={idx} className="border-b last:border-b-0">
                       <td className="px-2 py-1">
@@ -8819,7 +8826,7 @@ const InpatientModule = () => {
 
             <div className="flex justify-end gap-2 pt-2">
               <Button type="button" variant="outline" onClick={() => setShowReviewBillDialog(false)}>Cancel</Button>
-              <Button type="button" onClick={handleSubmitReviewedBill} disabled={loading || reviewBillItems.length === 0}>
+              <Button type="button" onClick={handleSubmitReviewedBill} disabled={loading}>
                 {loading ? 'Generating…' : 'Generate Final Bill'}
               </Button>
             </div>

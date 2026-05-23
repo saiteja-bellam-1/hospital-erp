@@ -3745,10 +3745,10 @@ async def finalize_bill(
     # Allow finalize with NO new computed charges if the operator submitted an
     # explicit override (e.g. waiving everything but adding a single custom
     # line). Without an override, refuse so we don't create empty final bills.
-    if breakdown["subtotal"] <= 0 and not items_override:
+    if breakdown["subtotal"] <= 0 and items_override is None:
         raise HTTPException(
             status_code=400,
-            detail="No outstanding charges to finalize. If everything is already on prior bills, cancel an interim bill first or submit an items_override.",
+            detail="No outstanding charges to finalize. All charges may already be on prior bills — the review dialog will let you confirm and close the admission.",
         )
 
     bill = _create_admission_bill_record(
