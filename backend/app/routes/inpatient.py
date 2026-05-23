@@ -1309,6 +1309,19 @@ def _generate_admission_number(db: Session) -> str:
     return f"{prefix}{seq:04d}"
 
 
+def _generate_consent_doc_number(db: Session) -> str:
+    today = datetime.now().strftime("%Y%m%d")
+    prefix = f"CS-{today}-"
+    last = db.query(Consent).filter(
+        Consent.doc_number.like(f"{prefix}%")
+    ).order_by(Consent.id.desc()).first()
+    if last and last.doc_number:
+        seq = int(last.doc_number.split("-")[-1]) + 1
+    else:
+        seq = 1
+    return f"{prefix}{seq:04d}"
+
+
 @router.post("/admissions", response_model=AdmissionResponse, status_code=status.HTTP_201_CREATED)
 async def create_admission(
     data: AdmissionCreate,
@@ -7954,7 +7967,7 @@ async def my_assigned_patients(
 # Phase 4 — Consent Management
 # ============================================================
 
-CONSENT_TYPES = {"surgical", "anaesthesia", "blood_transfusion", "high_risk_procedure", "general_treatment", "research"}
+CONSENT_TYPES = {"surgical", "anaesthesia", "blood_transfusion", "high_risk_procedure", "general_treatment", "research", "face_sheet", "case_sheet_declaration"}
 
 
 class ConsentTemplateCreate(BaseModel):
@@ -8068,6 +8081,7 @@ class ConsentWithdraw(BaseModel):
 
 class ConsentResponse(BaseModel):
     id: int
+    doc_number: Optional[str] = None
     admission_id: int
     patient_id: int
     consent_type: str
@@ -8126,6 +8140,7 @@ async def create_consent(
         patient_id=admission.patient_id,
         hospital_id=hospital.id,
         created_by_id=current_user.id,
+        doc_number=_generate_consent_doc_number(db),
         **data.model_dump(),
     )
     db.add(c)
@@ -8188,8 +8203,21 @@ async def get_consent_pdf(
     doctor = db.query(User).filter(User.id == c.doctor_id).first() if c.doctor_id else None
     hospital = _get_hospital(db, current_user)
 
+    room = db.query(RoomManagement).filter(RoomManagement.id == admission.room_id).first() if admission and admission.room_id else None
+
+    def _age_str(p):
+        if p.age:
+            return str(p.age)
+        if p.date_of_birth:
+            from datetime import date
+            today = date.today()
+            dob = p.date_of_birth
+            return str(today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day)))
+        return ""
+
     consent_data = {
         "consent_type": c.consent_type,
+        "doc_number": c.doc_number or "",
         "template_content": template.content if template else "",
         "procedure_name": c.procedure_name,
         "doctor_name": f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else "",
@@ -8204,8 +8232,18 @@ async def get_consent_pdf(
         "withdrawn_at": c.withdrawn_at.strftime("%d/%m/%Y %H:%M") if c.withdrawn_at else "",
         "withdrawal_reason": c.withdrawal_reason or "",
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "",
+        "mrn": getattr(patient, "mrn", None) or (patient.patient_id if patient else ""),
         "patient_id": patient.patient_id if patient else "",
+        "age": _age_str(patient) if patient else "",
+        "gender": (patient.gender or "").title() if patient else "",
+        "primary_phone": getattr(patient, "primary_phone", None) or "",
+        "emergency_contact_name": getattr(patient, "emergency_contact_name", None) or "",
+        "emergency_contact_relation": getattr(patient, "emergency_contact_relation", None) or "",
+        "emergency_contact_phone": getattr(patient, "emergency_contact_phone", None) or "",
         "admission_number": admission.admission_number if admission else "",
+        "admission_date": admission.admission_date.strftime("%d/%m/%Y") if admission and admission.admission_date else "",
+        "room_name": room.room_name if room else "",
+        "room_type": room.room_type if room else "",
     }
     hospital_info = {
         "name": hospital.name,

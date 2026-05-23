@@ -178,6 +178,8 @@ NEW_COLUMNS = [
     # Expanded room metadata: infection-control flag and gender policy
     ("room_management", "is_isolation", "BOOLEAN DEFAULT 0"),
     ("room_management", "gender_policy", "VARCHAR(10) DEFAULT 'mixed'"),
+    # Sequential document number printed on face-sheet / case-sheet PDFs
+    ("consents", "doc_number", "VARCHAR(50)"),
 ]
 
 # B6 — body release table is created via create_all on startup; no column adds.

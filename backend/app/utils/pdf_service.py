@@ -2805,8 +2805,21 @@ class PDFService:
         footer_style = ParagraphStyle('Footer', parent=self.styles['Normal'],
             fontSize=8, alignment=1, fontName='Helvetica', textColor=colors.black)
 
+        doc_number = consent_data.get('doc_number') or ''
+
         if include_header:
-            elements.append(Paragraph(hospital_info.get('name', 'HOSPITAL').upper(), title_style))
+            # Header row: hospital name left, doc number right
+            header_rows = [[
+                Paragraph(hospital_info.get('name', 'HOSPITAL').upper(), title_style),
+                Paragraph(
+                    f'<b>Doc No:</b> {doc_number}' if doc_number else '',
+                    ParagraphStyle('DocNum', parent=self.styles['Normal'],
+                        fontSize=9, fontName='Helvetica-Bold', alignment=2, textColor=colors.black)
+                ),
+            ]]
+            header_table = Table(header_rows, colWidths=[page_width * 0.7, page_width * 0.3])
+            header_table.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'TOP')]))
+            elements.append(header_table)
             if hospital_info.get('hospital_subname'):
                 elements.append(Paragraph(hospital_info['hospital_subname'], sub_style))
             if hospital_info.get('address'):
@@ -2815,6 +2828,12 @@ class PDFService:
             elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
         else:
             elements.append(Spacer(1, 90))
+            if doc_number:
+                elements.append(Paragraph(
+                    f'<b>Doc No: {doc_number}</b>',
+                    ParagraphStyle('DocNumNoH', parent=self.styles['Normal'],
+                        fontSize=9, fontName='Helvetica-Bold', alignment=2, textColor=colors.black)
+                ))
 
         elements.append(Spacer(1, 8))
         ctype = consent_data.get('consent_type', '').replace('_', ' ').upper()
@@ -2823,13 +2842,30 @@ class PDFService:
         elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
         elements.append(Spacer(1, 8))
 
-        # Patient/admission meta
+        # Patient/admission meta — always shown for all consent types
+        mrn = consent_data.get('mrn') or consent_data.get('patient_id', '')
         meta_rows = [
             [Paragraph("Patient:", label_small), Paragraph(str(consent_data.get('patient_name', '')), body),
-             Paragraph("MRN:", label_small), Paragraph(str(consent_data.get('mrn') or consent_data.get('patient_id', '')), body)],
+             Paragraph("MRN:", label_small), Paragraph(str(mrn), body)],
             [Paragraph("Admission #:", label_small), Paragraph(str(consent_data.get('admission_number', '')), body),
              Paragraph("Doctor:", label_small), Paragraph(str(consent_data.get('doctor_name', '')), body)],
+            [Paragraph("Admitted on:", label_small), Paragraph(str(consent_data.get('admission_date', '')), body),
+             Paragraph("Room:", label_small), Paragraph(str(consent_data.get('room_name', '')), body)],
+            [Paragraph("Age / Gender:", label_small),
+             Paragraph(f"{consent_data.get('age', '')} / {consent_data.get('gender', '')}", body),
+             Paragraph("Phone:", label_small), Paragraph(str(consent_data.get('primary_phone', '')), body)],
         ]
+        if consent_data.get('emergency_contact_name'):
+            meta_rows.append([
+                Paragraph("Emergency Contact:", label_small),
+                Paragraph(
+                    f"{consent_data['emergency_contact_name']}"
+                    f"{' (' + consent_data['emergency_contact_relation'] + ')' if consent_data.get('emergency_contact_relation') else ''}"
+                    f"{' — ' + consent_data['emergency_contact_phone'] if consent_data.get('emergency_contact_phone') else ''}",
+                    body
+                ),
+                Paragraph("", label_small), Paragraph("", body),
+            ])
         if consent_data.get('procedure_name'):
             meta_rows.append([Paragraph("Procedure:", label_small), Paragraph(str(consent_data['procedure_name']), body),
                               Paragraph("Language:", label_small), Paragraph(str(consent_data.get('language', 'english')).title(), body)])

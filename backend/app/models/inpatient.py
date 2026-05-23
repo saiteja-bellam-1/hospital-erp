@@ -783,6 +783,7 @@ class Consent(Base):
     __tablename__ = "consents"
 
     id = Column(Integer, primary_key=True, index=True)
+    doc_number = Column(String(50), unique=True, nullable=True, index=True)
     admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=False)
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
     consent_type = Column(String(40), nullable=False)

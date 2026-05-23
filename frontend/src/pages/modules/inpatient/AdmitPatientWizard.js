@@ -60,6 +60,8 @@ const EMPTY_DRAFT = {
   // Step 3
   face_sheet_signed: false,
   case_sheet_signed: false,
+  face_sheet_doc_number: '',
+  case_sheet_doc_number: '',
 };
 
 const Stepper = ({ step }) => {
@@ -327,9 +329,9 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
 
       // Record the two consent acknowledgements (face + case sheet)
       const recordConsent = async (template) => {
-        if (!template) return;
+        if (!template) return null;
         try {
-          await axios.post(`/api/inpatient/admissions/${newAdm.id}/consents`, {
+          const res = await axios.post(`/api/inpatient/admissions/${newAdm.id}/consents`, {
             consent_type: template.consent_type,
             template_id: template.id,
             language: template.language || 'english',
@@ -337,10 +339,13 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
             patient_signature_type: 'typed',
             signed_by: 'patient',
           });
-        } catch {/* non-blocking */}
+          return res.data?.doc_number || null;
+        } catch { return null; }
       };
-      await recordConsent(faceTpl);
-      await recordConsent(caseTpl);
+      const faceDocNum = await recordConsent(faceTpl);
+      const caseDocNum = await recordConsent(caseTpl);
+      if (faceDocNum) update({ face_sheet_doc_number: faceDocNum });
+      if (caseDocNum) update({ case_sheet_doc_number: caseDocNum });
 
       try { localStorage.removeItem(DRAFT_KEY); } catch {}
       toast({ title: 'Patient admitted',
@@ -721,6 +726,7 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
                 template={faceTpl}
                 signed={draft.face_sheet_signed}
                 onToggle={v => update({ face_sheet_signed: v })}
+                docNumber={draft.face_sheet_doc_number}
               />
               <DeclarationCard
                 title="Case Sheet"
@@ -728,6 +734,7 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
                 template={caseTpl}
                 signed={draft.case_sheet_signed}
                 onToggle={v => update({ case_sheet_signed: v })}
+                docNumber={draft.case_sheet_doc_number}
               />
             </div>
             {(!faceTpl || !caseTpl) && (
@@ -773,7 +780,7 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
 };
 
 
-const DeclarationCard = ({ title, subtitle, template, signed, onToggle }) => {
+const DeclarationCard = ({ title, subtitle, template, signed, onToggle, docNumber }) => {
   const [previewOpen, setPreviewOpen] = useState(false);
   return (
     <div className={
@@ -804,6 +811,17 @@ const DeclarationCard = ({ title, subtitle, template, signed, onToggle }) => {
         <Badge className="bg-green-100 text-green-800 text-xs mt-2">
           ✓ Signature recorded
         </Badge>
+      )}
+      {docNumber && (
+        <div className="mt-2 rounded bg-blue-50 border border-blue-200 px-2 py-1 text-xs text-blue-800">
+          <span className="font-semibold">Doc No: {docNumber}</span>
+          <span className="ml-1 text-blue-600">— write this on the physical form</span>
+        </div>
+      )}
+      {!docNumber && signed && (
+        <div className="mt-2 text-xs text-gray-400 italic">
+          Document number will appear after admission is saved.
+        </div>
       )}
       <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
         <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
