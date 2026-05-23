@@ -3,6 +3,25 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from config.database import Base
 
+class RoomType(Base):
+    """User-manageable room type catalog per hospital.
+    Auto-seeded from the built-in list on first access if the table is empty."""
+    __tablename__ = "room_types"
+
+    id = Column(Integer, primary_key=True, index=True)
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+    key = Column(String(50), nullable=False)    # slug: "icu", "general", "my_custom_ward"
+    label = Column(String(100), nullable=False)  # display name
+    is_active = Column(Boolean, default=True)
+    is_default = Column(Boolean, default=False)  # True for built-in seed entries
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("hospital_id", "key", name="uq_room_type_key_per_hospital"),
+    )
+
+
 class RoomManagement(Base):
     __tablename__ = "room_management"
 

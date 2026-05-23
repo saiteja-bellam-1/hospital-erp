@@ -28,7 +28,7 @@ from app.models.inpatient import (
     SurgeryPackage, AdmissionPackage, InsurancePreAuth, InsurancePreAuthExpansion,
     TPACompany, BillSplit, LeaveOfAbsence, ShiftHandover, CodeBlueEvent, BodyReleaseRecord,
     PayerScheme, AdmissionPayerChange, GatePass, DoctorDutyRoster, RoomMaintenance,
-    RoomTypeRateConfig, DoctorRoomTypeRate,
+    RoomTypeRateConfig, DoctorRoomTypeRate, RoomType,
 )
 from app.models.pharmacy import Prescription, PrescriptionItem, Medicine
 from app.models.prescriptions_simple import SimplePrescription
@@ -59,27 +59,44 @@ def _patient_age(patient):
 # ============================================================
 
 # --- Room ---
-ROOM_TYPES = {
-    # Standard ward types
+# Default built-in room types — seeded into the DB on first use per hospital.
+# Do NOT reference this dict for validation; use _get_room_types_map(db, hospital_id) instead.
+_DEFAULT_ROOM_TYPES = {
     "general":      "General Ward",
     "semi_private": "Semi-Private",
     "private":      "Private",
     "suite":        "Suite / Deluxe",
-    # Critical care
     "icu":          "ICU",
     "hdu":          "HDU / Step-Down",
     "nicu":         "NICU",
     "picu":         "PICU",
-    # Specialised
     "isolation":    "Isolation",
     "labour":       "Labour & Delivery",
     "recovery":     "Post-Op Recovery",
     "daycare":      "Day Care",
-    # Procedural
     "emergency":    "Emergency / Casualty",
     "operation":    "Operation Theatre",
 }
-ROOM_TYPE_PATTERN = "^(" + "|".join(ROOM_TYPES.keys()) + ")$"
+
+def _get_room_types(db: "Session", hospital_id: int) -> list:
+    """Return active RoomType rows for the hospital, seeding defaults on first call."""
+    rows = db.query(RoomType).filter(
+        RoomType.hospital_id == hospital_id,
+        RoomType.is_active == True,
+    ).order_by(RoomType.id).all()
+    if not rows:
+        for key, label in _DEFAULT_ROOM_TYPES.items():
+            db.add(RoomType(hospital_id=hospital_id, key=key, label=label, is_default=True))
+        db.commit()
+        rows = db.query(RoomType).filter(
+            RoomType.hospital_id == hospital_id,
+            RoomType.is_active == True,
+        ).order_by(RoomType.id).all()
+    return rows
+
+def _get_room_types_map(db: "Session", hospital_id: int) -> dict:
+    """Return {key: label} dict of active room types for the hospital."""
+    return {r.key: r.label for r in _get_room_types(db, hospital_id)}
 
 AMENITY_OPTIONS = [
     "ac", "tv", "wifi", "attached_bath", "refrigerator", "locker",
@@ -90,7 +107,7 @@ AMENITY_OPTIONS = [
 
 class RoomCreate(BaseModel):
     room_number: str = Field(..., max_length=20)
-    room_type: str = Field(..., pattern=ROOM_TYPE_PATTERN)
+    room_type: str = Field(..., max_length=50)
     floor: Optional[str] = None
     department: Optional[str] = None
     ward: Optional[str] = None
@@ -103,7 +120,7 @@ class RoomCreate(BaseModel):
 
 class RoomUpdate(BaseModel):
     room_number: Optional[str] = None
-    room_type: Optional[str] = Field(default=None, pattern=ROOM_TYPE_PATTERN)
+    room_type: Optional[str] = Field(default=None, max_length=50)
     floor: Optional[str] = None
     department: Optional[str] = None
     ward: Optional[str] = None
@@ -736,8 +753,93 @@ async def list_inpatient_nurses(
 # ============================================================
 # Room metadata helpers
 @router.get("/room-types")
-async def get_room_types(current_user: User = Depends(get_current_user)):
-    return [{"value": k, "label": v} for k, v in ROOM_TYPES.items()]
+async def get_room_types(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    hospital = _get_hospital(db, current_user)
+    rows = _get_room_types(db, hospital.id)
+    return [{"value": r.key, "label": r.label, "id": r.id, "is_default": r.is_default} for r in rows]
+
+
+@router.post("/room-types", status_code=status.HTTP_201_CREATED)
+async def create_room_type(
+    data: dict,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_wards")),
+    db: Session = Depends(get_db),
+):
+    hospital = _get_hospital(db, current_user)
+    key = (data.get("key") or "").strip().lower().replace(" ", "_")
+    label = (data.get("label") or "").strip()
+    if not key or not label:
+        raise HTTPException(status_code=400, detail="key and label are required")
+    if not key.replace("_", "").isalnum():
+        raise HTTPException(status_code=400, detail="key must contain only letters, numbers and underscores")
+    existing = db.query(RoomType).filter(
+        RoomType.hospital_id == hospital.id,
+        RoomType.key == key,
+    ).first()
+    if existing:
+        if existing.is_active:
+            raise HTTPException(status_code=400, detail="Room type with this key already exists")
+        # Reactivate a previously deactivated type
+        existing.label = label
+        existing.is_active = True
+        db.commit()
+        db.refresh(existing)
+        return {"id": existing.id, "value": existing.key, "label": existing.label, "is_default": existing.is_default}
+    rt = RoomType(hospital_id=hospital.id, key=key, label=label, is_default=False)
+    db.add(rt)
+    db.commit()
+    db.refresh(rt)
+    return {"id": rt.id, "value": rt.key, "label": rt.label, "is_default": rt.is_default}
+
+
+@router.put("/room-types/{key}")
+async def update_room_type(
+    key: str,
+    data: dict,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_wards")),
+    db: Session = Depends(get_db),
+):
+    hospital = _get_hospital(db, current_user)
+    rt = db.query(RoomType).filter(
+        RoomType.hospital_id == hospital.id,
+        RoomType.key == key,
+    ).first()
+    if not rt:
+        raise HTTPException(status_code=404, detail="Room type not found")
+    label = (data.get("label") or "").strip()
+    if not label:
+        raise HTTPException(status_code=400, detail="label is required")
+    rt.label = label
+    db.commit()
+    db.refresh(rt)
+    return {"id": rt.id, "value": rt.key, "label": rt.label, "is_default": rt.is_default}
+
+
+@router.delete("/room-types/{key}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_room_type(
+    key: str,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_wards")),
+    db: Session = Depends(get_db),
+):
+    hospital = _get_hospital(db, current_user)
+    rt = db.query(RoomType).filter(
+        RoomType.hospital_id == hospital.id,
+        RoomType.key == key,
+    ).first()
+    if not rt:
+        raise HTTPException(status_code=404, detail="Room type not found")
+    in_use = db.query(RoomManagement).filter(
+        RoomManagement.hospital_id == hospital.id,
+        RoomManagement.room_type == key,
+        RoomManagement.is_active == True,
+    ).first()
+    if in_use:
+        raise HTTPException(status_code=400, detail="Cannot remove a room type that is assigned to active rooms")
+    rt.is_active = False
+    db.commit()
 
 @router.get("/amenity-options")
 async def get_amenity_options(current_user: User = Depends(get_current_user)):
@@ -780,6 +882,9 @@ async def create_room(
     db: Session = Depends(get_db),
 ):
     hospital = _get_hospital(db, current_user)
+    rt_map = _get_room_types_map(db, hospital.id)
+    if room.room_type not in rt_map:
+        raise HTTPException(status_code=400, detail=f"Invalid room type '{room.room_type}'")
     existing = db.query(RoomManagement).filter(
         RoomManagement.room_number == room.room_number,
         RoomManagement.is_active == True,
@@ -817,6 +922,12 @@ async def update_room(
 
     import json as _json
     update_data = room.model_dump(exclude_unset=True)
+
+    if "room_type" in update_data and update_data["room_type"]:
+        hospital = _get_hospital(db, current_user)
+        rt_map = _get_room_types_map(db, hospital.id)
+        if update_data["room_type"] not in rt_map:
+            raise HTTPException(status_code=400, detail=f"Invalid room type '{update_data['room_type']}'")
 
     if "amenities" in update_data and update_data["amenities"] is not None:
         update_data["amenities"] = _json.dumps(update_data["amenities"])
@@ -1040,12 +1151,13 @@ async def get_room_type_rates(
             RoomTypeRateConfig.hospital_id == hospital.id
         ).all()
     }
+    rt_map = _get_room_types_map(db, hospital.id)
     result = []
-    for room_type in ROOM_TYPES.keys():
+    for room_type, label in rt_map.items():
         row = existing.get(room_type)
         result.append({
             "room_type": room_type,
-            "room_type_label": ROOM_TYPES[room_type],
+            "room_type_label": label,
             "nursing_charge_per_visit": float(row.nursing_charge_per_visit) if row and row.nursing_charge_per_visit is not None else None,
             "id": row.id if row else None,
         })
@@ -1059,9 +1171,10 @@ async def upsert_room_type_rate(
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "set_room_rates")),
     db: Session = Depends(get_db),
 ):
-    if room_type not in ROOM_TYPES:
-        raise HTTPException(status_code=400, detail="Invalid room type")
     hospital = _get_hospital(db, current_user)
+    rt_map = _get_room_types_map(db, hospital.id)
+    if room_type not in rt_map:
+        raise HTTPException(status_code=400, detail="Invalid room type")
     row = db.query(RoomTypeRateConfig).filter(
         RoomTypeRateConfig.hospital_id == hospital.id,
         RoomTypeRateConfig.room_type == room_type,
@@ -1079,7 +1192,7 @@ async def upsert_room_type_rate(
     db.refresh(row)
     return {
         "room_type": row.room_type,
-        "room_type_label": ROOM_TYPES[row.room_type],
+        "room_type_label": rt_map.get(row.room_type, row.room_type),
         "nursing_charge_per_visit": float(row.nursing_charge_per_visit) if row.nursing_charge_per_visit is not None else None,
         "id": row.id,
     }
@@ -1096,6 +1209,7 @@ async def get_doctor_room_rates(
     db: Session = Depends(get_db),
 ):
     hospital = _get_hospital(db, current_user)
+    rt_map = _get_room_types_map(db, hospital.id)
     q = db.query(DoctorRoomTypeRate).filter(
         DoctorRoomTypeRate.hospital_id == hospital.id
     )
@@ -1107,7 +1221,7 @@ async def get_doctor_room_rates(
             "id": r.id,
             "doctor_id": r.doctor_id,
             "room_type": r.room_type,
-            "room_type_label": ROOM_TYPES.get(r.room_type, r.room_type),
+            "room_type_label": rt_map.get(r.room_type, r.room_type),
             "visit_rate": float(r.visit_rate),
         }
         for r in rows
@@ -1120,9 +1234,10 @@ async def upsert_doctor_room_rate(
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "set_room_rates")),
     db: Session = Depends(get_db),
 ):
-    if data.room_type not in ROOM_TYPES:
-        raise HTTPException(status_code=400, detail="Invalid room type")
     hospital = _get_hospital(db, current_user)
+    rt_map = _get_room_types_map(db, hospital.id)
+    if data.room_type not in rt_map:
+        raise HTTPException(status_code=400, detail="Invalid room type")
     doctor = db.query(User).filter(User.id == data.doctor_id).first()
     if not doctor:
         raise HTTPException(status_code=404, detail="Doctor not found")
@@ -1147,7 +1262,7 @@ async def upsert_doctor_room_rate(
         "id": row.id,
         "doctor_id": row.doctor_id,
         "room_type": row.room_type,
-        "room_type_label": ROOM_TYPES.get(row.room_type, row.room_type),
+        "room_type_label": rt_map.get(row.room_type, row.room_type),
         "visit_rate": float(row.visit_rate),
     }
 
