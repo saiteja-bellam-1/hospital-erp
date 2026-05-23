@@ -86,8 +86,8 @@ const AdminModule = () => {
   const fetchRoomTypes = async () => {
     try {
       const res = await axios.get('/api/inpatient/room-types');
-      // Response is a dict { key: label }; convert to [{value, label}]
-      setRoomTypesList(Object.entries(res.data).map(([value, label]) => ({ value, label })));
+      // Response is an array [{value, label, id, is_default}]
+      setRoomTypesList(Array.isArray(res.data) ? res.data : []);
     } catch { /* non-fatal — section just won't render */ }
   };
 
@@ -369,7 +369,9 @@ const AdminModule = () => {
                      user.user_role?.name === 'doctor';
     setDoctorRoomRates([]);
     setDoctorRoomRatesEdits({});
+    // Always refresh room types list when opening a doctor form so it stays current
     if (isDoctor) {
+      fetchRoomTypes();
       try {
         const res = await axios.get('/api/inpatient/doctor-room-rates', { params: { doctor_id: user.id } });
         const rates = res.data || [];
