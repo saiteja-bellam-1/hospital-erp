@@ -3053,6 +3053,7 @@ async def get_admission_prescriptions(
             "total_amount": rx.total_amount or 0,
             "notes": rx.notes,
             "medicines": med_list,
+            "inpatient_bill_id": rx.inpatient_bill_id,
         })
 
     # Simple prescriptions
@@ -4355,6 +4356,7 @@ async def get_admission_lab_orders(
             "report_id": report.id if report else None,
             "notes": order.notes,
             "sample_id": order.sample_id,
+            "inpatient_bill_id": order.inpatient_bill_id,
         })
     return results
 

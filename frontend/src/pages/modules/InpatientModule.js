@@ -1524,27 +1524,6 @@ const InpatientModule = () => {
     } finally { setLoading(false); }
   };
 
-  // Finalize bill
-  const handleFinalizeBill = async () => {
-    if (!activityAdmission) return;
-    setLoading(true);
-    try {
-      const payload = {};
-      if (billDiscount.value > 0) {
-        payload.discount_type = billDiscount.type;
-        payload.discount_value = parseFloat(billDiscount.value);
-      }
-      if (billTaxPct > 0) {
-        payload.tax_percentage = parseFloat(billTaxPct);
-      }
-      const res = await axios.post(`/api/inpatient/admissions/${activityAdmission.id}/bill/finalize`, payload);
-      toast({ title: 'Success', description: `Bill ${res.data.bill_number} finalized — Total: ₹${res.data.total_amount}` });
-      fetchBill(activityAdmission.id);
-      fetchBalance(activityAdmission.id);
-    } catch (err) {
-      toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed to finalize bill' });
-    } finally { setLoading(false); }
-  };
 
   // Insurance claim status update
   const handleClaimStatusUpdate = async (admissionId, data) => {
@@ -4020,17 +3999,12 @@ const InpatientModule = () => {
                             <div className="flex gap-2 flex-wrap">
                               {ip('finalize_bill') && (
                                 <Button size="sm" onClick={openReviewBillDialog} disabled={loading}>
-                                  <Receipt className="h-4 w-4 mr-1" /> Review & Generate Final Bill
-                                </Button>
-                              )}
-                              {ip('finalize_bill') && (
-                                <Button size="sm" variant="outline" onClick={handleFinalizeBill} disabled={loading} title="Finalize directly using the auto-computed breakdown without review">
-                                  {loading ? 'Finalizing...' : 'Quick Finalize'}
+                                  <Receipt className="h-4 w-4 mr-1" /> Generate Final Bill
                                 </Button>
                               )}
                               {ip('generate_interim_bill') && (
                                 <Button size="sm" variant="outline" onClick={handleGenerateInterim} disabled={loading}>
-                                  <Receipt className="h-4 w-4 mr-1" /> Generate Interim
+                                  Interim Bill
                                 </Button>
                               )}
                               <Button size="sm" variant="outline" onClick={() => handlePrintBillPdf(activityAdmission.id)}>
