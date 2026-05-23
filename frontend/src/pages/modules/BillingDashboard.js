@@ -10,7 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../componen
 import { Textarea } from '../../components/ui/textarea';
 import {
   Receipt, Search, Download, Filter, DollarSign, TrendingUp, Clock,
-  CheckCircle2, AlertCircle, Loader2, CalendarDays, XCircle, Ban, Eye, FileText
+  CheckCircle2, AlertCircle, Loader2, CalendarDays, XCircle, Ban, Eye, FileText, CreditCard
 } from 'lucide-react';
 
 const BillingDashboard = () => {
@@ -31,9 +31,14 @@ const BillingDashboard = () => {
   const [paymentStatus, setPaymentStatus] = useState('all');
   const [doctorFilter, setDoctorFilter] = useState('all');
   const [referralFilter, setReferralFilter] = useState('all');
-  const [cancelBill, setCancelBill] = useState(null); // {bill_id, type, reference}
+  const [cancelBill, setCancelBill] = useState(null);
   const [cancelReason, setCancelReason] = useState('');
   const [cancelling, setCancelling] = useState(false);
+
+  // Collect payment dialog
+  const [collectBill, setCollectBill] = useState(null); // the bill row being settled
+  const [collectForm, setCollectForm] = useState({ amount: '', method: 'cash', reference: '', notes: '' });
+  const [collectLoading, setCollectLoading] = useState(false);
   const [doctors, setDoctors] = useState([]);
   const [referrals, setReferrals] = useState([]);
   // Bill preview dialog: bill row currently being viewed, blob URL of the
@@ -169,6 +174,52 @@ const BillingDashboard = () => {
     setPreviewPdfUrl(null);
     setPreviewBill(null);
     setPreviewIncludeHeader(true);
+  };
+
+  const openCollect = (bill) => {
+    // For admissions balance_due is the outstanding amount; for others use full amount.
+    const due = bill.type === 'admission'
+      ? (bill.balance_due > 0 ? bill.balance_due : bill.amount)
+      : bill.amount;
+    setCollectBill(bill);
+    setCollectForm({ amount: due.toFixed(2), method: 'cash', reference: '', notes: '' });
+  };
+
+  const handleCollect = async () => {
+    if (!collectBill || !collectForm.amount) return;
+    const amt = parseFloat(collectForm.amount);
+    if (!amt || amt <= 0) return;
+    setCollectLoading(true);
+    try {
+      if (collectBill.type === 'admission') {
+        // Admission payments go through the deposit ledger so the inpatient
+        // balance view stays consistent. Uses deposit_type "topup" so it
+        // appears as a top-up in the deposits list.
+        await axios.post(`/api/inpatient/admissions/${collectBill.admission_id}/deposits`, {
+          amount: amt,
+          payment_method: collectForm.method,
+          deposit_type: 'topup',
+          reference_number: collectForm.reference || undefined,
+          notes: collectForm.notes || undefined,
+        });
+      } else {
+        // Consultation / lab / day-care / consolidated bills use the generic
+        // payment endpoint — keeps parity with BillingModule's "Collect" flow.
+        await axios.post(`/api/hospital/billing/bills/${collectBill.bill_id}/payment`, {
+          amount_paid: amt,
+          payment_method: collectForm.method,
+          transaction_reference: collectForm.reference || undefined,
+          notes: collectForm.notes || undefined,
+        });
+      }
+      setCollectBill(null);
+      fetchBills();
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      alert(typeof detail === 'string' ? detail : (detail?.message || 'Payment failed'));
+    } finally {
+      setCollectLoading(false);
+    }
   };
 
   const downloadCSV = () => {
@@ -457,6 +508,13 @@ const BillingDashboard = () => {
                                   <Eye className="w-3 h-3 mr-0.5" /> View
                                 </Button>
                               )}
+                              {['pending', 'partial'].includes(bill.payment_status) && (
+                                <Button size="sm" variant="ghost"
+                                  className="h-6 text-[10px] px-2 text-green-700 hover:text-green-800 hover:bg-green-50"
+                                  onClick={() => openCollect(bill)}>
+                                  <CreditCard className="w-3 h-3 mr-0.5" /> Collect
+                                </Button>
+                              )}
                               {bill.payment_status !== 'cancelled' && bill.type !== 'admission' && (
                                 <Button size="sm" variant="ghost" className="h-6 text-[10px] text-red-500 hover:text-red-700 hover:bg-red-50 px-2"
                                   onClick={() => { setCancelBill(bill); setCancelReason(''); }}>
@@ -555,6 +613,103 @@ const BillingDashboard = () => {
               </Button>
             </div>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Collect Payment Dialog */}
+      <Dialog open={!!collectBill} onOpenChange={(open) => { if (!open) setCollectBill(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <CreditCard className="h-5 w-5 text-green-600" /> Collect Payment
+            </DialogTitle>
+          </DialogHeader>
+          {collectBill && (
+            <div className="space-y-4">
+              {/* Bill summary */}
+              <div className="bg-gray-50 rounded-lg p-3 space-y-1">
+                <p className="text-sm font-semibold">{collectBill.patient_name}</p>
+                <p className="text-xs text-gray-500 font-mono">{collectBill.reference}</p>
+                <div className="flex items-center justify-between pt-1">
+                  <span className="text-xs text-gray-500">
+                    {collectBill.type === 'admission' ? 'Balance due' : 'Amount due'}
+                  </span>
+                  <span className="text-base font-bold text-orange-600">
+                    {formatCurrency(
+                      collectBill.type === 'admission'
+                        ? (collectBill.balance_due > 0 ? collectBill.balance_due : collectBill.amount)
+                        : collectBill.amount
+                    )}
+                  </span>
+                </div>
+                {collectBill.type === 'admission' && collectBill.amount !== collectBill.balance_due && (
+                  <p className="text-[10px] text-gray-400">
+                    Total charges: {formatCurrency(collectBill.amount)} · Deposits received: {formatCurrency(collectBill.net_deposits || 0)}
+                  </p>
+                )}
+              </div>
+
+              {/* Amount */}
+              <div>
+                <Label className="text-sm">Amount collecting (₹) *</Label>
+                <Input
+                  type="number" min="0.01" step="0.01"
+                  className="mt-1"
+                  value={collectForm.amount}
+                  onChange={e => setCollectForm(p => ({ ...p, amount: e.target.value }))}
+                />
+              </div>
+
+              {/* Payment method */}
+              <div>
+                <Label className="text-sm">Payment method *</Label>
+                <Select value={collectForm.method} onValueChange={v => setCollectForm(p => ({ ...p, method: v }))}>
+                  <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="cash">Cash</SelectItem>
+                    <SelectItem value="card">Card</SelectItem>
+                    <SelectItem value="upi">UPI</SelectItem>
+                    <SelectItem value="cheque">Cheque</SelectItem>
+                    <SelectItem value="online">Online Transfer</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Reference */}
+              <div>
+                <Label className="text-sm">Reference / Transaction ID</Label>
+                <Input
+                  className="mt-1" placeholder="Optional"
+                  value={collectForm.reference}
+                  onChange={e => setCollectForm(p => ({ ...p, reference: e.target.value }))}
+                />
+              </div>
+
+              {/* Notes */}
+              <div>
+                <Label className="text-sm">Notes</Label>
+                <Textarea
+                  className="mt-1" rows={2} placeholder="Optional"
+                  value={collectForm.notes}
+                  onChange={e => setCollectForm(p => ({ ...p, notes: e.target.value }))}
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2 border-t">
+                <Button variant="outline" onClick={() => setCollectBill(null)}>Cancel</Button>
+                <Button
+                  disabled={collectLoading || !collectForm.amount || parseFloat(collectForm.amount) <= 0}
+                  onClick={handleCollect}
+                  className="bg-green-600 hover:bg-green-700 text-white"
+                >
+                  {collectLoading
+                    ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Recording…</>
+                    : <><CreditCard className="h-4 w-4 mr-2" /> Record Payment</>
+                  }
+                </Button>
+              </div>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
 
