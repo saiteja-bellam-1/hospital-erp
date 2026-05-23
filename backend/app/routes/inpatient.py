@@ -3387,6 +3387,24 @@ async def get_admission_bill(
     # Strip private keys before responding
     response_breakdown = {k: v for k, v in breakdown.items() if not k.startswith("_")}
 
+    # Deposits received for this admission
+    deposit_rows = db.query(AdmissionDeposit).filter(
+        AdmissionDeposit.admission_id == admission_id
+    ).order_by(AdmissionDeposit.received_at).all()
+    deposits_list = [
+        {
+            "deposit_number": d.deposit_number or "",
+            "date": d.received_at.strftime("%d/%m/%Y %H:%M") if d.received_at else "",
+            "deposit_type": d.deposit_type or "initial",
+            "method": d.payment_method or "cash",
+            "reference": d.reference_number or "",
+            "amount": float(d.amount or 0) if d.deposit_type != "refund" else -abs(float(d.amount or 0)),
+        }
+        for d in deposit_rows
+    ]
+    net_deposits = sum(float(d.amount or 0) if d.deposit_type != "refund" else -abs(float(d.amount or 0))
+                       for d in deposit_rows)
+
     return {
         "admission_id": admission_id,
         "admission_number": admission.admission_number,
@@ -3398,6 +3416,9 @@ async def get_admission_bill(
         "package": package_block,
         **response_breakdown,
         "grand_total": grand_total,
+        "deposits": deposits_list,
+        "deposits_total": round(net_deposits, 2),
+        "balance_due": round(grand_total - net_deposits, 2),
     }
 
 
@@ -3945,10 +3966,12 @@ async def get_bill_pdf(
     ).order_by(AdmissionDeposit.received_at).all()
     deposits_list = [
         {
+            "deposit_number": d.deposit_number or "",
             "date": d.received_at.strftime("%d/%m/%Y %H:%M") if d.received_at else "",
-            "method": d.payment_method or "—",
-            "reference": d.reference_number or "—",
-            "amount": float(d.amount or 0),
+            "deposit_type": d.deposit_type or "initial",
+            "method": d.payment_method or "cash",
+            "reference": d.reference_number or "",
+            "amount": float(d.amount or 0) if d.deposit_type != "refund" else -abs(float(d.amount or 0)),
         }
         for d in deposit_rows
     ]

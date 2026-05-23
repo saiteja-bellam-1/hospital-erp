@@ -312,7 +312,9 @@ class PDFService:
             elements.append(Spacer(1, 2))
             dep_header = [
                 Paragraph('<b>Sno</b>', cell_label),
+                Paragraph('<b>Receipt No</b>', cell_label),
                 Paragraph('<b>Date</b>', cell_label),
+                Paragraph('<b>Type</b>', cell_label),
                 Paragraph('<b>Method</b>', cell_label),
                 Paragraph('<b>Reference</b>', cell_label),
                 Paragraph('<b>Amount</b>',
@@ -320,20 +322,27 @@ class PDFService:
             ]
             dep_rows = [dep_header]
             for idx, d in enumerate(deposits, start=1):
+                amt = float(d.get('amount') or 0)
+                is_refund = (d.get('deposit_type') == 'refund') or amt < 0
+                amt_str = f"({abs(amt):,.2f})" if is_refund else f"{amt:,.2f}"
                 dep_rows.append([
                     Paragraph(str(idx), cell_value),
+                    Paragraph(d.get('deposit_number') or '—', cell_value),
                     Paragraph(d.get('date') or '—', cell_value),
+                    Paragraph(str(d.get('deposit_type') or 'initial').replace('_', ' ').title(), cell_value),
                     Paragraph(str(d.get('method') or '—').title(), cell_value),
                     Paragraph(d.get('reference') or '—', cell_value),
-                    Paragraph(
-                        f"{float(d.get('amount') or 0):,.2f}",
+                    Paragraph(amt_str,
                         ParagraphStyle('R', parent=cell_value, alignment=2)),
                 ])
+            ref_w = 0.8 * inch
+            type_w = 0.65 * inch
+            date_w = 1.1 * inch
             dep_table = Table(
                 dep_rows,
-                colWidths=[sno_w, 1.2 * inch,
-                           1.0 * inch,
-                           page_width - sno_w - 1.2 * inch - 1.0 * inch - rate_w,
+                colWidths=[sno_w, 1.1 * inch, date_w, type_w,
+                           0.75 * inch,
+                           page_width - sno_w - 1.1 * inch - date_w - type_w - 0.75 * inch - rate_w,
                            rate_w],
             )
             dep_table.setStyle(TableStyle([

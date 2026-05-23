@@ -281,6 +281,50 @@ const BillDetailDialog = ({ open, onClose, admission, onFinalized }) => {
               </div>
             </section>
 
+            {/* Deposits received */}
+            {(billData.deposits || []).length > 0 ? (
+              <section className="border rounded-lg p-3 text-sm space-y-1.5">
+                <p className="font-semibold mb-2">Deposits Received</p>
+                <div className="space-y-1">
+                  {billData.deposits.map((d, i) => {
+                    const isRefund = d.deposit_type === 'refund' || d.amount < 0;
+                    const typeLabel = (d.deposit_type || 'initial').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+                    return (
+                      <div key={i} className="flex justify-between items-start text-xs">
+                        <div className="text-gray-600 space-y-0.5">
+                          <span className="font-medium text-gray-800">{d.deposit_number || `#${i + 1}`}</span>
+                          <span className="mx-1.5 text-gray-400">·</span>
+                          <span>{d.date}</span>
+                          <span className="mx-1.5 text-gray-400">·</span>
+                          <span className={`inline-block px-1.5 py-0.5 rounded text-xs font-medium ${
+                            isRefund ? 'bg-red-50 text-red-700' : 'bg-green-50 text-green-700'
+                          }`}>{typeLabel}</span>
+                          <span className="mx-1.5 text-gray-400">·</span>
+                          <span className="capitalize">{d.method}</span>
+                          {d.reference && <><span className="mx-1.5 text-gray-400">·</span><span>{d.reference}</span></>}
+                        </div>
+                        <span className={`font-medium tabular-nums ${isRefund ? 'text-red-600' : ''}`}>
+                          {isRefund ? `(₹${fmt(Math.abs(d.amount))})` : `₹${fmt(d.amount)}`}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="border-t pt-2 space-y-1">
+                  <div className="flex justify-between font-semibold">
+                    <span>Net Deposits</span>
+                    <span>₹{fmt(billData.deposits_total)}</span>
+                  </div>
+                  <div className={`flex justify-between font-semibold ${billData.balance_due < -0.01 ? 'text-green-700' : billData.balance_due > 0.01 ? 'text-amber-700' : ''}`}>
+                    <span>{billData.balance_due < -0.01 ? 'Refund Due' : 'Balance Due'}</span>
+                    <span>₹{fmt(Math.abs(billData.balance_due))}</span>
+                  </div>
+                </div>
+              </section>
+            ) : (
+              <div className="text-xs text-gray-400 italic px-1">No deposits recorded for this admission.</div>
+            )}
+
             {/* Discount + Tax inputs — only meaningful pre-finalization */}
             <section className="border rounded-lg p-3 space-y-3">
               <p className="font-semibold text-sm flex items-center gap-1.5">
