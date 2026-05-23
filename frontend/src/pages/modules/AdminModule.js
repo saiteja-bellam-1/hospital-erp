@@ -85,8 +85,8 @@ const AdminModule = () => {
 
   const fetchRoomTypes = async () => {
     try {
-      const res = await axios.get('/api/inpatient/room-types');
-      // Response is an array [{value, label, id, is_default}]
+      // used_only=true: only room types that have at least one active room — relevant for doctor rate overrides
+      const res = await axios.get('/api/inpatient/room-types', { params: { used_only: true } });
       setRoomTypesList(Array.isArray(res.data) ? res.data : []);
     } catch { /* non-fatal — section just won't render */ }
   };
@@ -733,7 +733,7 @@ const AdminModule = () => {
                       </p>
                     </div>
                     {roomTypesList.length === 0 ? (
-                      <p className="text-xs text-gray-400">Room types not loaded — check inpatient module access.</p>
+                      <p className="text-xs text-gray-400">No rooms created yet — add rooms in the Inpatient → Room Management tab first.</p>
                     ) : (
                     <div className="border rounded overflow-hidden">
                       <table className="w-full text-xs">

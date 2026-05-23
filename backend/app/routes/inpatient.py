@@ -754,11 +754,20 @@ async def list_inpatient_nurses(
 # Room metadata helpers
 @router.get("/room-types")
 async def get_room_types(
+    used_only: bool = Query(default=False),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     hospital = _get_hospital(db, current_user)
     rows = _get_room_types(db, hospital.id)
+    if used_only:
+        used_keys = {
+            r[0] for r in db.query(RoomManagement.room_type).filter(
+                RoomManagement.hospital_id == hospital.id,
+                RoomManagement.is_active == True,
+            ).distinct().all()
+        }
+        rows = [r for r in rows if r.key in used_keys]
     return [{"value": r.key, "label": r.label, "id": r.id, "is_default": r.is_default} for r in rows]
 
 
