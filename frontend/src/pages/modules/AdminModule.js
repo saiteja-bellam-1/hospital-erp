@@ -69,23 +69,7 @@ const AdminModule = () => {
   const [doctorRoomRates, setDoctorRoomRates] = useState([]);
   const [doctorRoomRatesEdits, setDoctorRoomRatesEdits] = useState({});
   const [doctorRoomRatesSaving, setDoctorRoomRatesSaving] = useState({});
-
-  const ROOM_TYPES = [
-    { value: 'general',      label: 'General Ward' },
-    { value: 'semi_private', label: 'Semi-Private' },
-    { value: 'private',      label: 'Private' },
-    { value: 'suite',        label: 'Suite / Deluxe' },
-    { value: 'icu',          label: 'ICU' },
-    { value: 'hdu',          label: 'HDU / Step-Down' },
-    { value: 'nicu',         label: 'NICU' },
-    { value: 'picu',         label: 'PICU' },
-    { value: 'isolation',    label: 'Isolation' },
-    { value: 'labour',       label: 'Labour & Delivery' },
-    { value: 'recovery',     label: 'Post-Op Recovery' },
-    { value: 'daycare',      label: 'Day Care' },
-    { value: 'emergency',    label: 'Emergency / Casualty' },
-    { value: 'operation',    label: 'Operation Theatre' },
-  ];
+  const [roomTypesList, setRoomTypesList] = useState([]);  // [{value, label}] fetched from backend
 
   useEffect(() => {
     if (hasRole('super_admin') || hasRole('hospital_admin')) {
@@ -95,8 +79,17 @@ const AdminModule = () => {
       fetchUsers(); fetchUserLimit();
       fetchRoles();
       fetchUserLimit();
+      fetchRoomTypes();
     }
   }, [user]);
+
+  const fetchRoomTypes = async () => {
+    try {
+      const res = await axios.get('/api/inpatient/room-types');
+      // Response is a dict { key: label }; convert to [{value, label}]
+      setRoomTypesList(Object.entries(res.data).map(([value, label]) => ({ value, label })));
+    } catch { /* non-fatal — section just won't render */ }
+  };
 
   const fetchUserLimit = async () => {
     try {
@@ -712,6 +705,9 @@ const AdminModule = () => {
                         Override the base inpatient fee per room type. Leave blank to use the base fee (₹{userForm.inpatient_fee_inr || '—'}).
                       </p>
                     </div>
+                    {roomTypesList.length === 0 ? (
+                      <p className="text-xs text-gray-400">Room types not loaded — check inpatient module access.</p>
+                    ) : (
                     <div className="border rounded overflow-hidden">
                       <table className="w-full text-xs">
                         <thead className="bg-gray-50">
@@ -722,7 +718,7 @@ const AdminModule = () => {
                           </tr>
                         </thead>
                         <tbody>
-                          {ROOM_TYPES.map(rt => {
+                          {roomTypesList.map(rt => {
                             const existing = doctorRoomRates.find(r => r.room_type === rt.value);
                             const editVal = doctorRoomRatesEdits[rt.value] ?? '';
                             return (
@@ -792,6 +788,7 @@ const AdminModule = () => {
                         </tbody>
                       </table>
                     </div>
+                    )}
                   </div>
                 )}
 
