@@ -6602,6 +6602,7 @@ const InpatientModule = () => {
         isNurseOnly={isNurseOnly}
         loading={loading}
         onSubmit={handleCreateVisit}
+        admissionRoomType={activityAdmission?.room_type}
       />
 
 

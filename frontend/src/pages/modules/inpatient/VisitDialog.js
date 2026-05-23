@@ -33,12 +33,14 @@ const VisitDialog = ({
   open, onOpenChange, form, setForm,
   doctorsList = [], nursesList = [], isNurseOnly = false,
   loading = false, onSubmit,
+  admissionRoomType = null,
 }) => {
   const [onDuty, setOnDuty] = useState([]);     // doctors rostered now
   const [onDutyNurses, setOnDutyNurses] = useState([]);  // nurses rostered now
   const [dutyLoading, setDutyLoading] = useState(false);
   const [dutyRate, setDutyRate] = useState(null);  // hospital duty_visit_rate
   const [confirmBypass, setConfirmBypass] = useState(false);  // explicit checkbox
+  const [doctorRoomRates, setDoctorRoomRates] = useState([]);  // room-type overrides for selected doctor
 
   // Reset bypass acknowledgement whenever the user changes type or visitor.
   useEffect(() => { setConfirmBypass(false); }, [form.visit_type, form.visitor_id]);
@@ -94,9 +96,33 @@ const VisitDialog = ({
     () => new Set(onDutyNurses.map(n => n.nurse_id)), [onDutyNurses]
   );
 
+  // Fetch room-type rates for the selected doctor whenever they change.
+  useEffect(() => {
+    if (!open || form.visit_type !== 'doctor_visit' || !form.visitor_id) {
+      setDoctorRoomRates([]);
+      return;
+    }
+    axios.get('/api/inpatient/doctor-room-rates', {
+      params: { doctor_id: form.visitor_id },
+    })
+      .then(r => setDoctorRoomRates(r.data || []))
+      .catch(() => setDoctorRoomRates([]));
+  }, [open, form.visit_type, form.visitor_id]);
+
   const visitorOptions = isNurse ? nursesList : doctorsList;
   const selectedVisitor = visitorOptions.find(u => String(u.id) === String(form.visitor_id));
   const visitorFee = selectedVisitor?.inpatient_fee_inr;
+
+  // Resolved charge: room-type override → doctor base fee → nothing
+  const roomTypeRate = admissionRoomType
+    ? doctorRoomRates.find(r => r.room_type === admissionRoomType)
+    : null;
+  const resolvedCharge = roomTypeRate
+    ? parseFloat(roomTypeRate.visit_rate)
+    : (visitorFee ? parseFloat(visitorFee) : null);
+  const chargeSource = roomTypeRate
+    ? `room-type override for ${admissionRoomType.replace(/_/g, ' ')}`
+    : (visitorFee ? "doctor's base inpatient fee" : null);
 
   // True when the selected duty visitor is NOT in the on-duty roster.
   const isOffRoster = isDuty && form.visitor_id
@@ -229,10 +255,10 @@ const VisitDialog = ({
           {/* Charge preview */}
           {form.visitor_id && (isDoctor || isNurse) && (
             <p className="text-xs text-gray-600">
-              Auto-charge: {visitorFee
-                ? <b>₹{Number(visitorFee).toFixed(2)}</b>
-                : 'no fee set on this user'}
-              {' '}(from selected staff member's inpatient fee)
+              Auto-charge:{' '}
+              {resolvedCharge != null
+                ? <><b>₹{resolvedCharge.toFixed(2)}</b>{' '}<span className="text-gray-400">({chargeSource})</span></>
+                : <span className="text-gray-400">no fee configured for this staff member</span>}
             </p>
           )}
           {isDuty && form.visitor_id && (

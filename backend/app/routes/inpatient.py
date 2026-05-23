@@ -1090,7 +1090,7 @@ async def upsert_room_type_rate(
 @router.get("/doctor-room-rates")
 async def get_doctor_room_rates(
     doctor_id: Optional[int] = Query(default=None),
-    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "set_room_rates")),
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "record_visits")),
     db: Session = Depends(get_db),
 ):
     hospital = _get_hospital(db, current_user)
