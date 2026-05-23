@@ -27,7 +27,7 @@ import {
   ClipboardList, LayoutDashboard, Scissors, Shield, Upload, Download, Paperclip,
   HeartPulse, Pill, AlertTriangle, Check, XCircle, Wallet, Package, Receipt, FileCheck, Building2,
   Sparkles, CalendarDays, ArrowRightLeft, UserPlus, FileSignature, AlertOctagon, RotateCcw, Skull,
-  CalendarRange, Printer, Wrench, Settings
+  CalendarRange, Printer, Wrench
 } from 'lucide-react';
 import axios from 'axios';
 
@@ -221,11 +221,6 @@ const InpatientModule = () => {
   });
   const [roomTypes, setRoomTypes] = useState([]);
   const [amenityOptions, setAmenityOptions] = useState([]);
-  // Room Type management dialog
-  const [showRoomTypeDialog, setShowRoomTypeDialog] = useState(false);
-  const [roomTypeForm, setRoomTypeForm] = useState({ key: '', label: '' });
-  const [roomTypeFormLoading, setRoomTypeFormLoading] = useState(false);
-  const [editingRoomType, setEditingRoomType] = useState(null); // {key, label} when editing label
   // Maintenance
   const [maintenanceList, setMaintenanceList] = useState([]);
   const [showMaintenanceDialog, setShowMaintenanceDialog] = useState(false);
@@ -1804,38 +1799,6 @@ const InpatientModule = () => {
       toast({ title: 'Updated', description: 'Maintenance status updated' });
     } catch (err) {
       toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed to update' });
-    }
-  };
-
-  // Room Type CRUD
-  const handleSaveRoomType = async (e) => {
-    e.preventDefault();
-    setRoomTypeFormLoading(true);
-    try {
-      if (editingRoomType) {
-        await axios.put(`/api/inpatient/room-types/${editingRoomType.key}`, { label: roomTypeForm.label });
-        toast({ title: 'Updated', description: `Room type "${roomTypeForm.label}" updated.` });
-      } else {
-        await axios.post('/api/inpatient/room-types', { key: roomTypeForm.key, label: roomTypeForm.label });
-        toast({ title: 'Created', description: `Room type "${roomTypeForm.label}" added.` });
-      }
-      setRoomTypeForm({ key: '', label: '' });
-      setEditingRoomType(null);
-      fetchRoomMeta();
-    } catch (err) {
-      toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed' });
-    } finally {
-      setRoomTypeFormLoading(false);
-    }
-  };
-
-  const handleDeleteRoomType = async (key) => {
-    try {
-      await axios.delete(`/api/inpatient/room-types/${key}`);
-      toast({ title: 'Removed', description: 'Room type deactivated.' });
-      fetchRoomMeta();
-    } catch (err) {
-      toast({ variant: 'destructive', title: 'Cannot remove', description: err.response?.data?.detail || 'Failed' });
     }
   };
 
@@ -4755,14 +4718,9 @@ const InpatientModule = () => {
             <div className="p-6 overflow-y-auto h-full space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-semibold">Room Management</h2>
-            <div className="flex gap-2">
-              <Button variant="outline" onClick={() => { setRoomTypeForm({ key: '', label: '' }); setEditingRoomType(null); setShowRoomTypeDialog(true); }}>
-                <Settings className="h-4 w-4 mr-2" /> Room Types
-              </Button>
-              <Button onClick={() => { setEditingRoom(null); resetRoomForm(); setShowRoomDialog(true); }}>
-                <Plus className="h-4 w-4 mr-2" /> Add Room
-              </Button>
-            </div>
+            <Button onClick={() => { setEditingRoom(null); resetRoomForm(); setShowRoomDialog(true); }}>
+              <Plus className="h-4 w-4 mr-2" /> Add Room
+            </Button>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -9144,88 +9102,6 @@ const InpatientModule = () => {
             </div>
             <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Saving...' : editingRoom ? 'Update Room' : 'Create Room'}</Button>
           </form>
-        </DialogContent>
-      </Dialog>
-
-      {/* Room Types Management Dialog */}
-      <Dialog open={showRoomTypeDialog} onOpenChange={(open) => { setShowRoomTypeDialog(open); if (!open) { setEditingRoomType(null); setRoomTypeForm({ key: '', label: '' }); } }}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader><DialogTitle>Manage Room Types</DialogTitle></DialogHeader>
-          <div className="space-y-4">
-            {/* Existing types list */}
-            <div className="border rounded overflow-hidden max-h-64 overflow-y-auto">
-              <table className="w-full text-sm">
-                <thead className="bg-gray-50 sticky top-0">
-                  <tr>
-                    <th className="px-3 py-2 text-left font-medium">Key</th>
-                    <th className="px-3 py-2 text-left font-medium">Label</th>
-                    <th className="px-3 py-2 text-left font-medium">Type</th>
-                    <th className="px-3 py-2"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {roomTypes.map(rt => (
-                    <tr key={rt.value} className="border-t">
-                      <td className="px-3 py-2 font-mono text-xs text-gray-500">{rt.value}</td>
-                      <td className="px-3 py-2">{rt.label}</td>
-                      <td className="px-3 py-2">
-                        {rt.is_default
-                          ? <span className="text-xs bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded">Built-in</span>
-                          : <span className="text-xs bg-green-50 text-green-600 px-1.5 py-0.5 rounded">Custom</span>}
-                      </td>
-                      <td className="px-3 py-2 flex gap-1 justify-end">
-                        <Button size="sm" variant="ghost" className="h-7 w-7 p-0"
-                          onClick={() => { setEditingRoomType({ key: rt.value, label: rt.label }); setRoomTypeForm({ key: rt.value, label: rt.label }); }}>
-                          <Edit2 className="h-3.5 w-3.5" />
-                        </Button>
-                        <Button size="sm" variant="ghost" className="h-7 w-7 p-0"
-                          onClick={() => setConfirmState({ open: true, title: 'Remove room type?', description: `"${rt.label}" will be deactivated. Rooms already assigned this type are unaffected.`, onConfirm: () => { setConfirmState({ open: false }); handleDeleteRoomType(rt.value); } })}>
-                          <Trash2 className="h-3.5 w-3.5 text-red-500" />
-                        </Button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            {/* Add / Edit form */}
-            <form onSubmit={handleSaveRoomType} className="space-y-3 border-t pt-3">
-              <p className="text-sm font-medium text-gray-700">{editingRoomType ? `Edit "${editingRoomType.label}"` : 'Add New Room Type'}</p>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <Label>Key <span className="text-red-500">*</span></Label>
-                  <Input
-                    value={roomTypeForm.key}
-                    onChange={e => setRoomTypeForm(p => ({ ...p, key: e.target.value }))}
-                    placeholder="e.g. step_down"
-                    disabled={!!editingRoomType}
-                    required
-                  />
-                  <p className="text-xs text-gray-400 mt-0.5">Lowercase letters, numbers and underscores only</p>
-                </div>
-                <div>
-                  <Label>Display Label <span className="text-red-500">*</span></Label>
-                  <Input
-                    value={roomTypeForm.label}
-                    onChange={e => setRoomTypeForm(p => ({ ...p, label: e.target.value }))}
-                    placeholder="e.g. Step-Down Unit"
-                    required
-                  />
-                </div>
-              </div>
-              <div className="flex justify-end gap-2">
-                {editingRoomType && (
-                  <Button type="button" variant="outline" onClick={() => { setEditingRoomType(null); setRoomTypeForm({ key: '', label: '' }); }}>
-                    Cancel Edit
-                  </Button>
-                )}
-                <Button type="submit" disabled={roomTypeFormLoading}>
-                  {roomTypeFormLoading ? 'Saving...' : editingRoomType ? 'Update Label' : 'Add Type'}
-                </Button>
-              </div>
-            </form>
-          </div>
         </DialogContent>
       </Dialog>
 
