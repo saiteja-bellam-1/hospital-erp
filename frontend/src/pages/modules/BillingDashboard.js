@@ -18,6 +18,9 @@ const BillingDashboard = () => {
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  // Active Bills vs Bill History (cancelled) toggle
+  const [viewMode, setViewMode] = useState('active'); // 'active' | 'history'
+
   // Filters — default to last 7 days
   const today = new Date().toISOString().split('T')[0];
   const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0];
@@ -184,20 +187,59 @@ const BillingDashboard = () => {
     URL.revokeObjectURL(url);
   };
 
+  // Split bills by cancelled status for the two views
+  const activeBills = bills.filter(b => b.payment_status !== 'cancelled');
+  const cancelledBills = bills.filter(b => b.payment_status === 'cancelled');
+  const displayedBills = viewMode === 'active' ? activeBills : cancelledBills;
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Billing Dashboard</h1>
+          <h1 className="text-2xl font-bold">Bills History</h1>
           <p className="text-muted-foreground text-sm">Centralised view of all bills and payments</p>
         </div>
-        <Button onClick={downloadCSV} disabled={bills.length === 0} variant="outline">
+        <Button onClick={downloadCSV} disabled={displayedBills.length === 0} variant="outline">
           <Download className="h-4 w-4 mr-1" /> Export CSV
         </Button>
       </div>
 
-      {/* Summary Cards */}
-      {summary && (
+      {/* Active Bills / Bill History tabs */}
+      <div className="flex gap-1 border-b">
+        <button
+          onClick={() => { setViewMode('active'); setPaymentStatus('all'); }}
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+            viewMode === 'active'
+              ? 'border-blue-600 text-blue-600'
+              : 'border-transparent text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          Active Bills
+          {activeBills.length > 0 && (
+            <span className="ml-2 text-[10px] bg-blue-100 text-blue-700 rounded-full px-1.5 py-0.5">
+              {activeBills.length}
+            </span>
+          )}
+        </button>
+        <button
+          onClick={() => { setViewMode('history'); setPaymentStatus('all'); }}
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+            viewMode === 'history'
+              ? 'border-gray-600 text-gray-700'
+              : 'border-transparent text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          Cancelled / History
+          {cancelledBills.length > 0 && (
+            <span className="ml-2 text-[10px] bg-gray-100 text-gray-600 rounded-full px-1.5 py-0.5">
+              {cancelledBills.length}
+            </span>
+          )}
+        </button>
+      </div>
+
+      {/* Summary Cards — only shown for the active bills view */}
+      {summary && viewMode === 'active' && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <Card>
             <CardContent className="pt-5 pb-4">
@@ -288,7 +330,8 @@ const BillingDashboard = () => {
                   <SelectItem value="all">All</SelectItem>
                   <SelectItem value="paid">Paid</SelectItem>
                   <SelectItem value="pending">Pending</SelectItem>
-                  <SelectItem value="cancelled">Cancelled</SelectItem>
+                  <SelectItem value="partial">Partial</SelectItem>
+                  {viewMode === 'history' && <SelectItem value="cancelled">Cancelled</SelectItem>}
                 </SelectContent>
               </Select>
             </div>
@@ -317,7 +360,8 @@ const BillingDashboard = () => {
               </Select>
             </div>
             <Button size="sm" variant="outline" className="h-9" onClick={() => {
-              setDateFrom(weekAgo); setDateTo(today); setPatientSearch(''); setBillType('all'); setPaymentStatus('all'); setDoctorFilter('all'); setReferralFilter('all');
+              setDateFrom(weekAgo); setDateTo(today); setPatientSearch('');
+              setBillType('all'); setPaymentStatus('all'); setDoctorFilter('all'); setReferralFilter('all');
             }}>
               Reset
             </Button>
@@ -330,7 +374,7 @@ const BillingDashboard = () => {
         <CardContent className="pt-4">
           {loading ? (
             <div className="flex justify-center py-12"><Loader2 className="h-6 w-6 animate-spin text-gray-400" /></div>
-          ) : bills.length === 0 ? (
+          ) : displayedBills.length === 0 ? (
             <div className="text-center py-12 text-gray-500">
               <Receipt className="h-10 w-10 mx-auto mb-2 text-gray-300" />
               <p>No bills found for the selected filters.</p>
@@ -354,7 +398,7 @@ const BillingDashboard = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {bills.map((bill) => {
+                  {displayedBills.map((bill) => {
                     const typeBadge = (() => {
                       if (bill.type === 'consultation') return 'border-blue-200 text-blue-700';
                       if (bill.type === 'lab') return 'border-purple-200 text-purple-700';
