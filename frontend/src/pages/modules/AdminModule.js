@@ -194,8 +194,34 @@ const AdminModule = () => {
       // Assign multiple roles
       await axios.put(`/api/admin/users/${userId}/roles`, { role_ids: roleIds });
 
-      toast({ title: "Success", description: editingUser ? "User updated successfully" : "User created successfully" });
+      fetchUsers(); fetchUserLimit();
 
+      const isNewDoctor = !editingUser && roleIds.some(rid => {
+        const r = roles.find(role => role.id === rid);
+        return r?.name === 'doctor';
+      });
+
+      if (isNewDoctor) {
+        // Keep dialog open in edit mode so the doctor can immediately set room-type rates
+        const newUserRes = await axios.get(`/api/admin/users`);
+        const newUser = (newUserRes.data || []).find(u => u.id === userId);
+        if (newUser) {
+          toast({ title: "User created", description: "Doctor saved — you can now set room-type visit rates below." });
+          setEditingUser(newUser);
+          fetchRoomTypes();
+          try {
+            const ratesRes = await axios.get('/api/inpatient/doctor-room-rates', { params: { doctor_id: userId } });
+            const rates = ratesRes.data || [];
+            setDoctorRoomRates(rates);
+            const edits = {};
+            rates.forEach(r => { edits[r.room_type] = String(r.visit_rate); });
+            setDoctorRoomRatesEdits(edits);
+          } catch { /* non-fatal */ }
+          return; // keep dialog open
+        }
+      }
+
+      toast({ title: "Success", description: editingUser ? "User updated successfully" : "User created successfully" });
       setShowUserForm(false);
       setEditingUser(null);
       setUserForm({
@@ -216,7 +242,6 @@ const AdminModule = () => {
         qualification: '',
         experience_years: ''
       });
-      fetchUsers(); fetchUserLimit();
     } catch (error) {
       console.error('Error creating/updating user:', error.response?.data || error);
       toast({
@@ -698,7 +723,7 @@ const AdminModule = () => {
                   </div>
                 )}
 
-                {/* Doctor room-type visit rate overrides — only shown when editing an existing doctor */}
+                {/* Doctor room-type visit rate overrides — shown once a doctor user exists (edit or post-create) */}
                 {isDoctorRole() && editingUser && (
                   <div className="space-y-3 border-t pt-3">
                     <div>
@@ -802,7 +827,7 @@ const AdminModule = () => {
 
                 <div className="flex justify-end gap-2 pt-2 border-t">
                   <Button type="button" variant="outline" onClick={() => { setShowUserForm(false); setEditingUser(null); }}>
-                    Cancel
+                    {editingUser ? 'Done' : 'Cancel'}
                   </Button>
                   <Button type="submit" disabled={loading}>
                     {loading ? 'Saving...' : editingUser ? 'Update User' : 'Create User'}
