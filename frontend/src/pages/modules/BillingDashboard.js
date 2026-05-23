@@ -275,6 +275,8 @@ const BillingDashboard = () => {
                   <SelectItem value="all">All</SelectItem>
                   <SelectItem value="consultation">Consultation</SelectItem>
                   <SelectItem value="lab">Lab Orders</SelectItem>
+                  <SelectItem value="admission">Admission</SelectItem>
+                  <SelectItem value="deposit">Deposits / Refunds</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -352,66 +354,106 @@ const BillingDashboard = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {bills.map((bill) => (
-                    <tr key={bill.id} className={`border-b hover:bg-gray-50 ${bill.payment_status === 'cancelled' ? 'opacity-60' : ''}`}>
-                      <td className="py-2.5 pr-3 text-xs">{formatDate(bill.date)}</td>
-                      <td className="py-2.5 pr-3">
-                        <Badge variant="outline" className={`text-[10px] capitalize ${bill.type === 'consultation' ? 'border-blue-200 text-blue-700' : 'border-purple-200 text-purple-700'}`}>
-                          {bill.type}
-                        </Badge>
-                      </td>
-                      <td className="py-2.5 pr-3 text-xs font-mono text-gray-500">{bill.reference}</td>
-                      <td className="py-2.5 pr-3">
-                        <div>
-                          <p className="font-medium text-sm">{bill.patient_name}</p>
-                          <p className="text-[10px] text-gray-400">{bill.patient_phone}</p>
-                        </div>
-                      </td>
-                      <td className="py-2.5 pr-3 text-xs text-gray-600 max-w-[200px] truncate">{bill.items}</td>
-                      <td className="py-2.5 pr-3 text-right">
-                        <p className="font-semibold">{formatCurrency(bill.amount)}</p>
-                        {bill.discount > 0 && <p className="text-[10px] text-green-600">-{formatCurrency(bill.discount)} disc.</p>}
-                      </td>
-                      <td className="py-2.5 pr-3 text-xs text-gray-600">{bill.doctor_name || '-'}</td>
-                      <td className="py-2.5 pr-3 text-xs text-gray-600">{bill.referred_by || '-'}</td>
-                      <td className="py-2.5 pr-3">
-                        <Badge className={`text-[10px] ${
-                          bill.payment_status === 'paid' ? 'bg-green-100 text-green-700' :
-                          bill.payment_status === 'cancelled' ? 'bg-red-100 text-red-700' :
-                          'bg-orange-100 text-orange-700'
-                        }`}>
-                          {bill.payment_status}
-                        </Badge>
-                        {bill.cancel_reason && (
-                          <p className="text-[9px] text-red-500 mt-0.5 max-w-[120px] truncate" title={`${bill.cancel_reason} — by ${bill.cancelled_by}`}>
-                            {bill.cancel_reason}
-                          </p>
-                        )}
-                      </td>
-                      <td className="py-2.5 pr-3 text-xs text-gray-500 capitalize">{bill.payment_method || '-'}</td>
-                      <td className="py-2.5">
-                        <div className="flex items-center gap-1">
-                          {bill.payment_status !== 'cancelled' && (
-                            <Button size="sm" variant="ghost" className="h-6 text-[10px] px-2"
-                              onClick={() => openBillPreview(bill)}
-                              title="View bill PDF">
-                              <Eye className="w-3 h-3 mr-0.5" /> View
-                            </Button>
-                          )}
-                          {bill.payment_status !== 'cancelled' && (
-                            bill.type === 'admission'
-                              ? bill.admission_id
-                              : bill.payment_status !== 'pending'
-                          ) && (
-                            <Button size="sm" variant="ghost" className="h-6 text-[10px] text-red-500 hover:text-red-700 hover:bg-red-50 px-2"
-                              onClick={() => { setCancelBill(bill); setCancelReason(''); }}>
-                              <Ban className="w-3 h-3 mr-0.5" /> Cancel
-                            </Button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
+                  {bills.map((bill) => {
+                    const typeBadge = (() => {
+                      if (bill.type === 'consultation') return 'border-blue-200 text-blue-700';
+                      if (bill.type === 'lab') return 'border-purple-200 text-purple-700';
+                      if (bill.type === 'admission') return 'border-green-200 text-green-700';
+                      return 'border-gray-200 text-gray-700';
+                    })();
+                    const typeLabel = (() => {
+                      if (bill.type === 'admission') {
+                        return bill.bill_subtype === 'final' ? 'Admission' : 'Admission (interim)';
+                      }
+                      return bill.type === 'consultation' ? 'Consultation' : bill.type === 'lab' ? 'Lab' : bill.type;
+                    })();
+                    const statusBadge = `text-[10px] ${
+                      bill.payment_status === 'paid' ? 'bg-green-100 text-green-700' :
+                      bill.payment_status === 'cancelled' ? 'bg-red-100 text-red-700' :
+                      bill.payment_status === 'partial' ? 'bg-yellow-100 text-yellow-700' :
+                      'bg-orange-100 text-orange-700'
+                    }`;
+                    return (
+                      <React.Fragment key={bill.id}>
+                        {/* Main bill row */}
+                        <tr className={`border-b hover:bg-gray-50 ${bill.payment_status === 'cancelled' ? 'opacity-60' : ''}`}>
+                          <td className="py-2.5 pr-3 text-xs">{formatDate(bill.date)}</td>
+                          <td className="py-2.5 pr-3">
+                            <Badge variant="outline" className={`text-[10px] ${typeBadge}`}>{typeLabel}</Badge>
+                          </td>
+                          <td className="py-2.5 pr-3 text-xs font-mono text-gray-500">{bill.reference}</td>
+                          <td className="py-2.5 pr-3">
+                            <p className="font-medium text-sm">{bill.patient_name}</p>
+                            <p className="text-[10px] text-gray-400">{bill.patient_phone}</p>
+                          </td>
+                          <td className="py-2.5 pr-3 text-xs text-gray-600 max-w-[200px] truncate">{bill.items}</td>
+                          <td className="py-2.5 pr-3 text-right">
+                            <p className="font-semibold">{formatCurrency(bill.amount)}</p>
+                            {bill.type === 'admission' && bill.balance_due > 0.01 && (
+                              <p className="text-[10px] text-orange-600">bal. {formatCurrency(bill.balance_due)}</p>
+                            )}
+                            {bill.discount > 0 && <p className="text-[10px] text-green-600">-{formatCurrency(bill.discount)} disc.</p>}
+                          </td>
+                          <td className="py-2.5 pr-3 text-xs text-gray-600">{bill.doctor_name || '-'}</td>
+                          <td className="py-2.5 pr-3 text-xs text-gray-600">{bill.referred_by || '-'}</td>
+                          <td className="py-2.5 pr-3">
+                            <Badge className={statusBadge}>{bill.payment_status}</Badge>
+                            {bill.cancel_reason && (
+                              <p className="text-[9px] text-red-500 mt-0.5 max-w-[120px] truncate" title={`${bill.cancel_reason} — by ${bill.cancelled_by}`}>
+                                {bill.cancel_reason}
+                              </p>
+                            )}
+                          </td>
+                          <td className="py-2.5 pr-3 text-xs text-gray-500 capitalize">{bill.payment_method || '-'}</td>
+                          <td className="py-2.5">
+                            <div className="flex items-center gap-1">
+                              {bill.payment_status !== 'cancelled' && bill.bill_id && (
+                                <Button size="sm" variant="ghost" className="h-6 text-[10px] px-2"
+                                  onClick={() => openBillPreview(bill)} title="View bill PDF">
+                                  <Eye className="w-3 h-3 mr-0.5" /> View
+                                </Button>
+                              )}
+                              {bill.payment_status !== 'cancelled' && bill.type !== 'admission' && (
+                                <Button size="sm" variant="ghost" className="h-6 text-[10px] text-red-500 hover:text-red-700 hover:bg-red-50 px-2"
+                                  onClick={() => { setCancelBill(bill); setCancelReason(''); }}>
+                                  <Ban className="w-3 h-3 mr-0.5" /> Cancel
+                                </Button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+
+                        {/* Inline deposit / refund child rows */}
+                        {bill.type === 'admission' && (bill.deposits || []).map((dep, i) => {
+                          const isRefund = dep.deposit_type === 'refund';
+                          const depLabel = dep.deposit_type === 'initial' ? 'Deposit'
+                            : dep.deposit_type === 'topup' ? 'Top-up'
+                            : 'Refund';
+                          return (
+                            <tr key={`dep-${bill.id}-${i}`} className="border-b bg-gray-50/60">
+                              <td className="py-1.5 pr-3 pl-6 text-[10px] text-gray-400">{formatDate(dep.date)}</td>
+                              <td className="py-1.5 pr-3">
+                                <Badge className={`text-[10px] ${isRefund ? 'bg-red-100 text-red-700' : 'bg-teal-100 text-teal-700'}`}>
+                                  {depLabel}
+                                </Badge>
+                              </td>
+                              <td className="py-1.5 pr-3 text-[10px] font-mono text-gray-400">{dep.deposit_number}</td>
+                              <td className="py-1.5 pr-3 text-[10px] text-gray-400" colSpan={2}>
+                                {dep.method.charAt(0).toUpperCase() + dep.method.slice(1)}
+                                {dep.reference ? ` · ${dep.reference}` : ''}
+                              </td>
+                              <td className="py-1.5 pr-3 text-right">
+                                <span className={`text-xs font-medium ${isRefund ? 'text-red-600' : 'text-teal-700'}`}>
+                                  {isRefund ? '−' : '+'}{formatCurrency(dep.amount)}
+                                </span>
+                              </td>
+                              <td colSpan={5} />
+                            </tr>
+                          );
+                        })}
+                      </React.Fragment>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

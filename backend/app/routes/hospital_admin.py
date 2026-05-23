@@ -1013,61 +1013,149 @@ async def get_all_bills(
             "cancelled_at": lo.bill_cancelled_at.isoformat() if getattr(lo, 'bill_cancelled_at', None) else "",
         })
 
-    # --- Admission (inpatient) bills from bills table ---
-    if bill_type in (None, 'admission', 'inpatient'):
-        adm_query = db.query(Bill).join(Patient, Bill.patient_id == Patient.id).filter(
+    # --- Admission (inpatient) bills — one summary row per admission ---
+    # Each admission is represented by a single row whose amount = total of all
+    # non-cancelled bills for that admission (no double-counting across interim
+    # and final bills). Deposits/refunds appear as inline child rows beneath it.
+    if bill_type in (None, 'admission', 'inpatient', 'deposit'):
+        from app.models.inpatient import AdmissionDeposit
+
+        # Gather all admission bills in the date window (any subtype).
+        adm_bill_q = db.query(Bill).join(Patient, Bill.patient_id == Patient.id).filter(
             Patient.hospital_id == hospital_id,
             Bill.bill_type == "admission",
             sql_func.date(Bill.bill_date) >= d_from,
             sql_func.date(Bill.bill_date) <= d_to,
         )
-        if payment_status:
-            status_map = {"paid": "paid", "pending": "pending", "cancelled": "cancelled"}
-            mapped = status_map.get(payment_status, payment_status)
-            adm_query = adm_query.filter(Bill.status == mapped)
+        # Also gather admissions with deposits in the date window so deposit-only
+        # admissions (no bill yet) still surface when filter is 'deposit'.
+        dep_adm_ids_q = db.query(AdmissionDeposit.admission_id).join(
+            Admission, Admission.id == AdmissionDeposit.admission_id
+        ).join(Patient, Patient.id == Admission.patient_id).filter(
+            Patient.hospital_id == hospital_id,
+            sql_func.date(AdmissionDeposit.received_at) >= d_from,
+            sql_func.date(AdmissionDeposit.received_at) <= d_to,
+        )
         if patient_search:
             q = f"%{patient_search}%"
-            adm_query = adm_query.filter(
+            adm_bill_q = adm_bill_q.filter(
+                (Patient.first_name.ilike(q)) | (Patient.last_name.ilike(q)) | (Patient.primary_phone.ilike(q))
+            )
+            dep_adm_ids_q = dep_adm_ids_q.filter(
                 (Patient.first_name.ilike(q)) | (Patient.last_name.ilike(q)) | (Patient.primary_phone.ilike(q))
             )
 
-        for b in adm_query.order_by(Bill.bill_date.desc()).all():
-            p = db.query(Patient).filter(Patient.id == b.patient_id).first()
-            admission = db.query(Admission).filter(Admission.id == b.reference_id).first() if b.reference_id else None
+        # Group bills by admission_id.
+        adm_bills_by_adm: dict = {}
+        for b in adm_bill_q.all():
+            adm_bills_by_adm.setdefault(b.reference_id, []).append(b)
+
+        # Union of admission IDs from bills and from deposits.
+        adm_ids_from_bills = set(adm_bills_by_adm.keys())
+        adm_ids_from_deps = {row[0] for row in dep_adm_ids_q.all()}
+        all_adm_ids = adm_ids_from_bills | adm_ids_from_deps
+
+        for adm_id in all_adm_ids:
+            if adm_id is None:
+                continue
+            admission = db.query(Admission).filter(Admission.id == adm_id).first()
+            if not admission:
+                continue
+            p = db.query(Patient).filter(Patient.id == admission.patient_id).first()
             admitting_doc = None
-            if admission and admission.admitting_doctor_id:
+            if admission.admitting_doctor_id:
                 admitting_doc = db.query(User).filter(User.id == admission.admitting_doctor_id).first()
-            # Collect bill items summary
-            items_list = db.query(BillItem).filter(BillItem.bill_id == b.id).all()
-            items_text = ", ".join(it.item_name for it in items_list[:3])
-            if len(items_list) > 3:
-                items_text += f" +{len(items_list) - 3} more"
-            # Calculate amount paid from payments
-            paid_total = sum(float(pay.amount_paid) for pay in (b.payments or []))
+
+            adm_bill_list = adm_bills_by_adm.get(adm_id, [])
+            active_bills = [b for b in adm_bill_list if b.status != "cancelled"]
+            final_bill = next((b for b in active_bills if b.bill_subtype == "final"), None)
+            # Representative bill number: final bill if exists, else latest interim.
+            rep_bill = final_bill or (sorted(active_bills, key=lambda b: b.id, reverse=True)[0] if active_bills else None)
+            bill_subtype = "final" if final_bill else ("interim" if active_bills else "none")
+
+            # Total charges = sum of all active bills (not double-counted).
+            total_charges = sum(float(b.total_amount or 0) for b in active_bills)
+
+            # Build items description from the representative bill's items.
+            if rep_bill:
+                items_list = db.query(BillItem).filter(BillItem.bill_id == rep_bill.id).all()
+                items_text = ", ".join(it.item_name for it in items_list[:3])
+                if len(items_list) > 3:
+                    items_text += f" +{len(items_list) - 3} more"
+                if not items_text:
+                    items_text = "Admission charges"
+            else:
+                items_text = "Admission charges"
+
+            # Deposits and refunds for this admission.
+            dep_rows = db.query(AdmissionDeposit).filter(
+                AdmissionDeposit.admission_id == adm_id,
+            ).order_by(AdmissionDeposit.received_at).all()
+            net_deposits = sum(
+                float(d.amount or 0) if d.deposit_type != "refund" else -abs(float(d.amount or 0))
+                for d in dep_rows
+            )
+            balance_due = round(total_charges - net_deposits, 2)
+
+            # Admission-level status — based on financial balance, not bill status.
+            if total_charges <= 0 or balance_due <= 0:
+                adm_status = "paid"
+            elif net_deposits > 0:
+                adm_status = "partial"
+            else:
+                adm_status = "pending"
+
+            # Apply payment_status filter against the derived status.
+            if payment_status and payment_status != adm_status:
+                continue
+            # Skip admission-only rows when filter is 'deposit' (deposits handle separately).
+            if bill_type == 'deposit' and not dep_rows:
+                continue
+
+            # Representative date: final bill date, else latest active bill date, else admission date.
+            rep_date = (
+                (rep_bill.bill_date.isoformat() if rep_bill and rep_bill.bill_date else None)
+                or (admission.admission_date.isoformat() if admission.admission_date else "")
+            )
+
+            deposit_children = []
+            for d in dep_rows:
+                deposit_children.append({
+                    "deposit_number": d.deposit_number or "",
+                    "date": d.received_at.isoformat() if d.received_at else "",
+                    "deposit_type": d.deposit_type or "initial",
+                    "amount": float(d.amount or 0),
+                    "method": d.payment_method or "cash",
+                    "reference": d.reference_number or "",
+                })
+
             bills.append({
-                "id": f"ADM-{b.id}",
-                "bill_id": b.id,
+                "id": f"ADM-{adm_id}",
+                "bill_id": rep_bill.id if rep_bill else None,
                 "type": "admission",
-                "date": b.bill_date.isoformat() if b.bill_date else "",
+                "bill_subtype": bill_subtype,
+                "date": rep_date,
                 "patient_name": f"{p.first_name} {p.last_name}" if p else "Unknown",
                 "patient_phone": p.primary_phone if p else "",
                 "patient_id": p.patient_id if p else "",
-                "_doctor_id": admission.admitting_doctor_id if admission else None,
+                "_doctor_id": admission.admitting_doctor_id,
                 "doctor_name": f"Dr. {admitting_doc.first_name} {admitting_doc.last_name}" if admitting_doc else "",
-                "reference": b.bill_number,
-                "items": items_text or "Admission charges",
-                "subtotal": float(b.subtotal or 0),
-                "discount": float(b.discount_amount or 0),
-                "amount": float(b.total_amount or 0),
-                "payment_status": b.status or "pending",
+                "reference": rep_bill.bill_number if rep_bill else admission.admission_number or "",
+                "items": items_text,
+                "subtotal": total_charges,
+                "discount": 0,
+                "amount": total_charges,
+                "payment_status": adm_status,
                 "payment_method": "",
                 "referred_by": "",
                 "cancel_reason": "",
                 "cancelled_by": "",
                 "cancelled_at": "",
-                "amount_paid": paid_total,
-                "balance_due": float(b.total_amount or 0) - paid_total,
-                "admission_id": admission.id if admission else None,
+                "amount_paid": net_deposits,
+                "balance_due": balance_due,
+                "admission_id": adm_id,
+                "deposits": deposit_children,
+                "net_deposits": round(net_deposits, 2),
             })
 
     # --- Day-care bills from bills table (outpatient day-care services) ---
@@ -1173,10 +1261,15 @@ async def get_all_bills(
     # Sort all by date descending
     bills.sort(key=lambda b: b["date"], reverse=True)
 
-    # Summary — exclude cancelled from totals
+    # Summary — exclude cancelled from totals.
+    # Admission rows already carry the consolidated total (no double-counting
+    # across interim+final). For admissions, "paid" = balance_due <= 0.
     active_bills = [b for b in bills if b["payment_status"] != "cancelled"]
     total_billed = sum(b["amount"] for b in active_bills)
-    total_paid = sum(b["amount"] for b in active_bills if b["payment_status"] == "paid")
+    total_paid = sum(
+        (b["net_deposits"] if b["type"] == "admission" else b["amount"])
+        for b in active_bills if b["payment_status"] == "paid"
+    )
     total_pending = sum(b["amount"] for b in active_bills if b["payment_status"] in ("pending", "partial"))
     cancelled_count = sum(1 for b in bills if b["payment_status"] == "cancelled")
     apt_count = sum(1 for b in bills if b["type"] == "consultation")
