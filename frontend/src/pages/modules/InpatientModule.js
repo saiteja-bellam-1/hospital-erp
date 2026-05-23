@@ -1516,10 +1516,10 @@ const InpatientModule = () => {
         payload.tax_percentage = parseFloat(reviewBillTaxPct);
       }
       const res = await axios.post(`/api/inpatient/admissions/${activityAdmission.id}/bill/finalize`, payload);
-      toast({ title: 'Bill finalized', description: `${res.data.bill_number} — ₹${res.data.total_amount}` });
       setShowReviewBillDialog(false);
       fetchBill(activityAdmission.id);
       fetchBalance(activityAdmission.id);
+      await handlePrintBillPdf(activityAdmission.id);
     } catch (err) {
       const detail = err.response?.data?.detail;
       const msg = typeof detail === 'string' ? detail : (detail?.message || 'Failed to finalize bill');
@@ -2187,10 +2187,10 @@ const InpatientModule = () => {
         tax_percentage: billTaxPct || 0,
       };
       const res = await axios.post(`/api/inpatient/admissions/${activityAdmission.id}/bill/interim`, payload);
-      toast({ title: 'Interim bill created', description: `${res.data.bill_number} — ₹${res.data.total_amount.toFixed(2)}` });
       fetchBill(activityAdmission.id);
       fetchAdmissionBills(activityAdmission.id);
       fetchBalance(activityAdmission.id);
+      await handlePrintBillPdf(activityAdmission.id);
     } catch (err) {
       const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed to create interim bill';
       toast({ variant: 'destructive', title: 'Error', description: msg });
