@@ -5260,6 +5260,23 @@ def _generate_deposit_number(db: Session) -> str:
     return f"{prefix}{seq:04d}"
 
 
+def _generate_txn_id(db: Session) -> str:
+    """Auto-generate a transaction ID when the user doesn't supply one."""
+    today = datetime.now().strftime("%Y%m%d")
+    prefix = f"TXN-{today}-"
+    last = db.query(AdmissionDeposit).filter(
+        AdmissionDeposit.reference_number.like(f"{prefix}%")
+    ).order_by(AdmissionDeposit.id.desc()).first()
+    if last and last.reference_number:
+        try:
+            seq = int(last.reference_number.split("-")[-1]) + 1
+        except (ValueError, IndexError):
+            seq = 1
+    else:
+        seq = 1
+    return f"{prefix}{seq:04d}"
+
+
 def _admission_balance_summary(db: Session, admission: Admission) -> dict:
     """Compute deposits/charges/balance for an admission. Positive balance =
     patient has unused credit (refund due on discharge); negative = patient owes."""
@@ -5431,13 +5448,14 @@ async def create_deposit(
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
 
+    txn_id = data.reference_number or _generate_txn_id(db)
     deposit = AdmissionDeposit(
         admission_id=admission_id,
         deposit_number=_generate_deposit_number(db),
         amount=data.amount,
         deposit_type=data.deposit_type,
         payment_method=data.payment_method,
-        reference_number=data.reference_number,
+        reference_number=txn_id,
         notes=data.notes,
         received_by_id=current_user.id,
         hospital_id=hospital.id,
@@ -5496,13 +5514,14 @@ async def create_refund(
             detail=f"Refund of Rs.{data.amount:,.2f} exceeds available credit of Rs.{summary['balance']:,.2f}",
         )
 
+    txn_id = data.reference_number or _generate_txn_id(db)
     deposit = AdmissionDeposit(
         admission_id=admission_id,
         deposit_number=_generate_deposit_number(db),
         amount=data.amount,  # stored positive; deposit_type marks it as refund
         deposit_type="refund",
         payment_method=data.payment_method,
-        reference_number=data.reference_number,
+        reference_number=txn_id,
         notes=data.notes,
         received_by_id=current_user.id,
         hospital_id=hospital.id,

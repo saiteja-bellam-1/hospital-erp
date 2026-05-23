@@ -27,7 +27,7 @@ import {
   ClipboardList, LayoutDashboard, Scissors, Shield, Upload, Download, Paperclip,
   HeartPulse, Pill, AlertTriangle, Check, XCircle, Wallet, Package, Receipt, FileCheck, Building2,
   Sparkles, CalendarDays, ArrowRightLeft, UserPlus, FileSignature, AlertOctagon, RotateCcw, Skull,
-  CalendarRange, Printer, Wrench
+  CalendarRange, Printer, Wrench, Eye
 } from 'lucide-react';
 import axios from 'axios';
 
@@ -245,6 +245,12 @@ const InpatientModule = () => {
   const [reviewBillItems, setReviewBillItems] = useState([]);
   const [reviewBillDiscount, setReviewBillDiscount] = useState({ type: 'flat', value: 0 });
   const [reviewBillTaxPct, setReviewBillTaxPct] = useState(0);
+  // Bill PDF preview dialog
+  const [showBillPdfDialog, setShowBillPdfDialog] = useState(false);
+  const [billPdfUrl, setBillPdfUrl] = useState(null);
+  const [billPdfAdmissionId, setBillPdfAdmissionId] = useState(null);
+  const [billPdfIncludeHeader, setBillPdfIncludeHeader] = useState(true);
+  const [billPdfLoading, setBillPdfLoading] = useState(false);
   const [nursingNotes, setNursingNotes] = useState([]);
   // LOA dialog state
   const [loaDialog, setLoaDialog] = useState({ open: false, admissionId: null,
@@ -3102,13 +3108,20 @@ const InpatientModule = () => {
     }
   };
 
-  const handlePrintBillPdf = async (admissionId) => {
+  const handlePrintBillPdf = async (admissionId, includeHeader = true) => {
+    setBillPdfLoading(true);
     try {
-      const res = await axios.get(`/api/inpatient/admissions/${admissionId}/bill/pdf`, { responseType: 'blob' });
-      const url = URL.createObjectURL(res.data);
-      printPdfFromUrl(url);
+      const res = await axios.get(
+        `/api/inpatient/admissions/${admissionId}/bill/pdf?include_header=${includeHeader}`,
+        { responseType: 'blob' },
+      );
+      if (billPdfUrl) URL.revokeObjectURL(billPdfUrl);
+      const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+      setBillPdfUrl(url);
+      setBillPdfAdmissionId(admissionId);
+      setBillPdfIncludeHeader(includeHeader);
+      setShowBillPdfDialog(true);
     } catch (err) {
-      // Blob responses hide the JSON detail — read it back as text.
       let msg = 'Failed to generate bill PDF';
       try {
         if (err.response?.data instanceof Blob) {
@@ -3121,7 +3134,17 @@ const InpatientModule = () => {
         }
       } catch { /* keep default msg */ }
       toast({ variant: 'destructive', title: 'Error', description: msg });
-    }
+    } finally { setBillPdfLoading(false); }
+  };
+
+  const closeBillPdfDialog = () => {
+    setShowBillPdfDialog(false);
+    if (billPdfUrl) { URL.revokeObjectURL(billPdfUrl); setBillPdfUrl(null); }
+    setBillPdfAdmissionId(null);
+  };
+
+  const printBillPdf = () => {
+    if (billPdfUrl) printPdfFromUrl(billPdfUrl);
   };
 
   // Filtered admissions — sub-tab also hides pending-acceptance rows from
@@ -3877,6 +3900,10 @@ const InpatientModule = () => {
                                       </div>
                                       <div className="flex items-center gap-2">
                                         <span className={`font-semibold ${b.status === 'cancelled' ? 'line-through text-gray-400' : ''}`}>₹{b.total_amount.toFixed(2)}</span>
+                                        <Button variant="ghost" size="sm" className="h-6 px-2 text-xs text-blue-600 hover:text-blue-700"
+                                          onClick={() => handlePrintBillPdf(activityAdmission.id)}>
+                                          <Eye className="h-3 w-3 mr-1" />View
+                                        </Button>
                                         {b.status !== 'cancelled' && (
                                           <>
                                             <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => openSplitDialog(b)}>Split</Button>
@@ -4062,6 +4089,7 @@ const InpatientModule = () => {
                                   <thead className="bg-gray-50">
                                     <tr className="text-left">
                                       <th className="px-2 py-2">Receipt</th>
+                                      <th className="px-2 py-2">Txn ID</th>
                                       <th className="px-2 py-2">Date</th>
                                       <th className="px-2 py-2">Type</th>
                                       <th className="px-2 py-2">Method</th>
@@ -4074,6 +4102,7 @@ const InpatientModule = () => {
                                     {deposits.map(d => (
                                       <tr key={d.id} className={`border-t ${d.deposit_type === 'refund' ? 'bg-orange-50' : ''}`}>
                                         <td className="px-2 py-1.5 font-mono">{d.deposit_number}</td>
+                                        <td className="px-2 py-1.5 font-mono text-blue-700">{d.reference_number || '—'}</td>
                                         <td className="px-2 py-1.5">{new Date(d.received_at).toLocaleString()}</td>
                                         <td className="px-2 py-1.5"><Badge variant="outline" className="text-xs">{d.deposit_type}</Badge></td>
                                         <td className="px-2 py-1.5">{d.payment_method}</td>
@@ -7040,8 +7069,8 @@ const InpatientModule = () => {
                 </Select>
               </div>
               <div>
-                <Label>Reference #</Label>
-                <Input value={depositForm.reference_number} onChange={e => setDepositForm(p => ({ ...p, reference_number: e.target.value }))} placeholder="Txn ref / cheque #" />
+                <Label>Transaction ID <span className="text-gray-400 font-normal">(auto-generated if blank)</span></Label>
+                <Input value={depositForm.reference_number} onChange={e => setDepositForm(p => ({ ...p, reference_number: e.target.value }))} placeholder="e.g. TXN-20260523-0001 or cheque #" />
               </div>
             </div>
             <div>
@@ -7079,8 +7108,8 @@ const InpatientModule = () => {
               </div>
             </div>
             <div>
-              <Label>Reference #</Label>
-              <Input value={refundForm.reference_number} onChange={e => setRefundForm(p => ({ ...p, reference_number: e.target.value }))} />
+              <Label>Transaction ID <span className="text-gray-400 font-normal">(auto-generated if blank)</span></Label>
+              <Input value={refundForm.reference_number} onChange={e => setRefundForm(p => ({ ...p, reference_number: e.target.value }))} placeholder="e.g. TXN-20260523-0001" />
             </div>
             <div>
               <Label>Notes</Label>
@@ -9349,6 +9378,45 @@ const InpatientModule = () => {
             <p className="text-xs text-gray-400">
               {roomBeds.length} bed{roomBeds.length !== 1 ? 's' : ''} total, {roomBeds.filter(b => b.status === 'available').length} available
             </p>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bill PDF Preview Dialog */}
+      <Dialog open={showBillPdfDialog} onOpenChange={(open) => { if (!open) closeBillPdfDialog(); }}>
+        <DialogContent className="max-w-4xl max-h-[90vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileText className="h-5 w-5" />
+              Bill Preview
+            </DialogTitle>
+          </DialogHeader>
+          <div className="flex-1 min-h-[500px] border rounded-lg overflow-hidden">
+            {billPdfLoading ? (
+              <div className="flex items-center justify-center h-full text-gray-500">Loading PDF…</div>
+            ) : billPdfUrl ? (
+              <iframe src={billPdfUrl} className="w-full h-full border-0" title="Bill Preview" style={{ minHeight: 500 }} />
+            ) : null}
+          </div>
+          <div className="flex items-center gap-3 pt-3 border-t">
+            <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <input
+                type="checkbox"
+                checked={billPdfIncludeHeader}
+                onChange={async (e) => {
+                  const val = e.target.checked;
+                  setBillPdfIncludeHeader(val);
+                  if (billPdfAdmissionId) await handlePrintBillPdf(billPdfAdmissionId, val);
+                }}
+                className="w-4 h-4"
+              />
+              Include header
+            </label>
+            <div className="flex-1" />
+            <Button variant="outline" onClick={printBillPdf} disabled={!billPdfUrl}>
+              <Printer className="h-4 w-4 mr-1" /> Print
+            </Button>
+            <Button variant="ghost" onClick={closeBillPdfDialog}>Close</Button>
           </div>
         </DialogContent>
       </Dialog>
