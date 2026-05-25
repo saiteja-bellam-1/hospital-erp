@@ -30,8 +30,20 @@ export function useNavigationSections({ roles, enabledModules }) {
   };
 
   // ── HOME ──
-  const homeItems = [make('Dashboard', Home, '/dashboard')];
-  addedPaths.add('/dashboard');
+  // If the user has more than one role-specific dashboard, surface each as its
+  // own sidebar item (e.g. "Reception Dashboard", "Lab Tech Dashboard") so
+  // nothing gets shadowed by the priority fallback at /dashboard.
+  const roleDashboards = getRoleDashboards({ hasRole, hasAnyRole, enabledModules });
+  const homeItems = [];
+  if (roleDashboards.length > 1) {
+    roleDashboards.forEach(d => {
+      homeItems.push(make(d.label, Home, d.path));
+      addedPaths.add(d.path);
+    });
+  } else {
+    homeItems.push(make('Dashboard', Home, '/dashboard'));
+    addedPaths.add('/dashboard');
+  }
   sections.push({ label: '', items: homeItems });
 
   // ── OUTPATIENT ── (visible to receptionist + hospital/super admin)
@@ -149,4 +161,41 @@ export function useNavigationSections({ roles, enabledModules }) {
   }
 
   return { sections };
+}
+
+/**
+ * Returns the role-specific dashboards a user is entitled to, in priority order.
+ * Mirrors the legacy HomeDashboard switch in Dashboard.js so the sidebar and
+ * the /dashboard fallback agree on what counts as a "dashboard".
+ */
+export function getRoleDashboards({ hasRole, hasAnyRole, enabledModules }) {
+  const out = [];
+  if (hasRole('super_admin')) {
+    out.push({ key: 'super_admin', label: 'Admin Dashboard', path: '/dashboard/admin-home' });
+  }
+  if (hasRole('hospital_admin') && !hasRole('super_admin')) {
+    out.push({ key: 'hospital_admin', label: 'Admin Dashboard', path: '/dashboard/hospital-admin-home' });
+  }
+  if (hasRole('doctor') && enabledModules.outpatient) {
+    out.push({ key: 'doctor', label: 'Doctor Dashboard', path: '/dashboard/doctor-home' });
+  }
+  if (hasAnyRole('lab_admin', 'lab_technician') && enabledModules.lab) {
+    out.push({ key: 'lab', label: 'Lab Tech Dashboard', path: '/dashboard/lab-home' });
+  }
+  if (hasRole('receptionist') && enabledModules.outpatient) {
+    out.push({ key: 'reception', label: 'Reception Dashboard', path: '/dashboard/reception-home' });
+  }
+  // Receptionist-only with lab (no outpatient, no lab role) — fall back to lab dashboard.
+  if (
+    hasRole('receptionist') &&
+    !enabledModules.outpatient &&
+    enabledModules.lab &&
+    !hasAnyRole('lab_admin', 'lab_technician')
+  ) {
+    out.push({ key: 'lab', label: 'Lab Tech Dashboard', path: '/dashboard/lab-home' });
+  }
+  if (hasRole('nurse')) {
+    out.push({ key: 'nurse', label: 'Nurse Dashboard', path: '/dashboard/nurse-home' });
+  }
+  return out;
 }

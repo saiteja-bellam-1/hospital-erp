@@ -470,6 +470,15 @@ const Dashboard = () => {
                 <HomeDashboard hasRole={hasRole} enabledModules={enabledModules} />
               }
             />
+            {/* Per-role dashboards — surfaced as separate sidebar items when a
+                user has more than one role-dashboard, so neither one is hidden
+                behind the priority fallback at /dashboard. */}
+            <Route path="/admin-home" element={<SuperAdminDashboard />} />
+            <Route path="/hospital-admin-home" element={<HospitalAdminDashboard />} />
+            <Route path="/doctor-home" element={<DoctorDashboard />} />
+            <Route path="/lab-home" element={<LabTechDashboard />} />
+            <Route path="/reception-home" element={<ReceptionDashboard />} />
+            <Route path="/nurse-home" element={<NurseDashboard />} />
             <Route
               path="/home"
               element={

@@ -180,6 +180,10 @@ NEW_COLUMNS = [
     ("room_management", "gender_policy", "VARCHAR(10) DEFAULT 'mixed'"),
     # Sequential document number printed on face-sheet / case-sheet PDFs
     ("consents", "doc_number", "VARCHAR(50)"),
+    # Granular lab-test inclusion inside a Surgery Package: when mode='selected'
+    # only the LabTest IDs in included_lab_test_ids are covered, the rest bill.
+    ("surgery_packages", "lab_coverage_mode", "VARCHAR(20) DEFAULT 'all'"),
+    ("surgery_packages", "included_lab_test_ids", "TEXT"),
 ]
 
 # B6 — body release table is created via create_all on startup; no column adds.

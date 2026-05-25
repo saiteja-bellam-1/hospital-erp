@@ -1073,8 +1073,14 @@ async def get_all_bills(
             rep_bill = final_bill or (sorted(active_bills, key=lambda b: b.id, reverse=True)[0] if active_bills else None)
             bill_subtype = "final" if final_bill else ("interim" if active_bills else "none")
 
-            # Total charges = sum of all active bills (not double-counted).
-            total_charges = sum(float(b.total_amount or 0) for b in active_bills)
+            # Total charges: when a comprehensive final bill exists, its total
+            # already includes prior interim charges — use it alone to avoid
+            # double-counting (interim ₹X + final ₹X = ₹2X). Fall back to
+            # summing all active bills when only interim bills exist.
+            if final_bill:
+                total_charges = float(final_bill.total_amount or 0)
+            else:
+                total_charges = sum(float(b.total_amount or 0) for b in active_bills)
 
             # Build items description from the representative bill's items.
             if rep_bill:

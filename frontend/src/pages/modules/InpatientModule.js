@@ -218,7 +218,9 @@ const InpatientModule = () => {
     room_number: '', room_type: 'general', floor: '', department: '', ward: '',
     nursing_charge_per_visit: '', bed_count: 1, room_charge_per_day: '',
     amenities: [], is_isolation: false, gender_policy: 'mixed',
+    meal_prices: { breakfast: '', lunch: '', dinner: '', snacks: '' },
   });
+  const [roomDialogSection, setRoomDialogSection] = useState('basics'); // basics | pricing | features
   const [roomTypes, setRoomTypes] = useState([]);
   const [amenityOptions, setAmenityOptions] = useState([]);
   // Maintenance
@@ -245,6 +247,13 @@ const InpatientModule = () => {
   const [reviewBillItems, setReviewBillItems] = useState([]);
   const [reviewBillDiscount, setReviewBillDiscount] = useState({ type: 'flat', value: 0 });
   const [reviewBillTaxPct, setReviewBillTaxPct] = useState(0);
+  // Inline settle form inside the Review Final Bill dialog. The bill must
+  // balance to ₹0 before Generate Final Bill is allowed; if the draft total
+  // doesn't match deposits, the operator fills this and we hit
+  // /bill/finalize-and-settle to do both in one tx.
+  const [reviewSettleForm, setReviewSettleForm] = useState({
+    method: 'cash', reference: '', notes: '',
+  });
   // Bill PDF preview dialog
   const [showBillPdfDialog, setShowBillPdfDialog] = useState(false);
   const [billPdfUrl, setBillPdfUrl] = useState(null);
@@ -315,6 +324,14 @@ const InpatientModule = () => {
   const [showAncillaryDialog, setShowAncillaryDialog] = useState(false);
   const [ancillaryForm, setAncillaryForm] = useState({ service_id: '', quantity: 1, unit_price: '', notes: '' });
 
+  // Food ordering — per-admission meal schedule
+  const [foodOrders, setFoodOrders] = useState([]);
+  const [foodMealPlans, setFoodMealPlans] = useState({}); // {meal_type: price} for the admission's room type
+  const [foodDiet, setFoodDiet] = useState('veg');
+  const [foodNotes, setFoodNotes] = useState('');
+  const [foodDaysAhead, setFoodDaysAhead] = useState(3); // how many days to show in grid
+  const [foodBusy, setFoodBusy] = useState(false);
+
   // Phase 2: Bills history + interim
   const [admissionBills, setAdmissionBills] = useState([]);
 
@@ -338,7 +355,9 @@ const InpatientModule = () => {
   const [serviceForm, setServiceForm] = useState({ service_name: '', service_code: '', category: 'imaging', default_charge: '', charge_unit: 'per_session', description: '' });
   const [showPackageDialog, setShowPackageDialog] = useState(false);
   const [editingPackage, setEditingPackage] = useState(null);
-  const [packageForm, setPackageForm] = useState({ package_name: '', package_code: '', base_price: '', included_room_type: '', included_stay_days: 0, included_services: [], excess_per_day_charge: 0, description: '' });
+  const [packageLabTests, setPackageLabTests] = useState([]);
+  const [packageLabSearch, setPackageLabSearch] = useState('');
+  const [packageForm, setPackageForm] = useState({ package_name: '', package_code: '', base_price: '', included_room_type: '', included_stay_days: 0, included_services: [], lab_coverage_mode: 'all', included_lab_test_ids: [], excess_per_day_charge: 0, description: '' });
   const [showTpaDialog, setShowTpaDialog] = useState(false);
   const [editingTpa, setEditingTpa] = useState(null);
   const [tpaForm, setTpaForm] = useState({ tpa_name: '', tpa_code: '', address: '', phone: '', email: '', default_discount_percent: 0, contract_details: '' });
@@ -688,6 +707,85 @@ const InpatientModule = () => {
     } catch { setAncillaryCharges([]); }
   }, []);
 
+  const fetchFoodOrders = useCallback(async (admissionId) => {
+    try {
+      const res = await axios.get(`/api/inpatient/admissions/${admissionId}/food-orders`);
+      setFoodOrders(res.data || []);
+    } catch { setFoodOrders([]); }
+  }, []);
+
+  const fetchFoodMealPlans = useCallback(async (roomType) => {
+    if (!roomType) return;
+    try {
+      const res = await axios.get('/api/inpatient/meal-plans', { params: { room_type: roomType } });
+      const map = {};
+      (res.data || []).forEach(p => {
+        if (p.room_type === roomType && p.is_active) {
+          map[p.meal_type] = parseFloat(p.price) || 0;
+        }
+      });
+      setFoodMealPlans(map);
+    } catch { setFoodMealPlans({}); }
+  }, []);
+
+  // Toggle a single meal cell — order if missing, cancel if active, re-order if cancelled.
+  const handleToggleFoodCell = async (mealDate, mealType, existing) => {
+    if (!activityAdmission) return;
+    if (foodBusy) return;
+    setFoodBusy(true);
+    try {
+      if (existing && existing.status !== 'cancelled') {
+        // Cancel (blocked if billed — caught by 409)
+        await axios.post(`/api/inpatient/food-orders/${existing.id}/cancel`, { reason: 'Operator removed from schedule' });
+      } else {
+        await axios.post(`/api/inpatient/admissions/${activityAdmission.id}/food-orders`, {
+          items: [{ meal_date: mealDate, meal_type: mealType, diet_preference: foodDiet, notes: foodNotes || undefined }],
+        });
+      }
+      await fetchFoodOrders(activityAdmission.id);
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      const msg = typeof detail === 'string' ? detail : (detail?.message || 'Operation failed');
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally {
+      setFoodBusy(false);
+    }
+  };
+
+  // Bulk: order every meal type for the given date (skipping already-ordered).
+  const handleOrderWholeDay = async (mealDate) => {
+    if (!activityAdmission) return;
+    const items = ['breakfast', 'lunch', 'dinner', 'snacks']
+      .filter(mt => (foodMealPlans[mt] || 0) > 0)
+      .map(mt => ({ meal_date: mealDate, meal_type: mt, diet_preference: foodDiet, notes: foodNotes || undefined }));
+    if (items.length === 0) {
+      toast({ variant: 'destructive', title: 'No meal plan', description: 'No meal prices set for this room type' });
+      return;
+    }
+    setFoodBusy(true);
+    try {
+      await axios.post(`/api/inpatient/admissions/${activityAdmission.id}/food-orders`, { items });
+      await fetchFoodOrders(activityAdmission.id);
+      toast({ title: 'Done', description: `Ordered meals for ${mealDate}` });
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      toast({ variant: 'destructive', title: 'Error', description: typeof detail === 'string' ? detail : (detail?.message || 'Failed to order') });
+    } finally {
+      setFoodBusy(false);
+    }
+  };
+
+  const handleMarkFoodDelivered = async (orderId) => {
+    if (foodBusy) return;
+    setFoodBusy(true);
+    try {
+      await axios.patch(`/api/inpatient/food-orders/${orderId}`, { status: 'delivered' });
+      await fetchFoodOrders(activityAdmission.id);
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed to mark delivered' });
+    } finally { setFoodBusy(false); }
+  };
+
   const fetchAncillaryServices = useCallback(async () => {
     try {
       const res = await axios.get('/api/inpatient/ancillary-services', { params: { active_only: true } });
@@ -791,6 +889,16 @@ const InpatientModule = () => {
       const res = await axios.get('/api/inpatient/packages', { params: { active_only: true } });
       setPackagesList(res.data || []);
     } catch { setPackagesList([]); }
+  }, []);
+
+  // Lab tests for the granular Package > Lab > "Only selected tests" picker.
+  // Fetched lazily when the package dialog opens — kept in module state to
+  // avoid re-fetching on every keystroke.
+  const fetchPackageLabTests = useCallback(async () => {
+    try {
+      const res = await axios.get('/api/lab/tests');
+      setPackageLabTests(res.data || []);
+    } catch { setPackageLabTests([]); }
   }, []);
 
   const fetchTpaList = useCallback(async () => {
@@ -1197,6 +1305,9 @@ const InpatientModule = () => {
     fetchBalance(admission.id);
     fetchAncillaryCharges(admission.id);
     fetchAncillaryServices();
+    fetchFoodOrders(admission.id);
+    if (admission.room_type) fetchFoodMealPlans(admission.room_type);
+    setFoodDiet('veg'); setFoodNotes('');
     fetchAdmissionBills(admission.id);
     fetchAdmissionPackage(admission.id);
     fetchPackages();
@@ -1364,8 +1475,19 @@ const InpatientModule = () => {
     if (!activityAdmission) return;
     try {
       const safeFetch = (path, params) => axios.get(path, params ? { params } : undefined).then(r => r.data).catch(() => null);
-      // Fetch all charges (for billed flags on visits/OT/ancillary) AND unbilled-only
-      // (for the correct remaining room amount after prior bills).
+      // Short-circuit: if a non-cancelled final bill already exists, just
+      // open the print preview for it instead of going through the review
+      // dialog. A second final bill is blocked at the backend anyway.
+      const existingBills = await safeFetch(`/api/inpatient/admissions/${activityAdmission.id}/bills`);
+      const existingFinal = (existingBills || []).find(
+        b => b.bill_subtype === 'final' && b.status !== 'cancelled'
+      );
+      if (existingFinal) {
+        toast({ title: 'Final bill exists', description: `${existingFinal.bill_number} — opening preview.` });
+        await handlePrintBillPdf(activityAdmission.id);
+        return;
+      }
+      // Comprehensive final bill: fetch ALL charges + unbilled-only (for room billed-so-far).
       const [billAll, billUnbilled, rxList, labList] = await Promise.all([
         safeFetch(`/api/inpatient/admissions/${activityAdmission.id}/bill`),
         safeFetch(`/api/inpatient/admissions/${activityAdmission.id}/bill`, { unbilled_only: true }),
@@ -1376,26 +1498,59 @@ const InpatientModule = () => {
       const bu = billUnbilled || {};
       const items = [];
 
-      // Room — use the unbilled amount so prior bills aren't double-charged
+      // Package fee — when admission has a package and the fee has NOT yet
+      // been booked on a prior bill, prepend it as the first line so the
+      // operator sees it and it contributes to the bill total. When already
+      // booked (e.g. interim already covered it) we still show it greyed
+      // out as a prior line so the operator understands the composition.
+      if (b.package && (b.package.agreed_price || 0) > 0) {
+        items.push({
+          source: 'package', source_id: b.package.package_id || null,
+          item_type: 'package',
+          item_name: `Surgery Package: ${b.package.package_name || ''}${b.package.package_code ? ' [' + b.package.package_code + ']' : ''}`,
+          quantity: 1,
+          unit_price: parseFloat(b.package.agreed_price || 0),
+          total_price: parseFloat(b.package.agreed_price || 0),
+          is_prior: !!b.package.fee_already_billed,
+        });
+      }
+
+      // Room — split into prior-billed portion and new unbilled portion.
+      // full_room_total comes from billAll (unbilled_only=false).
+      // unbilledRoomTotal from billUnbilled; the difference is already billed.
+      const fullRoomTotal = b.room_total || 0;
       const unbilledRoomTotal = bu.room_total || 0;
-      if (unbilledRoomTotal > 0 && b.room) {
-        const rate = b.room?.charge_per_day || 0;
-        const days = rate ? +(unbilledRoomTotal / rate).toFixed(2) : 1;
+      const billedRoomTotal = Math.max(0, Math.round((fullRoomTotal - unbilledRoomTotal) * 100) / 100);
+      const roomRate = b.room?.charge_per_day || 0;
+      if (billedRoomTotal > 0 && b.room) {
+        const days = roomRate ? +(billedRoomTotal / roomRate).toFixed(2) : 1;
         items.push({
           source: 'room', source_id: null,
           item_type: 'room_charge',
           item_name: `Room ${b.room.room_number || ''} (${b.room.room_type || ''}) — ${days} day${days === 1 ? '' : 's'}`,
           quantity: Math.max(1, Math.round(days)),
-          unit_price: rate,
+          unit_price: roomRate,
+          total_price: billedRoomTotal,
+          is_prior: true,
+        });
+      }
+      if (unbilledRoomTotal > 0 && b.room) {
+        const days = roomRate ? +(unbilledRoomTotal / roomRate).toFixed(2) : 1;
+        items.push({
+          source: 'room', source_id: null,
+          item_type: 'room_charge',
+          item_name: `Room ${b.room.room_number || ''} (${b.room.room_type || ''}) — ${days} day${days === 1 ? '' : 's'}`,
+          quantity: Math.max(1, Math.round(days)),
+          unit_price: roomRate,
           total_price: unbilledRoomTotal,
+          is_prior: false,
         });
       }
 
-      // Visits — use all-charges view so billed flag is present for filtering
+      // Visits — ALL from billAll, tagged is_prior if already billed
       const visitsObj = b.visits || {};
       Object.entries(visitsObj).forEach(([vtype, group]) => {
         (group.items || []).forEach(v => {
-          if (v.billed) return;
           items.push({
             source: 'visit', source_id: v.id,
             item_type: vtype,
@@ -1403,13 +1558,13 @@ const InpatientModule = () => {
             quantity: 1,
             unit_price: parseFloat(v.amount || 0),
             total_price: parseFloat(v.amount || 0),
+            is_prior: !!v.billed,
           });
         });
       });
 
-      // OT
+      // OT — ALL, tagged is_prior if already billed
       (b.ot_entries || []).forEach(o => {
-        if (o.billed) return;
         items.push({
           source: 'ot', source_id: o.id,
           item_type: 'ot_procedure',
@@ -1417,12 +1572,12 @@ const InpatientModule = () => {
           quantity: 1,
           unit_price: parseFloat(o.total || 0),
           total_price: parseFloat(o.total || 0),
+          is_prior: !!o.billed,
         });
       });
 
-      // Ancillary
+      // Ancillary — ALL, tagged is_prior if already billed
       (b.ancillary_entries || []).forEach(a => {
-        if (a.billed) return;
         items.push({
           source: 'ancillary', source_id: a.id,
           item_type: 'ancillary',
@@ -1430,13 +1585,13 @@ const InpatientModule = () => {
           quantity: parseInt(a.quantity || 1),
           unit_price: parseFloat(a.unit_price || 0),
           total_price: parseFloat(a.total_amount || 0),
+          is_prior: !!a.billed,
         });
       });
 
-      // Pharmacy — flatten per-medicine line for unbilled pharmacy prescriptions only
+      // Pharmacy — ALL dispensed prescriptions (prior + new)
       (rxList || []).forEach(rx => {
         if (rx.type !== 'pharmacy') return;
-        if (rx.inpatient_bill_id) return;
         if (rx.status === 'pending') return;
         (rx.medicines || []).forEach(m => {
           const total = parseFloat(m.total_price || 0);
@@ -1448,13 +1603,13 @@ const InpatientModule = () => {
             quantity: parseInt(m.quantity || 1),
             unit_price: parseFloat(m.unit_price || 0),
             total_price: total,
+            is_prior: !!rx.inpatient_bill_id,
           });
         });
       });
 
-      // Lab orders
+      // Lab orders — ALL non-cancelled (prior + new)
       (labList || []).forEach(l => {
-        if (l.inpatient_bill_id) return;
         if (l.status === 'cancelled') return;
         items.push({
           source: 'lab_order', source_id: l.id,
@@ -1463,6 +1618,7 @@ const InpatientModule = () => {
           quantity: 1,
           unit_price: parseFloat(l.amount || 0),
           total_price: parseFloat(l.amount || 0),
+          is_prior: !!l.inpatient_bill_id,
         });
       });
 
@@ -1493,8 +1649,6 @@ const InpatientModule = () => {
 
   const handleSubmitReviewedBill = async () => {
     if (!activityAdmission) return;
-    // 0 items is allowed — means everything is on prior interim bills; we
-    // create a ₹0 final bill to formally close the admission.
     setLoading(true);
     try {
       const payload = {
@@ -1515,13 +1669,43 @@ const InpatientModule = () => {
       if (parseFloat(reviewBillTaxPct) > 0) {
         payload.tax_percentage = parseFloat(reviewBillTaxPct);
       }
-      const res = await axios.post(`/api/inpatient/admissions/${activityAdmission.id}/bill/finalize`, payload);
+
+      // Pick path based on whether a settle is needed: balance != 0 → atomic
+      // finalize-and-settle; balance = 0 → plain finalize.
+      const priorBilled = parseFloat(balance?.billed_on_bills) || 0;
+      const netDeposits = parseFloat(balance?.net_deposits) || 0;
+      const postBalance = +(netDeposits - (priorBilled + reviewBillGrandTotal)).toFixed(2);
+
+      let url = `/api/inpatient/admissions/${activityAdmission.id}/bill/finalize`;
+      if (Math.abs(postBalance) >= 0.01) {
+        const direction = postBalance < 0 ? 'collect' : 'refund';
+        payload.settle = {
+          direction,
+          amount: +Math.abs(postBalance).toFixed(2),
+          payment_method: reviewSettleForm.method || 'cash',
+          reference_number: reviewSettleForm.reference || undefined,
+          notes: reviewSettleForm.notes || undefined,
+        };
+        url = `/api/inpatient/admissions/${activityAdmission.id}/bill/finalize-and-settle`;
+      }
+
+      await axios.post(url, payload);
       setShowReviewBillDialog(false);
+      setReviewSettleForm({ method: 'cash', reference: '', notes: '' });
       fetchBill(activityAdmission.id);
       fetchBalance(activityAdmission.id);
+      fetchDeposits(activityAdmission.id);
       await handlePrintBillPdf(activityAdmission.id);
     } catch (err) {
       const detail = err.response?.data?.detail;
+      if (detail && typeof detail === 'object' && detail.code === 'final_bill_exists') {
+        setShowReviewBillDialog(false);
+        toast({ title: 'Final bill exists', description: `${detail.bill_number} — opening preview.` });
+        fetchBill(activityAdmission.id);
+        fetchBalance(activityAdmission.id);
+        await handlePrintBillPdf(activityAdmission.id);
+        return;
+      }
       const msg = typeof detail === 'string' ? detail : (detail?.message || 'Failed to finalize bill');
       toast({ variant: 'destructive', title: 'Error', description: msg });
     } finally { setLoading(false); }
@@ -1713,19 +1897,56 @@ const InpatientModule = () => {
     } finally { setLoading(false); }
   };
 
+  // Fetch existing meal-plan prices for a room_type and merge into the form.
+  // Called when the room dialog opens or the room_type field changes.
+  const _loadMealPricesForType = async (room_type) => {
+    if (!room_type) return;
+    try {
+      const res = await axios.get('/api/inpatient/meal-plans', { params: { room_type } });
+      const byMeal = { breakfast: '', lunch: '', dinner: '', snacks: '' };
+      (res.data || []).forEach(p => {
+        if (p.room_type === room_type && byMeal.hasOwnProperty(p.meal_type)) {
+          byMeal[p.meal_type] = p.price > 0 ? String(p.price) : '';
+        }
+      });
+      setRoomForm(prev => ({ ...prev, meal_prices: byMeal }));
+    } catch { /* meal plans optional */ }
+  };
+
   // Room CRUD
   const handleSaveRoom = async (e) => {
     e.preventDefault();
     setLoading(true);
     try {
-      const payload = { ...roomForm, bed_count: parseInt(roomForm.bed_count), room_charge_per_day: parseFloat(roomForm.room_charge_per_day), nursing_charge_per_visit: parseFloat(roomForm.nursing_charge_per_visit) || 0 };
+      const { meal_prices, ...roomFields } = roomForm;
+      const payload = { ...roomFields, bed_count: parseInt(roomForm.bed_count), room_charge_per_day: parseFloat(roomForm.room_charge_per_day), nursing_charge_per_visit: parseFloat(roomForm.nursing_charge_per_visit) || 0 };
       if (editingRoom) {
         await axios.put(`/api/inpatient/rooms/${editingRoom.id}`, payload);
-        toast({ title: 'Success', description: 'Room updated' });
       } else {
         await axios.post('/api/inpatient/rooms', payload);
-        toast({ title: 'Success', description: 'Room created' });
       }
+      // Persist meal plan prices for the room type (any non-blank entry).
+      // Blank means "no plan / inactive" — still upsert at price 0 + inactive so
+      // the operator can clear a previously-set price.
+      const planEntries = ['breakfast', 'lunch', 'dinner', 'snacks'].map(mt => {
+        const raw = (meal_prices?.[mt] ?? '').toString().trim();
+        const price = parseFloat(raw);
+        const has = raw !== '' && !isNaN(price);
+        return {
+          room_type: roomForm.room_type,
+          meal_type: mt,
+          price: has ? price : 0,
+          description: '',
+          is_active: has && price >= 0,
+        };
+      });
+      try {
+        await axios.put('/api/inpatient/meal-plans', { plans: planEntries });
+      } catch (mealErr) {
+        // Non-fatal — room saved successfully; just warn.
+        toast({ variant: 'destructive', title: 'Meal plan not saved', description: mealErr.response?.data?.detail || 'Room saved but meal prices could not be saved' });
+      }
+      toast({ title: 'Success', description: editingRoom ? 'Room updated' : 'Room created' });
       setShowRoomDialog(false);
       setEditingRoom(null);
       resetRoomForm();
@@ -1736,9 +1957,17 @@ const InpatientModule = () => {
     } finally { setLoading(false); }
   };
 
-  const resetRoomForm = () => setRoomForm({ room_number: '', room_type: 'general', floor: '', department: '', ward: '', bed_count: 1, room_charge_per_day: '', nursing_charge_per_visit: '', amenities: [], is_isolation: false, gender_policy: 'mixed' });
+  const resetRoomForm = () => {
+    setRoomForm({
+      room_number: '', room_type: 'general', floor: '', department: '', ward: '',
+      bed_count: 1, room_charge_per_day: '', nursing_charge_per_visit: '',
+      amenities: [], is_isolation: false, gender_policy: 'mixed',
+      meal_prices: { breakfast: '', lunch: '', dinner: '', snacks: '' },
+    });
+    setRoomDialogSection('basics');
+  };
 
-  const handleEditRoom = (room) => {
+  const handleEditRoom = async (room) => {
     setEditingRoom(room);
     let amenities = room.amenities;
     if (typeof amenities === 'string') {
@@ -1750,8 +1979,19 @@ const InpatientModule = () => {
       room_charge_per_day: room.room_charge_per_day, nursing_charge_per_visit: room.nursing_charge_per_visit || '',
       amenities: Array.isArray(amenities) ? amenities : [], is_isolation: room.is_isolation || false,
       gender_policy: room.gender_policy || 'mixed',
+      meal_prices: { breakfast: '', lunch: '', dinner: '', snacks: '' },
     });
+    setRoomDialogSection('basics');
     setShowRoomDialog(true);
+    await _loadMealPricesForType(room.room_type);
+  };
+
+  // When opening Add Room (vs edit), reload meal prices when type changes
+  const openAddRoomDialog = async () => {
+    resetRoomForm();
+    setEditingRoom(null);
+    setShowRoomDialog(true);
+    await _loadMealPricesForType('general');
   };
 
   const handleDeleteRoom = async (roomId) => {
@@ -2281,7 +2521,7 @@ const InpatientModule = () => {
       toast({ title: 'Package saved' });
       setShowPackageDialog(false);
       setEditingPackage(null);
-      setPackageForm({ package_name: '', package_code: '', base_price: '', included_room_type: '', included_stay_days: 0, included_services: [], excess_per_day_charge: 0, description: '' });
+      setPackageForm({ package_name: '', package_code: '', base_price: '', included_room_type: '', included_stay_days: 0, included_services: [], lab_coverage_mode: 'all', included_lab_test_ids: [], excess_per_day_charge: 0, description: '' });
       fetchPackages();
     } catch (err) {
       const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed';
@@ -3607,6 +3847,7 @@ const InpatientModule = () => {
                           { v: 'visits', l: 'Visits' },
                           { v: 'lab', l: 'Lab' },
                           { v: 'medications', l: 'Meds' },
+                          ...(ip('view_food_orders') ? [{ v: 'food', l: 'Food' }] : []),
                         ]},
                         ...(canViewBilling ? {
                           billing: { label: 'Billing', tabs: [
@@ -3847,6 +4088,191 @@ const InpatientModule = () => {
                         )}
                       </TabsContent>
 
+                      {/* Food sub-tab — per-admission meal schedule */}
+                      <TabsContent value="food" className="space-y-3 mt-3">
+                        {(() => {
+                          const mealTypes = ['breakfast', 'lunch', 'dinner', 'snacks'];
+                          const mealEmoji = { breakfast: '🌅', lunch: '🍱', dinner: '🍽️', snacks: '🍪' };
+                          const mealLabel = { breakfast: 'Breakfast', lunch: 'Lunch', dinner: 'Dinner', snacks: 'Snacks' };
+                          const today = new Date();
+                          const dates = [];
+                          for (let i = 0; i < foodDaysAhead; i++) {
+                            const d = new Date(today);
+                            d.setDate(today.getDate() + i);
+                            dates.push(d.toISOString().split('T')[0]);
+                          }
+                          // Map orders by date+type for quick lookup
+                          const byCell = {};
+                          (foodOrders || []).forEach(o => {
+                            byCell[`${o.meal_date}|${o.meal_type}`] = o;
+                          });
+                          const canOrder = ip('order_food');
+                          const canDeliver = ip('mark_food_delivered');
+                          const noPlans = Object.keys(foodMealPlans).length === 0;
+                          // Running total for unbilled
+                          const unbilledTotal = (foodOrders || []).reduce((s, o) => (
+                            o.status !== 'cancelled' && !o.billed ? s + parseFloat(o.price || 0) : s
+                          ), 0);
+
+                          return (
+                            <div className="space-y-3">
+                              {/* No meal plan banner */}
+                              {noPlans && (
+                                <div className="border border-amber-300 bg-amber-50 rounded p-3 text-xs text-amber-900">
+                                  <strong>No meal plan set</strong> for room type "{activityAdmission?.room_type || ''}".
+                                  Hospital admin can set prices when creating / editing the room.
+                                </div>
+                              )}
+
+                              {/* Diet + notes header */}
+                              {canOrder && !noPlans && (
+                                <div className="grid grid-cols-2 gap-3 border rounded-lg p-3 bg-gray-50">
+                                  <div>
+                                    <Label className="text-xs">Diet preference (applied to new orders)</Label>
+                                    <Select value={foodDiet} onValueChange={setFoodDiet}>
+                                      <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                                      <SelectContent>
+                                        <SelectItem value="veg">Vegetarian</SelectItem>
+                                        <SelectItem value="non-veg">Non-Vegetarian</SelectItem>
+                                        <SelectItem value="diabetic">Diabetic-friendly</SelectItem>
+                                        <SelectItem value="soft">Soft diet</SelectItem>
+                                        <SelectItem value="liquid">Liquid diet</SelectItem>
+                                        <SelectItem value="custom">Custom (see notes)</SelectItem>
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                  <div>
+                                    <Label className="text-xs">Notes (allergies, restrictions)</Label>
+                                    <Input className="h-8 text-xs" value={foodNotes} onChange={e => setFoodNotes(e.target.value)} placeholder="e.g. no salt, no nuts" />
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Day-range selector */}
+                              <div className="flex items-center justify-between text-xs">
+                                <div className="flex items-center gap-2">
+                                  <Label className="mb-0">Show next</Label>
+                                  <Select value={String(foodDaysAhead)} onValueChange={v => setFoodDaysAhead(parseInt(v))}>
+                                    <SelectTrigger className="h-7 w-20 text-xs"><SelectValue /></SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="1">1 day</SelectItem>
+                                      <SelectItem value="3">3 days</SelectItem>
+                                      <SelectItem value="7">7 days</SelectItem>
+                                      <SelectItem value="14">14 days</SelectItem>
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                                <span className="text-gray-500">
+                                  Unbilled food charges: <strong className="text-gray-700">₹{unbilledTotal.toFixed(2)}</strong>
+                                </span>
+                              </div>
+
+                              {/* Meal schedule grid */}
+                              <div className="border rounded-lg overflow-hidden">
+                                <table className="w-full text-xs">
+                                  <thead className="bg-gray-50 border-b">
+                                    <tr>
+                                      <th className="text-left px-2 py-2 font-medium">Date</th>
+                                      {mealTypes.map(mt => (
+                                        <th key={mt} className="text-center px-2 py-2 font-medium">
+                                          <div>{mealEmoji[mt]} {mealLabel[mt]}</div>
+                                          <div className="text-[10px] text-gray-500 font-normal">
+                                            {foodMealPlans[mt] ? `₹${foodMealPlans[mt]}` : '—'}
+                                          </div>
+                                        </th>
+                                      ))}
+                                      {canOrder && !noPlans && <th className="w-20"></th>}
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {dates.map((d, idx) => {
+                                      const dateObj = new Date(d + 'T00:00:00');
+                                      const dayLabel = idx === 0 ? 'Today' : idx === 1 ? 'Tomorrow'
+                                        : dateObj.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+                                      return (
+                                        <tr key={d} className="border-b last:border-b-0">
+                                          <td className="px-2 py-2 align-middle">
+                                            <div className="font-medium">{dayLabel}</div>
+                                            <div className="text-[10px] text-gray-400">{d}</div>
+                                          </td>
+                                          {mealTypes.map(mt => {
+                                            const cell = byCell[`${d}|${mt}`];
+                                            const hasPlan = (foodMealPlans[mt] || 0) > 0;
+                                            const status = cell?.status;
+                                            const billed = cell?.billed;
+                                            // Visual state
+                                            let cellClass = 'border rounded h-12 flex flex-col items-center justify-center text-[10px] transition-colors';
+                                            let inner;
+                                            if (!cell) {
+                                              cellClass += hasPlan ? ' bg-white hover:bg-blue-50 cursor-pointer text-gray-400' : ' bg-gray-100 text-gray-300';
+                                              inner = hasPlan ? <span>+ order</span> : <span>—</span>;
+                                            } else if (status === 'cancelled') {
+                                              cellClass += ' bg-gray-50 text-gray-400 line-through cursor-pointer hover:bg-blue-50';
+                                              inner = <span>₹{parseFloat(cell.price).toFixed(0)}</span>;
+                                            } else if (status === 'delivered') {
+                                              cellClass += ' bg-green-100 text-green-800 font-semibold';
+                                              inner = <>
+                                                <span>✓✓ ₹{parseFloat(cell.price).toFixed(0)}</span>
+                                                {billed && <span className="text-[9px] opacity-70">billed</span>}
+                                              </>;
+                                            } else {
+                                              // ordered
+                                              cellClass += billed
+                                                ? ' bg-amber-100 text-amber-800 font-semibold'
+                                                : ' bg-blue-100 text-blue-800 font-semibold cursor-pointer hover:bg-blue-200';
+                                              inner = <>
+                                                <span>✓ ₹{parseFloat(cell.price).toFixed(0)}</span>
+                                                {billed ? <span className="text-[9px] opacity-70">billed</span> : null}
+                                              </>;
+                                            }
+                                            const clickable = canOrder && hasPlan && !billed;
+                                            return (
+                                              <td key={mt} className="px-1 py-1 text-center">
+                                                <div
+                                                  className={cellClass}
+                                                  onClick={clickable ? () => handleToggleFoodCell(d, mt, cell) : undefined}
+                                                  title={cell ? `${status}${billed ? ' • billed' : ''}` : (hasPlan ? 'Click to order' : 'No meal plan')}
+                                                >
+                                                  {inner}
+                                                </div>
+                                                {/* Mark delivered button */}
+                                                {cell && status === 'ordered' && !billed && canDeliver && (
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => handleMarkFoodDelivered(cell.id)}
+                                                    className="text-[9px] text-blue-600 hover:underline mt-0.5"
+                                                  >
+                                                    Mark delivered
+                                                  </button>
+                                                )}
+                                              </td>
+                                            );
+                                          })}
+                                          {canOrder && !noPlans && (
+                                            <td className="px-1 py-1 text-center">
+                                              <Button size="sm" variant="ghost" className="h-7 text-[10px]"
+                                                onClick={() => handleOrderWholeDay(d)}
+                                                disabled={foodBusy}>
+                                                Order day
+                                              </Button>
+                                            </td>
+                                          )}
+                                        </tr>
+                                      );
+                                    })}
+                                  </tbody>
+                                </table>
+                              </div>
+
+                              <p className="text-[10px] text-gray-400 italic">
+                                Click a cell to order / cancel. Already-billed meals can't be changed (refund via deposit flow).
+                                Delivered = ✓✓ (green). Ordered = ✓ (blue, unbilled / amber, billed).
+                              </p>
+                            </div>
+                          );
+                        })()}
+                      </TabsContent>
+
                       {/* Bill sub-tab */}
                       <TabsContent value="bill" className="space-y-3 mt-3">
                         {billData ? (
@@ -3858,6 +4284,21 @@ const InpatientModule = () => {
                                   <div>
                                     <div className="font-semibold flex items-center gap-1.5"><Package className="h-4 w-4" /> {billData.package.package_name}</div>
                                     <p className="text-xs text-gray-600 mt-0.5">Agreed price ₹{billData.package.agreed_price.toFixed(2)} · {billData.package.included_stay_days} days included · Excess after that ₹{billData.package.excess_per_day_charge.toFixed(2)}/day</p>
+                                    {typeof billData.package.days_elapsed === 'number' && (
+                                      <p className="text-xs mt-0.5">
+                                        <span className={`font-medium ${billData.package.excess_days > 0 ? 'text-red-700' : 'text-purple-700'}`}>
+                                          Day {billData.package.days_elapsed} of stay
+                                        </span>
+                                        {billData.package.elapsed_label && (
+                                          <span className="text-gray-600"> ({billData.package.elapsed_label} since admission)</span>
+                                        )}
+                                        <span className="text-gray-600">
+                                          {billData.package.excess_days > 0
+                                            ? ` · ${billData.package.excess_days} day(s) past package cap`
+                                            : ` · ${billData.package.days_remaining_in_package} day(s) remaining in package`}
+                                        </span>
+                                      </p>
+                                    )}
                                     <p className="text-xs text-gray-600">Includes: {(billData.package.included_services || []).join(', ') || 'core only'}</p>
                                   </div>
                                   <Button variant="ghost" size="sm" onClick={() => setConfirmState({ open: true, title: 'Remove package?', description: 'Bill will revert to itemised mode.', onConfirm: () => { setConfirmState({ open: false }); handleRemovePackage(); } })}>
@@ -3910,42 +4351,104 @@ const InpatientModule = () => {
                                   </Button>
                                 )}
                               </div>
-                              <div className="flex justify-between"><span className="text-gray-500">Room ({billData.room?.room_number} - {billData.stay_days} days)</span><span>₹{billData.room_total?.toFixed(2)}</span></div>
-                              {billData.visits && Object.entries(billData.visits).map(([type, data]) => (
-                                <div key={type} className="flex justify-between">
-                                  <span className="text-gray-500">{type.replace('_', ' ').replace(/\b\w/g, c => c.toUpperCase())} (x{data.count})</span>
-                                  <span>₹{data.total.toFixed(2)}</span>
-                                </div>
-                              ))}
-                              {billData.ot_total > 0 && (
-                                <div className="flex justify-between">
-                                  <span className="text-gray-500">OT Procedures ({(billData.ot_entries || []).length})</span>
-                                  <span>₹{billData.ot_total.toFixed(2)}</span>
-                                </div>
-                              )}
-                              {billData.ancillary_total > 0 && (
-                                <div className="flex justify-between">
-                                  <span className="text-gray-500">Ancillary services ({(billData.ancillary_entries || []).length})</span>
-                                  <span>₹{billData.ancillary_total.toFixed(2)}</span>
-                                </div>
-                              )}
-                              {billData.pharmacy_total > 0 && (
-                                <div className="flex justify-between">
-                                  <span className="text-gray-500">Pharmacy / Medications</span>
-                                  <span>₹{billData.pharmacy_total.toFixed(2)}</span>
-                                </div>
-                              )}
-                              {billData.lab_total > 0 && (
-                                <div className="flex justify-between">
-                                  <span className="text-gray-500">Lab Tests</span>
-                                  <span>₹{billData.lab_total.toFixed(2)}</span>
-                                </div>
-                              )}
+                              {(() => {
+                                const included = new Set(billData.package?.included_services || []);
+                                const isIncluded = (cat) => included.has(cat);
+                                const Tag = () => (<span className="ml-1.5 text-[10px] uppercase tracking-wide bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded">Included</span>);
+                                const visitCovered = (t) => billData.package && (included.has('visits') || (t === 'doctor_visit' && included.has('doctor_visit')) || (t === 'nurse_visit' && included.has('nurse_visit')));
+                                return (
+                                  <>
+                                    <div className="flex justify-between">
+                                      <span className="text-gray-500">Room ({billData.room?.room_number} - {billData.stay_days} days){billData.package && isIncluded('room') && <Tag />}</span>
+                                      <span>₹{billData.room_total?.toFixed(2)}</span>
+                                    </div>
+                                    {billData.visits && Object.entries(billData.visits).map(([type, data]) => (
+                                      <div key={type} className="flex justify-between">
+                                        <span className="text-gray-500">
+                                          {type.replace('_', ' ').replace(/\b\w/g, c => c.toUpperCase())} (x{data.count})
+                                          {visitCovered(type) && <Tag />}
+                                        </span>
+                                        <span>₹{data.total.toFixed(2)}</span>
+                                      </div>
+                                    ))}
+                                    {((billData.ot_entries || []).length > 0) && (
+                                      <div className="flex justify-between">
+                                        <span className="text-gray-500">
+                                          OT Procedures ({(billData.ot_entries || []).length})
+                                          {billData.package && (isIncluded('ot') || isIncluded('surgery')) && <Tag />}
+                                        </span>
+                                        <span>₹{(billData.ot_total || 0).toFixed(2)}</span>
+                                      </div>
+                                    )}
+                                    {((billData.ancillary_entries || []).length > 0) && (
+                                      <div className="flex justify-between">
+                                        <span className="text-gray-500">
+                                          Ancillary services ({(billData.ancillary_entries || []).length})
+                                          {billData.package && isIncluded('ancillary') && <Tag />}
+                                        </span>
+                                        <span>₹{(billData.ancillary_total || 0).toFixed(2)}</span>
+                                      </div>
+                                    )}
+                                    {(billData.pharmacy_total > 0 || (billData.package && isIncluded('pharmacy'))) && (
+                                      <div className="flex justify-between">
+                                        <span className="text-gray-500">
+                                          Pharmacy / Medications
+                                          {billData.package && isIncluded('pharmacy') && <Tag />}
+                                        </span>
+                                        <span>₹{(billData.pharmacy_total || 0).toFixed(2)}</span>
+                                      </div>
+                                    )}
+                                    {(() => {
+                                      const labMode = billData.package?.lab_coverage_mode || 'all';
+                                      const labEntries = billData.lab_entries || [];
+                                      const showLab = labEntries.length > 0 || billData.lab_total > 0 || (billData.package && isIncluded('lab'));
+                                      if (!showLab) return null;
+                                      // Per-test breakdown only when the package partially covers labs.
+                                      // Otherwise (no package / mode='all') a single rolled-up row is plenty.
+                                      const granular = billData.package && isIncluded('lab') && labMode === 'selected' && labEntries.length > 0;
+                                      if (!granular) {
+                                        return (
+                                          <div className="flex justify-between">
+                                            <span className="text-gray-500">
+                                              Lab Tests
+                                              {billData.package && isIncluded('lab') && <Tag />}
+                                            </span>
+                                            <span>₹{(billData.lab_total || 0).toFixed(2)}</span>
+                                          </div>
+                                        );
+                                      }
+                                      return (
+                                        <div>
+                                          <div className="flex justify-between">
+                                            <span className="text-gray-500">Lab Tests ({labEntries.length})</span>
+                                            <span>₹{(billData.lab_total || 0).toFixed(2)}</span>
+                                          </div>
+                                          <div className="ml-4 mt-1 space-y-0.5">
+                                            {labEntries.map(e => (
+                                              <div key={e.id} className="flex justify-between text-xs">
+                                                <span className="text-gray-500">
+                                                  {e.test_name}
+                                                  {e.included_in_package && <Tag />}
+                                                </span>
+                                                <span className={e.included_in_package ? 'text-gray-400 line-through' : ''}>
+                                                  ₹{(e.amount || 0).toFixed(2)}
+                                                </span>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      );
+                                    })()}
+                                  </>
+                                );
+                              })()}
                               <div className="border-t pt-2 flex justify-between font-semibold">
-                                <span>{billData.package ? 'Excess + Package' : 'Subtotal'}</span><span>₹{billData.grand_total?.toFixed(2)}</span>
+                                <span>{billData.package ? 'Package + Excess' : 'Subtotal'}</span><span>₹{billData.grand_total?.toFixed(2)}</span>
                               </div>
                               {billData.package && (
-                                <p className="text-xs text-purple-700">Package ₹{billData.package.agreed_price.toFixed(2)} + Excess ₹{billData.package.excess_total.toFixed(2)}</p>
+                                <p className="text-xs text-purple-700">
+                                  Package ₹{billData.package.agreed_price.toFixed(2)} + Excess ₹{billData.package.excess_total.toFixed(2)}
+                                </p>
                               )}
                             </div>
 
@@ -4724,7 +5227,7 @@ const InpatientModule = () => {
             <div className="p-6 overflow-y-auto h-full space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-semibold">Room Management</h2>
-            <Button onClick={() => { setEditingRoom(null); resetRoomForm(); setShowRoomDialog(true); }}>
+            <Button onClick={openAddRoomDialog}>
               <Plus className="h-4 w-4 mr-2" /> Add Room
             </Button>
           </div>
@@ -5909,7 +6412,7 @@ const InpatientModule = () => {
                 <TabsContent value="packages" className="space-y-3 mt-3">
                   <div className="flex justify-between items-center">
                     <p className="text-sm text-gray-500">Fixed-price surgery/treatment packages (e.g. cataract, LSCS, appendectomy).</p>
-                    <Button size="sm" onClick={() => { setEditingPackage(null); setPackageForm({ package_name: '', package_code: '', base_price: '', included_room_type: '', included_stay_days: 0, included_services: [], excess_per_day_charge: 0, description: '' }); setShowPackageDialog(true); }}>
+                    <Button size="sm" onClick={() => { setEditingPackage(null); setPackageForm({ package_name: '', package_code: '', base_price: '', included_room_type: '', included_stay_days: 0, included_services: [], lab_coverage_mode: 'all', included_lab_test_ids: [], excess_per_day_charge: 0, description: '' }); fetchPackageLabTests(); setPackageLabSearch(''); setShowPackageDialog(true); }}>
                       <Plus className="h-4 w-4 mr-1" /> New Package
                     </Button>
                   </div>
@@ -5932,7 +6435,7 @@ const InpatientModule = () => {
                                 {pkg.description && <p className="text-xs text-gray-500 mt-1">{pkg.description}</p>}
                               </div>
                               <div className="flex gap-1">
-                                <Button size="sm" variant="ghost" onClick={() => { setEditingPackage(pkg); setPackageForm({ package_name: pkg.package_name, package_code: pkg.package_code || '', base_price: String(pkg.base_price), included_room_type: pkg.included_room_type || '', included_stay_days: pkg.included_stay_days, included_services: pkg.included_services || [], excess_per_day_charge: pkg.excess_per_day_charge, description: pkg.description || '' }); setShowPackageDialog(true); }}><Edit2 className="h-3.5 w-3.5" /></Button>
+                                <Button size="sm" variant="ghost" onClick={() => { setEditingPackage(pkg); setPackageForm({ package_name: pkg.package_name, package_code: pkg.package_code || '', base_price: String(pkg.base_price), included_room_type: pkg.included_room_type || '', included_stay_days: pkg.included_stay_days, included_services: pkg.included_services || [], lab_coverage_mode: pkg.lab_coverage_mode || 'all', included_lab_test_ids: pkg.included_lab_test_ids || [], excess_per_day_charge: pkg.excess_per_day_charge, description: pkg.description || '' }); fetchPackageLabTests(); setPackageLabSearch(''); setShowPackageDialog(true); }}><Edit2 className="h-3.5 w-3.5" /></Button>
                                 <Button size="sm" variant="ghost" onClick={() => setConfirmState({ open: true, title: 'Deactivate package?', description: `"${pkg.package_name}" will be hidden from new admissions.`, onConfirm: () => { setConfirmState({ open: false }); handleDeletePackage(pkg.id); } })}><Trash2 className="h-3.5 w-3.5 text-red-500" /></Button>
                               </div>
                             </div>
@@ -7453,6 +7956,73 @@ const InpatientModule = () => {
                 ))}
               </div>
             </div>
+
+            {/* Granular lab inclusion. Only meaningful when "lab" is checked above. */}
+            {(packageForm.included_services || []).includes('lab') && (
+              <div className="border rounded p-3 bg-purple-50/40 space-y-2">
+                <Label className="text-xs font-semibold uppercase text-purple-800">Lab tests included</Label>
+                <div className="flex gap-3 text-xs">
+                  <label className="flex items-center gap-1.5">
+                    <input
+                      type="radio"
+                      name="lab_coverage_mode"
+                      checked={(packageForm.lab_coverage_mode || 'all') === 'all'}
+                      onChange={() => setPackageForm(p => ({ ...p, lab_coverage_mode: 'all', included_lab_test_ids: [] }))}
+                    />
+                    All lab tests
+                  </label>
+                  <label className="flex items-center gap-1.5">
+                    <input
+                      type="radio"
+                      name="lab_coverage_mode"
+                      checked={packageForm.lab_coverage_mode === 'selected'}
+                      onChange={() => setPackageForm(p => ({ ...p, lab_coverage_mode: 'selected' }))}
+                    />
+                    Only selected tests below
+                  </label>
+                </div>
+                {packageForm.lab_coverage_mode === 'selected' && (
+                  <>
+                    <Input
+                      placeholder="Search tests…"
+                      value={packageLabSearch}
+                      onChange={e => setPackageLabSearch(e.target.value)}
+                      className="h-8 text-xs"
+                    />
+                    <div className="max-h-56 overflow-y-auto border rounded bg-white p-2 text-xs space-y-1">
+                      {(packageLabTests || [])
+                        .filter(t => !packageLabSearch || (t.name || '').toLowerCase().includes(packageLabSearch.toLowerCase()) || (t.code || '').toLowerCase().includes(packageLabSearch.toLowerCase()))
+                        .map(t => {
+                          const checked = (packageForm.included_lab_test_ids || []).includes(t.id);
+                          return (
+                            <label key={t.id} className="flex items-center gap-2 cursor-pointer hover:bg-gray-50 rounded px-1 py-0.5">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={e => {
+                                  setPackageForm(p => ({
+                                    ...p,
+                                    included_lab_test_ids: e.target.checked
+                                      ? [...(p.included_lab_test_ids || []), t.id]
+                                      : (p.included_lab_test_ids || []).filter(x => x !== t.id),
+                                  }));
+                                }}
+                              />
+                              <span className="flex-1 truncate">{t.name}{t.code && <span className="text-gray-400"> · {t.code}</span>}</span>
+                              {typeof t.price === 'number' && <span className="text-gray-500">₹{t.price.toFixed(2)}</span>}
+                            </label>
+                          );
+                        })}
+                      {(packageLabTests || []).length === 0 && <p className="text-gray-500 italic">No lab tests configured.</p>}
+                    </div>
+                    <p className="text-[11px] text-gray-600">
+                      {(packageForm.included_lab_test_ids || []).length} test(s) included.
+                      Any other lab test ordered will be billed normally.
+                    </p>
+                  </>
+                )}
+              </div>
+            )}
             <div>
               <Label>Description</Label>
               <Textarea value={packageForm.description} onChange={e => setPackageForm(p => ({ ...p, description: e.target.value }))} rows={2} />
@@ -8701,10 +9271,72 @@ const InpatientModule = () => {
       <Dialog open={showReviewBillDialog} onOpenChange={setShowReviewBillDialog}>
         <DialogContent className="max-w-4xl max-h-[92vh] overflow-y-auto">
           <DialogHeader><DialogTitle>Review & Generate Final Bill — {activityAdmission?.patient_name || ''}</DialogTitle></DialogHeader>
+          {(() => {
+            const priorBilled = parseFloat(balance?.billed_on_bills) || 0;
+            const netDeposits = parseFloat(balance?.net_deposits) || 0;
+            const postBalance = +(netDeposits - (priorBilled + reviewBillGrandTotal)).toFixed(2);
+            const owes = postBalance < -0.01;
+            const refund = postBalance > 0.01;
+            const balanced = !owes && !refund;
+            const settleAmount = +Math.abs(postBalance).toFixed(2);
+            const cls = owes
+              ? 'border-red-300 bg-red-50 text-red-900'
+              : refund ? 'border-green-300 bg-green-50 text-green-900'
+              : 'border-gray-200 bg-gray-50 text-gray-700';
+            const label = owes
+              ? `Patient owes ₹${settleAmount.toFixed(2)} — collect before generating`
+              : refund ? `Refund due ₹${settleAmount.toFixed(2)} — refund before generating`
+              : 'Balanced ✓ — ready to generate';
+            return (
+              <div className={`border rounded-lg p-3 text-sm mb-2 ${cls}`}>
+                <div className="font-semibold">{label}</div>
+                <div className="text-xs mt-1 opacity-80">
+                  Bill total ₹{(priorBilled + reviewBillGrandTotal).toFixed(2)} ·
+                  Deposits ₹{netDeposits.toFixed(2)}
+                  {priorBilled > 0 && (
+                    <> · Prior bills ₹{priorBilled.toFixed(2)} · New ₹{reviewBillGrandTotal.toFixed(2)}</>
+                  )}
+                </div>
+                {!balanced && (
+                  <div className="mt-2 grid grid-cols-3 gap-2">
+                    <div>
+                      <Label className="text-[10px] uppercase">Method</Label>
+                      <Select value={reviewSettleForm.method}
+                              onValueChange={v => setReviewSettleForm(p => ({ ...p, method: v }))}>
+                        <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="cash">Cash</SelectItem>
+                          <SelectItem value="card">Card</SelectItem>
+                          <SelectItem value="upi">UPI</SelectItem>
+                          <SelectItem value="cheque">Cheque</SelectItem>
+                          <SelectItem value="online">Online transfer</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div>
+                      <Label className="text-[10px] uppercase">Reference</Label>
+                      <Input className="h-8 text-xs"
+                             placeholder="Optional"
+                             value={reviewSettleForm.reference}
+                             onChange={e => setReviewSettleForm(p => ({ ...p, reference: e.target.value }))} />
+                    </div>
+                    <div>
+                      <Label className="text-[10px] uppercase">Notes</Label>
+                      <Input className="h-8 text-xs"
+                             placeholder="Optional"
+                             value={reviewSettleForm.notes}
+                             onChange={e => setReviewSettleForm(p => ({ ...p, notes: e.target.value }))} />
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
           <div className="space-y-3">
             <p className="text-xs text-gray-500">
-              All currently unbilled charges are loaded below. Edit qty / unit price / item name, remove lines you don't want
-              to bill, or add a custom line. Changes are recorded once you generate the final bill.
+              The final bill is a <strong>comprehensive statement</strong> of all charges for this admission.
+              Items already on interim bills are shown in grey (read-only). New charges can be edited or removed.
+              Apply discount / tax to the whole bill before generating.
             </p>
             <div className="border rounded">
               <table className="w-full text-xs">
@@ -8720,66 +9352,118 @@ const InpatientModule = () => {
                 <tbody>
                   {reviewBillItems.length === 0 ? (
                     <tr><td colSpan={5} className="text-center text-gray-500 py-4 italic text-xs">
-                      All charges are captured in prior interim bills.<br />
-                      Generating the final bill will create a ₹0 balance record to formally close this admission.<br />
-                      You can still add custom lines below if needed.
+                      No charges found for this admission.<br />
+                      Add a custom line below if needed.
                     </td></tr>
-                  ) : reviewBillItems.map((it, idx) => (
-                    <tr key={idx} className="border-b last:border-b-0">
-                      <td className="px-2 py-1">
-                        <Input
-                          className="h-7 text-xs"
-                          value={it.item_name}
-                          onChange={e => setReviewBillItems(arr => { const n = [...arr]; n[idx] = { ...n[idx], item_name: e.target.value }; return n; })}
-                        />
-                        {it.source && it.source !== 'custom' && (
-                          <span className="text-[10px] text-gray-400">{it.source}{it.source_id ? ` #${it.source_id}` : ''}</span>
-                        )}
-                      </td>
-                      <td className="px-2 py-1">
-                        <Input type="number" min="1" className="h-7 text-xs text-right"
-                          value={it.quantity}
-                          onChange={e => setReviewBillItems(arr => {
-                            const n = [...arr];
-                            const q = Math.max(1, parseInt(e.target.value) || 1);
-                            const up = parseFloat(n[idx].unit_price) || 0;
-                            n[idx] = { ...n[idx], quantity: q, total_price: +(q * up).toFixed(2) };
-                            return n;
-                          })} />
-                      </td>
-                      <td className="px-2 py-1">
-                        <Input type="number" min="0" step="0.01" className="h-7 text-xs text-right"
-                          value={it.unit_price}
-                          onChange={e => setReviewBillItems(arr => {
-                            const n = [...arr];
-                            const up = parseFloat(e.target.value) || 0;
-                            const q = parseInt(n[idx].quantity) || 1;
-                            n[idx] = { ...n[idx], unit_price: up, total_price: +(q * up).toFixed(2) };
-                            return n;
-                          })} />
-                      </td>
-                      <td className="px-2 py-1">
-                        <Input type="number" min="0" step="0.01" className="h-7 text-xs text-right"
-                          value={it.total_price}
-                          onChange={e => setReviewBillItems(arr => {
-                            const n = [...arr];
-                            n[idx] = { ...n[idx], total_price: parseFloat(e.target.value) || 0 };
-                            return n;
-                          })} />
-                      </td>
-                      <td className="px-1 py-1 text-center">
-                        <Button type="button" size="sm" variant="ghost" className="h-7 w-7 p-0"
-                          onClick={() => setReviewBillItems(arr => arr.filter((_, i) => i !== idx))}>
-                          <Trash2 className="h-3.5 w-3.5 text-red-500" />
-                        </Button>
-                      </td>
-                    </tr>
-                  ))}
+                  ) : (() => {
+                    const priorItems = reviewBillItems.filter(it => it.is_prior);
+                    const newItems = reviewBillItems.filter(it => !it.is_prior);
+                    const rows = [];
+                    if (priorItems.length > 0) {
+                      rows.push(
+                        <tr key="hdr-prior" className="bg-amber-50">
+                          <td colSpan={5} className="px-2 py-1 text-[10px] font-semibold text-amber-700 uppercase tracking-wide">
+                            Previously Billed (Interim Bills) — included in final statement
+                          </td>
+                        </tr>
+                      );
+                      priorItems.forEach((it, i) => {
+                        const idx = reviewBillItems.indexOf(it);
+                        rows.push(
+                          <tr key={`prior-${i}`} className="border-b bg-gray-50 text-gray-400">
+                            <td className="px-2 py-1.5">
+                              <div className="flex items-center gap-1.5">
+                                <span className="truncate max-w-[220px]">{it.item_name}</span>
+                                <span className="text-[9px] bg-amber-100 text-amber-600 px-1 py-0.5 rounded font-medium whitespace-nowrap">PRIOR</span>
+                              </div>
+                            </td>
+                            <td className="px-2 py-1.5 text-right">{it.quantity}</td>
+                            <td className="px-2 py-1.5 text-right">₹{parseFloat(it.unit_price || 0).toFixed(2)}</td>
+                            <td className="px-2 py-1.5 text-right">₹{parseFloat(it.total_price || 0).toFixed(2)}</td>
+                            <td></td>
+                          </tr>
+                        );
+                      });
+                    }
+                    if (newItems.length > 0) {
+                      rows.push(
+                        <tr key="hdr-new" className="bg-green-50">
+                          <td colSpan={5} className="px-2 py-1 text-[10px] font-semibold text-green-700 uppercase tracking-wide">
+                            New Charges
+                          </td>
+                        </tr>
+                      );
+                      newItems.forEach((it, i) => {
+                        const idx = reviewBillItems.indexOf(it);
+                        rows.push(
+                          <tr key={`new-${i}`} className="border-b last:border-b-0">
+                            <td className="px-2 py-1">
+                              <Input
+                                className="h-7 text-xs"
+                                value={it.item_name}
+                                onChange={e => setReviewBillItems(arr => { const n = [...arr]; n[idx] = { ...n[idx], item_name: e.target.value }; return n; })}
+                              />
+                              {it.source && it.source !== 'custom' && (
+                                <span className="text-[10px] text-gray-400">{it.source}{it.source_id ? ` #${it.source_id}` : ''}</span>
+                              )}
+                            </td>
+                            <td className="px-2 py-1">
+                              <Input type="number" min="1" className="h-7 text-xs text-right"
+                                value={it.quantity}
+                                onChange={e => setReviewBillItems(arr => {
+                                  const n = [...arr];
+                                  const q = Math.max(1, parseInt(e.target.value) || 1);
+                                  const up = parseFloat(n[idx].unit_price) || 0;
+                                  n[idx] = { ...n[idx], quantity: q, total_price: +(q * up).toFixed(2) };
+                                  return n;
+                                })} />
+                            </td>
+                            <td className="px-2 py-1">
+                              <Input type="number" min="0" step="0.01" className="h-7 text-xs text-right"
+                                value={it.unit_price}
+                                onChange={e => setReviewBillItems(arr => {
+                                  const n = [...arr];
+                                  const up = parseFloat(e.target.value) || 0;
+                                  const q = parseInt(n[idx].quantity) || 1;
+                                  n[idx] = { ...n[idx], unit_price: up, total_price: +(q * up).toFixed(2) };
+                                  return n;
+                                })} />
+                            </td>
+                            <td className="px-2 py-1">
+                              <Input type="number" min="0" step="0.01" className="h-7 text-xs text-right"
+                                value={it.total_price}
+                                onChange={e => setReviewBillItems(arr => {
+                                  const n = [...arr];
+                                  n[idx] = { ...n[idx], total_price: parseFloat(e.target.value) || 0 };
+                                  return n;
+                                })} />
+                            </td>
+                            <td className="px-1 py-1 text-center">
+                              <Button type="button" size="sm" variant="ghost" className="h-7 w-7 p-0"
+                                onClick={() => setReviewBillItems(arr => arr.filter((_, i) => i !== idx))}>
+                                <Trash2 className="h-3.5 w-3.5 text-red-500" />
+                              </Button>
+                            </td>
+                          </tr>
+                        );
+                      });
+                    }
+                    if (newItems.length === 0 && priorItems.length > 0) {
+                      rows.push(
+                        <tr key="no-new">
+                          <td colSpan={5} className="text-center text-gray-400 py-2 italic text-xs">
+                            No additional charges since the last interim bill. You can add a custom line below.
+                          </td>
+                        </tr>
+                      );
+                    }
+                    return rows;
+                  })()}
                 </tbody>
               </table>
             </div>
             <Button type="button" size="sm" variant="outline" onClick={() => setReviewBillItems(arr => [...arr, {
-              source: 'custom', source_id: null, item_type: 'custom', item_name: '', quantity: 1, unit_price: 0, total_price: 0,
+              source: 'custom', source_id: null, item_type: 'custom', item_name: '', quantity: 1, unit_price: 0, total_price: 0, is_prior: false,
             }])}>
               <Plus className="h-3.5 w-3.5 mr-1" /> Add Custom Line
             </Button>
@@ -8826,9 +9510,23 @@ const InpatientModule = () => {
 
             <div className="flex justify-end gap-2 pt-2">
               <Button type="button" variant="outline" onClick={() => setShowReviewBillDialog(false)}>Cancel</Button>
-              <Button type="button" onClick={handleSubmitReviewedBill} disabled={loading}>
-                {loading ? 'Generating…' : 'Generate Final Bill'}
-              </Button>
+              {(() => {
+                const priorBilled = parseFloat(balance?.billed_on_bills) || 0;
+                const netDeposits = parseFloat(balance?.net_deposits) || 0;
+                const postBalance = +(netDeposits - (priorBilled + reviewBillGrandTotal)).toFixed(2);
+                const settleAmt = +Math.abs(postBalance).toFixed(2);
+                const owes = postBalance < -0.01;
+                const refund = postBalance > 0.01;
+                const cta = loading ? 'Working…'
+                  : owes ? `Collect ₹${settleAmt.toFixed(2)} & Generate Final Bill`
+                  : refund ? `Refund ₹${settleAmt.toFixed(2)} & Generate Final Bill`
+                  : 'Generate Final Bill';
+                return (
+                  <Button type="button" onClick={handleSubmitReviewedBill} disabled={loading}>
+                    {cta}
+                  </Button>
+                );
+              })()}
             </div>
           </div>
         </DialogContent>
@@ -9017,101 +9715,203 @@ const InpatientModule = () => {
 
       {/* Room Dialog */}
       <Dialog open={showRoomDialog} onOpenChange={setShowRoomDialog}>
-        <DialogContent className="max-w-md">
-          <DialogHeader><DialogTitle>{editingRoom ? 'Edit Room' : 'Add Room'}</DialogTitle></DialogHeader>
-          <form onSubmit={handleSaveRoom} className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <Label>Room Number *</Label>
-                <Input required value={roomForm.room_number} onChange={e => setRoomForm(p => ({ ...p, room_number: e.target.value }))} />
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{editingRoom ? `Edit Room ${editingRoom.room_number}` : 'Add Room'}</DialogTitle>
+            <p className="text-xs text-gray-500 mt-1">Configure the room in three steps: basics, pricing &amp; meals, and features.</p>
+          </DialogHeader>
+          <form onSubmit={handleSaveRoom} className="space-y-4">
+            {/* Step nav */}
+            <div className="flex border-b">
+              {[
+                { key: 'basics', label: '1. Basics' },
+                { key: 'pricing', label: '2. Pricing & Meals' },
+                { key: 'features', label: '3. Features' },
+              ].map(s => (
+                <button
+                  type="button"
+                  key={s.key}
+                  onClick={() => setRoomDialogSection(s.key)}
+                  className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+                    roomDialogSection === s.key
+                      ? 'border-blue-600 text-blue-700'
+                      : 'border-transparent text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="max-h-[60vh] overflow-y-auto pr-1 space-y-4">
+              {/* SECTION 1: BASICS */}
+              {roomDialogSection === 'basics' && (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <Label>Room Number *</Label>
+                      <Input required value={roomForm.room_number} onChange={e => setRoomForm(p => ({ ...p, room_number: e.target.value }))} placeholder="e.g. 201A" />
+                    </div>
+                    <div>
+                      <Label>Room Type *</Label>
+                      <Select value={roomForm.room_type} onValueChange={v => { setRoomForm(p => ({ ...p, room_type: v })); _loadMealPricesForType(v); }}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          {roomTypes.length > 0 ? roomTypes.map(t => (
+                            <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
+                          )) : <>
+                            <SelectItem value="general">General Ward</SelectItem>
+                            <SelectItem value="semi_private">Semi-Private</SelectItem>
+                            <SelectItem value="private">Private</SelectItem>
+                            <SelectItem value="suite">Suite / Deluxe</SelectItem>
+                            <SelectItem value="icu">ICU</SelectItem>
+                            <SelectItem value="hdu">HDU / Step-Down</SelectItem>
+                            <SelectItem value="nicu">NICU</SelectItem>
+                            <SelectItem value="picu">PICU</SelectItem>
+                            <SelectItem value="isolation">Isolation</SelectItem>
+                            <SelectItem value="labour">Labour &amp; Delivery</SelectItem>
+                            <SelectItem value="recovery">Post-Op Recovery</SelectItem>
+                            <SelectItem value="daycare">Day Care</SelectItem>
+                            <SelectItem value="emergency">Emergency / Casualty</SelectItem>
+                            <SelectItem value="operation">Operation Theatre</SelectItem>
+                          </>}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div><Label>Ward</Label><Input value={roomForm.ward} onChange={e => setRoomForm(p => ({ ...p, ward: e.target.value }))} placeholder="e.g. Cardiology, ICU-A" /></div>
+                    <div><Label>Floor</Label><Input value={roomForm.floor} onChange={e => setRoomForm(p => ({ ...p, floor: e.target.value }))} placeholder="e.g. 2" /></div>
+                  </div>
+                  <div><Label>Department</Label><Input value={roomForm.department} onChange={e => setRoomForm(p => ({ ...p, department: e.target.value }))} placeholder="e.g. General Medicine" /></div>
+                  <div>
+                    <Label>Bed Count *</Label>
+                    <Input type="number" min="1" required value={roomForm.bed_count} onChange={e => setRoomForm(p => ({ ...p, bed_count: e.target.value }))} />
+                    <p className="text-xs text-gray-500 mt-1">Number of beds in this room.</p>
+                  </div>
+                </div>
+              )}
+
+              {/* SECTION 2: PRICING & MEALS */}
+              {roomDialogSection === 'pricing' && (
+                <div className="space-y-5">
+                  <div className="border rounded-lg p-3 bg-gray-50">
+                    <h4 className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-3">Room &amp; Care Charges</h4>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <Label>Room Charge / Day (₹) *</Label>
+                        <Input type="number" min="0" step="0.01" required value={roomForm.room_charge_per_day} onChange={e => setRoomForm(p => ({ ...p, room_charge_per_day: e.target.value }))} placeholder="0.00" />
+                      </div>
+                      <div>
+                        <Label>Nursing Charge / Visit (₹)</Label>
+                        <Input type="number" min="0" step="0.01" value={roomForm.nursing_charge_per_visit} onChange={e => setRoomForm(p => ({ ...p, nursing_charge_per_visit: e.target.value }))} placeholder="Leave blank for global rate" />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="border rounded-lg p-3 bg-amber-50/40 border-amber-200">
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="text-xs font-semibold text-amber-800 uppercase tracking-wide">Meal Prices ({roomForm.room_type ? (roomTypes.find(rt => rt.value === roomForm.room_type)?.label || roomForm.room_type) : 'Select type first'})</h4>
+                      <span className="text-[10px] text-amber-700">Applied to all {roomForm.room_type} rooms</span>
+                    </div>
+                    <p className="text-xs text-gray-600 mb-3">
+                      Per-meal price. Patients in this room type can order meals at these rates. Leave blank to disable that meal type.
+                    </p>
+                    <div className="grid grid-cols-2 gap-3">
+                      {[
+                        { key: 'breakfast', label: 'Breakfast', emoji: '🌅' },
+                        { key: 'lunch', label: 'Lunch', emoji: '🍱' },
+                        { key: 'dinner', label: 'Dinner', emoji: '🍽️' },
+                        { key: 'snacks', label: 'Snacks / Tea', emoji: '🍪' },
+                      ].map(meal => (
+                        <div key={meal.key}>
+                          <Label className="text-xs">{meal.emoji} {meal.label} (₹)</Label>
+                          <Input
+                            type="number" min="0" step="0.01"
+                            value={roomForm.meal_prices?.[meal.key] || ''}
+                            onChange={e => setRoomForm(p => ({ ...p, meal_prices: { ...p.meal_prices, [meal.key]: e.target.value } }))}
+                            placeholder="0.00"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                    <p className="text-[10px] text-gray-500 mt-3 italic">
+                      Tip: Changes apply to <strong>all</strong> rooms of type "{roomForm.room_type}" — this is a room-type-wide price.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* SECTION 3: FEATURES */}
+              {roomDialogSection === 'features' && (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <Label>Gender Policy</Label>
+                      <Select value={roomForm.gender_policy} onValueChange={v => setRoomForm(p => ({ ...p, gender_policy: v }))}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="mixed">Mixed</SelectItem>
+                          <SelectItem value="male">Male Only</SelectItem>
+                          <SelectItem value="female">Female Only</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex flex-col justify-center gap-1 pt-5">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" checked={roomForm.is_isolation} onChange={e => setRoomForm(p => ({ ...p, is_isolation: e.target.checked }))} className="rounded" />
+                        <span className="text-sm font-medium">Isolation Room</span>
+                      </label>
+                      <p className="text-xs text-gray-400">Infection control / negative pressure</p>
+                    </div>
+                  </div>
+                  <div>
+                    <Label>Amenities</Label>
+                    <div className="grid grid-cols-3 gap-1.5 mt-1.5">
+                      {(amenityOptions.length > 0 ? amenityOptions : [
+                        {value:'ac',label:'Air Conditioning'},{value:'tv',label:'Television'},{value:'wifi',label:'Wi-Fi'},
+                        {value:'attached_bath',label:'Attached Bathroom'},{value:'refrigerator',label:'Refrigerator'},{value:'locker',label:'Locker'},
+                        {value:'oxygen_point',label:'Oxygen Point'},{value:'suction_point',label:'Suction Point'},{value:'call_bell',label:'Call Bell'},
+                        {value:'visitor_chair',label:'Visitor Chair'},{value:'cardiac_monitor',label:'Cardiac Monitor'},{value:'pulse_oximeter',label:'Pulse Oximeter'},
+                        {value:'ventilator_support',label:'Ventilator Support'},{value:'infusion_pump',label:'Infusion Pump'},{value:'dialysis_point',label:'Dialysis Point'},
+                      ]).map(opt => (
+                        <label key={opt.value} className="flex items-center gap-1.5 cursor-pointer text-xs">
+                          <input type="checkbox"
+                            checked={Array.isArray(roomForm.amenities) && roomForm.amenities.includes(opt.value)}
+                            onChange={e => setRoomForm(p => ({
+                              ...p,
+                              amenities: e.target.checked
+                                ? [...(Array.isArray(p.amenities) ? p.amenities : []), opt.value]
+                                : (Array.isArray(p.amenities) ? p.amenities : []).filter(a => a !== opt.value)
+                            }))}
+                            className="rounded" />
+                          {opt.label}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Footer: nav + save */}
+            <div className="flex items-center justify-between pt-2 border-t">
+              <div className="flex gap-2">
+                {roomDialogSection !== 'basics' && (
+                  <Button type="button" variant="outline" size="sm" onClick={() => setRoomDialogSection(roomDialogSection === 'features' ? 'pricing' : 'basics')}>
+                    ← Back
+                  </Button>
+                )}
+                {roomDialogSection !== 'features' && (
+                  <Button type="button" variant="outline" size="sm" onClick={() => setRoomDialogSection(roomDialogSection === 'basics' ? 'pricing' : 'features')}>
+                    Next →
+                  </Button>
+                )}
               </div>
-              <div>
-                <Label>Room Type *</Label>
-                <Select value={roomForm.room_type} onValueChange={v => setRoomForm(p => ({ ...p, room_type: v }))}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {roomTypes.length > 0 ? roomTypes.map(t => (
-                      <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
-                    )) : <>
-                      <SelectItem value="general">General Ward</SelectItem>
-                      <SelectItem value="semi_private">Semi-Private</SelectItem>
-                      <SelectItem value="private">Private</SelectItem>
-                      <SelectItem value="suite">Suite / Deluxe</SelectItem>
-                      <SelectItem value="icu">ICU</SelectItem>
-                      <SelectItem value="hdu">HDU / Step-Down</SelectItem>
-                      <SelectItem value="nicu">NICU</SelectItem>
-                      <SelectItem value="picu">PICU</SelectItem>
-                      <SelectItem value="isolation">Isolation</SelectItem>
-                      <SelectItem value="labour">Labour &amp; Delivery</SelectItem>
-                      <SelectItem value="recovery">Post-Op Recovery</SelectItem>
-                      <SelectItem value="daycare">Day Care</SelectItem>
-                      <SelectItem value="emergency">Emergency / Casualty</SelectItem>
-                      <SelectItem value="operation">Operation Theatre</SelectItem>
-                    </>}
-                  </SelectContent>
-                </Select>
-              </div>
+              <Button type="submit" disabled={loading || !roomForm.room_number || !roomForm.room_charge_per_day}>
+                {loading ? 'Saving...' : editingRoom ? 'Update Room' : 'Create Room'}
+              </Button>
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div><Label>Ward</Label><Input value={roomForm.ward} onChange={e => setRoomForm(p => ({ ...p, ward: e.target.value }))} placeholder="e.g. Cardiology, ICU-A" /></div>
-              <div><Label>Floor</Label><Input value={roomForm.floor} onChange={e => setRoomForm(p => ({ ...p, floor: e.target.value }))} /></div>
-            </div>
-            <div><Label>Department</Label><Input value={roomForm.department} onChange={e => setRoomForm(p => ({ ...p, department: e.target.value }))} /></div>
-            <div className="grid grid-cols-2 gap-4">
-              <div><Label>Bed Count *</Label><Input type="number" min="1" required value={roomForm.bed_count} onChange={e => setRoomForm(p => ({ ...p, bed_count: e.target.value }))} /></div>
-              <div><Label>Room Charge / Day (₹) *</Label><Input type="number" min="0" step="0.01" required value={roomForm.room_charge_per_day} onChange={e => setRoomForm(p => ({ ...p, room_charge_per_day: e.target.value }))} /></div>
-            </div>
-            <div>
-              <Label>Nursing Charge / Visit (₹)</Label>
-              <Input type="number" min="0" step="0.01" value={roomForm.nursing_charge_per_visit} onChange={e => setRoomForm(p => ({ ...p, nursing_charge_per_visit: e.target.value }))} placeholder="0.00 — overrides global rate" />
-              <p className="text-xs text-gray-500 mt-1">Leave blank to use the global nursing rate.</p>
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <Label>Gender Policy</Label>
-                <Select value={roomForm.gender_policy} onValueChange={v => setRoomForm(p => ({ ...p, gender_policy: v }))}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="mixed">Mixed</SelectItem>
-                    <SelectItem value="male">Male Only</SelectItem>
-                    <SelectItem value="female">Female Only</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex flex-col justify-center gap-1 pt-5">
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input type="checkbox" checked={roomForm.is_isolation} onChange={e => setRoomForm(p => ({ ...p, is_isolation: e.target.checked }))} className="rounded" />
-                  <span className="text-sm font-medium">Isolation Room</span>
-                </label>
-                <p className="text-xs text-gray-400">Infection control / negative pressure</p>
-              </div>
-            </div>
-            <div>
-              <Label>Amenities</Label>
-              <div className="grid grid-cols-3 gap-1.5 mt-1.5">
-                {(amenityOptions.length > 0 ? amenityOptions : [
-                  {value:'ac',label:'Air Conditioning'},{value:'tv',label:'Television'},{value:'wifi',label:'Wi-Fi'},
-                  {value:'attached_bath',label:'Attached Bathroom'},{value:'refrigerator',label:'Refrigerator'},{value:'locker',label:'Locker'},
-                  {value:'oxygen_point',label:'Oxygen Point'},{value:'suction_point',label:'Suction Point'},{value:'call_bell',label:'Call Bell'},
-                  {value:'visitor_chair',label:'Visitor Chair'},{value:'cardiac_monitor',label:'Cardiac Monitor'},{value:'pulse_oximeter',label:'Pulse Oximeter'},
-                  {value:'ventilator_support',label:'Ventilator Support'},{value:'infusion_pump',label:'Infusion Pump'},{value:'dialysis_point',label:'Dialysis Point'},
-                ]).map(opt => (
-                  <label key={opt.value} className="flex items-center gap-1.5 cursor-pointer text-xs">
-                    <input type="checkbox"
-                      checked={Array.isArray(roomForm.amenities) && roomForm.amenities.includes(opt.value)}
-                      onChange={e => setRoomForm(p => ({
-                        ...p,
-                        amenities: e.target.checked
-                          ? [...(Array.isArray(p.amenities) ? p.amenities : []), opt.value]
-                          : (Array.isArray(p.amenities) ? p.amenities : []).filter(a => a !== opt.value)
-                      }))}
-                      className="rounded" />
-                    {opt.label}
-                  </label>
-                ))}
-              </div>
-            </div>
-            <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Saving...' : editingRoom ? 'Update Room' : 'Create Room'}</Button>
           </form>
         </DialogContent>
       </Dialog>

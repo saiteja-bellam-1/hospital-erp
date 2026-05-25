@@ -270,6 +270,7 @@ const DischargeWizard = ({
         if (codes.includes('outstanding_balance')) dischargePayload.force_outstanding_balance = true;
         if (codes.includes('unacknowledged_critical_alerts')) dischargePayload.force_unacknowledged_alerts = true;
         if (codes.includes('missing_surgical_consent')) dischargePayload.force_missing_consents = true;
+        if (codes.includes('final_bill_required')) dischargePayload.force_no_final_bill = true;
         dischargePayload.override_reason = form.override_reason.trim();
       }
 
@@ -340,7 +341,7 @@ const DischargeWizard = ({
       }
       const isGate = err.response?.status === 409
         && detail && typeof detail === 'object' && detail.code
-        && ['outstanding_balance', 'unacknowledged_critical_alerts', 'missing_surgical_consent']
+        && ['outstanding_balance', 'unacknowledged_critical_alerts', 'missing_surgical_consent', 'final_bill_required']
           .includes(detail.code);
       if (isGate) {
         // Add to blockers and jump to step 3 so the override reason input is visible.
@@ -918,6 +919,11 @@ const SafetyGateOverride = ({ blockers, form, update }) => (
           {b.code === 'missing_surgical_consent' && (
             <span className="block text-xs">
               {b.completed_ot_count} completed OT procedure(s) without recorded consent.
+            </span>
+          )}
+          {b.code === 'final_bill_required' && (
+            <span className="block text-xs">
+              Generate the final bill (and settle the balance) from the Billing tab, then retry discharge.
             </span>
           )}
         </li>

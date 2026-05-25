@@ -28,7 +28,8 @@ from app.models.inpatient import (
     SurgeryPackage, AdmissionPackage, InsurancePreAuth, InsurancePreAuthExpansion,
     TPACompany, BillSplit, LeaveOfAbsence, ShiftHandover, CodeBlueEvent, BodyReleaseRecord,
     PayerScheme, AdmissionPayerChange, GatePass, DoctorDutyRoster, RoomMaintenance,
-    RoomTypeRateConfig, DoctorRoomTypeRate,
+    RoomTypeRateConfig, DoctorRoomTypeRate, RoomType,
+    MealPlan, FoodOrder,
 )
 from app.models.pharmacy import Prescription, PrescriptionItem, Medicine
 from app.models.prescriptions_simple import SimplePrescription
@@ -470,6 +471,7 @@ class DischargeCreate(BaseModel):
     force_outstanding_balance: bool = False
     force_unacknowledged_alerts: bool = False
     force_missing_consents: bool = False
+    force_no_final_bill: bool = False
     override_reason: Optional[str] = None
 
 class DischargeResponse(BaseModel):
@@ -599,7 +601,7 @@ class BillItemOverride(BaseModel):
     items so the source record's `bill_id` (or `billed` flag) is set correctly
     when the bill is committed. `source=None` is a custom add-on line that has
     no source record."""
-    source: Optional[str] = Field(default=None, pattern=r"^(room|visit|ot|ancillary|pharmacy_rx|lab_order|custom)$")
+    source: Optional[str] = Field(default=None, pattern=r"^(room|visit|ot|ancillary|pharmacy_rx|lab_order|package|custom)$")
     source_id: Optional[int] = None
     item_type: str = Field(..., max_length=40)
     item_name: str = Field(..., min_length=1, max_length=300)
@@ -618,6 +620,48 @@ class FinalizeBillRequest(BaseModel):
     # override (or included with total_price=0) are also stamped — they're
     # explicitly waived on this bill rather than carried forward.
     items_override: Optional[List[BillItemOverride]] = None
+
+class SettleInstruction(BaseModel):
+    direction: str = Field(..., pattern="^(collect|refund)$")
+    amount: float = Field(..., gt=0)
+    payment_method: str = Field(default="cash", max_length=30)
+    reference_number: Optional[str] = Field(default=None, max_length=120)
+    notes: Optional[str] = Field(default=None, max_length=500)
+
+
+class FinalizeAndSettleRequest(FinalizeBillRequest):
+    settle: SettleInstruction
+
+
+def _compute_draft_final_bill_total(
+    breakdown: dict,
+    discount_value: float,
+    discount_type: str,
+    tax_percentage: float,
+    items_override: Optional[List[BillItemOverride]] = None,
+) -> float:
+    """Mirror of the subtotal→discount→tax→total math in
+    _create_admission_bill_record_inner so callers can preview the total
+    without persisting a Bill row. Used by the balance precheck."""
+    if items_override is not None:
+        subtotal = round(sum(float(i.total_price or 0) for i in items_override), 2)
+    else:
+        subtotal = float(breakdown.get("subtotal") or 0)
+    discount_amount = 0.0
+    if discount_value and discount_value > 0:
+        if discount_type == "percentage":
+            pct = min(max(float(discount_value), 0.0), 100.0)
+            discount_amount = round(subtotal * pct / 100, 2)
+        else:
+            discount_amount = min(discount_value, subtotal)
+    discount_amount = min(max(discount_amount, 0.0), subtotal)
+    after_discount = max(subtotal - discount_amount, 0.0)
+    tax_amount = 0.0
+    if tax_percentage and tax_percentage > 0:
+        tax_pct = min(max(float(tax_percentage), 0.0), 100.0)
+        tax_amount = round(after_discount * tax_pct / 100, 2)
+    return round(after_discount + tax_amount, 2)
+
 
 class NursingNoteCreate(BaseModel):
     shift: str = Field(..., pattern="^(morning|afternoon|night)$")
@@ -1310,16 +1354,37 @@ def _generate_admission_number(db: Session) -> str:
 
 
 def _generate_consent_doc_number(db: Session) -> str:
+    """Next CS-YYYYMMDD-NNNN number considering BOTH issued consents and
+    pre-allocated wizard reservations so the two streams never collide.
+    """
+    from app.models.inpatient import ConsentDocReservation
     today = datetime.now().strftime("%Y%m%d")
     prefix = f"CS-{today}-"
-    last = db.query(Consent).filter(
-        Consent.doc_number.like(f"{prefix}%")
-    ).order_by(Consent.id.desc()).first()
-    if last and last.doc_number:
-        seq = int(last.doc_number.split("-")[-1]) + 1
-    else:
-        seq = 1
-    return f"{prefix}{seq:04d}"
+    max_seq = 0
+    for cls, col in ((Consent, Consent.doc_number),
+                     (ConsentDocReservation, ConsentDocReservation.doc_number)):
+        row = db.query(cls).filter(col.like(f"{prefix}%")).order_by(cls.id.desc()).first()
+        if row and row.doc_number:
+            try:
+                max_seq = max(max_seq, int(row.doc_number.split("-")[-1]))
+            except ValueError:
+                pass
+    return f"{prefix}{(max_seq + 1):04d}"
+
+
+def _substitute_template_tokens(content: str, ctx: dict) -> str:
+    """Replace {{token}} placeholders inside a consent template body with
+    values from ctx. Unknown tokens are blanked so the printed form does
+    not leak literal {{patient_name}} text.
+    """
+    if not content:
+        return content
+    import re
+    def repl(m):
+        key = m.group(1).strip().lower()
+        val = ctx.get(key)
+        return str(val) if val not in (None, "") else "________________"
+    return re.sub(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}", repl, content)
 
 
 @router.post("/admissions", response_model=AdmissionResponse, status_code=status.HTTP_201_CREATED)
@@ -2821,6 +2886,28 @@ async def discharge_patient(
                     )
                 forced_gates.append("missing_surgical_consent")
 
+    # Final-bill gate: a non-cancelled final bill must exist before discharge
+    # (so the patient leaves with a printed bill in hand and a settled
+    # balance). Death/AMA exits bypass — those flows still let the operator
+    # close out the admission without a polished bill.
+    if not is_protected_exit:
+        final_bill = db.query(Bill).filter(
+            Bill.bill_type == "admission",
+            Bill.reference_id == admission_id,
+            Bill.bill_subtype == "final",
+            Bill.status != "cancelled",
+        ).first()
+        if not final_bill:
+            if not data.force_no_final_bill:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "final_bill_required",
+                        "message": "Generate the final bill (and settle the balance) before discharging. Override with force_no_final_bill=true and an override_reason if absolutely needed.",
+                    },
+                )
+            forced_gates.append("no_final_bill")
+
     # An override_reason is required when forcing discharge gates — except for
     # "outstanding_balance_waived", which is a soft-pass recorded for audit
     # only. The deposit waiver carries its own deposit_waiver_reason, so it is
@@ -3082,7 +3169,164 @@ async def get_admission_prescriptions(
 # Billing
 # ============================================================
 
-def _compute_admission_charges(db: Session, admission: Admission, unbilled_only: bool = False) -> dict:
+# ---- Package billing helpers ------------------------------------------------
+
+# Categories that the package's `included_services` JSON can list. Used to
+# detect "included" service buckets when netting them out of the bill.
+_PKG_CAT_ROOM = "room"
+_PKG_CAT_DOCTOR_VISIT = "doctor_visit"
+_PKG_CAT_NURSE_VISIT = "nurse_visit"
+_PKG_CAT_OT = "ot"
+_PKG_CAT_SURGERY = "surgery"
+_PKG_CAT_PHARMACY = "pharmacy"
+_PKG_CAT_LAB = "lab"
+_PKG_CAT_ANCILLARY = "ancillary"
+
+
+def _pkg_covers(boundary, when) -> bool:
+    """True if `when` falls within the package coverage window.
+
+    - boundary == None  → entire stay is covered (no window set).
+    - when     == None  → treated as covered (no usable date to decide otherwise).
+    - Otherwise covered iff when <= boundary.
+
+    Tz-safe: normalises both sides so a tz-aware/naive mismatch (very common
+    when comparing DB datetimes against datetimes parsed from isoformat
+    strings) doesn't raise TypeError.
+    """
+    if boundary is None or when is None:
+        return True
+    b_aware = boundary.tzinfo is not None
+    w_aware = when.tzinfo is not None
+    if b_aware and not w_aware:
+        when = when.replace(tzinfo=boundary.tzinfo)
+    elif w_aware and not b_aware:
+        boundary = boundary.replace(tzinfo=when.tzinfo)
+    return when <= boundary
+
+
+def _pkg_visit_included(visit_type: str, included: set) -> bool:
+    """Whether a given PatientVisit.visit_type is covered by a package's
+    included_services set."""
+    if not included:
+        return False
+    if visit_type == "doctor_visit" and (_PKG_CAT_DOCTOR_VISIT in included or "visits" in included):
+        return True
+    if visit_type == "nurse_visit" and (_PKG_CAT_NURSE_VISIT in included or "visits" in included):
+        return True
+    if "visits" in included:
+        return True
+    return False
+
+
+def _pkg_ot_included(included: set) -> bool:
+    return bool(included) and (_PKG_CAT_OT in included or _PKG_CAT_SURGERY in included)
+
+
+def _pkg_lab_covered(pkg, lab_test_id: Optional[int]) -> bool:
+    """True when this lab test is covered by the package.
+
+    Resolution:
+      * "lab" not in the package's included_services → not covered.
+      * lab_coverage_mode == "all" → covered.
+      * lab_coverage_mode == "selected" → covered only when test_id is in the
+        whitelist (``included_lab_test_ids``). Missing test_id → not covered.
+    """
+    if pkg is None:
+        return False
+    included = set(pkg.included_services or [])
+    if _PKG_CAT_LAB not in included:
+        return False
+    mode = (pkg.lab_coverage_mode or "all").lower()
+    if mode == "all":
+        return True
+    whitelist = pkg.included_lab_test_ids or []
+    return lab_test_id is not None and lab_test_id in whitelist
+
+
+def _get_package_assignment(db: Session, admission_id: int):
+    """Return (assignment, pkg) for the admission's active package, or (None, None)."""
+    ap = db.query(AdmissionPackage).filter(AdmissionPackage.admission_id == admission_id).first()
+    if not ap:
+        return None, None
+    pkg = db.query(SurgeryPackage).filter(SurgeryPackage.id == ap.package_id).first()
+    return ap, pkg
+
+
+def _included_room_rate(db: Session, hospital_id, included_room_type: Optional[str]) -> float:
+    """Resolve the package's included room rate by looking at rooms of the
+    matching room_type in the hospital. Falls back to 0 if no room of that
+    type exists (or no type specified). ``hospital_id`` is optional — when
+    None, the rate is resolved across all hospitals (single-tenant deployments)."""
+    if not included_room_type:
+        return 0.0
+    q = db.query(sqlfunc.min(RoomManagement.room_charge_per_day)).filter(
+        RoomManagement.room_type == included_room_type,
+    )
+    if hospital_id is not None:
+        q = q.filter(RoomManagement.hospital_id == hospital_id)
+    rate = q.scalar()
+    return float(rate or 0)
+
+
+def _apply_package_room(rate_segments, billable_stay_days, included_stay_days, included_room_rate, has_reference_rate=True):
+    """Apply package room logic to the rate_segments timeline.
+
+    Returns (package_room_total, line_items) where line_items is a list of
+    {label, days, rate, total} dicts suitable for emitting BillItem rows.
+
+    Rules:
+      * For days <= included_stay_days, charge max(seg_rate - included_room_rate, 0)
+        per day (upgrade differential, clamped at 0 when patient is in same or
+        cheaper room than the package). When ``has_reference_rate`` is False
+        (no included_room_type configured, or no room of that type exists),
+        the actual room is treated as fully covered — no upgrade charge.
+      * For days > included_stay_days, charge the actual segment rate per day
+        (NOT excess_per_day_charge — caller passes that in only as a fallback
+        when no rate_segments exist).
+    """
+    pkg_total = 0.0
+    lines = []
+    days_consumed = 0
+    inc_cap = max(int(included_stay_days or 0), 0)
+
+    for seg in rate_segments:
+        seg_days = int(seg.get("days") or 0)
+        seg_rate = float(seg.get("rate") or 0)
+        if seg_days <= 0:
+            continue
+
+        # Split into included (within cap) and excess (beyond cap) portions
+        remaining_inc = max(inc_cap - days_consumed, 0)
+        inc_days = min(seg_days, remaining_inc)
+        exc_days = seg_days - inc_days
+
+        if inc_days > 0 and has_reference_rate:
+            upgrade_rate = max(seg_rate - included_room_rate, 0.0)
+            if upgrade_rate > 0:
+                total = round(upgrade_rate * inc_days, 2)
+                pkg_total += total
+                lines.append({
+                    "label": f"Room upgrade ({inc_days} days @ ₹{upgrade_rate:.2f})",
+                    "days": inc_days,
+                    "rate": upgrade_rate,
+                    "total": total,
+                })
+        if exc_days > 0:
+            total = round(seg_rate * exc_days, 2)
+            pkg_total += total
+            lines.append({
+                "label": f"Room excess stay ({exc_days} days @ ₹{seg_rate:.2f})",
+                "days": exc_days,
+                "rate": seg_rate,
+                "total": total,
+            })
+        days_consumed += seg_days
+
+    return round(pkg_total, 2), lines
+
+
+def _compute_admission_charges(db: Session, admission: Admission, unbilled_only: bool = False, apply_package: bool = True) -> dict:
     """Compute the full breakdown of charges for an admission.
 
     When `unbilled_only=True`, returns only items not yet attached to a bill —
@@ -3285,7 +3529,10 @@ def _compute_admission_charges(db: Session, admission: Admission, unbilled_only:
     pharmacy_rxs = rx_q.all()
     pharmacy_total = sum(float(rx.total_amount or 0) for rx in pharmacy_rxs)
 
-    # Lab
+    # Lab — build a per-order breakdown so the bill display can mark each
+    # individual lab test as covered or billed when the package uses granular
+    # inclusion (lab_coverage_mode == "selected"). `included_in_package` is
+    # filled in by the package overlay block below.
     lab_q = db.query(PatientLabOrder).filter(
         PatientLabOrder.admission_id == admission.id,
         PatientLabOrder.status != "cancelled",
@@ -3294,8 +3541,243 @@ def _compute_admission_charges(db: Session, admission: Admission, unbilled_only:
         lab_q = lab_q.filter(PatientLabOrder.inpatient_bill_id.is_(None))
     lab_orders = lab_q.all()
     lab_total = sum(float(o.amount or 0) for o in lab_orders)
+    lab_entries = []
+    for o in lab_orders:
+        test = db.query(LabTest).filter(LabTest.id == o.test_id).first() if o.test_id else None
+        lab_entries.append({
+            "id": o.id,
+            "test_id": o.test_id,
+            "test_name": test.name if test else "Lab Test",
+            "order_number": o.order_number,
+            "amount": float(o.amount or 0),
+            "billed": o.inpatient_bill_id is not None,
+            "included_in_package": False,
+        })
 
-    subtotal = room_total + visit_total + ot_total + ancillary_total + pharmacy_total + lab_total
+    # Food orders — non-cancelled. When unbilled_only, exclude already-billed.
+    food_q = db.query(FoodOrder).filter(
+        FoodOrder.admission_id == admission.id,
+        FoodOrder.status != "cancelled",
+    )
+    if unbilled_only:
+        food_q = food_q.filter(FoodOrder.billed == False)
+    food_orders = food_q.order_by(FoodOrder.meal_date.asc(), FoodOrder.meal_type.asc()).all()
+    food_total = sum(float(f.price or 0) for f in food_orders)
+    food_entries = [
+        {
+            "id": f.id,
+            "meal_date": f.meal_date.isoformat() if f.meal_date else None,
+            "meal_type": f.meal_type,
+            "status": f.status,
+            "price": float(f.price or 0),
+            "diet_preference": f.diet_preference or "",
+            "billed": bool(f.billed),
+        }
+        for f in food_orders
+    ]
+
+    # ---- Package overlay --------------------------------------------------
+    # When an admission has an active package, the agreed_price covers all
+    # included_services performed within the coverage window
+    # (admission_date → admission_date + included_stay_days). Anything outside
+    # that window — or any category NOT in included_services — bills at the
+    # full standard rate as "excess".
+    #
+    # `included_stay_days == 0` (or None) means "no window cap" — every item
+    # in an included category is covered for the entire stay.
+    pkg_block = None
+    pkg_room_lines = []
+    pkg = None  # SurgeryPackage row, exposed below for downstream coverage checks
+    pkg_boundary = None
+    pkg_fee_already_billed = False
+    pkg_room_excess_already_billed = 0.0
+    if apply_package:
+        pkg_assignment, pkg = _get_package_assignment(db, admission.id)
+        if pkg_assignment and pkg:
+            from datetime import timedelta as _td_v
+            included = set(pkg.included_services or [])
+            # Coverage window. included_stay_days=0/null → no boundary
+            # (whole stay covered for included categories).
+            if (pkg.included_stay_days or 0) > 0 and admission.admission_date:
+                pkg_boundary = admission.admission_date + _td_v(days=pkg.included_stay_days)
+
+            # Has the package fee already been billed on a prior non-cancelled
+            # bill for this admission? Used in unbilled_only mode so finalize
+            # after interim doesn't re-bill the agreed_price.
+            prior_pkg_item = db.query(BillItem).join(Bill, Bill.id == BillItem.bill_id).filter(
+                Bill.bill_type == "admission",
+                Bill.reference_id == admission.id,
+                Bill.status != "cancelled",
+                BillItem.item_type == "package",
+            ).first()
+            pkg_fee_already_billed = prior_pkg_item is not None
+
+            # Resolve package's reference room rate (for upgrade differential).
+            included_room_rate = _included_room_rate(
+                db,
+                getattr(room, 'hospital_id', None) or getattr(admission, 'hospital_id', None),
+                pkg.included_room_type,
+            ) if _PKG_CAT_ROOM in included else 0.0
+            has_reference_rate = bool(pkg.included_room_type) and included_room_rate > 0
+
+            # ---- Room: replace total with package logic when room is included
+            pkg_room_total = room_total
+            if _PKG_CAT_ROOM in included:
+                if rate_segments:
+                    pkg_room_total, pkg_room_lines = _apply_package_room(
+                        rate_segments,
+                        billable_stay_days,
+                        pkg.included_stay_days or 0,
+                        included_room_rate,
+                        has_reference_rate=has_reference_rate,
+                    )
+                else:
+                    excess_days = max(billable_stay_days - (pkg.included_stay_days or 0), 0)
+                    pkg_room_total = round(excess_days * float(pkg.excess_per_day_charge or 0), 2)
+                    if pkg_room_total > 0:
+                        pkg_room_lines.append({
+                            "label": f"Room excess stay ({excess_days} days)",
+                            "days": excess_days,
+                            "rate": float(pkg.excess_per_day_charge or 0),
+                            "total": pkg_room_total,
+                        })
+                # Subtract room excess already billed on prior bills so a
+                # finalize after interim doesn't double-bill it.
+                if unbilled_only:
+                    pkg_room_excess_already_billed = float(billed_room_total or 0)
+                    pkg_room_total = round(max(pkg_room_total - pkg_room_excess_already_billed, 0.0), 2)
+
+            # ---- Visits — split per-item by boundary.
+            pkg_visit_total = 0.0
+            for vtype, vdata in list(visit_summary.items()):
+                if _pkg_visit_included(vtype, included):
+                    covered_orig_total = 0.0
+                    billed_total = 0.0
+                    covered_count = 0
+                    billed_count = 0
+                    for it in vdata.get("items", []):
+                        visit_dt = None
+                        if it.get("date"):
+                            try:
+                                visit_dt = datetime.fromisoformat(it["date"])
+                            except Exception:
+                                visit_dt = None
+                        if _pkg_covers(pkg_boundary, visit_dt):
+                            it["original_amount"] = it.get("amount", 0)
+                            it["amount"] = 0.0
+                            it["included_in_package"] = True
+                            covered_orig_total += float(it.get("original_amount") or 0)
+                            covered_count += 1
+                        else:
+                            it["included_in_package"] = False
+                            billed_total += float(it.get("amount") or 0)
+                            billed_count += 1
+                    vdata["covered_count"] = covered_count
+                    vdata["billed_count"] = billed_count
+                    vdata["covered_total_original"] = round(covered_orig_total, 2)
+                    vdata["billed_total"] = round(billed_total, 2)
+                    vdata["original_total"] = round(covered_orig_total + billed_total, 2)
+                    vdata["total"] = round(billed_total, 2)
+                    vdata["included_in_package"] = covered_count > 0
+                    pkg_visit_total += billed_total
+                else:
+                    vdata["included_in_package"] = False
+                    pkg_visit_total += float(vdata.get("total") or 0)
+
+            # ---- OT — per-entry boundary check (covered/excess split).
+            ot_type_in_pkg = _pkg_ot_included(included)
+            pkg_ot_total = 0.0
+            for raw, entry in zip(ot_entries, ot_breakdown):
+                covers = ot_type_in_pkg and _pkg_covers(pkg_boundary, getattr(raw, "scheduled_date", None))
+                if covers:
+                    entry["included_in_package"] = True
+                    entry["original_total"] = entry.get("total", 0)
+                    entry["total"] = 0.0
+                else:
+                    entry["included_in_package"] = False
+                    pkg_ot_total += float(entry.get("total") or 0)
+            pkg_ot_total = round(pkg_ot_total, 2)
+
+            # ---- Ancillary — per-entry boundary check.
+            anc_type_in_pkg = _PKG_CAT_ANCILLARY in included
+            pkg_ancillary_total = 0.0
+            for raw, entry in zip(anc_entries, ancillary_breakdown):
+                covers = anc_type_in_pkg and _pkg_covers(pkg_boundary, getattr(raw, "charged_at", None))
+                if covers:
+                    entry["included_in_package"] = True
+                    entry["original_total"] = entry.get("total_amount", 0)
+                    entry["total_amount"] = 0.0
+                else:
+                    entry["included_in_package"] = False
+                    pkg_ancillary_total += float(entry.get("total_amount") or 0)
+            pkg_ancillary_total = round(pkg_ancillary_total, 2)
+
+            # ---- Pharmacy — per-Rx boundary check (still surfaced as lump
+            # totals; covered/billed split exposed so the PDF can show two
+            # rows).
+            rx_type_in_pkg = _PKG_CAT_PHARMACY in included
+            pkg_pharmacy_total = 0.0
+            pkg_pharmacy_covered_total = 0.0
+            for rx in pharmacy_rxs:
+                rx_dt = getattr(rx, "dispensed_date", None) or getattr(rx, "prescription_date", None)
+                covers = rx_type_in_pkg and _pkg_covers(pkg_boundary, rx_dt)
+                if covers:
+                    pkg_pharmacy_covered_total += float(rx.total_amount or 0)
+                else:
+                    pkg_pharmacy_total += float(rx.total_amount or 0)
+            pkg_pharmacy_total = round(pkg_pharmacy_total, 2)
+            pkg_pharmacy_covered_total = round(pkg_pharmacy_covered_total, 2)
+
+            # ---- Lab — per-order: covered iff package covers the test AND
+            # the order was placed within the coverage window.
+            pkg_lab_total = 0.0
+            for raw, entry in zip(lab_orders, lab_entries):
+                test_covered = _pkg_lab_covered(pkg, entry.get("test_id"))
+                date_covered = _pkg_covers(pkg_boundary, getattr(raw, "order_date", None))
+                covered = test_covered and date_covered
+                entry["included_in_package"] = covered
+                if not covered:
+                    pkg_lab_total += float(entry.get("amount") or 0)
+            pkg_lab_total = round(pkg_lab_total, 2)
+
+            # Override display totals
+            room_total = pkg_room_total
+            visit_total = pkg_visit_total
+            ot_total = pkg_ot_total
+            ancillary_total = pkg_ancillary_total
+            pharmacy_total = pkg_pharmacy_total
+            lab_total = pkg_lab_total
+
+            pkg_block = {
+                "package_id": pkg.id,
+                "package_name": pkg.package_name,
+                "package_code": pkg.package_code,
+                "agreed_price": float(pkg_assignment.agreed_price or 0),
+                "included_services": list(included),
+                "included_room_type": pkg.included_room_type,
+                "included_stay_days": pkg.included_stay_days or 0,
+                "included_room_rate": included_room_rate,
+                "excess_per_day_charge": float(pkg.excess_per_day_charge or 0),
+                "room_lines": pkg_room_lines,
+                "lab_coverage_mode": (pkg.lab_coverage_mode or "all"),
+                "included_lab_test_ids": list(pkg.included_lab_test_ids or []),
+                "boundary_at": pkg_boundary.isoformat() if pkg_boundary else None,
+                "fee_already_billed": pkg_fee_already_billed,
+                "pharmacy_covered_total": pkg_pharmacy_covered_total,
+                "_assignment_id": pkg_assignment.id,
+            }
+
+    # Bill subtotal = excess + agreed_price (when applicable). Agreed_price
+    # is part of the inpatient bill — not collected separately. On finalize
+    # after an interim that already billed the package fee, we skip it.
+    subtotal = round(
+        room_total + visit_total + ot_total + ancillary_total
+        + pharmacy_total + lab_total + food_total,
+        2,
+    )
+    include_agreed_price = bool(pkg_block) and not (unbilled_only and pkg_fee_already_billed)
+    if include_agreed_price:
+        subtotal = round(subtotal + pkg_block["agreed_price"], 2)
 
     return {
         "stay_days": stay_days,
@@ -3320,7 +3802,11 @@ def _compute_admission_charges(db: Session, admission: Admission, unbilled_only:
         "ancillary_total": ancillary_total,
         "pharmacy_total": pharmacy_total,
         "lab_total": lab_total,
+        "lab_entries": lab_entries,
+        "food_entries": food_entries,
+        "food_total": food_total,
         "room_total": room_total,
+        "package": pkg_block,
         "subtotal": subtotal,
         # Source records (used by bill creation to tag with bill_id)
         "_visits": visits,
@@ -3328,9 +3814,14 @@ def _compute_admission_charges(db: Session, admission: Admission, unbilled_only:
         "_ancillary": anc_entries,
         "_pharmacy_rxs": pharmacy_rxs,
         "_lab_orders": lab_orders,
+        "_food_orders": food_orders,
         "_room_unbilled_total": room_total if unbilled_only else 0.0,
         "_room_charge_per_day": room_charge_per_day,
         "_room": room,
+        "_package": pkg_block,
+        # Raw SurgeryPackage row, exposed so the bill writer can re-evaluate
+        # per-test coverage when emitting BillItems.
+        "_package_obj": pkg if pkg_block is not None else None,
     }
 
 
@@ -3348,45 +3839,56 @@ async def get_admission_bill(
 
     breakdown = _compute_admission_charges(db, admission, unbilled_only=unbilled_only)
 
-    # Package mode
-    pkg_assignment = db.query(AdmissionPackage).filter(AdmissionPackage.admission_id == admission_id).first()
-    package_block = None
-    if pkg_assignment:
-        pkg = db.query(SurgeryPackage).filter(SurgeryPackage.id == pkg_assignment.package_id).first()
+    # Package totals are now baked into the breakdown by _compute_admission_charges
+    # — preserve the previous response shape with excess_total / grand_total fields
+    # for the frontend that consumes them.
+    package_block = breakdown.get("package")
+    if package_block:
+        stay_days = breakdown["stay_days"]
+        inc_days = package_block.get("included_stay_days") or 0
+        days_remaining = max(inc_days - stay_days, 0)
+        excess_days = max(stay_days - inc_days, 0)
+        # Excess = bill subtotal minus the package fee (when the fee is
+        # part of this bill — it isn't on a finalize-after-interim).
+        agreed = float(package_block.get("agreed_price") or 0)
+        fee_in_this_bill = not bool(package_block.get("fee_already_billed"))
+        excess_total = round(breakdown["subtotal"] - (agreed if fee_in_this_bill else 0), 2)
+        # Precise time-since-admission so the operator sees hours/minutes too,
+        # not just whole days (the integer day count rounds up to 1 from minute
+        # one of admission, which can mislead).
+        admitted_at = admission.admission_date
+        hours_since = None
+        elapsed_label = None
+        if admitted_at:
+            now = datetime.now(admitted_at.tzinfo) if admitted_at.tzinfo else datetime.now()
+            delta_secs = max((now - admitted_at).total_seconds(), 0)
+            hours_since = round(delta_secs / 3600, 2)
+            d = int(delta_secs // 86400)
+            h = int((delta_secs % 86400) // 3600)
+            m = int((delta_secs % 3600) // 60)
+            if d > 0:
+                elapsed_label = f"{d}d {h}h {m}m"
+            elif h > 0:
+                elapsed_label = f"{h}h {m}m"
+            else:
+                elapsed_label = f"{m}m"
         package_block = {
-            "package_id": pkg.id if pkg else None,
-            "package_name": pkg.package_name if pkg else None,
-            "package_code": pkg.package_code if pkg else None,
-            "agreed_price": pkg_assignment.agreed_price,
-            "included_room_type": pkg.included_room_type if pkg else None,
-            "included_stay_days": pkg.included_stay_days if pkg else 0,
-            "included_services": pkg.included_services if pkg else [],
-            "excess_per_day_charge": float(pkg.excess_per_day_charge or 0) if pkg else 0,
+            **package_block,
+            "days_elapsed": stay_days,
+            "hours_since_admission": hours_since,
+            "elapsed_label": elapsed_label,
+            "admitted_at": admitted_at.isoformat() if admitted_at else None,
+            "days_remaining_in_package": days_remaining,
+            "excess_days": excess_days,
+            "excess_room": breakdown["room_total"],
+            "excess_total": excess_total,
+            "grand_total": breakdown["subtotal"],
         }
-        # Excess calculation
-        excess_days = max(breakdown["stay_days"] - (pkg.included_stay_days or 0), 0)
-        excess_room = excess_days * float(pkg.excess_per_day_charge or 0)
-        included = set(pkg.included_services or [])
-        excess_total = excess_room
-        if "doctor_visit" not in included and "visits" not in included:
-            excess_total += breakdown["visit_total"]
-        if "pharmacy" not in included:
-            excess_total += breakdown["pharmacy_total"]
-        if "lab" not in included:
-            excess_total += breakdown["lab_total"]
-        if "ancillary" not in included:
-            excess_total += breakdown["ancillary_total"]
-        if "ot" not in included and "surgery" not in included:
-            excess_total += breakdown["ot_total"]
-        package_block["excess_days"] = excess_days
-        package_block["excess_room"] = excess_room
-        package_block["excess_total"] = round(excess_total, 2)
-        package_block["grand_total"] = round(pkg_assignment.agreed_price + excess_total, 2)
 
-    grand_total = (package_block["grand_total"] if package_block else breakdown["subtotal"])
+    grand_total = breakdown["subtotal"]
 
     # Strip private keys before responding
-    response_breakdown = {k: v for k, v in breakdown.items() if not k.startswith("_")}
+    response_breakdown = {k: v for k, v in breakdown.items() if not k.startswith("_") and k != "package"}
 
     # Deposits received for this admission
     deposit_rows = db.query(AdmissionDeposit).filter(
@@ -3426,14 +3928,24 @@ async def get_admission_bill(
 @router.get("/admissions/{admission_id}/bills")
 async def list_admission_bills(
     admission_id: int,
+    include_cancelled: bool = False,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_bill")),
     db: Session = Depends(get_db),
 ):
-    """All Bill records (interim + final) for an admission, oldest-first."""
-    bills = db.query(Bill).filter(
+    """Bill records (interim + final) for an admission, oldest-first.
+
+    Cancelled bills are hidden by default — they're considered "removed" from
+    the admission's billing view. Pass ``include_cancelled=true`` to surface
+    them for audit. The billing dashboard's dedicated cancelled-history tab
+    uses that flag.
+    """
+    q = db.query(Bill).filter(
         Bill.bill_type == "admission",
         Bill.reference_id == admission_id,
-    ).order_by(Bill.bill_date.asc()).all()
+    )
+    if not include_cancelled:
+        q = q.filter(Bill.status != "cancelled")
+    bills = q.order_by(Bill.bill_date.asc()).all()
     return [
         {
             "id": b.id,
@@ -3490,32 +4002,60 @@ async def cancel_admission_bill(
             },
         )
 
-    # Release every source row tagged with this bill_id so it can be billed again.
-    visits_q = db.query(PatientVisit).filter(PatientVisit.bill_id == bill.id)
-    visits_released = visits_q.count()
-    visits_q.update({PatientVisit.billed: False, PatientVisit.bill_id: None}, synchronize_session=False)
+    # Also block when any bill_split has been collected — those flow through
+    # the BillSplit table, not the Payment table, so the paid-check above
+    # misses TPA / insurance receipts.
+    received_splits = db.query(BillSplit).filter(
+        BillSplit.bill_id == bill.id,
+        BillSplit.payment_status == "received",
+    ).all()
+    if received_splits:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "bill_splits_received",
+                "message": "Cannot cancel — one or more payer splits have already been marked as received. Reverse those splits first.",
+                "received_splits": [
+                    {"id": s.id, "payer_type": s.payer_type, "payer_name": s.payer_name, "amount": float(s.amount or 0)}
+                    for s in received_splits
+                ],
+            },
+        )
 
-    ot_q = db.query(OTSchedule).filter(OTSchedule.bill_id == bill.id)
-    ot_released = ot_q.count()
-    ot_q.update({OTSchedule.billed: False, OTSchedule.bill_id: None}, synchronize_session=False)
+    try:
+        # Release every source row tagged with this bill_id so it can be billed again.
+        visits_q = db.query(PatientVisit).filter(PatientVisit.bill_id == bill.id)
+        visits_released = visits_q.count()
+        visits_q.update({PatientVisit.billed: False, PatientVisit.bill_id: None}, synchronize_session=False)
 
-    anc_q = db.query(AdmissionAncillaryCharge).filter(AdmissionAncillaryCharge.bill_id == bill.id)
-    anc_released = anc_q.count()
-    anc_q.update({AdmissionAncillaryCharge.billed: False, AdmissionAncillaryCharge.bill_id: None}, synchronize_session=False)
+        ot_q = db.query(OTSchedule).filter(OTSchedule.bill_id == bill.id)
+        ot_released = ot_q.count()
+        ot_q.update({OTSchedule.billed: False, OTSchedule.bill_id: None}, synchronize_session=False)
 
-    rx_q = db.query(Prescription).filter(Prescription.inpatient_bill_id == bill.id)
-    rx_released = rx_q.count()
-    rx_q.update({Prescription.inpatient_bill_id: None}, synchronize_session=False)
+        anc_q = db.query(AdmissionAncillaryCharge).filter(AdmissionAncillaryCharge.bill_id == bill.id)
+        anc_released = anc_q.count()
+        anc_q.update({AdmissionAncillaryCharge.billed: False, AdmissionAncillaryCharge.bill_id: None}, synchronize_session=False)
 
-    lab_q = db.query(PatientLabOrder).filter(PatientLabOrder.inpatient_bill_id == bill.id)
-    lab_released = lab_q.count()
-    lab_q.update({PatientLabOrder.inpatient_bill_id: None}, synchronize_session=False)
+        rx_q = db.query(Prescription).filter(Prescription.inpatient_bill_id == bill.id)
+        rx_released = rx_q.count()
+        rx_q.update({Prescription.inpatient_bill_id: None}, synchronize_session=False)
 
-    bill.status = "cancelled"
-    cancel_note = f"[CANCELLED by user {current_user.id} on {datetime.now().isoformat()}]: {data.reason}"
-    bill.notes = (bill.notes + "\n" if bill.notes else "") + cancel_note
+        lab_q = db.query(PatientLabOrder).filter(PatientLabOrder.inpatient_bill_id == bill.id)
+        lab_released = lab_q.count()
+        lab_q.update({PatientLabOrder.inpatient_bill_id: None}, synchronize_session=False)
 
-    db.commit()
+        food_q = db.query(FoodOrder).filter(FoodOrder.bill_id == bill.id)
+        food_released = food_q.count()
+        food_q.update({FoodOrder.billed: False, FoodOrder.bill_id: None}, synchronize_session=False)
+
+        bill.status = "cancelled"
+        cancel_note = f"[CANCELLED by user {current_user.id} on {datetime.now().isoformat()}]: {data.reason}"
+        bill.notes = (bill.notes + "\n" if bill.notes else "") + cancel_note
+
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     log_action(db, current_user, "cancel_admission_bill", "inpatient", "Bill", bill.id,
                f"Cancelled admission bill {bill.bill_number}: {data.reason}",
@@ -3528,6 +4068,7 @@ async def cancel_admission_bill(
                        "ancillary": anc_released,
                        "prescriptions": rx_released,
                        "lab_orders": lab_released,
+                       "food_orders": food_released,
                    },
                })
 
@@ -3540,11 +4081,45 @@ async def cancel_admission_bill(
             "ancillary": anc_released,
             "prescriptions": rx_released,
             "lab_orders": lab_released,
+            "food_orders": food_released,
         },
     }
 
 
 def _create_admission_bill_record(
+    db: Session, admission: Admission, hospital, current_user: User,
+    breakdown: dict, discount_value: float, discount_type: str, tax_percentage: float,
+    bill_subtype: str,
+    items_override: Optional[List[BillItemOverride]] = None,
+) -> Bill:
+    """Transactional wrapper around _create_admission_bill_record_inner that
+    rolls back on any failure so partial Bill+BillItems writes never leak.
+
+    Also retries on ``IntegrityError`` so concurrent finalize calls that race on
+    the ``BILL-ADM-{date}-{seq}`` MAX(seq)+1 read don't 500 — the loser simply
+    re-reads and increments."""
+    from sqlalchemy.exc import IntegrityError
+    last_exc = None
+    for _attempt in range(5):
+        try:
+            return _create_admission_bill_record_inner(
+                db, admission, hospital, current_user, breakdown,
+                discount_value, discount_type, tax_percentage, bill_subtype,
+                items_override=items_override,
+            )
+        except IntegrityError as e:
+            db.rollback()
+            last_exc = e
+            continue
+        except Exception:
+            db.rollback()
+            raise
+    # Exhausted retries — re-raise the last collision
+    if last_exc is not None:
+        raise last_exc
+
+
+def _create_admission_bill_record_inner(
     db: Session, admission: Admission, hospital, current_user: User,
     breakdown: dict, discount_value: float, discount_type: str, tax_percentage: float,
     bill_subtype: str,
@@ -3562,13 +4137,19 @@ def _create_admission_bill_record(
     discount_amount = 0.0
     if discount_value and discount_value > 0:
         if discount_type == "percentage":
-            discount_amount = round(subtotal * discount_value / 100, 2)
+            # Clamp percentage to [0, 100] so we never go below zero.
+            pct = min(max(float(discount_value), 0.0), 100.0)
+            discount_amount = round(subtotal * pct / 100, 2)
         else:
             discount_amount = min(discount_value, subtotal)
-    after_discount = subtotal - discount_amount
+    # Never let discount exceed subtotal (guards against operator-supplied
+    # percentage > 100 or flat > subtotal slipping through).
+    discount_amount = min(max(discount_amount, 0.0), subtotal)
+    after_discount = max(subtotal - discount_amount, 0.0)
     tax_amount = 0.0
     if tax_percentage and tax_percentage > 0:
-        tax_amount = round(after_discount * tax_percentage / 100, 2)
+        tax_pct = min(max(float(tax_percentage), 0.0), 100.0)
+        tax_amount = round(after_discount * tax_pct / 100, 2)
     grand_total = round(after_discount + tax_amount, 2)
 
     today = datetime.now().strftime("%Y%m%d")
@@ -3621,12 +4202,54 @@ def _create_admission_bill_record(
             rx.inpatient_bill_id = bill.id
         for lo in breakdown["_lab_orders"]:
             lo.inpatient_bill_id = bill.id
+        for f in breakdown.get("_food_orders", []):
+            f.billed = True
+            f.bill_id = bill.id
         db.commit()
         db.refresh(bill)
         return bill
 
+    pkg = breakdown.get("_package")
+    included = set(pkg["included_services"]) if pkg else set()
+    # Resolve package coverage boundary (admission_date + included_stay_days)
+    # so we know which items to bill as excess-stay.
+    pkg_boundary_dt = None
+    if pkg and pkg.get("boundary_at"):
+        try:
+            pkg_boundary_dt = datetime.fromisoformat(pkg["boundary_at"])
+        except Exception:
+            pkg_boundary_dt = None
+
+    # Package fee — emit a single BillItem at agreed_price UNLESS a prior
+    # non-cancelled bill on this admission already booked it (dedup so a
+    # finalize after an interim doesn't double-bill).
+    if pkg and not pkg.get("fee_already_billed"):
+        db.add(BillItem(
+            bill_id=bill.id,
+            item_type="package",
+            item_name=f"Surgery Package: {pkg['package_name']}" + (
+                f" [{pkg['package_code']}]" if pkg.get('package_code') else ""
+            ),
+            quantity=1,
+            unit_price=float(pkg["agreed_price"]),
+            total_price=float(pkg["agreed_price"]),
+        ))
+
     room = breakdown["_room"]
-    if breakdown["room_total"] > 0 and room:
+    if pkg and _PKG_CAT_ROOM in included:
+        # Package covers room — emit per-segment upgrade/excess lines only.
+        for line in pkg.get("room_lines", []):
+            if (line.get("total") or 0) <= 0:
+                continue
+            db.add(BillItem(
+                bill_id=bill.id,
+                item_type="room_charge",
+                item_name=line["label"],
+                quantity=int(line.get("days") or 1),
+                unit_price=float(line.get("rate") or 0),
+                total_price=float(line.get("total") or 0),
+            ))
+    elif breakdown["room_total"] > 0 and room:
         days_in_this_bill = round(breakdown["room_total"] / breakdown["_room_charge_per_day"], 2) if breakdown["_room_charge_per_day"] else 0
         db.add(BillItem(
             bill_id=bill.id,
@@ -3639,67 +4262,123 @@ def _create_admission_bill_record(
 
     for v in breakdown["_visits"]:
         visitor = v.visitor
-        db.add(BillItem(
-            bill_id=bill.id,
-            item_type=v.visit_type,
-            item_name=f"{v.visit_type.replace('_', ' ').title()} - {visitor.first_name} {visitor.last_name}" if visitor else v.visit_type,
-            quantity=1,
-            unit_price=float(v.charge_amount or 0),
-            total_price=float(v.charge_amount or 0),
-        ))
+        type_in_pkg = _pkg_visit_included(v.visit_type, included)
+        # Excess-stay visits (after pkg_boundary) bill even if type is included.
+        is_excess_visit = bool(
+            type_in_pkg and pkg_boundary_dt and v.visit_datetime and v.visit_datetime > pkg_boundary_dt
+        )
+        if (not type_in_pkg) or is_excess_visit:
+            visit_label = f"{v.visit_type.replace('_', ' ').title()} - {visitor.first_name} {visitor.last_name}" if visitor else v.visit_type
+            if is_excess_visit:
+                visit_label += " (excess stay)"
+            db.add(BillItem(
+                bill_id=bill.id,
+                item_type=v.visit_type,
+                item_name=visit_label,
+                quantity=1,
+                unit_price=float(v.charge_amount or 0),
+                total_price=float(v.charge_amount or 0),
+            ))
         v.billed = True
         v.bill_id = bill.id
 
+    # OT — covered iff package includes ot/surgery AND scheduled inside the
+    # boundary; excess-stay procedures bill at the full rate.
+    ot_type_in_pkg = _pkg_ot_included(included)
     for ot in breakdown["_ot"]:
-        db.add(BillItem(
-            bill_id=bill.id,
-            item_type="ot_procedure",
-            item_name=f"OT: {ot.procedure_name}",
-            quantity=1,
-            unit_price=ot.total_charges,
-            total_price=ot.total_charges,
-        ))
+        covers = ot_type_in_pkg and _pkg_covers(pkg_boundary_dt, getattr(ot, "scheduled_date", None))
+        if not covers:
+            label = f"OT: {ot.procedure_name}"
+            if ot_type_in_pkg and not covers:
+                label += " (excess stay)"
+            db.add(BillItem(
+                bill_id=bill.id,
+                item_type="ot_procedure",
+                item_name=label,
+                quantity=1,
+                unit_price=ot.total_charges,
+                total_price=ot.total_charges,
+            ))
         ot.billed = True
         ot.bill_id = bill.id
 
+    # Ancillary — covered iff included AND charged inside the boundary.
+    anc_type_in_pkg = _PKG_CAT_ANCILLARY in included
     for c in breakdown["_ancillary"]:
-        svc = db.query(AncillaryServiceCatalog).filter(AncillaryServiceCatalog.id == c.service_id).first()
-        db.add(BillItem(
-            bill_id=bill.id,
-            item_type="ancillary",
-            item_name=f"{svc.service_name if svc else 'Service'} ({svc.category if svc else ''})",
-            quantity=int(c.quantity) if float(c.quantity).is_integer() else 1,
-            unit_price=float(c.unit_price or 0),
-            total_price=float(c.total_amount or 0),
-        ))
+        covers = anc_type_in_pkg and _pkg_covers(pkg_boundary_dt, getattr(c, "charged_at", None))
+        if not covers:
+            svc = db.query(AncillaryServiceCatalog).filter(AncillaryServiceCatalog.id == c.service_id).first()
+            label = f"{svc.service_name if svc else 'Service'} ({svc.category if svc else ''})"
+            if anc_type_in_pkg and not covers:
+                label += " (excess stay)"
+            db.add(BillItem(
+                bill_id=bill.id,
+                item_type="ancillary",
+                item_name=label,
+                quantity=int(c.quantity) if float(c.quantity).is_integer() else 1,
+                unit_price=float(c.unit_price or 0),
+                total_price=float(c.total_amount or 0),
+            ))
         c.billed = True
         c.bill_id = bill.id
 
+    # Pharmacy — covered iff included AND dispensed/prescribed inside the
+    # boundary. Each prescription decides independently.
+    rx_type_in_pkg = _PKG_CAT_PHARMACY in included
     for rx in breakdown["_pharmacy_rxs"]:
-        rx_items = db.query(PrescriptionItem).filter(PrescriptionItem.prescription_id == rx.id).all()
-        for item in rx_items:
-            medicine = db.query(Medicine).filter(Medicine.id == item.medicine_id).first()
-            db.add(BillItem(
-                bill_id=bill.id,
-                item_type="pharmacy",
-                item_name=f"Rx: {medicine.name if medicine else 'Medicine'} ({item.dosage or ''})",
-                quantity=item.quantity_dispensed or item.quantity_prescribed,
-                unit_price=item.unit_price,
-                total_price=item.total_price,
-            ))
+        rx_dt = getattr(rx, "dispensed_date", None) or getattr(rx, "prescription_date", None)
+        covers = rx_type_in_pkg and _pkg_covers(pkg_boundary_dt, rx_dt)
+        if not covers:
+            rx_items = db.query(PrescriptionItem).filter(PrescriptionItem.prescription_id == rx.id).all()
+            for item in rx_items:
+                medicine = db.query(Medicine).filter(Medicine.id == item.medicine_id).first()
+                label = f"Rx: {medicine.name if medicine else 'Medicine'} ({item.dosage or ''})"
+                if rx_type_in_pkg and not covers:
+                    label += " (excess stay)"
+                db.add(BillItem(
+                    bill_id=bill.id,
+                    item_type="pharmacy",
+                    item_name=label,
+                    quantity=item.quantity_dispensed or item.quantity_prescribed,
+                    unit_price=item.unit_price,
+                    total_price=item.total_price,
+                ))
         rx.inpatient_bill_id = bill.id
 
+    # Lab — covered iff per-test whitelist matches AND order is inside the
+    # boundary. Either failing → bill at full rate.
+    pkg_obj = breakdown.get("_package_obj")  # SurgeryPackage row when packaged
     for lo in breakdown["_lab_orders"]:
-        test = db.query(LabTest).filter(LabTest.id == lo.test_id).first()
+        test_covered = _pkg_lab_covered(pkg_obj, lo.test_id) if pkg_obj else False
+        date_covered = _pkg_covers(pkg_boundary_dt, getattr(lo, "order_date", None))
+        covered = test_covered and date_covered
+        if not covered:
+            test = db.query(LabTest).filter(LabTest.id == lo.test_id).first()
+            label = f"Lab: {test.name if test else 'Test'} ({lo.order_number})"
+            # Tag excess-stay specifically (test was in coverage but order was outside window)
+            if pkg_obj and test_covered and not date_covered:
+                label += " (excess stay)"
+            db.add(BillItem(
+                bill_id=bill.id,
+                item_type="lab_test",
+                item_name=label,
+                quantity=1,
+                unit_price=float(lo.amount or 0),
+                total_price=float(lo.amount or 0),
+            ))
+        lo.inpatient_bill_id = bill.id
+
+    for f in breakdown.get("_food_orders", []):
         db.add(BillItem(
             bill_id=bill.id,
-            item_type="lab_test",
-            item_name=f"Lab: {test.name if test else 'Test'} ({lo.order_number})",
+            item_type="food",
+            item_name=f"Meal: {f.meal_type.title()} on {f.meal_date.isoformat() if f.meal_date else ''}",
             quantity=1,
-            unit_price=float(lo.amount or 0),
-            total_price=float(lo.amount or 0),
+            unit_price=float(f.price or 0),
+            total_price=float(f.price or 0),
         ))
-        lo.inpatient_bill_id = bill.id
+        f.billed = True
+        f.bill_id = bill.id
 
     db.commit()
     db.refresh(bill)
@@ -3751,6 +4430,46 @@ async def finalize_bill(
             detail="No outstanding charges to finalize. All charges may already be on prior bills — the review dialog will let you confirm and close the admission.",
         )
 
+    # Balance precheck — refuse to finalize unless deposits already cover the
+    # would-be bill (within ₹0.01). The UI is expected to either collect the
+    # owed amount / issue the refund first, or call /bill/finalize-and-settle
+    # to do both atomically.
+    draft_total = _compute_draft_final_bill_total(
+        breakdown,
+        discount_value=(data.discount_value if data else 0) or 0,
+        discount_type=(data.discount_type if data else "flat") or "flat",
+        tax_percentage=(data.tax_percentage if data else 0) or 0,
+        items_override=items_override,
+    )
+    prior_summary = _admission_balance_summary(db, admission)
+    # net_deposits = total_collected - total_refunded. With the draft total as
+    # what *this* finalize would book, the post-finalize balance is:
+    #   net_deposits - (billed_on_bills_before + draft_total)
+    # We approximate already-billed-and-this-final as prior_billed + draft.
+    prior_billed_on_bills = float(prior_summary.get("billed_on_bills") or 0)
+    post_finalize_balance = round(
+        float(prior_summary.get("net_deposits") or 0)
+        - (prior_billed_on_bills + draft_total),
+        2,
+    )
+    if abs(post_finalize_balance) >= 0.01:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "unsettled_balance",
+                "message": (
+                    "Settle the balance before finalising the bill. "
+                    "Either collect/refund the difference first or use "
+                    "/bill/finalize-and-settle to do both in one step."
+                ),
+                "draft_total": draft_total,
+                "net_deposits": float(prior_summary.get("net_deposits") or 0),
+                "balance": post_finalize_balance,
+                "amount_to_collect": round(max(0.0, -post_finalize_balance), 2),
+                "amount_to_refund": round(max(0.0, post_finalize_balance), 2),
+            },
+        )
+
     bill = _create_admission_bill_record(
         db, admission, hospital, current_user, breakdown,
         discount_value=(data.discount_value if data else 0) or 0,
@@ -3795,6 +4514,153 @@ async def finalize_bill(
         "amount_to_refund": round(max(0.0, credit_balance), 2),
         "net_deposits": summary["net_deposits"],
         "total_billed": summary["total_billed"],
+    }
+
+
+@router.post("/admissions/{admission_id}/bill/finalize-and-settle")
+async def finalize_and_settle_bill(
+    admission_id: int,
+    data: FinalizeAndSettleRequest,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "finalize_bill")),
+    db: Session = Depends(get_db),
+):
+    """Atomic: insert a settle deposit/refund AND create the final bill so the
+    admission lands at balance = 0 in a single transaction. Either both rows
+    persist or neither does.
+
+    Used by the Review Final Bill dialog when the operator clicks the inline
+    Collect/Refund button.
+    """
+    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    if not admission:
+        raise HTTPException(status_code=404, detail="Admission not found")
+    patient = db.query(Patient).filter(Patient.id == admission.patient_id).first()
+    hospital = _get_hospital(db, current_user)
+
+    # Uniqueness guard — same as plain finalize.
+    existing_final = db.query(Bill).filter(
+        Bill.bill_type == "admission",
+        Bill.reference_id == admission_id,
+        Bill.bill_subtype == "final",
+        Bill.status != "cancelled",
+    ).first()
+    if existing_final:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "final_bill_exists",
+                "message": "A final bill already exists for this admission. Cancel it first to issue a new one.",
+                "bill_id": existing_final.id,
+                "bill_number": existing_final.bill_number,
+            },
+        )
+
+    breakdown = _compute_admission_charges(db, admission, unbilled_only=True)
+    items_override = data.items_override
+    if breakdown["subtotal"] <= 0 and items_override is None:
+        raise HTTPException(
+            status_code=400,
+            detail="No outstanding charges to finalize.",
+        )
+
+    # Verify the operator-supplied settle amount actually balances the bill.
+    draft_total = _compute_draft_final_bill_total(
+        breakdown,
+        discount_value=data.discount_value or 0,
+        discount_type=data.discount_type or "flat",
+        tax_percentage=data.tax_percentage or 0,
+        items_override=items_override,
+    )
+    prior_summary = _admission_balance_summary(db, admission)
+    prior_billed_on_bills = float(prior_summary.get("billed_on_bills") or 0)
+    net_deposits_before = float(prior_summary.get("net_deposits") or 0)
+
+    settle = data.settle
+    if settle.direction == "collect":
+        net_deposits_after = round(net_deposits_before + float(settle.amount), 2)
+    else:
+        # Refund — guard against refunding more than the credit on hand even
+        # after the bill is booked.
+        post_bill_credit = round(net_deposits_before - (prior_billed_on_bills + draft_total), 2)
+        if float(settle.amount) > post_bill_credit + 0.01:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Refund of Rs.{settle.amount:,.2f} exceeds the credit that will remain after this bill (Rs.{post_bill_credit:,.2f}).",
+            )
+        net_deposits_after = round(net_deposits_before - float(settle.amount), 2)
+    post_finalize_balance = round(net_deposits_after - (prior_billed_on_bills + draft_total), 2)
+    if abs(post_finalize_balance) >= 0.01:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "settle_amount_mismatch",
+                "message": (
+                    f"Settle amount Rs.{settle.amount:,.2f} doesn't balance the bill. "
+                    f"Post-settle balance would be Rs.{post_finalize_balance:,.2f}."
+                ),
+                "draft_total": draft_total,
+                "expected_collect": round(max(0.0, draft_total + prior_billed_on_bills - net_deposits_before), 2),
+                "expected_refund": round(max(0.0, net_deposits_before - prior_billed_on_bills - draft_total), 2),
+            },
+        )
+
+    # Insert the deposit/refund FIRST, then the bill. Both share this request's
+    # transaction; if the bill creation fails we rollback the deposit too.
+    def _settle_kwargs():
+        return dict(
+            admission_id=admission_id,
+            deposit_number=_generate_deposit_number(db),
+            amount=float(settle.amount),
+            deposit_type=("refund" if settle.direction == "refund" else "topup"),
+            payment_method=settle.payment_method,
+            reference_number=settle.reference_number or _generate_txn_id(db),
+            notes=settle.notes or ("Bill settle — refund" if settle.direction == "refund" else "Bill settle — collect"),
+            received_by_id=current_user.id,
+            hospital_id=hospital.id,
+        )
+    deposit = _insert_deposit_safely(db, _settle_kwargs)
+
+    bill = _create_admission_bill_record(
+        db, admission, hospital, current_user, breakdown,
+        discount_value=data.discount_value or 0,
+        discount_type=data.discount_type or "flat",
+        tax_percentage=data.tax_percentage or 0,
+        bill_subtype="final",
+        items_override=items_override,
+    )
+    reconcile_admission_bill_statuses(db, admission_id)
+    db.commit()
+    db.refresh(bill)
+    db.refresh(deposit)
+
+    log_action(db, current_user, "finalize_and_settle_admission_bill", "inpatient", "Bill", bill.id,
+               f"Finalized + settled admission bill {bill.bill_number} (settle Rs.{settle.amount:,.2f} {settle.direction}) for {patient.first_name} {patient.last_name}",
+               details={
+                   "admission_id": admission_id,
+                   "total": float(bill.total_amount),
+                   "settle_direction": settle.direction,
+                   "settle_amount": float(settle.amount),
+                   "deposit_id": deposit.id,
+               })
+
+    return {
+        "bill_id": bill.id,
+        "bill_number": bill.bill_number,
+        "bill_subtype": bill.bill_subtype,
+        "subtotal": float(bill.subtotal),
+        "discount_amount": float(bill.discount_amount or 0),
+        "tax_amount": float(bill.tax_amount or 0),
+        "total_amount": float(bill.total_amount),
+        "status": bill.status,
+        "message": "Bill finalized and settled",
+        "deposit_id": deposit.id,
+        "deposit_number": deposit.deposit_number,
+        "settle_direction": settle.direction,
+        "settle_amount": float(settle.amount),
+        "credit_balance": 0.0,
+        "requires_action": "none",
+        "amount_to_collect": 0.0,
+        "amount_to_refund": 0.0,
     }
 
 
@@ -3848,23 +4714,38 @@ async def create_interim_bill(
 async def get_bill_pdf(
     admission_id: int,
     include_header: bool = True,
+    bill_id: Optional[int] = Query(default=None, description="Specific bill row to render (any status). Defaults to the latest non-cancelled bill."),
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_bill")),
     db: Session = Depends(get_db),
 ):
     """Inpatient bill PDF — uses the live computed breakdown so it always
     shows itemised charges (room, visits, OT, ancillary, pharmacy, lab) even
     when the saved Bill snapshot stored category totals only. Falls back to
-    a "preview" header when no Bill record exists yet."""
+    a "preview" header when no Bill record exists yet.
+
+    ``bill_id`` lets the operator print a specific historical bill — including
+    cancelled ones — for audit. Cancelled bills are rendered with a CANCELLED
+    watermark; interim bills render with an INTERIM watermark.
+    """
     admission = db.query(Admission).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
 
-    # Optional Bill record (may not exist — we still render a preview)
-    bill = db.query(Bill).filter(
-        Bill.bill_type == "admission",
-        Bill.reference_id == admission.id,
-        Bill.status != "cancelled",
-    ).order_by(Bill.id.desc()).first()
+    if bill_id is not None:
+        bill = db.query(Bill).filter(
+            Bill.id == bill_id,
+            Bill.bill_type == "admission",
+            Bill.reference_id == admission.id,
+        ).first()
+        if not bill:
+            raise HTTPException(status_code=404, detail="Bill not found for this admission")
+    else:
+        # Optional Bill record (may not exist — we still render a preview)
+        bill = db.query(Bill).filter(
+            Bill.bill_type == "admission",
+            Bill.reference_id == admission.id,
+            Bill.status != "cancelled",
+        ).order_by(Bill.id.desc()).first()
 
     patient = db.query(Patient).filter(Patient.id == admission.patient_id).first()
     hospital = _get_hospital(db, current_user)
@@ -3873,65 +4754,221 @@ async def get_bill_pdf(
 
     # Build itemised display rows from the computed breakdown.
     breakdown = _compute_admission_charges(db, admission, unbilled_only=False)
-    items = []
-    # Room — one row per rate segment so transfers are visible, else single row.
-    room_segs = (breakdown.get("room") or {}).get("rate_segments") or []
-    if room_segs:
+    pkg_block = breakdown.get("package")
+    pkg_included = set(pkg_block.get("included_services") or []) if pkg_block else set()
+
+    INCLUDED_TAG = "  [INCLUDED]"
+
+    # Bucketed item collection so the printed bill always orders as:
+    #   1. Package fee
+    #   2. Included (covered-by-package) non-lab rows
+    #   3. Excluded / excess / non-package non-lab rows
+    #   4. Lab tests (included first, then excluded)
+    bucket_included = []
+    bucket_excluded = []
+    bucket_lab_included = []
+    bucket_lab_excluded = []
+    bucket_package = []
+
+    # ---- Room -------------------------------------------------------------
+    room_info = breakdown.get("room") or {}
+    room_segs = room_info.get("rate_segments") or []
+    if pkg_block and _PKG_CAT_ROOM in pkg_included:
+        # Show the COVERED portion of the room stay only: capped at
+        # included_stay_days (or the actual stay, whichever is smaller).
+        # Anything beyond that appears in pkg_block.room_lines as excess.
+        stay_days_total = int(breakdown.get('billable_stay_days') or breakdown.get('stay_days') or 0)
+        included_days_cap = int(pkg_block.get('included_stay_days') or 0)
+        # included_stay_days=0 means "covers entire stay", so use full stay then.
+        covered_days = stay_days_total if included_days_cap <= 0 else min(stay_days_total, included_days_cap)
+
+        if room_segs and covered_days > 0:
+            remaining = covered_days
+            for seg in room_segs:
+                if remaining <= 0:
+                    break
+                seg_days = min(int(seg['days']), remaining)
+                if seg_days <= 0:
+                    continue
+                bucket_included.append({
+                    "description": f"Room rent — {room_info.get('room_number')} ({room_info.get('room_type')}){INCLUDED_TAG}",
+                    "qty": f"{seg_days} day(s)",
+                    "rate": seg['rate'],
+                    "amount": 0,
+                })
+                remaining -= seg_days
+        elif covered_days > 0:
+            bucket_included.append({
+                "description": f"Room rent — {room_info.get('room_number')} ({room_info.get('room_type')}){INCLUDED_TAG}",
+                "qty": f"{covered_days} day(s)",
+                "rate": room_info.get('charge_per_day') or 0,
+                "amount": 0,
+            })
+        for line in pkg_block.get("room_lines") or []:
+            if (line.get('total') or 0) <= 0:
+                continue
+            bucket_excluded.append({
+                "description": line.get('label') or "Room excess",
+                "qty": f"{line.get('days') or 1} day(s)",
+                "rate": line.get('rate') or 0,
+                "amount": line.get('total') or 0,
+            })
+    elif room_segs:
         for seg in room_segs:
-            items.append({
-                "description": f"Room rent — {breakdown['room']['room_number']} ({breakdown['room']['room_type']})",
+            bucket_excluded.append({
+                "description": f"Room rent — {room_info.get('room_number')} ({room_info.get('room_type')})",
                 "qty": f"{seg['days']} day(s)",
                 "rate": seg['rate'],
                 "amount": seg['total'],
             })
     elif breakdown.get("room_total", 0) > 0:
-        items.append({
-            "description": f"Room rent — {breakdown['room']['room_number']} ({breakdown['room']['room_type']})",
+        bucket_excluded.append({
+            "description": f"Room rent — {room_info.get('room_number')} ({room_info.get('room_type')})",
             "qty": f"{breakdown.get('stay_days', 0)} day(s)",
-            "rate": breakdown['room']['charge_per_day'],
+            "rate": room_info.get('charge_per_day') or 0,
             "amount": breakdown['room_total'],
         })
-    # Visits — one row per visit_type
+
+    # ---- Visits — emit a covered row and/or an excess-stay row per type.
     for vtype, vinfo in (breakdown.get("visits") or {}).items():
-        if not vinfo or vinfo.get('total', 0) <= 0:
+        if not vinfo or not vinfo.get('count'):
             continue
-        items.append({
-            "description": vtype.replace('_', ' ').title(),
-            "qty": f"× {vinfo.get('count', 0)}",
-            "rate": (vinfo['total'] / vinfo['count']) if vinfo.get('count') else 0,
-            "amount": vinfo['total'],
-        })
-    # OT — one row per procedure
+        type_label = vtype.replace('_', ' ').title()
+        type_in_pkg = bool(vinfo.get("included_in_package")) or bool(vinfo.get("covered_count"))
+        covered_count = int(vinfo.get("covered_count") or 0)
+        billed_count = int(vinfo.get("billed_count") or 0)
+        if pkg_block and type_in_pkg and (covered_count or billed_count):
+            if covered_count:
+                covered_orig = float(vinfo.get("covered_total_original") or 0)
+                bucket_included.append({
+                    "description": f"{type_label}{INCLUDED_TAG}",
+                    "qty": f"× {covered_count}",
+                    "rate": (covered_orig / covered_count) if covered_count else 0,
+                    "amount": 0,
+                })
+            if billed_count:
+                billed_total = float(vinfo.get("billed_total") or vinfo.get("total") or 0)
+                bucket_excluded.append({
+                    "description": f"{type_label} (excess stay)",
+                    "qty": f"× {billed_count}",
+                    "rate": (billed_total / billed_count) if billed_count else 0,
+                    "amount": billed_total,
+                })
+        else:
+            count = int(vinfo.get('count') or 0)
+            total = float(vinfo.get('total') or 0)
+            bucket_excluded.append({
+                "description": type_label,
+                "qty": f"× {count}",
+                "rate": (total / count) if count else 0,
+                "amount": total,
+            })
+
+    # ---- OT — one row per procedure with covered/excess tag.
     for ot in (breakdown.get("ot_entries") or []):
-        items.append({
-            "description": f"OT — {ot.get('procedure_name', 'Procedure')}",
+        covered = bool(ot.get("included_in_package"))
+        ref_total = float(ot.get("original_total") if covered else ot.get("total") or 0)
+        proc_name = ot.get('procedure', ot.get('procedure_name', 'Procedure'))
+        suffix = INCLUDED_TAG if covered else (
+            " (excess stay)" if pkg_block and _pkg_ot_included(pkg_included) else ""
+        )
+        row = {
+            "description": f"OT — {proc_name}{suffix}",
             "qty": "1",
-            "rate": ot.get('total', 0),
-            "amount": ot.get('total', 0),
-        })
-    # Ancillary — itemised
+            "rate": ref_total,
+            "amount": 0 if covered else float(ot.get('total') or 0),
+        }
+        (bucket_included if covered else bucket_excluded).append(row)
+
+    # ---- Ancillary — itemised with covered/excess tag.
     for anc in (breakdown.get("ancillary_entries") or []):
-        items.append({
-            "description": f"Ancillary — {anc.get('service_name', 'Service')}",
+        covered = bool(anc.get("included_in_package"))
+        ref_total = float(anc.get("original_total") if covered else (anc.get("total_amount") or anc.get('total') or 0))
+        suffix = INCLUDED_TAG if covered else (
+            " (excess stay)" if pkg_block and _PKG_CAT_ANCILLARY in pkg_included else ""
+        )
+        row = {
+            "description": f"Ancillary — {anc.get('service_name', 'Service')}{suffix}",
             "qty": str(anc.get('quantity', 1)),
             "rate": anc.get('unit_price', 0),
-            "amount": anc.get('total', anc.get('quantity', 1) * anc.get('unit_price', 0)),
+            "amount": 0 if covered else float(anc.get('total_amount') or anc.get('total') or 0),
+        }
+        (bucket_included if covered else bucket_excluded).append(row)
+
+    # ---- Pharmacy — lump sums split into covered + billed.
+    pharmacy_covered_total = float((pkg_block or {}).get("pharmacy_covered_total") or 0)
+    if pharmacy_covered_total > 0:
+        bucket_included.append({
+            "description": "Pharmacy / Medications" + INCLUDED_TAG,
+            "qty": "—",
+            "rate": "",
+            "amount": 0,
         })
-    # Pharmacy + lab summary
     if breakdown.get("pharmacy_total", 0) > 0:
-        items.append({
-            "description": "Pharmacy / Medications",
+        excess_suffix = " (excess stay)" if pkg_block and _PKG_CAT_PHARMACY in pkg_included else ""
+        bucket_excluded.append({
+            "description": f"Pharmacy / Medications{excess_suffix}",
             "qty": "—",
             "rate": "",
             "amount": breakdown['pharmacy_total'],
         })
-    if breakdown.get("lab_total", 0) > 0:
-        items.append({
-            "description": "Lab tests",
-            "qty": "—",
-            "rate": "",
-            "amount": breakdown['lab_total'],
+
+    # ---- Lab — one row per test. Included labs go in their own sub-bucket
+    # ahead of excluded labs; the whole lab section is rendered AFTER all
+    # non-lab rows so the bill ends with the lab listing.
+    for lab in (breakdown.get("lab_entries") or []):
+        covered = bool(lab.get("included_in_package"))
+        amount = float(lab.get('amount') or 0)
+        suffix = INCLUDED_TAG if covered else ""
+        if not covered and pkg_block and _PKG_CAT_LAB in pkg_included:
+            suffix = " (excess stay)" if not lab.get("test_excluded") else ""
+        row = {
+            "description": f"Lab — {lab.get('test_name', 'Test')} ({lab.get('order_number', '')}){suffix}",
+            "qty": "1",
+            "rate": amount,
+            "amount": 0 if covered else amount,
+        }
+        (bucket_lab_included if covered else bucket_lab_excluded).append(row)
+
+    # Catering — group meals by type for a compact view (excluded section).
+    food_entries = breakdown.get("food_entries") or []
+    if food_entries:
+        food_by_type: dict = {}
+        for f in food_entries:
+            mt = f.get("meal_type", "meal")
+            food_by_type.setdefault(mt, {"count": 0, "total": 0.0})
+            food_by_type[mt]["count"] += 1
+            food_by_type[mt]["total"] += float(f.get("price") or 0)
+        for mt, info in food_by_type.items():
+            rate = info["total"] / info["count"] if info["count"] else 0
+            bucket_excluded.append({
+                "description": f"Catering — {mt.title()}",
+                "qty": f"× {info['count']}",
+                "rate": rate,
+                "amount": info["total"],
+            })
+
+    # ---- Package fee line (always at the very top when present).
+    if pkg_block and float(pkg_block.get("agreed_price") or 0) > 0 \
+            and not pkg_block.get("fee_already_billed"):
+        pkg_label = f"Surgery Package: {pkg_block.get('package_name', '')}"
+        if pkg_block.get("package_code"):
+            pkg_label += f" [{pkg_block['package_code']}]"
+        bucket_package.append({
+            "description": pkg_label,
+            "qty": "1",
+            "rate": float(pkg_block["agreed_price"]),
+            "amount": float(pkg_block["agreed_price"]),
         })
+
+    # Final assembled order: package → included → excluded → lab (included → excluded)
+    items = (
+        bucket_package
+        + bucket_included
+        + bucket_excluded
+        + bucket_lab_included
+        + bucket_lab_excluded
+    )
 
     # Totals — prefer the saved Bill snapshot when present; otherwise show the
     # live computed breakdown so a "preview" is still meaningful.
@@ -5298,6 +6335,29 @@ def _generate_deposit_number(db: Session) -> str:
     return f"{prefix}{seq:04d}"
 
 
+def _insert_deposit_safely(db: Session, build_kwargs) -> AdmissionDeposit:
+    """Insert an AdmissionDeposit, retrying on UNIQUE collisions of the
+    auto-generated deposit_number / reference_number. `build_kwargs` is a
+    callable that returns a fresh dict of column values — re-invoked on each
+    retry so the seq numbers are re-rolled."""
+    from sqlalchemy.exc import IntegrityError
+    last_exc = None
+    for _ in range(5):
+        kwargs = build_kwargs()
+        deposit = AdmissionDeposit(**kwargs)
+        db.add(deposit)
+        try:
+            db.flush()
+            return deposit
+        except IntegrityError as e:
+            db.rollback()
+            last_exc = e
+            continue
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("Failed to allocate deposit number after retries")
+
+
 def _generate_txn_id(db: Session) -> str:
     """Auto-generate a transaction ID when the user doesn't supply one."""
     today = datetime.now().strftime("%Y%m%d")
@@ -5330,7 +6390,13 @@ def _admission_balance_summary(db: Session, admission: Admission) -> dict:
         Bill.reference_id == admission.id,
         Bill.status != "cancelled",
     ).all()
-    billed_from_bills = sum(float(b.total_amount or 0) for b in bills)
+    # When a comprehensive final bill exists it already includes prior interim charges
+    # — use only the final bill total to avoid double-counting with interim bills.
+    final_bill = next((b for b in bills if b.bill_subtype == "final"), None)
+    if final_bill:
+        billed_from_bills = float(final_bill.total_amount or 0)
+    else:
+        billed_from_bills = sum(float(b.total_amount or 0) for b in bills)
     total_paid = 0.0
     for b in bills:
         for p in (b.payments or []):
@@ -5486,20 +6552,19 @@ async def create_deposit(
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
 
-    txn_id = data.reference_number or _generate_txn_id(db)
-    deposit = AdmissionDeposit(
-        admission_id=admission_id,
-        deposit_number=_generate_deposit_number(db),
-        amount=data.amount,
-        deposit_type=data.deposit_type,
-        payment_method=data.payment_method,
-        reference_number=txn_id,
-        notes=data.notes,
-        received_by_id=current_user.id,
-        hospital_id=hospital.id,
-    )
-    db.add(deposit)
-    db.flush()
+    def _kwargs():
+        return dict(
+            admission_id=admission_id,
+            deposit_number=_generate_deposit_number(db),
+            amount=data.amount,
+            deposit_type=data.deposit_type,
+            payment_method=data.payment_method,
+            reference_number=data.reference_number or _generate_txn_id(db),
+            notes=data.notes,
+            received_by_id=current_user.id,
+            hospital_id=hospital.id,
+        )
+    deposit = _insert_deposit_safely(db, _kwargs)
     reconcile_admission_bill_statuses(db, admission_id)
     db.commit()
     db.refresh(deposit)
@@ -5552,20 +6617,19 @@ async def create_refund(
             detail=f"Refund of Rs.{data.amount:,.2f} exceeds available credit of Rs.{summary['balance']:,.2f}",
         )
 
-    txn_id = data.reference_number or _generate_txn_id(db)
-    deposit = AdmissionDeposit(
-        admission_id=admission_id,
-        deposit_number=_generate_deposit_number(db),
-        amount=data.amount,  # stored positive; deposit_type marks it as refund
-        deposit_type="refund",
-        payment_method=data.payment_method,
-        reference_number=txn_id,
-        notes=data.notes,
-        received_by_id=current_user.id,
-        hospital_id=hospital.id,
-    )
-    db.add(deposit)
-    db.flush()
+    def _kwargs():
+        return dict(
+            admission_id=admission_id,
+            deposit_number=_generate_deposit_number(db),
+            amount=data.amount,  # stored positive; deposit_type marks it as refund
+            deposit_type="refund",
+            payment_method=data.payment_method,
+            reference_number=data.reference_number or _generate_txn_id(db),
+            notes=data.notes,
+            received_by_id=current_user.id,
+            hospital_id=hospital.id,
+        )
+    deposit = _insert_deposit_safely(db, _kwargs)
     reconcile_admission_bill_statuses(db, admission_id)
     db.commit()
     db.refresh(deposit)
@@ -5586,14 +6650,31 @@ async def delete_deposit(
     d = db.query(AdmissionDeposit).filter(AdmissionDeposit.id == deposit_id).first()
     if not d:
         raise HTTPException(status_code=404, detail="Deposit not found")
-    age_hours = (datetime.now(d.received_at.tzinfo) - d.received_at).total_seconds() / 3600
+    # Guard against naive vs aware datetime arithmetic — SQLite-stored values
+    # can come back naive even though we wrote them aware.
+    received_at = d.received_at
+    now = datetime.now(received_at.tzinfo) if received_at and received_at.tzinfo else datetime.now()
+    if received_at and received_at.tzinfo is None and now.tzinfo is not None:
+        now = now.replace(tzinfo=None)
+    age_hours = ((now - received_at).total_seconds() / 3600) if received_at else 0
     if age_hours > 24:
         raise HTTPException(status_code=409, detail="Deposit older than 24h cannot be deleted; issue a refund instead")
     adm_id = d.admission_id
+    snapshot = {
+        "deposit_number": d.deposit_number,
+        "amount": float(d.amount or 0),
+        "deposit_type": d.deposit_type,
+        "payment_method": d.payment_method,
+        "reference_number": d.reference_number,
+        "received_at": received_at.isoformat() if received_at else None,
+    }
     db.delete(d)
     db.flush()
     reconcile_admission_bill_statuses(db, adm_id)
     db.commit()
+    log_action(db, current_user, "delete_deposit", "inpatient", "AdmissionDeposit", deposit_id,
+               f"Deleted deposit {snapshot.get('deposit_number')} (Rs.{snapshot['amount']:,.2f}) for admission {adm_id}",
+               details={"admission_id": adm_id, **snapshot})
 
 
 # ============================================================
@@ -6244,6 +7325,11 @@ async def set_bill_split(
     bill = db.query(Bill).filter(Bill.id == bill_id).first()
     if not bill:
         raise HTTPException(status_code=404, detail="Bill not found")
+    if bill.status == "cancelled":
+        raise HTTPException(status_code=409, detail="Cannot split a cancelled bill")
+    # Hospital scoping — prevent cross-tenant split mutation
+    if getattr(bill, "hospital_id", None) and bill.hospital_id != _get_hospital(db, current_user).id:
+        raise HTTPException(status_code=403, detail="Bill belongs to a different hospital")
 
     total = round(sum(s.amount for s in data.splits), 2)
     bill_total = round(float(bill.total_amount or 0), 2)
@@ -6302,6 +7388,11 @@ async def record_split_payment(
     s = db.query(BillSplit).filter(BillSplit.id == split_id).first()
     if not s:
         raise HTTPException(status_code=404, detail="Split not found")
+    parent = db.query(Bill).filter(Bill.id == s.bill_id).first()
+    if parent and parent.status == "cancelled":
+        raise HTTPException(status_code=409, detail="Cannot record payment on a cancelled bill")
+    if parent and getattr(parent, "hospital_id", None) and parent.hospital_id != _get_hospital(db, current_user).id:
+        raise HTTPException(status_code=403, detail="Bill belongs to a different hospital")
     s.payment_status = "received"
     s.payment_date = _now_utc()
     if payment_reference:
@@ -6637,6 +7728,9 @@ async def delete_preauth(
 PKG_INCLUDED_OPTIONS = {"room", "doctor_visit", "nurse_visit", "procedure", "ot", "surgery", "pharmacy", "lab", "ancillary"}
 
 
+PKG_COVERAGE_MODES = {"all", "selected"}
+
+
 class PackageCreate(BaseModel):
     package_name: str = Field(..., min_length=1, max_length=200)
     package_code: Optional[str] = Field(default=None, max_length=50)
@@ -6644,6 +7738,9 @@ class PackageCreate(BaseModel):
     included_room_type: Optional[str] = Field(default=None, max_length=30)
     included_stay_days: int = Field(default=0, ge=0)
     included_services: Optional[List[str]] = None
+    # Granular lab inclusion. Only meaningful when "lab" is in included_services.
+    lab_coverage_mode: Optional[str] = Field(default="all", description="'all' or 'selected'")
+    included_lab_test_ids: Optional[List[int]] = None
     excess_per_day_charge: float = Field(default=0.0, ge=0)
     description: Optional[str] = None
 
@@ -6655,6 +7752,8 @@ class PackageUpdate(BaseModel):
     included_room_type: Optional[str] = None
     included_stay_days: Optional[int] = Field(default=None, ge=0)
     included_services: Optional[List[str]] = None
+    lab_coverage_mode: Optional[str] = None
+    included_lab_test_ids: Optional[List[int]] = None
     excess_per_day_charge: Optional[float] = Field(default=None, ge=0)
     description: Optional[str] = None
     is_active: Optional[bool] = None
@@ -6668,12 +7767,51 @@ class PackageResponse(BaseModel):
     included_room_type: Optional[str]
     included_stay_days: int
     included_services: Optional[List[str]] = None
+    lab_coverage_mode: Optional[str] = "all"
+    included_lab_test_ids: Optional[List[int]] = None
     excess_per_day_charge: float
     description: Optional[str]
     is_active: bool
 
     class Config:
         from_attributes = True
+
+
+def _validate_lab_coverage(
+    db: Session,
+    hospital_id: int,
+    included_services: Optional[List[str]],
+    lab_coverage_mode: Optional[str],
+    included_lab_test_ids: Optional[List[int]],
+) -> tuple:
+    """Normalize + validate the granular lab fields. Returns (mode, ids) ready
+    to persist. Raises HTTPException on validation failure."""
+    services = set(included_services or [])
+    mode = (lab_coverage_mode or "all").lower()
+    if mode not in PKG_COVERAGE_MODES:
+        raise HTTPException(status_code=400, detail=f"lab_coverage_mode must be one of {sorted(PKG_COVERAGE_MODES)}")
+
+    # If lab isn't in included_services, the granular fields are irrelevant.
+    # Force back to a sane default so the DB doesn't carry confusing stale data.
+    if "lab" not in services:
+        return "all", None
+
+    ids = list(included_lab_test_ids or [])
+    if mode == "selected" and ids:
+        # Validate every ID exists and belongs to this hospital.
+        from app.models.lab import LabTest
+        rows = db.query(LabTest.id).filter(
+            LabTest.id.in_(ids),
+            LabTest.hospital_id == hospital_id,
+        ).all()
+        found = {r[0] for r in rows}
+        missing = [i for i in ids if i not in found]
+        if missing:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Lab test IDs not found in this hospital: {missing}",
+            )
+    return mode, (ids or None)
 
 
 @router.get("/packages", response_model=List[PackageResponse])
@@ -6699,7 +7837,14 @@ async def create_package(
         unknown = set(data.included_services) - PKG_INCLUDED_OPTIONS
         if unknown:
             raise HTTPException(status_code=400, detail=f"Unknown included_services: {', '.join(unknown)}")
-    pkg = SurgeryPackage(hospital_id=hospital.id, **data.model_dump())
+    lab_mode, lab_ids = _validate_lab_coverage(
+        db, hospital.id, data.included_services,
+        data.lab_coverage_mode, data.included_lab_test_ids,
+    )
+    payload = data.model_dump()
+    payload["lab_coverage_mode"] = lab_mode
+    payload["included_lab_test_ids"] = lab_ids
+    pkg = SurgeryPackage(hospital_id=hospital.id, **payload)
     db.add(pkg)
     db.commit()
     db.refresh(pkg)
@@ -6721,6 +7866,18 @@ async def update_package(
         unknown = set(update["included_services"]) - PKG_INCLUDED_OPTIONS
         if unknown:
             raise HTTPException(status_code=400, detail=f"Unknown included_services: {', '.join(unknown)}")
+    # Re-normalize lab coverage when any related field is being touched OR when
+    # included_services is changing (which can drop/add 'lab' silently).
+    touches_lab_fields = any(k in update for k in ("included_services", "lab_coverage_mode", "included_lab_test_ids"))
+    if touches_lab_fields:
+        effective_services = update.get("included_services", pkg.included_services)
+        effective_mode = update.get("lab_coverage_mode", pkg.lab_coverage_mode)
+        effective_ids = update.get("included_lab_test_ids", pkg.included_lab_test_ids)
+        lab_mode, lab_ids = _validate_lab_coverage(
+            db, pkg.hospital_id, effective_services, effective_mode, effective_ids,
+        )
+        update["lab_coverage_mode"] = lab_mode
+        update["included_lab_test_ids"] = lab_ids
     for k, v in update.items():
         setattr(pkg, k, v)
     db.commit()
@@ -6817,8 +7974,34 @@ async def remove_admission_package(
     ap = db.query(AdmissionPackage).filter(AdmissionPackage.admission_id == admission_id).first()
     if not ap:
         raise HTTPException(status_code=404, detail="No package on this admission")
+    # Block when a non-cancelled admission bill already reflects this package —
+    # the bill line items would no longer match what was finalised.
+    existing_bill = db.query(Bill).filter(
+        Bill.bill_type == "admission",
+        Bill.reference_id == admission_id,
+        Bill.status != "cancelled",
+    ).first()
+    if existing_bill:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "package_locked_by_bill",
+                "message": "Cannot remove the package — a bill has already been generated with it. Cancel the bill first.",
+                "bill_id": existing_bill.id,
+                "bill_number": existing_bill.bill_number,
+            },
+        )
+    pkg = db.query(SurgeryPackage).filter(SurgeryPackage.id == ap.package_id).first()
+    snapshot = {
+        "package_id": ap.package_id,
+        "package_name": pkg.package_name if pkg else None,
+        "agreed_price": float(ap.agreed_price or 0),
+    }
     db.delete(ap)
     db.commit()
+    log_action(db, current_user, "remove_admission_package", "inpatient", "AdmissionPackage", ap.id,
+               f"Removed package '{snapshot.get('package_name')}' from admission {admission_id}",
+               details={"admission_id": admission_id, **snapshot})
 
 
 # ============================================================
@@ -7204,7 +8387,11 @@ async def get_deposit_receipt_pdf(
         "logo_url": getattr(hospital, "logo_url", "") or "",
         "hospital_subname": getattr(hospital, "hospital_subname", "") or "",
     }
-    pdf_buffer = pdf_service.generate_deposit_receipt_pdf(deposit_data, hospital_info, include_header=include_header)
+    if (d.deposit_type or "").lower() == "refund":
+        # Route to the dedicated refund template (red, all-caps amount, refund-specific layout).
+        pdf_buffer = pdf_service.generate_refund_receipt_pdf(deposit_data, hospital_info, include_header=include_header)
+    else:
+        pdf_buffer = pdf_service.generate_deposit_receipt_pdf(deposit_data, hospital_info, include_header=include_header)
     return StreamingResponse(
         pdf_buffer,
         media_type="application/pdf",
@@ -8098,6 +9285,10 @@ class ConsentCreate(BaseModel):
     witness_name: Optional[str] = Field(default=None, max_length=200)
     witness_signature: Optional[str] = None
     notes: Optional[str] = None
+    # When the wizard pre-reserves a doc number via /consents/reserve-doc-number,
+    # it sends it back here so the issued consent uses the same number that was
+    # printed/written on the physical form.
+    doc_number: Optional[str] = None
 
 
 class ConsentWithdraw(BaseModel):
@@ -8160,17 +9351,37 @@ async def create_consent(
     if data.signed_by in ("guardian", "proxy") and not data.guardian_name:
         raise HTTPException(status_code=400, detail="guardian_name required when signed_by is guardian or proxy")
 
+    from app.models.inpatient import ConsentDocReservation
+    payload = data.model_dump()
+    requested_doc = payload.pop("doc_number", None)
+    reservation = None
+    if requested_doc:
+        reservation = db.query(ConsentDocReservation).filter(
+            ConsentDocReservation.doc_number == requested_doc,
+            ConsentDocReservation.consumed_at.is_(None),
+        ).first()
+        # If the supplied number isn't a live reservation we silently fall
+        # back to a fresh sequence to avoid collisions with already-issued
+        # consents.
+        doc_number = requested_doc if reservation else _generate_consent_doc_number(db)
+    else:
+        doc_number = _generate_consent_doc_number(db)
+
     c = Consent(
         admission_id=admission_id,
         patient_id=admission.patient_id,
         hospital_id=hospital.id,
         created_by_id=current_user.id,
-        doc_number=_generate_consent_doc_number(db),
-        **data.model_dump(),
+        doc_number=doc_number,
+        **payload,
     )
     db.add(c)
     db.commit()
     db.refresh(c)
+    if reservation:
+        reservation.consumed_at = datetime.now()
+        reservation.consumed_consent_id = c.id
+        db.commit()
     log_action(db, current_user, "create_consent", "inpatient", "Consent", c.id,
                f"Signed {data.consent_type} consent for admission {admission.admission_number}",
                {"consent_type": data.consent_type, "signed_by": data.signed_by})
@@ -8212,6 +9423,197 @@ async def withdraw_consent(
     return _consent_to_response(c, db)
 
 
+class ConsentReserveRequest(BaseModel):
+    patient_id: str  # int Patient.id or UUID Patient.patient_id
+    template_id: int
+    consent_type: str = Field(..., pattern=f"^({'|'.join(CONSENT_TYPES)})$")
+
+
+@router.post("/consents/reserve-doc-number")
+async def reserve_consent_doc_number(
+    data: ConsentReserveRequest,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "record_consent")),
+    db: Session = Depends(get_db),
+):
+    """Allocate (and persist) a CS-YYYYMMDD-NNNN doc number before the
+    consent record exists. Idempotent per patient + consent_type today —
+    repeated calls return the same unconsumed reservation so refreshing
+    the wizard doesn't burn numbers.
+    """
+    from app.models.inpatient import ConsentDocReservation
+    patient = None
+    if data.patient_id.isdigit():
+        patient = db.query(Patient).filter(Patient.id == int(data.patient_id)).first()
+    if not patient:
+        patient = db.query(Patient).filter(Patient.patient_id == data.patient_id).first()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    template = db.query(ConsentTemplate).filter(ConsentTemplate.id == data.template_id).first()
+    if not template:
+        raise HTTPException(status_code=404, detail="Consent template not found")
+
+    today_prefix = f"CS-{datetime.now().strftime('%Y%m%d')}-"
+    existing = db.query(ConsentDocReservation).filter(
+        ConsentDocReservation.patient_id == patient.id,
+        ConsentDocReservation.consent_type == data.consent_type,
+        ConsentDocReservation.consumed_at.is_(None),
+        ConsentDocReservation.doc_number.like(f"{today_prefix}%"),
+    ).order_by(ConsentDocReservation.id.desc()).first()
+    if existing:
+        return {"doc_number": existing.doc_number, "reservation_id": existing.id}
+
+    hospital = _get_hospital(db, current_user)
+    res = ConsentDocReservation(
+        doc_number=_generate_consent_doc_number(db),
+        patient_id=patient.id,
+        consent_type=data.consent_type,
+        template_id=template.id,
+        hospital_id=hospital.id,
+        reserved_by_id=current_user.id,
+    )
+    db.add(res)
+    db.commit()
+    db.refresh(res)
+    return {"doc_number": res.doc_number, "reservation_id": res.id}
+
+
+@router.get("/consents/preview-pdf")
+async def preview_consent_pdf(
+    patient_id: str,
+    template_id: int,
+    room_id: Optional[int] = None,
+    admitting_doctor_id: Optional[int] = None,
+    referring_doctor_id: Optional[int] = None,
+    admission_reason: Optional[str] = None,
+    doc_number: Optional[str] = None,
+    include_header: bool = True,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "record_consent")),
+    db: Session = Depends(get_db),
+):
+    """Generate a prefilled (unsigned) consent PDF for a patient before the
+    admission record is created. Used by the Admit-Patient wizard so staff
+    can print a face/case sheet with patient demographics already filled in
+    and hand it to the patient for physical signing. No DB writes.
+
+    Note: the doc number printed here is the *next* number that would be
+    allocated; the real allocation happens when the consent is actually
+    recorded after admission, so they may differ if another consent gets
+    recorded in between.
+    """
+    """Generate a prefilled (unsigned) consent PDF for a patient before the
+    admission record is created. Used by the Admit-Patient wizard so staff
+    can print a face/case sheet with patient demographics already filled in
+    and hand it to the patient for physical signing. No DB writes.
+    """
+    # patient_id may be either the integer Patient.id (what the admit wizard
+    # holds) or the UUID Patient.patient_id — accept both.
+    patient = None
+    if patient_id.isdigit():
+        patient = db.query(Patient).filter(Patient.id == int(patient_id)).first()
+    if not patient:
+        patient = db.query(Patient).filter(Patient.patient_id == patient_id).first()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    template = db.query(ConsentTemplate).filter(ConsentTemplate.id == template_id).first()
+    if not template:
+        raise HTTPException(status_code=404, detail="Consent template not found")
+    room = db.query(RoomManagement).filter(RoomManagement.id == room_id).first() if room_id else None
+    doctor = db.query(User).filter(User.id == admitting_doctor_id).first() if admitting_doctor_id else None
+    referring_doctor = db.query(User).filter(User.id == referring_doctor_id).first() if referring_doctor_id else None
+    hospital = _get_hospital(db, current_user)
+
+    def _age_str(p):
+        if p.age:
+            return str(p.age)
+        if p.date_of_birth:
+            from datetime import date
+            today = date.today()
+            dob = p.date_of_birth
+            return str(today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day)))
+        return ""
+
+    patient_name = f"{patient.first_name} {patient.last_name}".strip()
+    doctor_name = f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else ""
+    referring_name = (
+        f"Dr. {referring_doctor.first_name} {referring_doctor.last_name}"
+        if referring_doctor else ""
+    )
+    room_label = room.room_number if room else ""
+    token_ctx = {
+        "patient_name": patient_name,
+        "name": patient_name,
+        "age": _age_str(patient),
+        "gender": (patient.gender or "").title(),
+        "sex": (patient.gender or "").title(),
+        "mrn": getattr(patient, "mrn", None) or patient.patient_id,
+        "patient_id": patient.patient_id,
+        "primary_phone": getattr(patient, "primary_phone", None) or "",
+        "phone": getattr(patient, "primary_phone", None) or "",
+        "admission_number": "",
+        "admission_date": datetime.now().strftime("%d/%m/%Y"),
+        "ward": getattr(room, "ward", "") if room else "",
+        "room": room_label,
+        "room_name": room_label,
+        "room_number": room_label,
+        "bed": "",
+        "admitting_doctor": doctor_name,
+        "doctor": doctor_name,
+        "doctor_name": doctor_name,
+        "referring_doctor": referring_name,
+        "admission_reason": admission_reason or "",
+        "diagnosis": admission_reason or "",
+        "emergency_contact_name": getattr(patient, "emergency_contact_name", None) or "",
+        "emergency_contact_relation": getattr(patient, "emergency_contact_relation", None) or "",
+        "emergency_contact_phone": getattr(patient, "emergency_contact_phone", None) or "",
+    }
+    rendered_content = _substitute_template_tokens(template.content or "", token_ctx)
+
+    consent_data = {
+        "consent_type": template.consent_type,
+        "doc_number": doc_number or _generate_consent_doc_number(db),
+        "template_content": rendered_content,
+        "procedure_name": "",
+        "doctor_name": doctor_name,
+        "risks_explained": "",
+        "signed_by": "patient",
+        "guardian_name": "",
+        "guardian_relationship": "",
+        "patient_signature": "",
+        "patient_signature_type": None,
+        "witness_name": "",
+        "signed_at": "",
+        "withdrawn_at": "",
+        "withdrawal_reason": "",
+        "patient_name": patient_name,
+        "mrn": token_ctx["mrn"],
+        "patient_id": patient.patient_id,
+        "age": token_ctx["age"],
+        "gender": token_ctx["gender"],
+        "primary_phone": token_ctx["primary_phone"],
+        "emergency_contact_name": token_ctx["emergency_contact_name"],
+        "emergency_contact_relation": token_ctx["emergency_contact_relation"],
+        "emergency_contact_phone": token_ctx["emergency_contact_phone"],
+        "admission_number": "",
+        "admission_date": "",
+        "room_name": room_label,
+        "room_type": room.room_type if room else "",
+    }
+    hospital_info = {
+        "name": hospital.name,
+        "address": hospital.address or "",
+        "phone": hospital.phone or "",
+        "email": hospital.email or "",
+        "logo_url": getattr(hospital, "logo_url", "") or "",
+        "hospital_subname": getattr(hospital, "hospital_subname", "") or "",
+    }
+    pdf_buffer = pdf_service.generate_consent_pdf(consent_data, hospital_info, include_header=include_header)
+    return StreamingResponse(
+        pdf_buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="consent-{template.consent_type}-preview.pdf"'},
+    )
+
+
 @router.get("/consents/{consent_id}/pdf")
 async def get_consent_pdf(
     consent_id: int,
@@ -8240,10 +9642,49 @@ async def get_consent_pdf(
             return str(today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day)))
         return ""
 
+    patient_name_full = f"{patient.first_name} {patient.last_name}".strip() if patient else ""
+    doctor_name_full = f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else ""
+    referring_doctor = (
+        db.query(User).filter(User.id == admission.referring_doctor_id).first()
+        if admission and admission.referring_doctor_id else None
+    )
+    referring_name_full = (
+        f"Dr. {referring_doctor.first_name} {referring_doctor.last_name}"
+        if referring_doctor
+        else (admission.referring_external_name if admission and admission.referring_external_name else "")
+    )
+    token_ctx = {
+        "patient_name": patient_name_full,
+        "name": patient_name_full,
+        "age": _age_str(patient) if patient else "",
+        "gender": (patient.gender or "").title() if patient else "",
+        "sex": (patient.gender or "").title() if patient else "",
+        "mrn": (getattr(patient, "mrn", None) or (patient.patient_id if patient else "")),
+        "patient_id": patient.patient_id if patient else "",
+        "primary_phone": (getattr(patient, "primary_phone", None) or "") if patient else "",
+        "phone": (getattr(patient, "primary_phone", None) or "") if patient else "",
+        "admission_number": admission.admission_number if admission else "",
+        "admission_date": admission.admission_date.strftime("%d/%m/%Y") if admission and admission.admission_date else "",
+        "ward": getattr(room, "ward", "") if room else "",
+        "room": room.room_number if room else "",
+        "room_name": room.room_number if room else "",
+        "room_number": room.room_number if room else "",
+        "bed": "",
+        "admitting_doctor": doctor_name_full,
+        "doctor": doctor_name_full,
+        "doctor_name": doctor_name_full,
+        "referring_doctor": referring_name_full,
+        "admission_reason": (admission.admission_reason or "") if admission else "",
+        "diagnosis": (admission.admission_reason or "") if admission else "",
+        "emergency_contact_name": (getattr(patient, "emergency_contact_name", None) or "") if patient else "",
+        "emergency_contact_relation": (getattr(patient, "emergency_contact_relation", None) or "") if patient else "",
+        "emergency_contact_phone": (getattr(patient, "emergency_contact_phone", None) or "") if patient else "",
+    }
+    rendered_content = _substitute_template_tokens(template.content if template else "", token_ctx)
     consent_data = {
         "consent_type": c.consent_type,
         "doc_number": c.doc_number or "",
-        "template_content": template.content if template else "",
+        "template_content": rendered_content,
         "procedure_name": c.procedure_name,
         "doctor_name": f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else "",
         "risks_explained": c.risks_explained or "",
@@ -8267,7 +9708,7 @@ async def get_consent_pdf(
         "emergency_contact_phone": getattr(patient, "emergency_contact_phone", None) or "",
         "admission_number": admission.admission_number if admission else "",
         "admission_date": admission.admission_date.strftime("%d/%m/%Y") if admission and admission.admission_date else "",
-        "room_name": room.room_name if room else "",
+        "room_name": room.room_number if room else "",
         "room_type": room.room_type if room else "",
     }
     hospital_info = {
@@ -10350,3 +11791,352 @@ async def get_body_release_pdf(
         media_type="application/pdf",
         headers={"Content-Disposition": f"inline; filename=BodyRelease_{admission.admission_number}.pdf"},
     )
+
+
+# ============================================================
+# FOOD ORDERING — meal plans + per-admission food orders
+# ============================================================
+
+MEAL_TYPES = ("breakfast", "lunch", "dinner", "snacks")
+DIET_OPTIONS = ("veg", "non-veg", "diabetic", "soft", "liquid", "custom")
+
+
+class MealPlanItem(BaseModel):
+    room_type: str = Field(..., min_length=1, max_length=30)
+    meal_type: str = Field(..., pattern=r"^(breakfast|lunch|dinner|snacks)$")
+    price: float = Field(..., ge=0)
+    description: Optional[str] = Field(default=None, max_length=200)
+    is_active: bool = True
+
+
+class MealPlanBulkUpdate(BaseModel):
+    plans: List[MealPlanItem]
+
+
+@router.get("/meal-plans")
+async def list_meal_plans(
+    room_type: Optional[str] = None,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_food_orders")),
+    db: Session = Depends(get_db),
+):
+    """List meal plans, optionally filtered by room_type. Returns rows for
+    every (room_type, meal_type) combination — missing ones come back with
+    price=0 and is_active=False so the UI can render the full grid."""
+    hospital = _get_hospital(db, current_user)
+    q = db.query(MealPlan).filter(MealPlan.hospital_id == hospital.id)
+    if room_type:
+        q = q.filter(MealPlan.room_type == room_type)
+    existing = {(p.room_type, p.meal_type): p for p in q.all()}
+
+    # Determine the set of room_types to render. Prefer the RoomType catalog;
+    # fall back to room types currently in use by rooms or existing plans;
+    # finally to the built-in default list so the grid is never empty.
+    rt_rows = db.query(RoomType).filter(RoomType.hospital_id == hospital.id).all()
+    room_types = [r.type_key for r in rt_rows] if rt_rows else []
+    if not room_types:
+        room_types = list({r[0] for r in db.query(RoomManagement.room_type).filter(
+            RoomManagement.hospital_id == hospital.id
+        ).distinct().all() if r[0]})
+    if not room_types:
+        room_types = list({k for k in existing.keys()} and {p.room_type for p in existing.values()})
+    if not room_types:
+        room_types = [
+            "general", "semi_private", "private", "suite", "icu", "hdu",
+            "nicu", "picu", "isolation", "labour", "recovery", "daycare",
+            "emergency", "operation",
+        ]
+    if room_type and room_type not in room_types:
+        room_types = [room_type]
+
+    out = []
+    for rt in room_types:
+        for mt in MEAL_TYPES:
+            p = existing.get((rt, mt))
+            out.append({
+                "id": p.id if p else None,
+                "room_type": rt,
+                "meal_type": mt,
+                "price": float(p.price) if p else 0.0,
+                "description": (p.description if p else "") or "",
+                "is_active": bool(p.is_active) if p else False,
+            })
+    return out
+
+
+@router.put("/meal-plans")
+async def upsert_meal_plans(
+    data: MealPlanBulkUpdate,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_meal_plans")),
+    db: Session = Depends(get_db),
+):
+    """Bulk upsert. Each (room_type, meal_type) row is created or updated."""
+    hospital = _get_hospital(db, current_user)
+    upserted = 0
+    for item in data.plans:
+        row = db.query(MealPlan).filter(
+            MealPlan.hospital_id == hospital.id,
+            MealPlan.room_type == item.room_type,
+            MealPlan.meal_type == item.meal_type,
+        ).first()
+        if row:
+            row.price = item.price
+            row.description = item.description
+            row.is_active = item.is_active
+        else:
+            row = MealPlan(
+                hospital_id=hospital.id,
+                room_type=item.room_type,
+                meal_type=item.meal_type,
+                price=item.price,
+                description=item.description,
+                is_active=item.is_active,
+            )
+            db.add(row)
+        upserted += 1
+    db.commit()
+    log_action(db, current_user, "upsert_meal_plans", "inpatient", "MealPlan", None,
+               f"Updated {upserted} meal plan row(s)")
+    return {"upserted": upserted}
+
+
+@router.delete("/meal-plans/{plan_id}")
+async def delete_meal_plan(
+    plan_id: int,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_meal_plans")),
+    db: Session = Depends(get_db),
+):
+    hospital = _get_hospital(db, current_user)
+    row = db.query(MealPlan).filter(
+        MealPlan.id == plan_id, MealPlan.hospital_id == hospital.id
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Meal plan not found")
+    db.delete(row)
+    db.commit()
+    return {"deleted": True}
+
+
+class FoodOrderItem(BaseModel):
+    meal_date: date
+    meal_type: str = Field(..., pattern=r"^(breakfast|lunch|dinner|snacks)$")
+    diet_preference: Optional[str] = Field(default=None, max_length=50)
+    notes: Optional[str] = Field(default=None, max_length=500)
+
+
+class FoodOrderBulkCreate(BaseModel):
+    items: List[FoodOrderItem] = Field(..., min_length=1)
+
+
+class FoodOrderUpdate(BaseModel):
+    status: Optional[str] = Field(default=None, pattern=r"^(ordered|delivered)$")
+    diet_preference: Optional[str] = Field(default=None, max_length=50)
+    notes: Optional[str] = Field(default=None, max_length=500)
+
+
+class FoodOrderCancel(BaseModel):
+    reason: str = Field(..., min_length=1, max_length=200)
+
+
+def _food_order_to_response(o: FoodOrder) -> dict:
+    return {
+        "id": o.id,
+        "admission_id": o.admission_id,
+        "meal_date": o.meal_date.isoformat() if o.meal_date else None,
+        "meal_type": o.meal_type,
+        "status": o.status,
+        "price": float(o.price or 0),
+        "diet_preference": o.diet_preference or "",
+        "notes": o.notes or "",
+        "ordered_at": o.ordered_at.isoformat() if o.ordered_at else None,
+        "delivered_at": o.delivered_at.isoformat() if o.delivered_at else None,
+        "cancelled_at": o.cancelled_at.isoformat() if o.cancelled_at else None,
+        "cancelled_reason": o.cancelled_reason or "",
+        "billed": bool(o.billed),
+    }
+
+
+@router.get("/admissions/{admission_id}/food-orders")
+async def list_food_orders(
+    admission_id: int,
+    from_date: Optional[date] = None,
+    to_date: Optional[date] = None,
+    include_cancelled: bool = True,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_food_orders")),
+    db: Session = Depends(get_db),
+):
+    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    if not admission:
+        raise HTTPException(status_code=404, detail="Admission not found")
+    q = db.query(FoodOrder).filter(FoodOrder.admission_id == admission_id)
+    if from_date:
+        q = q.filter(FoodOrder.meal_date >= from_date)
+    if to_date:
+        q = q.filter(FoodOrder.meal_date <= to_date)
+    if not include_cancelled:
+        q = q.filter(FoodOrder.status != "cancelled")
+    orders = q.order_by(FoodOrder.meal_date.asc(), FoodOrder.meal_type.asc()).all()
+    return [_food_order_to_response(o) for o in orders]
+
+
+@router.post("/admissions/{admission_id}/food-orders", status_code=201)
+async def create_food_orders(
+    admission_id: int,
+    data: FoodOrderBulkCreate,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "order_food")),
+    db: Session = Depends(get_db),
+):
+    """Create one or more food orders. Each line is priced from the active
+    MealPlan row for the admission's current room_type + meal_type. Duplicate
+    (admission, date, meal_type) rows are silently skipped — already-ordered
+    cells are a UX no-op."""
+    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    if not admission:
+        raise HTTPException(status_code=404, detail="Admission not found")
+    if admission.status not in ("admitted", "active"):
+        raise HTTPException(status_code=400, detail="Cannot order food for a non-active admission")
+    hospital = _get_hospital(db, current_user)
+    room = db.query(RoomManagement).filter(RoomManagement.id == admission.room_id).first()
+    if not room:
+        raise HTTPException(status_code=400, detail="Admission has no room assigned")
+
+    # Cache meal-plan lookups for this room_type
+    plan_rows = db.query(MealPlan).filter(
+        MealPlan.hospital_id == hospital.id,
+        MealPlan.room_type == room.room_type,
+        MealPlan.is_active == True,
+    ).all()
+    plan_by_type = {p.meal_type: p for p in plan_rows}
+
+    created = []
+    skipped = []
+    for it in data.items:
+        plan = plan_by_type.get(it.meal_type)
+        if not plan:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No active meal plan for room type '{room.room_type}' / {it.meal_type}. Set price in Hospital Admin → Meal Plans.",
+            )
+        existing = db.query(FoodOrder).filter(
+            FoodOrder.admission_id == admission_id,
+            FoodOrder.meal_date == it.meal_date,
+            FoodOrder.meal_type == it.meal_type,
+        ).first()
+        if existing:
+            # If it was cancelled, re-activate at current price; otherwise skip.
+            if existing.status == "cancelled":
+                existing.status = "ordered"
+                existing.price = plan.price
+                existing.diet_preference = it.diet_preference
+                existing.notes = it.notes
+                existing.cancelled_at = None
+                existing.cancelled_by_id = None
+                existing.cancelled_reason = None
+                existing.ordered_at = datetime.now(timezone.utc)
+                existing.ordered_by_id = current_user.id
+                created.append(existing)
+            else:
+                skipped.append({"meal_date": it.meal_date.isoformat(), "meal_type": it.meal_type})
+            continue
+        order = FoodOrder(
+            admission_id=admission_id,
+            hospital_id=hospital.id,
+            meal_date=it.meal_date,
+            meal_type=it.meal_type,
+            status="ordered",
+            price=plan.price,
+            diet_preference=it.diet_preference,
+            notes=it.notes,
+            ordered_by_id=current_user.id,
+        )
+        db.add(order)
+        created.append(order)
+    db.commit()
+    for o in created:
+        db.refresh(o)
+    log_action(db, current_user, "create_food_orders", "inpatient", "FoodOrder", None,
+               f"Created {len(created)} food order(s) for admission {admission_id}",
+               details={"created": len(created), "skipped": len(skipped)})
+    return {
+        "created": [_food_order_to_response(o) for o in created],
+        "skipped": skipped,
+    }
+
+
+@router.patch("/food-orders/{order_id}")
+async def update_food_order(
+    order_id: int,
+    data: FoodOrderUpdate,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "order_food")),
+    db: Session = Depends(get_db),
+):
+    """Update diet/notes or mark delivered. Marking delivered requires the
+    mark_food_delivered permission — checked inline since this endpoint
+    accepts both status transitions and diet edits under one permission."""
+    order = db.query(FoodOrder).filter(FoodOrder.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Food order not found")
+    if order.status == "cancelled":
+        raise HTTPException(status_code=400, detail="Cannot edit a cancelled order")
+    if data.status == "delivered":
+        # Enforce delivery-specific permission inline. super_admin/hospital_admin bypass.
+        allowed = any(r in current_user.role_names for r in ("super_admin", "hospital_admin"))
+        if not allowed:
+            from app.models.permissions import RoleModulePermission
+            role_ids = [r.id for r in (current_user.roles or [])]
+            if current_user.role_id and current_user.role_id not in role_ids:
+                role_ids.append(current_user.role_id)
+            for rid in role_ids:
+                rp = db.query(RoleModulePermission).filter(
+                    RoleModulePermission.role_id == rid,
+                    RoleModulePermission.module_name == Modules.INPATIENT,
+                ).first()
+                if rp and rp.permissions and "mark_food_delivered" in rp.permissions:
+                    allowed = True
+                    break
+        if not allowed:
+            raise HTTPException(status_code=403, detail="Missing mark_food_delivered permission")
+        if order.status == "delivered":
+            raise HTTPException(status_code=400, detail="Already marked delivered")
+        order.status = "delivered"
+        order.delivered_at = datetime.now(timezone.utc)
+        order.delivered_by_id = current_user.id
+    if data.diet_preference is not None:
+        order.diet_preference = data.diet_preference
+    if data.notes is not None:
+        order.notes = data.notes
+    db.commit()
+    db.refresh(order)
+    return _food_order_to_response(order)
+
+
+@router.post("/food-orders/{order_id}/cancel")
+async def cancel_food_order(
+    order_id: int,
+    data: FoodOrderCancel,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "order_food")),
+    db: Session = Depends(get_db),
+):
+    """Cancel a food order. Blocked if already billed — operator must refund
+    through the deposit flow instead."""
+    order = db.query(FoodOrder).filter(FoodOrder.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Food order not found")
+    if order.status == "cancelled":
+        raise HTTPException(status_code=400, detail="Already cancelled")
+    if order.billed or order.bill_id:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "food_order_billed",
+                "message": "This meal is already on a finalized bill. Cancel the bill or issue a refund.",
+                "bill_id": order.bill_id,
+            },
+        )
+    order.status = "cancelled"
+    order.cancelled_at = datetime.now(timezone.utc)
+    order.cancelled_by_id = current_user.id
+    order.cancelled_reason = data.reason
+    db.commit()
+    log_action(db, current_user, "cancel_food_order", "inpatient", "FoodOrder", order.id,
+               f"Cancelled meal {order.meal_type} on {order.meal_date}: {data.reason}")
+    return {"cancelled": True}

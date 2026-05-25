@@ -247,8 +247,6 @@ def _ensure_payer_schemes():
 _FACE_SHEET_PLACEHOLDER = """\
 FACE SHEET — ADMISSION IDENTIFICATION
 
-[PLACEHOLDER CONTENT — replace via Consent Templates admin once final wording is approved.]
-
 Patient: {{patient_name}}              Age / Sex: {{age}} / {{gender}}
 Admission No: {{admission_number}}     Admission Date: {{admission_date}}
 Ward / Room / Bed: {{ward}} / {{room}} / {{bed}}
@@ -274,8 +272,6 @@ Signature of admitting officer:   __________________   Date: __________
 
 _CASE_SHEET_PLACEHOLDER = """\
 CASE SHEET — DECLARATION & GENERAL CONSENT FOR TREATMENT
-
-[PLACEHOLDER CONTENT — replace via Consent Templates admin once final wording is approved.]
 
 I, ______________________________________________ (patient / guardian),
 admitted under Dr. ______________________________________ on
@@ -342,6 +338,16 @@ def _ensure_admission_consent_templates():
                         language="english",
                         is_active=True,
                     ))
+                elif existing.content and "[PLACEHOLDER CONTENT" in existing.content:
+                    # One-shot cleanup of the bracketed placeholder banner
+                    # left over from previous seeds. Preserves any edits the
+                    # admin made to the rest of the template.
+                    import re as _re
+                    existing.content = _re.sub(
+                        r"\[PLACEHOLDER CONTENT[^\]]*\]\s*\n?",
+                        "",
+                        existing.content,
+                    )
         db.commit()
     except Exception as e:
         print(f"Warning: Could not seed admission consent templates: {e}")

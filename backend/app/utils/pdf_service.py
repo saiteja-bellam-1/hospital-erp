@@ -18,6 +18,106 @@ def _get_uploads_base():
         return os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
 
 
+def _load_seller_info_safe():
+    """Best-effort fetch of seller_info from the License table.
+
+    Used as a fallback when callers don't pass seller_info via hospital_info.
+    Failures are swallowed — the footer simply falls back to the generic line.
+    """
+    try:
+        from app.config.database import SessionLocal
+        from app.models.license import License
+        db = SessionLocal()
+        try:
+            lic = db.query(License).order_by(License.id.desc()).first()
+            return lic.seller_info if (lic and lic.seller_info) else None
+        finally:
+            db.close()
+    except Exception:
+        return None
+
+
+def _draw_footer(canvas_obj, doc, seller_info=None):
+    """Draws the standard footer line on every page.
+
+    "Powered by KT HEALTH ERP — Sold by {vendor}" when a seller_info dict
+    with a non-empty name is supplied; otherwise the generic
+    "Developed by KT Health Soft" line.
+    """
+    try:
+        if seller_info and seller_info.get('name'):
+            text = f"Powered by KT HEALTH ERP — Sold by {seller_info['name']}"
+        else:
+            text = "Developed by KT Health Soft"
+        canvas_obj.saveState()
+        canvas_obj.setFont('Helvetica', 7)
+        canvas_obj.setFillGray(0.4)
+        page_width = doc.pagesize[0] if hasattr(doc, 'pagesize') else A4[0]
+        canvas_obj.drawCentredString(page_width / 2, 12, text)
+        canvas_obj.restoreState()
+    except Exception:
+        pass
+
+
+def _draw_watermark(canvas_obj, doc, text):
+    """Draws a large semi-transparent diagonal watermark across the page."""
+    if not text:
+        return
+    try:
+        canvas_obj.saveState()
+        page_w = doc.pagesize[0] if hasattr(doc, 'pagesize') else A4[0]
+        page_h = doc.pagesize[1] if hasattr(doc, 'pagesize') else A4[1]
+        canvas_obj.translate(page_w / 2, page_h / 2)
+        canvas_obj.rotate(35)
+        canvas_obj.setFont('Helvetica-Bold', 90)
+        try:
+            canvas_obj.setFillAlpha(0.18)
+        except Exception:
+            canvas_obj.setFillGray(0.85)
+        canvas_obj.setFillColorRGB(0.85, 0.15, 0.15)
+        canvas_obj.drawCentredString(0, 0, text.upper())
+        canvas_obj.restoreState()
+    except Exception:
+        pass
+
+
+def _make_page_callback(seller_info, header_cb=None, watermark=None):
+    """Returns a SimpleDocTemplate onPage callback chaining the optional
+    header callback, watermark, then the footer."""
+    def _cb(canvas_obj, doc):
+        if watermark:
+            _draw_watermark(canvas_obj, doc, watermark)
+        if header_cb is not None:
+            try:
+                header_cb(canvas_obj, doc)
+            except Exception:
+                pass
+        _draw_footer(canvas_obj, doc, seller_info)
+    return _cb
+
+
+def _resolve_seller(hospital_info):
+    """Extract seller_info from hospital_info dict (preferred) or fall back
+    to a one-shot DB lookup."""
+    if isinstance(hospital_info, dict):
+        si = hospital_info.get('seller_info')
+        if si:
+            return si
+    return _load_seller_info_safe()
+
+
+def _finalize(doc, elements, hospital_info, header_cb=None, watermark=None):
+    """Build the PDF with the footer (and optional header) wired in.
+
+    Use this in place of `doc.build(elements)` so every generated PDF
+    carries the consistent vendor footer. ``watermark`` (e.g. ``"CANCELLED"``,
+    ``"INTERIM"``) renders a diagonal stamp behind the content.
+    """
+    seller_info = _resolve_seller(hospital_info)
+    cb = _make_page_callback(seller_info, header_cb, watermark)
+    doc.build(elements, onFirstPage=cb, onLaterPages=cb)
+
+
 class PDFService:
     def __init__(self):
         self.styles = getSampleStyleSheet()
@@ -369,27 +469,40 @@ class PDFService:
                         else (total - deposits_total))
 
         summary_label_w = page_width - code_w - rate_w
-        payment_data = [
-            [lv_sm('Paymode', payer_str),
-             Paragraph('<b>Sub Total</b>', cell_value_sm),
-             Paragraph(f"{subtotal:,.2f}", cell_value_right)],
-        ]
-        if discount > 0:
+        # When neither a discount nor a tax row is shown, the Sub Total + Total
+        # rows are redundant — collapse them into a single "Bill Total" line.
+        has_adjustments = discount > 0 or tax > 0
+        payment_data = []
+        if has_adjustments:
             payment_data.append([
-                Paragraph('', cell_value_sm),
-                Paragraph('<b>Discount</b>', cell_value_sm),
-                Paragraph(f"- {discount:,.2f}", cell_value_right),
+                lv_sm('Paymode', payer_str),
+                Paragraph('<b>Sub Total</b>', cell_value_sm),
+                Paragraph(f"{subtotal:,.2f}", cell_value_right),
             ])
-        if tax > 0:
+            if discount > 0:
+                payment_data.append([
+                    Paragraph('', cell_value_sm),
+                    Paragraph('<b>Discount</b>', cell_value_sm),
+                    Paragraph(f"- {discount:,.2f}", cell_value_right),
+                ])
+            if tax > 0:
+                payment_data.append([
+                    Paragraph('', cell_value_sm),
+                    Paragraph('<b>Tax</b>', cell_value_sm),
+                    Paragraph(f"+ {tax:,.2f}", cell_value_right),
+                ])
             payment_data.append([
                 Paragraph('', cell_value_sm),
-                Paragraph('<b>Tax</b>', cell_value_sm),
-                Paragraph(f"+ {tax:,.2f}", cell_value_right),
+                Paragraph('<b>Total Amt</b>', cell_value_sm),
+                Paragraph(f"{total:,.2f}", cell_value_right),
+            ])
+        else:
+            payment_data.append([
+                lv_sm('Paymode', payer_str),
+                Paragraph('<b>Bill Total</b>', cell_value_sm),
+                Paragraph(f"{total:,.2f}", cell_value_right),
             ])
         payment_data.extend([
-            [Paragraph('', cell_value_sm),
-             Paragraph('<b>Total Amt</b>', cell_value_sm),
-             Paragraph(f"{total:,.2f}", cell_value_right)],
             [Paragraph('', cell_value_sm),
              Paragraph('<b>Deposits</b>', cell_value_sm),
              Paragraph(f"{deposits_total:,.2f}", cell_value_right)],
@@ -481,7 +594,14 @@ class PDFService:
         ]))
         elements.append(footer_table)
 
-        doc.build(elements)
+        # Watermark: CANCELLED bills always; INTERIM bills surface that they
+        # are not the final settlement.
+        wm = None
+        if (bill_data.get('status') or '').lower() == 'cancelled':
+            wm = 'CANCELLED'
+        elif (bill_data.get('bill_subtype') or '').lower() == 'interim':
+            wm = 'INTERIM'
+        _finalize(doc, elements, hospital_info, watermark=wm)
         buffer.seek(0)
         return buffer
 
@@ -834,7 +954,7 @@ class PDFService:
         elements.append(footer_table)
 
         # Build PDF
-        doc.build(elements)
+        _finalize(doc, elements, hospital_info)
         buffer.seek(0)
         return buffer
 
@@ -1246,7 +1366,7 @@ class PDFService:
         elements.append(Spacer(1, 15))
         elements.append(Paragraph(f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M:%S')}", footer_style))
 
-        doc.build(elements)
+        _finalize(doc, elements, hospital_info)
         buffer.seek(0)
         return buffer
 
@@ -1666,7 +1786,7 @@ class PDFService:
         elements.append(Spacer(1, 20))
         elements.append(Paragraph(f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M:%S')}", footer_style))
 
-        doc.build(elements)
+        _finalize(doc, elements, hospital_info)
         buffer.seek(0)
         return buffer
 
@@ -2043,7 +2163,7 @@ class PDFService:
         elements.append(Spacer(1, 20))
         elements.append(Paragraph(f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M:%S')}", footer_style))
 
-        doc.build(elements, onFirstPage=_draw_header, onLaterPages=_draw_header)
+        _finalize(doc, elements, hospital_info, header_cb=_draw_header)
         buffer.seek(0)
         return buffer
 
@@ -2315,7 +2435,7 @@ class PDFService:
             footer_style
         ))
 
-        doc.build(elements)
+        _finalize(doc, elements, hospital_info)
         buffer.seek(0)
         return buffer
 
@@ -2587,7 +2707,7 @@ class PDFService:
                 fontSize=7, fontName='Helvetica-Oblique', alignment=1, textColor=colors.grey),
         ))
 
-        doc.build(elements)
+        _finalize(doc, elements, hospital_info)
         buffer.seek(0)
         return buffer
 
@@ -2678,7 +2798,7 @@ class PDFService:
             footer_style,
         ))
 
-        doc.build(elements)
+        _finalize(doc, elements, hospital_info)
         buffer.seek(0)
         return buffer
 
@@ -2790,7 +2910,7 @@ class PDFService:
             footer_style,
         ))
 
-        doc.build(elements)
+        _finalize(doc, elements, hospital_info)
         buffer.seek(0)
         return buffer
 
@@ -2817,22 +2937,64 @@ class PDFService:
         doc_number = consent_data.get('doc_number') or ''
 
         if include_header:
-            # Header row: hospital name left, doc number right
-            header_rows = [[
-                Paragraph(hospital_info.get('name', 'HOSPITAL').upper(), title_style),
-                Paragraph(
-                    f'<b>Doc No:</b> {doc_number}' if doc_number else '',
-                    ParagraphStyle('DocNum', parent=self.styles['Normal'],
-                        fontSize=9, fontName='Helvetica-Bold', alignment=2, textColor=colors.black)
-                ),
-            ]]
-            header_table = Table(header_rows, colWidths=[page_width * 0.7, page_width * 0.3])
-            header_table.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'TOP')]))
-            elements.append(header_table)
+            # Header: hospital logo (left) + name/subname/address/contact (centre)
+            # + doc number (right) — mirrors the OPD/bill header layout.
+            logo_path = hospital_info.get('logo_url', '')
+            uploads_base = _get_uploads_base()
+            has_logo = False
+            full_logo_path = ''
+            if logo_path:
+                relative = logo_path.lstrip('/')
+                if relative.startswith('uploads/'):
+                    relative = relative[len('uploads/'):]
+                full_logo_path = os.path.join(uploads_base, relative)
+                has_logo = os.path.exists(full_logo_path)
+
+            centre_elems = [Paragraph(hospital_info.get('name', 'HOSPITAL').upper(), title_style)]
             if hospital_info.get('hospital_subname'):
-                elements.append(Paragraph(hospital_info['hospital_subname'], sub_style))
+                centre_elems.append(Paragraph(hospital_info['hospital_subname'], sub_style))
             if hospital_info.get('address'):
-                elements.append(Paragraph(hospital_info['address'], sub_style))
+                centre_elems.append(Paragraph(hospital_info['address'], sub_style))
+            contact_parts = []
+            if hospital_info.get('email'):
+                contact_parts.append(f"Email: {hospital_info['email']}")
+            if hospital_info.get('phone'):
+                contact_parts.append(f"Phone: {hospital_info['phone']}")
+            if contact_parts:
+                centre_elems.append(Paragraph("  |  ".join(contact_parts), sub_style))
+
+            doc_num_para = Paragraph(
+                f'<b>Doc No:</b><br/>{doc_number}' if doc_number else '',
+                ParagraphStyle('DocNum', parent=self.styles['Normal'],
+                    fontSize=9, fontName='Helvetica-Bold', alignment=2, textColor=colors.black)
+            )
+
+            if has_logo:
+                try:
+                    logo_img = Image(full_logo_path, width=60, height=60)
+                    logo_img.hAlign = 'CENTER'
+                    header_table = Table(
+                        [[logo_img, centre_elems, doc_num_para]],
+                        colWidths=[70, page_width - 70 - 90, 90],
+                    )
+                except Exception:
+                    header_table = Table(
+                        [[centre_elems, doc_num_para]],
+                        colWidths=[page_width - 90, 90],
+                    )
+            else:
+                header_table = Table(
+                    [[centre_elems, doc_num_para]],
+                    colWidths=[page_width - 90, 90],
+                )
+            header_table.setStyle(TableStyle([
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+                ('TOPPADDING', (0, 0), (-1, -1), 0),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+            ]))
+            elements.append(header_table)
             elements.append(Spacer(1, 6))
             elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
         else:
@@ -2853,12 +3015,18 @@ class PDFService:
 
         # Patient/admission meta — always shown for all consent types
         mrn = consent_data.get('mrn') or consent_data.get('patient_id', '')
+        admission_number = consent_data.get('admission_number') or ''
+        # In wizard preview mode the admission row doesn't exist yet, but the
+        # form is being filled today — fall back to today's date so the
+        # printed form has a meaningful "Date" on it.
+        admission_date = consent_data.get('admission_date') or datetime.now().strftime("%d/%m/%Y")
+        date_label = "Admitted on:" if admission_number else "Date:"
         meta_rows = [
             [Paragraph("Patient:", label_small), Paragraph(str(consent_data.get('patient_name', '')), body),
              Paragraph("MRN:", label_small), Paragraph(str(mrn), body)],
-            [Paragraph("Admission #:", label_small), Paragraph(str(consent_data.get('admission_number', '')), body),
+            [Paragraph("Admission #:", label_small), Paragraph(admission_number or '—', body),
              Paragraph("Doctor:", label_small), Paragraph(str(consent_data.get('doctor_name', '')), body)],
-            [Paragraph("Admitted on:", label_small), Paragraph(str(consent_data.get('admission_date', '')), body),
+            [Paragraph(date_label, label_small), Paragraph(admission_date, body),
              Paragraph("Room:", label_small), Paragraph(str(consent_data.get('room_name', '')), body)],
             [Paragraph("Age / Gender:", label_small),
              Paragraph(f"{consent_data.get('age', '')} / {consent_data.get('gender', '')}", body),
@@ -2927,7 +3095,7 @@ class PDFService:
 
         elements.append(Spacer(1, 18))
         elements.append(Paragraph(f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M:%S')}", footer_style))
-        doc.build(elements)
+        _finalize(doc, elements, hospital_info)
         buffer.seek(0)
         return buffer
 
@@ -3021,7 +3189,7 @@ class PDFService:
         elements.append(sig_table)
         elements.append(Spacer(1, 14))
         elements.append(Paragraph(f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M:%S')}", footer_style))
-        doc.build(elements)
+        _finalize(doc, elements, hospital_info)
         buffer.seek(0)
         return buffer
 
@@ -3141,7 +3309,7 @@ class PDFService:
         elements.append(Paragraph(
             f"Form signed on {dama_data.get('signed_at', '')} | Generated {datetime.now().strftime('%d/%m/%Y at %H:%M')}",
             footer_style))
-        doc.build(elements)
+        _finalize(doc, elements, hospital_info)
         buffer.seek(0)
         return buffer
 
@@ -3329,7 +3497,7 @@ class PDFService:
             footer_meta,
         ))
 
-        doc.build(elements)
+        _finalize(doc, elements, hospital_info)
         buffer.seek(0)
         return buffer
 
@@ -3422,7 +3590,7 @@ class PDFService:
         elements.append(Paragraph(
             f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M')}",
             ParagraphStyle('F', parent=self.styles['Normal'], fontSize=8, alignment=1)))
-        doc.build(elements)
+        _finalize(doc, elements, hospital_info)
         buffer.seek(0)
         return buffer
 
@@ -3554,7 +3722,7 @@ class PDFService:
         elements.append(Paragraph(
             f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M')}",
             ParagraphStyle('F', parent=self.styles['Normal'], fontSize=8, alignment=1)))
-        doc.build(elements)
+        _finalize(doc, elements, hospital_info)
         buffer.seek(0)
         return buffer
 
@@ -3640,7 +3808,7 @@ class PDFService:
         elements.append(Paragraph(
             f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M')}",
             ParagraphStyle('F', parent=self.styles['Normal'], fontSize=8, alignment=1)))
-        doc.build(elements)
+        _finalize(doc, elements, hospital_info)
         buffer.seek(0)
         return buffer
 
@@ -3770,7 +3938,7 @@ class PDFService:
         elements.append(Paragraph(
             f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M')}",
             ParagraphStyle('F', parent=self.styles['Normal'], fontSize=8, alignment=1)))
-        doc.build(elements)
+        _finalize(doc, elements, hospital_info)
         buffer.seek(0)
         return buffer
 
@@ -3864,7 +4032,7 @@ class PDFService:
         elements.append(Paragraph(
             f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M')}",
             ParagraphStyle('F', parent=self.styles['Normal'], fontSize=8, alignment=1)))
-        doc.build(elements)
+        _finalize(doc, elements, hospital_info)
         buffer.seek(0)
         return buffer
 
@@ -3975,7 +4143,7 @@ class PDFService:
         elements.append(Paragraph(
             f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M')}",
             ParagraphStyle('F', parent=self.styles['Normal'], fontSize=8, alignment=1)))
-        doc.build(elements)
+        _finalize(doc, elements, hospital_info)
         buffer.seek(0)
         return buffer
 

@@ -16,7 +16,7 @@ import { printPdfFromUrl } from '../../../utils/printPdf';
 import {
   Search, ChevronLeft, ChevronRight, Loader2,
   Banknote, Shield, FileCheck2, Landmark,
-  CheckCircle2, AlertTriangle, FileText, X
+  CheckCircle2, AlertTriangle, FileText, X, Printer
 } from 'lucide-react';
 
 const DRAFT_KEY = 'kt_admit_wizard_draft_v1';
@@ -207,6 +207,28 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
   const faceTpl = useMemo(() => templates.find(t => t.consent_type === 'face_sheet'), [templates]);
   const caseTpl = useMemo(() => templates.find(t => t.consent_type === 'case_sheet_declaration'), [templates]);
 
+  // Pre-reserve doc numbers as soon as the user reaches Step 3 with a
+  // patient selected, so the wizard can print/show them. Idempotent on
+  // the backend — repeated calls return the same unconsumed reservation.
+  useEffect(() => {
+    if (step !== 3 || !draft.patient_id) return;
+    const reserve = async (tpl, draftKey) => {
+      if (!tpl || draft[draftKey]) return;
+      try {
+        const res = await axios.post('/api/inpatient/consents/reserve-doc-number', {
+          patient_id: String(draft.patient_id),
+          template_id: tpl.id,
+          consent_type: tpl.consent_type,
+        });
+        const num = res.data?.doc_number;
+        if (num) update({ [draftKey]: num });
+      } catch (_) { /* non-fatal — staff can still admit; number assigned at sign-time */ }
+    };
+    reserve(faceTpl, 'face_sheet_doc_number');
+    reserve(caseTpl, 'case_sheet_doc_number');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, draft.patient_id, faceTpl, caseTpl]);
+
   const update = (patch) => setDraft(p => ({ ...p, ...patch }));
 
   const validateStep1 = () => {
@@ -328,7 +350,7 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
       }
 
       // Record the two consent acknowledgements (face + case sheet)
-      const recordConsent = async (template) => {
+      const recordConsent = async (template, reservedDocNumber) => {
         if (!template) return null;
         try {
           const res = await axios.post(`/api/inpatient/admissions/${newAdm.id}/consents`, {
@@ -338,12 +360,13 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
             patient_signature: draft.patient_label || 'Signed at admission',
             patient_signature_type: 'typed',
             signed_by: 'patient',
+            doc_number: reservedDocNumber || undefined,
           });
           return res.data?.doc_number || null;
         } catch { return null; }
       };
-      const faceDocNum = await recordConsent(faceTpl);
-      const caseDocNum = await recordConsent(caseTpl);
+      const faceDocNum = await recordConsent(faceTpl, draft.face_sheet_doc_number);
+      const caseDocNum = await recordConsent(caseTpl, draft.case_sheet_doc_number);
       if (faceDocNum) update({ face_sheet_doc_number: faceDocNum });
       if (caseDocNum) update({ case_sheet_doc_number: caseDocNum });
 
@@ -727,6 +750,11 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
                 signed={draft.face_sheet_signed}
                 onToggle={v => update({ face_sheet_signed: v })}
                 docNumber={draft.face_sheet_doc_number}
+                patientId={draft.patient_id}
+                roomId={draft.room_id}
+                doctorId={draft.admitting_doctor_id}
+                referringDoctorId={draft.referring_doctor_kind === 'internal' ? draft.referring_doctor_id : ''}
+                admissionReason={draft.admission_reason}
               />
               <DeclarationCard
                 title="Case Sheet"
@@ -735,6 +763,11 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
                 signed={draft.case_sheet_signed}
                 onToggle={v => update({ case_sheet_signed: v })}
                 docNumber={draft.case_sheet_doc_number}
+                patientId={draft.patient_id}
+                roomId={draft.room_id}
+                doctorId={draft.admitting_doctor_id}
+                referringDoctorId={draft.referring_doctor_kind === 'internal' ? draft.referring_doctor_id : ''}
+                admissionReason={draft.admission_reason}
               />
             </div>
             {(!faceTpl || !caseTpl) && (
@@ -780,8 +813,35 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
 };
 
 
-const DeclarationCard = ({ title, subtitle, template, signed, onToggle, docNumber }) => {
+const DeclarationCard = ({
+  title, subtitle, template, signed, onToggle, docNumber,
+  patientId, roomId, doctorId, referringDoctorId, admissionReason,
+}) => {
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [printing, setPrinting] = useState(false);
+
+  const canPrefill = Boolean(template && patientId);
+
+  const handlePrint = async () => {
+    if (!canPrefill || printing) return;
+    setPrinting(true);
+    try {
+      const params = {
+        patient_id: String(patientId),
+        template_id: template.id,
+        include_header: true,
+      };
+      if (roomId) params.room_id = roomId;
+      if (doctorId) params.admitting_doctor_id = doctorId;
+      if (referringDoctorId) params.referring_doctor_id = referringDoctorId;
+      if (admissionReason) params.admission_reason = admissionReason;
+      if (docNumber) params.doc_number = docNumber;
+      await printPdfFromUrl('/api/inpatient/consents/preview-pdf', { params });
+    } finally {
+      setPrinting(false);
+    }
+  };
+
   return (
     <div className={
       'border-2 rounded-lg p-3 ' +
@@ -799,6 +859,13 @@ const DeclarationCard = ({ title, subtitle, template, signed, onToggle, docNumbe
                 disabled={!template}>
           Preview
         </Button>
+        <Button size="sm" variant="outline" onClick={handlePrint}
+                disabled={!canPrefill || printing}
+                title={!patientId ? 'Select a patient first' : 'Print prefilled form for patient signature'}>
+          {printing
+            ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" /> Printing…</>
+            : <><Printer className="h-4 w-4 mr-1" /> Print</>}
+        </Button>
         <Button size="sm"
                 variant={signed ? 'outline' : 'default'}
                 onClick={() => onToggle(!signed)}>
@@ -812,15 +879,14 @@ const DeclarationCard = ({ title, subtitle, template, signed, onToggle, docNumbe
           ✓ Signature recorded
         </Badge>
       )}
-      {docNumber && (
+      {docNumber ? (
         <div className="mt-2 rounded bg-blue-50 border border-blue-200 px-2 py-1 text-xs text-blue-800">
           <span className="font-semibold">Doc No: {docNumber}</span>
-          <span className="ml-1 text-blue-600">— write this on the physical form</span>
+          <span className="ml-1 text-blue-600">— write this on your physical form if you're not printing ours</span>
         </div>
-      )}
-      {!docNumber && signed && (
+      ) : (
         <div className="mt-2 text-xs text-gray-400 italic">
-          Document number will appear after admission is saved.
+          {patientId ? 'Allocating doc number…' : 'Doc number appears once patient is selected.'}
         </div>
       )}
       <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>

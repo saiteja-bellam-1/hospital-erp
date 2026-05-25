@@ -123,6 +123,12 @@ def setup_module_permissions():
         {"module_name": "inpatient", "permission_name": "view_procedures", "permission_description": "View the procedure catalog", "category": "user"},
         {"module_name": "inpatient", "permission_name": "manage_procedures", "permission_description": "Add, edit, and remove procedures with default rates", "category": "admin"},
 
+        # Food / Catering
+        {"module_name": "inpatient", "permission_name": "view_food_orders", "permission_description": "View scheduled meals for admitted patients", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "order_food", "permission_description": "Order, edit, and cancel meals for admitted patients", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "mark_food_delivered", "permission_description": "Mark scheduled meals as delivered (kitchen staff)", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "manage_meal_plans", "permission_description": "Set meal prices per room type", "category": "admin"},
+
         # Documents
         {"module_name": "inpatient", "permission_name": "upload_documents", "permission_description": "Upload admission documents", "category": "user"},
         {"module_name": "inpatient", "permission_name": "view_documents", "permission_description": "Download and list admission documents", "category": "user"},
@@ -280,6 +286,7 @@ def setup_role_permissions():
                 "view_procedures", "manage_procedures",
                 "manage_roster", "view_roster",
                 "upload_documents", "view_documents", "delete_documents",
+                "view_food_orders", "order_food", "mark_food_delivered", "manage_meal_plans",
             ],
             "ehr": ["view_records", "edit_records", "create_prescriptions", "manage_templates", "view_history", "generate_reports", "manage_allergies"]
         },
@@ -314,6 +321,7 @@ def setup_role_permissions():
                 "view_procedures", "manage_procedures",
                 "manage_roster", "view_roster",
                 "upload_documents", "view_documents", "delete_documents",
+                "view_food_orders", "order_food", "mark_food_delivered", "manage_meal_plans",
             ],
             "ehr": ["view_records", "edit_records", "view_history", "generate_reports"]
         },
@@ -340,6 +348,7 @@ def setup_role_permissions():
                 "manage_consent_templates", "set_critical_thresholds",
                 "manage_roster", "view_roster",
                 "upload_documents", "view_documents", "delete_documents",
+                "view_food_orders", "order_food", "manage_meal_plans",
             ],
             "ehr": ["manage_allergies", "view_records", "view_history"]
         },
@@ -379,6 +388,7 @@ def setup_role_permissions():
                 "view_bill", "view_readmissions", "view_mortality",
                 "view_roster",
                 "upload_documents", "view_documents",
+                "view_food_orders", "order_food",
             ],
         },
         "nurse": {
@@ -396,6 +406,7 @@ def setup_role_permissions():
                 "report_incident", "acknowledge_critical_alert",
                 "view_roster",
                 "view_documents",
+                "view_food_orders", "order_food", "mark_food_delivered",
             ],
         },
         "lab_technician": {
@@ -413,6 +424,7 @@ def setup_role_permissions():
                 "receive_deposits", "manage_reservations",
                 "view_bill",
                 "upload_documents", "view_documents",
+                "view_food_orders", "order_food",
             ],
         },
         "frontdesk": {

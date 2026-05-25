@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Float, Numeric, JSON, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Date, ForeignKey, Text, Float, Numeric, JSON, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from config.database import Base
@@ -623,6 +623,12 @@ class SurgeryPackage(Base):
     included_room_type = Column(String(30), nullable=True)
     included_stay_days = Column(Integer, default=0)
     included_services = Column(JSON, nullable=True)  # ["pharmacy", "lab", "doctor_visit", ...]
+    # Per-category granular inclusion. When "lab" is in included_services and
+    # lab_coverage_mode == "selected", only the LabTest IDs listed in
+    # included_lab_test_ids are covered; the rest bill normally. Mode "all" (the
+    # default) preserves the original behaviour of covering every lab order.
+    lab_coverage_mode = Column(String(20), default="all")  # "all" | "selected"
+    included_lab_test_ids = Column(JSON, nullable=True)    # list[int] of LabTest.id
     excess_per_day_charge = Column(Float, default=0.0)
     description = Column(Text, nullable=True)
     is_active = Column(Boolean, default=True)
@@ -815,6 +821,26 @@ class Consent(Base):
     patient = relationship("Patient", foreign_keys=[patient_id])
     doctor = relationship("User", foreign_keys=[doctor_id])
     template = relationship("ConsentTemplate", foreign_keys=[template_id])
+
+
+class ConsentDocReservation(Base):
+    """A pre-allocated consent doc number reserved during the admit-patient
+    wizard so staff can write/print the number on a physical form before
+    the admission (and therefore the Consent row) exists. Consumed when the
+    matching Consent record is actually created.
+    """
+    __tablename__ = "consent_doc_reservations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    doc_number = Column(String(50), unique=True, nullable=False, index=True)
+    patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
+    consent_type = Column(String(40), nullable=False)
+    template_id = Column(Integer, ForeignKey("consent_templates.id"), nullable=True)
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+    reserved_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    reserved_at = Column(DateTime(timezone=True), server_default=func.now())
+    consumed_at = Column(DateTime(timezone=True), nullable=True)
+    consumed_consent_id = Column(Integer, ForeignKey("consents.id"), nullable=True)
 
 
 # ======================================================================
@@ -1216,4 +1242,55 @@ class DoctorRoomTypeRate(Base):
 
     __table_args__ = (
         UniqueConstraint("hospital_id", "doctor_id", "room_type", name="uq_doctor_room_type_rate"),
+    )
+
+
+class MealPlan(Base):
+    """Per-room-type meal pricing. One row per (hospital, room_type, meal_type)."""
+    __tablename__ = "meal_plans"
+
+    id = Column(Integer, primary_key=True, index=True)
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+    room_type = Column(String(30), nullable=False)
+    meal_type = Column(String(20), nullable=False)  # breakfast/lunch/dinner/snacks
+    price = Column(Numeric(10, 2), nullable=False, default=0)
+    description = Column(String(200), nullable=True)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("hospital_id", "room_type", "meal_type", name="uq_meal_plan_room_meal"),
+    )
+
+
+class FoodOrder(Base):
+    """A scheduled meal for an admitted patient. Billable at order time;
+    cancellation before billing simply drops the line. After the bill stamps
+    bill_id, cancellation is blocked (must refund through the deposit flow)."""
+    __tablename__ = "food_orders"
+
+    id = Column(Integer, primary_key=True, index=True)
+    admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=False, index=True)
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+    meal_date = Column(Date, nullable=False, index=True)
+    meal_type = Column(String(20), nullable=False)  # breakfast/lunch/dinner/snacks
+    status = Column(String(20), default="ordered", nullable=False)  # ordered/delivered/cancelled
+    price = Column(Numeric(10, 2), nullable=False)  # snapshot at order time
+    diet_preference = Column(String(50), nullable=True)  # veg/non-veg/diabetic/soft/liquid/custom
+    notes = Column(Text, nullable=True)
+    ordered_at = Column(DateTime(timezone=True), server_default=func.now())
+    ordered_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    delivered_at = Column(DateTime(timezone=True), nullable=True)
+    delivered_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    cancelled_at = Column(DateTime(timezone=True), nullable=True)
+    cancelled_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    cancelled_reason = Column(String(200), nullable=True)
+    billed = Column(Boolean, default=False, nullable=False)
+    bill_id = Column(Integer, ForeignKey("bills.id"), nullable=True)
+
+    admission = relationship("Admission", foreign_keys=[admission_id])
+
+    __table_args__ = (
+        UniqueConstraint("admission_id", "meal_date", "meal_type", name="uq_food_order_per_meal"),
     )
