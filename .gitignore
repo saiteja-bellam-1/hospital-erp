@@ -45,3 +45,4 @@ installer/dbcheck/dist/
 
 # Claude internal
 .claude/
+backend/machine_id.txt
