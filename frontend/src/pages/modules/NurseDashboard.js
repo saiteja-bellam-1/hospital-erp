@@ -40,7 +40,7 @@ const NurseDashboard = () => {
   const [selectedPatient, setSelectedPatient] = useState(null);
   const [todayAppointments, setTodayAppointments] = useState([]);
   const [showVitalsDialog, setShowVitalsDialog] = useState(false);
-  const [activeTab, setActiveTab] = useState('patients');
+  const [activeTab, setActiveTab] = useState('appointments');
 
   // Inpatient ward state
   const [inpatientEnabled, setInpatientEnabled] = useState(false);
@@ -190,8 +190,12 @@ const NurseDashboard = () => {
         recorded_by: 'nurse' // Indicates nurse recorded these vitals
       };
 
-      // For now, we'll save this via a patient update
-      // In a complete system, this would be a dedicated vitals API
+      const patientUuid = selectedPatient.patient_id || selectedPatient.patient_uuid;
+      if (!patientUuid) {
+        toast({ variant: 'destructive', title: 'Error', description: 'Patient UUID missing — cannot save vitals.' });
+        return;
+      }
+
       const response = await fetch('/api/patients/vitals', {
         method: 'POST',
         headers: {
@@ -199,9 +203,10 @@ const NurseDashboard = () => {
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
-          patient_id: selectedPatient.id,
+          patient_id: patientUuid,
           vital_signs: JSON.stringify(vitalsData),
-          notes: vitalsForm.notes
+          notes: vitalsForm.notes,
+          recorded_by_role: 'nurse'
         })
       });
 
@@ -210,21 +215,29 @@ const NurseDashboard = () => {
         setShowVitalsDialog(false);
         resetVitalsForm();
       } else {
-        // If the API doesn't exist yet, show a success message for demo
-        console.log('Vitals would be saved:', vitalsData);
-        toast({ title: 'Success', description: 'Vitals recorded successfully! (Demo mode)' });
-        setShowVitalsDialog(false);
-        resetVitalsForm();
+        const err = await response.json().catch(() => ({}));
+        const detail = typeof err.detail === 'string' ? err.detail : 'Failed to save vitals';
+        toast({ variant: 'destructive', title: 'Error', description: detail });
       }
     } catch (error) {
       console.error('Error saving vitals:', error);
-      // For demo purposes, still show success
-      toast({ title: 'Success', description: 'Vitals recorded successfully! (Demo mode)' });
-      setShowVitalsDialog(false);
-      resetVitalsForm();
+      toast({ variant: 'destructive', title: 'Error', description: 'Failed to save vitals' });
     } finally {
       setLoading(false);
     }
+  };
+
+  // Open the vitals dialog for a specific appointment's patient
+  const openVitalsForAppointment = (appointment) => {
+    const patientForVitals = {
+      id: appointment.patient_id,
+      patient_id: appointment.patient_uuid,
+      first_name: (appointment.patient_name || '').split(' ')[0] || '',
+      last_name: (appointment.patient_name || '').split(' ').slice(1).join(' '),
+    };
+    setSelectedPatient(patientForVitals);
+    resetVitalsForm();
+    setShowVitalsDialog(true);
   };
 
   const resetVitalsForm = () => {
@@ -274,7 +287,7 @@ const NurseDashboard = () => {
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
         <TabsList className={`grid w-full ${inpatientEnabled ? 'grid-cols-3' : 'grid-cols-2'}`}>
           <TabsTrigger value="patients">Patient Care</TabsTrigger>
-          <TabsTrigger value="appointments">Today's Schedule</TabsTrigger>
+          <TabsTrigger value="appointments">Today's Consultations</TabsTrigger>
           {inpatientEnabled && <TabsTrigger value="ward">Inpatient Ward</TabsTrigger>}
         </TabsList>
 
@@ -439,42 +452,66 @@ const NurseDashboard = () => {
           </div>
         </TabsContent>
 
-        {/* Today's Appointments Tab */}
+        {/* Today's Consultations Tab — booked outpatient appointments. Nurse records vitals here. */}
         <TabsContent value="appointments" className="space-y-4">
           <Card>
             <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Calendar className="h-5 w-5" />
-                Today's Appointments ({todayAppointments.length})
+              <CardTitle className="flex items-center justify-between">
+                <span className="flex items-center gap-2">
+                  <Calendar className="h-5 w-5" />
+                  Today's Consultations ({todayAppointments.length})
+                </span>
+                <Button variant="outline" size="sm" onClick={fetchTodayAppointments}>
+                  <RefreshCw className="h-4 w-4 mr-2" /> Refresh
+                </Button>
               </CardTitle>
             </CardHeader>
             <CardContent>
               {todayAppointments.length === 0 ? (
-                <p className="text-gray-500 text-center py-4">No appointments today</p>
+                <p className="text-gray-500 text-center py-4">No consultations booked for today.</p>
               ) : (
-                <div className="space-y-3">
-                  {todayAppointments.map((appointment) => (
-                    <Card key={appointment.id} className="border-l-4 border-l-blue-500">
-                      <CardContent className="pt-3 pb-3">
-                        <div className="space-y-2">
-                          <div className="flex justify-between items-start">
-                            <div>
-                              <p className="font-medium text-sm">{appointment.patient_name}</p>
-                              <p className="text-xs text-gray-600">{appointment.doctor_name}</p>
+                <div className="overflow-x-auto">
+                  <table className="w-full border-collapse">
+                    <thead>
+                      <tr className="border-b text-left text-sm text-gray-600">
+                        <th className="py-2">Time</th>
+                        <th className="py-2">Patient</th>
+                        <th className="py-2">Doctor</th>
+                        <th className="py-2">Reason</th>
+                        <th className="py-2">Status</th>
+                        <th className="py-2">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {todayAppointments.map((appointment) => (
+                        <tr key={appointment.id} className="border-b hover:bg-gray-50">
+                          <td className="py-2 text-sm whitespace-nowrap">
+                            <div className="flex items-center gap-1">
+                              <Clock className="h-3 w-3 text-gray-400" />
+                              {appointment.appointment_time}
                             </div>
-                            {getStatusBadge(appointment.status)}
-                          </div>
-                          <div className="flex items-center gap-2 text-xs text-gray-600">
-                            <Clock className="h-3 w-3" />
-                            {appointment.appointment_time}
-                          </div>
-                          {appointment.reason && (
-                            <p className="text-xs text-gray-500">{appointment.reason}</p>
-                          )}
-                        </div>
-                      </CardContent>
-                    </Card>
-                  ))}
+                          </td>
+                          <td className="py-2">
+                            <div className="font-medium text-sm">{appointment.patient_name}</div>
+                            <div className="text-xs text-gray-500">{appointment.patient_uuid}</div>
+                          </td>
+                          <td className="py-2 text-sm">{appointment.doctor_name}</td>
+                          <td className="py-2 text-sm text-gray-600">{appointment.reason || '—'}</td>
+                          <td className="py-2">{getStatusBadge(appointment.status)}</td>
+                          <td className="py-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={!appointment.patient_uuid}
+                              onClick={() => openVitalsForAppointment(appointment)}
+                            >
+                              <Activity className="h-3 w-3 mr-1" /> Record Vitals
+                            </Button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               )}
             </CardContent>

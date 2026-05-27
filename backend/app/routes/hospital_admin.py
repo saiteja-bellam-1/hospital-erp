@@ -2329,7 +2329,7 @@ async def get_bill_pdf(
         "patient_age": getattr(patient, 'age', None) if patient else None,
         "patient_gender": patient.gender if patient else "",
         "patient_phone": patient.primary_phone if patient else "",
-        "mrn": patient.patient_id if patient else "",
+        "mrn": (patient.mrn or "") if patient else "",
         "payment_method": (payments[0].payment_method_name if payments else "Cash"),
         "items": [
             {"item_name": it.item_name, "item_code": it.item_code or "",

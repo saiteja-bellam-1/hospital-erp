@@ -1579,13 +1579,16 @@ async def quick_admit(
     hospital = _get_hospital(db, current_user)
 
     # Create stub patient — reception completes name, DOB, address, ID proof later.
+    from app.services.patient_service import _next_mrn_for
+    hospital_id_val = hospital.id if hospital else 1
     patient = Patient(
         first_name=data.first_name.strip(),
         last_name=(data.last_name or "UNKNOWN").strip() or "UNKNOWN",
         age=data.age,
         gender=data.gender,
         primary_phone=(data.primary_phone or "0000000000").strip(),
-        hospital_id=hospital.id if hospital else 1,
+        hospital_id=hospital_id_val,
+        mrn=_next_mrn_for(db, hospital_id_val),
         registration_complete=False,
     )
     db.add(patient)
@@ -2308,6 +2311,7 @@ async def get_handover_pdf(
     payload = {
         "admission_number": admission.admission_number if admission else "",
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "",
+        "mrn": (patient.mrn or "") if patient else "",
         "patient_id": patient.patient_id if patient else "",
         "room": room.room_number if room else "",
         "bed": (admission.bed.bed_label if admission and admission.bed else admission.bed_number) if admission else "",
@@ -3049,6 +3053,7 @@ async def get_discharge_pdf(
     discharge_data = {
         "admission_number": admission.admission_number,
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "N/A",
+        "mrn": (patient.mrn or "") if patient else "",
         "patient_id": patient.patient_id if patient else "N/A",
         "age": _patient_age(patient) or "",
         "gender": patient.gender if patient else "",
@@ -7253,6 +7258,7 @@ async def gate_pass_pdf(
         "issued_at": gp.generated_at.strftime("%d/%m/%Y %H:%M") if gp.generated_at else "",
         "admission_number": admission.admission_number if admission else "",
         "patient_name": (f"{patient.first_name} {patient.last_name}" if patient else "-"),
+        "mrn": (patient.mrn or "") if patient else "",
         "patient_id": patient.patient_id if patient else "-",
         "vehicle_no": gp.vehicle_no or "-",
         "attendant_name": gp.attendant_name or "-",
@@ -8375,6 +8381,7 @@ async def get_deposit_receipt_pdf(
         "received_at": d.received_at.strftime("%d/%m/%Y %H:%M") if d.received_at else "",
         "received_by_name": received_by_name,
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "—",
+        "mrn": (patient.mrn or "") if patient else "",
         "patient_id": patient.patient_id if patient else "—",
         "patient_phone": patient.primary_phone if patient else "",
         "admission_number": admission.admission_number if admission else "—",
@@ -10578,6 +10585,7 @@ async def death_certificate_pdf(
     d = admission.discharge
     cert_data = {
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "",
+        "mrn": (patient.mrn or "") if patient else "",
         "patient_id": patient.patient_id if patient else "",
         "age": _patient_age(patient) or "",
         "gender": patient.gender if patient else "",
@@ -11751,6 +11759,7 @@ async def get_body_release_pdf(
     rel_data = {
         "admission_number": admission.admission_number,
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "",
+        "mrn": (patient.mrn or "") if patient else "",
         "patient_id": patient.patient_id if patient else "",
         "age": _patient_age(patient) or "",
         "gender": patient.gender if patient else "",

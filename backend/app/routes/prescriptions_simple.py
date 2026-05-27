@@ -412,6 +412,7 @@ async def download_prescription_pdf(
         "patient_gender": patient_gender,
         "patient_phone": patient_phone,
         "patient_blood_group": patient_blood_group,
+        "mrn": (patient.mrn or "") if patient else "",
         "patient_id_display": prescription.patient_id,
         "doctor_name": f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else "Unknown",
         "doctor_specialization": doctor.specialization if doctor and hasattr(doctor, 'specialization') else '',

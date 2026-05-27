@@ -303,7 +303,7 @@ class PDFService:
             [lv('Name', p.get('name', '')),                 lv('Bill No',    bill_data.get('bill_number', ''))],
             [lv('Age / Gender', age_sex),                   lv('Bill Date',  bill_date_str)],
             [lv('Phone', p.get('phone', '')),               lv('Print Date', print_date_str)],
-            [lv('MRN',   p.get('mrn') or p.get('patient_id', '')),
+            [lv('MRN',   p.get('mrn', '')),
              lv('Pay Mode',   payer_str)],
             [lv('Referred By', ref_value),                  Paragraph('', cell_value)],
         ]
@@ -741,7 +741,7 @@ class PDFService:
                 age_sex = gender
 
         phone = bill_data.get('patient_phone', '')
-        patient_id = bill_data.get('mrn') or bill_data.get('patient_id', bill_data.get('reg_no', ''))
+        patient_id = bill_data.get('mrn', '')
         doctor = bill_data.get('doctor_name', '')
         referred_by = bill_data.get('referred_by', '')
         pay_category = bill_data.get('payment_method', 'Cash')
@@ -1085,7 +1085,7 @@ class PDFService:
         patient_gender = prescription_data.get('patient_gender', '')
         patient_blood_group = prescription_data.get('patient_blood_group', '')
         patient_phone = prescription_data.get('patient_phone', '')
-        patient_id = prescription_data.get('mrn') or prescription_data.get('patient_id_display', prescription_data.get('patient_id', ''))
+        patient_id = prescription_data.get('mrn', '')
 
         age_sex = f"{patient_age} Years" if patient_age is not None and patient_age != '' else ''
         if patient_gender:
@@ -1562,7 +1562,7 @@ class PDFService:
             [lv('Age / Gender', age_sex), lv('Collection Date', collection_date_str)],
             [lv('Phone', patient_phone), lv('Report Date', report_date_str)],
             [lv(referral_label, referral_name), lv('Sample ID', report_data.get('sample_id', ''))],
-            [lv('MRN', report_data.get('mrn') or report_data.get('patient_uuid', '')), lv('Report ID', report_data.get('order_number', ''))],
+            [lv('MRN', report_data.get('mrn', '')), lv('Report ID', report_data.get('order_number', ''))],
         ]
 
         info_table = Table(info_data, colWidths=[col_w, col_w])
@@ -1965,7 +1965,7 @@ class PDFService:
             [lv('Age / Gender', age_sex), lv('Collection Date', _fmt_dt(first_report.get('collection_date')))],
             [lv('Phone', patient_phone), lv('Report Date', _fmt_dt(first_report.get('report_date')))],
             [lv(referral_label, referral_name), lv('Report Status', first_report.get('report_status', 'Final'))],
-            [lv('MRN', first_report.get('mrn') or first_report.get('patient_uuid', '')), Paragraph('', cell_value)],
+            [lv('MRN', first_report.get('mrn', '')), Paragraph('', cell_value)],
         ]
 
         info_table = Table(info_data, colWidths=[col_w, col_w])
@@ -2286,7 +2286,7 @@ class PDFService:
         col_w = page_width / 2
         patient_info_data = [
             [lv('Patient', discharge_data.get('patient_name', '')),
-             lv('MRN', discharge_data.get('mrn') or discharge_data.get('patient_id', ''))],
+             lv('MRN', discharge_data.get('mrn', ''))],
             [lv('Age / Gender', age_gender),
              lv('Doctor', discharge_data.get('doctor_name', ''))],
             [lv('Admission No', discharge_data.get('admission_number', '')),
@@ -2556,7 +2556,7 @@ class PDFService:
              lv('Receipt No', receipt_no)],
             [lv('Phone', deposit_data.get('patient_phone', '')),
              lv('Date', receipt_date)],
-            [lv('MRN', deposit_data.get('patient_id', '')),
+            [lv('MRN', deposit_data.get('mrn', '')),
              lv('Print Date', print_date_str)],
             [lv('Admission No', deposit_data.get('admission_number', '')),
              lv('Pay Mode', pay_method)],
@@ -3014,7 +3014,7 @@ class PDFService:
         elements.append(Spacer(1, 8))
 
         # Patient/admission meta — always shown for all consent types
-        mrn = consent_data.get('mrn') or consent_data.get('patient_id', '')
+        mrn = consent_data.get('mrn', '')
         admission_number = consent_data.get('admission_number') or ''
         # In wizard preview mode the admission row doesn't exist yet, but the
         # form is being filled today — fall back to today's date so the
@@ -3140,7 +3140,7 @@ class PDFService:
         rows = [
             [Paragraph("Name of Deceased:", label), Paragraph(str(cert_data.get('patient_name', '')), value)],
             [Paragraph("Age / Gender:", label), Paragraph(f"{cert_data.get('age', '')} Years / {cert_data.get('gender', '')}" if cert_data.get('age') else cert_data.get('gender', ''), value)],
-            [Paragraph("MRN:", label), Paragraph(str(cert_data.get('mrn') or cert_data.get('patient_id', '')), value)],
+            [Paragraph("MRN:", label), Paragraph(str(cert_data.get('mrn', '')), value)],
             [Paragraph("Admission No:", label), Paragraph(str(cert_data.get('admission_number', '')), value)],
             [Paragraph("Admitted On:", label), Paragraph(str(cert_data.get('admission_date', '')), value)],
             [Paragraph("Date of Death:", label), Paragraph(str(cert_data.get('discharge_date', '')), value)],
@@ -3235,7 +3235,7 @@ class PDFService:
 
         meta_rows = [
             [Paragraph("Patient Name:", label), Paragraph(str(dama_data.get('patient_name', '')), value)],
-            [Paragraph("MRN:", label), Paragraph(str(dama_data.get('mrn') or dama_data.get('patient_id', '')), value)],
+            [Paragraph("MRN:", label), Paragraph(str(dama_data.get('mrn', '')), value)],
             [Paragraph("Age / Gender:", label),
              Paragraph(f"{dama_data.get('age', '')} / {dama_data.get('gender', '')}", value)],
             [Paragraph("Admission No:", label), Paragraph(str(dama_data.get('admission_number', '')), value)],
@@ -3419,7 +3419,7 @@ class PDFService:
             [Paragraph("Pass Number", label), Paragraph(payload.get('pass_number', '-'), value),
              Paragraph("Issued at", label), Paragraph(payload.get('issued_at', '-'), value)],
             [Paragraph("Admission No", label), Paragraph(payload.get('admission_number', '-'), value),
-             Paragraph("Patient ID", label), Paragraph(payload.get('patient_id', '-'), value)],
+             Paragraph("MRN", label), Paragraph(payload.get('mrn', '-'), value)],
             [Paragraph("Patient Name", label), Paragraph(payload.get('patient_name', '-'), value),
              Paragraph("Attendant", label), Paragraph(payload.get('attendant_name', '-'), value)],
             [Paragraph("Vehicle No.", label), Paragraph(payload.get('vehicle_no', '-'), value),
@@ -3764,7 +3764,7 @@ class PDFService:
 
         meta_rows = [
             [Paragraph("Patient:", label), Paragraph(str(payload.get('patient_name', '')), value)],
-            [Paragraph("MRN:", label), Paragraph(str(payload.get('mrn') or payload.get('patient_id', '')), value)],
+            [Paragraph("MRN:", label), Paragraph(str(payload.get('mrn', '')), value)],
             [Paragraph("Admission No:", label), Paragraph(str(payload.get('admission_number', '')), value)],
             [Paragraph("Room / Bed:", label),
              Paragraph(f"{payload.get('room', '')} / {payload.get('bed', '')}", value)],
@@ -4073,7 +4073,7 @@ class PDFService:
 
         meta = [
             [Paragraph("Patient Name:", label), Paragraph(str(rel.get('patient_name', '')), value),
-             Paragraph("MRN:", label), Paragraph(str(rel.get('mrn') or rel.get('patient_id', '')), value)],
+             Paragraph("MRN:", label), Paragraph(str(rel.get('mrn', '')), value)],
             [Paragraph("Age / Gender:", label), Paragraph(f"{rel.get('age', '')} / {rel.get('gender', '')}", value),
              Paragraph("Admission No:", label), Paragraph(str(rel.get('admission_number', '')), value)],
             [Paragraph("Date / Time of Death:", label), Paragraph(str(rel.get('death_date', '')), value),
