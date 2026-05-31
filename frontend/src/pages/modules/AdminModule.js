@@ -18,9 +18,11 @@ import {
   Save,
   X,
   RefreshCw,
-  KeyRound
+  KeyRound,
+  Upload
 } from 'lucide-react';
 import axios from 'axios';
+import BulkUserImportDialog from './admin/BulkUserImport';
 
 const AdminModule = () => {
   const { user } = useAuth();
@@ -32,6 +34,7 @@ const AdminModule = () => {
   const [roles, setRoles] = useState([]);
   const [activeTab, setActiveTab] = useState(hasRole('super_admin') ? 'modules' : 'users');
   const [showUserForm, setShowUserForm] = useState(false);
+  const [showBulkImport, setShowBulkImport] = useState(false);
   const [showRoleForm, setShowRoleForm] = useState(false);
   const [editingUser, setEditingUser] = useState(null);
   const [editingRole, setEditingRole] = useState(null);
@@ -567,6 +570,16 @@ const AdminModule = () => {
                 <p className="text-xs text-red-600">Limit reached. Upgrade license to add more.</p>
               )}
               <Button
+                variant="outline"
+                onClick={() => setShowBulkImport(true)}
+                className="flex items-center"
+                disabled={userLimit && !userLimit.unlimited && userLimit.remaining === 0}
+                title="Import multiple doctors or nurses from a CSV file"
+              >
+                <Upload className="h-4 w-4 mr-2" />
+                Bulk Import
+              </Button>
+              <Button
                 onClick={() => {
                   setShowUserForm(true);
                   setEditingUser(null);
@@ -593,6 +606,12 @@ const AdminModule = () => {
               </Button>
             </div>
           </div>
+
+          <BulkUserImportDialog
+            open={showBulkImport}
+            onOpenChange={setShowBulkImport}
+            onImported={() => { fetchUsers(); fetchUserLimit(); }}
+          />
 
           {/* User Create/Edit Dialog */}
           <Dialog open={showUserForm} onOpenChange={(open) => { if (!open) { setShowUserForm(false); setEditingUser(null); } }}>

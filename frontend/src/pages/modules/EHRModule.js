@@ -102,7 +102,7 @@ const EHRModule = () => {
     try { return format(new Date(dateStr), 'dd MMM yyyy, hh:mm a'); } catch { return dateStr; }
   };
 
-  const downloadPrescription = async (prescriptionId, includeHeader = true) => {
+  const downloadPrescription = async (prescriptionId, includeHeader = false) => {
     try {
       const res = await fetch(`/api/prescriptions-simple/${prescriptionId}/download?include_header=${includeHeader}`, { headers });
       const blob = await res.blob();
@@ -117,7 +117,7 @@ const EHRModule = () => {
     }
   };
 
-  const downloadLabReport = async (reportId, orderNumber, includeHeader = true) => {
+  const downloadLabReport = async (reportId, orderNumber, includeHeader = false) => {
     try {
       const res = await fetch(`/api/lab/reports/${reportId}/download?include_header=${includeHeader}`, { headers });
       const blob = await res.blob();

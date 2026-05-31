@@ -31,13 +31,13 @@ const ReceptionPackagesPage = () => {
   const [notes, setNotes] = useState('');
   const [referredBy, setReferredBy] = useState('');
   const [bookingLoading, setBookingLoading] = useState(false);
-  const [pkgIncludeHeader, setPkgIncludeHeader] = useState(true);
+  const [pkgIncludeHeader, setPkgIncludeHeader] = useState(false);
   const [referralList, setReferralList] = useState([]);
   const [pkgDuplicateWarning, setPkgDuplicateWarning] = useState(null);
   const [pkgBillPdfUrl, setPkgBillPdfUrl] = useState(null);
   const [pkgBillOrderIds, setPkgBillOrderIds] = useState([]);
   const [showPkgBillPreview, setShowPkgBillPreview] = useState(false);
-  const [pkgPreviewHeader, setPkgPreviewHeader] = useState(true);
+  const [pkgPreviewHeader, setPkgPreviewHeader] = useState(false);
 
   useEffect(() => {
     const fetchRefs = async () => {
@@ -294,7 +294,7 @@ const ReceptionPackagesPage = () => {
 
       {/* Booking Dialog */}
       <Dialog open={showBookingDialog} onOpenChange={setShowBookingDialog}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="max-w-2xl max-h-[92vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Book Package: {selectedPackage?.name}</DialogTitle>
           </DialogHeader>

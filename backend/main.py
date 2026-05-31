@@ -35,7 +35,7 @@ from app.models.inpatient import (
 from app.models.patient import PatientAllergy
 
 # Import route modules
-from app.routes import auth, patients, admin, system, module_admin, hospital_admin, appointments, prescriptions, medicines, consultations, prescriptions_simple, doctor_availability, lab, ehr, license, backup, referrals, audit, inpatient, outpatient_procedures
+from app.routes import auth, patients, admin, system, module_admin, hospital_admin, appointments, prescriptions, medicines, consultations, prescriptions_simple, doctor_availability, lab, ehr, license, backup, referrals, audit, inpatient, outpatient_procedures, pharmacy
 from app.middleware.license_middleware import LicenseMiddleware
 from app.middleware.audit_middleware import AuditMiddleware
 from app.middleware.maintenance import MaintenanceMiddleware
@@ -98,6 +98,13 @@ async def startup_event():
         except Exception as e:
             raise RuntimeError(
                 f"Schema migration migrate_drop_incidents_diet failed — refusing to boot. Error: {e}"
+            )
+        try:
+            from migrate_pharmacy import migrate as _pharmacy_migrate
+            run_migration(_engine, "migrate_pharmacy", _pharmacy_migrate)
+        except Exception as e:
+            raise RuntimeError(
+                f"Schema migration migrate_pharmacy failed — refusing to boot. Error: {e}"
             )
         # Ensure role permissions exist (for installations that pre-date the wizard)
         _ensure_role_permissions()
@@ -432,8 +439,8 @@ app.include_router(prescriptions_simple.router, prefix="/api/prescriptions-simpl
 app.include_router(medicines.router, prefix="/api/medicines", tags=["Medicines"])
 app.include_router(doctor_availability.router, prefix="/api/doctor-availability", tags=["Doctor Availability"])
 app.include_router(lab.router, prefix="/api/lab", tags=["Laboratory"])
+app.include_router(pharmacy.router, prefix="/api/pharmacy", tags=["Pharmacy"])
 # Additional module routers will be added as they are implemented
-# app.include_router(pharmacy.router, prefix="/api/pharmacy", tags=["Pharmacy"])
 # app.include_router(billing.router, prefix="/api/billing", tags=["Billing"])
 app.include_router(ehr.router, prefix="/api/ehr", tags=["EHR"])
 app.include_router(license.router, prefix="/api/license", tags=["License"])

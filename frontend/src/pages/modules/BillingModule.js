@@ -14,6 +14,7 @@ import {
   CheckCircle2, Loader2, XCircle, Ban, CreditCard, Eye,
   Building2, Stethoscope, FlaskConical, BedDouble, Printer, FileText
 } from 'lucide-react';
+import { printPdfFromUrl } from '../../utils/printPdf';
 
 const BillingModule = () => {
   const [bills, setBills] = useState([]);
@@ -340,7 +341,7 @@ const BillingModule = () => {
       }
       fetchBills();
       if (r.data?.refund_id && window.confirm('Refund recorded. Open refund receipt?')) {
-        window.open(`/api/hospital/billing/payments/${r.data.refund_id}/refund-receipt/pdf`, '_blank');
+        printPdfFromUrl(`/api/hospital/billing/payments/${r.data.refund_id}/refund-receipt/pdf`);
       }
     } catch (err) {
       const detail = err.response?.data?.detail;
@@ -503,7 +504,7 @@ const BillingModule = () => {
       setDetailData(res.data);
       fetchBills();
       if (r.data?.credit_note_id && window.confirm('Credit note issued. Open PDF?')) {
-        window.open(`/api/hospital/billing/bills/${r.data.credit_note_id}/credit-note/pdf`, '_blank');
+        printPdfFromUrl(`/api/hospital/billing/bills/${r.data.credit_note_id}/credit-note/pdf`);
       }
     } catch (err) {
       const detail = err.response?.data?.detail;
@@ -562,7 +563,7 @@ const BillingModule = () => {
   const handlePrintAdmissionBill = async (admissionId) => {
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch(`/api/inpatient/admissions/${admissionId}/bill/pdf?include_header=true`, {
+      const res = await fetch(`/api/inpatient/admissions/${admissionId}/bill/pdf?include_header=false`, {
         headers: { 'Authorization': `Bearer ${token}` },
       });
       if (res.ok) {
@@ -1130,7 +1131,7 @@ const BillingModule = () => {
                           )}
                           {p.is_refund && (
                             <Button size="sm" variant="ghost" className="h-6 text-[10px] px-2"
-                              onClick={() => window.open(`/api/hospital/billing/payments/${p.id}/refund-receipt/pdf`, '_blank')}>
+                              onClick={() => printPdfFromUrl(`/api/hospital/billing/payments/${p.id}/refund-receipt/pdf`)}>
                               PDF
                             </Button>
                           )}

@@ -23,7 +23,7 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
   const [paymentMethod, setPaymentMethod] = useState('cash');
   const [discount, setDiscount] = useState(0);
   const [referredBy, setReferredBy] = useState('');
-  const [includeHeader, setIncludeHeader] = useState(true);
+  const [includeHeader, setIncludeHeader] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [duplicateWarning, setDuplicateWarning] = useState(null);
 
@@ -31,7 +31,7 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
   const [billPdfUrl, setBillPdfUrl] = useState(null);
   const [showBillPreview, setShowBillPreview] = useState(false);
   const [billOrderIds, setBillOrderIds] = useState([]);
-  const [previewHeader, setPreviewHeader] = useState(true);
+  const [previewHeader, setPreviewHeader] = useState(false);
 
   useEffect(() => {
     if (open) {

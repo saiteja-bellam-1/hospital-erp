@@ -300,7 +300,7 @@ const ReceptionPatientsPage = () => {
     }
   };
 
-  const printPrescription = async (prescriptionId, includeHeader = true) => {
+  const printPrescription = async (prescriptionId, includeHeader = false) => {
     try {
       const token = localStorage.getItem('token');
       const response = await fetch(`/api/prescriptions-simple/${prescriptionId}/download?include_header=${includeHeader}`, {
@@ -710,11 +710,11 @@ const ReceptionPatientsPage = () => {
 
       {/* Register Patient Dialog */}
       <Dialog open={showPatientDialog} onOpenChange={setShowPatientDialog}>
-        <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto">
+        <DialogContent className="max-w-6xl max-h-[95vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Register New Patient</DialogTitle>
           </DialogHeader>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-3 gap-y-2">
             <div>
               <Label htmlFor="first_name">First Name *</Label>
               <Input
@@ -841,7 +841,7 @@ const ReceptionPatientsPage = () => {
             </div>
 
             {/* Emergency Contact Section */}
-            <div className="col-span-2 border-t pt-3 mt-2">
+            <div className="col-span-full border-t pt-2 mt-1">
               <Label className="text-sm font-semibold text-gray-700">Emergency Contact</Label>
             </div>
             <div>
@@ -868,14 +868,14 @@ const ReceptionPatientsPage = () => {
             </div>
 
             {/* Address Section */}
-            <div className="col-span-2 border-t pt-3 mt-2">
+            <div className="col-span-full border-t pt-2 mt-1">
               <Label className="text-sm font-semibold text-gray-700">Address</Label>
             </div>
-            <div className="col-span-2">
+            <div className="md:col-span-2 lg:col-span-3 xl:col-span-2">
               <Label>Address Line 1</Label>
               <Input value={patientForm.address_line1} onChange={(e) => setPatientForm({...patientForm, address_line1: e.target.value})} placeholder="House/Flat No, Street" />
             </div>
-            <div className="col-span-2">
+            <div className="md:col-span-2 lg:col-span-3 xl:col-span-2">
               <Label>Address Line 2</Label>
               <Input value={patientForm.address_line2} onChange={(e) => setPatientForm({...patientForm, address_line2: e.target.value})} placeholder="Area, Landmark" />
             </div>
@@ -892,7 +892,7 @@ const ReceptionPatientsPage = () => {
               <Input value={patientForm.district} onChange={(e) => setPatientForm({...patientForm, district: e.target.value})} />
             </div>
           </div>
-          <div className="flex gap-2 pt-4">
+          <div className="flex gap-2 pt-3">
             <Button variant="outline" onClick={() => setShowPatientDialog(false)} className="flex-1">
               Cancel
             </Button>
@@ -909,11 +909,11 @@ const ReceptionPatientsPage = () => {
 
       {/* Edit Patient Dialog */}
       <Dialog open={showEditPatientDialog} onOpenChange={setShowEditPatientDialog}>
-        <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto">
+        <DialogContent className="max-w-6xl max-h-[95vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Edit Patient - {selectedPatient?.first_name} {selectedPatient?.last_name}</DialogTitle>
           </DialogHeader>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-3 gap-y-2">
             <div>
               <Label>First Name *</Label>
               <Input
@@ -1027,7 +1027,7 @@ const ReceptionPatientsPage = () => {
             </div>
 
             {/* Emergency Contact Section */}
-            <div className="col-span-2 border-t pt-3 mt-2">
+            <div className="col-span-full border-t pt-2 mt-1">
               <Label className="text-sm font-semibold text-gray-700">Emergency Contact</Label>
             </div>
             <div>
@@ -1055,14 +1055,14 @@ const ReceptionPatientsPage = () => {
             </div>
 
             {/* Address Section */}
-            <div className="col-span-2 border-t pt-3 mt-2">
+            <div className="col-span-full border-t pt-2 mt-1">
               <Label className="text-sm font-semibold text-gray-700">Address</Label>
             </div>
-            <div className="col-span-2">
+            <div className="md:col-span-2 lg:col-span-3 xl:col-span-2">
               <Label>Address Line 1</Label>
               <Input value={editPatientForm.address_line1} onChange={(e) => setEditPatientForm({...editPatientForm, address_line1: e.target.value})} placeholder="House/Flat No, Street" />
             </div>
-            <div className="col-span-2">
+            <div className="md:col-span-2 lg:col-span-3 xl:col-span-2">
               <Label>Address Line 2</Label>
               <Input value={editPatientForm.address_line2} onChange={(e) => setEditPatientForm({...editPatientForm, address_line2: e.target.value})} placeholder="Area, Landmark" />
             </div>
@@ -1079,7 +1079,7 @@ const ReceptionPatientsPage = () => {
               <Input value={editPatientForm.district} onChange={(e) => setEditPatientForm({...editPatientForm, district: e.target.value})} />
             </div>
           </div>
-          <div className="flex gap-2 pt-4">
+          <div className="flex gap-2 pt-3">
             <Button variant="outline" onClick={() => setShowEditPatientDialog(false)} className="flex-1">
               Cancel
             </Button>

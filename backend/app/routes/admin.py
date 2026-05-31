@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 from typing import List, Optional
 
 from config.database import get_db
+from app.models.hospital import Hospital
 from app.models.user import User, UserRole, UserPermission
 from app.models.system import SystemModule, SystemSettings
 from app.utils.dependencies import get_current_user
@@ -739,6 +740,178 @@ async def restore_user(
     user.is_active = True
     db.commit()
     return {"message": "User restored successfully"}
+
+# ---------------------------------------------------------------------------
+# Bulk user import (doctors / nurses) — CSV upload
+# ---------------------------------------------------------------------------
+#
+# Installer-time "normal users" bulk import lives in the Inno Setup wizard
+# (see app.services.bootstrap_from_seed). Doctors and nurses are intentionally
+# excluded from that path because they have role-specific profile columns
+# (specialization, license number, default consultation duration, etc) and
+# benefit from being added after the hospital is up and running.
+#
+# Both endpoints share the same pattern: read the upload, run the role-
+# specific validator, and BLOCK the whole batch if any row fails — duplicates
+# never apply partially. The frontend is expected to surface row-level errors
+# from the response.
+
+CSV_MAX_BYTES = 1 * 1024 * 1024  # 1 MB — generous for 5k rows
+
+
+async def _read_csv_upload(file: UploadFile) -> str:
+    raw = await file.read()
+    if len(raw) > CSV_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="CSV file too large (max 1 MB)")
+    try:
+        # Tolerate Excel-saved UTF-8 BOM.
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="CSV must be UTF-8 encoded")
+
+
+def _resolve_hospital_id(db: Session) -> int:
+    hospital = db.query(Hospital).first()
+    if hospital is None:
+        raise HTTPException(status_code=500, detail="No hospital row in DB — finish setup first")
+    return hospital.id
+
+
+@router.post("/users/bulk-import-doctors")
+async def bulk_import_doctors(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_admin_access),
+    db: Session = Depends(get_db),
+):
+    """Bulk-create doctor users from a CSV upload.
+
+    Required columns: username, email, first_name, last_name, password,
+    specialization, license_number. Optional: phone, qualification,
+    consultation_fee_inr, inpatient_fee_inr, emergency_fee_inr,
+    experience_years, default_consultation_duration.
+    """
+    from app.services.user_csv_import import (
+        apply_doctors,
+        parse_and_validate_doctors,
+    )
+
+    csv_text = await _read_csv_upload(file)
+    existing_usernames = [u for (u,) in db.query(User.username).all()]
+    existing_emails = [e for (e,) in db.query(User.email).all()]
+
+    rows, errors = parse_and_validate_doctors(
+        csv_text,
+        existing_usernames=existing_usernames,
+        existing_emails=existing_emails,
+    )
+    if errors:
+        return {
+            "ok": False,
+            "created": 0,
+            "errors": [e.as_dict() for e in errors],
+        }
+
+    hospital_id = _resolve_hospital_id(db)
+    try:
+        result = apply_doctors(db, rows, hospital_id)
+    except ValueError as e:
+        return {"ok": False, "created": 0, "errors": [{"line": None, "field": None, "message": str(e)}]}
+
+    try:
+        from app.services.audit_service import log_action
+        log_action(db, current_user, "bulk_import_doctors", "admin", "User", None,
+                   f"Bulk-imported {result['created']} doctor(s) from CSV",
+                   details={"usernames": result["usernames"]})
+    except Exception:
+        pass
+
+    return {"ok": True, "created": result["created"], "usernames": result["usernames"], "errors": []}
+
+
+@router.post("/users/bulk-import-nurses")
+async def bulk_import_nurses(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_admin_access),
+    db: Session = Depends(get_db),
+):
+    """Bulk-create nurse users from a CSV upload.
+
+    Required columns: username, email, first_name, last_name, password.
+    Optional: phone.
+    """
+    from app.services.user_csv_import import (
+        apply_nurses,
+        parse_and_validate_nurses,
+    )
+
+    csv_text = await _read_csv_upload(file)
+    existing_usernames = [u for (u,) in db.query(User.username).all()]
+    existing_emails = [e for (e,) in db.query(User.email).all()]
+
+    rows, errors = parse_and_validate_nurses(
+        csv_text,
+        existing_usernames=existing_usernames,
+        existing_emails=existing_emails,
+    )
+    if errors:
+        return {
+            "ok": False,
+            "created": 0,
+            "errors": [e.as_dict() for e in errors],
+        }
+
+    hospital_id = _resolve_hospital_id(db)
+    try:
+        result = apply_nurses(db, rows, hospital_id)
+    except ValueError as e:
+        return {"ok": False, "created": 0, "errors": [{"line": None, "field": None, "message": str(e)}]}
+
+    try:
+        from app.services.audit_service import log_action
+        log_action(db, current_user, "bulk_import_nurses", "admin", "User", None,
+                   f"Bulk-imported {result['created']} nurse(s) from CSV",
+                   details={"usernames": result["usernames"]})
+    except Exception:
+        pass
+
+    return {"ok": True, "created": result["created"], "usernames": result["usernames"], "errors": []}
+
+
+@router.get("/users/bulk-import-sample/{role}")
+async def bulk_import_sample(
+    role: str,
+    current_user: User = Depends(require_admin_access),
+):
+    """Return a sample CSV body for the given role. Used by the in-app
+    importer UI to give operators a known-good template they can edit."""
+    from fastapi import Response
+    if role == "doctor":
+        body = (
+            "username,email,first_name,last_name,password,phone,"
+            "specialization,license_number,qualification,consultation_fee_inr,"
+            "inpatient_fee_inr,emergency_fee_inr,experience_years,"
+            "default_consultation_duration\n"
+            "drravi,drravi@hospital.in,Ravi,Kumar,Welcome@123,9876543210,"
+            "Cardiology,MCI-12345,MBBS MD,800,2000,1500,12,15\n"
+            "drmeera,drmeera@hospital.in,Meera,Iyer,Welcome@123,9876543211,"
+            "Pediatrics,MCI-67890,MBBS MD DCH,600,1500,1200,8,20\n"
+        )
+        filename = "doctors_sample.csv"
+    elif role == "nurse":
+        body = (
+            "username,email,first_name,last_name,password,phone\n"
+            "asha,asha.n@hospital.in,Asha,Menon,Welcome@123,9876543220\n"
+            "priya,priya.n@hospital.in,Priya,Rao,Welcome@123,9876543221\n"
+        )
+        filename = "nurses_sample.csv"
+    else:
+        raise HTTPException(status_code=404, detail=f"No sample for role {role!r}")
+    return Response(
+        content=body,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
 
 # ROLE MANAGEMENT ENDPOINTS
 @router.get("/roles", response_model=List[RoleResponse])

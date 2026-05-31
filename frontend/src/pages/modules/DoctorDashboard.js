@@ -66,7 +66,7 @@ const DoctorDashboard = () => {
   // Preview state
   const [previewPrescription, setPreviewPrescription] = useState(null);
   const [previewPdfUrl, setPreviewPdfUrl] = useState(null);
-  const [includeHeader, setIncludeHeader] = useState(true);
+  const [includeHeader, setIncludeHeader] = useState(false);
 
   // Success feedback state
   const [successMessage, setSuccessMessage] = useState('');
@@ -391,6 +391,33 @@ const DoctorDashboard = () => {
       }
     } catch (error) {
       console.error('Error fetching queue:', error);
+    }
+  };
+
+  const queueAction = async (action, appointmentId) => {
+    const doctorId = user?.id;
+    if (!doctorId) return;
+    try {
+      const token = localStorage.getItem('token');
+      const url = appointmentId
+        ? `/api/appointments/queue/${doctorId}/${action}/${appointmentId}`
+        : `/api/appointments/queue/${doctorId}/${action}`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const msg = typeof data.detail === 'string' ? data.detail : `Failed to ${action}`;
+        toast({ title: 'Error', description: msg, variant: 'destructive' });
+        return;
+      }
+      toast({ title: 'Queue updated', description: data.message || `${action} complete` });
+      await fetchQueueData(doctorId);
+      await fetchTodayAppointments(doctorId);
+    } catch (error) {
+      console.error(`Queue ${action} error:`, error);
+      toast({ title: 'Error', description: `Failed to ${action}`, variant: 'destructive' });
     }
   };
 
@@ -1072,21 +1099,38 @@ const DoctorDashboard = () => {
           <CardContent className="p-4">
             <h3 className="text-sm font-semibold text-gray-500 mb-2">CURRENT QUEUE</h3>
             {queueData && queueData.queue && queueData.queue.length > 0 ? (
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <Hash className="h-5 w-5 text-blue-600" />
-                  <div>
-                    {queueData.current_patient ? (
-                      <span className="font-medium text-blue-700">
-                        Token #{queueData.current_patient.token_number} - {queueData.current_patient.patient_name}
-                      </span>
-                    ) : (
-                      <span className="text-gray-500">No patient in consultation</span>
-                    )}
+              <>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-3">
+                    <Hash className="h-5 w-5 text-blue-600" />
+                    <div>
+                      {queueData.current_patient ? (
+                        <span className="font-medium text-blue-700">
+                          Token #{queueData.current_patient.token_number} - {queueData.current_patient.patient_name}
+                        </span>
+                      ) : (
+                        <span className="text-gray-500">No patient in consultation</span>
+                      )}
+                    </div>
                   </div>
+                  <Badge variant="outline">{queueData.queue.filter(q => q.status === 'confirmed' && q.token_status !== 'skipped').length} waiting</Badge>
                 </div>
-                <Badge variant="outline">{queueData.queue.filter(q => q.status === 'confirmed').length} waiting</Badge>
-              </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button size="sm" onClick={() => queueAction('call-next')}>
+                    Call Next
+                  </Button>
+                  {queueData.current_patient && (
+                    <Button size="sm" variant="outline" onClick={() => queueAction('skip', queueData.current_patient.appointment_id)}>
+                      Skip Current
+                    </Button>
+                  )}
+                  {queueData.queue.filter(q => q.token_status === 'skipped').map(s => (
+                    <Button key={s.appointment_id} size="sm" variant="secondary" onClick={() => queueAction('recall', s.appointment_id)}>
+                      Recall #{s.token_number}
+                    </Button>
+                  ))}
+                </div>
+              </>
             ) : (
               <p className="text-sm text-gray-400">No patients in queue</p>
             )}

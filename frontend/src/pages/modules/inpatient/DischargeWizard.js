@@ -420,7 +420,7 @@ const DischargeWizard = ({
 
   return (
     <Dialog open={open} onOpenChange={v => !v && onClose?.()}>
-      <DialogContent className="max-w-2xl max-h-[92vh] overflow-y-auto">
+      <DialogContent className="max-w-4xl max-h-[92vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center justify-between">
             <span>Discharge — {admission.patient_name}</span>

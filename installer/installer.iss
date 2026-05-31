@@ -101,11 +101,11 @@ Type: files; Name: "{app}\assets\icon.ico"
 // Order:
 //   wpWelcome -> wpSelectDir -> [DataFolderPage] -> [DbCheckPage]
 //   -> [LicensePage] -> [HospitalPage] -> [AdminPage] -> [BackupPage]
-//   -> wpSelectTasks -> wpReady -> wpInstalling -> wpFinished
+//   -> [UsersPage] -> wpSelectTasks -> wpReady -> wpInstalling -> wpFinished
 //
-// Pages prefixed with [Hospital/Admin/License] are skipped when the operator
-// picks "Use existing data folder" on DataFolderPage — that branch only needs
-// the data folder + (optional) backup destinations.
+// Pages prefixed with [Hospital/Admin/License/Users] are skipped when the
+// operator picks "Use existing data folder" on DataFolderPage — that branch
+// only needs the data folder + (optional) backup destinations.
 // ============================================================================
 
 const
@@ -150,6 +150,8 @@ var
   BtnVerifyLicense:  TNewButton;
   LblLicenseStatus:  TNewStaticText;
   LicenseValid:      Boolean;
+  LicenseStatus:     String;   // "active" | "expiring_soon" | "grace_period" | "expired"
+  LicenseDaysLeft:   Integer;  // from dbcheck validate-license
 
   // HospitalPage
   HospitalPage:      TWizardPage;
@@ -174,6 +176,23 @@ var
   BtnBackup1:        TNewButton;
   BtnBackup2:        TNewButton;
   BtnBackup3:        TNewButton;
+
+  // UsersPage (MODE_FRESH only) — optional bulk import of "normal" users.
+  // Doctors and nurses are NOT supported here — they have dedicated in-app
+  // importers that collect specialisation, qualifications, etc.
+  UsersPage:         TWizardPage;
+  EdUsersCsv:        TNewEdit;
+  BtnBrowseUsers:    TNewButton;
+  BtnSampleUsers:    TNewButton;
+  BtnValidateUsers:  TNewButton;
+  UsersMemo:         TNewMemo;
+  UsersCsvOk:        Boolean;
+
+  // Auto-link tracker: the data folder defaults to {app}\data so that picking
+  // the install location on wpSelectDir automatically determines the data
+  // location. LastAutoDataDir is the value we last auto-populated; if the
+  // user hasn't edited away from it we may refresh it when {app} changes.
+  LastAutoDataDir:   String;
 
 // ----------------------------------------------------------------------------
 //   helpers
@@ -228,6 +247,27 @@ begin
   Result := '"' + S + '"';
 end;
 
+function TimeoutForCommand(const Args: String): Integer;
+begin
+  // Hard deadlines (seconds) per dbcheck sub-command so a hung UNC share,
+  // antivirus scan or stuck SQLite open doesn't freeze the wizard. The
+  // values are intentionally generous; normal runs finish in <1s.
+  if Pos('validate-backup-db', Args) = 1 then
+    Result := 60  // large backups may need a real integrity-check pass
+  else if Pos('check-db', Args) = 1 then
+    Result := 20
+  else if Pos('check-writable', Args) = 1 then
+    Result := 15
+  else if Pos('validate-license', Args) = 1 then
+    Result := 15
+  else if Pos('validate-users-csv', Args) = 1 then
+    Result := 20
+  else if Pos('machine-id', Args) = 1 then
+    Result := 10
+  else
+    Result := 20;
+end;
+
 function RunDbCheck(const Args: String; out Output: String): Boolean;
 var
   TmpFile, Params: String;
@@ -246,8 +286,12 @@ begin
   // Call dbcheck.exe directly (no `cmd /C` wrapper). dbcheck writes its
   // JSON to TmpFile via --out, which dodges Windows command-line quoting
   // bugs entirely (a path ending in `\` would otherwise escape the
-  // closing quote and corrupt the redirection).
-  Params := '--out ' + QuoteArg(TmpFile) + ' ' + Args;
+  // closing quote and corrupt the redirection). We also pass --timeout so
+  // dbcheck self-kills after a deadline — Inno's Exec has no timeout of
+  // its own.
+  Params := '--out ' + QuoteArg(TmpFile)
+          + ' --timeout ' + IntToStr(TimeoutForCommand(Args))
+          + ' ' + Args;
   if not Exec(DbCheckExePath, Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
     Exit;
 
@@ -264,7 +308,9 @@ begin
 
   // Treat a successful Exec + populated output as a successful invocation.
   // The caller still inspects "ok": true/false in the JSON to decide
-  // whether the underlying check passed.
+  // whether the underlying check passed. A timeout exit (124) still has
+  // useful JSON in TmpFile, so we let callers fall through to the standard
+  // error display.
   Result := (Output <> '') or (ResultCode = 0);
 end;
 
@@ -273,6 +319,53 @@ begin
   // Tiny JSON probe — dbcheck.exe always emits {"ok": true|false, ...} as the
   // first thing on stdout. We avoid pulling in a real JSON lib in Pascal.
   Result := (Pos('"ok": true', S) > 0) or (Pos('"ok":true', S) > 0);
+end;
+
+function JsonGetString(const S, Key: String): String;
+var
+  Tag: String;
+  P, Q: Integer;
+begin
+  // Extract a string value from a flat JSON blob: looks for `"Key":` then a
+  // quoted value. Returns '' if missing. Same hand-rolled style as
+  // ExtractJsonError — we deliberately don't pull a real JSON lib into Pascal.
+  Result := '';
+  Tag := '"' + Key + '":';
+  P := Pos(Tag, S);
+  if P = 0 then Exit;
+  P := P + Length(Tag);
+  while (P <= Length(S)) and (S[P] = ' ') do Inc(P);
+  if (P > Length(S)) or (S[P] <> '"') then Exit;
+  Inc(P);
+  Q := P;
+  while (Q <= Length(S)) and (S[Q] <> '"') do Inc(Q);
+  if Q > P then Result := Copy(S, P, Q - P);
+end;
+
+function JsonGetInt(const S, Key: String; Default: Integer): Integer;
+var
+  Tag, Tail: String;
+  P, Q: Integer;
+  Code: Integer;
+begin
+  // Extract a numeric value (positive or negative integer). Returns Default
+  // when the key is absent or unparseable.
+  Result := Default;
+  Tag := '"' + Key + '":';
+  P := Pos(Tag, S);
+  if P = 0 then Exit;
+  P := P + Length(Tag);
+  while (P <= Length(S)) and (S[P] = ' ') do Inc(P);
+  Q := P;
+  while (Q <= Length(S)) and
+        (((S[Q] >= '0') and (S[Q] <= '9')) or (S[Q] = '-')) do
+    Inc(Q);
+  if Q > P then
+  begin
+    Tail := Copy(S, P, Q - P);
+    Val(Tail, Result, Code);
+    if Code <> 0 then Result := Default;
+  end;
 end;
 
 function ExtractJsonError(const S: String): String;
@@ -445,7 +538,9 @@ begin
   LblDataIntro.Caption :=
     'Pick "Create a new data folder" for a fresh install, "Use existing data folder" to ' +
     'reinstall on top of an existing database, or "Restore from a backup database file" ' +
-    'to bring up a hospital from a single .db backup file.';
+    'to bring up a hospital from a single .db backup file. The data folder defaults to ' +
+    '<install folder>\data so it tracks the location chosen on the previous page; you ' +
+    'can override it with Browse.';
 
   RbFresh := TNewRadioButton.Create(DataFolderPage.Surface);
   RbFresh.Parent := DataFolderPage.Surface;
@@ -460,11 +555,11 @@ begin
   EdNewDataDir.Top := 65;
   EdNewDataDir.Left := 24;
   EdNewDataDir.Width := DataFolderPage.SurfaceWidth - 110;
-  // Default to ProgramData, NOT Program Files. Storing a SQLite DB under
-  // Program Files is fragile (UAC virtualisation, AV interference, blown
-  // away on uninstall) and previously caused "Cannot write to this folder"
-  // when the wizard wasn't elevated.
-  EdNewDataDir.Text := ExpandConstant('{commonappdata}\KTHEALTHERP\data');
+  // Default is populated lazily in CurPageChanged once {app} is known
+  // (wpSelectDir runs before this page). Data lives under <app>\data so
+  // the two folder pickers can't drift apart unless the user explicitly
+  // edits this field.
+  EdNewDataDir.Text := '';
 
   BtnBrowseNewData := TNewButton.Create(DataFolderPage.Surface);
   BtnBrowseNewData.Parent := DataFolderPage.Surface;
@@ -487,9 +582,10 @@ begin
   EdExistingDataDir.Top := 135;
   EdExistingDataDir.Left := 24;
   EdExistingDataDir.Width := DataFolderPage.SurfaceWidth - 110;
-  // Pre-fill with the same default the fresh-install path uses, so that
-  // re-running the installer over a previous install just needs Next.
-  EdExistingDataDir.Text := ExpandConstant('{commonappdata}\KTHEALTHERP\data');
+  // Pre-fill is lazy (see CurPageChanged) so it tracks {app}\data, matching
+  // the fresh-install path. Re-running the installer over a previous install
+  // just needs Next.
+  EdExistingDataDir.Text := '';
   EdExistingDataDir.Enabled := False;
 
   BtnBrowseExisting := TNewButton.Create(DataFolderPage.Surface);
@@ -515,7 +611,7 @@ begin
   EdRestoreDataDir.Top := 200;
   EdRestoreDataDir.Left := 24;
   EdRestoreDataDir.Width := DataFolderPage.SurfaceWidth - 110;
-  EdRestoreDataDir.Text := ExpandConstant('{commonappdata}\KTHEALTHERP\data');
+  EdRestoreDataDir.Text := '';
   EdRestoreDataDir.Enabled := False;
 
   BtnBrowseRestoreDir := TNewButton.Create(DataFolderPage.Surface);
@@ -572,31 +668,66 @@ end;
 
 procedure OnVerifyLicense(Sender: TObject);
 var
-  Output, Err: String;
+  Output, Err, Status: String;
+  Days: Integer;
 begin
   LicenseValid := False;
+  LicenseStatus := '';
+  LicenseDaysLeft := 0;
   if StrIsEmpty(EdLicensePath.Text) then
   begin
+    LblLicenseStatus.Font.Color := clBlack;
     LblLicenseStatus.Caption := 'No license selected. You can skip this step and upload one from the app later.';
     Exit;
   end;
   if not FileExists(EdLicensePath.Text) then
   begin
+    LblLicenseStatus.Font.Color := clRed;
     LblLicenseStatus.Caption := 'File not found: ' + EdLicensePath.Text;
     Exit;
   end;
 
+  LblLicenseStatus.Font.Color := clBlack;
   LblLicenseStatus.Caption := 'Verifying...';
   RunDbCheck('validate-license ' + QuoteArg(StripTrailingSlash(EdLicensePath.Text)), Output);
   if JsonHasOkTrue(Output) then
   begin
     LicenseValid := True;
-    LblLicenseStatus.Caption := 'License OK — signature valid and bound to this machine.';
+    Status := JsonGetString(Output, 'status');
+    Days := JsonGetInt(Output, 'days_remaining', 0);
+    LicenseStatus := Status;
+    LicenseDaysLeft := Days;
+    if Status = 'expired' then
+    begin
+      LblLicenseStatus.Font.Color := clRed;
+      LblLicenseStatus.Caption := 'License signature OK, but this license is EXPIRED. The app will ' +
+        'run in restricted mode until you upload a renewal. Continue only if you have a ' +
+        'renewal ready.';
+    end
+    else if Status = 'grace_period' then
+    begin
+      LblLicenseStatus.Font.Color := clRed;
+      LblLicenseStatus.Caption := 'License signature OK, but expired ' + IntToStr(-Days) +
+        ' days ago — currently in the grace period. Upload a renewal as soon as possible.';
+    end
+    else if Status = 'expiring_soon' then
+    begin
+      LblLicenseStatus.Font.Color := $00808000;  // dark amber-ish (BGR)
+      LblLicenseStatus.Caption := 'License OK — expires in ' + IntToStr(Days) +
+        ' day(s). Plan a renewal soon.';
+    end
+    else
+    begin
+      LblLicenseStatus.Font.Color := $00006400;  // dark green (BGR)
+      LblLicenseStatus.Caption := 'License OK — signature valid, bound to this machine, ' +
+        IntToStr(Days) + ' day(s) remaining.';
+    end;
   end
   else
   begin
     Err := ExtractJsonError(Output);
     if Err = '' then Err := 'Unknown error. See ' + ExpandConstant('{tmp}\dbcheck_out.txt');
+    LblLicenseStatus.Font.Color := clRed;
     LblLicenseStatus.Caption := 'License rejected: ' + Err;
   end;
 end;
@@ -808,6 +939,163 @@ begin
   BtnBackup3.Caption := 'Browse...'; BtnBackup3.OnClick := @OnBrowseBackup3;
 end;
 
+procedure OnBrowseUsersCsv(Sender: TObject);
+var
+  Picked: String;
+begin
+  Picked := PickFile('CSV files (*.csv)|*.csv|All files|*.*', EdUsersCsv.Text, '');
+  if Picked <> '' then
+  begin
+    EdUsersCsv.Text := Picked;
+    UsersCsvOk := False;
+    UsersMemo.Lines.Clear;
+    UsersMemo.Lines.Add('Click "Validate" to check this file before continuing.');
+  end;
+end;
+
+procedure WriteSampleUsersCsv(const Path: String);
+var
+  Lines: TStringList;
+begin
+  Lines := TStringList.Create;
+  try
+    Lines.Add('username,email,first_name,last_name,role,password,phone,additional_roles');
+    Lines.Add('ravi,ravi@hospital.in,Ravi,Kumar,billing_admin,Welcome@123,9876543210,');
+    Lines.Add('asha,asha@hospital.in,Asha,Menon,receptionist,Welcome@123,9876543211,frontdesk');
+    Lines.Add('neha,neha@hospital.in,Neha,Iyer,lab_technician,Welcome@123,9876543212,');
+    Lines.SaveToFile(Path);
+  finally
+    Lines.Free;
+  end;
+end;
+
+procedure OnSampleUsersCsv(Sender: TObject);
+var
+  TargetDir, TargetPath: String;
+begin
+  // Drop the sample next to the operator's user profile so they always know
+  // where it landed. Desktop is the most discoverable on a Windows machine.
+  TargetDir := ExpandConstant('{userdesktop}');
+  if not DirExists(TargetDir) then
+    TargetDir := ExpandConstant('{userdocs}');
+  TargetPath := AddBackslash(TargetDir) + 'kthealth_users_sample.csv';
+  try
+    WriteSampleUsersCsv(TargetPath);
+    MsgBox('Sample CSV written to:' + Chr(13) + Chr(10) + TargetPath + Chr(13) + Chr(10) + Chr(13) + Chr(10) +
+           'Open it in Excel or a text editor, edit the rows, save, then come back and pick it here.',
+           mbInformation, MB_OK);
+  except
+    MsgBox('Could not write the sample CSV to ' + TargetPath, mbError, MB_OK);
+  end;
+end;
+
+procedure OnValidateUsersCsv(Sender: TObject);
+var
+  Output, Err, Path, Args, AdminU, AdminE: String;
+begin
+  UsersCsvOk := False;
+  UsersMemo.Lines.Clear;
+  Path := Trim(EdUsersCsv.Text);
+  if Path = '' then
+  begin
+    UsersMemo.Lines.Add('No CSV picked. Leave this blank to skip the import.');
+    Exit;
+  end;
+  UsersMemo.Lines.Add('Validating ' + Path + ' ...');
+  // Forward the admin username/email the operator set on the previous page
+  // so the CSV can't shadow them. Catches the collision at install time
+  // instead of leaving a half-applied seed for first-launch bootstrap to
+  // discover.
+  AdminU := Trim(EdAdminUser.Text);
+  AdminE := Trim(EdAdminEmail.Text);
+  Args := 'validate-users-csv ' + QuoteArg(Path);
+  if AdminU <> '' then
+    Args := Args + ' --reserved-username ' + QuoteArg(AdminU);
+  if AdminE <> '' then
+    Args := Args + ' --reserved-email ' + QuoteArg(AdminE);
+  if RunDbCheck(Args, Output) and JsonHasOkTrue(Output) then
+  begin
+    UsersCsvOk := True;
+    UsersMemo.Lines.Add('');
+    UsersMemo.Lines.Add('OK — CSV is valid. Click Next to continue.');
+    UsersMemo.Lines.Add('');
+    UsersMemo.Lines.Add(Output);
+  end
+  else
+  begin
+    Err := ExtractJsonError(Output);
+    if Err = '' then
+    begin
+      if Output = '' then
+        Err := '(dbcheck.exe produced no output)'
+      else
+        Err := '(see raw output below)';
+    end;
+    UsersMemo.Lines.Add('');
+    UsersMemo.Lines.Add('CSV rejected: ' + Err);
+    UsersMemo.Lines.Add('');
+    if Output <> '' then
+      UsersMemo.Lines.Add(Output);
+  end;
+end;
+
+procedure CreateUsersPage;
+var
+  Lbl: TNewStaticText;
+begin
+  UsersPage := CreateCustomPage(BackupPage.ID,
+    'Import additional users (optional)',
+    'Import billing, reception, lab, pharmacy, and admin users from a CSV. Doctors and nurses are imported from the app after install.');
+
+  Lbl := TNewStaticText.Create(UsersPage.Surface);
+  Lbl.Parent := UsersPage.Surface;
+  Lbl.Top := 0;
+  Lbl.Caption := 'Users CSV (leave blank to skip):';
+
+  EdUsersCsv := TNewEdit.Create(UsersPage.Surface);
+  EdUsersCsv.Parent := UsersPage.Surface;
+  EdUsersCsv.Top := 18;
+  EdUsersCsv.Width := UsersPage.SurfaceWidth - 90;
+
+  BtnBrowseUsers := TNewButton.Create(UsersPage.Surface);
+  BtnBrowseUsers.Parent := UsersPage.Surface;
+  BtnBrowseUsers.Top := 16;
+  BtnBrowseUsers.Left := UsersPage.SurfaceWidth - 80;
+  BtnBrowseUsers.Width := 80; BtnBrowseUsers.Height := 23;
+  BtnBrowseUsers.Caption := 'Browse...';
+  BtnBrowseUsers.OnClick := @OnBrowseUsersCsv;
+
+  BtnSampleUsers := TNewButton.Create(UsersPage.Surface);
+  BtnSampleUsers.Parent := UsersPage.Surface;
+  BtnSampleUsers.Top := 50;
+  BtnSampleUsers.Left := 0;
+  BtnSampleUsers.Width := 150; BtnSampleUsers.Height := 23;
+  BtnSampleUsers.Caption := 'Save sample CSV...';
+  BtnSampleUsers.OnClick := @OnSampleUsersCsv;
+
+  BtnValidateUsers := TNewButton.Create(UsersPage.Surface);
+  BtnValidateUsers.Parent := UsersPage.Surface;
+  BtnValidateUsers.Top := 50;
+  BtnValidateUsers.Left := 160;
+  BtnValidateUsers.Width := 100; BtnValidateUsers.Height := 23;
+  BtnValidateUsers.Caption := 'Validate';
+  BtnValidateUsers.OnClick := @OnValidateUsersCsv;
+
+  UsersMemo := TNewMemo.Create(UsersPage.Surface);
+  UsersMemo.Parent := UsersPage.Surface;
+  UsersMemo.Top := 84;
+  UsersMemo.Left := 0;
+  UsersMemo.Width := UsersPage.SurfaceWidth;
+  UsersMemo.Height := UsersPage.SurfaceHeight - 90;
+  UsersMemo.ScrollBars := ssVertical;
+  UsersMemo.ReadOnly := True;
+  UsersMemo.Lines.Add('Allowed roles: hospital_admin, lab_admin, lab_technician,');
+  UsersMemo.Lines.Add('pharmacy_admin, pharmacist, billing_admin, inpatient_admin,');
+  UsersMemo.Lines.Add('frontdesk, receptionist.');
+  UsersMemo.Lines.Add('');
+  UsersMemo.Lines.Add('Click "Save sample CSV..." to drop a template on your Desktop.');
+end;
+
 procedure InitializeWizard;
 begin
   CreateDataFolderPage;
@@ -816,8 +1104,11 @@ begin
   CreateHospitalPage;
   CreateAdminPage;
   CreateBackupPage;
+  CreateUsersPage;
   DbCheckOk := False;
   LicenseValid := False;
+  UsersCsvOk := False;
+  LastAutoDataDir := '';
 end;
 
 // ----------------------------------------------------------------------------
@@ -959,7 +1250,24 @@ begin
       if not PathOk then
       begin
         MsgBox('Cannot write to that folder:' + Chr(13) + Chr(10) + DescribeFailure(Output), mbError, MB_OK);
-        Result := False;
+        Result := False; Exit;
+      end;
+      // Warn if the folder already contains a KT HEALTH ERP database — a
+      // fresh install would seed on top of it and may corrupt or merge
+      // existing state. Soft-block: confirm before proceeding.
+      if RunDbCheck('check-db ' + QuoteArg(EdNewDataDir.Text), Output) and JsonHasOkTrue(Output) then
+      begin
+        if MsgBox(
+          'This folder already contains a KT HEALTH ERP database. A fresh ' +
+          'install will reuse the existing database file and may corrupt ' +
+          'in-flight data.' + Chr(13) + Chr(10) + Chr(13) + Chr(10) +
+          'Continue anyway?' + Chr(13) + Chr(10) + Chr(13) + Chr(10) +
+          'Tip: pick "Use existing data folder" on the previous step to ' +
+          'safely reuse this database, or pick an empty folder for a fresh install.',
+          mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDNO then
+        begin
+          Result := False; Exit;
+        end;
       end;
     end
     else if GetMode = MODE_RESTORE then
@@ -1034,6 +1342,21 @@ begin
       end;
       // If they say yes, drop the license path so it isn't carried forward
       EdLicensePath.Text := '';
+    end
+    // Signature OK but the license is expired — force an explicit
+    // acknowledgement so the operator doesn't ship an expired install by
+    // accident. Grace-period licenses go through silently (still usable).
+    else if LicenseValid and (LicenseStatus = 'expired') then
+    begin
+      if MsgBox('The selected license is EXPIRED.' + Chr(13) + Chr(10) +
+                'Once installed, the app will run in restricted mode until ' +
+                'a renewal is uploaded.' + Chr(13) + Chr(10) + Chr(13) + Chr(10) +
+                'Continue with the expired license?',
+                mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDNO then
+      begin
+        Result := False;
+        Exit;
+      end;
     end;
     Exit;
   end;
@@ -1073,6 +1396,41 @@ begin
     end;
     Exit;
   end;
+
+  if CurPageID = UsersPage.ID then
+  begin
+    // CSV is optional. If a path was entered, require a successful Validate.
+    if (not StrIsEmpty(EdUsersCsv.Text)) and (not UsersCsvOk) then
+    begin
+      if MsgBox('You picked a users CSV but did not click Validate (or validation failed). ' +
+                'Click Yes to skip the import (you can re-run it from the app later) or No to go back and validate.',
+                mbConfirmation, MB_YESNO) = IDNO then
+      begin
+        Result := False;
+        Exit;
+      end;
+      EdUsersCsv.Text := '';
+    end;
+    Exit;
+  end;
+end;
+
+procedure RefreshDataDirDefaults;
+var
+  NewDefault: String;
+begin
+  // Compute <app>\data from whatever the operator just chose on wpSelectDir.
+  // For each of the three data-dir edits, refresh the text ONLY if it is
+  // empty or still matches the last value we auto-populated — that way a
+  // manual edit (typed or via Browse) is preserved.
+  NewDefault := AddBackslash(ExpandConstant('{app}')) + 'data';
+  if (EdNewDataDir.Text = '') or (EdNewDataDir.Text = LastAutoDataDir) then
+    EdNewDataDir.Text := NewDefault;
+  if (EdExistingDataDir.Text = '') or (EdExistingDataDir.Text = LastAutoDataDir) then
+    EdExistingDataDir.Text := NewDefault;
+  if (EdRestoreDataDir.Text = '') or (EdRestoreDataDir.Text = LastAutoDataDir) then
+    EdRestoreDataDir.Text := NewDefault;
+  LastAutoDataDir := NewDefault;
 end;
 
 procedure CurPageChanged(CurPageID: Integer);
@@ -1080,6 +1438,8 @@ begin
   // ShouldSkipPage handles MODE_FRESH/EXISTING fork, but Inno Setup needs
   // the explicit ShouldSkipPage callback below — this proc is only used for
   // page-specific side effects.
+  if CurPageID = DataFolderPage.ID then
+    RefreshDataDirDefaults;
   if CurPageID = DbCheckPage.ID then
     RunDbIntegrityCheck;
 end;
@@ -1095,20 +1455,22 @@ begin
   begin
     if (PageID = DataFolderPage.ID) or (PageID = DbCheckPage.ID) or
        (PageID = LicensePage.ID) or (PageID = HospitalPage.ID) or
-       (PageID = AdminPage.ID) or (PageID = BackupPage.ID) then
+       (PageID = AdminPage.ID) or (PageID = BackupPage.ID) or
+       (PageID = UsersPage.ID) then
       Result := True;
     Exit;
   end;
   Mode := GetMode;
   if (Mode = MODE_EXISTING) or (Mode = MODE_RESTORE) then
   begin
-    // Skip license/hospital/admin — they live in the existing/backup DB.
+    // Skip license/hospital/admin/users — they live in the existing/backup DB.
     // Skip the dedicated DbCheckPage too: MODE_EXISTING uses it for an
     // existing folder, MODE_RESTORE validates the .db file inline on
     // the DataFolderPage Next click.
     if (PageID = LicensePage.ID) or
        (PageID = HospitalPage.ID) or
-       (PageID = AdminPage.ID) then
+       (PageID = AdminPage.ID) or
+       (PageID = UsersPage.ID) then
       Result := True;
     if (Mode = MODE_RESTORE) and (PageID = DbCheckPage.ID) then
       Result := True;
@@ -1152,11 +1514,12 @@ end;
 
 procedure WriteSeedFile;
 var
-  DataDir, SeedPath, PwdPath, Json: String;
+  DataDir, SeedPath, PwdPath, Json, UsersSrc, UsersDst, UsersJsonPath: String;
   Mode: Integer;
   Lines: TStringList;
   ResultCode: Integer;
 begin
+  UsersJsonPath := '';
   Mode := GetMode;
   if Mode = MODE_FRESH then
     DataDir := EdNewDataDir.Text
@@ -1174,6 +1537,18 @@ begin
 
   if Mode = MODE_FRESH then
   begin
+    // If the operator picked + validated a users CSV, copy it into the data
+    // folder so the runtime bootstrap can apply it (and the source file can be
+    // moved/unplugged after install). users_csv_path in the seed always points
+    // at the COPY, never the original.
+    UsersSrc := Trim(EdUsersCsv.Text);
+    if (UsersSrc <> '') and FileExists(UsersSrc) then
+    begin
+      UsersDst := AddBackslash(ExpandConstant('{app}\data')) + 'install_users.csv';
+      if FileCopy(UsersSrc, UsersDst, False) then
+        UsersJsonPath := UsersDst;
+    end;
+
     Json :=
       '{' + #13#10 +
       '  "mode": "fresh",' + #13#10 +
@@ -1185,6 +1560,7 @@ begin
       '  "admin_username": "' + JsonEscape(EdAdminUser.Text) + '",' + #13#10 +
       '  "admin_email": "' + JsonEscape(EdAdminEmail.Text) + '",' + #13#10 +
       '  "license_path": "' + JsonEscape(EdLicensePath.Text) + '",' + #13#10 +
+      '  "users_csv_path": "' + JsonEscape(UsersJsonPath) + '",' + #13#10 +
       '  "backup_locations": [' + #13#10 +
       '    "' + JsonEscape(EdBackup1.Text) + '",' + #13#10 +
       '    "' + JsonEscape(EdBackup2.Text) + '",' + #13#10 +

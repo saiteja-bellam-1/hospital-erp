@@ -47,6 +47,12 @@ class AppointmentCreate(BaseModel):
     payment_notes: Optional[str] = None
     referred_by: Optional[str] = Field(None, max_length=100)
 
+    # Availability override — receptionist / hospital_admin / super_admin only.
+    # Bypasses doctor schedule constraints (off-days, leave, holiday, outside hours,
+    # breaks, doctor status). Does NOT bypass existing-appointment conflicts.
+    override_availability: bool = False
+    override_reason: Optional[str] = Field(None, max_length=500)
+
 class AppointmentResponse(BaseModel):
     id: int
     appointment_number: str
@@ -263,21 +269,44 @@ async def create_appointment(
     if doctor.hospital_id != current_user.hospital_id:
         raise HTTPException(status_code=403, detail="Doctor not available")
     
-    # Use availability service to check if doctor is available
+    # Availability check — receptionist / hospital_admin / super_admin can
+    # override the doctor schedule (off-days, leave, breaks, hours, status),
+    # but existing-appointment conflicts are NEVER bypassed.
     availability_service = AvailabilityService(db)
-    is_available, reason = availability_service.is_doctor_available(
-        doctor_id=appointment_data.doctor_id,
-        appointment_date=appointment_data.appointment_date,
-        appointment_time=appointment_data.appointment_time,
-        duration_minutes=appointment_data.duration_minutes
-    )
+    allowed_override_roles = {"receptionist", "hospital_admin", "super_admin"}
+    user_roles = set(getattr(current_user, "role_names", None) or [])
+    if current_user.role and current_user.role.name:
+        user_roles.add(current_user.role.name)
+
+    if appointment_data.override_availability:
+        if not (user_roles & allowed_override_roles):
+            raise HTTPException(status_code=403, detail="You are not allowed to override doctor availability")
+        if not (appointment_data.override_reason and appointment_data.override_reason.strip()):
+            raise HTTPException(status_code=400, detail="A reason is required when overriding doctor availability")
+        # Still block double-booking
+        has_conflict, conflict_reason = availability_service.has_appointment_conflict(
+            doctor_id=appointment_data.doctor_id,
+            appointment_date=appointment_data.appointment_date,
+            appointment_time=appointment_data.appointment_time,
+            duration_minutes=appointment_data.duration_minutes,
+        )
+        if has_conflict:
+            raise HTTPException(status_code=400, detail=f"Cannot override: {conflict_reason}")
+    else:
+        is_available, reason = availability_service.is_doctor_available(
+            doctor_id=appointment_data.doctor_id,
+            appointment_date=appointment_data.appointment_date,
+            appointment_time=appointment_data.appointment_time,
+            duration_minutes=appointment_data.duration_minutes
+        )
+        if not is_available:
+            raise HTTPException(status_code=400, detail=f"Doctor not available: {reason}")
     
-    if not is_available:
-        raise HTTPException(status_code=400, detail=f"Doctor not available: {reason}")
-    
-    # Calculate consultation fee from doctor's rates
+    # Calculate consultation fee from doctor's rates.
+    # Follow-up visits are free — the patient already paid for the initial
+    # consultation, the follow-up is part of the same care episode.
     consultation_fee = 0.0
-    if doctor.consultation_fee_inr:
+    if appointment_data.appointment_type != "followup" and doctor.consultation_fee_inr:
         # Extract numeric value from fee string (e.g., "₹1500" -> 1500.0)
         fee_str = doctor.consultation_fee_inr.replace('₹', '').replace(',', '').strip()
         try:
@@ -325,21 +354,42 @@ async def create_appointment(
         payment_notes=appointment_data.payment_notes,
         discount_amount=appointment_data.discount_amount,
         final_amount=final_amount,
-        referred_by=appointment_data.referred_by
+        referred_by=appointment_data.referred_by,
+        override_availability=bool(appointment_data.override_availability),
+        override_reason=(appointment_data.override_reason.strip()
+                         if appointment_data.override_availability and appointment_data.override_reason
+                         else None),
     )
     
     db.add(appointment)
     db.commit()
     db.refresh(appointment)
 
+    # Assign token at booking time (per-doctor, per-date sequence).
+    # The bill PDF printed right after booking acts as the patient's token slip.
+    try:
+        token = _generate_token_number(db, appointment.doctor_id, appointment_data.appointment_date)
+        appointment.token_number = token
+        appointment.queue_position = token
+        appointment.token_status = "waiting"
+        db.commit()
+        db.refresh(appointment)
+    except Exception:
+        pass
+
     # Audit log
     try:
         from app.services.audit_service import log_action
         doctor_name = f"Dr. {appointment.doctor.first_name} {appointment.doctor.last_name}" if appointment.doctor else "N/A"
         patient_name = f"{patient.first_name} {patient.last_name}"
+        override_suffix = (
+            f" [AVAILABILITY OVERRIDDEN — reason: {appointment.override_reason}]"
+            if appointment.override_availability else ""
+        )
         log_action(db, current_user, "book_appointment", "appointment", "Appointment", appointment.id,
-            f"Booked appointment for {patient_name} with {doctor_name} on {appointment_data.appointment_date} at {appointment_data.appointment_time}, Fee: ₹{appointment.final_amount or 0}",
-            details={"patient": patient_name, "doctor": doctor_name, "date": str(appointment_data.appointment_date), "amount": appointment.final_amount})
+            f"Booked appointment for {patient_name} with {doctor_name} on {appointment_data.appointment_date} at {appointment_data.appointment_time}, Fee: ₹{appointment.final_amount or 0}{override_suffix}",
+            details={"patient": patient_name, "doctor": doctor_name, "date": str(appointment_data.appointment_date), "amount": appointment.final_amount,
+                     "override_availability": appointment.override_availability, "override_reason": appointment.override_reason})
     except Exception:
         pass
 
@@ -409,6 +459,8 @@ async def get_appointments(
             # Queue / check-in fields
             "token_number": apt.token_number,
             "queue_position": apt.queue_position,
+            "token_status": apt.token_status,
+            "priority_boost": apt.priority_boost or 0,
             "checked_in_at": apt.checked_in_at,
             "checked_out_at": apt.checked_out_at,
             "cancellation_reason": apt.cancellation_reason,
@@ -422,7 +474,7 @@ async def get_appointments(
             "final_amount": apt.final_amount or 0.0
         }
         result.append(apt_dict)
-    
+
     return result
 
 @router.get("/{appointment_id}", response_model=AppointmentResponse)
@@ -534,6 +586,8 @@ async def get_doctor_appointments(
             # Queue / check-in fields
             "token_number": apt.token_number,
             "queue_position": apt.queue_position,
+            "token_status": apt.token_status,
+            "priority_boost": apt.priority_boost or 0,
             "checked_in_at": apt.checked_in_at,
             "checked_out_at": apt.checked_out_at,
             "cancellation_reason": apt.cancellation_reason,
@@ -574,11 +628,13 @@ async def check_in_appointment(
     if appointment.status in ["cancelled", "completed", "no_show"]:
         raise HTTPException(status_code=400, detail=f"Cannot check in a {appointment.status} appointment")
 
-    # Assign token number
-    apt_date = appointment.appointment_date.date() if isinstance(appointment.appointment_date, datetime) else appointment.appointment_date
-    token = _generate_token_number(db, appointment.doctor_id, apt_date)
-    appointment.token_number = token
-    appointment.queue_position = token
+    # Token is assigned at booking; only generate here if it's somehow missing
+    if not appointment.token_number:
+        apt_date = appointment.appointment_date.date() if isinstance(appointment.appointment_date, datetime) else appointment.appointment_date
+        token = _generate_token_number(db, appointment.doctor_id, apt_date)
+        appointment.token_number = token
+        appointment.queue_position = token
+    appointment.token_status = "waiting"
     appointment.checked_in_at = datetime.now()
     appointment.status = "confirmed"
 
@@ -616,6 +672,7 @@ async def check_out_appointment(
 
     appointment.checked_out_at = datetime.now()
     appointment.status = "completed"
+    appointment.token_status = "completed"
     appointment.consultation_ended_at = datetime.now()
 
     db.commit()
@@ -752,7 +809,7 @@ async def get_doctor_queue(
         Appointment.appointment_date <= date_end,
         Appointment.token_number.isnot(None),
         Patient.hospital_id == current_user.hospital_id
-    ).order_by(Appointment.token_number).all()
+    ).order_by(Appointment.priority_boost.desc(), Appointment.token_number).all()
 
     queue = []
     for apt in appointments:
@@ -762,8 +819,13 @@ async def get_doctor_queue(
             "patient_name": f"{apt.patient.first_name} {apt.patient.last_name}",
             "appointment_time": str(apt.appointment_time),
             "status": apt.status,
+            "token_status": apt.token_status,
+            "priority_boost": apt.priority_boost or 0,
             "checked_in_at": apt.checked_in_at.isoformat() if apt.checked_in_at else None,
             "checked_out_at": apt.checked_out_at.isoformat() if apt.checked_out_at else None,
+            "token_called_at": apt.token_called_at.isoformat() if apt.token_called_at else None,
+            "token_skipped_at": apt.token_skipped_at.isoformat() if apt.token_skipped_at else None,
+            "token_recalled_at": apt.token_recalled_at.isoformat() if apt.token_recalled_at else None,
         })
 
     # Find current/next patient
@@ -772,7 +834,7 @@ async def get_doctor_queue(
     for item in queue:
         if item["status"] == "in_progress":
             current_patient = item
-        elif item["status"] in ["confirmed"] and not item["checked_out_at"] and not next_patient:
+        elif item["status"] in ["confirmed"] and item["token_status"] != "skipped" and not item["checked_out_at"] and not next_patient:
             next_patient = item
 
     return {
@@ -807,10 +869,12 @@ async def call_next_patient(
 
     if current:
         current.status = "completed"
+        current.token_status = "completed"
         current.consultation_ended_at = datetime.now()
         current.checked_out_at = datetime.now()
 
-    # Find next checked-in patient
+    # Find next checked-in patient (priority-boosted first, then by token order;
+    # skip any token currently in 'skipped' state — they require explicit recall)
     next_apt = db.query(Appointment).join(Patient).filter(
         Appointment.doctor_id == doctor_id,
         Appointment.appointment_date >= date_start,
@@ -818,14 +882,17 @@ async def call_next_patient(
         Appointment.status == "confirmed",
         Appointment.checked_in_at.isnot(None),
         Appointment.checked_out_at.is_(None),
+        (Appointment.token_status != "skipped") | (Appointment.token_status.is_(None)),
         Patient.hospital_id == current_user.hospital_id
-    ).order_by(Appointment.token_number).first()
+    ).order_by(Appointment.priority_boost.desc(), Appointment.token_number).first()
 
     if not next_apt:
         db.commit()
         return {"message": "No more patients in queue", "current_patient": None}
 
     next_apt.status = "in_progress"
+    next_apt.token_status = "in_consult"
+    next_apt.token_called_at = datetime.now()
     next_apt.consultation_started_at = datetime.now()
 
     db.commit()
@@ -839,6 +906,126 @@ async def call_next_patient(
             "patient_name": f"{next_apt.patient.first_name} {next_apt.patient.last_name}",
             "appointment_time": str(next_apt.appointment_time),
         }
+    }
+
+
+def _get_queued_appointment(db: Session, doctor_id: int, appointment_id: int, hospital_id: int) -> Appointment:
+    today = date.today()
+    date_start = datetime.combine(today, datetime.min.time())
+    date_end = datetime.combine(today, datetime.max.time())
+    apt = db.query(Appointment).join(Patient).filter(
+        Appointment.id == appointment_id,
+        Appointment.doctor_id == doctor_id,
+        Appointment.appointment_date >= date_start,
+        Appointment.appointment_date <= date_end,
+        Patient.hospital_id == hospital_id,
+    ).first()
+    if not apt:
+        raise HTTPException(status_code=404, detail="Appointment not in today's queue for this doctor")
+    if apt.token_number is None:
+        raise HTTPException(status_code=400, detail="Patient has not been checked in yet")
+    return apt
+
+
+@router.post("/queue/{doctor_id}/skip/{appointment_id}")
+async def skip_token(
+    doctor_id: int,
+    appointment_id: int,
+    current_user: User = Depends(require_permission(Modules.OUTPATIENT, "write")),
+    db: Session = Depends(get_db)
+):
+    """Skip a token — patient didn't respond. Excluded from call-next until recalled."""
+    apt = _get_queued_appointment(db, doctor_id, appointment_id, current_user.hospital_id)
+    if apt.status in ("completed", "cancelled", "no_show"):
+        raise HTTPException(status_code=400, detail=f"Cannot skip a {apt.status} appointment")
+
+    apt.token_status = "skipped"
+    apt.token_skipped_at = datetime.now()
+    # If they were in_progress, roll back to confirmed so the doctor can call next
+    if apt.status == "in_progress":
+        apt.status = "confirmed"
+        apt.consultation_started_at = None
+
+    db.commit()
+    db.refresh(apt)
+
+    try:
+        from app.services.audit_service import log_action
+        log_action(db, current_user, "skip_token", "appointment", "Appointment", apt.id,
+                   f"Skipped token #{apt.token_number}")
+    except Exception:
+        pass
+
+    return {
+        "message": f"Token #{apt.token_number} skipped",
+        "appointment_id": apt.id,
+        "token_status": apt.token_status,
+    }
+
+
+@router.post("/queue/{doctor_id}/recall/{appointment_id}")
+async def recall_token(
+    doctor_id: int,
+    appointment_id: int,
+    current_user: User = Depends(require_permission(Modules.OUTPATIENT, "write")),
+    db: Session = Depends(get_db)
+):
+    """Recall a previously skipped token — patient is now present."""
+    apt = _get_queued_appointment(db, doctor_id, appointment_id, current_user.hospital_id)
+    if apt.token_status != "skipped":
+        raise HTTPException(status_code=400, detail="Only skipped tokens can be recalled")
+
+    apt.token_status = "recalled"
+    apt.token_recalled_at = datetime.now()
+    # Ensure they're eligible for call-next again
+    if apt.status != "confirmed":
+        apt.status = "confirmed"
+
+    db.commit()
+    db.refresh(apt)
+
+    try:
+        from app.services.audit_service import log_action
+        log_action(db, current_user, "recall_token", "appointment", "Appointment", apt.id,
+                   f"Recalled token #{apt.token_number}")
+    except Exception:
+        pass
+
+    return {
+        "message": f"Token #{apt.token_number} recalled — eligible for next call",
+        "appointment_id": apt.id,
+        "token_status": apt.token_status,
+    }
+
+
+@router.post("/queue/{doctor_id}/boost/{appointment_id}")
+async def boost_token(
+    doctor_id: int,
+    appointment_id: int,
+    current_user: User = Depends(require_permission(Modules.OUTPATIENT, "write")),
+    db: Session = Depends(get_db)
+):
+    """Boost priority — emergency override. Higher priority_boost is served first."""
+    apt = _get_queued_appointment(db, doctor_id, appointment_id, current_user.hospital_id)
+    if apt.status in ("completed", "cancelled", "no_show"):
+        raise HTTPException(status_code=400, detail=f"Cannot boost a {apt.status} appointment")
+
+    apt.priority_boost = (apt.priority_boost or 0) + 1
+
+    db.commit()
+    db.refresh(apt)
+
+    try:
+        from app.services.audit_service import log_action
+        log_action(db, current_user, "boost_token", "appointment", "Appointment", apt.id,
+                   f"Boosted token #{apt.token_number} to priority {apt.priority_boost}")
+    except Exception:
+        pass
+
+    return {
+        "message": f"Token #{apt.token_number} boosted",
+        "appointment_id": apt.id,
+        "priority_boost": apt.priority_boost,
     }
 
 
@@ -868,6 +1055,8 @@ async def start_consultation(
         appointment.checked_in_at = datetime.now()
 
     appointment.status = "in_progress"
+    appointment.token_status = "in_consult"
+    appointment.token_called_at = datetime.now()
     appointment.consultation_started_at = datetime.now()
 
     db.commit()
@@ -1134,6 +1323,7 @@ async def get_appointment_bill(
         "bill_date": appointment.created_at.isoformat(),
         "patient_name": f"{appointment.patient.first_name} {appointment.patient.last_name}",
         "doctor_name": f"Dr. {appointment.doctor.first_name} {appointment.doctor.last_name}",
+        "token_number": appointment.token_number,
         "status": "generated",
         "items": items,
         "subtotal": subtotal,
@@ -1205,7 +1395,10 @@ async def download_appointment_bill(
         "mrn": appointment.patient.mrn or "",
         "patient_age": "",
         "patient_gender": appointment.patient.gender or "",
+        "village": appointment.patient.village or "",
+        "district": appointment.patient.district or "",
         "reg_no": appointment.appointment_number,
+        "token_number": appointment.token_number,
         "doctor_name": f"Dr. {appointment.doctor.first_name} {appointment.doctor.last_name}",
         "doctor_specialization": appointment.doctor.specialization or "General",
         "appointment_type": appointment.appointment_type or "consultation",

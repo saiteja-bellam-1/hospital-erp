@@ -69,6 +69,39 @@ _INPATIENT_ALL = [
 ]
 
 
+# Full pharmacy permission set — kept in sync with the pharmacy permission catalog
+# above. Used to seed full access for super_admin / hospital_admin / pharmacy_admin.
+_PHARMACY_ALL = [
+    # Catalog
+    "view_catalog", "manage_medicines", "manage_companies", "manage_suppliers",
+    "manage_salts", "manage_racks", "manage_uoms", "manage_categories", "manage_hsn_tax",
+    # Pricing
+    "set_rates", "set_discounts",
+    # Regulatory
+    "manage_scheduled_drugs", "view_narcotic_register",
+    # Inventory
+    "view_inventory", "adjust_stock", "view_stock_ledger", "view_low_stock", "view_expiring",
+    # Procurement
+    "create_purchase", "edit_purchase", "confirm_purchase", "revoke_purchase", "view_purchases",
+    # Sales — POS
+    "create_sale", "void_sale", "view_sales", "apply_discount", "select_rate_tier",
+    # Sales — Rx
+    "dispense_rx", "view_dispense_queue",
+    # Reports
+    "view_reports",
+]
+
+# Pharmacist (counter operator) default permission set.
+_PHARMACIST_DEFAULT = [
+    "view_catalog",
+    "view_inventory", "adjust_stock", "view_stock_ledger", "view_low_stock", "view_expiring",
+    "view_purchases",
+    "create_sale", "view_sales", "apply_discount", "select_rate_tier",
+    "dispense_rx", "view_dispense_queue",
+    "view_narcotic_register", "view_reports",
+]
+
+
 def _seed_roles(db, UserRole):
     for name, desc in SYSTEM_ROLES:
         existing = db.query(UserRole).filter(UserRole.name == name).first()
@@ -90,13 +123,46 @@ def _seed_module_permissions(db, ModulePermission):
         {"module_name": "lab", "permission_name": "create_reports", "permission_description": "Create lab reports", "category": "user"},
         {"module_name": "lab", "permission_name": "manage_equipment", "permission_description": "Manage lab equipment", "category": "admin"},
         {"module_name": "lab", "permission_name": "manage_templates", "permission_description": "Create and edit report templates", "category": "admin"},
-        # Pharmacy
-        {"module_name": "pharmacy", "permission_name": "manage_inventory", "permission_description": "Manage medication inventory", "category": "admin"},
-        {"module_name": "pharmacy", "permission_name": "set_drug_rates", "permission_description": "Set medication pricing", "category": "admin"},
-        {"module_name": "pharmacy", "permission_name": "dispense_medications", "permission_description": "Dispense medications", "category": "user"},
-        {"module_name": "pharmacy", "permission_name": "view_prescriptions", "permission_description": "View patient prescriptions", "category": "user"},
-        {"module_name": "pharmacy", "permission_name": "manage_suppliers", "permission_description": "Manage drug suppliers", "category": "admin"},
-        {"module_name": "pharmacy", "permission_name": "generate_reports", "permission_description": "Generate pharmacy reports", "category": "admin"},
+        # Pharmacy — granular per-feature keys (mirror inpatient style)
+        # Catalog
+        {"module_name": "pharmacy", "permission_name": "view_catalog", "permission_description": "View medicine catalog and master tables", "category": "user"},
+        {"module_name": "pharmacy", "permission_name": "manage_medicines", "permission_description": "Create, edit, and delete medicines", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "manage_companies", "permission_description": "Maintain pharmacy company / manufacturer master", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "manage_suppliers", "permission_description": "Maintain pharmacy supplier / party master", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "manage_salts", "permission_description": "Maintain salt / composition master", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "manage_racks", "permission_description": "Maintain rack / location master", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "manage_uoms", "permission_description": "Maintain unit-of-measure master", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "manage_categories", "permission_description": "Maintain medicine category master", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "manage_hsn_tax", "permission_description": "Maintain HSN code and SGST/CGST tax master", "category": "admin"},
+        # Pricing
+        {"module_name": "pharmacy", "permission_name": "set_rates", "permission_description": "Set MRP, Purchase-Rate, Rate-A, Rate-B on medicines", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "set_discounts", "permission_description": "Set default discount percentages on medicines", "category": "admin"},
+        # Regulatory
+        {"module_name": "pharmacy", "permission_name": "manage_scheduled_drugs", "permission_description": "Flag Schedule H / H1 / Tramadol / Narcotic medicines", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "view_narcotic_register", "permission_description": "View narcotic / Schedule H register", "category": "user"},
+        # Inventory
+        {"module_name": "pharmacy", "permission_name": "view_inventory", "permission_description": "View current stock levels and batch list", "category": "user"},
+        {"module_name": "pharmacy", "permission_name": "adjust_stock", "permission_description": "Make manual stock adjustments", "category": "user"},
+        {"module_name": "pharmacy", "permission_name": "view_stock_ledger", "permission_description": "View stock movement ledger", "category": "user"},
+        {"module_name": "pharmacy", "permission_name": "view_low_stock", "permission_description": "View low-stock alerts", "category": "user"},
+        {"module_name": "pharmacy", "permission_name": "view_expiring", "permission_description": "View expiring batches alert", "category": "user"},
+        # Procurement
+        {"module_name": "pharmacy", "permission_name": "create_purchase", "permission_description": "Create purchase drafts", "category": "user"},
+        {"module_name": "pharmacy", "permission_name": "edit_purchase", "permission_description": "Edit purchase drafts", "category": "user"},
+        {"module_name": "pharmacy", "permission_name": "confirm_purchase", "permission_description": "Confirm a purchase and commit batches to inventory", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "revoke_purchase", "permission_description": "Revoke a confirmed purchase (proportional reversal of un-sold qty)", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "view_purchases", "permission_description": "View purchases list and detail", "category": "user"},
+        # Sales — POS
+        {"module_name": "pharmacy", "permission_name": "create_sale", "permission_description": "Create POS counter sales", "category": "user"},
+        {"module_name": "pharmacy", "permission_name": "void_sale", "permission_description": "Void / reverse a completed sale", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "view_sales", "permission_description": "View sales list and detail", "category": "user"},
+        {"module_name": "pharmacy", "permission_name": "apply_discount", "permission_description": "Apply line or sale-level discounts", "category": "user"},
+        {"module_name": "pharmacy", "permission_name": "select_rate_tier", "permission_description": "Choose between Rate-A and Rate-B on a sale line", "category": "user"},
+        # Sales — Rx
+        {"module_name": "pharmacy", "permission_name": "dispense_rx", "permission_description": "Dispense items against a doctor's prescription", "category": "user"},
+        {"module_name": "pharmacy", "permission_name": "view_dispense_queue", "permission_description": "View pending prescriptions awaiting dispensing", "category": "user"},
+        # Reports
+        {"module_name": "pharmacy", "permission_name": "view_reports", "permission_description": "Run pharmacy reports (sales, purchases, stock, tax, narcotic)", "category": "user"},
         # Billing
         {"module_name": "billing", "permission_name": "manage_rates", "permission_description": "Manage service rates and pricing", "category": "admin"},
         {"module_name": "billing", "permission_name": "process_payments", "permission_description": "Process patient payments", "category": "user"},
@@ -198,7 +264,7 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
         "super_admin": {
             "admin": ["manage_users", "manage_roles", "manage_modules", "view_system_reports", "manage_settings"],
             "lab": ["manage_tests", "set_rates", "view_reports", "create_reports", "manage_equipment", "manage_templates"],
-            "pharmacy": ["manage_inventory", "set_drug_rates", "dispense_medications", "view_prescriptions", "manage_suppliers", "generate_reports"],
+            "pharmacy": list(_PHARMACY_ALL),
             "billing": ["manage_rates", "process_payments", "generate_invoices", "view_financial_reports", "manage_insurance", "handle_refunds"],
             "outpatient": ["schedule_appointments", "manage_schedules", "register_patients", "manage_queues", "view_appointments", "cancel_appointments"],
             "inpatient": list(_INPATIENT_ALL),
@@ -207,7 +273,7 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
         "hospital_admin": {
             "admin": ["manage_users", "manage_roles", "view_system_reports", "manage_settings"],
             "lab": ["view_reports", "create_reports"],
-            "pharmacy": ["view_prescriptions", "generate_reports"],
+            "pharmacy": list(_PHARMACY_ALL),
             "billing": ["view_financial_reports", "manage_insurance", "process_payments", "generate_invoices"],
             "outpatient": ["schedule_appointments", "manage_schedules", "register_patients", "manage_queues", "view_appointments", "cancel_appointments"],
             "inpatient": list(_INPATIENT_ALL),
@@ -216,7 +282,8 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
         "doctor": {
             "ehr": ["view_records", "edit_records", "create_prescriptions", "view_history", "generate_reports"],
             "lab": ["view_reports", "create_reports"],
-            "pharmacy": ["view_prescriptions"],
+            # No pharmacy permissions for doctor — pharmacy module is standalone in
+            # this build. Cross-module Rx → dispense linkage is a later phase.
             "outpatient": ["view_appointments", "view_patients", "schedule_appointments", "update_appointments", "register_patients", "manage_queues", "cancel_appointments"],
             "inpatient": [
                 "view_occupancy",
@@ -318,10 +385,10 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
             "lab": ["view_reports", "create_reports"],
         },
         "pharmacy_admin": {
-            "pharmacy": ["manage_inventory", "set_drug_rates", "dispense_medications", "view_prescriptions", "manage_suppliers", "generate_reports"],
+            "pharmacy": list(_PHARMACY_ALL),
         },
         "pharmacist": {
-            "pharmacy": ["dispense_medications", "view_prescriptions", "manage_inventory"],
+            "pharmacy": list(_PHARMACIST_DEFAULT),
         },
     }
 
@@ -342,6 +409,45 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
                     module_name=module_name,
                     permissions=permissions,
                 ))
+
+    _heal_legacy_pharmacy_perms(db)
+
+
+def _heal_legacy_pharmacy_perms(db):
+    """Remove stale pharmacy permission keys that pre-date the granular vocabulary.
+
+    Pharmacy permissions were originally 6 coarse action-bucket keys
+    (`manage_inventory`, `set_drug_rates`, `dispense_medications`,
+    `view_prescriptions`, `manage_suppliers`, `generate_reports`). Section A of
+    the pharmacy module build replaced these with a 30-key granular catalog.
+    This healer:
+      1. Deletes ModulePermission rows for legacy keys not in `_PHARMACY_ALL`.
+      2. Strips legacy keys out of any existing RoleModulePermission.permissions
+         lists so old role grants don't carry forward unknown perms.
+
+    Idempotent; safe to run on every startup.
+    """
+    from app.models.permissions import ModulePermission, RoleModulePermission
+
+    valid = set(_PHARMACY_ALL)
+    # 1. Drop stale catalog rows
+    stale_catalog = db.query(ModulePermission).filter(
+        ModulePermission.module_name == "pharmacy",
+        ~ModulePermission.permission_name.in_(valid),
+    ).all()
+    for row in stale_catalog:
+        db.delete(row)
+
+    # 2. Strip stale entries from role grants
+    grants = db.query(RoleModulePermission).filter(
+        RoleModulePermission.module_name == "pharmacy",
+    ).all()
+    for g in grants:
+        if not g.permissions:
+            continue
+        cleaned = [p for p in g.permissions if p in valid]
+        if cleaned != list(g.permissions):
+            g.permissions = cleaned
 
 
 # ----------------------------------------------------------------------------

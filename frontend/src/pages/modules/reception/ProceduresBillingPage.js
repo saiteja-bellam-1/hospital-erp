@@ -160,7 +160,7 @@ const ProceduresBillingPage = () => {
       if (print && r.data.bill_id) {
         try {
           const pdf = await axios.get(
-            `/api/hospital/billing/bills/${r.data.bill_id}/pdf?include_header=true`,
+            `/api/hospital/billing/bills/${r.data.bill_id}/pdf?include_header=false`,
             { responseType: 'blob' },
           );
           const url = URL.createObjectURL(new Blob([pdf.data], { type: 'application/pdf' }));
@@ -224,7 +224,7 @@ const ProceduresBillingPage = () => {
   const printBill = async (billId) => {
     try {
       const pdf = await axios.get(
-        `/api/hospital/billing/bills/${billId}/pdf?include_header=true`,
+        `/api/hospital/billing/bills/${billId}/pdf?include_header=false`,
         { responseType: 'blob' },
       );
       const url = URL.createObjectURL(new Blob([pdf.data], { type: 'application/pdf' }));

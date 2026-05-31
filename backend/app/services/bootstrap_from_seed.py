@@ -153,6 +153,9 @@ def consume_seed_if_present(exe_dir: str) -> Optional[dict]:
             "mode": mode,
             "at": datetime.datetime.utcnow().isoformat() + "Z",
         }
+        users_result = seed.get("_users_import_result")
+        if users_result is not None:
+            status["users_import"] = users_result
         _write_status(status_path, status)
         log.info("Installer seed applied (mode=%s)", mode)
         return status
@@ -257,6 +260,84 @@ def _apply_fresh(seed: dict, password: str) -> None:
                     log.warning("License install failed: %s", result.get("error"))
             except Exception as e:
                 log.warning("License install raised %s — operator can upload from Dashboard", e)
+
+    # Bulk user import (optional).
+    users_csv_path = (seed.get("users_csv_path") or "").strip()
+    if users_csv_path:
+        seed["_users_import_result"] = _apply_users_csv(users_csv_path, db_path)
+
+
+def _apply_users_csv(csv_path: str, db_path: str) -> dict:
+    """Parse + apply an installer-supplied users CSV.
+
+    Failures here are non-fatal for bootstrap: super_admin already exists and
+    the operator can re-import from the in-app screen later. Returns a status
+    dict that the caller stitches into ``.bootstrap_status.json``.
+    """
+    if not os.path.isfile(csv_path):
+        log.warning("users_csv_path %s not found; skipping bulk user import", csv_path)
+        return {"applied": False, "reason": "file_not_found", "path": csv_path}
+
+    try:
+        from app.services.user_csv_import import (
+            INSTALLER_ALLOWED_ROLES,
+            apply_users,
+            parse_and_validate_file,
+        )
+        from app.models.hospital import Hospital
+        from app.models.user import User
+        from config.database import SessionLocal
+
+        db = SessionLocal()
+        try:
+            existing_usernames = [u for (u,) in db.query(User.username).all()]
+            existing_emails = [e for (e,) in db.query(User.email).all()]
+            rows, errors = parse_and_validate_file(
+                csv_path,
+                allowed_roles=INSTALLER_ALLOWED_ROLES,
+                existing_usernames=existing_usernames,
+                existing_emails=existing_emails,
+            )
+            if errors:
+                log.warning(
+                    "Bulk user import rejected — %d row(s) had errors. Leaving "
+                    "%s in place for operator to fix and retry.",
+                    len(errors), csv_path,
+                )
+                return {
+                    "applied": False,
+                    "reason": "validation_failed",
+                    "errors": [e.as_dict() for e in errors],
+                    "path": csv_path,
+                }
+
+            hospital = db.query(Hospital).first()
+            if hospital is None:
+                return {"applied": False, "reason": "no_hospital_row", "path": csv_path}
+
+            result = apply_users(db, rows, hospital.id)
+        finally:
+            db.close()
+
+        try:
+            os.remove(csv_path)
+        except Exception:
+            log.warning("Could not remove %s after import", csv_path, exc_info=True)
+
+        log.info("Bulk user import created %d user(s)", result["created"])
+        return {
+            "applied": True,
+            "created": result["created"],
+            "usernames": result["usernames"],
+        }
+    except Exception as e:
+        log.error("Bulk user import raised %s; leaving CSV in place", e, exc_info=True)
+        return {
+            "applied": False,
+            "reason": "exception",
+            "error": str(e),
+            "path": csv_path,
+        }
 
 
 def _apply_restore(seed: dict) -> None:

@@ -4,7 +4,7 @@ import {
   FileText, TestTube, LayoutDashboard, BedDouble, Scissors, FileCheck,
   CalendarDays, CalendarRange, Sparkles, RotateCcw, Building2,
   BarChart3, ClipboardList, Shield, Database, ScrollText, Activity, Stethoscope,
-  DownloadCloud,
+  DownloadCloud, Pill, ShoppingCart, Boxes, Truck, BookOpen,
 } from 'lucide-react';
 
 const I = (Icon) => <Icon className="h-[18px] w-[18px]" />;
@@ -62,10 +62,9 @@ export function useNavigationSections({ roles, enabledModules }) {
     }
     add(items, make('Day Care', Stethoscope, '/dashboard/reception/procedures'));
     add(items, make('Referrals', Share2, '/dashboard/reception/referrals'));
-    // Billing + Bills History are always available — billing is an always-on
-    // module and the backend already authorises receptionist/admin for it.
+    // Billing is always available — always-on module, backend authorises
+    // receptionist/admin for it.
     add(items, make('Billing', Receipt, '/dashboard/billing'));
-    add(items, make('Bills History', BarChart3, '/dashboard/billing-dashboard'));
     if (enabledModules.outpatient) {
       add(items, make('Reports', TrendingUp, '/dashboard/reception/reports'));
     }
@@ -88,6 +87,19 @@ export function useNavigationSections({ roles, enabledModules }) {
     const items = [];
     add(items, make('Lab Dashboard', TestTube, '/dashboard/lab'));
     if (items.length > 0) sections.push({ label: 'Laboratory', items });
+  }
+
+  // ── PHARMACY ──
+  if (enabledModules.pharmacy && hasAnyRole('pharmacist', 'pharmacy_admin', 'hospital_admin', 'super_admin')) {
+    const items = [];
+    add(items, make('Pharmacy', Pill, '/dashboard/pharmacy'));
+    add(items, make('Sales Counter', ShoppingCart, '/dashboard/pharmacy/sales-counter'));
+    add(items, make('Sales & Rx', Receipt, '/dashboard/pharmacy/sales'));
+    add(items, make('Inventory', Boxes, '/dashboard/pharmacy/inventory'));
+    add(items, make('Procurement', Truck, '/dashboard/pharmacy/procurement'));
+    add(items, make('Catalog', BookOpen, '/dashboard/pharmacy/catalog'));
+    add(items, make('Pharmacy Reports', BarChart3, '/dashboard/pharmacy/reports'));
+    if (items.length > 0) sections.push({ label: 'Pharmacy', items });
   }
 
   // ── EHR (admin who isn't a doctor) ──

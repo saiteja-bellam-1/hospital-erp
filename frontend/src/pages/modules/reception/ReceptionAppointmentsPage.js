@@ -57,7 +57,7 @@ const ReceptionAppointmentsPage = () => {
   const [showPrescriptionDialog, setShowPrescriptionDialog] = useState(false);
   const [prescriptionPdfUrl, setPrescriptionPdfUrl] = useState(null);
   const [prescriptionData, setPrescriptionData] = useState(null);
-  const [rxIncludeHeader, setRxIncludeHeader] = useState(true);
+  const [rxIncludeHeader, setRxIncludeHeader] = useState(false);
 
   // Lab payment dialog state
   const [showLabPaymentDialog, setShowLabPaymentDialog] = useState(false);
@@ -67,7 +67,7 @@ const ReceptionAppointmentsPage = () => {
   const [labBillPdfUrl, setLabBillPdfUrl] = useState(null);
   const [labBillOrderIds, setLabBillOrderIds] = useState([]);
   const [showLabBillPreview, setShowLabBillPreview] = useState(false);
-  const [labPreviewHeader, setLabPreviewHeader] = useState(true);
+  const [labPreviewHeader, setLabPreviewHeader] = useState(false);
 
   // Referrals
   const [referralList, setReferralList] = useState([]);
@@ -87,7 +87,7 @@ const ReceptionAppointmentsPage = () => {
   const [showBillPreviewDialog, setShowBillPreviewDialog] = useState(false);
   const [currentBill, setCurrentBill] = useState(null);
   const [billPdfUrl, setBillPdfUrl] = useState(null);
-  const [billIncludeHeader, setBillIncludeHeader] = useState(true);
+  const [billIncludeHeader, setBillIncludeHeader] = useState(false);
   const [currentBillAppointmentId, setCurrentBillAppointmentId] = useState(null);
 
   // Cancel dialog
@@ -129,7 +129,9 @@ const ReceptionAppointmentsPage = () => {
     payment_method: 'cash',
     discount_amount: 0,
     payment_notes: '',
-    referred_by: ''
+    referred_by: '',
+    override_availability: false,
+    override_reason: ''
   });
 
   // Load initial data
@@ -439,7 +441,7 @@ const ReceptionAppointmentsPage = () => {
     }
   };
 
-  const downloadLabReport = async (reportId, orderNumber, includeHeader = true, packageBookingId = null) => {
+  const downloadLabReport = async (reportId, orderNumber, includeHeader = false, packageBookingId = null) => {
     try {
       const token = localStorage.getItem('token');
       const url = packageBookingId
@@ -469,21 +471,29 @@ const ReceptionAppointmentsPage = () => {
   const createAppointment = async () => {
     if (!selectedPatient) return;
     
-    // Check availability before booking
+    // If overriding availability, require a reason
+    if (appointmentForm.override_availability && !(appointmentForm.override_reason || '').trim()) {
+      toast({ variant: 'destructive', title: 'Reason required', description: 'Please provide a reason for overriding doctor availability.' });
+      return;
+    }
+
+    // Check availability before booking (skipped when override is on — backend
+    // still blocks double-booking)
     setLoading(true);
     try {
-      // First check if doctor is available
-      const availabilityCheck = await checkAvailability(
-        appointmentForm.doctor_id,
-        appointmentForm.appointment_date,
-        appointmentForm.appointment_time,
-        appointmentForm.duration_minutes
-      );
+      if (!appointmentForm.override_availability) {
+        const availabilityCheck = await checkAvailability(
+          appointmentForm.doctor_id,
+          appointmentForm.appointment_date,
+          appointmentForm.appointment_time,
+          appointmentForm.duration_minutes
+        );
 
-      if (!availabilityCheck.is_available) {
-        toast({ variant: 'destructive', title: 'Error', description: `Cannot book appointment: ${availabilityCheck.reason}` });
-        setLoading(false);
-        return;
+        if (!availabilityCheck.is_available) {
+          toast({ variant: 'destructive', title: 'Error', description: `Cannot book appointment: ${availabilityCheck.reason}` });
+          setLoading(false);
+          return;
+        }
       }
 
       const token = localStorage.getItem('token');
@@ -514,7 +524,10 @@ const ReceptionAppointmentsPage = () => {
           payment_status: 'paid',
           payment_method: 'cash',
           discount_amount: 0,
-          payment_notes: ''
+          payment_notes: '',
+          referred_by: '',
+          override_availability: false,
+          override_reason: ''
         });
         setAvailableSlots([]);
         setSelectedPatient(null);
@@ -540,7 +553,7 @@ const ReceptionAppointmentsPage = () => {
   };
 
   // Bill preview functions
-  const showBillPreview = async (appointmentId, includeHeader = true) => {
+  const showBillPreview = async (appointmentId, includeHeader = false) => {
     try {
       const token = localStorage.getItem('token');
       setCurrentBillAppointmentId(appointmentId);
@@ -618,6 +631,28 @@ const ReceptionAppointmentsPage = () => {
     } catch (error) {
       console.error('Check-in error:', error);
       toast({ variant: 'destructive', title: 'Error', description: 'Error during check-in' });
+    }
+  };
+
+  // Boost / Skip / Recall handlers (token queue)
+  const handleQueueAction = async (action, doctorId, appointmentId) => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`/api/appointments/queue/${doctorId}/${action}/${appointmentId}`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await response.json().catch(() => ({}));
+      if (response.ok) {
+        toast({ title: 'Queue updated', description: data.message || `${action} complete` });
+        fetchAppointmentsByDate(filterDate);
+      } else {
+        const msg = typeof data.detail === 'string' ? data.detail : `Failed to ${action}`;
+        toast({ variant: 'destructive', title: 'Error', description: msg });
+      }
+    } catch (error) {
+      console.error(`Queue ${action} error:`, error);
+      toast({ variant: 'destructive', title: 'Error', description: `Failed to ${action}` });
     }
   };
 
@@ -1038,13 +1073,14 @@ const ReceptionAppointmentsPage = () => {
                       <div>
                         <div className="flex items-center gap-2 mb-0.5">
                           {appointment.token_number && (
-                            <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-sidebar text-white font-bold text-[10px] flex-shrink-0">
-                              {appointment.token_number}
+                            <span className="inline-flex flex-col items-center justify-center w-10 h-10 rounded-full bg-blue-700 text-white shadow-sm ring-2 ring-blue-200 flex-shrink-0 leading-none" title={`Token #${appointment.token_number}`}>
+                              <span className="text-[8px] uppercase tracking-wide opacity-80">Tok</span>
+                              <span className="font-bold text-sm">{appointment.token_number}</span>
                             </span>
                           )}
                           <span className="font-semibold text-gray-900 truncate">{appointment.patient_name}</span>
                         </div>
-                        <p className="text-xs text-gray-500 pl-8">#{appointment.appointment_number}</p>
+                        <p className={`text-xs text-gray-500 ${appointment.token_number ? 'pl-12' : ''}`}>#{appointment.appointment_number}</p>
                       </div>
 
                       <div>
@@ -1080,6 +1116,32 @@ const ReceptionAppointmentsPage = () => {
 
                   {/* Bottom row: Action buttons — text-first, clean layout */}
                   <div className="px-4 py-2 bg-gray-50/80 border-t border-gray-100 flex items-center gap-2 flex-wrap">
+                    {/* Token queue state badges */}
+                    {appointment.token_status === 'skipped' && (
+                      <Badge variant="secondary" className="h-6 text-[10px] bg-amber-100 text-amber-800">SKIPPED</Badge>
+                    )}
+                    {appointment.priority_boost > 0 && (
+                      <Badge className="h-6 text-[10px] bg-red-600 text-white">PRIORITY</Badge>
+                    )}
+
+                    {/* Token queue actions — only meaningful after check-in */}
+                    {appointment.checked_in_at && !['completed', 'cancelled', 'no_show'].includes(appointment.status) && (
+                      <>
+                        {!appointment.priority_boost && (
+                          <Button size="sm" variant="outline" className="h-7 px-3 text-xs text-red-700 border-red-300"
+                                  onClick={() => handleQueueAction('boost', appointment.doctor_id, appointment.id)}>
+                            Boost
+                          </Button>
+                        )}
+                        {appointment.token_status === 'skipped' && (
+                          <Button size="sm" variant="outline" className="h-7 px-3 text-xs text-amber-700 border-amber-300"
+                                  onClick={() => handleQueueAction('recall', appointment.doctor_id, appointment.id)}>
+                            Recall
+                          </Button>
+                        )}
+                      </>
+                    )}
+
                     {/* Primary action — contextual */}
                     {appointment.status === 'scheduled' && !appointment.checked_in_at && (
                       <Button size="sm" className="h-7 px-3 text-xs bg-green-600 hover:bg-green-700 text-white" onClick={() => handleCheckIn(appointment.id)}>
@@ -1144,7 +1206,7 @@ const ReceptionAppointmentsPage = () => {
 
       {/* Schedule Appointment Dialog */}
       <Dialog open={showAppointmentDialog} onOpenChange={setShowAppointmentDialog}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="max-w-3xl max-h-[92vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Schedule New Appointment</DialogTitle>
           </DialogHeader>
@@ -1266,7 +1328,7 @@ const ReceptionAppointmentsPage = () => {
 
               <div>
                 <Label htmlFor="appointment_time">Time *</Label>
-                {availableSlots.length > 0 ? (
+                {(!appointmentForm.override_availability && availableSlots.length > 0) ? (
                   <Select value={appointmentForm.appointment_time} onValueChange={(value) => setAppointmentForm({...appointmentForm, appointment_time: value})}>
                     <SelectTrigger>
                       <SelectValue placeholder="Select Available Time" />
@@ -1292,14 +1354,48 @@ const ReceptionAppointmentsPage = () => {
                     value={appointmentForm.appointment_time}
                     onChange={(e) => setAppointmentForm({...appointmentForm, appointment_time: e.target.value})}
                     required
-                    placeholder="Select doctor and date first"
+                    placeholder={appointmentForm.override_availability ? 'Enter time (any)' : 'Select doctor and date first'}
                   />
                 )}
-                {availabilityChecking && (
+                {availabilityChecking && !appointmentForm.override_availability && (
                   <p className="text-sm text-blue-600 mt-1">Checking availability...</p>
                 )}
-                {appointmentForm.doctor_id && appointmentForm.appointment_date && availableSlots.length === 0 && !availabilityChecking && (
+                {!appointmentForm.override_availability && appointmentForm.doctor_id && appointmentForm.appointment_date && availableSlots.length === 0 && !availabilityChecking && (
                   <p className="text-sm text-red-600 mt-1">No available slots for selected date</p>
+                )}
+              </div>
+
+              {/* Availability Override — receptionist/admin only (backend-enforced) */}
+              <div className="md:col-span-2 border border-amber-200 bg-amber-50 rounded-md p-3 space-y-2">
+                <label className="flex items-start gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="mt-1"
+                    checked={!!appointmentForm.override_availability}
+                    onChange={(e) => setAppointmentForm({
+                      ...appointmentForm,
+                      override_availability: e.target.checked,
+                      override_reason: e.target.checked ? appointmentForm.override_reason : ''
+                    })}
+                  />
+                  <div className="text-sm">
+                    <div className="font-medium text-amber-900">Override doctor availability</div>
+                    <div className="text-amber-700 text-xs">
+                      Allows booking outside doctor's schedule (leave, off-hours, breaks). Double-booking the same slot is still blocked. The override is audit-logged.
+                    </div>
+                  </div>
+                </label>
+                {appointmentForm.override_availability && (
+                  <div>
+                    <Label htmlFor="override_reason" className="text-amber-900">Reason for override *</Label>
+                    <Input
+                      id="override_reason"
+                      value={appointmentForm.override_reason}
+                      onChange={(e) => setAppointmentForm({...appointmentForm, override_reason: e.target.value})}
+                      placeholder="e.g. emergency walk-in, doctor agreed by phone"
+                      maxLength={500}
+                    />
+                  </div>
                 )}
               </div>
 
@@ -1343,15 +1439,17 @@ const ReceptionAppointmentsPage = () => {
                 <div className="space-y-1 text-sm">
                   {(() => {
                     const doctor = doctors.find(d => d.id.toString() === appointmentForm.doctor_id.toString());
-                    const consultFee = doctor?.consultation_fee_inr
+                    const isFollowup = appointmentForm.appointment_type === 'followup';
+                    const baseFee = doctor?.consultation_fee_inr
                       ? parseFloat(doctor.consultation_fee_inr.replace('₹', '').replace(',', '').trim()) || 0
                       : 0;
+                    const consultFee = isFollowup ? 0 : baseFee;
                     const regFee = patientFeeInfo.is_new_patient ? patientFeeInfo.registration_fee : 0;
                     const total = consultFee + regFee - (parseFloat(appointmentForm.discount_amount) || 0);
                     return (
                       <>
                         <div className="flex justify-between">
-                          <span>Consultation Fee</span>
+                          <span>Consultation Fee{isFollowup ? ' (Follow-up — free)' : ''}</span>
                           <span>₹{consultFee.toFixed(2)}</span>
                         </div>
                         {patientFeeInfo.is_new_patient && regFee > 0 && (
@@ -1424,7 +1522,7 @@ const ReceptionAppointmentsPage = () => {
               </Button>
               <Button
                 onClick={createAppointment}
-                disabled={loading || !appointmentForm.doctor_id || !appointmentForm.appointment_date || !appointmentForm.appointment_time}
+                disabled={loading || !appointmentForm.doctor_id || !appointmentForm.appointment_date || !appointmentForm.appointment_time || (appointmentForm.override_availability && !(appointmentForm.override_reason || '').trim())}
                 className="flex-1"
               >
                 {loading ? 'Booking...' : 'Book Appointment'}

@@ -374,7 +374,7 @@ const LabTestParametersPage = () => {
 
   // ============ Sample report ============
 
-  const handlePrintSampleReport = async (includeHeader = true) => {
+  const handlePrintSampleReport = async (includeHeader = false) => {
     try {
       const res = await axios.get(`/api/lab/tests/${testId}/sample-report?include_header=${includeHeader}`, {
         responseType: 'blob'

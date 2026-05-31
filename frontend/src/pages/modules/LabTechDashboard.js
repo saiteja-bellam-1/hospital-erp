@@ -44,7 +44,7 @@ const LabTechDashboard = () => {
   // Report print preview
   const [showReportPrintPreview, setShowReportPrintPreview] = useState(false);
   const [reportPdfUrl, setReportPdfUrl] = useState(null);
-  const [reportPreviewHeader, setReportPreviewHeader] = useState(true);
+  const [reportPreviewHeader, setReportPreviewHeader] = useState(false);
   const [reportPreviewId, setReportPreviewId] = useState(null);
 
   // Bill print preview
@@ -291,7 +291,7 @@ const LabTechDashboard = () => {
     return false;
   };
 
-  const downloadPackageReport = async (packageBookingId, packageName, includeHeader = true) => {
+  const downloadPackageReport = async (packageBookingId, packageName, includeHeader = false) => {
     try {
       const token = localStorage.getItem('token');
       const res = await fetch(`/api/lab/reports/package/${packageBookingId}/download?include_header=${includeHeader}`, {

@@ -115,10 +115,16 @@ def seed_data(db_engine, TestSessionLocal):
         session.add(hospital)
         session.flush()
 
-        # Roles
-        admin_role = UserRole(name="super_admin", is_system_role=True)
-        doctor_role = UserRole(name="doctor", is_system_role=True)
-        session.add_all([admin_role, doctor_role])
+        # Roles — get-or-create so this fixture is safe to run after other
+        # tests in the same session DB have already seeded these roles.
+        admin_role = session.query(UserRole).filter_by(name="super_admin").first()
+        if admin_role is None:
+            admin_role = UserRole(name="super_admin", is_system_role=True)
+            session.add(admin_role)
+        doctor_role = session.query(UserRole).filter_by(name="doctor").first()
+        if doctor_role is None:
+            doctor_role = UserRole(name="doctor", is_system_role=True)
+            session.add(doctor_role)
         session.flush()
 
         # Admin user

@@ -184,6 +184,32 @@ NEW_COLUMNS = [
     # only the LabTest IDs in included_lab_test_ids are covered, the rest bill.
     ("surgery_packages", "lab_coverage_mode", "VARCHAR(20) DEFAULT 'all'"),
     ("surgery_packages", "included_lab_test_ids", "TEXT"),
+    # Outpatient token lifecycle — skip/recall/priority-boost queue management
+    ("appointments", "token_status", "VARCHAR(20)"),
+    ("appointments", "token_called_at", "DATETIME"),
+    ("appointments", "token_skipped_at", "DATETIME"),
+    ("appointments", "token_recalled_at", "DATETIME"),
+    ("appointments", "priority_boost", "INTEGER DEFAULT 0"),
+    # Availability override — receptionist/admin force-book outside doctor schedule
+    ("appointments", "override_availability", "BOOLEAN DEFAULT 0"),
+    ("appointments", "override_reason", "TEXT"),
+    # Pharmacy hardening (P1.3): stop older back-dated purchases from clobbering
+    # the medicine master price; only entries newer than this date win.
+    ("medicines", "last_purchase_date", "DATE"),
+    # Pharmacy: confirmed purchases can be revoked (proportional reversal of
+    # the un-sold portion). Confirmed/draft/revoked/revoked_partial are the
+    # possible statuses going forward.
+    ("pharmacy_purchases", "revoked_by", "INTEGER REFERENCES users(id)"),
+    ("pharmacy_purchases", "revoked_at", "DATETIME"),
+    ("pharmacy_purchases", "revoke_reason", "TEXT"),
+    # P2.1: snapshot HSN tax breakdown onto line items so historical reports
+    # are stable even when the HSN master rates change later.
+    ("pharmacy_sale_items", "sgst_pct", "FLOAT DEFAULT 0.0"),
+    ("pharmacy_sale_items", "cgst_pct", "FLOAT DEFAULT 0.0"),
+    ("pharmacy_sale_items", "igst_pct", "FLOAT DEFAULT 0.0"),
+    ("pharmacy_purchase_items", "sgst_pct", "FLOAT DEFAULT 0.0"),
+    ("pharmacy_purchase_items", "cgst_pct", "FLOAT DEFAULT 0.0"),
+    ("pharmacy_purchase_items", "igst_pct", "FLOAT DEFAULT 0.0"),
 ]
 
 # B6 — body release table is created via create_all on startup; no column adds.

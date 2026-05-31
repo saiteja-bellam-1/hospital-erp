@@ -18,9 +18,9 @@ import PendingAcceptanceList from './inpatient/PendingAcceptanceList';
 import AdmissionDetailHeader from './inpatient/AdmissionDetailHeader';
 import VisitDialog from './inpatient/VisitDialog';
 import DoctorRosterTab, { OnDutyNowPanel } from './inpatient/DoctorRosterTab';
-import GatePassTab from './inpatient/GatePassTab';
 import DischargeWizard from './inpatient/DischargeWizard';
-import PaymentCollectionTab from './inpatient/PaymentCollectionTab';
+import BillingDischargePage from './inpatient/BillingDischargePage';
+import BillingDischargeList from './inpatient/BillingDischargeList';
 import {
   Plus, Search, Edit2, Trash2, Bed, Activity, Clock, User, Users,
   FileText, Loader2, X, ChevronLeft, ChevronRight, DollarSign, Stethoscope,
@@ -258,7 +258,7 @@ const InpatientModule = () => {
   const [showBillPdfDialog, setShowBillPdfDialog] = useState(false);
   const [billPdfUrl, setBillPdfUrl] = useState(null);
   const [billPdfAdmissionId, setBillPdfAdmissionId] = useState(null);
-  const [billPdfIncludeHeader, setBillPdfIncludeHeader] = useState(true);
+  const [billPdfIncludeHeader, setBillPdfIncludeHeader] = useState(false);
   const [billPdfLoading, setBillPdfLoading] = useState(false);
   const [nursingNotes, setNursingNotes] = useState([]);
   // LOA dialog state
@@ -457,7 +457,8 @@ const InpatientModule = () => {
     return today;
   });
   const [rosterRole, setRosterRole] = useState('nurse');  // 'nurse' | 'doctor'
-  const [dischargeSubTab, setDischargeSubTab] = useState('history');  // 'history' | 'pending-settlement' | 'gate-pass'
+  const [dischargeSubTab, setDischargeSubTab] = useState('history');  // 'history' | 'billing-discharge'
+  const [billingDischargeFor, setBillingDischargeFor] = useState(null);  // admission id of in-flight unified flow
   const [rosterGrid, setRosterGrid] = useState(null);
   const [rosterCoverage, setRosterCoverage] = useState([]);
   const [rosterMinPerShift, setRosterMinPerShift] = useState(2);
@@ -2372,7 +2373,7 @@ const InpatientModule = () => {
   const handlePrintDepositReceipt = async (depositId) => {
     try {
       const res = await axios.get(
-        `/api/inpatient/deposits/${depositId}/receipt/pdf?include_header=true`,
+        `/api/inpatient/deposits/${depositId}/receipt/pdf?include_header=false`,
         { responseType: 'blob' },
       );
       const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
@@ -2912,7 +2913,7 @@ const InpatientModule = () => {
   };
 
   const handlePrintConsent = async (consentId) => {
-    await printPdfFromUrl(`/api/inpatient/consents/${consentId}/pdf`, { include_header: true });
+    await printPdfFromUrl(`/api/inpatient/consents/${consentId}/pdf`, { include_header: false });
   };
 
   const handleSubmitConsentTemplate = async (e) => {
@@ -2981,7 +2982,7 @@ const InpatientModule = () => {
   };
 
   const handlePrintDeathCertificate = async (admissionId) => {
-    await printPdfFromUrl(`/api/inpatient/admissions/${admissionId}/death-certificate/pdf`, { include_header: true });
+    await printPdfFromUrl(`/api/inpatient/admissions/${admissionId}/death-certificate/pdf`, { include_header: false });
   };
 
   // ---- Body release / mortuary tracking ----
@@ -3055,7 +3056,7 @@ const InpatientModule = () => {
   };
 
   const printBodyRelease = (admissionId) => {
-    printPdfFromUrl(`/api/inpatient/admissions/${admissionId}/body-release/pdf`, { include_header: true });
+    printPdfFromUrl(`/api/inpatient/admissions/${admissionId}/body-release/pdf`, { include_header: false });
   };
 
   const handleSaveDama = async (e) => {
@@ -3081,7 +3082,7 @@ const InpatientModule = () => {
       setDamaAdmission(null);
       // Offer to print the signed PDF immediately
       setTimeout(() => {
-        printPdfFromUrl(`/api/inpatient/admissions/${admId}/dama/pdf`, { include_header: true });
+        printPdfFromUrl(`/api/inpatient/admissions/${admId}/dama/pdf`, { include_header: false });
       }, 200);
     } catch (err) {
       const detail = err.response?.data?.detail;
@@ -3091,7 +3092,7 @@ const InpatientModule = () => {
   };
 
   const handlePrintDama = async (admissionId) => {
-    await printPdfFromUrl(`/api/inpatient/admissions/${admissionId}/dama/pdf`, { include_header: true });
+    await printPdfFromUrl(`/api/inpatient/admissions/${admissionId}/dama/pdf`, { include_header: false });
   };
 
   // ICU: I/O record
@@ -3330,7 +3331,7 @@ const InpatientModule = () => {
     }
   };
 
-  const handlePrintBillPdf = async (admissionId, includeHeader = true) => {
+  const handlePrintBillPdf = async (admissionId, includeHeader = false) => {
     setBillPdfLoading(true);
     try {
       const res = await axios.get(
@@ -3460,7 +3461,7 @@ const InpatientModule = () => {
             <div className="p-6 overflow-y-auto h-full space-y-4">
           <div className="flex justify-end">
             <Button size="sm" variant="outline"
-              onClick={() => printPdfFromUrl('/api/inpatient/reports/census/pdf', { include_header: true })}>
+              onClick={() => printPdfFromUrl('/api/inpatient/reports/census/pdf', { include_header: false })}>
               <Printer className="h-4 w-4 mr-1" /> Print daily census
             </Button>
           </div>
@@ -5425,35 +5426,36 @@ const InpatientModule = () => {
                       ? 'border-blue-500 text-blue-600'
                       : 'border-transparent text-gray-600 hover:text-gray-800'
                   }`}
-                  onClick={() => setDischargeSubTab('history')}
+                  onClick={() => { setDischargeSubTab('history'); setBillingDischargeFor(null); }}
                 >History</button>
                 <button
                   className={`px-3 py-2 text-sm font-medium border-b-2 transition ${
-                    dischargeSubTab === 'pending-settlement'
+                    dischargeSubTab === 'billing-discharge'
                       ? 'border-blue-500 text-blue-600'
                       : 'border-transparent text-gray-600 hover:text-gray-800'
                   }`}
-                  onClick={() => setDischargeSubTab('pending-settlement')}
-                >Pending Settlement</button>
-                <button
-                  className={`px-3 py-2 text-sm font-medium border-b-2 transition ${
-                    dischargeSubTab === 'gate-pass'
-                      ? 'border-blue-500 text-blue-600'
-                      : 'border-transparent text-gray-600 hover:text-gray-800'
-                  }`}
-                  onClick={() => setDischargeSubTab('gate-pass')}
-                >Ready for Gate Pass</button>
+                  onClick={() => setDischargeSubTab('billing-discharge')}
+                >Billing &amp; Discharge</button>
               </div>
 
-              {dischargeSubTab === 'pending-settlement' && (
-                <PaymentCollectionTab
-                  canCollect={ip('receive_deposits')}
-                  canOpenBill={ip('view_bill')}
-                />
-              )}
-
-              {dischargeSubTab === 'gate-pass' && (
-                <GatePassTab canIssue={ip('issue_gate_pass')} />
+              {dischargeSubTab === 'billing-discharge' && (
+                billingDischargeFor ? (
+                  <BillingDischargePage
+                    admissionId={billingDischargeFor}
+                    onBack={() => { setBillingDischargeFor(null); fetchAdmissions('admitted'); fetchAdmissions('discharged'); }}
+                    permissions={{
+                      receive_deposits:    ip('receive_deposits'),
+                      finalize_bill:       ip('finalize_bill'),
+                      discharge_patients:  ip('discharge_patients'),
+                      issue_gate_pass:     ip('issue_gate_pass'),
+                      issue_refunds:       ip('issue_refunds'),
+                    }}
+                  />
+                ) : (
+                  <BillingDischargeList
+                    onPick={setBillingDischargeFor}
+                  />
+                )
               )}
 
               {dischargeSubTab === 'history' && (<>
@@ -6134,7 +6136,7 @@ const InpatientModule = () => {
                     </Button>
                     <Button size="sm" variant="outline"
                       onClick={() => printPdfFromUrl('/api/inpatient/reports/monthly-outcomes/pdf',
-                        { month: outcomesMonth, include_header: true })}>
+                        { month: outcomesMonth, include_header: false })}>
                       <Printer className="h-4 w-4 mr-1" /> Print PDF
                     </Button>
                     {outcomesData && (
@@ -6288,7 +6290,7 @@ const InpatientModule = () => {
                     </Button>
                     <Button size="sm" variant="outline"
                       onClick={() => {
-                        const params = { date_from: productivityRange.from, date_to: productivityRange.to, include_header: true };
+                        const params = { date_from: productivityRange.from, date_to: productivityRange.to, include_header: false };
                         if (productivityRange.doctor_id) params.doctor_id = productivityRange.doctor_id;
                         printPdfFromUrl('/api/inpatient/reports/doctor-productivity/pdf', params);
                       }}>

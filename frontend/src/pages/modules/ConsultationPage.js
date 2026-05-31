@@ -54,7 +54,7 @@ const ConsultationPage = () => {
   const [expandedHistoryItems, setExpandedHistoryItems] = useState({});
   const [savedPrescription, setSavedPrescription] = useState(null);
   const [rxPdfUrl, setRxPdfUrl] = useState(null);
-  const [rxIncludeHeader, setRxIncludeHeader] = useState(true);
+  const [rxIncludeHeader, setRxIncludeHeader] = useState(false);
 
   // Lab Order
   const [availableLabTests, setAvailableLabTests] = useState([]);
@@ -535,7 +535,7 @@ const ConsultationPage = () => {
     }
   };
 
-  const downloadReport = async (reportId, orderNumber, includeHeader = true) => {
+  const downloadReport = async (reportId, orderNumber, includeHeader = false) => {
     try {
       const res = await fetch(`/api/lab/reports/${reportId}/download?include_header=${includeHeader}`, { headers });
       const blob = await res.blob();

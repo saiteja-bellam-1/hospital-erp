@@ -13,7 +13,36 @@ class AvailabilityService:
     def __init__(self, db: Session):
         self.db = db
     
-    def is_doctor_available(self, doctor_id: int, appointment_date: date, 
+    def has_appointment_conflict(self, doctor_id: int, appointment_date: date,
+                                  appointment_time: time, duration_minutes: int = 10) -> Tuple[bool, str]:
+        """Return (has_conflict, reason). Only checks existing scheduled appointments —
+        ignores doctor schedule/status/breaks. Used for override-booking by reception."""
+        try:
+            availability = self.db.query(DoctorAvailability).filter(
+                DoctorAvailability.doctor_id == doctor_id
+            ).first()
+            buffer_minutes = (availability.buffer_minutes or 0) if availability else 0
+
+            appointment_datetime = datetime.combine(appointment_date, appointment_time)
+            appointment_end = appointment_datetime + timedelta(minutes=duration_minutes)
+            check_start = appointment_datetime - timedelta(minutes=buffer_minutes)
+            check_end = appointment_end + timedelta(minutes=buffer_minutes)
+
+            existing = self.db.query(Appointment).filter(
+                Appointment.doctor_id == doctor_id,
+                Appointment.appointment_date == appointment_date,
+                Appointment.status.in_(["scheduled", "confirmed", "in_progress"]),
+            ).all()
+            for apt in existing:
+                existing_start = datetime.combine(appointment_date, apt.appointment_time)
+                existing_end = existing_start + timedelta(minutes=apt.duration_minutes)
+                if not (check_end <= existing_start or check_start >= existing_end):
+                    return True, f"Conflicts with existing appointment at {apt.appointment_time}"
+            return False, ""
+        except Exception as e:
+            return True, f"Error checking conflict: {str(e)}"
+
+    def is_doctor_available(self, doctor_id: int, appointment_date: date,
                            appointment_time: time, duration_minutes: int = 10) -> Tuple[bool, str]:
         """
         Check if a doctor is available for an appointment at the specified date and time

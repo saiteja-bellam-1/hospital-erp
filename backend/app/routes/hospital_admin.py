@@ -1566,7 +1566,7 @@ async def apply_bill_discount(
 
     bill.discount_amount = discount
     bill.total_amount = round(subtotal + float(bill.tax_amount or 0) - discount, 2)
-    note_line = f"[DISCOUNT by user {current_user.id} on {datetime.now().isoformat()}]: ₹{discount:.2f} — {req.reason}"
+    note_line = f"[DISCOUNT by user {current_user.id} on {datetime.now().isoformat()}]: Rs. {discount:.2f} — {req.reason}"
     bill.notes = (bill.notes + "\n" if bill.notes else "") + note_line
     db.commit()
 
@@ -1606,7 +1606,7 @@ async def apply_bill_tax(
     tax = round((subtotal - discount) * (req.tax_percentage / 100), 2)
     bill.tax_amount = tax
     bill.total_amount = round(subtotal + tax - discount, 2)
-    note_line = f"[TAX by user {current_user.id} on {datetime.now().isoformat()}]: {req.tax_percentage}% (₹{tax:.2f}) — {req.reason}"
+    note_line = f"[TAX by user {current_user.id} on {datetime.now().isoformat()}]: {req.tax_percentage}% (Rs. {tax:.2f}) — {req.reason}"
     bill.notes = (bill.notes + "\n" if bill.notes else "") + note_line
     db.commit()
 
@@ -1768,6 +1768,8 @@ async def refund_receipt_pdf(
         "reason": (refund.notes or "").split(":", 1)[-1].strip() if refund.notes else "",
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "Unknown",
         "patient_phone": patient.primary_phone if patient else "",
+        "village": (patient.village or "") if patient else "",
+        "district": (patient.district or "") if patient else "",
         "bill_number": bill.bill_number if bill else "",
         "original_payment_number": original.payment_number if original else "",
         "original_amount": float(original.amount_paid or 0) if original else 0,
@@ -2330,6 +2332,8 @@ async def get_bill_pdf(
         "patient_gender": patient.gender if patient else "",
         "patient_phone": patient.primary_phone if patient else "",
         "mrn": (patient.mrn or "") if patient else "",
+        "village": (patient.village or "") if patient else "",
+        "district": (patient.district or "") if patient else "",
         "payment_method": (payments[0].payment_method_name if payments else "Cash"),
         "items": [
             {"item_name": it.item_name, "item_code": it.item_code or "",
@@ -2396,6 +2400,8 @@ async def credit_note_pdf(
         "reason": (cn.notes or "").split(":", 1)[-1].strip() if cn.notes else "",
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "Unknown",
         "patient_phone": patient.primary_phone if patient else "",
+        "village": (patient.village or "") if patient else "",
+        "district": (patient.district or "") if patient else "",
         "parent_bill_number": parent.bill_number if parent else "",
         "parent_bill_total": float(parent.total_amount or 0) if parent else 0,
         "items": [

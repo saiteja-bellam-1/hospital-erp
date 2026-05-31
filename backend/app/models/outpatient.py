@@ -29,6 +29,11 @@ class Appointment(Base):
     # Queue management
     token_number = Column(Integer)
     queue_position = Column(Integer)
+    token_status = Column(String(20))  # waiting, called, in_consult, skipped, completed, recalled
+    token_called_at = Column(DateTime)
+    token_skipped_at = Column(DateTime)
+    token_recalled_at = Column(DateTime)
+    priority_boost = Column(Integer, default=0)
 
     # Cancellation/Reschedule
     cancellation_reason = Column(Text)
@@ -47,6 +52,10 @@ class Appointment(Base):
     bill_cancelled_reason = Column(Text, nullable=True)
     bill_cancelled_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     bill_cancelled_at = Column(DateTime, nullable=True)
+
+    # Availability override (receptionist/admin force-book outside doctor schedule)
+    override_availability = Column(Boolean, default=False)
+    override_reason = Column(Text, nullable=True)
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

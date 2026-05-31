@@ -27,13 +27,46 @@ def setup_module_permissions():
         {"module_name": "lab", "permission_name": "manage_equipment", "permission_description": "Manage lab equipment", "category": "admin"},
         {"module_name": "lab", "permission_name": "manage_templates", "permission_description": "Create and edit report templates", "category": "admin"},
         
-        # Pharmacy Module Permissions  
-        {"module_name": "pharmacy", "permission_name": "manage_inventory", "permission_description": "Manage medication inventory", "category": "admin"},
-        {"module_name": "pharmacy", "permission_name": "set_drug_rates", "permission_description": "Set medication pricing", "category": "admin"},
-        {"module_name": "pharmacy", "permission_name": "dispense_medications", "permission_description": "Dispense medications", "category": "user"},
-        {"module_name": "pharmacy", "permission_name": "view_prescriptions", "permission_description": "View patient prescriptions", "category": "user"},
-        {"module_name": "pharmacy", "permission_name": "manage_suppliers", "permission_description": "Manage drug suppliers", "category": "admin"},
-        {"module_name": "pharmacy", "permission_name": "generate_reports", "permission_description": "Generate pharmacy reports", "category": "admin"},
+        # Pharmacy Module Permissions — granular (mirrors db_seed.py)
+        # Catalog
+        {"module_name": "pharmacy", "permission_name": "view_catalog", "permission_description": "View medicine catalog and master tables", "category": "user"},
+        {"module_name": "pharmacy", "permission_name": "manage_medicines", "permission_description": "Create, edit, and delete medicines", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "manage_companies", "permission_description": "Maintain pharmacy company / manufacturer master", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "manage_suppliers", "permission_description": "Maintain pharmacy supplier / party master", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "manage_salts", "permission_description": "Maintain salt / composition master", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "manage_racks", "permission_description": "Maintain rack / location master", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "manage_uoms", "permission_description": "Maintain unit-of-measure master", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "manage_categories", "permission_description": "Maintain medicine category master", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "manage_hsn_tax", "permission_description": "Maintain HSN code and SGST/CGST tax master", "category": "admin"},
+        # Pricing
+        {"module_name": "pharmacy", "permission_name": "set_rates", "permission_description": "Set MRP, Purchase-Rate, Rate-A, Rate-B on medicines", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "set_discounts", "permission_description": "Set default discount percentages on medicines", "category": "admin"},
+        # Regulatory
+        {"module_name": "pharmacy", "permission_name": "manage_scheduled_drugs", "permission_description": "Flag Schedule H / H1 / Tramadol / Narcotic medicines", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "view_narcotic_register", "permission_description": "View narcotic / Schedule H register", "category": "user"},
+        # Inventory
+        {"module_name": "pharmacy", "permission_name": "view_inventory", "permission_description": "View current stock levels and batch list", "category": "user"},
+        {"module_name": "pharmacy", "permission_name": "adjust_stock", "permission_description": "Make manual stock adjustments", "category": "user"},
+        {"module_name": "pharmacy", "permission_name": "view_stock_ledger", "permission_description": "View stock movement ledger", "category": "user"},
+        {"module_name": "pharmacy", "permission_name": "view_low_stock", "permission_description": "View low-stock alerts", "category": "user"},
+        {"module_name": "pharmacy", "permission_name": "view_expiring", "permission_description": "View expiring batches alert", "category": "user"},
+        # Procurement
+        {"module_name": "pharmacy", "permission_name": "create_purchase", "permission_description": "Create purchase drafts", "category": "user"},
+        {"module_name": "pharmacy", "permission_name": "edit_purchase", "permission_description": "Edit purchase drafts", "category": "user"},
+        {"module_name": "pharmacy", "permission_name": "confirm_purchase", "permission_description": "Confirm a purchase and commit batches to inventory", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "revoke_purchase", "permission_description": "Revoke a confirmed purchase (proportional reversal of un-sold qty)", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "view_purchases", "permission_description": "View purchases list and detail", "category": "user"},
+        # Sales — POS
+        {"module_name": "pharmacy", "permission_name": "create_sale", "permission_description": "Create POS counter sales", "category": "user"},
+        {"module_name": "pharmacy", "permission_name": "void_sale", "permission_description": "Void / reverse a completed sale", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "view_sales", "permission_description": "View sales list and detail", "category": "user"},
+        {"module_name": "pharmacy", "permission_name": "apply_discount", "permission_description": "Apply line or sale-level discounts", "category": "user"},
+        {"module_name": "pharmacy", "permission_name": "select_rate_tier", "permission_description": "Choose between Rate-A and Rate-B on a sale line", "category": "user"},
+        # Sales — Rx
+        {"module_name": "pharmacy", "permission_name": "dispense_rx", "permission_description": "Dispense items against a doctor's prescription", "category": "user"},
+        {"module_name": "pharmacy", "permission_name": "view_dispense_queue", "permission_description": "View pending prescriptions awaiting dispensing", "category": "user"},
+        # Reports
+        {"module_name": "pharmacy", "permission_name": "view_reports", "permission_description": "Run pharmacy reports (sales, purchases, stock, tax, narcotic)", "category": "user"},
         
         # Billing Module Permissions
         {"module_name": "billing", "permission_name": "manage_rates", "permission_description": "Manage service rates and pricing", "category": "admin"},
@@ -260,7 +293,7 @@ def setup_role_permissions():
         "super_admin": {
             "admin": ["manage_users", "manage_roles", "manage_modules", "view_system_reports", "manage_settings"],
             "lab": ["manage_tests", "set_rates", "view_reports", "create_reports", "manage_equipment", "manage_templates"],
-            "pharmacy": ["manage_inventory", "set_drug_rates", "dispense_medications", "view_prescriptions", "manage_suppliers", "generate_reports"],
+            "pharmacy": ["view_catalog", "manage_medicines", "manage_companies", "manage_suppliers", "manage_salts", "manage_racks", "manage_uoms", "manage_categories", "manage_hsn_tax", "set_rates", "set_discounts", "manage_scheduled_drugs", "view_narcotic_register", "view_inventory", "adjust_stock", "view_stock_ledger", "view_low_stock", "view_expiring", "create_purchase", "edit_purchase", "confirm_purchase", "view_purchases", "create_sale", "void_sale", "view_sales", "apply_discount", "select_rate_tier", "dispense_rx", "view_dispense_queue", "view_reports"],
             "billing": ["manage_rates", "process_payments", "generate_invoices", "view_financial_reports", "manage_insurance", "handle_refunds"],
             "outpatient": ["schedule_appointments", "manage_schedules", "register_patients", "manage_queues", "view_appointments", "cancel_appointments"],
             # Inpatient: everything (also bypassed at decorator level, but seeded for completeness)
@@ -296,7 +329,7 @@ def setup_role_permissions():
         "hospital_admin": {
             "admin": ["manage_users", "manage_roles", "view_system_reports", "manage_settings"],
             "lab": ["view_reports", "create_reports"],
-            "pharmacy": ["view_prescriptions", "generate_reports"],
+            "pharmacy": ["view_catalog", "manage_medicines", "manage_companies", "manage_suppliers", "manage_salts", "manage_racks", "manage_uoms", "manage_categories", "manage_hsn_tax", "set_rates", "set_discounts", "manage_scheduled_drugs", "view_narcotic_register", "view_inventory", "adjust_stock", "view_stock_ledger", "view_low_stock", "view_expiring", "create_purchase", "edit_purchase", "confirm_purchase", "view_purchases", "create_sale", "void_sale", "view_sales", "apply_discount", "select_rate_tier", "dispense_rx", "view_dispense_queue", "view_reports"],
             "billing": ["view_financial_reports", "manage_insurance", "process_payments", "generate_invoices"],
             "outpatient": ["schedule_appointments", "manage_schedules", "register_patients", "manage_queues", "view_appointments", "cancel_appointments"],
             "inpatient": [
@@ -329,7 +362,7 @@ def setup_role_permissions():
             "lab": ["manage_tests", "set_rates", "view_reports", "create_reports", "manage_equipment", "manage_templates"]
         },
         "pharmacy_admin": {
-            "pharmacy": ["manage_inventory", "set_drug_rates", "dispense_medications", "view_prescriptions", "manage_suppliers", "generate_reports"]
+            "pharmacy": ["view_catalog", "manage_medicines", "manage_companies", "manage_suppliers", "manage_salts", "manage_racks", "manage_uoms", "manage_categories", "manage_hsn_tax", "set_rates", "set_discounts", "manage_scheduled_drugs", "view_narcotic_register", "view_inventory", "adjust_stock", "view_stock_ledger", "view_low_stock", "view_expiring", "create_purchase", "edit_purchase", "confirm_purchase", "view_purchases", "create_sale", "void_sale", "view_sales", "apply_discount", "select_rate_tier", "dispense_rx", "view_dispense_queue", "view_reports"],
         },
         "billing_admin": {
             "billing": ["manage_rates", "process_payments", "generate_invoices", "view_financial_reports", "manage_insurance", "handle_refunds"]
@@ -372,7 +405,8 @@ def setup_role_permissions():
         "doctor": {
             "ehr": ["view_records", "edit_records", "create_prescriptions", "view_history", "generate_reports", "manage_allergies"],
             "lab": ["view_reports", "create_reports"],
-            "pharmacy": ["view_prescriptions"],
+            # Doctor: no pharmacy permissions in this build. Pharmacy module
+            # is standalone — Rx-to-dispense linkage is a later phase.
             "outpatient": ["view_appointments", "view_patients", "schedule_appointments", "update_appointments", "register_patients", "manage_queues", "cancel_appointments"],
             "inpatient": [
                 "view_occupancy",
@@ -413,7 +447,7 @@ def setup_role_permissions():
             "lab": ["view_reports", "create_reports"]
         },
         "pharmacist": {
-            "pharmacy": ["dispense_medications", "view_prescriptions", "manage_inventory"]
+            "pharmacy": ["view_catalog", "view_inventory", "adjust_stock", "view_stock_ledger", "view_low_stock", "view_expiring", "view_purchases", "create_sale", "view_sales", "apply_discount", "select_rate_tier", "dispense_rx", "view_dispense_queue", "view_narcotic_register", "view_reports"],
         },
         "receptionist": {
             "outpatient": ["schedule_appointments", "register_patients", "manage_queues", "view_appointments", "cancel_appointments"],

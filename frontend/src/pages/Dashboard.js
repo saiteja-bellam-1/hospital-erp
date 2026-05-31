@@ -24,7 +24,6 @@ import hospitalLogo from '../assets/Final Logo KT (1).jpg';
 import DashboardHome from './modules/DashboardHome';
 import HospitalAdminDashboard from './modules/HospitalAdminDashboard';
 import SuperAdminDashboard from './modules/SuperAdminDashboard';
-import BillingDashboard from './modules/BillingDashboard';
 import AuditLogsPage from './modules/AuditLogsPage';
 import SupportContactPage from './modules/SupportContactPage';
 import PatientsModule from './modules/PatientsModule';
@@ -510,7 +509,6 @@ const Dashboard = () => {
             <Route path="/license" element={<LicenseManagement />} />
             <Route path="/backup" element={<BackupManagement />} />
             <Route path="/software-update" element={<SoftwareUpdate />} />
-            <Route path="/billing-dashboard" element={<BillingDashboard />} />
             <Route path="/audit" element={<AuditLogsPage />} />
             <Route path="/support-contact" element={
               <SupportContactPage sellerInfo={licenseStatus?.seller_info} />

@@ -16,9 +16,51 @@ import os
 import sqlite3
 import sys
 import tempfile
+import threading
 
 
 _OUT_PATH: "str | None" = None
+# Exit code emitted when --timeout fires. Distinct enough that the Inno Setup
+# wizard can recognise it (124 is the POSIX convention for timed-out commands).
+_TIMEOUT_EXIT_CODE = 124
+
+
+def _install_watchdog(seconds: float) -> None:
+    """Hard-kill the process if it's still running after ``seconds``.
+
+    The Inno Setup wizard's Pascal layer has no usable subprocess timeout, so
+    dbcheck owns its own deadline. A daemon thread fires after the deadline,
+    writes a timeout JSON to the --out file (so the wizard's existing
+    error-display path picks it up), and ``os._exit``s with code
+    ``_TIMEOUT_EXIT_CODE``. We use ``os._exit`` (not ``sys.exit``) because
+    the main thread may be blocked inside a slow syscall (UNC share, AV scan)
+    that wouldn't see a normal exception.
+    """
+    if seconds <= 0:
+        return
+
+    def _fire():
+        try:
+            payload = {"ok": False, "error": f"dbcheck timed out after {seconds}s"}
+            data = json.dumps(payload) + "\n"
+            if _OUT_PATH:
+                try:
+                    with open(_OUT_PATH, "w", encoding="utf-8") as f:
+                        f.write(data)
+                except Exception:
+                    pass
+            else:
+                try:
+                    sys.stdout.write(data)
+                    sys.stdout.flush()
+                except Exception:
+                    pass
+        finally:
+            os._exit(_TIMEOUT_EXIT_CODE)
+
+    t = threading.Timer(seconds, _fire)
+    t.daemon = True
+    t.start()
 
 
 def _emit(payload: dict, ok: bool) -> int:
@@ -197,7 +239,19 @@ def cmd_validate_license(args) -> int:
             "report": report,
         }, False)
 
-    return _emit({"ok": True, "report": report}, True)
+    # Surface expiry at the top level so the Pascal wizard can highlight it
+    # without parsing the nested report object. We still return ok=True for
+    # expired/expiring licenses — the operator may have a renewal in hand and
+    # we shouldn't block install; the wizard shows the status in colour.
+    status = report.get("status") or ""
+    days_remaining = report.get("days_remaining")
+    return _emit({
+        "ok": True,
+        "status": status,
+        "days_remaining": days_remaining,
+        "expires_at": report.get("expires_at"),
+        "report": report,
+    }, True)
 
 
 def cmd_validate_backup_db(args) -> int:
@@ -259,6 +313,54 @@ def cmd_validate_backup_db(args) -> int:
     return _emit({"ok": True, "details": details}, True)
 
 
+def cmd_validate_users_csv(args) -> int:
+    """Validate the optional install-time users CSV.
+
+    The runtime bootstrap (`bootstrap_from_seed`) re-validates with the live
+    DB before applying, so this command is the operator-facing "is my file
+    well-formed" check. No DB is available yet at install time, so we only
+    catch structural problems: bad header, missing fields, disallowed roles,
+    short passwords, within-file dupes, length caps.
+    """
+    path = os.path.abspath(args.path)
+    if not os.path.isfile(path):
+        return _emit({"ok": False, "error": "CSV file not found", "path": path}, False)
+
+    try:
+        # parse_and_validate is the sqlalchemy-free half of user_csv_import —
+        # safe to import here even though dbcheck.spec excludes sqlalchemy.
+        from app.services.user_csv_import import (
+            INSTALLER_ALLOWED_ROLES,
+            parse_and_validate_file,
+        )
+    except Exception as e:
+        return _emit({"ok": False, "error": f"Validator unavailable: {e}"}, False)
+
+    reserved_users = [u for u in (args.reserved_username or []) if u]
+    reserved_emails = [e for e in (args.reserved_email or []) if e]
+    rows, errors = parse_and_validate_file(
+        path,
+        allowed_roles=INSTALLER_ALLOWED_ROLES,
+        existing_usernames=reserved_users or None,
+        existing_emails=reserved_emails or None,
+    )
+
+    payload = {
+        "path": path,
+        "row_count": len(rows),
+        "errors": [e.as_dict() for e in errors],
+    }
+    if errors:
+        first = errors[0]
+        line_hint = f" (line {first.line_no})" if first.line_no else ""
+        payload["error"] = f"{first.message}{line_hint}"
+        payload["ok"] = False
+        return _emit(payload, False)
+
+    payload["ok"] = True
+    return _emit(payload, True)
+
+
 def cmd_check_writable(args) -> int:
     folder = os.path.abspath(args.folder)
     try:
@@ -282,6 +384,14 @@ def main(argv=None) -> int:
         default=None,
         help="Write JSON result to this file instead of stdout. Used by the Inno Setup wizard to avoid cmd-shell quoting hazards.",
     )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=0,
+        help="Hard-kill dbcheck if it hasn't finished within N seconds. "
+             "Emits a timeout JSON to --out and exits 124. Used by the wizard "
+             "so a hung UNC share or AV scan can't freeze the install.",
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("machine-id", help="Print the current machine ID")
@@ -298,11 +408,31 @@ def main(argv=None) -> int:
     p_b = sub.add_parser("validate-backup-db", help="Validate a single .db backup file")
     p_b.add_argument("path")
 
+    p_u = sub.add_parser("validate-users-csv", help="Validate an install-time users CSV")
+    p_u.add_argument("path")
+    p_u.add_argument(
+        "--reserved-username",
+        action="append",
+        default=[],
+        help="Reject the CSV if a row uses this username (e.g. the admin chosen "
+             "on the previous wizard page). Repeatable.",
+    )
+    p_u.add_argument(
+        "--reserved-email",
+        action="append",
+        default=[],
+        help="Reject the CSV if a row uses this email. Repeatable.",
+    )
+
     args = parser.parse_args(argv)
 
     global _OUT_PATH
     if getattr(args, "out", None):
         _OUT_PATH = args.out
+
+    # Arm the watchdog AFTER _OUT_PATH is set so a timeout payload still lands
+    # in the file the wizard reads.
+    _install_watchdog(getattr(args, "timeout", 0) or 0)
 
     if args.cmd == "machine-id":
         return cmd_machine_id(args)
@@ -314,6 +444,8 @@ def main(argv=None) -> int:
         return cmd_check_writable(args)
     if args.cmd == "validate-backup-db":
         return cmd_validate_backup_db(args)
+    if args.cmd == "validate-users-csv":
+        return cmd_validate_users_csv(args)
     return _emit({"ok": False, "error": f"unknown command {args.cmd!r}"}, False)
 
 

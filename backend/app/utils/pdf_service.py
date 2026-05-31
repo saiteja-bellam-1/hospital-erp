@@ -6,6 +6,7 @@ from reportlab.lib.units import inch
 from reportlab.pdfgen import canvas
 from io import BytesIO
 from datetime import datetime
+from typing import Optional
 import os
 
 
@@ -94,6 +95,40 @@ def _make_page_callback(seller_info, header_cb=None, watermark=None):
                 pass
         _draw_footer(canvas_obj, doc, seller_info)
     return _cb
+
+
+def _patient_address_line(data):
+    """Return a "village, district" string from a data dict, skipping empties.
+
+    Used to populate a one-line address row in every patient-facing PDF's info
+    box. Looks at the top level of the dict first and falls back to a nested
+    "patient" sub-dict (the inpatient PDFs use that shape).
+    """
+    if not isinstance(data, dict):
+        return ''
+    village = (data.get('village') or '').strip()
+    district = (data.get('district') or '').strip()
+    if not village and not district:
+        nested = data.get('patient')
+        if isinstance(nested, dict):
+            village = (nested.get('village') or '').strip()
+            district = (nested.get('district') or '').strip()
+    parts = [p for p in (village, district) if p]
+    return ', '.join(parts)
+
+
+def _append_address_row(info_data, style_list, data, lv):
+    """Append a SPAN'd 'Address' row to a patient info table when the data
+    dict carries village/district. Mutates info_data and style_list in place;
+    no-op when no address info is present. Use after building the rest of
+    the info_data list and the base style list, before constructing the Table.
+    """
+    addr = _patient_address_line(data)
+    if not addr:
+        return
+    row_idx = len(info_data)
+    info_data.append([lv('Address', addr), ''])
+    style_list.append(('SPAN', (0, row_idx), (1, row_idx)))
 
 
 def _resolve_seller(hospital_info):
@@ -211,7 +246,6 @@ class PDFService:
             bill_date_str = bd.strftime('%d/%m/%Y')
         except Exception:
             bill_date_str = bill_data.get('bill_date') or datetime.now().strftime('%d/%m/%Y')
-        print_date_str = datetime.now().strftime('%d/%m/%Y  %I:%M:%S%p')
 
         # ============================================================
         # HEADER — identical pattern to OPD generate_bill_pdf
@@ -302,20 +336,21 @@ class PDFService:
         info_data = [
             [lv('Name', p.get('name', '')),                 lv('Bill No',    bill_data.get('bill_number', ''))],
             [lv('Age / Gender', age_sex),                   lv('Bill Date',  bill_date_str)],
-            [lv('Phone', p.get('phone', '')),               lv('Print Date', print_date_str)],
+            [lv('Phone', p.get('phone', '')),               lv('Address', _patient_address_line(bill_data))],
             [lv('MRN',   p.get('mrn', '')),
              lv('Pay Mode',   payer_str)],
             [lv('Referred By', ref_value),                  Paragraph('', cell_value)],
         ]
-        info_table = Table(info_data, colWidths=[col_w, col_w])
-        info_table.setStyle(TableStyle([
+        info_style = [
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('TOPPADDING', (0, 0), (-1, -1), 3),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
             ('LEFTPADDING', (0, 0), (-1, -1), 8),
             ('RIGHTPADDING', (0, 0), (-1, -1), 6),
             ('BOX', (0, 0), (-1, -1), 1, colors.black),
-        ]))
+        ]
+        info_table = Table(info_data, colWidths=[col_w, col_w])
+        info_table.setStyle(TableStyle(info_style))
         elements.append(info_table)
         elements.append(Spacer(1, 6))
 
@@ -662,8 +697,6 @@ class PDFService:
         except Exception:
             bill_date_str = datetime.now().strftime('%d/%m/%Y')
 
-        print_date_str = datetime.now().strftime('%d/%m/%Y  %I:%M:%S%p')
-
         # ============================================================
         # HEADER: Hospital Name + Address + Receipt Title
         # ============================================================
@@ -760,23 +793,33 @@ class PDFService:
 
         col_w = page_width / 2
 
+        token_num = bill_data.get('token_number')
+        if token_num:
+            token_style = ParagraphStyle('TokenCell', parent=self.styles['Normal'],
+                fontSize=12, fontName='Helvetica-Bold', textColor=colors.black)
+            token_cell = Paragraph(f"<b>TOKEN #</b> &nbsp; <font size='16'>{token_num}</font>", token_style)
+        else:
+            token_cell = Paragraph('', cell_value)
+
         patient_info_data = [
-            [lv('Name', patient_name), lv('Bill No', bill_no)],
-            [lv('Age / Gender', age_sex), lv('Bill Date', bill_date_str)],
-            [lv('Phone', phone), lv('Print Date', print_date_str)],
-            [lv('MRN', patient_id), lv('Pay Mode', pay_category)],
-            [lv(ref_label, ref_value), Paragraph('', cell_value)],
+            [lv('Name', patient_name), token_cell],
+            [lv('Age / Gender', age_sex), lv('Bill No', bill_no)],
+            [lv('Phone', phone), lv('Bill Date', bill_date_str)],
+            [lv('MRN', patient_id), lv('Address', _patient_address_line(bill_data))],
+            [lv(ref_label, ref_value), lv('Pay Mode', pay_category)],
         ]
 
-        info_table = Table(patient_info_data, colWidths=[col_w, col_w])
-        info_table.setStyle(TableStyle([
+        info_style = [
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('TOPPADDING', (0, 0), (-1, -1), 3),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
             ('LEFTPADDING', (0, 0), (-1, -1), 8),
             ('RIGHTPADDING', (0, 0), (-1, -1), 6),
             ('BOX', (0, 0), (-1, -1), 1, colors.black),
-        ]))
+        ]
+
+        info_table = Table(patient_info_data, colWidths=[col_w, col_w])
+        info_table.setStyle(TableStyle(info_style))
         elements.append(info_table)
         elements.append(Spacer(1, 6))
 
@@ -1103,15 +1146,22 @@ class PDFService:
             [Paragraph(f"<b>MRN</b> :  {patient_id}", cell_val), Paragraph(f"<b>Blood Group</b> :  {patient_blood_group or '—'}", cell_val)],
         ]
 
-        info_table = Table(info_data, colWidths=[col_w, col_w])
-        info_table.setStyle(TableStyle([
+        info_style = [
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('TOPPADDING', (0, 0), (-1, -1), 3),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
             ('LEFTPADDING', (0, 0), (-1, -1), 8),
             ('RIGHTPADDING', (0, 0), (-1, -1), 6),
             ('BOX', (0, 0), (-1, -1), 1, colors.black),
-        ]))
+        ]
+        _rx_addr = _patient_address_line(prescription_data)
+        if _rx_addr:
+            _addr_row_idx = len(info_data)
+            info_data.append([Paragraph(f"<b>Address</b> :  {_rx_addr}", cell_val), ''])
+            info_style.append(('SPAN', (0, _addr_row_idx), (1, _addr_row_idx)))
+
+        info_table = Table(info_data, colWidths=[col_w, col_w])
+        info_table.setStyle(TableStyle(info_style))
         elements.append(info_table)
         elements.append(Spacer(1, 10))
 
@@ -1565,15 +1615,17 @@ class PDFService:
             [lv('MRN', report_data.get('mrn', '')), lv('Report ID', report_data.get('order_number', ''))],
         ]
 
-        info_table = Table(info_data, colWidths=[col_w, col_w])
-        info_table.setStyle(TableStyle([
+        info_style = [
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('TOPPADDING', (0, 0), (-1, -1), 3),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
             ('LEFTPADDING', (0, 0), (-1, -1), 8),
             ('RIGHTPADDING', (0, 0), (-1, -1), 6),
             ('BOX', (0, 0), (-1, -1), 1, colors.black),
-        ]))
+        ]
+        _append_address_row(info_data, info_style, report_data, lv)
+        info_table = Table(info_data, colWidths=[col_w, col_w])
+        info_table.setStyle(TableStyle(info_style))
         elements.append(info_table)
         elements.append(Spacer(1, 10))
 
@@ -1968,13 +2020,15 @@ class PDFService:
             [lv('MRN', first_report.get('mrn', '')), Paragraph('', cell_value)],
         ]
 
-        info_table = Table(info_data, colWidths=[col_w, col_w])
-        info_table.setStyle(TableStyle([
+        info_style = [
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('TOPPADDING', (0, 0), (-1, -1), 3), ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
             ('LEFTPADDING', (0, 0), (-1, -1), 8), ('RIGHTPADDING', (0, 0), (-1, -1), 6),
             ('BOX', (0, 0), (-1, -1), 1, colors.black),
-        ]))
+        ]
+        _append_address_row(info_data, info_style, first_report, lv)
+        info_table = Table(info_data, colWidths=[col_w, col_w])
+        info_table.setStyle(TableStyle(info_style))
         elements.append(info_table)
         elements.append(Spacer(1, 10))
 
@@ -2297,15 +2351,17 @@ class PDFService:
              lv('Condition on Admission', discharge_data.get('condition_on_admission', ''))],
         ]
 
-        info_table = Table(patient_info_data, colWidths=[col_w, col_w])
-        info_table.setStyle(TableStyle([
+        info_style = [
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('TOPPADDING', (0, 0), (-1, -1), 3),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
             ('LEFTPADDING', (0, 0), (-1, -1), 8),
             ('RIGHTPADDING', (0, 0), (-1, -1), 6),
             ('BOX', (0, 0), (-1, -1), 1, colors.black),
-        ]))
+        ]
+        _append_address_row(patient_info_data, info_style, discharge_data, lv)
+        info_table = Table(patient_info_data, colWidths=[col_w, col_w])
+        info_table.setStyle(TableStyle(info_style))
         elements.append(info_table)
         elements.append(Spacer(1, 8))
 
@@ -2478,7 +2534,6 @@ class PDFService:
         amount = float(deposit_data.get('amount', 0))
         receipt_no = deposit_data.get('deposit_number', '')
         receipt_date = deposit_data.get('received_at', '') or datetime.now().strftime('%d/%m/%Y %H:%M')
-        print_date_str = datetime.now().strftime('%d/%m/%Y  %I:%M:%S%p')
 
         # ============================================================
         # HEADER — identical to generate_bill_pdf
@@ -2557,21 +2612,22 @@ class PDFService:
             [lv('Phone', deposit_data.get('patient_phone', '')),
              lv('Date', receipt_date)],
             [lv('MRN', deposit_data.get('mrn', '')),
-             lv('Print Date', print_date_str)],
+             lv('Address', _patient_address_line(deposit_data))],
             [lv('Admission No', deposit_data.get('admission_number', '')),
              lv('Pay Mode', pay_method)],
             [lv('Type', deposit_type_label),
              lv('Reference', deposit_data.get('reference_number') or '-')],
         ]
-        info_table = Table(info_data, colWidths=[col_w, col_w])
-        info_table.setStyle(TableStyle([
+        info_style = [
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('TOPPADDING', (0, 0), (-1, -1), 3),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
             ('LEFTPADDING', (0, 0), (-1, -1), 8),
             ('RIGHTPADDING', (0, 0), (-1, -1), 6),
             ('BOX', (0, 0), (-1, -1), 1, colors.black),
-        ]))
+        ]
+        info_table = Table(info_data, colWidths=[col_w, col_w])
+        info_table.setStyle(TableStyle(info_style))
         elements.append(info_table)
         elements.append(Spacer(1, 6))
 
@@ -2765,8 +2821,14 @@ class PDFService:
             [Paragraph("Original Payment:", label_style), Paragraph(str(refund_data.get('original_payment_number', '')), value_style),
              Paragraph("Original Amt:", label_style), Paragraph(f"Rs. {float(refund_data.get('original_amount', 0)):,.2f}", value_style)],
         ]
+        _refund_style = [('VALIGN', (0, 0), (-1, -1), 'TOP'), ('BOTTOMPADDING', (0, 0), (-1, -1), 6)]
+        _refund_addr = _patient_address_line(refund_data)
+        if _refund_addr:
+            _row_idx = len(rows)
+            rows.append([Paragraph("Address:", label_style), Paragraph(_refund_addr, value_style), '', ''])
+            _refund_style.append(('SPAN', (1, _row_idx), (3, _row_idx)))
         meta_table = Table(rows, colWidths=[page_width * 0.20, page_width * 0.30, page_width * 0.18, page_width * 0.32])
-        meta_table.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'TOP'), ('BOTTOMPADDING', (0, 0), (-1, -1), 6)]))
+        meta_table.setStyle(TableStyle(_refund_style))
         elements.append(meta_table)
         elements.append(Spacer(1, 14))
 
@@ -2854,8 +2916,14 @@ class PDFService:
             [Paragraph("Original Bill:", label_style), Paragraph(str(cn_data.get('parent_bill_number', '')), value_style),
              Paragraph("Bill Total:", label_style), Paragraph(f"Rs. {float(cn_data.get('parent_bill_total', 0)):,.2f}", value_style)],
         ]
+        _cn_style = [('VALIGN', (0, 0), (-1, -1), 'TOP'), ('BOTTOMPADDING', (0, 0), (-1, -1), 6)]
+        _cn_addr = _patient_address_line(cn_data)
+        if _cn_addr:
+            _row_idx = len(rows)
+            rows.append([Paragraph("Address:", label_style), Paragraph(_cn_addr, value_style), '', ''])
+            _cn_style.append(('SPAN', (1, _row_idx), (3, _row_idx)))
         meta = Table(rows, colWidths=[page_width * 0.20, page_width * 0.30, page_width * 0.18, page_width * 0.32])
-        meta.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'TOP'), ('BOTTOMPADDING', (0, 0), (-1, -1), 6)]))
+        meta.setStyle(TableStyle(_cn_style))
         elements.append(meta)
         elements.append(Spacer(1, 10))
 
@@ -2863,7 +2931,7 @@ class PDFService:
         items = cn_data.get('items') or []
         if items:
             head = [Paragraph("<b>Item</b>", value_style), Paragraph("<b>Qty</b>", value_style),
-                    Paragraph("<b>Unit ₹</b>", value_style), Paragraph("<b>Total ₹</b>", value_style)]
+                    Paragraph("<b>Unit (Rs.)</b>", value_style), Paragraph("<b>Total (Rs.)</b>", value_style)]
             body = [head]
             for it in items:
                 body.append([
@@ -3046,11 +3114,17 @@ class PDFService:
         if consent_data.get('procedure_name'):
             meta_rows.append([Paragraph("Procedure:", label_small), Paragraph(str(consent_data['procedure_name']), body),
                               Paragraph("Language:", label_small), Paragraph(str(consent_data.get('language', 'english')).title(), body)])
-        meta_table = Table(meta_rows, colWidths=[page_width * 0.15, page_width * 0.35, page_width * 0.15, page_width * 0.35])
-        meta_table.setStyle(TableStyle([
+        _consent_style = [
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-        ]))
+        ]
+        _consent_addr = _patient_address_line(consent_data)
+        if _consent_addr:
+            _row_idx = len(meta_rows)
+            meta_rows.append([Paragraph("Address:", label_small), Paragraph(_consent_addr, body), '', ''])
+            _consent_style.append(('SPAN', (1, _row_idx), (3, _row_idx)))
+        meta_table = Table(meta_rows, colWidths=[page_width * 0.15, page_width * 0.35, page_width * 0.15, page_width * 0.35])
+        meta_table.setStyle(TableStyle(_consent_style))
         elements.append(meta_table)
         elements.append(Spacer(1, 10))
 
@@ -3153,6 +3227,10 @@ class PDFService:
             rows.append([Paragraph("MLC No:", label), Paragraph(str(cert_data['mlc_number']), value)])
         rows.append([Paragraph("Autopsy Done:", label), Paragraph("Yes" if cert_data.get('autopsy_done') else "No", value)])
 
+        _cert_addr = _patient_address_line(cert_data)
+        if _cert_addr:
+            rows.append([Paragraph("Address:", label), Paragraph(_cert_addr, value)])
+
         meta_table = Table(rows, colWidths=[page_width * 0.3, page_width * 0.7])
         meta_table.setStyle(TableStyle([
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
@@ -3244,6 +3322,9 @@ class PDFService:
             [Paragraph("Discharge Date/Time:", label), Paragraph(str(dama_data.get('discharge_date', '')), value)],
             [Paragraph("Language Used:", label), Paragraph(str(dama_data.get('language_used', '')).title(), value)],
         ]
+        _dama_addr = _patient_address_line(dama_data)
+        if _dama_addr:
+            meta_rows.append([Paragraph("Address:", label), Paragraph(_dama_addr, value)])
         meta_table = Table(meta_rows, colWidths=[page_width * 0.3, page_width * 0.7])
         meta_table.setStyle(TableStyle([
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
@@ -3545,7 +3626,7 @@ class PDFService:
         else:
             header = ["Doctor", "Adm", "Dis", "Death", "Re-30d",
                       "OT-Sur", "OT-An", "Visits", "Avg LOS",
-                      "Visit ₹", "OT Surgeon ₹", "OT Anaes ₹", "Total ₹"]
+                      "Visit (Rs.)", "OT Surgeon (Rs.)", "OT Anaes (Rs.)", "Total (Rs.)"]
             data_rows = [[Paragraph(h, cell_b) for h in header]]
             for r in rows:
                 data_rows.append([
@@ -3584,7 +3665,7 @@ class PDFService:
 
         elements.append(Spacer(1, 14))
         elements.append(Paragraph(
-            "Total ₹ = Visit fees + OT surgeon fees (for OTs led) + OT anaesthetist fees. Outpatient consultation fees not included.",
+            "Total (Rs.) = Visit fees + OT surgeon fees (for OTs led) + OT anaesthetist fees. Outpatient consultation fees not included.",
             ParagraphStyle('NF', parent=self.styles['Normal'], fontSize=7, alignment=0,
                 fontName='Helvetica-Oblique', textColor=colors.HexColor('#555555'))))
         elements.append(Paragraph(
@@ -4143,6 +4224,585 @@ class PDFService:
         elements.append(Paragraph(
             f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M')}",
             ParagraphStyle('F', parent=self.styles['Normal'], fontSize=8, alignment=1)))
+        _finalize(doc, elements, hospital_info)
+        buffer.seek(0)
+        return buffer
+
+
+    # ========================================================================
+    # Pharmacy PDFs (Section I)
+    # ========================================================================
+
+    def _pharmacy_header(self, elements, hospital_info, include_header, title, page_width):
+        """Header for pharmacy PDFs. Mirrors generate_bill_pdf — logo on the
+        left, hospital name/address/contact stacked to the right, divider, then
+        the receipt title."""
+        title_style = ParagraphStyle('PhTitle', parent=self.styles['Title'],
+            fontSize=15, alignment=1, fontName='Helvetica-Bold',
+            textColor=colors.black, spaceAfter=2)
+        sub_style = ParagraphStyle('PhSub', parent=self.styles['Normal'],
+            fontSize=9, alignment=1, fontName='Helvetica',
+            textColor=colors.black, spaceAfter=2)
+        receipt_title = ParagraphStyle('PhReceipt', parent=self.styles['Normal'],
+            fontSize=12, alignment=1, fontName='Helvetica-Bold',
+            textColor=colors.black, spaceAfter=4)
+
+        if include_header:
+            logo_path = hospital_info.get('logo_url', '')
+            uploads_base = _get_uploads_base()
+            has_logo = False
+            full_logo_path = ''
+            if logo_path:
+                relative = logo_path.lstrip('/')
+                if relative.startswith('uploads/'):
+                    relative = relative[len('uploads/'):]
+                full_logo_path = os.path.join(uploads_base, relative)
+                has_logo = os.path.exists(full_logo_path)
+
+            name = (hospital_info.get('name') or 'PHARMACY').upper()
+            header_text_elems = [Paragraph(name, title_style)]
+            sub = hospital_info.get('hospital_subname')
+            if sub:
+                header_text_elems.append(Paragraph(sub, sub_style))
+            addr = hospital_info.get('address')
+            if addr:
+                header_text_elems.append(Paragraph(addr, sub_style))
+            contact_parts = []
+            if hospital_info.get('email'):
+                contact_parts.append(f"Email: {hospital_info['email']}")
+            if hospital_info.get('phone'):
+                contact_parts.append(f"Phone: {hospital_info['phone']}")
+            if contact_parts:
+                header_text_elems.append(Paragraph("  |  ".join(contact_parts), sub_style))
+
+            if has_logo:
+                try:
+                    logo_img = Image(full_logo_path, width=60, height=60)
+                    logo_img.hAlign = 'CENTER'
+                    header_table = Table([[logo_img, header_text_elems]],
+                                         colWidths=[75, page_width - 75])
+                    header_table.setStyle(TableStyle([
+                        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+                        ('TOPPADDING', (0, 0), (-1, -1), 0),
+                        ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+                    ]))
+                    elements.append(header_table)
+                except Exception:
+                    for el in header_text_elems:
+                        elements.append(el)
+            else:
+                for el in header_text_elems:
+                    elements.append(el)
+
+            elements.append(Spacer(1, 6))
+            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+        else:
+            elements.append(Spacer(1, 100))  # leave room for pre-printed letterhead
+
+        elements.append(Spacer(1, 4))
+        elements.append(Paragraph(title, receipt_title))
+        elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+        elements.append(Spacer(1, 6))
+
+    def generate_pharmacy_sale_invoice_pdf(self, sale_data, hospital_info, include_header=True):
+        """Sale invoice for `pharmacy_sales` row.
+
+        Expected `sale_data` keys:
+          sale_number, sale_date, payment_type, status,
+          patient_name, patient_phone, patient_ip_id, patient_address,
+          doctor_name, doctor_number,
+          items: [{medicine_name, batch_number, quantity, free_quantity,
+                   rate, rate_tier, discount_pct, tax_pct, line_total}],
+          subtotal, discount_total, tax_total, grand_total
+        """
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4,
+            rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=20)
+        elements = []
+        page_width = A4[0] - 60
+
+        is_voided = (sale_data.get('status') == 'voided')
+        watermark = "VOIDED" if is_voided else None
+
+        self._pharmacy_header(elements, hospital_info, include_header,
+                              "PHARMACY SALE INVOICE", page_width)
+
+        # ── Meta strip: sale # / date / payment ───────────────────────────
+        cell = ParagraphStyle('C', parent=self.styles['Normal'], fontSize=8,
+            fontName='Helvetica', textColor=colors.black, leading=11)
+        def lv(label, value):
+            return Paragraph(f"<b>{label}:</b> {value}", cell)
+
+        sd = sale_data.get('sale_date')
+        try:
+            sd_str = datetime.fromisoformat(str(sd)).strftime('%d/%m/%Y %I:%M%p') if sd else ''
+        except Exception:
+            sd_str = str(sd or '')
+
+        # Meta box rows: sale identity on top, patient identity below. Address
+        # spans the right two cells so long addresses don't wrap awkwardly.
+        _addr = _patient_address_line(sale_data) or sale_data.get('patient_address') or '—'
+        _ipid = sale_data.get('patient_ip_id')
+        _patient_label = sale_data.get('patient_name') or '—'
+        if _ipid:
+            _patient_label = f"{_patient_label}  (IP-ID: {_ipid})"
+
+        meta_rows = [
+            [lv("Sale #", sale_data.get('sale_number', '')),
+             lv("Date", sd_str),
+             lv("Payment", (sale_data.get('payment_type') or '—').upper())],
+            [lv("Patient", _patient_label),
+             lv("Phone", sale_data.get('patient_phone') or '—'),
+             lv("Address", _addr)],
+        ]
+        meta = Table(meta_rows, colWidths=[page_width / 3] * 3)
+        meta.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 6),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ]))
+        elements.append(meta)
+        elements.append(Spacer(1, 6))
+
+        # ── Doctor block (only if present; patient now lives in the meta box)
+        doc_lines = []
+        if sale_data.get('doctor_name'):
+            doc_lines.append(lv("Doctor", sale_data['doctor_name']))
+        if sale_data.get('doctor_number'):
+            doc_lines.append(lv("Reg #", sale_data['doctor_number']))
+        if doc_lines:
+            party = Table([[doc_lines]], colWidths=[page_width])
+            party.setStyle(TableStyle([
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('LEFTPADDING', (0, 0), (-1, -1), 6),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+                ('TOPPADDING', (0, 0), (-1, -1), 4),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ]))
+            elements.append(party)
+            elements.append(Spacer(1, 6))
+
+        # ── Items table ──────────────────────────────────────────────────
+        header_p = ParagraphStyle('H', parent=cell, fontName='Helvetica-Bold')
+        rows = [[
+            Paragraph("#", header_p), Paragraph("Medicine", header_p),
+            Paragraph("Batch", header_p), Paragraph("Qty", header_p),
+            Paragraph("Free", header_p), Paragraph("Rate", header_p),
+            Paragraph("Tier", header_p), Paragraph("Disc%", header_p),
+            Paragraph("Tax%", header_p), Paragraph("Amount", header_p),
+        ]]
+        for i, it in enumerate(sale_data.get('items') or [], start=1):
+            rows.append([
+                Paragraph(str(i), cell),
+                Paragraph(str(it.get('medicine_name') or ''), cell),
+                Paragraph(str(it.get('batch_number') or '—'), cell),
+                Paragraph(f"{it.get('quantity', 0)}", cell),
+                Paragraph(f"{it.get('free_quantity', 0)}", cell),
+                Paragraph(f"Rs. {it.get('rate', 0):.2f}", cell),
+                Paragraph(str(it.get('rate_tier') or '—'), cell),
+                Paragraph(f"{it.get('discount_pct', 0):g}", cell),
+                Paragraph(f"{it.get('tax_pct', 0):g}", cell),
+                Paragraph(f"Rs. {it.get('line_total', 0):.2f}", cell),
+            ])
+        # Column widths sum to page_width (≈535pt on A4 with 30pt side margins).
+        # Tuned so the "Free", "Disc%", "Tax%" headers fit on a single line and
+        # "Rs. 30.00" / "Rs. 150.00" values don't wrap.
+        items_tbl = Table(rows, colWidths=[
+            22, page_width - (22 + 60 + 38 + 38 + 60 + 30 + 40 + 38 + 70),
+            60, 38, 38, 60, 30, 40, 38, 70,
+        ])
+        items_tbl.setStyle(TableStyle([
+            # Light header band with a single rule above and below it — keeps the
+            # item rows clean and borderless while still separating the header.
+            ('BACKGROUND', (0, 0), (-1, 0), colors.whitesmoke),
+            ('LINEABOVE', (0, 0), (-1, 0), 0.5, colors.black),
+            ('LINEBELOW', (0, 0), (-1, 0), 0.5, colors.black),
+            ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
+            ('ALIGN', (3, 1), (-1, -1), 'RIGHT'),
+            ('ALIGN', (0, 1), (0, -1), 'CENTER'),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('FONTSIZE', (0, 0), (-1, -1), 8),
+            ('LEFTPADDING', (0, 0), (-1, -1), 4),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ]))
+        elements.append(items_tbl)
+        elements.append(Spacer(1, 8))
+
+        # ── Totals block (right-aligned) ─────────────────────────────────
+        tot_rows = [
+            [Paragraph("Subtotal", cell), Paragraph(f"Rs. {sale_data.get('subtotal', 0):.2f}", cell)],
+            [Paragraph("Discount", cell), Paragraph(f"−Rs. {sale_data.get('discount_total', 0):.2f}", cell)],
+            [Paragraph("Tax (SGST+CGST)", cell), Paragraph(f"+Rs. {sale_data.get('tax_total', 0):.2f}", cell)],
+            [Paragraph("<b>Grand Total</b>", cell),
+             Paragraph(f"<b>Rs. {sale_data.get('grand_total', 0):.2f}</b>", cell)],
+        ]
+        tot = Table(tot_rows, colWidths=[120, 90], hAlign='RIGHT')
+        tot.setStyle(TableStyle([
+            # Single hairline above Grand Total — separates it from the
+            # subtotal rows without boxing the whole totals block.
+            ('LINEABOVE', (0, -1), (-1, -1), 0.75, colors.black),
+            ('FONTSIZE', (0, 0), (-1, -1), 8),
+            ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 6),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+        ]))
+        elements.append(tot)
+
+        if is_voided:
+            elements.append(Spacer(1, 8))
+            elements.append(Paragraph(
+                f"<i>VOIDED — {sale_data.get('void_reason') or 'no reason recorded'}</i>",
+                ParagraphStyle('V', parent=cell, fontSize=9, textColor=colors.red),
+            ))
+
+        _finalize(doc, elements, hospital_info, watermark=watermark)
+        buffer.seek(0)
+        return buffer
+
+    def generate_pharmacy_purchase_pdf(self, purchase_data, hospital_info, include_header=True):
+        """GRN / purchase order document for `pharmacy_purchases`.
+
+        Expected keys: purchase_number, entry_date, supplier_name, invoice_number,
+        bill_date, payment_type, purchase_type, status,
+        items: [{medicine_name, batch_number, expiry_date, mrp, quantity,
+                 free_quantity, purchase_rate, discount_pct, tax_amount, line_total}],
+        subtotal, total_discount, total_tax, grand_total, notes
+        """
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4,
+            rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=20)
+        elements = []
+        page_width = A4[0] - 60
+
+        self._pharmacy_header(elements, hospital_info, include_header,
+                              "PURCHASE / GOODS RECEIPT", page_width)
+
+        cell = ParagraphStyle('C', parent=self.styles['Normal'], fontSize=8,
+            fontName='Helvetica', textColor=colors.black, leading=11)
+        def lv(label, value):
+            return Paragraph(f"<b>{label}:</b> {value}", cell)
+
+        # Meta
+        meta = Table([
+            [lv("Purchase #", purchase_data.get('purchase_number', '')),
+             lv("Entry Date", str(purchase_data.get('entry_date') or '')),
+             lv("Status", (purchase_data.get('status') or '—').upper())],
+            [lv("Supplier", purchase_data.get('supplier_name') or '—'),
+             lv("Invoice #", purchase_data.get('invoice_number') or '—'),
+             lv("Payment", (purchase_data.get('payment_type') or '—').upper())],
+        ], colWidths=[page_width / 3] * 3)
+        meta.setStyle(TableStyle([
+            ('BOX', (0, 0), (-1, -1), 0.5, colors.black),
+            ('INNERGRID', (0, 0), (-1, -1), 0.25, colors.grey),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 6),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ]))
+        elements.append(meta)
+        elements.append(Spacer(1, 6))
+
+        # Items
+        header_p = ParagraphStyle('H', parent=cell, fontName='Helvetica-Bold')
+        rows = [[
+            Paragraph("#", header_p), Paragraph("Medicine", header_p),
+            Paragraph("Batch", header_p),
+            Paragraph("MRP", header_p), Paragraph("Qty", header_p),
+            Paragraph("Free", header_p), Paragraph("P-Rate", header_p),
+            Paragraph("Disc%", header_p), Paragraph("Tax", header_p),
+            Paragraph("Line", header_p),
+        ]]
+        for i, it in enumerate(purchase_data.get('items') or [], start=1):
+            rows.append([
+                Paragraph(str(i), cell),
+                Paragraph(str(it.get('medicine_name') or ''), cell),
+                Paragraph(str(it.get('batch_number') or '—'), cell),
+                Paragraph(f"Rs. {it.get('mrp', 0):.2f}", cell),
+                Paragraph(f"{it.get('quantity', 0)}", cell),
+                Paragraph(f"{it.get('free_quantity', 0)}", cell),
+                Paragraph(f"Rs. {it.get('purchase_rate', 0):.2f}", cell),
+                Paragraph(f"{it.get('discount_pct', 0):g}", cell),
+                Paragraph(f"Rs. {it.get('tax_amount', 0):.2f}", cell),
+                Paragraph(f"Rs. {it.get('line_total', 0):.2f}", cell),
+            ])
+        items_tbl = Table(rows, colWidths=[
+            18, page_width * 0.28, 70, 50, 35, 35, 50, 35, 50, 60,
+        ])
+        items_tbl.setStyle(TableStyle([
+            ('BOX', (0, 0), (-1, -1), 0.5, colors.black),
+            ('INNERGRID', (0, 0), (-1, -1), 0.25, colors.grey),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+            ('ALIGN', (3, 1), (-1, -1), 'RIGHT'),
+            ('FONTSIZE', (0, 0), (-1, -1), 7),
+        ]))
+        elements.append(items_tbl)
+        elements.append(Spacer(1, 8))
+
+        # Totals
+        tot_rows = [
+            [Paragraph("Subtotal", cell), Paragraph(f"Rs. {purchase_data.get('subtotal', 0):.2f}", cell)],
+            [Paragraph("Discount", cell), Paragraph(f"−Rs. {purchase_data.get('total_discount', 0):.2f}", cell)],
+            [Paragraph("Tax", cell), Paragraph(f"+Rs. {purchase_data.get('total_tax', 0):.2f}", cell)],
+            [Paragraph("<b>Grand Total</b>", cell),
+             Paragraph(f"<b>Rs. {purchase_data.get('grand_total', 0):.2f}</b>", cell)],
+        ]
+        tot = Table(tot_rows, colWidths=[120, 90], hAlign='RIGHT')
+        tot.setStyle(TableStyle([
+            ('BOX', (0, -1), (-1, -1), 0.75, colors.black),
+            ('LINEABOVE', (0, -1), (-1, -1), 0.75, colors.black),
+            ('FONTSIZE', (0, 0), (-1, -1), 8),
+            ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 6),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+        ]))
+        elements.append(tot)
+
+        if purchase_data.get('notes'):
+            elements.append(Spacer(1, 10))
+            elements.append(Paragraph(f"<b>Notes:</b> {purchase_data['notes']}",
+                ParagraphStyle('N', parent=cell, fontSize=8, leading=11)))
+
+        watermark = None
+        if (purchase_data.get('status') or '').lower() == 'draft':
+            watermark = "DRAFT"
+        _finalize(doc, elements, hospital_info, watermark=watermark)
+        buffer.seek(0)
+        return buffer
+
+    def generate_pharmacy_dispense_slip_pdf(self, dispense_data, hospital_info, include_header=True):
+        """Dispense slip — handed to the patient on Rx-linked dispensing.
+
+        Expected keys: prescription_number, prescription_date, patient_name,
+        doctor_name, lines: [{medicine_name, batch_number, quantity}],
+        dispensed_by, notes
+        """
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4,
+            rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=20)
+        elements = []
+        page_width = A4[0] - 60
+
+        self._pharmacy_header(elements, hospital_info, include_header,
+                              "DISPENSE SLIP", page_width)
+
+        cell = ParagraphStyle('C', parent=self.styles['Normal'], fontSize=8,
+            fontName='Helvetica', textColor=colors.black, leading=11)
+        def lv(label, value):
+            return Paragraph(f"<b>{label}:</b> {value}", cell)
+
+        meta_rows = [
+            [lv("Rx #", dispense_data.get('prescription_number', '')),
+             lv("Patient", dispense_data.get('patient_name') or '—')],
+            [lv("Doctor", dispense_data.get('doctor_name') or '—'),
+             lv("Dispensed by", dispense_data.get('dispensed_by') or '—')],
+        ]
+        _meta_style = [
+            ('BOX', (0, 0), (-1, -1), 0.5, colors.black),
+            ('INNERGRID', (0, 0), (-1, -1), 0.25, colors.grey),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 6),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ]
+        _disp_addr = _patient_address_line(dispense_data)
+        if _disp_addr:
+            _row_idx = len(meta_rows)
+            meta_rows.append([lv("Address", _disp_addr), ''])
+            _meta_style.append(('SPAN', (0, _row_idx), (1, _row_idx)))
+        meta = Table(meta_rows, colWidths=[page_width / 2] * 2)
+        meta.setStyle(TableStyle(_meta_style))
+        elements.append(meta)
+        elements.append(Spacer(1, 6))
+
+        header_p = ParagraphStyle('H', parent=cell, fontName='Helvetica-Bold')
+        rows = [[
+            Paragraph("#", header_p), Paragraph("Medicine", header_p),
+            Paragraph("Batch", header_p), Paragraph("Quantity", header_p),
+        ]]
+        for i, ln in enumerate(dispense_data.get('lines') or [], start=1):
+            rows.append([
+                Paragraph(str(i), cell),
+                Paragraph(str(ln.get('medicine_name') or ''), cell),
+                Paragraph(str(ln.get('batch_number') or '—'), cell),
+                Paragraph(f"{ln.get('quantity', 0)}", cell),
+            ])
+        tbl = Table(rows, colWidths=[20, page_width - 200, 80, 80])
+        tbl.setStyle(TableStyle([
+            ('BOX', (0, 0), (-1, -1), 0.5, colors.black),
+            ('INNERGRID', (0, 0), (-1, -1), 0.25, colors.grey),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+            ('ALIGN', (3, 1), (3, -1), 'RIGHT'),
+            ('FONTSIZE', (0, 0), (-1, -1), 8),
+        ]))
+        elements.append(tbl)
+
+        if dispense_data.get('notes'):
+            elements.append(Spacer(1, 8))
+            elements.append(Paragraph(f"<b>Notes:</b> {dispense_data['notes']}",
+                ParagraphStyle('N', parent=cell, fontSize=8, leading=11)))
+
+        _finalize(doc, elements, hospital_info)
+        buffer.seek(0)
+        return buffer
+
+    def generate_narcotic_register_pdf(self, rows, period, hospital_info, include_header=True):
+        """Narcotic / Schedule-H register for compliance.
+
+        `rows` is a list of dicts with keys: sale_date, sale_number,
+        medicine_name, quantity, batch_number, patient_name, patient_phone,
+        doctor_name, schedule.
+        `period` is a {from, to} dict (strings).
+        """
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4,
+            rightMargin=20, leftMargin=20, topMargin=30, bottomMargin=20)
+        elements = []
+        page_width = A4[0] - 40
+
+        self._pharmacy_header(elements, hospital_info, include_header,
+                              "NARCOTIC / SCHEDULE-H REGISTER", page_width)
+
+        cell = ParagraphStyle('C', parent=self.styles['Normal'], fontSize=7,
+            fontName='Helvetica', textColor=colors.black, leading=10)
+        if period:
+            elements.append(Paragraph(
+                f"<b>Period:</b> {period.get('from') or '—'} to {period.get('to') or '—'} "
+                f"&nbsp;&nbsp;&nbsp;<b>Entries:</b> {len(rows)}",
+                ParagraphStyle('P', parent=cell, fontSize=9)))
+            elements.append(Spacer(1, 6))
+
+        header_p = ParagraphStyle('H', parent=cell, fontName='Helvetica-Bold')
+        out = [[
+            Paragraph("Date", header_p), Paragraph("Sale #", header_p),
+            Paragraph("Medicine", header_p), Paragraph("Schedule", header_p),
+            Paragraph("Qty", header_p), Paragraph("Batch", header_p),
+            Paragraph("Patient", header_p), Paragraph("Phone", header_p),
+            Paragraph("Doctor", header_p),
+        ]]
+        for r in rows or []:
+            try:
+                d = datetime.fromisoformat(str(r.get('sale_date')))
+                d_str = d.strftime('%d/%m/%Y %H:%M')
+            except Exception:
+                d_str = str(r.get('sale_date') or '')
+            out.append([
+                Paragraph(d_str, cell),
+                Paragraph(str(r.get('sale_number') or ''), cell),
+                Paragraph(str(r.get('medicine_name') or ''), cell),
+                Paragraph(str(r.get('schedule') or '').replace('_', ' ').title(), cell),
+                Paragraph(f"{r.get('quantity', 0)}", cell),
+                Paragraph(str(r.get('batch_number') or '—'), cell),
+                Paragraph(str(r.get('patient_name') or '—'), cell),
+                Paragraph(str(r.get('patient_phone') or '—'), cell),
+                Paragraph(str(r.get('doctor_name') or '—'), cell),
+            ])
+        tbl = Table(out, colWidths=[
+            65, 70, page_width * 0.18, 55, 28, 55,
+            page_width * 0.15, 60, page_width * 0.13,
+        ], repeatRows=1)
+        tbl.setStyle(TableStyle([
+            ('BOX', (0, 0), (-1, -1), 0.5, colors.black),
+            ('INNERGRID', (0, 0), (-1, -1), 0.25, colors.grey),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+            ('ALIGN', (4, 1), (4, -1), 'RIGHT'),
+            ('FONTSIZE', (0, 0), (-1, -1), 7),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ]))
+        elements.append(tbl)
+        _finalize(doc, elements, hospital_info)
+        buffer.seek(0)
+        return buffer
+
+
+    def generate_pharmacy_report_pdf(
+        self, *, title: str, period: Optional[dict],
+        columns: list, rows: list, hospital_info: dict,
+        include_header: bool = True, meta: Optional[dict] = None,
+    ):
+        """Generic landscape tabular PDF for Phase-2 pharmacy reports.
+
+        `columns` is a list of dicts: {key, label, align?, width?, formatter?}
+          - key: the dict field on each row to pull
+          - label: column header text
+          - align: 'LEFT' (default) | 'RIGHT' | 'CENTER'
+          - width: relative weight (any positive number); widths normalized to page
+          - formatter: optional callable(value) -> str
+
+        `period`: {from, to} strings shown in the sub-header. `meta`: optional
+        extra dict of {label: value} pairs to render alongside the period.
+        """
+        from reportlab.lib.pagesizes import landscape, A4 as _A4
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(
+            buffer, pagesize=landscape(_A4),
+            rightMargin=20, leftMargin=20, topMargin=30, bottomMargin=20,
+        )
+        elements = []
+        page_width = landscape(_A4)[0] - 40
+
+        self._pharmacy_header(elements, hospital_info, include_header, title, page_width)
+
+        cell = ParagraphStyle('GenCell', parent=self.styles['Normal'], fontSize=7,
+                              fontName='Helvetica', textColor=colors.black, leading=10)
+        sub = ParagraphStyle('GenSub', parent=cell, fontSize=9)
+        header_p = ParagraphStyle('GenHdr', parent=cell, fontName='Helvetica-Bold')
+
+        sub_bits = []
+        if period:
+            sub_bits.append(
+                f"<b>Period:</b> {period.get('from') or '—'} to {period.get('to') or '—'}"
+            )
+        sub_bits.append(f"<b>Rows:</b> {len(rows)}")
+        for k, v in (meta or {}).items():
+            sub_bits.append(f"<b>{k}:</b> {v}")
+        elements.append(Paragraph("&nbsp;&nbsp;&nbsp;".join(sub_bits), sub))
+        elements.append(Spacer(1, 6))
+
+        out = [[Paragraph(c.get('label', c['key']), header_p) for c in columns]]
+        for r in rows or []:
+            cells = []
+            for c in columns:
+                val = r.get(c['key']) if isinstance(r, dict) else getattr(r, c['key'], None)
+                fmt = c.get('formatter')
+                if fmt is not None:
+                    s = fmt(val)
+                elif val is None:
+                    s = '—'
+                elif isinstance(val, float):
+                    s = f"{val:,.2f}"
+                elif isinstance(val, int):
+                    s = f"{val:,}"
+                else:
+                    s = str(val)
+                cells.append(Paragraph(s, cell))
+            out.append(cells)
+
+        weights = [float(c.get('width', 1)) for c in columns]
+        total = sum(weights) or 1.0
+        col_widths = [page_width * w / total for w in weights]
+
+        tbl = Table(out, colWidths=col_widths, repeatRows=1)
+        style = [
+            ('BOX', (0, 0), (-1, -1), 0.5, colors.black),
+            ('INNERGRID', (0, 0), (-1, -1), 0.25, colors.grey),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+            ('FONTSIZE', (0, 0), (-1, -1), 7),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ]
+        for col_idx, c in enumerate(columns):
+            a = (c.get('align') or 'LEFT').upper()
+            if a in ('RIGHT', 'CENTER'):
+                style.append(('ALIGN', (col_idx, 1), (col_idx, -1), a))
+        tbl.setStyle(TableStyle(style))
+        elements.append(tbl)
         _finalize(doc, elements, hospital_info)
         buffer.seek(0)
         return buffer

@@ -84,7 +84,7 @@ const ReceptionDashboard = () => {
   const [showPrescriptionDialog, setShowPrescriptionDialog] = useState(false);
   const [prescriptionPdfUrl, setPrescriptionPdfUrl] = useState(null);
   const [prescriptionData, setPrescriptionData] = useState(null);
-  const [rxIncludeHeader, setRxIncludeHeader] = useState(true);
+  const [rxIncludeHeader, setRxIncludeHeader] = useState(false);
 
   useEffect(() => {
     fetchDashboardData();
@@ -212,11 +212,11 @@ const ReceptionDashboard = () => {
   const [labPaymentLoading, setLabPaymentLoading] = useState(false);
   const [labPaymentMethod, setLabPaymentMethod] = useState('cash');
   const [labDiscount, setLabDiscount] = useState(0);
-  const [labBillHeader, setLabBillHeader] = useState(true);
+  const [labBillHeader, setLabBillHeader] = useState(false);
   const [labBillPdfUrl, setLabBillPdfUrl] = useState(null);
   const [labBillOrderIds, setLabBillOrderIds] = useState([]);
   const [showLabBillPreview, setShowLabBillPreview] = useState(false);
-  const [labPreviewHeader, setLabPreviewHeader] = useState(true);
+  const [labPreviewHeader, setLabPreviewHeader] = useState(false);
   const [allLabOrdersForPatient, setAllLabOrdersForPatient] = useState([]);
 
 
@@ -281,7 +281,7 @@ const ReceptionDashboard = () => {
     }
   };
 
-  const downloadLabReport = async (reportId, orderNumber, includeHeader = true, packageBookingId = null) => {
+  const downloadLabReport = async (reportId, orderNumber, includeHeader = false, packageBookingId = null) => {
     try {
       const token = localStorage.getItem('token');
       const url = packageBookingId
@@ -524,6 +524,11 @@ const ReceptionDashboard = () => {
                   >
                     <div className="flex-1">
                       <div className="flex items-center space-x-3">
+                        {appointment.token_number && (
+                          <span className="inline-flex items-center justify-center w-9 h-9 rounded-full bg-blue-700 text-white shadow-sm ring-2 ring-blue-200 font-bold text-sm flex-shrink-0">
+                            {appointment.token_number}
+                          </span>
+                        )}
                         <div className="flex-1">
                           <p className="font-medium text-gray-900">{appointment.patient_name}</p>
                           <p className="text-sm text-gray-600">{appointment.doctor_name}</p>

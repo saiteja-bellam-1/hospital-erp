@@ -3057,6 +3057,8 @@ async def get_discharge_pdf(
         "patient_id": patient.patient_id if patient else "N/A",
         "age": _patient_age(patient) or "",
         "gender": patient.gender if patient else "",
+        "village": (patient.village or "") if patient else "",
+        "district": (patient.district or "") if patient else "",
         "doctor_name": f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else "N/A",
         "admission_date": admission.admission_date.strftime("%d/%m/%Y") if admission.admission_date else "",
         "discharge_date": discharge.discharge_date.strftime("%d/%m/%Y") if discharge.discharge_date else "",
@@ -3312,7 +3314,7 @@ def _apply_package_room(rate_segments, billable_stay_days, included_stay_days, i
                 total = round(upgrade_rate * inc_days, 2)
                 pkg_total += total
                 lines.append({
-                    "label": f"Room upgrade ({inc_days} days @ ₹{upgrade_rate:.2f})",
+                    "label": f"Room upgrade ({inc_days} days @ Rs. {upgrade_rate:.2f})",
                     "days": inc_days,
                     "rate": upgrade_rate,
                     "total": total,
@@ -3321,7 +3323,7 @@ def _apply_package_room(rate_segments, billable_stay_days, included_stay_days, i
             total = round(seg_rate * exc_days, 2)
             pkg_total += total
             lines.append({
-                "label": f"Room excess stay ({exc_days} days @ ₹{seg_rate:.2f})",
+                "label": f"Room excess stay ({exc_days} days @ Rs. {seg_rate:.2f})",
                 "days": exc_days,
                 "rate": seg_rate,
                 "total": total,
@@ -5072,6 +5074,8 @@ async def get_bill_pdf(
                 getattr(patient, "mandal", None),
                 getattr(patient, "district", None),
             ])) if patient else "",
+            "village": (getattr(patient, "village", None) or "") if patient else "",
+            "district": (getattr(patient, "district", None) or "") if patient else "",
             "referred_by": getattr(patient, "referred_by", None),
         },
         "admission": {
@@ -8384,6 +8388,8 @@ async def get_deposit_receipt_pdf(
         "mrn": (patient.mrn or "") if patient else "",
         "patient_id": patient.patient_id if patient else "—",
         "patient_phone": patient.primary_phone if patient else "",
+        "village": (patient.village or "") if patient else "",
+        "district": (patient.district or "") if patient else "",
         "admission_number": admission.admission_number if admission else "—",
     }
     hospital_info = {
@@ -9597,6 +9603,8 @@ async def preview_consent_pdf(
         "age": token_ctx["age"],
         "gender": token_ctx["gender"],
         "primary_phone": token_ctx["primary_phone"],
+        "village": (patient.village or "") if patient else "",
+        "district": (patient.district or "") if patient else "",
         "emergency_contact_name": token_ctx["emergency_contact_name"],
         "emergency_contact_relation": token_ctx["emergency_contact_relation"],
         "emergency_contact_phone": token_ctx["emergency_contact_phone"],
@@ -9707,6 +9715,8 @@ async def get_consent_pdf(
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "",
         "mrn": getattr(patient, "mrn", None) or (patient.patient_id if patient else ""),
         "patient_id": patient.patient_id if patient else "",
+        "village": (getattr(patient, "village", None) or "") if patient else "",
+        "district": (getattr(patient, "district", None) or "") if patient else "",
         "age": _age_str(patient) if patient else "",
         "gender": (patient.gender or "").title() if patient else "",
         "primary_phone": getattr(patient, "primary_phone", None) or "",
@@ -9920,6 +9930,8 @@ async def get_dama_pdf(
         "patient_id": patient.patient_id if patient else "",
         "age": _patient_age(patient) or "",
         "gender": patient.gender if patient else "",
+        "village": (patient.village or "") if patient else "",
+        "district": (patient.district or "") if patient else "",
         "doctor_name": f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else "",
         "admission_date": admission.admission_date.strftime("%d/%m/%Y") if admission and admission.admission_date else "",
         "discharge_date": discharge.discharge_date.strftime("%d/%m/%Y %H:%M") if discharge and discharge.discharge_date else "",
@@ -10589,6 +10601,8 @@ async def death_certificate_pdf(
         "patient_id": patient.patient_id if patient else "",
         "age": _patient_age(patient) or "",
         "gender": patient.gender if patient else "",
+        "village": (patient.village or "") if patient else "",
+        "district": (patient.district or "") if patient else "",
         "admission_number": admission.admission_number,
         "admission_date": admission.admission_date.strftime("%d/%m/%Y") if admission.admission_date else "",
         "discharge_date": d.discharge_date.strftime("%d/%m/%Y") if d.discharge_date else "",

@@ -53,7 +53,7 @@ const ReceptionistDashboard = () => {
   const [showBillPreviewDialog, setShowBillPreviewDialog] = useState(false);
   const [currentBill, setCurrentBill] = useState(null);
   const [billPdfUrl, setBillPdfUrl] = useState(null);
-  const [billIncludeHeader, setBillIncludeHeader] = useState(true);
+  const [billIncludeHeader, setBillIncludeHeader] = useState(false);
   const [currentBillAppointmentId, setCurrentBillAppointmentId] = useState(null);
 
   // Filter states
@@ -312,7 +312,7 @@ const ReceptionistDashboard = () => {
   };
 
   // Bill preview functions
-  const showBillPreview = async (appointmentId, includeHeader = true) => {
+  const showBillPreview = async (appointmentId, includeHeader = false) => {
     try {
       const token = localStorage.getItem('token');
       setCurrentBillAppointmentId(appointmentId);
@@ -407,7 +407,7 @@ const ReceptionistDashboard = () => {
     }
   };
 
-  const printPrescription = async (prescriptionId, includeHeader = true) => {
+  const printPrescription = async (prescriptionId, includeHeader = false) => {
     try {
       const token = localStorage.getItem('token');
       const response = await fetch(`/api/prescriptions-simple/${prescriptionId}/download?include_header=${includeHeader}`, {
@@ -801,9 +801,16 @@ const ReceptionistDashboard = () => {
                       <CardContent className="pt-3 pb-3">
                         <div className="space-y-2">
                           <div className="flex justify-between items-start">
-                            <div>
-                              <p className="font-medium text-sm">{appointment.patient_name}</p>
-                              <p className="text-xs text-gray-600">{appointment.doctor_name}</p>
+                            <div className="flex items-center gap-2">
+                              {appointment.token_number && (
+                                <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-blue-700 text-white shadow-sm ring-2 ring-blue-200 font-bold text-xs flex-shrink-0">
+                                  {appointment.token_number}
+                                </span>
+                              )}
+                              <div>
+                                <p className="font-medium text-sm">{appointment.patient_name}</p>
+                                <p className="text-xs text-gray-600">{appointment.doctor_name}</p>
+                              </div>
                             </div>
                             {getStatusBadge(appointment.status)}
                           </div>

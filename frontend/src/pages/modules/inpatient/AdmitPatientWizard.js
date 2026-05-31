@@ -336,7 +336,7 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
           // Auto-print the deposit receipt so the receptionist can hand it over
           try {
             const pdfRes = await axios.get(
-              `/api/inpatient/deposits/${dep.data.id}/receipt/pdf?include_header=true`,
+              `/api/inpatient/deposits/${dep.data.id}/receipt/pdf?include_header=false`,
               { responseType: 'blob' },
             );
             const url = URL.createObjectURL(new Blob([pdfRes.data], { type: 'application/pdf' }));
@@ -389,7 +389,7 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
 
   return (
     <Dialog open={open} onOpenChange={v => !v && onClose?.()}>
-      <DialogContent className="max-w-3xl max-h-[92vh] overflow-y-auto">
+      <DialogContent className="max-w-5xl max-h-[92vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center justify-between">
             <span>Admit Patient</span>
@@ -829,7 +829,7 @@ const DeclarationCard = ({
       const params = {
         patient_id: String(patientId),
         template_id: template.id,
-        include_header: true,
+        include_header: false,
       };
       if (roomId) params.room_id = roomId;
       if (doctorId) params.admitting_doctor_id = doctorId;

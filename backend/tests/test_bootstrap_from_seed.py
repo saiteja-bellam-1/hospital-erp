@@ -191,6 +191,80 @@ def test_adopt_existing_missing_db_fails(fake_install):
     assert "existing DB not found" in status["error"]
 
 
+def test_fresh_seed_with_users_csv_imports_extra_users(fake_install):
+    csv_path = fake_install / "data" / "install_users.csv"
+    csv_path.write_text(
+        "username,email,first_name,last_name,role,password,phone,additional_roles\n"
+        "csvbill,csvbill@h.in,CSV,Bill,billing_admin,Welcome@123,9000000001,\n"
+        "csvrec,csvrec@h.in,CSV,Rec,receptionist,Welcome@123,,frontdesk\n"
+    )
+    _write_seed(
+        fake_install,
+        {
+            "mode": "fresh",
+            "hospital_name": "CSV Bootstrap Hospital",
+            "admin_username": "csvadmin",
+            "admin_email": "csvadmin@local",
+            "data_dir": str(fake_install / "data"),
+            "users_csv_path": str(csv_path),
+        },
+        password="StrongPass123",
+    )
+
+    from app.services.bootstrap_from_seed import consume_seed_if_present
+    status = consume_seed_if_present(str(fake_install))
+
+    assert status["applied"] is True
+    assert status["users_import"]["applied"] is True
+    assert status["users_import"]["created"] == 2
+    assert set(status["users_import"]["usernames"]) == {"csvbill", "csvrec"}
+
+    # CSV is deleted after a successful import.
+    assert not csv_path.exists()
+
+    db = sqlite3.connect(str(fake_install / "data" / "kthealth_erp.db"))
+    try:
+        users = dict(db.execute("SELECT username, must_change_password FROM users").fetchall())
+    finally:
+        db.close()
+    # super_admin (from AdminPage) does NOT get must_change_password forced by
+    # the CSV path — only the CSV-imported users should be flagged.
+    assert users.get("csvbill") == 1
+    assert users.get("csvrec") == 1
+
+
+def test_fresh_seed_with_invalid_users_csv_keeps_admin_and_csv(fake_install):
+    csv_path = fake_install / "data" / "install_users.csv"
+    csv_path.write_text(
+        "username,email,first_name,last_name,role,password,phone,additional_roles\n"
+        # doctor is rejected — must be imported via the in-app importer.
+        "drbad,drbad@h.in,Dr,Bad,doctor,Welcome@123,,\n"
+    )
+    _write_seed(
+        fake_install,
+        {
+            "mode": "fresh",
+            "hospital_name": "Reject Hospital",
+            "admin_username": "rejadmin",
+            "admin_email": "rejadmin@local",
+            "data_dir": str(fake_install / "data"),
+            "users_csv_path": str(csv_path),
+        },
+        password="StrongPass123",
+    )
+
+    from app.services.bootstrap_from_seed import consume_seed_if_present
+    status = consume_seed_if_present(str(fake_install))
+
+    # Bootstrap as a whole still succeeded (admin + hospital created); only
+    # the users import was rejected. CSV is preserved for operator retry.
+    assert status["applied"] is True
+    assert status["users_import"]["applied"] is False
+    assert status["users_import"]["reason"] == "validation_failed"
+    assert any("not allowed here" in e["message"] for e in status["users_import"]["errors"])
+    assert csv_path.exists()
+
+
 def test_unknown_mode_fails(fake_install):
     _write_seed(fake_install, {"mode": "wat"}, password="StrongPass123")
     from app.services.bootstrap_from_seed import consume_seed_if_present
