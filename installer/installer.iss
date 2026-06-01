@@ -346,10 +346,10 @@ function JsonGetInt(const S, Key: String; Default: Integer): Integer;
 var
   Tag, Tail: String;
   P, Q: Integer;
-  Code: Integer;
 begin
   // Extract a numeric value (positive or negative integer). Returns Default
-  // when the key is absent or unparseable.
+  // when the key is absent or unparseable. Uses StrToIntDef because Inno's
+  // PascalScript runtime does not expose Pascal's Val procedure.
   Result := Default;
   Tag := '"' + Key + '":';
   P := Pos(Tag, S);
@@ -363,8 +363,7 @@ begin
   if Q > P then
   begin
     Tail := Copy(S, P, Q - P);
-    Val(Tail, Result, Code);
-    if Code <> 0 then Result := Default;
+    Result := StrToIntDef(Tail, Default);
   end;
 end;
 

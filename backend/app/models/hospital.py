@@ -26,9 +26,16 @@ class Hospital(Base):
     established_date = Column(DateTime)
     mrn_prefix = Column(String(8), nullable=True)
     is_active = Column(Boolean, default=True)
+    # Pharmacy module per-hospital settings (Phase 3).
+    # void_window_days = 0 means voids are never time-limited; > 0 caps the
+    # age of a sale that can be voided without the `void_sale_legacy` perm.
+    pharmacy_void_window_days = Column(Integer, default=0)
+    # When True, free quantity included on a sale line contributes to the
+    # taxable base. Default off — most pharmacies do not tax freebies.
+    pharmacy_tax_on_free = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    
+
     users = relationship("User", back_populates="hospital")
     modules = relationship("HospitalModule", back_populates="hospital")
 

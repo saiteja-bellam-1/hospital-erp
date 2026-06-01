@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.hospital import Hospital
@@ -73,6 +74,30 @@ async def pharmacy_health(
 # ============================================================================
 # Helpers
 # ============================================================================
+
+def _user_has_permission(db, user, module: str, permission_name: str) -> bool:
+    """Inline check used for in-route conditional gates (e.g. the `void_sale_legacy`
+    bypass on the void window). Mirrors require_feature_permission's matching
+    rule against RoleModulePermission for any of the user's roles. Returns
+    False for any error so callers can fall through to the "deny by default"
+    branch.
+    """
+    try:
+        from app.models.permissions import RoleModulePermission
+        role_ids = [r.id for r in (getattr(user, "roles", None) or [])]
+        if user.role_id and user.role_id not in role_ids:
+            role_ids.append(user.role_id)
+        for rid in role_ids:
+            rp = db.query(RoleModulePermission).filter(
+                RoleModulePermission.role_id == rid,
+                RoleModulePermission.module_name == module,
+            ).first()
+            if rp and rp.permissions and permission_name in rp.permissions:
+                return True
+    except Exception:
+        return False
+    return False
+
 
 def _audit(db, user, action, resource_type, resource_id, description, details=None):
     log_action(
@@ -1193,7 +1218,13 @@ def create_purchase(
         status="draft", notes=data.notes,
         created_by=current_user.id, hospital_id=current_user.hospital_id,
     )
-    db.add(purchase); db.flush()
+    db.add(purchase)
+    # P3.3: handle concurrent-draft race on the per-day sequence.
+    _flush_with_number_retry(
+        db, purchase,
+        regen=lambda: _next_purchase_number(db, current_user.hospital_id),
+        set_attr="purchase_number",
+    )
 
     for item in data.items:
         med = db.query(Medicine).filter(
@@ -1658,18 +1689,45 @@ def _next_sale_number(db: Session, hospital_id: int) -> str:
     return f"{prefix}{seq:04d}"
 
 
+def _flush_with_number_retry(db: Session, target, *, regen, set_attr: str, retries: int = 3):
+    """Flush `target` and, on a unique-constraint violation against `set_attr`,
+    re-mint the number via `regen()` and try again up to `retries` times.
+
+    Used for sale_number / purchase_number which are globally unique on the
+    column but minted by a "MAX seq + 1" lookup that two concurrent inserts
+    can race against.
+    """
+    last_err = None
+    for _ in range(retries):
+        try:
+            db.flush()
+            return
+        except IntegrityError as e:
+            last_err = e
+            db.rollback()
+            # IntegrityError invalidates `target` from the session; re-attach
+            # with a freshly minted number and try again.
+            setattr(target, set_attr, regen())
+            db.add(target)
+    raise last_err  # propagated, caller decides how to surface
+
+
 def _pick_fifo_batches(db: Session, *, medicine_id: int, qty_needed: float, hospital_id: int):
     """Return [(batch_row, qty_to_take), ...] picking oldest batch first
     (insertion order — expiry tracking has been removed).
 
     Raises 400 if total available across all active batches < qty_needed.
     """
+    # P3.2: lock the candidate inventory rows for the duration of this tx so
+    # two concurrent sales can't both read the same quantity and oversell. No-op
+    # on SQLite (relies on BEGIN IMMEDIATE serialization); real effect on
+    # Postgres/MySQL deployments.
     avail = db.query(PharmacyInventory).filter(
         PharmacyInventory.medicine_id == medicine_id,
         PharmacyInventory.hospital_id == hospital_id,
         PharmacyInventory.is_active == True,  # noqa: E712
         PharmacyInventory.quantity_in_stock > 0,
-    ).order_by(PharmacyInventory.id.asc()).all()
+    ).order_by(PharmacyInventory.id.asc()).with_for_update().all()
     total = sum((b.quantity_in_stock or 0) for b in avail)
     if total < qty_needed:
         raise HTTPException(status_code=400,
@@ -1727,6 +1785,39 @@ def create_sale(
     each batch becomes its own `PharmacySaleItem` row so the inventory link
     is precise.
     """
+    # P3.4: validate IP link when provided. patient_ip_id stores the Patient
+    # UUID string (the historical column name is misleading); we cross-check
+    # the patient is in this hospital and currently admitted.
+    # P3.9: per-hospital flag for taxing free items. Read once up front so we
+    # don't re-fetch the Hospital row per line.
+    _hosp = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
+    tax_on_free = bool(getattr(_hosp, "pharmacy_tax_on_free", False))
+
+    if data.patient_ip_id:
+        from app.models.patient import Patient as _IPPatient
+        from app.models.inpatient import Admission as _IPAdmission
+        pat = db.query(_IPPatient).filter(
+            _IPPatient.patient_id == data.patient_ip_id,
+            _IPPatient.hospital_id == current_user.hospital_id,
+        ).first()
+        if not pat:
+            raise HTTPException(
+                status_code=400,
+                detail=f"patient_ip_id {data.patient_ip_id} not found in this hospital",
+            )
+        active = db.query(_IPAdmission).filter(
+            _IPAdmission.patient_id == pat.id,
+            _IPAdmission.status == "admitted",
+        ).first()
+        if not active:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Patient {data.patient_ip_id} has no active admission. "
+                    "Leave patient_ip_id blank for OP / walk-in sales."
+                ),
+            )
+
     sale = PharmacySale(
         sale_number=_next_sale_number(db, current_user.hospital_id),
         payment_type=data.payment_type,
@@ -1736,7 +1827,15 @@ def create_sale(
         status="completed", created_by=current_user.id,
         hospital_id=current_user.hospital_id,
     )
-    db.add(sale); db.flush()
+    db.add(sale)
+    # P3.3: two concurrent sales can compute the same MAX-seq and produce the
+    # same sale_number. Retry-on-IntegrityError remints from the now-updated
+    # MAX before any items have been attached to this sale.
+    _flush_with_number_retry(
+        db, sale,
+        regen=lambda: _next_sale_number(db, current_user.hospital_id),
+        set_attr="sale_number",
+    )
 
     subtotal = 0.0
     disc_total = 0.0
@@ -1763,8 +1862,20 @@ def create_sale(
             raise HTTPException(status_code=400,
                                 detail=f"No price set on medicine {med.name}")
 
-        disc = (line.discount_pct or 0) + (med.item_discount_pct or 0)
-        disc = min(disc, 100.0)
+        # P3.7: surface stacking instead of silently clamping at 100. The user
+        # can either lower their line discount or unset the medicine-level one.
+        line_disc = float(line.discount_pct or 0)
+        med_disc = float(med.item_discount_pct or 0)
+        disc = line_disc + med_disc
+        if disc > 100.0:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Discount exceeds 100% on {med.name}: "
+                    f"line {line_disc}% + medicine default {med_disc}% = {disc}%. "
+                    "Lower the line discount or clear the medicine's default."
+                ),
+            )
         hsn_row = db.query(PharmacyHSN).filter(PharmacyHSN.id == med.hsn_id).first() if med.hsn_id else None
         sgst_snap = (hsn_row.sgst_pct or 0) if hsn_row else 0.0
         cgst_snap = (hsn_row.cgst_pct or 0) if hsn_row else 0.0
@@ -1775,11 +1886,12 @@ def create_sale(
         picks = []
         qty_needed = float(line.quantity)
         if line.batch_id:
+            # P3.2: lock the batch row during this sale.
             batch = db.query(PharmacyInventory).filter(
                 PharmacyInventory.id == line.batch_id,
                 PharmacyInventory.hospital_id == current_user.hospital_id,
                 PharmacyInventory.is_active == True,  # noqa: E712
-            ).first()
+            ).with_for_update().first()
             if not batch:
                 raise HTTPException(status_code=400, detail=f"Invalid batch_id {line.batch_id}")
             if (batch.quantity_in_stock or 0) < qty_needed:
@@ -1792,19 +1904,35 @@ def create_sale(
                 hospital_id=current_user.hospital_id,
             )
 
-        # Distribute free_quantity across picked batches proportionally to take qty
+        # P3.8: distribute free_quantity across picked batches so that the per-
+        # batch portions sum to free_total exactly. Rounding each portion to 2dp
+        # independently used to drift by ±0.01 across batches.
         free_total = float(line.free_quantity or 0)
+        free_alloc = []
+        if picks and free_total > 0:
+            allocated = 0.0
+            for i, (_b, take_q) in enumerate(picks):
+                if i == len(picks) - 1:
+                    portion = round(free_total - allocated, 2)
+                else:
+                    portion = round((take_q / qty_needed) * free_total, 2) if qty_needed else 0.0
+                    allocated += portion
+                free_alloc.append(portion)
+        else:
+            free_alloc = [0.0] * len(picks)
 
-        for batch, take_qty in picks:
-            free_for_batch = (take_qty / qty_needed) * free_total if qty_needed else 0.0
+        for (batch, take_qty), free_for_batch in zip(picks, free_alloc):
             base = take_qty * rate
             base_after_disc = base * (1 - disc / 100.0)
+            # P3.9: include free portion in taxable base when the hospital opts in.
+            if tax_on_free and free_for_batch:
+                base_after_disc += free_for_batch * rate * (1 - disc / 100.0)
             tax_amt = base_after_disc * (tax_pct / 100.0)
             line_total = round(base_after_disc + tax_amt, 2)
 
             item_row = PharmacySaleItem(
                 sale_id=sale.id, medicine_id=med.id, batch_id=batch.id,
-                quantity=take_qty, free_quantity=round(free_for_batch, 2),
+                quantity=take_qty, free_quantity=free_for_batch,
                 rate=rate, rate_tier=line.rate_tier,
                 discount_pct=disc, tax_pct=tax_pct,
                 sgst_pct=sgst_snap, cgst_pct=cgst_snap, igst_pct=igst_snap,
@@ -1893,7 +2021,16 @@ def void_sale(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "void_sale")),
 ):
-    """Reverse a completed sale: restore qty to each batch + write reverse ledger entries."""
+    """Reverse a completed sale: restore qty to each batch + write reverse ledger entries.
+
+    P3.5: rejects sales older than `hospital.pharmacy_void_window_days` (when > 0)
+    unless the caller also has the `void_sale_legacy` permission.
+
+    P3.6 caveat: pharmacy sales are not yet linked to inpatient bills in the
+    schema. Voiding a sale with `patient_ip_id` set is allowed but the audit
+    log explicitly flags the IP linkage so manual bill review can follow up.
+    Full auto-reversal will land once the sale↔bill link ships.
+    """
     sale = db.query(PharmacySale).filter(
         PharmacySale.id == sid,
         PharmacySale.hospital_id == current_user.hospital_id,
@@ -1902,6 +2039,26 @@ def void_sale(
         raise HTTPException(status_code=404, detail="Sale not found")
     if sale.status != "completed":
         raise HTTPException(status_code=400, detail=f"Sale already {sale.status}")
+
+    # P3.5: void window check.
+    hosp = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
+    window = int(getattr(hosp, "pharmacy_void_window_days", 0) or 0)
+    if window > 0 and sale.sale_date:
+        age = (datetime.now() - sale.sale_date).days
+        if age > window:
+            roles = set(getattr(current_user, "role_names", []) or [])
+            has_bypass = (
+                "super_admin" in roles or "hospital_admin" in roles
+                or _user_has_permission(db, current_user, Modules.PHARMACY, "void_sale_legacy")
+            )
+            if not has_bypass:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Sale {sale.sale_number} is {age} days old; void window is "
+                        f"{window} days. Ask an admin with `void_sale_legacy` to do it."
+                    ),
+                )
 
     for it in sale.items:
         batch = db.query(PharmacyInventory).filter(PharmacyInventory.id == it.batch_id).first()
@@ -1921,8 +2078,13 @@ def void_sale(
     sale.voided_at = datetime.now()
     sale.void_reason = data.reason
     db.commit(); db.refresh(sale)
+
+    # P3.6: pharmacy sales are not yet linked to inpatient bills, so we can't
+    # silently auto-reverse a bill line. Flag the IP linkage in the audit log
+    # so billing review can be triggered manually.
+    ip_note = f" (IP linkage: {sale.patient_ip_id} — review inpatient bill manually)" if sale.patient_ip_id else ""
     _audit(db, current_user, "void_sale", "pharmacy_sale", sale.id,
-           f"Voided sale {sale.sale_number}: {data.reason}")
+           f"Voided sale {sale.sale_number}: {data.reason}{ip_note}")
     return _shape_sale(sale, db)
 
 
@@ -2029,7 +2191,20 @@ def dispense_prescription(
     overall status is set to `dispensed` when all items are fully dispensed,
     `partial` otherwise.
     """
-    rx = db.query(Prescription).filter(Prescription.id == rx_id).first()
+    # P3.1: scope to caller's hospital via the linked Patient. Prescription has
+    # no direct hospital_id column, but Patient does. Without this join a user
+    # could dispense against another hospital's Rx id and silently decrement
+    # their own stock.
+    from app.models.patient import Patient as _PatientForRx
+    rx = (
+        db.query(Prescription)
+        .join(_PatientForRx, _PatientForRx.id == Prescription.patient_id)
+        .filter(
+            Prescription.id == rx_id,
+            _PatientForRx.hospital_id == current_user.hospital_id,
+        )
+        .first()
+    )
     if not rx:
         raise HTTPException(status_code=404, detail="Prescription not found")
     if rx.status in ("dispensed", "cancelled"):
@@ -2050,11 +2225,12 @@ def dispense_prescription(
 
         # Resolve batch picks: explicit or FIFO
         if req.batch_id:
+            # P3.2: lock the batch row for the duration of this dispense.
             batch = db.query(PharmacyInventory).filter(
                 PharmacyInventory.id == req.batch_id,
                 PharmacyInventory.hospital_id == current_user.hospital_id,
                 PharmacyInventory.is_active == True,  # noqa: E712
-            ).first()
+            ).with_for_update().first()
             if not batch:
                 raise HTTPException(status_code=400, detail=f"Invalid batch_id {req.batch_id}")
             if (batch.quantity_in_stock or 0) < req.quantity:
@@ -2956,3 +3132,252 @@ def narcotic_register_pdf(
     row_dicts = [r.model_dump() for r in rows]
     buf = pdf_service.generate_narcotic_register_pdf(row_dicts, period, hi, include_header=include_header)
     return _pdf_response(buf, "narcotic_register.pdf")
+
+
+# ============================================================================
+# Phase-2 report PDFs — all go through the generic tabular generator.
+# ============================================================================
+
+def _report_period(date_from: Optional[date], date_to: Optional[date]) -> dict:
+    return {
+        "from": date_from.isoformat() if date_from else None,
+        "to": date_to.isoformat() if date_to else None,
+    }
+
+
+@router.get("/reports/sales/pdf")
+def sales_report_pdf(
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    group_by: str = Query("day", pattern="^(day|medicine|doctor|payment_type)$"),
+    include_header: bool = True,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
+):
+    rows = sales_report(date_from=date_from, date_to=date_to, group_by=group_by,
+                        db=db, current_user=current_user)
+    hi = _hospital_info_for_pdf(db, current_user.hospital_id)
+    cols = [
+        {"key": "bucket", "label": group_by.replace("_", " ").title(), "width": 3},
+        {"key": "sales_count", "label": "Sales", "align": "RIGHT", "width": 1},
+        {"key": "items_count", "label": "Items", "align": "RIGHT", "width": 1},
+        {"key": "subtotal", "label": "Subtotal", "align": "RIGHT", "width": 1.5},
+        {"key": "discount_total", "label": "Discount", "align": "RIGHT", "width": 1.5},
+        {"key": "tax_total", "label": "Tax", "align": "RIGHT", "width": 1.5},
+        {"key": "grand_total", "label": "Grand Total", "align": "RIGHT", "width": 1.8},
+    ]
+    buf = pdf_service.generate_pharmacy_report_pdf(
+        title="SALES REPORT", period=_report_period(date_from, date_to),
+        columns=cols, rows=[r.model_dump() for r in rows],
+        hospital_info=hi, include_header=include_header,
+        meta={"Group by": group_by},
+    )
+    return _pdf_response(buf, "pharmacy_sales.pdf")
+
+
+@router.get("/reports/purchases/pdf")
+def purchases_report_pdf(
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    supplier_id: Optional[int] = None,
+    group_by: str = Query("day", pattern="^(day|supplier)$"),
+    include_header: bool = True,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
+):
+    rows = purchases_report(date_from=date_from, date_to=date_to,
+                            supplier_id=supplier_id, group_by=group_by,
+                            db=db, current_user=current_user)
+    hi = _hospital_info_for_pdf(db, current_user.hospital_id)
+    cols = [
+        {"key": "bucket", "label": group_by.title(), "width": 3},
+        {"key": "purchases_count", "label": "Purchases", "align": "RIGHT", "width": 1},
+        {"key": "items_count", "label": "Items", "align": "RIGHT", "width": 1},
+        {"key": "subtotal", "label": "Subtotal", "align": "RIGHT", "width": 1.5},
+        {"key": "discount_total", "label": "Discount", "align": "RIGHT", "width": 1.5},
+        {"key": "tax_total", "label": "Tax", "align": "RIGHT", "width": 1.5},
+        {"key": "grand_total", "label": "Grand Total", "align": "RIGHT", "width": 1.8},
+    ]
+    buf = pdf_service.generate_pharmacy_report_pdf(
+        title="PURCHASES REPORT", period=_report_period(date_from, date_to),
+        columns=cols, rows=[r.model_dump() for r in rows],
+        hospital_info=hi, include_header=include_header,
+        meta={"Group by": group_by},
+    )
+    return _pdf_response(buf, "pharmacy_purchases.pdf")
+
+
+@router.get("/reports/stock-on-hand/pdf")
+def stock_on_hand_pdf(
+    include_header: bool = True,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
+):
+    rows = stock_on_hand_report(db=db, current_user=current_user)
+    hi = _hospital_info_for_pdf(db, current_user.hospital_id)
+    cols = [
+        {"key": "medicine_code", "label": "Code", "width": 1.2},
+        {"key": "name", "label": "Medicine", "width": 3},
+        {"key": "total_stock", "label": "Qty", "align": "RIGHT", "width": 1},
+        {"key": "batch_count", "label": "Batches", "align": "RIGHT", "width": 1},
+        {"key": "nearest_expiry", "label": "Nearest Expiry", "width": 1.2,
+         "formatter": lambda v: v.isoformat() if v else "—"},
+        {"key": "stock_value_cost", "label": "Value @ Cost", "align": "RIGHT", "width": 1.4},
+        {"key": "stock_value_mrp", "label": "Value @ MRP", "align": "RIGHT", "width": 1.4},
+    ]
+    buf = pdf_service.generate_pharmacy_report_pdf(
+        title="STOCK ON HAND", period=None,
+        columns=cols, rows=[r.model_dump() for r in rows],
+        hospital_info=hi, include_header=include_header,
+    )
+    return _pdf_response(buf, "pharmacy_stock.pdf")
+
+
+@router.get("/reports/tax-summary/pdf")
+def tax_summary_pdf(
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    include_header: bool = True,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
+):
+    rows = tax_summary_report(date_from=date_from, date_to=date_to,
+                              db=db, current_user=current_user)
+    hi = _hospital_info_for_pdf(db, current_user.hospital_id)
+    cols = [
+        {"key": "hsn_code", "label": "HSN", "width": 1.3},
+        {"key": "sgst_pct", "label": "SGST %", "align": "RIGHT", "width": 0.8},
+        {"key": "cgst_pct", "label": "CGST %", "align": "RIGHT", "width": 0.8},
+        {"key": "igst_pct", "label": "IGST %", "align": "RIGHT", "width": 0.8},
+        {"key": "taxable_value", "label": "Taxable", "align": "RIGHT", "width": 1.5},
+        {"key": "sgst_amount", "label": "SGST", "align": "RIGHT", "width": 1.2},
+        {"key": "cgst_amount", "label": "CGST", "align": "RIGHT", "width": 1.2},
+        {"key": "igst_amount", "label": "IGST", "align": "RIGHT", "width": 1.2},
+        {"key": "total_tax", "label": "Total Tax", "align": "RIGHT", "width": 1.4},
+    ]
+    buf = pdf_service.generate_pharmacy_report_pdf(
+        title="TAX SUMMARY", period=_report_period(date_from, date_to),
+        columns=cols, rows=[r.model_dump() for r in rows],
+        hospital_info=hi, include_header=include_header,
+    )
+    return _pdf_response(buf, "pharmacy_tax_summary.pdf")
+
+
+@router.get("/reports/daily-closeout/pdf")
+def daily_closeout_pdf(
+    date: Optional[date] = None,
+    cashier_id: Optional[int] = None,
+    include_header: bool = True,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
+):
+    rows = daily_closeout_report(date=date, cashier_id=cashier_id,
+                                 db=db, current_user=current_user)
+    hi = _hospital_info_for_pdf(db, current_user.hospital_id)
+    cols = [
+        {"key": "cashier_name", "label": "Cashier", "width": 2.5,
+         "formatter": lambda v: v or "(unknown)"},
+        {"key": "sales_count", "label": "Sales", "align": "RIGHT", "width": 0.8},
+        {"key": "voided_count", "label": "Voided", "align": "RIGHT", "width": 0.8},
+        {"key": "gross", "label": "Gross", "align": "RIGHT", "width": 1.3},
+        {"key": "discount", "label": "Discount", "align": "RIGHT", "width": 1.3},
+        {"key": "tax", "label": "Tax", "align": "RIGHT", "width": 1.2},
+        {"key": "net", "label": "Net", "align": "RIGHT", "width": 1.4},
+        {"key": "by_payment", "label": "By Payment", "width": 2.5,
+         "formatter": lambda v: ", ".join(
+             f"{b['payment_type']}: ₹{b['grand_total']:.2f} ({b['sales_count']})"
+             for b in (v or [])
+         ) or "—"},
+    ]
+    from datetime import date as _d
+    the_day = (date or _d.today()).isoformat()
+    buf = pdf_service.generate_pharmacy_report_pdf(
+        title="DAILY CLOSEOUT", period={"from": the_day, "to": the_day},
+        columns=cols, rows=[r.model_dump() for r in rows],
+        hospital_info=hi, include_header=include_header,
+    )
+    return _pdf_response(buf, f"closeout_{the_day}.pdf")
+
+
+@router.get("/reports/margin/pdf")
+def margin_report_pdf(
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    group_by: str = Query("day", pattern="^(day|medicine)$"),
+    include_header: bool = True,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
+):
+    rows = margin_report(date_from=date_from, date_to=date_to, group_by=group_by,
+                         db=db, current_user=current_user)
+    hi = _hospital_info_for_pdf(db, current_user.hospital_id)
+    cols = [
+        {"key": "bucket", "label": group_by.title(), "width": 3},
+        {"key": "units_sold", "label": "Units", "align": "RIGHT", "width": 1},
+        {"key": "revenue", "label": "Revenue", "align": "RIGHT", "width": 1.5},
+        {"key": "cost", "label": "Cost", "align": "RIGHT", "width": 1.5},
+        {"key": "margin", "label": "Margin", "align": "RIGHT", "width": 1.5},
+        {"key": "margin_pct", "label": "Margin %", "align": "RIGHT", "width": 1.2},
+    ]
+    buf = pdf_service.generate_pharmacy_report_pdf(
+        title="PROFIT / MARGIN", period=_report_period(date_from, date_to),
+        columns=cols, rows=[r.model_dump() for r in rows],
+        hospital_info=hi, include_header=include_header,
+        meta={"Group by": group_by},
+    )
+    return _pdf_response(buf, "pharmacy_margin.pdf")
+
+
+@router.get("/reports/supplier-aging/pdf")
+def supplier_aging_pdf(
+    as_of: Optional[date] = None,
+    include_header: bool = True,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
+):
+    rows = supplier_aging_report(as_of=as_of, db=db, current_user=current_user)
+    hi = _hospital_info_for_pdf(db, current_user.hospital_id)
+    cols = [
+        {"key": "supplier_name", "label": "Supplier", "width": 3},
+        {"key": "bucket_0_30", "label": "0–30 d", "align": "RIGHT", "width": 1.2},
+        {"key": "bucket_31_60", "label": "31–60 d", "align": "RIGHT", "width": 1.2},
+        {"key": "bucket_61_90", "label": "61–90 d", "align": "RIGHT", "width": 1.2},
+        {"key": "bucket_90_plus", "label": "90+ d", "align": "RIGHT", "width": 1.2},
+        {"key": "total_outstanding", "label": "Total", "align": "RIGHT", "width": 1.5},
+    ]
+    from datetime import date as _d
+    the_day = (as_of or _d.today()).isoformat()
+    buf = pdf_service.generate_pharmacy_report_pdf(
+        title="SUPPLIER OUTSTANDING (AGING)",
+        period={"from": "—", "to": the_day},
+        columns=cols, rows=[r.model_dump() for r in rows],
+        hospital_info=hi, include_header=include_header,
+        meta={"Note": "Interim — payments tracking ships in P4.2"},
+    )
+    return _pdf_response(buf, "supplier_aging.pdf")
+
+
+@router.get("/reports/movement/pdf")
+def movement_report_pdf(
+    days: int = Query(90, ge=1, le=365),
+    include_header: bool = True,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
+):
+    rows = movement_report(days=days, db=db, current_user=current_user)
+    hi = _hospital_info_for_pdf(db, current_user.hospital_id)
+    cols = [
+        {"key": "medicine_name", "label": "Medicine", "width": 3},
+        {"key": "abc_class", "label": "ABC", "align": "CENTER", "width": 0.7},
+        {"key": "units_sold", "label": "Units", "align": "RIGHT", "width": 1},
+        {"key": "revenue", "label": "Revenue", "align": "RIGHT", "width": 1.4},
+        {"key": "stock_on_hand", "label": "Stock", "align": "RIGHT", "width": 1},
+        {"key": "days_of_cover", "label": "Days Cover", "align": "RIGHT", "width": 1.2,
+         "formatter": lambda v: f"{v:.1f}" if v is not None else "∞"},
+    ]
+    buf = pdf_service.generate_pharmacy_report_pdf(
+        title=f"MOVEMENT — Last {days} days", period=None,
+        columns=cols, rows=[r.model_dump() for r in rows],
+        hospital_info=hi, include_header=include_header,
+    )
+    return _pdf_response(buf, "pharmacy_movement.pdf")

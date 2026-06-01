@@ -210,6 +210,9 @@ NEW_COLUMNS = [
     ("pharmacy_purchase_items", "sgst_pct", "FLOAT DEFAULT 0.0"),
     ("pharmacy_purchase_items", "cgst_pct", "FLOAT DEFAULT 0.0"),
     ("pharmacy_purchase_items", "igst_pct", "FLOAT DEFAULT 0.0"),
+    # Phase 3 pharmacy settings — per-hospital void window + tax-on-free toggle.
+    ("hospitals", "pharmacy_void_window_days", "INTEGER DEFAULT 0"),
+    ("hospitals", "pharmacy_tax_on_free", "BOOLEAN DEFAULT 0"),
 ]
 
 # B6 — body release table is created via create_all on startup; no column adds.

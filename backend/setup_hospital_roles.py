@@ -59,6 +59,7 @@ def setup_module_permissions():
         # Sales — POS
         {"module_name": "pharmacy", "permission_name": "create_sale", "permission_description": "Create POS counter sales", "category": "user"},
         {"module_name": "pharmacy", "permission_name": "void_sale", "permission_description": "Void / reverse a completed sale", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "void_sale_legacy", "permission_description": "Void sales older than the configured void window", "category": "admin"},
         {"module_name": "pharmacy", "permission_name": "view_sales", "permission_description": "View sales list and detail", "category": "user"},
         {"module_name": "pharmacy", "permission_name": "apply_discount", "permission_description": "Apply line or sale-level discounts", "category": "user"},
         {"module_name": "pharmacy", "permission_name": "select_rate_tier", "permission_description": "Choose between Rate-A and Rate-B on a sale line", "category": "user"},
