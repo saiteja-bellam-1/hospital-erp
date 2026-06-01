@@ -448,6 +448,13 @@ async def create_user(
             detail="Role not found"
         )
 
+    # super_admin can only be created via the install seed, never through the API
+    if role.name == 'super_admin':
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="super_admin users cannot be created through this form"
+        )
+
     # Doctor/nurse users must have a positive inpatient/visit fee.
     _ensure_visit_fee_for_role(db, user_data.role_id, user_data.inpatient_fee_inr)
 
@@ -574,6 +581,12 @@ async def update_user(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Role not found"
             )
+        # Prevent assigning super_admin via the API — it is seeded only.
+        if role.name == 'super_admin' and not user.has_role('super_admin'):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="super_admin cannot be assigned through this form"
+            )
         user.role_id = user_data.role_id
     if user_data.is_active is not None:
         user.is_active = user_data.is_active
@@ -662,6 +675,13 @@ async def update_user_roles(
     roles = db.query(UserRole).filter(UserRole.id.in_(role_ids)).all()
     if len(roles) != len(role_ids):
         raise HTTPException(status_code=400, detail="One or more roles not found")
+
+    # Prevent granting super_admin via the API to a user that doesn't already hold it
+    if any(r.name == 'super_admin' for r in roles) and not user.has_role('super_admin'):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="super_admin cannot be assigned through this form"
+        )
 
     # Update primary role_id to the first role
     user.role_id = role_ids[0]

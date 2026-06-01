@@ -659,7 +659,7 @@ const AdminModule = () => {
                 <div>
                   <Label>Roles *</Label>
                   <div className="flex flex-wrap gap-2 mt-1">
-                    {roles.map((role) => {
+                    {roles.filter(r => r.name !== 'super_admin').map((role) => {
                       const checked = (userForm.role_ids || []).includes(role.id);
                       return (
                         <label key={role.id}
