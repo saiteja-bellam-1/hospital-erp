@@ -2027,10 +2027,16 @@ def void_sale(
     P3.5: rejects sales older than `hospital.pharmacy_void_window_days` (when > 0)
     unless the caller also has the `void_sale_legacy` permission.
 
-    P3.6 caveat: pharmacy sales are not yet linked to inpatient bills in the
-    schema. Voiding a sale with `patient_ip_id` set is allowed but the audit
-    log explicitly flags the IP linkage so manual bill review can follow up.
-    Full auto-reversal will land once the sale↔bill link ships.
+    POS sales never appear on an inpatient bill — `_persist_bill()` in
+    routes/inpatient.py only emits BillItem rows from Prescription records, not
+    from PharmacySale. So voiding a POS sale (even one with `patient_ip_id`
+    set) does not need to touch any inpatient bill. The audit log still flags
+    the IP linkage for human reconciliation in case the patient's counter
+    purchase was being tracked off-bill.
+
+    For Rx-driven dispenses against an admitted patient, use the Rx cancel
+    flow (POST /api/pharmacy/prescriptions/{id}/cancel) — that path is wired
+    to reverse stock AND issue a credit-note when the bill is locked.
     """
     sale = db.query(PharmacySale).filter(
         PharmacySale.id == sid,
@@ -2080,10 +2086,10 @@ def void_sale(
     sale.void_reason = data.reason
     db.commit(); db.refresh(sale)
 
-    # P3.6: pharmacy sales are not yet linked to inpatient bills, so we can't
-    # silently auto-reverse a bill line. Flag the IP linkage in the audit log
-    # so billing review can be triggered manually.
-    ip_note = f" (IP linkage: {sale.patient_ip_id} — review inpatient bill manually)" if sale.patient_ip_id else ""
+    # POS sales aren't on inpatient bills (only Prescriptions are), so there
+    # is no IP bill line to reverse here. Still log the IP tag so the floor
+    # team can reconcile if the patient was tracking the counter purchase.
+    ip_note = f" (IP linkage: {sale.patient_ip_id} — POS sale, not on IP bill)" if sale.patient_ip_id else ""
     _audit(db, current_user, "void_sale", "pharmacy_sale", sale.id,
            f"Voided sale {sale.sale_number}: {data.reason}{ip_note}")
     return _shape_sale(sale, db)
@@ -2283,6 +2289,54 @@ def dispense_prescription(
         prescription_id=rx.id, prescription_number=rx.prescription_number,
         status=rx.status, lines=lines_out,
     )
+
+
+# ----------------------------------------------------------------------------
+# Rx cancellation (Pharmacy P0 #1)
+# ----------------------------------------------------------------------------
+
+class CancelRxIn(BaseModel):
+    reason: str = Field(..., min_length=2, max_length=500)
+
+
+class CancelRxOut(BaseModel):
+    prescription_id: int
+    prescription_number: str
+    status: str
+    stock_ledger_rows_written: int
+    parent_bill_id: Optional[int] = None
+    bill_items_removed: int = 0
+    credit_note_id: Optional[int] = None
+    credit_note_number: Optional[str] = None
+    reason: str
+
+
+@router.post("/prescriptions/{rx_id}/cancel", response_model=CancelRxOut)
+def cancel_prescription_route(
+    rx_id: int,
+    data: CancelRxIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "cancel_rx")),
+):
+    """Cancel a Prescription and reverse its side effects.
+
+    Reverses any dispensed stock (writes `rx_cancel` ledger rows back to the
+    original batches). If the Rx had already been included on an inpatient
+    bill, the bill is handled per the hybrid policy in
+    `app/services/pharmacy_reversal.py`:
+
+      * Unlocked parent bill (draft, no payments, not "final" subtype) → bill
+        items removed in place, parent totals decremented.
+      * Locked parent bill → a credit-note Bill is emitted with negative
+        line items; the original bill is left untouched.
+
+    Always idempotency-safe in one direction only: a second cancel call on
+    an already-cancelled Rx is rejected with 400.
+    """
+    from app.services.pharmacy_reversal import cancel_prescription
+    summary = cancel_prescription(db, rx_id=rx_id, user=current_user, reason=data.reason)
+    db.commit()
+    return CancelRxOut(**summary)
 
 
 # ============================================================================

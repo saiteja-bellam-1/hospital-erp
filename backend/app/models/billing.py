@@ -60,7 +60,12 @@ class BillItem(Base):
     total_price = Column(Float, nullable=False)
     discount_percentage = Column(Float, default=0.0)
     tax_percentage = Column(Float, default=0.0)
-    
+
+    # Source pointer for reversal. e.g. ('prescription_item', 42) lets the
+    # pharmacy cancel flow find this exact line and emit a credit-note for it.
+    source_ref_type = Column(String(50), nullable=True)
+    source_ref_id = Column(Integer, nullable=True)
+
     bill = relationship("Bill", back_populates="items")
 
 class Payment(Base):

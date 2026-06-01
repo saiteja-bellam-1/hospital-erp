@@ -4347,6 +4347,8 @@ def _create_admission_bill_record_inner(
                     quantity=item.quantity_dispensed or item.quantity_prescribed,
                     unit_price=item.unit_price,
                     total_price=item.total_price,
+                    source_ref_type="prescription_item",
+                    source_ref_id=item.id,
                 ))
         rx.inpatient_bill_id = bill.id
 

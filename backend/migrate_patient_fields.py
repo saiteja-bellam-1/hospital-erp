@@ -213,6 +213,16 @@ NEW_COLUMNS = [
     # Phase 3 pharmacy settings — per-hospital void window + tax-on-free toggle.
     ("hospitals", "pharmacy_void_window_days", "INTEGER DEFAULT 0"),
     ("hospitals", "pharmacy_tax_on_free", "BOOLEAN DEFAULT 0"),
+    # Pharmacy P0 #1 — Rx cancellation + bill reversal.
+    # Prescription cancel metadata: who/when/why so we can audit and emit
+    # credit-notes against bills that already shipped to the patient.
+    ("prescriptions", "cancelled_at", "DATETIME"),
+    ("prescriptions", "cancelled_by_id", "INTEGER REFERENCES users(id)"),
+    ("prescriptions", "cancel_reason", "TEXT"),
+    # Source ref on bill items so a cancel can find and reverse the exact
+    # line(s) without name-matching. Backfilled forward-only for new bills.
+    ("bill_items", "source_ref_type", "VARCHAR(50)"),
+    ("bill_items", "source_ref_id", "INTEGER"),
 ]
 
 # B6 — body release table is created via create_all on startup; no column adds.
