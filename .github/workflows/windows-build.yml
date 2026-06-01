@@ -3,11 +3,9 @@ name: Windows installer build
 # Builds KTHEALTHERP_Setup_<version>.exe.
 #
 # Versioning rules:
-#   * tag push `vMAJOR.MINOR.PATCH` -> version = MAJOR.MINOR.PATCH (also creates a Release).
-#   * any other trigger             -> version = <base>.<github.run_number>
-#                                       where <base> is the MAJOR.MINOR read out of
-#                                       backend/app/version.py's APP_VERSION constant
-#                                       (so build #42 on `1.1.x` becomes `1.1.42`).
+#   * tag push `vMAJOR.MINOR.PATCH` -> version = MAJOR.MINOR.PATCH (publishes a Release).
+#   * push to `main`                -> version = <base>.<github.run_number> (also publishes).
+#   * PR / workflow_dispatch        -> version = <base>.<run_number>, artifact only (no Release).
 #
 # APP_VERSION (in app/version.py) is patched to the resolved value before
 # building so the runtime version, .exe metadata, and installer filename match.
@@ -46,14 +44,17 @@ jobs:
         id: ver
         shell: pwsh
         run: |
+          $line = Select-String -Path 'backend\app\version.py' -Pattern 'APP_VERSION\s*=\s*"([0-9]+\.[0-9]+)' | Select-Object -First 1
+          if (-not $line) { Write-Error "Could not parse APP_VERSION from app/version.py"; exit 1 }
+          $base = $line.Matches[0].Groups[1].Value
+
           if ($env:GITHUB_REF -like 'refs/tags/v*') {
             $version = $env:GITHUB_REF -replace '^refs/tags/v',''
             $isRelease = 'true'
+          } elseif ($env:GITHUB_EVENT_NAME -eq 'push' -and $env:GITHUB_REF -eq 'refs/heads/main') {
+            $version = "$base.$env:GITHUB_RUN_NUMBER"
+            $isRelease = 'true'
           } else {
-            # Pull MAJOR.MINOR from APP_VERSION in app/version.py (single source of truth)
-            $line = Select-String -Path 'backend\app\version.py' -Pattern 'APP_VERSION\s*=\s*"([0-9]+\.[0-9]+)' | Select-Object -First 1
-            if (-not $line) { Write-Error "Could not parse APP_VERSION from app/version.py"; exit 1 }
-            $base = $line.Matches[0].Groups[1].Value
             $version = "$base.$env:GITHUB_RUN_NUMBER"
             $isRelease = 'false'
           }

@@ -9,4 +9,4 @@ Bumped when a release ships. Consumed by:
 Keep this as the ONLY hardcoded version string in the codebase.
 """
 
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.2.2"

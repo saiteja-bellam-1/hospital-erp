@@ -1184,6 +1184,7 @@ class ReceptionLabBooking(BaseModel):
     patient_id: int
     test_ids: List[int] = Field(..., min_length=1)
     payment_method: str = Field(..., pattern="^(cash|card|upi|cheque|online|insurance)$")
+    doctor_id: Optional[int] = None
     referred_by: Optional[str] = None
     discount_amount: float = Field(default=0.0, ge=0)
     include_header: bool = True
@@ -1208,6 +1209,17 @@ async def reception_book_lab_tests(
     ).first()
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
+
+    booking_doctor = None
+    if data.doctor_id is not None:
+        booking_doctor = db.query(User).join(User.role).filter(
+            User.id == data.doctor_id,
+            User.role.has(name="doctor"),
+            User.hospital_id == current_user.hospital_id,
+            User.is_active == True,
+        ).first()
+        if not booking_doctor:
+            raise HTTPException(status_code=400, detail="Invalid or inactive doctor")
 
     # Duplicate check
     if not data.force:
@@ -1234,7 +1246,7 @@ async def reception_book_lab_tests(
             order_number=f"LAB-{str(uuid.uuid4())[:8].upper()}",
             patient_id=data.patient_id,
             test_id=test_id,
-            doctor_id=None,
+            doctor_id=booking_doctor.id if booking_doctor else None,
             referred_by=data.referred_by,
             priority="normal",
             notes=data.notes,
@@ -1284,7 +1296,10 @@ async def reception_book_lab_tests(
         "village": patient.village or "",
         "district": patient.district or "",
         "reg_no": patient.patient_id,
-        "doctor_name": "",
+        "doctor_name": (
+            f"Dr. {booking_doctor.first_name} {booking_doctor.last_name}"
+            if booking_doctor else ""
+        ),
         "referred_by": data.referred_by or "",
         "payment_method": data.payment_method.capitalize(),
         "items": [{"item_name": o.test.name, "item_code": o.test.test_code, "total_price": o.amount} for o in orders if o.test],

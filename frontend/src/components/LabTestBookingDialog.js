@@ -22,6 +22,8 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
 
   const [paymentMethod, setPaymentMethod] = useState('cash');
   const [discount, setDiscount] = useState(0);
+  const [doctors, setDoctors] = useState([]);
+  const [doctorId, setDoctorId] = useState('');
   const [referredBy, setReferredBy] = useState('');
   const [includeHeader, setIncludeHeader] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -40,8 +42,10 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
       setDuplicateWarning(null);
       setDiscount(0);
       setPaymentMethod('cash');
+      setDoctorId('');
       setReferredBy('');
       setBillPdfUrl(null);
+      fetchDoctors();
       setShowBillPreview(false);
       setBillOrderIds([]);
       setPreviewHeader(true);
@@ -53,6 +57,15 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
     try {
       const res = await fetch('/api/lab/tests', { headers: { Authorization: `Bearer ${token}` } });
       if (res.ok) setTests(await res.json());
+    } catch {}
+  };
+
+  const fetchDoctors = async () => {
+    try {
+      const res = await fetch('/api/appointments/doctors', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) setDoctors(await res.json());
     } catch {}
   };
 
@@ -110,6 +123,7 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
           patient_id: selectedPatient.id,
           test_ids: selectedTests.map(t => t.id),
           payment_method: paymentMethod,
+          doctor_id: doctorId ? parseInt(doctorId, 10) : null,
           referred_by: referredBy || null,
           discount_amount: discount,
           include_header: includeHeader,
@@ -329,21 +343,36 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
               </Select>
             </div>
             <div>
-              <Label>Referred By</Label>
-              {referralList.length > 0 ? (
-                <Select value={referredBy || '_none'} onValueChange={v => setReferredBy(v === '_none' ? '' : v)}>
-                  <SelectTrigger><SelectValue placeholder="Select..." /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="_none">Self / None</SelectItem>
-                    {referralList.map(r => (
-                      <SelectItem key={r.id} value={r.name}>{r.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              ) : (
-                <Input value={referredBy} onChange={e => setReferredBy(e.target.value)} placeholder="Referral name" />
-              )}
+              <Label>Doctor</Label>
+              <Select value={doctorId || '_none'} onValueChange={v => setDoctorId(v === '_none' ? '' : v)}>
+                <SelectTrigger><SelectValue placeholder="Select doctor..." /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="_none">None</SelectItem>
+                  {doctors.map(d => (
+                    <SelectItem key={d.id} value={String(d.id)}>
+                      Dr. {d.first_name} {d.last_name}
+                      {d.specialization ? ` — ${d.specialization}` : ''}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
+          </div>
+          <div>
+            <Label>Referred By</Label>
+            {referralList.length > 0 ? (
+              <Select value={referredBy || '_none'} onValueChange={v => setReferredBy(v === '_none' ? '' : v)}>
+                <SelectTrigger><SelectValue placeholder="Select..." /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="_none">Self / None</SelectItem>
+                  {referralList.map(r => (
+                    <SelectItem key={r.id} value={r.name}>{r.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <Input value={referredBy} onChange={e => setReferredBy(e.target.value)} placeholder="Referral name" />
+            )}
           </div>
 
           {selectedTests.length > 0 && (
