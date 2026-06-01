@@ -6,7 +6,8 @@ import { Input } from '../../../../components/ui/input';
 import { Badge } from '../../../../components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../../../../components/ui/dialog';
 import { useToast } from '../../../../hooks/use-toast';
-import { RefreshCw, Pill } from 'lucide-react';
+import { RefreshCw, Pill, XCircle } from 'lucide-react';
+import { Textarea } from '../../../../components/ui/textarea';
 import { errMsg } from '../../PharmacyModule';
 import { printPdfFromUrl } from '../../../../utils/printPdf';
 
@@ -17,6 +18,10 @@ export default function PendingRxTab() {
   const [open, setOpen] = useState(false);
   const [target, setTarget] = useState(null);
   const [qty, setQty] = useState({}); // item_id → qty string
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [cancelTarget, setCancelTarget] = useState(null);
+  const [cancelReason, setCancelReason] = useState('');
+  const [cancelling, setCancelling] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -55,6 +60,42 @@ export default function PendingRxTab() {
     }
   };
 
+  const openCancel = (rx) => {
+    setCancelTarget(rx);
+    setCancelReason('');
+    setCancelOpen(true);
+  };
+
+  const submitCancel = async () => {
+    const reason = cancelReason.trim();
+    if (reason.length < 2) {
+      toast({ variant: 'destructive', title: 'Enter a cancellation reason' });
+      return;
+    }
+    setCancelling(true);
+    try {
+      const r = await axios.post(
+        `/api/pharmacy/prescriptions/${cancelTarget.id}/cancel`,
+        { reason },
+      );
+      const d = r.data || {};
+      const detailBits = [];
+      if (d.stock_ledger_rows_written) detailBits.push(`stock restored on ${d.stock_ledger_rows_written} batch(es)`);
+      if (d.bill_items_removed) detailBits.push(`${d.bill_items_removed} bill line(s) removed`);
+      if (d.credit_note_number) detailBits.push(`credit note ${d.credit_note_number} issued`);
+      toast({
+        title: 'Prescription cancelled',
+        description: detailBits.length ? detailBits.join(' · ') : undefined,
+      });
+      setCancelOpen(false);
+      load();
+    } catch (e) {
+      toast({ variant: 'destructive', title: 'Cancel failed', description: errMsg(e) });
+    } finally {
+      setCancelling(false);
+    }
+  };
+
   return (
     <Card>
       <CardHeader>
@@ -80,9 +121,12 @@ export default function PendingRxTab() {
                     <td className="py-2 pr-4 text-xs">{new Date(rx.prescription_date).toLocaleString()}</td>
                     <td className="py-2 pr-4">{rx.items.length}</td>
                     <td className="py-2 pr-4"><Badge variant="outline" className="text-xs">{rx.status}</Badge></td>
-                    <td className="py-2 text-right">
+                    <td className="py-2 text-right space-x-2">
                       <Button size="sm" onClick={() => openDispense(rx)}>
                         <Pill className="h-3 w-3 mr-1" /> Dispense
+                      </Button>
+                      <Button size="sm" variant="outline" className="text-red-600 border-red-200 hover:bg-red-50" onClick={() => openCancel(rx)}>
+                        <XCircle className="h-3 w-3 mr-1" /> Cancel
                       </Button>
                     </td>
                   </tr>
@@ -123,6 +167,38 @@ export default function PendingRxTab() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
             <Button onClick={submit}>Dispense</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={cancelOpen} onOpenChange={setCancelOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Cancel Rx — {cancelTarget?.prescription_number}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            <p className="text-gray-600">
+              Any dispensed stock for this Rx will be returned to the original batch(es).
+              If the prescription is already on an inpatient bill, the bill will either be
+              adjusted in place (if still a draft) or offset by a credit-note (if locked / paid).
+            </p>
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">Reason</label>
+              <Textarea
+                rows={3}
+                value={cancelReason}
+                onChange={(e) => setCancelReason(e.target.value)}
+                placeholder="e.g. Patient discharged early / Prescribed in error"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCancelOpen(false)} disabled={cancelling}>
+              Keep Rx
+            </Button>
+            <Button variant="destructive" onClick={submitCancel} disabled={cancelling}>
+              {cancelling ? 'Cancelling…' : 'Cancel Rx'}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
