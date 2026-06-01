@@ -234,7 +234,6 @@ export default function SalesCounter() {
         onClose={() => setPreviewSaleId(null)}
         title="Sale Invoice Preview"
         path={previewSaleId ? `/api/pharmacy/sales/${previewSaleId}/invoice/pdf` : null}
-        defaultHeader={true}
       />
     </div>
   );

@@ -9,6 +9,7 @@ import uuid
 import io
 
 from config.database import get_db
+from app.utils.pdf_settings import get_hospital_pdf_include_header
 from app.models.user import User
 from app.models.patient import Patient
 from app.models.hospital import Hospital
@@ -292,7 +293,6 @@ class PackageBooking(BaseModel):
     notes: Optional[str] = None
     referred_by: Optional[str] = Field(None, max_length=100)
     payment_method: str = Field(..., pattern="^(cash|card|upi|cheque|online|insurance)$")
-    include_header: bool = True
     force: bool = False
 
 # ============================================================
@@ -1187,7 +1187,6 @@ class ReceptionLabBooking(BaseModel):
     doctor_id: Optional[int] = None
     referred_by: Optional[str] = None
     discount_amount: float = Field(default=0.0, ge=0)
-    include_header: bool = True
     force: bool = False
     notes: Optional[str] = None
 
@@ -1312,7 +1311,7 @@ async def reception_book_lab_tests(
 
     from fastapi.responses import StreamingResponse
     order_ids = ",".join(str(o.id) for o in orders)
-    pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, include_header=data.include_header)
+    pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
     filename = f"lab_bill_{bill_data['bill_number']}.pdf"
     return StreamingResponse(pdf_buffer, media_type="application/pdf",
         headers={
@@ -1470,7 +1469,6 @@ async def update_order_status(
 @router.get("/orders/{order_id}/bill")
 async def download_order_bill(
     order_id: int,
-    include_header: bool = True,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -1517,7 +1515,7 @@ async def download_order_bill(
 
     from app.utils.pdf_service import pdf_service
     from fastapi.responses import StreamingResponse
-    pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, include_header=include_header)
+    pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
     filename = f"lab_bill_{order.order_number}.pdf"
     return StreamingResponse(pdf_buffer, media_type="application/pdf",
         headers={"Content-Disposition": f"attachment; filename={filename}"})
@@ -1525,7 +1523,6 @@ async def download_order_bill(
 
 class RegenerateBillRequest(BaseModel):
     order_ids: List[int] = Field(..., min_length=1)
-    include_header: bool = True
 
 
 @router.post("/orders/regenerate-bill")
@@ -1599,7 +1596,7 @@ async def regenerate_lab_bill(
 
     from app.utils.pdf_service import pdf_service
     from fastapi.responses import StreamingResponse
-    pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, include_header=data.include_header)
+    pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
     return StreamingResponse(pdf_buffer, media_type="application/pdf",
         headers={"Content-Disposition": f"attachment; filename=lab_bill.pdf"})
 
@@ -1607,7 +1604,6 @@ async def regenerate_lab_bill(
 @router.get("/bills/{group_id}/pdf")
 async def download_grouped_lab_bill(
     group_id: str,
-    include_header: bool = True,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -1705,7 +1701,7 @@ async def download_grouped_lab_bill(
 
     from app.utils.pdf_service import pdf_service
     from fastapi.responses import StreamingResponse
-    pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, include_header=include_header)
+    pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
     filename = f"lab_bill_{bill_number}.pdf"
     return StreamingResponse(pdf_buffer, media_type="application/pdf",
         headers={"Content-Disposition": f"attachment; filename={filename}"})
@@ -1714,9 +1710,6 @@ async def download_grouped_lab_bill(
 class LabPaymentUpdate(BaseModel):
     payment_method: str = Field(..., pattern="^(cash|card|upi|cheque|online|insurance)$")
     discount_amount: float = Field(default=0.0, ge=0)
-    include_header: bool = True
-
-
 @router.put("/orders/{order_id}/payment")
 async def update_order_payment(
     order_id: int,
@@ -1873,7 +1866,7 @@ async def generate_lab_bill(
 
     try:
         order_ids_str = ",".join(str(o.id) for o in orders)
-        pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, include_header=data.include_header)
+        pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
         filename = f"lab_bill_{bill_number}.pdf"
         return StreamingResponse(
             pdf_buffer,
@@ -2075,7 +2068,6 @@ async def get_report(
 @router.get("/reports/{report_id}/download")
 async def download_report_pdf(
     report_id: int,
-    include_header: bool = True,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -2103,7 +2095,7 @@ async def download_report_pdf(
     lab_config = {s.setting_key: s.setting_value for s in lab_settings}
 
     try:
-        pdf_buffer = pdf_service.generate_lab_report_pdf(report_data, hospital_info, lab_config, include_header=include_header)
+        pdf_buffer = pdf_service.generate_lab_report_pdf(report_data, hospital_info, lab_config, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
         filename = f"lab_report_{report_data['order_number']}_{datetime.now().strftime('%Y%m%d')}.pdf"
         return StreamingResponse(
             pdf_buffer,
@@ -2116,7 +2108,6 @@ async def download_report_pdf(
 @router.get("/reports/package/{package_booking_id}/download")
 async def download_package_report_pdf(
     package_booking_id: str,
-    include_header: bool = True,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -2153,7 +2144,7 @@ async def download_package_report_pdf(
 
     try:
         pdf_buffer = pdf_service.generate_combined_lab_report_pdf(
-            reports_data, hospital_info, lab_config, include_header=include_header
+            reports_data, hospital_info, lab_config, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id)
         )
         pkg_name = orders[0].package.name if orders[0].package else "package"
         patient = db.query(Patient).filter(Patient.id == orders[0].patient_id).first()
@@ -2209,7 +2200,6 @@ async def get_lab_stats(
 @router.get("/tests/{test_id}/sample-report")
 async def generate_sample_report(
     test_id: int,
-    include_header: bool = True,
     current_user: User = Depends(require_permission(Modules.LAB, "read")),
     db: Session = Depends(get_db)
 ):
@@ -2283,7 +2273,7 @@ async def generate_sample_report(
         lab_config[s.setting_key] = s.setting_value
 
     try:
-        pdf_buffer = pdf_service.generate_lab_report_pdf(report_data, hospital_info, lab_config, include_header=include_header)
+        pdf_buffer = pdf_service.generate_lab_report_pdf(report_data, hospital_info, lab_config, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -2689,7 +2679,7 @@ async def book_package(
 
     try:
         order_ids = ",".join(str(o.id) for o in orders)
-        pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, include_header=data.include_header)
+        pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
         filename = f"lab_package_bill_{bill_number}.pdf"
         return StreamingResponse(
             pdf_buffer,

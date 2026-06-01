@@ -31,13 +31,11 @@ const ReceptionPackagesPage = () => {
   const [notes, setNotes] = useState('');
   const [referredBy, setReferredBy] = useState('');
   const [bookingLoading, setBookingLoading] = useState(false);
-  const [pkgIncludeHeader, setPkgIncludeHeader] = useState(false);
   const [referralList, setReferralList] = useState([]);
   const [pkgDuplicateWarning, setPkgDuplicateWarning] = useState(null);
   const [pkgBillPdfUrl, setPkgBillPdfUrl] = useState(null);
   const [pkgBillOrderIds, setPkgBillOrderIds] = useState([]);
   const [showPkgBillPreview, setShowPkgBillPreview] = useState(false);
-  const [pkgPreviewHeader, setPkgPreviewHeader] = useState(false);
 
   useEffect(() => {
     const fetchRefs = async () => {
@@ -141,14 +139,12 @@ const ReceptionPackagesPage = () => {
         notes: notes || null,
         referred_by: referredBy || null,
         payment_method: paymentMethod,
-        include_header: pkgIncludeHeader,
         force: force,
       }, { responseType: 'blob' });
 
       const orderIdsHeader = res.headers?.['x-order-ids'] || '';
       const ids = orderIdsHeader ? orderIdsHeader.split(',').map(Number) : [];
       setPkgBillOrderIds(ids);
-      setPkgPreviewHeader(pkgIncludeHeader);
 
       const url = window.URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
       if (pkgBillPdfUrl) window.URL.revokeObjectURL(pkgBillPdfUrl);
@@ -443,11 +439,6 @@ const ReceptionPackagesPage = () => {
 
               {!pkgDuplicateWarning && (
                 <div className="flex items-center gap-3">
-                  <div className="flex items-center space-x-2">
-                    <input type="checkbox" id="pkg-include-header" checked={pkgIncludeHeader}
-                      onChange={(e) => setPkgIncludeHeader(e.target.checked)} className="w-4 h-4" />
-                    <Label htmlFor="pkg-include-header" className="text-sm">Include header</Label>
-                  </div>
                   <Button variant="outline" onClick={() => setShowBookingDialog(false)} className="flex-1">Cancel</Button>
                   <Button onClick={() => bookPackage()} className="flex-1"
                     disabled={bookingLoading || !selectedPatient}>
@@ -478,30 +469,6 @@ const ReceptionPackagesPage = () => {
               )}
             </div>
             <div className="flex items-center gap-3">
-              <div className="flex items-center space-x-2">
-                <input type="checkbox" id="pkg-preview-header" checked={pkgPreviewHeader}
-                  onChange={async (e) => {
-                    const newVal = e.target.checked;
-                    setPkgPreviewHeader(newVal);
-                    if (pkgBillOrderIds.length > 0) {
-                      try {
-                        const token = localStorage.getItem('token');
-                        const res = await fetch('/api/lab/orders/regenerate-bill', {
-                          method: 'POST',
-                          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ order_ids: pkgBillOrderIds, include_header: newVal }),
-                        });
-                        if (res.ok) {
-                          if (pkgBillPdfUrl) window.URL.revokeObjectURL(pkgBillPdfUrl);
-                          const blob = await res.blob();
-                          setPkgBillPdfUrl(window.URL.createObjectURL(new Blob([blob], { type: 'application/pdf' })));
-                        }
-                      } catch {}
-                    }
-                  }}
-                  className="w-4 h-4" />
-                <Label htmlFor="pkg-preview-header" className="text-sm">Include header</Label>
-              </div>
               <Button variant="outline" onClick={() => {
                 if (pkgBillPdfUrl) { window.URL.revokeObjectURL(pkgBillPdfUrl); setPkgBillPdfUrl(null); }
                 setShowPkgBillPreview(false);

@@ -25,15 +25,11 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
   const [doctors, setDoctors] = useState([]);
   const [doctorId, setDoctorId] = useState('');
   const [referredBy, setReferredBy] = useState('');
-  const [includeHeader, setIncludeHeader] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [duplicateWarning, setDuplicateWarning] = useState(null);
 
-  // Bill preview state
   const [billPdfUrl, setBillPdfUrl] = useState(null);
   const [showBillPreview, setShowBillPreview] = useState(false);
-  const [billOrderIds, setBillOrderIds] = useState([]);
-  const [previewHeader, setPreviewHeader] = useState(false);
 
   useEffect(() => {
     if (open) {
@@ -45,10 +41,8 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
       setDoctorId('');
       setReferredBy('');
       setBillPdfUrl(null);
-      fetchDoctors();
       setShowBillPreview(false);
-      setBillOrderIds([]);
-      setPreviewHeader(true);
+      fetchDoctors();
       fetchTests();
     }
   }, [open, patient]);
@@ -105,8 +99,6 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
             setDuplicateWarning(duplicates);
             return;
           }
-        } else {
-          console.warn('Duplicate check failed:', checkRes.status, await checkRes.text());
         }
       } catch (err) {
         console.warn('Duplicate check error:', err);
@@ -126,20 +118,13 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
           doctor_id: doctorId ? parseInt(doctorId, 10) : null,
           referred_by: referredBy || null,
           discount_amount: discount,
-          include_header: includeHeader,
           force: force,
         }),
       });
       if (res.ok) {
-        const orderIdsHeader = res.headers.get('X-Order-Ids');
-        const ids = orderIdsHeader ? orderIdsHeader.split(',').map(Number) : [];
-        setBillOrderIds(ids);
-        setPreviewHeader(includeHeader);
-
         const blob = await res.blob();
         if (billPdfUrl) window.URL.revokeObjectURL(billPdfUrl);
-        const url = window.URL.createObjectURL(new Blob([blob], { type: 'application/pdf' }));
-        setBillPdfUrl(url);
+        setBillPdfUrl(window.URL.createObjectURL(new Blob([blob], { type: 'application/pdf' })));
         setShowBillPreview(true);
       } else if (res.status === 409) {
         const err = await res.json();
@@ -152,24 +137,6 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
       alert('Failed to book lab tests');
     } finally {
       setSubmitting(false);
-    }
-  };
-
-  const refetchBillPdf = async (withHeader) => {
-    if (billOrderIds.length === 0) return;
-    try {
-      const res = await fetch('/api/lab/orders/regenerate-bill', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ order_ids: billOrderIds, include_header: withHeader }),
-      });
-      if (res.ok) {
-        if (billPdfUrl) window.URL.revokeObjectURL(billPdfUrl);
-        const blob = await res.blob();
-        setBillPdfUrl(window.URL.createObjectURL(new Blob([blob], { type: 'application/pdf' })));
-      }
-    } catch (err) {
-      console.error('Failed to regenerate bill:', err);
     }
   };
 
@@ -202,6 +169,9 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
             </DialogTitle>
           </DialogHeader>
           <div className="flex flex-col space-y-4">
+            <p className="text-xs text-muted-foreground">
+              Letterhead follows Hospital Config → Printing settings.
+            </p>
             <div className="grid grid-cols-2 gap-4 p-4 bg-gray-50 rounded-lg">
               <div>
                 <p className="text-sm text-gray-600">Patient</p>
@@ -218,16 +188,6 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
               )}
             </div>
             <div className="flex items-center gap-3">
-              <div className="flex items-center space-x-2">
-                <input type="checkbox" id="lab-bill-header" checked={previewHeader}
-                  onChange={async (e) => {
-                    const newVal = e.target.checked;
-                    setPreviewHeader(newVal);
-                    await refetchBillPdf(newVal);
-                  }}
-                  className="w-4 h-4" />
-                <Label htmlFor="lab-bill-header" className="text-sm">Include header</Label>
-              </div>
               <Button variant="outline" onClick={closeBillPreview} className="flex-1">Close</Button>
               <Button onClick={handlePrintBill} className="flex-1 bg-blue-600 hover:bg-blue-700">
                 <Printer className="h-4 w-4 mr-2" /> Print Bill
@@ -396,10 +356,7 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
 
           {duplicateWarning && (
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-2">
-              <p className="text-sm font-semibold text-amber-800 flex items-center gap-1.5">
-                <span className="text-amber-500 text-lg">&#9888;</span>
-                These tests were already booked and paid for this patient today:
-              </p>
+              <p className="text-sm font-semibold text-amber-800">Duplicate tests booked today:</p>
               <ul className="space-y-1 ml-6">
                 {duplicateWarning.map((d, i) => (
                   <li key={i} className="text-sm text-amber-700">
@@ -409,24 +366,18 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
                 ))}
               </ul>
               <div className="flex gap-2 pt-1">
-                <Button size="sm" variant="outline" onClick={() => setDuplicateWarning(null)}>Go Back & Edit</Button>
+                <Button size="sm" variant="outline" onClick={() => setDuplicateWarning(null)}>Go Back</Button>
                 <Button size="sm" className="bg-amber-600 hover:bg-amber-700 text-white" onClick={() => handleSubmit(true)}>Proceed Anyway</Button>
               </div>
             </div>
           )}
 
-          <div className={`flex items-center justify-between pt-2 border-t ${duplicateWarning ? 'hidden' : ''}`}>
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={includeHeader} onChange={e => setIncludeHeader(e.target.checked)} className="rounded" />
-              Include header in bill
-            </label>
-            <div className="flex gap-2">
-              <Button variant="outline" onClick={() => onClose(false)}>Cancel</Button>
-              <Button onClick={() => handleSubmit(false)}
-                disabled={submitting || !selectedPatient || selectedTests.length === 0}>
-                {submitting ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" /> Booking...</> : `Book & Print Bill (₹${total.toFixed(2)})`}
-              </Button>
-            </div>
+          <div className={`flex items-center justify-end pt-2 border-t gap-2 ${duplicateWarning ? 'hidden' : ''}`}>
+            <Button variant="outline" onClick={() => onClose(false)}>Cancel</Button>
+            <Button onClick={() => handleSubmit(false)}
+              disabled={submitting || !selectedPatient || selectedTests.length === 0}>
+              {submitting ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" /> Booking...</> : `Book & Print Bill (₹${total.toFixed(2)})`}
+            </Button>
           </div>
         </div>
       </DialogContent>

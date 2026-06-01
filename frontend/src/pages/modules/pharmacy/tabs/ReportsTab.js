@@ -99,7 +99,7 @@ export default function ReportsTab() {
 
   const printPdf = () => {
     if (!def.pdfPath) return;
-    printPdfFromUrl(def.pdfPath, { include_header: false, params: buildParams() });
+    printPdfFromUrl(def.pdfPath, { params: buildParams() });
   };
 
   return (

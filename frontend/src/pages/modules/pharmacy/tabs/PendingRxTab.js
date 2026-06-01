@@ -49,7 +49,7 @@ export default function PendingRxTab() {
       const rxId = target.id;
       setOpen(false); load();
       // Auto-print the dispense slip
-      printPdfFromUrl(`/api/pharmacy/prescriptions/${rxId}/dispense/pdf`, { include_header: false });
+      printPdfFromUrl(`/api/pharmacy/prescriptions/${rxId}/dispense/pdf`);
     } catch (e) {
       toast({ variant: 'destructive', title: 'Dispense failed', description: errMsg(e) });
     }

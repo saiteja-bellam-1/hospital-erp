@@ -53,7 +53,6 @@ const ReceptionistDashboard = () => {
   const [showBillPreviewDialog, setShowBillPreviewDialog] = useState(false);
   const [currentBill, setCurrentBill] = useState(null);
   const [billPdfUrl, setBillPdfUrl] = useState(null);
-  const [billIncludeHeader, setBillIncludeHeader] = useState(false);
   const [currentBillAppointmentId, setCurrentBillAppointmentId] = useState(null);
 
   // Filter states
@@ -312,11 +311,10 @@ const ReceptionistDashboard = () => {
   };
 
   // Bill preview functions
-  const showBillPreview = async (appointmentId, includeHeader = false) => {
+  const showBillPreview = async (appointmentId) => {
     try {
       const token = localStorage.getItem('token');
       setCurrentBillAppointmentId(appointmentId);
-      setBillIncludeHeader(includeHeader);
 
       // Fetch bill data
       const billResponse = await fetch(`/api/appointments/${appointmentId}/bill`, {
@@ -328,7 +326,7 @@ const ReceptionistDashboard = () => {
         setCurrentBill(billData);
         
         // Fetch PDF for preview
-        const pdfResponse = await fetch(`/api/appointments/${appointmentId}/bill/download?include_header=${includeHeader}`, {
+        const pdfResponse = await fetch(`/api/appointments/${appointmentId}/bill/download`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         
@@ -407,10 +405,10 @@ const ReceptionistDashboard = () => {
     }
   };
 
-  const printPrescription = async (prescriptionId, includeHeader = false) => {
+  const printPrescription = async (prescriptionId) => {
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch(`/api/prescriptions-simple/${prescriptionId}/download?include_header=${includeHeader}`, {
+      const response = await fetch(`/api/prescriptions-simple/${prescriptionId}/download`, {
         headers: { Authorization: `Bearer ${token}` }
       });
 
@@ -1072,16 +1070,10 @@ const ReceptionistDashboard = () => {
                             </p>
                           )}
                         </div>
-                        <div className="flex gap-1">
-                          <Button size="sm" variant="outline" className="flex items-center gap-1"
-                            onClick={() => printPrescription(prescription.prescription_id, true)}>
-                            <Printer className="h-3.5 w-3.5" /> With Header
-                          </Button>
-                          <Button size="sm" variant="ghost"
-                            onClick={() => printPrescription(prescription.prescription_id, false)}>
-                            Without Header
-                          </Button>
-                        </div>
+                        <Button size="sm" variant="outline" className="flex items-center gap-1"
+                          onClick={() => printPrescription(prescription.prescription_id)}>
+                          <Printer className="h-3.5 w-3.5" /> Print
+                        </Button>
                       </div>
                       
                       {/* Medicines */}
@@ -1178,20 +1170,10 @@ const ReceptionistDashboard = () => {
             </div>
             
             {/* Action Buttons */}
-            <div className="flex items-center gap-3 pt-4">
-              <div className="flex items-center space-x-2">
-                <input type="checkbox" id="bill-header-rcpt" checked={billIncludeHeader}
-                  onChange={async (e) => {
-                    const newVal = e.target.checked;
-                    setBillIncludeHeader(newVal);
-                    if (currentBillAppointmentId) {
-                      if (billPdfUrl) { window.URL.revokeObjectURL(billPdfUrl); setBillPdfUrl(null); }
-                      await showBillPreview(currentBillAppointmentId, newVal);
-                    }
-                  }}
-                  className="w-4 h-4" />
-                <Label htmlFor="bill-header-rcpt" className="text-sm">Include header</Label>
-              </div>
+            <p className="text-xs text-muted-foreground pt-4">
+              Letterhead follows Hospital Config → Printing.
+            </p>
+            <div className="flex items-center gap-3 pt-2">
               <Button variant="outline" onClick={closeBillPreview} className="flex-1">
                 Close
               </Button>

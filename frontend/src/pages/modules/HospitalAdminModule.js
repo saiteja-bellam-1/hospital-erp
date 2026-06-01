@@ -19,11 +19,13 @@ import {
   Receipt,
   ShieldCheck,
   Loader2,
-  CreditCard
+  CreditCard,
+  Printer
 } from 'lucide-react';
 import axios from 'axios';
 import ModuleConfigForm from './ModuleConfigForm';
 import PayerSchemesAdmin from './inpatient/PayerSchemesAdmin';
+import { invalidatePdfIncludeHeaderCache } from '../../hooks/usePdfPrintSettings';
 
 const HospitalAdminModule = () => {
   const { user } = useAuth();
@@ -74,6 +76,10 @@ const HospitalAdminModule = () => {
   // Registration Fee State
   const [registrationFee, setRegistrationFee] = useState(0);
 
+  // PDF / print settings
+  const [includeHeaderOnPdfs, setIncludeHeaderOnPdfs] = useState(true);
+  const [printSettingsSaving, setPrintSettingsSaving] = useState(false);
+
   // Module Settings State
   const [selectedModule, setSelectedModule] = useState('lab');
   const [moduleSettings, setModuleSettings] = useState([]);
@@ -99,6 +105,7 @@ const HospitalAdminModule = () => {
       fetchHospitalInfo();
       fetchDoctors();
       fetchRegistrationFee();
+      fetchPrintSettings();
       if (selectedModule) {
         fetchModuleSettings(selectedModule);
       }
@@ -223,6 +230,34 @@ const HospitalAdminModule = () => {
       setRegistrationFee(response.data.registration_fee || 0);
     } catch (error) {
       console.error('Failed to fetch registration fee:', error);
+    }
+  };
+
+  const fetchPrintSettings = async () => {
+    try {
+      const response = await axios.get('/api/hospital/print-settings');
+      setIncludeHeaderOnPdfs(response.data.include_header_on_pdfs !== false);
+    } catch (error) {
+      console.error('Failed to fetch print settings:', error);
+    }
+  };
+
+  const savePrintSettings = async () => {
+    setPrintSettingsSaving(true);
+    try {
+      await axios.put('/api/hospital/print-settings', {
+        include_header_on_pdfs: includeHeaderOnPdfs,
+      });
+      invalidatePdfIncludeHeaderCache();
+      toast({ title: 'Success', description: 'Print settings saved' });
+    } catch (error) {
+      toast({
+        variant: 'destructive',
+        title: 'Error',
+        description: error.response?.data?.detail || 'Failed to save print settings',
+      });
+    } finally {
+      setPrintSettingsSaving(false);
     }
   };
 
@@ -428,6 +463,38 @@ const HospitalAdminModule = () => {
 
       {/* Hospital Information Tab */}
       {activeTab === 'hospital-info' && (
+        <div className="space-y-6">
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center">
+              <Printer className="h-5 w-5 mr-2" />
+              Printing &amp; PDFs
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                className="mt-1 w-4 h-4"
+                checked={includeHeaderOnPdfs}
+                onChange={(e) => setIncludeHeaderOnPdfs(e.target.checked)}
+              />
+              <div>
+                <p className="text-sm font-medium">Include hospital letterhead on all PDFs</p>
+                <p className="text-xs text-gray-500 mt-1">
+                  Applies to bills, prescriptions, lab reports, discharge summaries, pharmacy invoices,
+                  and other printable documents. Logo and hospital details come from the form below.
+                  Users no longer toggle this per print — change it here once for the whole hospital.
+                </p>
+              </div>
+            </label>
+            <Button type="button" onClick={savePrintSettings} disabled={printSettingsSaving}>
+              <Save className="h-4 w-4 mr-2" />
+              {printSettingsSaving ? 'Saving…' : 'Save Print Settings'}
+            </Button>
+          </CardContent>
+        </Card>
+
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center">
@@ -644,6 +711,7 @@ const HospitalAdminModule = () => {
             </form>
           </CardContent>
         </Card>
+        </div>
       )}
 
       {/* Doctor Profiles Tab */}

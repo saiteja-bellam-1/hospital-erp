@@ -141,7 +141,7 @@ const BillingDischargePage = ({ admissionId, onBack, permissions = {} }) => {
       // Best-effort print receipt
       try {
         const pdfRes = await axios.get(
-          `/api/inpatient/deposits/${res.data.id}/receipt/pdf?include_header=false`,
+          `/api/inpatient/deposits/${res.data.id}/receipt/pdf`,
           { responseType: 'blob' },
         );
         printPdfFromUrl(URL.createObjectURL(pdfRes.data));
@@ -332,7 +332,7 @@ const BillingDischargePage = ({ admissionId, onBack, permissions = {} }) => {
       toast({ title: 'Payment recorded', description: `${rupee(amt)} collected.` });
       try {
         const pdfRes = await axios.get(
-          `/api/inpatient/deposits/${res.data.id}/receipt/pdf?include_header=false`,
+          `/api/inpatient/deposits/${res.data.id}/receipt/pdf`,
           { responseType: 'blob' },
         );
         printPdfFromUrl(URL.createObjectURL(pdfRes.data));
@@ -365,7 +365,7 @@ const BillingDischargePage = ({ admissionId, onBack, permissions = {} }) => {
     try {
       const res = await axios.get(
         `/api/inpatient/admissions/${admissionId}/bill/pdf`,
-        { responseType: 'blob', params: { include_header: false } });
+        { responseType: 'blob', params: {} });
       printPdfFromUrl(URL.createObjectURL(res.data));
     } catch (err) {
       toast({ variant: 'destructive', title: 'Bill print failed',
@@ -377,7 +377,7 @@ const BillingDischargePage = ({ admissionId, onBack, permissions = {} }) => {
     try {
       const res = await axios.get(
         `/api/inpatient/admissions/${admissionId}/gate-pass/pdf`,
-        { responseType: 'blob', params: { include_header: false } });
+        { responseType: 'blob', params: {} });
       printPdfFromUrl(URL.createObjectURL(res.data));
     } catch (err) {
       toast({ variant: 'destructive', title: 'Gate pass print failed' });

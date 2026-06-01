@@ -546,6 +546,44 @@ async def set_registration_fee(
     return {"message": "Registration fee updated", "registration_fee": data.registration_fee}
 
 
+# PRINT / PDF SETTINGS
+@router.get("/print-settings")
+async def get_print_settings(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Hospital-wide default for letterhead on generated PDFs."""
+    from app.utils.pdf_settings import get_hospital_pdf_include_header
+
+    return {
+        "include_header_on_pdfs": get_hospital_pdf_include_header(db, current_user.hospital_id),
+    }
+
+
+class PrintSettingsUpdate(BaseModel):
+    include_header_on_pdfs: bool
+
+
+@router.put("/print-settings")
+async def update_print_settings(
+    data: PrintSettingsUpdate,
+    current_user: User = Depends(require_hospital_admin),
+    db: Session = Depends(get_db),
+):
+    from app.utils.pdf_settings import set_hospital_pdf_include_header
+
+    set_hospital_pdf_include_header(
+        db,
+        include_header=data.include_header_on_pdfs,
+        created_by=current_user.id,
+    )
+    db.commit()
+    return {
+        "message": "Print settings updated",
+        "include_header_on_pdfs": data.include_header_on_pdfs,
+    }
+
+
 @router.get("/dashboard-overview")
 async def get_dashboard_overview(
     current_user: User = Depends(get_current_user),
@@ -1736,7 +1774,6 @@ async def refund_payment(
 @router.get("/billing/payments/{payment_id}/refund-receipt/pdf")
 async def refund_receipt_pdf(
     payment_id: int,
-    include_header: bool = True,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -1774,7 +1811,7 @@ async def refund_receipt_pdf(
         "original_payment_number": original.payment_number if original else "",
         "original_amount": float(original.amount_paid or 0) if original else 0,
     }
-    pdf_buffer = pdf_service.generate_refund_receipt_pdf(refund_data, hospital_info, include_header=include_header)
+    pdf_buffer = pdf_service.generate_refund_receipt_pdf(refund_data, hospital_info, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
     from fastapi.responses import Response
     return Response(content=pdf_buffer.getvalue(), media_type="application/pdf",
                     headers={"Content-Disposition": f'inline; filename="refund_{refund.payment_number}.pdf"'})
@@ -2298,7 +2335,6 @@ async def issue_credit_note(
 @router.get("/billing/bills/{bill_id}/pdf")
 async def get_bill_pdf(
     bill_id: int,
-    include_header: bool = True,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -2360,7 +2396,7 @@ async def get_bill_pdf(
         "hospital_subname": getattr(hospital, "hospital_subname", "") if hospital else "",
     }
     from app.utils.pdf_service import pdf_service
-    buf = pdf_service.generate_bill_pdf(bill_data, hospital_info, include_header=include_header)
+    buf = pdf_service.generate_bill_pdf(bill_data, hospital_info, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
     from fastapi.responses import Response
     return Response(content=buf.getvalue(), media_type="application/pdf",
                     headers={"Content-Disposition": f'inline; filename="{bill.bill_number}.pdf"'})
@@ -2369,7 +2405,6 @@ async def get_bill_pdf(
 @router.get("/billing/bills/{bill_id}/credit-note/pdf")
 async def credit_note_pdf(
     bill_id: int,
-    include_header: bool = True,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -2410,7 +2445,7 @@ async def credit_note_pdf(
             for it in items
         ],
     }
-    pdf_buffer = pdf_service.generate_credit_note_pdf(cn_data, hospital_info, include_header=include_header)
+    pdf_buffer = pdf_service.generate_credit_note_pdf(cn_data, hospital_info, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
     from fastapi.responses import Response
     return Response(content=pdf_buffer.getvalue(), media_type="application/pdf",
                     headers={"Content-Disposition": f'inline; filename="{cn.bill_number}.pdf"'})

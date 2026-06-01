@@ -66,7 +66,6 @@ const DoctorDashboard = () => {
   // Preview state
   const [previewPrescription, setPreviewPrescription] = useState(null);
   const [previewPdfUrl, setPreviewPdfUrl] = useState(null);
-  const [includeHeader, setIncludeHeader] = useState(false);
 
   // Success feedback state
   const [successMessage, setSuccessMessage] = useState('');
@@ -623,11 +622,10 @@ const DoctorDashboard = () => {
   };
 
   // --- Prescription ---
-  const showPrintPreview = async (prescription, headerOverride = null) => {
+  const showPrintPreview = async (prescription) => {
     try {
       const token = localStorage.getItem('token');
-      const headerValue = headerOverride !== null ? headerOverride : includeHeader;
-      const response = await fetch(`/api/prescriptions-simple/${prescription.prescription_id}/download?include_header=${headerValue}`, {
+      const response = await fetch(`/api/prescriptions-simple/${prescription.prescription_id}/download`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (response.ok) {
@@ -2570,27 +2568,25 @@ const DoctorDashboard = () => {
               )}
 
               <div className="flex justify-end gap-2 mt-4">
-                {[true, false].map(withHeader => (
-                  <Button key={String(withHeader)} variant="outline" onClick={async () => {
-                    try {
-                      const token = localStorage.getItem('token');
-                      const res = await fetch(`/api/lab/reports/${viewingLabReport.id}/download?include_header=${withHeader}`, {
-                        headers: { Authorization: `Bearer ${token}` }
-                      });
-                      const blob = await res.blob();
-                      const url = window.URL.createObjectURL(blob);
-                      const a = document.createElement('a');
-                      a.href = url;
-                      a.download = `lab_report_${viewingLabReport.order_number}.pdf`;
-                      a.click();
-                      window.URL.revokeObjectURL(url);
-                    } catch (err) {
-                      console.error('Failed to download PDF:', err);
-                    }
-                  }}>
-                    <Printer className="h-4 w-4 mr-2" /> {withHeader ? 'With Header' : 'Without Header'}
-                  </Button>
-                ))}
+                <Button variant="outline" onClick={async () => {
+                  try {
+                    const token = localStorage.getItem('token');
+                    const res = await fetch(`/api/lab/reports/${viewingLabReport.id}/download`, {
+                      headers: { Authorization: `Bearer ${token}` }
+                    });
+                    const blob = await res.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `lab_report_${viewingLabReport.order_number}.pdf`;
+                    a.click();
+                    window.URL.revokeObjectURL(url);
+                  } catch (err) {
+                    console.error('Failed to download PDF:', err);
+                  }
+                }}>
+                  <Printer className="h-4 w-4 mr-2" /> Download PDF
+                </Button>
               </div>
             </div>
           )}
@@ -2714,23 +2710,10 @@ const DoctorDashboard = () => {
             )}
           </div>
           <div className="pt-4 border-t space-y-3">
+            <p className="text-xs text-muted-foreground">
+              Letterhead follows Hospital Config → Printing.
+            </p>
             <div className="flex items-center gap-4">
-              <div className="flex items-center space-x-2">
-                <input
-                  type="checkbox" id="include-header"
-                  checked={includeHeader}
-                  onChange={async (e) => {
-                    const newHeaderValue = e.target.checked;
-                    setIncludeHeader(newHeaderValue);
-                    if (previewPrescription) {
-                      if (previewPdfUrl) { window.URL.revokeObjectURL(previewPdfUrl); setPreviewPdfUrl(null); }
-                      await showPrintPreview(previewPrescription, newHeaderValue);
-                    }
-                  }}
-                  className="w-4 h-4"
-                />
-                <Label htmlFor="include-header" className="text-sm">Include hospital letterhead</Label>
-              </div>
               <Button variant="outline" size="sm" onClick={refreshPreview}>
                 <RefreshCw className="h-3 w-3 mr-1" /> Refresh Preview
               </Button>

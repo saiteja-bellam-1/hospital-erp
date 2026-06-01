@@ -54,8 +54,6 @@ const ConsultationPage = () => {
   const [expandedHistoryItems, setExpandedHistoryItems] = useState({});
   const [savedPrescription, setSavedPrescription] = useState(null);
   const [rxPdfUrl, setRxPdfUrl] = useState(null);
-  const [rxIncludeHeader, setRxIncludeHeader] = useState(false);
-
   // Lab Order
   const [availableLabTests, setAvailableLabTests] = useState([]);
   const [labCategories, setLabCategories] = useState([]);
@@ -267,9 +265,9 @@ const ConsultationPage = () => {
     }
   };
 
-  const fetchRxPdf = async (prescriptionId, includeHeader) => {
+  const fetchRxPdf = async (prescriptionId) => {
     try {
-      const res = await fetch(`/api/prescriptions-simple/${prescriptionId}/download?include_header=${includeHeader}`, { headers });
+      const res = await fetch(`/api/prescriptions-simple/${prescriptionId}/download`, { headers });
       if (res.ok) {
         const blob = await res.blob();
         if (rxPdfUrl) window.URL.revokeObjectURL(rxPdfUrl);
@@ -440,7 +438,7 @@ const ConsultationPage = () => {
         showFeedback(currentPrescriptionId ? 'Prescription updated' : 'Prescription created');
         fetchPatientPrescriptions();
         // Load PDF preview
-        fetchRxPdf(data.prescription_id, rxIncludeHeader);
+        fetchRxPdf(data.prescription_id);
       } else {
         const err = await res.json();
         const detail = typeof err.detail === 'string' ? err.detail : 'Failed to save prescription';
@@ -535,9 +533,9 @@ const ConsultationPage = () => {
     }
   };
 
-  const downloadReport = async (reportId, orderNumber, includeHeader = false) => {
+  const downloadReport = async (reportId, orderNumber) => {
     try {
-      const res = await fetch(`/api/lab/reports/${reportId}/download?include_header=${includeHeader}`, { headers });
+      const res = await fetch(`/api/lab/reports/${reportId}/download`, { headers });
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -868,18 +866,6 @@ const ConsultationPage = () => {
                       <FileText className="h-4 w-4" /> Prescription Preview
                     </h3>
                     <div className="flex items-center gap-3">
-                      <label className="flex items-center gap-2 text-xs text-gray-600">
-                        <input
-                          type="checkbox"
-                          checked={rxIncludeHeader}
-                          onChange={(e) => {
-                            setRxIncludeHeader(e.target.checked);
-                            fetchRxPdf(savedPrescription.prescription_id, e.target.checked);
-                          }}
-                          className="rounded"
-                        />
-                        Include hospital letterhead
-                      </label>
                       {rxPdfUrl && (
                         <>
                           <Button size="sm" variant="outline" onClick={() => window.open(rxPdfUrl, '_blank')}>
@@ -1144,13 +1130,9 @@ const ConsultationPage = () => {
                                             <Badge variant="outline" className="text-[10px]">{order.test_code}</Badge>
                                           </div>
                                           <div className="flex items-center gap-2">
-                                            <Button size="sm" variant="ghost" className="h-7 px-2" title="Download with header"
-                                              onClick={(e) => { e.stopPropagation(); downloadReport(order.report_id, order.order_number, true); }}>
+                                            <Button size="sm" variant="ghost" className="h-7 px-2" title="Download report"
+                                              onClick={(e) => { e.stopPropagation(); downloadReport(order.report_id, order.order_number); }}>
                                               <Printer className="h-3.5 w-3.5" />
-                                            </Button>
-                                            <Button size="sm" variant="ghost" className="h-7 px-2 text-gray-400" title="Download without header"
-                                              onClick={(e) => { e.stopPropagation(); downloadReport(order.report_id, order.order_number, false); }}>
-                                              <FileText className="h-3.5 w-3.5" />
                                             </Button>
                                             <Button size="sm" variant={expandedReport?.id === order.report_id ? 'default' : 'ghost'} className="h-7 px-2"
                                               onClick={(e) => { e.stopPropagation(); openReport(order.report_id); }}>

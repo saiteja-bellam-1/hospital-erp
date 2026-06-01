@@ -291,10 +291,10 @@ const LabTechDashboard = () => {
     return false;
   };
 
-  const downloadPackageReport = async (packageBookingId, packageName, includeHeader = false) => {
+  const downloadPackageReport = async (packageBookingId, packageName) => {
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch(`/api/lab/reports/package/${packageBookingId}/download?include_header=${includeHeader}`, {
+      const res = await fetch(`/api/lab/reports/package/${packageBookingId}/download`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (res.ok) {
@@ -319,7 +319,7 @@ const LabTechDashboard = () => {
     try {
       setReportPreviewId(reportId);
       setReportPreviewHeader(withHeader);
-      const res = await axios.get(`/api/lab/reports/${reportId}/download?include_header=${withHeader}`, { responseType: 'blob' });
+      const res = await axios.get(`/api/lab/reports/${reportId}/download`, { responseType: 'blob' });
       if (reportPdfUrl) window.URL.revokeObjectURL(reportPdfUrl);
       const url = window.URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
       setReportPdfUrl(url);
@@ -332,7 +332,7 @@ const LabTechDashboard = () => {
   const refetchReportPdf = async (withHeader) => {
     if (!reportPreviewId) return;
     try {
-      const res = await axios.get(`/api/lab/reports/${reportPreviewId}/download?include_header=${withHeader}`, { responseType: 'blob' });
+      const res = await axios.get(`/api/lab/reports/${reportPreviewId}/download`, { responseType: 'blob' });
       if (reportPdfUrl) window.URL.revokeObjectURL(reportPdfUrl);
       const url = window.URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
       setReportPdfUrl(url);
@@ -645,14 +645,10 @@ const LabTechDashboard = () => {
           </div>
           {/* Download All Reports button */}
           {completedCount > 0 && (
-            <div className="mt-3 pt-2 border-t border-indigo-200 flex gap-2">
+            <div className="mt-3 pt-2 border-t border-indigo-200">
               <Button size="sm" variant="outline" className="h-7 text-xs border-indigo-300 text-indigo-700"
-                onClick={() => downloadPackageReport(group.package_booking_id, group.package_name, true)}>
-                <FileText className="h-3 w-3 mr-1" /> Download All Reports (With Header)
-              </Button>
-              <Button size="sm" variant="ghost" className="h-7 text-xs text-indigo-600"
-                onClick={() => downloadPackageReport(group.package_booking_id, group.package_name, false)}>
-                Without Header
+                onClick={() => downloadPackageReport(group.package_booking_id, group.package_name)}>
+                <FileText className="h-3 w-3 mr-1" /> Download All Reports
               </Button>
             </div>
           )}
@@ -1199,16 +1195,6 @@ const LabTechDashboard = () => {
               )}
             </div>
             <div className="flex items-center gap-3">
-              <div className="flex items-center space-x-2">
-                <input type="checkbox" id="report-preview-header" checked={reportPreviewHeader}
-                  onChange={async (e) => {
-                    const newVal = e.target.checked;
-                    setReportPreviewHeader(newVal);
-                    await refetchReportPdf(newVal);
-                  }}
-                  className="w-4 h-4" />
-                <Label htmlFor="report-preview-header" className="text-sm">Include header</Label>
-              </div>
               <Button variant="outline" onClick={closeReportPreview} className="flex-1">Close</Button>
               <Button onClick={() => {
                 if (reportPdfUrl) {

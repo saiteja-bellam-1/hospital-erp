@@ -374,9 +374,9 @@ const LabTestParametersPage = () => {
 
   // ============ Sample report ============
 
-  const handlePrintSampleReport = async (includeHeader = false) => {
+  const handlePrintSampleReport = async () => {
     try {
-      const res = await axios.get(`/api/lab/tests/${testId}/sample-report?include_header=${includeHeader}`, {
+      const res = await axios.get(`/api/lab/tests/${testId}/sample-report`, {
         responseType: 'blob'
       });
       const url = window.URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
@@ -457,14 +457,9 @@ const LabTestParametersPage = () => {
         </div>
         <div className="flex items-center gap-2">
           {test.parameters?.length > 0 && (
-            <div className="flex gap-1">
-              <Button variant="outline" size="sm" className="text-xs" onClick={() => handlePrintSampleReport(true)}>
-                <Printer className="h-3.5 w-3.5 mr-1.5" /> With Header
-              </Button>
-              <Button variant="ghost" size="sm" className="text-xs" onClick={() => handlePrintSampleReport(false)}>
-                Without Header
-              </Button>
-            </div>
+            <Button variant="outline" size="sm" className="text-xs" onClick={() => handlePrintSampleReport()}>
+              <Printer className="h-3.5 w-3.5 mr-1.5" /> Sample Report
+            </Button>
           )}
           {showNewSectionInput ? (
             <div className="flex items-center gap-1">

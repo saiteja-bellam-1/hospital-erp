@@ -23,6 +23,7 @@ from app.models.hospital import Hospital
 from app.utils.pdf_service import pdf_service
 
 from config.database import get_db
+from app.utils.pdf_settings import get_hospital_pdf_include_header
 from app.models.user import User
 from datetime import date, datetime, timedelta
 
@@ -3001,7 +3002,6 @@ def _pdf_response(buffer, filename: str) -> StreamingResponse:
 @router.get("/sales/{sid}/invoice/pdf")
 def sale_invoice_pdf(
     sid: int,
-    include_header: bool = True,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_sales")),
 ):
@@ -3025,14 +3025,13 @@ def sale_invoice_pdf(
     except Exception:
         pass
     hi = _hospital_info_for_pdf(db, current_user.hospital_id)
-    buf = pdf_service.generate_pharmacy_sale_invoice_pdf(shaped, hi, include_header=include_header)
+    buf = pdf_service.generate_pharmacy_sale_invoice_pdf(shaped, hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
     return _pdf_response(buf, f"{s.sale_number}.pdf")
 
 
 @router.get("/purchases/{pid}/pdf")
 def purchase_pdf(
     pid: int,
-    include_header: bool = True,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_purchases")),
 ):
@@ -3045,14 +3044,13 @@ def purchase_pdf(
     shaped = _shape_purchase(p, db).model_dump()
     shaped["notes"] = p.notes
     hi = _hospital_info_for_pdf(db, current_user.hospital_id)
-    buf = pdf_service.generate_pharmacy_purchase_pdf(shaped, hi, include_header=include_header)
+    buf = pdf_service.generate_pharmacy_purchase_pdf(shaped, hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
     return _pdf_response(buf, f"{p.purchase_number}.pdf")
 
 
 @router.get("/prescriptions/{rx_id}/dispense/pdf")
 def dispense_slip_pdf(
     rx_id: int,
-    include_header: bool = True,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_dispense_queue")),
 ):
@@ -3109,7 +3107,7 @@ def dispense_slip_pdf(
         "notes": rx.notes,
     }
     hi = _hospital_info_for_pdf(db, current_user.hospital_id)
-    buf = pdf_service.generate_pharmacy_dispense_slip_pdf(data, hi, include_header=include_header)
+    buf = pdf_service.generate_pharmacy_dispense_slip_pdf(data, hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
     return _pdf_response(buf, f"dispense_{rx.prescription_number}.pdf")
 
 
@@ -3117,7 +3115,6 @@ def dispense_slip_pdf(
 def narcotic_register_pdf(
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
-    include_header: bool = True,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_narcotic_register")),
 ):
@@ -3130,7 +3127,7 @@ def narcotic_register_pdf(
     }
     # Convert Pydantic rows → plain dicts for the generator
     row_dicts = [r.model_dump() for r in rows]
-    buf = pdf_service.generate_narcotic_register_pdf(row_dicts, period, hi, include_header=include_header)
+    buf = pdf_service.generate_narcotic_register_pdf(row_dicts, period, hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
     return _pdf_response(buf, "narcotic_register.pdf")
 
 
@@ -3150,7 +3147,6 @@ def sales_report_pdf(
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
     group_by: str = Query("day", pattern="^(day|medicine|doctor|payment_type)$"),
-    include_header: bool = True,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
 ):
@@ -3169,7 +3165,7 @@ def sales_report_pdf(
     buf = pdf_service.generate_pharmacy_report_pdf(
         title="SALES REPORT", period=_report_period(date_from, date_to),
         columns=cols, rows=[r.model_dump() for r in rows],
-        hospital_info=hi, include_header=include_header,
+        hospital_info=hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id),
         meta={"Group by": group_by},
     )
     return _pdf_response(buf, "pharmacy_sales.pdf")
@@ -3181,7 +3177,6 @@ def purchases_report_pdf(
     date_to: Optional[date] = None,
     supplier_id: Optional[int] = None,
     group_by: str = Query("day", pattern="^(day|supplier)$"),
-    include_header: bool = True,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
 ):
@@ -3201,7 +3196,7 @@ def purchases_report_pdf(
     buf = pdf_service.generate_pharmacy_report_pdf(
         title="PURCHASES REPORT", period=_report_period(date_from, date_to),
         columns=cols, rows=[r.model_dump() for r in rows],
-        hospital_info=hi, include_header=include_header,
+        hospital_info=hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id),
         meta={"Group by": group_by},
     )
     return _pdf_response(buf, "pharmacy_purchases.pdf")
@@ -3209,7 +3204,6 @@ def purchases_report_pdf(
 
 @router.get("/reports/stock-on-hand/pdf")
 def stock_on_hand_pdf(
-    include_header: bool = True,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
 ):
@@ -3228,7 +3222,7 @@ def stock_on_hand_pdf(
     buf = pdf_service.generate_pharmacy_report_pdf(
         title="STOCK ON HAND", period=None,
         columns=cols, rows=[r.model_dump() for r in rows],
-        hospital_info=hi, include_header=include_header,
+        hospital_info=hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id),
     )
     return _pdf_response(buf, "pharmacy_stock.pdf")
 
@@ -3237,7 +3231,6 @@ def stock_on_hand_pdf(
 def tax_summary_pdf(
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
-    include_header: bool = True,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
 ):
@@ -3258,7 +3251,7 @@ def tax_summary_pdf(
     buf = pdf_service.generate_pharmacy_report_pdf(
         title="TAX SUMMARY", period=_report_period(date_from, date_to),
         columns=cols, rows=[r.model_dump() for r in rows],
-        hospital_info=hi, include_header=include_header,
+        hospital_info=hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id),
     )
     return _pdf_response(buf, "pharmacy_tax_summary.pdf")
 
@@ -3267,7 +3260,6 @@ def tax_summary_pdf(
 def daily_closeout_pdf(
     date: Optional[date] = None,
     cashier_id: Optional[int] = None,
-    include_header: bool = True,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
 ):
@@ -3294,7 +3286,7 @@ def daily_closeout_pdf(
     buf = pdf_service.generate_pharmacy_report_pdf(
         title="DAILY CLOSEOUT", period={"from": the_day, "to": the_day},
         columns=cols, rows=[r.model_dump() for r in rows],
-        hospital_info=hi, include_header=include_header,
+        hospital_info=hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id),
     )
     return _pdf_response(buf, f"closeout_{the_day}.pdf")
 
@@ -3304,7 +3296,6 @@ def margin_report_pdf(
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
     group_by: str = Query("day", pattern="^(day|medicine)$"),
-    include_header: bool = True,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
 ):
@@ -3322,7 +3313,7 @@ def margin_report_pdf(
     buf = pdf_service.generate_pharmacy_report_pdf(
         title="PROFIT / MARGIN", period=_report_period(date_from, date_to),
         columns=cols, rows=[r.model_dump() for r in rows],
-        hospital_info=hi, include_header=include_header,
+        hospital_info=hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id),
         meta={"Group by": group_by},
     )
     return _pdf_response(buf, "pharmacy_margin.pdf")
@@ -3331,7 +3322,6 @@ def margin_report_pdf(
 @router.get("/reports/supplier-aging/pdf")
 def supplier_aging_pdf(
     as_of: Optional[date] = None,
-    include_header: bool = True,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
 ):
@@ -3351,7 +3341,7 @@ def supplier_aging_pdf(
         title="SUPPLIER OUTSTANDING (AGING)",
         period={"from": "—", "to": the_day},
         columns=cols, rows=[r.model_dump() for r in rows],
-        hospital_info=hi, include_header=include_header,
+        hospital_info=hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id),
         meta={"Note": "Interim — payments tracking ships in P4.2"},
     )
     return _pdf_response(buf, "supplier_aging.pdf")
@@ -3360,7 +3350,6 @@ def supplier_aging_pdf(
 @router.get("/reports/movement/pdf")
 def movement_report_pdf(
     days: int = Query(90, ge=1, le=365),
-    include_header: bool = True,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
 ):
@@ -3378,6 +3367,6 @@ def movement_report_pdf(
     buf = pdf_service.generate_pharmacy_report_pdf(
         title=f"MOVEMENT — Last {days} days", period=None,
         columns=cols, rows=[r.model_dump() for r in rows],
-        hospital_info=hi, include_header=include_header,
+        hospital_info=hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id),
     )
     return _pdf_response(buf, "pharmacy_movement.pdf")
