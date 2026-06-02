@@ -103,7 +103,7 @@ export default function PurchasesTab() {
                     </td>
                     <td className="py-2 text-right">
                       <Button size="sm" variant="ghost" title="Print purchase"
-                        onClick={() => printPdfFromUrl(`/api/pharmacy/purchases/${p.id}/pdf`, { include_header: false })}>
+                        onClick={() => printPdfFromUrl(`/api/pharmacy/purchases/${p.id}/pdf`)}>
                         <Printer className="h-3 w-3" />
                       </Button>
                       {p.status === 'confirmed' && (

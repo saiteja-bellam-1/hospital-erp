@@ -1,18 +1,18 @@
 import axios from 'axios';
+import { fetchPdfIncludeHeaderSetting, getCachedPdfIncludeHeader } from '../hooks/usePdfPrintSettings';
 
 /**
  * Print a PDF using a hidden iframe.
  *
  * Accepts either:
  *   - a blob: URL (already-fetched PDF), or
- *   - an API path (e.g. "/api/inpatient/.../pdf"). In that case, the PDF is fetched
- *     with the current axios auth headers and converted to a blob URL before printing.
+ *   - an API path (e.g. "/api/inpatient/.../pdf"). Fetches with auth; letterhead
+ *     follows Hospital Config print settings via include_header query param.
  *
  * @param {string} urlOrPath - blob: URL or API path
  * @param {object} [options]
- *   include_header {boolean}  Appends include_header=true query param (API-path mode only).
- *   params {object}           Extra query params (API-path mode only).
- *   filename {string}         Reserved; currently informational only.
+ *   params {object}  Extra query params (API-path mode only).
+ *   filename {string}  Reserved; informational only.
  */
 export const printPdfFromUrl = async (urlOrPath, options = {}) => {
   if (!urlOrPath) return;
@@ -21,9 +21,9 @@ export const printPdfFromUrl = async (urlOrPath, options = {}) => {
   let createdBlobHere = false;
 
   if (!urlOrPath.startsWith('blob:')) {
-    // API-path mode — fetch with auth and build blob URL
+    await fetchPdfIncludeHeaderSetting();
     const params = { ...(options.params || {}) };
-    if (options.include_header) params.include_header = true;
+    params.include_header = getCachedPdfIncludeHeader();
 
     try {
       const res = await axios.get(urlOrPath, { responseType: 'blob', params });

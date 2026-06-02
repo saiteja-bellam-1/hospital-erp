@@ -502,6 +502,12 @@ class Prescription(Base):
     dispensed_date = Column(DateTime)
     inpatient_bill_id = Column(Integer, ForeignKey("bills.id"), nullable=True)  # which admission bill consumed this Rx
 
+    # Cancellation metadata. status='cancelled' is set at the same time these
+    # are stamped; see app/services/pharmacy_reversal.py.
+    cancelled_at = Column(DateTime(timezone=True), nullable=True)
+    cancelled_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    cancel_reason = Column(Text, nullable=True)
+
     items = relationship("PrescriptionItem", back_populates="prescription")
     consultation = relationship("Consultation", back_populates="prescriptions")
 

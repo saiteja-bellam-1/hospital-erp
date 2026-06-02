@@ -23,6 +23,7 @@ from app.models.hospital import Hospital
 from app.utils.pdf_service import pdf_service
 
 from config.database import get_db
+from app.utils.pdf_settings import get_hospital_pdf_include_header
 from app.models.user import User
 from datetime import date, datetime, timedelta
 
@@ -921,6 +922,132 @@ def adjust_stock(
     }
 
 
+class ExpiringBatchOut(BaseModel):
+    batch_id: int
+    medicine_id: int
+    medicine_code: Optional[str] = None
+    medicine_name: str
+    batch_number: str
+    expiry_date: date
+    days_to_expiry: int
+    quantity_in_stock: float
+    stock_value_cost: float
+
+
+@router.get("/inventory/expiring", response_model=List[ExpiringBatchOut])
+def list_expiring_batches(
+    days: int = 90,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_expiring")),
+):
+    """Active batches with `expiry_date <= today + days` and stock > 0.
+
+    Sentinel-expiry batches (no-expiry stock) are excluded. Negative `days`
+    is accepted and returns already-expired stock (useful for the write-off
+    workflow).
+    """
+    if days < -3650 or days > 3650:
+        raise HTTPException(status_code=400, detail="days must be within ±3650")
+    today = date.today()
+    threshold = today + timedelta(days=days)
+    rows = (
+        db.query(PharmacyInventory, Medicine)
+        .join(Medicine, Medicine.id == PharmacyInventory.medicine_id)
+        .filter(
+            PharmacyInventory.hospital_id == current_user.hospital_id,
+            PharmacyInventory.is_active == True,  # noqa: E712
+            PharmacyInventory.quantity_in_stock > 0,
+            PharmacyInventory.expiry_date <= threshold,
+            PharmacyInventory.expiry_date < _EXPIRY_SENTINEL,
+        )
+        .order_by(PharmacyInventory.expiry_date.asc(), PharmacyInventory.id.asc())
+        .all()
+    )
+    out: List[ExpiringBatchOut] = []
+    for inv, med in rows:
+        qty = float(inv.quantity_in_stock or 0)
+        cost = float(inv.cost_price or 0)
+        out.append(ExpiringBatchOut(
+            batch_id=inv.id,
+            medicine_id=med.id,
+            medicine_code=med.medicine_code,
+            medicine_name=med.name,
+            batch_number=inv.batch_number,
+            expiry_date=inv.expiry_date,
+            days_to_expiry=(inv.expiry_date - today).days,
+            quantity_in_stock=qty,
+            stock_value_cost=round(qty * cost, 2),
+        ))
+    return out
+
+
+class ExpiryWriteoffIn(BaseModel):
+    batch_ids: List[int] = Field(..., min_items=1)
+    reason: str = Field(..., min_length=2, max_length=200)
+
+
+class ExpiryWriteoffOut(BaseModel):
+    batches_written_off: int
+    total_qty_written_off: float
+    total_cost_value: float
+    ledger_rows: int
+
+
+@router.post("/inventory/expire-writeoff", response_model=ExpiryWriteoffOut, status_code=201)
+def writeoff_expired_batches(
+    data: ExpiryWriteoffIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "adjust_stock")),
+):
+    """Zero out the stock on one or more expired batches and write a ledger
+    row per batch (txn_type='expiry_writeoff'). Operates only on batches the
+    caller's hospital owns and ignores anything already at zero.
+    """
+    batches = (
+        db.query(PharmacyInventory)
+        .filter(
+            PharmacyInventory.id.in_(data.batch_ids),
+            PharmacyInventory.hospital_id == current_user.hospital_id,
+            PharmacyInventory.is_active == True,  # noqa: E712
+        )
+        .with_for_update()
+        .all()
+    )
+    if not batches:
+        raise HTTPException(status_code=404, detail="No matching batches found")
+
+    total_qty = 0.0
+    total_value = 0.0
+    rows_written = 0
+    for b in batches:
+        qty = float(b.quantity_in_stock or 0)
+        if qty <= 0:
+            continue
+        cost = float(b.cost_price or 0)
+        total_qty += qty
+        total_value += qty * cost
+        b.quantity_in_stock = 0
+        db.add(PharmacyStockLedger(
+            medicine_id=b.medicine_id, batch_id=b.id,
+            txn_type="expiry_writeoff", qty_delta=-qty,
+            reference_type="expiry", reference_id=b.id,
+            performed_by=current_user.id, hospital_id=current_user.hospital_id,
+            notes=f"Expiry write-off ({b.expiry_date}): {data.reason}",
+        ))
+        rows_written += 1
+
+    db.commit()
+    _audit(db, current_user, "expiry_writeoff", "pharmacy_inventory", 0,
+           f"Wrote off {rows_written} batch(es), total qty {total_qty:g}, value ₹{round(total_value, 2)}",
+           details={"reason": data.reason, "batch_ids": data.batch_ids})
+    return ExpiryWriteoffOut(
+        batches_written_off=rows_written,
+        total_qty_written_off=total_qty,
+        total_cost_value=round(total_value, 2),
+        ledger_rows=rows_written,
+    )
+
+
 class LedgerOut(BaseModel):
     id: int
     medicine_id: int
@@ -980,9 +1107,11 @@ def list_ledger(
 # ============================================================================
 # Procurement / Purchase (Section E)
 # ----------------------------------------------------------------------------
-# `expiry_date` used to be a required field on PharmacyInventory /
-# PharmacyPurchaseItem. It is no longer entered by users; the DB column is
-# kept for backward compatibility and filled with this sentinel.
+# `expiry_date` is re-enabled as a user-entered field per Pharmacy P0 #2.
+# The frontend collects MM/YYYY and submits last-day-of-month as YYYY-MM-DD.
+# For purchases that don't carry an expiry (older imports, non-perishable
+# consumables), the column stays populated with this sentinel so the NOT NULL
+# constraint is satisfied. FEFO sort treats the sentinel as "never expires".
 # ============================================================================
 
 _EXPIRY_SENTINEL = date(2099, 12, 31)
@@ -996,11 +1125,14 @@ class PurchaseItemIn(BaseModel):
     purchase_rate: float = Field(..., ge=0)
     discount_pct: float = 0.0
     hsn_id: Optional[int] = None
+    # Last-day-of-month for the batch's expiry. Optional only for backward
+    # compatibility with the prior "no expiry" UI; frontends should always send
+    # this for perishable medicines.
+    expiry_date: Optional[date] = None
 
 
 class PurchaseItemOut(PurchaseItemIn):
     id: int
-    expiry_date: Optional[date] = None   # legacy column, no longer entered by users
     tax_amount: float
     line_total: float
     inventory_id: Optional[int] = None
@@ -1234,7 +1366,8 @@ def create_purchase(
             raise HTTPException(status_code=400, detail=f"Invalid medicine_id {item.medicine_id}")
         row = PharmacyPurchaseItem(
             purchase_id=purchase.id, medicine_id=item.medicine_id,
-            batch_number=item.batch_number, expiry_date=_EXPIRY_SENTINEL,
+            batch_number=item.batch_number,
+            expiry_date=item.expiry_date or _EXPIRY_SENTINEL,
             mrp=item.mrp, quantity=item.quantity, free_quantity=item.free_quantity,
             purchase_rate=item.purchase_rate, discount_pct=item.discount_pct,
             hsn_id=item.hsn_id,
@@ -1293,7 +1426,8 @@ def edit_purchase(
     for item in data.items:
         db.add(PharmacyPurchaseItem(
             purchase_id=purchase.id, medicine_id=item.medicine_id,
-            batch_number=item.batch_number, expiry_date=_EXPIRY_SENTINEL,
+            batch_number=item.batch_number,
+            expiry_date=item.expiry_date or _EXPIRY_SENTINEL,
             mrp=item.mrp, quantity=item.quantity, free_quantity=item.free_quantity,
             purchase_rate=item.purchase_rate, discount_pct=item.discount_pct,
             hsn_id=item.hsn_id,
@@ -1333,12 +1467,15 @@ def confirm_purchase(
     _recompute_purchase_totals(purchase, db)  # safety re-calc
 
     for item in purchase.items:
-        # Merge into existing batch row if same medicine + batch number.
-        # (expiry_date is no longer user-entered — kept only as a NOT-NULL
-        # sentinel for backward compat.)
+        # Merge into an existing inventory row only if the medicine, batch
+        # number AND expiry date all match — different expiry means it is
+        # physically a different lot even if the manufacturer reused the batch
+        # number, so it should be tracked separately for FEFO and write-off.
+        item_expiry = item.expiry_date or _EXPIRY_SENTINEL
         existing = db.query(PharmacyInventory).filter(
             PharmacyInventory.medicine_id == item.medicine_id,
             PharmacyInventory.batch_number == item.batch_number,
+            PharmacyInventory.expiry_date == item_expiry,
             PharmacyInventory.hospital_id == current_user.hospital_id,
             PharmacyInventory.is_active == True,  # noqa: E712
         ).first()
@@ -1364,7 +1501,7 @@ def confirm_purchase(
         else:
             inv = PharmacyInventory(
                 medicine_id=item.medicine_id, batch_number=item.batch_number,
-                expiry_date=_EXPIRY_SENTINEL, quantity_in_stock=added_qty,
+                expiry_date=item_expiry, quantity_in_stock=added_qty,
                 cost_price=eff_cost, selling_price=item.mrp or item.purchase_rate,
                 mrp=item.mrp, purchase_rate=item.purchase_rate,
                 free_quantity=item.free_quantity or 0, discount_pct=item.discount_pct,
@@ -1713,8 +1850,13 @@ def _flush_with_number_retry(db: Session, target, *, regen, set_attr: str, retri
 
 
 def _pick_fifo_batches(db: Session, *, medicine_id: int, qty_needed: float, hospital_id: int):
-    """Return [(batch_row, qty_to_take), ...] picking oldest batch first
-    (insertion order — expiry tracking has been removed).
+    """Return [(batch_row, qty_to_take), ...] picking nearest-expiry first
+    (First-Expiry-First-Out). Ties on expiry break on insertion order, so
+    older receipts of the same expiry date still flow out first. Sentinel
+    expiry dates (no-expiry stock) sort to the back automatically.
+
+    Function name keeps the historical _pick_fifo_batches for callsite
+    compatibility but the policy is FEFO as of Pharmacy P0 #2.
 
     Raises 400 if total available across all active batches < qty_needed.
     """
@@ -1727,7 +1869,10 @@ def _pick_fifo_batches(db: Session, *, medicine_id: int, qty_needed: float, hosp
         PharmacyInventory.hospital_id == hospital_id,
         PharmacyInventory.is_active == True,  # noqa: E712
         PharmacyInventory.quantity_in_stock > 0,
-    ).order_by(PharmacyInventory.id.asc()).with_for_update().all()
+    ).order_by(
+        PharmacyInventory.expiry_date.asc(),
+        PharmacyInventory.id.asc(),
+    ).with_for_update().all()
     total = sum((b.quantity_in_stock or 0) for b in avail)
     if total < qty_needed:
         raise HTTPException(status_code=400,
@@ -2026,10 +2171,16 @@ def void_sale(
     P3.5: rejects sales older than `hospital.pharmacy_void_window_days` (when > 0)
     unless the caller also has the `void_sale_legacy` permission.
 
-    P3.6 caveat: pharmacy sales are not yet linked to inpatient bills in the
-    schema. Voiding a sale with `patient_ip_id` set is allowed but the audit
-    log explicitly flags the IP linkage so manual bill review can follow up.
-    Full auto-reversal will land once the sale↔bill link ships.
+    POS sales never appear on an inpatient bill — `_persist_bill()` in
+    routes/inpatient.py only emits BillItem rows from Prescription records, not
+    from PharmacySale. So voiding a POS sale (even one with `patient_ip_id`
+    set) does not need to touch any inpatient bill. The audit log still flags
+    the IP linkage for human reconciliation in case the patient's counter
+    purchase was being tracked off-bill.
+
+    For Rx-driven dispenses against an admitted patient, use the Rx cancel
+    flow (POST /api/pharmacy/prescriptions/{id}/cancel) — that path is wired
+    to reverse stock AND issue a credit-note when the bill is locked.
     """
     sale = db.query(PharmacySale).filter(
         PharmacySale.id == sid,
@@ -2079,10 +2230,10 @@ def void_sale(
     sale.void_reason = data.reason
     db.commit(); db.refresh(sale)
 
-    # P3.6: pharmacy sales are not yet linked to inpatient bills, so we can't
-    # silently auto-reverse a bill line. Flag the IP linkage in the audit log
-    # so billing review can be triggered manually.
-    ip_note = f" (IP linkage: {sale.patient_ip_id} — review inpatient bill manually)" if sale.patient_ip_id else ""
+    # POS sales aren't on inpatient bills (only Prescriptions are), so there
+    # is no IP bill line to reverse here. Still log the IP tag so the floor
+    # team can reconcile if the patient was tracking the counter purchase.
+    ip_note = f" (IP linkage: {sale.patient_ip_id} — POS sale, not on IP bill)" if sale.patient_ip_id else ""
     _audit(db, current_user, "void_sale", "pharmacy_sale", sale.id,
            f"Voided sale {sale.sale_number}: {data.reason}{ip_note}")
     return _shape_sale(sale, db)
@@ -2284,6 +2435,54 @@ def dispense_prescription(
     )
 
 
+# ----------------------------------------------------------------------------
+# Rx cancellation (Pharmacy P0 #1)
+# ----------------------------------------------------------------------------
+
+class CancelRxIn(BaseModel):
+    reason: str = Field(..., min_length=2, max_length=500)
+
+
+class CancelRxOut(BaseModel):
+    prescription_id: int
+    prescription_number: str
+    status: str
+    stock_ledger_rows_written: int
+    parent_bill_id: Optional[int] = None
+    bill_items_removed: int = 0
+    credit_note_id: Optional[int] = None
+    credit_note_number: Optional[str] = None
+    reason: str
+
+
+@router.post("/prescriptions/{rx_id}/cancel", response_model=CancelRxOut)
+def cancel_prescription_route(
+    rx_id: int,
+    data: CancelRxIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "cancel_rx")),
+):
+    """Cancel a Prescription and reverse its side effects.
+
+    Reverses any dispensed stock (writes `rx_cancel` ledger rows back to the
+    original batches). If the Rx had already been included on an inpatient
+    bill, the bill is handled per the hybrid policy in
+    `app/services/pharmacy_reversal.py`:
+
+      * Unlocked parent bill (draft, no payments, not "final" subtype) → bill
+        items removed in place, parent totals decremented.
+      * Locked parent bill → a credit-note Bill is emitted with negative
+        line items; the original bill is left untouched.
+
+    Always idempotency-safe in one direction only: a second cancel call on
+    an already-cancelled Rx is rejected with 400.
+    """
+    from app.services.pharmacy_reversal import cancel_prescription
+    summary = cancel_prescription(db, rx_id=rx_id, user=current_user, reason=data.reason)
+    db.commit()
+    return CancelRxOut(**summary)
+
+
 # ============================================================================
 # Reports & dashboard (Section H)
 # ============================================================================
@@ -2295,6 +2494,10 @@ class DashboardSummaryOut(BaseModel):
     today_purchases_count: int
     low_stock_count: int
     pending_rx_count: int
+    # Pharmacy P0 #2 — number of batches with stock > 0 whose expiry falls
+    # within the next 90 days (or already past). Drives the dashboard tile.
+    expiring_soon_count: int = 0
+    already_expired_count: int = 0
 
 
 @router.get("/dashboard", response_model=DashboardSummaryOut)
@@ -2327,6 +2530,22 @@ def dashboard_summary(
     low = sum(1 for r in list_inventory(search=None, low_only=True, db=db, current_user=current_user))
     pending = db.query(Prescription).filter(Prescription.status.in_(["pending", "partial"])).count()
 
+    today = date.today()
+    expiring_threshold = today + timedelta(days=90)
+    expiring_soon = db.query(sa_func.count(PharmacyInventory.id)).filter(
+        PharmacyInventory.hospital_id == hid,
+        PharmacyInventory.is_active == True,  # noqa: E712
+        PharmacyInventory.quantity_in_stock > 0,
+        PharmacyInventory.expiry_date <= expiring_threshold,
+        PharmacyInventory.expiry_date < _EXPIRY_SENTINEL,
+    ).scalar() or 0
+    already_expired = db.query(sa_func.count(PharmacyInventory.id)).filter(
+        PharmacyInventory.hospital_id == hid,
+        PharmacyInventory.is_active == True,  # noqa: E712
+        PharmacyInventory.quantity_in_stock > 0,
+        PharmacyInventory.expiry_date < today,
+    ).scalar() or 0
+
     return DashboardSummaryOut(
         today_sales_total=float(sales_q[0] or 0),
         today_sales_count=int(sales_q[1] or 0),
@@ -2334,6 +2553,8 @@ def dashboard_summary(
         today_purchases_count=int(purchases_q[1] or 0),
         low_stock_count=low,
         pending_rx_count=pending,
+        expiring_soon_count=int(expiring_soon),
+        already_expired_count=int(already_expired),
     )
 
 
@@ -3001,7 +3222,6 @@ def _pdf_response(buffer, filename: str) -> StreamingResponse:
 @router.get("/sales/{sid}/invoice/pdf")
 def sale_invoice_pdf(
     sid: int,
-    include_header: bool = True,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_sales")),
 ):
@@ -3025,14 +3245,13 @@ def sale_invoice_pdf(
     except Exception:
         pass
     hi = _hospital_info_for_pdf(db, current_user.hospital_id)
-    buf = pdf_service.generate_pharmacy_sale_invoice_pdf(shaped, hi, include_header=include_header)
+    buf = pdf_service.generate_pharmacy_sale_invoice_pdf(shaped, hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
     return _pdf_response(buf, f"{s.sale_number}.pdf")
 
 
 @router.get("/purchases/{pid}/pdf")
 def purchase_pdf(
     pid: int,
-    include_header: bool = True,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_purchases")),
 ):
@@ -3045,14 +3264,13 @@ def purchase_pdf(
     shaped = _shape_purchase(p, db).model_dump()
     shaped["notes"] = p.notes
     hi = _hospital_info_for_pdf(db, current_user.hospital_id)
-    buf = pdf_service.generate_pharmacy_purchase_pdf(shaped, hi, include_header=include_header)
+    buf = pdf_service.generate_pharmacy_purchase_pdf(shaped, hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
     return _pdf_response(buf, f"{p.purchase_number}.pdf")
 
 
 @router.get("/prescriptions/{rx_id}/dispense/pdf")
 def dispense_slip_pdf(
     rx_id: int,
-    include_header: bool = True,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_dispense_queue")),
 ):
@@ -3109,7 +3327,7 @@ def dispense_slip_pdf(
         "notes": rx.notes,
     }
     hi = _hospital_info_for_pdf(db, current_user.hospital_id)
-    buf = pdf_service.generate_pharmacy_dispense_slip_pdf(data, hi, include_header=include_header)
+    buf = pdf_service.generate_pharmacy_dispense_slip_pdf(data, hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
     return _pdf_response(buf, f"dispense_{rx.prescription_number}.pdf")
 
 
@@ -3117,7 +3335,6 @@ def dispense_slip_pdf(
 def narcotic_register_pdf(
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
-    include_header: bool = True,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_narcotic_register")),
 ):
@@ -3130,7 +3347,7 @@ def narcotic_register_pdf(
     }
     # Convert Pydantic rows → plain dicts for the generator
     row_dicts = [r.model_dump() for r in rows]
-    buf = pdf_service.generate_narcotic_register_pdf(row_dicts, period, hi, include_header=include_header)
+    buf = pdf_service.generate_narcotic_register_pdf(row_dicts, period, hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
     return _pdf_response(buf, "narcotic_register.pdf")
 
 
@@ -3150,7 +3367,6 @@ def sales_report_pdf(
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
     group_by: str = Query("day", pattern="^(day|medicine|doctor|payment_type)$"),
-    include_header: bool = True,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
 ):
@@ -3169,7 +3385,7 @@ def sales_report_pdf(
     buf = pdf_service.generate_pharmacy_report_pdf(
         title="SALES REPORT", period=_report_period(date_from, date_to),
         columns=cols, rows=[r.model_dump() for r in rows],
-        hospital_info=hi, include_header=include_header,
+        hospital_info=hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id),
         meta={"Group by": group_by},
     )
     return _pdf_response(buf, "pharmacy_sales.pdf")
@@ -3181,7 +3397,6 @@ def purchases_report_pdf(
     date_to: Optional[date] = None,
     supplier_id: Optional[int] = None,
     group_by: str = Query("day", pattern="^(day|supplier)$"),
-    include_header: bool = True,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
 ):
@@ -3201,7 +3416,7 @@ def purchases_report_pdf(
     buf = pdf_service.generate_pharmacy_report_pdf(
         title="PURCHASES REPORT", period=_report_period(date_from, date_to),
         columns=cols, rows=[r.model_dump() for r in rows],
-        hospital_info=hi, include_header=include_header,
+        hospital_info=hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id),
         meta={"Group by": group_by},
     )
     return _pdf_response(buf, "pharmacy_purchases.pdf")
@@ -3209,7 +3424,6 @@ def purchases_report_pdf(
 
 @router.get("/reports/stock-on-hand/pdf")
 def stock_on_hand_pdf(
-    include_header: bool = True,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
 ):
@@ -3228,7 +3442,7 @@ def stock_on_hand_pdf(
     buf = pdf_service.generate_pharmacy_report_pdf(
         title="STOCK ON HAND", period=None,
         columns=cols, rows=[r.model_dump() for r in rows],
-        hospital_info=hi, include_header=include_header,
+        hospital_info=hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id),
     )
     return _pdf_response(buf, "pharmacy_stock.pdf")
 
@@ -3237,7 +3451,6 @@ def stock_on_hand_pdf(
 def tax_summary_pdf(
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
-    include_header: bool = True,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
 ):
@@ -3258,7 +3471,7 @@ def tax_summary_pdf(
     buf = pdf_service.generate_pharmacy_report_pdf(
         title="TAX SUMMARY", period=_report_period(date_from, date_to),
         columns=cols, rows=[r.model_dump() for r in rows],
-        hospital_info=hi, include_header=include_header,
+        hospital_info=hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id),
     )
     return _pdf_response(buf, "pharmacy_tax_summary.pdf")
 
@@ -3267,7 +3480,6 @@ def tax_summary_pdf(
 def daily_closeout_pdf(
     date: Optional[date] = None,
     cashier_id: Optional[int] = None,
-    include_header: bool = True,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
 ):
@@ -3294,7 +3506,7 @@ def daily_closeout_pdf(
     buf = pdf_service.generate_pharmacy_report_pdf(
         title="DAILY CLOSEOUT", period={"from": the_day, "to": the_day},
         columns=cols, rows=[r.model_dump() for r in rows],
-        hospital_info=hi, include_header=include_header,
+        hospital_info=hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id),
     )
     return _pdf_response(buf, f"closeout_{the_day}.pdf")
 
@@ -3304,7 +3516,6 @@ def margin_report_pdf(
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
     group_by: str = Query("day", pattern="^(day|medicine)$"),
-    include_header: bool = True,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
 ):
@@ -3322,7 +3533,7 @@ def margin_report_pdf(
     buf = pdf_service.generate_pharmacy_report_pdf(
         title="PROFIT / MARGIN", period=_report_period(date_from, date_to),
         columns=cols, rows=[r.model_dump() for r in rows],
-        hospital_info=hi, include_header=include_header,
+        hospital_info=hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id),
         meta={"Group by": group_by},
     )
     return _pdf_response(buf, "pharmacy_margin.pdf")
@@ -3331,7 +3542,6 @@ def margin_report_pdf(
 @router.get("/reports/supplier-aging/pdf")
 def supplier_aging_pdf(
     as_of: Optional[date] = None,
-    include_header: bool = True,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
 ):
@@ -3351,7 +3561,7 @@ def supplier_aging_pdf(
         title="SUPPLIER OUTSTANDING (AGING)",
         period={"from": "—", "to": the_day},
         columns=cols, rows=[r.model_dump() for r in rows],
-        hospital_info=hi, include_header=include_header,
+        hospital_info=hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id),
         meta={"Note": "Interim — payments tracking ships in P4.2"},
     )
     return _pdf_response(buf, "supplier_aging.pdf")
@@ -3360,7 +3570,6 @@ def supplier_aging_pdf(
 @router.get("/reports/movement/pdf")
 def movement_report_pdf(
     days: int = Query(90, ge=1, le=365),
-    include_header: bool = True,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
 ):
@@ -3378,6 +3587,6 @@ def movement_report_pdf(
     buf = pdf_service.generate_pharmacy_report_pdf(
         title=f"MOVEMENT — Last {days} days", period=None,
         columns=cols, rows=[r.model_dump() for r in rows],
-        hospital_info=hi, include_header=include_header,
+        hospital_info=hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id),
     )
     return _pdf_response(buf, "pharmacy_movement.pdf")

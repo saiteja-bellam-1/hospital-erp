@@ -22,7 +22,8 @@ import {
   History,
   Calendar,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Printer
 } from 'lucide-react';
 import VitalsForm from '../../../components/vitals/VitalsForm';
 import LabTestBookingDialog from '../../../components/LabTestBookingDialog';
@@ -300,10 +301,10 @@ const ReceptionPatientsPage = () => {
     }
   };
 
-  const printPrescription = async (prescriptionId, includeHeader = false) => {
+  const printPrescription = async (prescriptionId) => {
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch(`/api/prescriptions-simple/${prescriptionId}/download?include_header=${includeHeader}`, {
+      const response = await fetch(`/api/prescriptions-simple/${prescriptionId}/download`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (response.ok) {
@@ -1202,16 +1203,10 @@ const ReceptionPatientsPage = () => {
                             )}
                           </div>
                         </div>
-                        <div className="flex gap-1">
-                          <Button size="sm" variant="outline"
-                            onClick={() => printPrescription(prescription.prescription_id, true)}>
-                            With Header
-                          </Button>
-                          <Button size="sm" variant="ghost"
-                            onClick={() => printPrescription(prescription.prescription_id, false)}>
-                            Without Header
-                          </Button>
-                        </div>
+                        <Button size="sm" variant="outline"
+                          onClick={() => printPrescription(prescription.prescription_id)}>
+                          <Printer className="h-3.5 w-3.5 mr-1" /> Print
+                        </Button>
                       </div>
                     </CardHeader>
                     <CardContent>

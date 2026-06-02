@@ -273,7 +273,7 @@ def test_dashboard_and_reports_respond(client, auth_headers):
     assert client.get("/api/pharmacy/reports/tax-summary", headers=H).status_code == 200
 
 
-def test_pdf_generators_return_valid_pdf(client, auth_headers, pharmacy_seed):
+def test_pdf_generators_return_valid_pdf(client, auth_headers, pharmacy_seed, db_session):
     """PDFs must start with the %PDF magic-bytes and be non-trivial in size."""
     H = auth_headers
 
@@ -299,12 +299,13 @@ def test_pdf_generators_return_valid_pdf(client, auth_headers, pharmacy_seed):
     assert pdf.status_code == 200
     assert pdf.content[:4] == b"%PDF"
 
-    # 4. include_header=false
+    # 4. Hospital print setting off still returns valid PDF
     if r.json():
+        from app.utils.pdf_settings import set_hospital_pdf_include_header
+
+        set_hospital_pdf_include_header(db_session, include_header=False, created_by=1)
+        db_session.commit()
         sid = r.json()[0]["id"]
-        pdf = client.get(
-            f"/api/pharmacy/sales/{sid}/invoice/pdf",
-            params={"include_header": False}, headers=H,
-        )
+        pdf = client.get(f"/api/pharmacy/sales/{sid}/invoice/pdf", headers=H)
         assert pdf.status_code == 200
         assert pdf.content[:4] == b"%PDF"

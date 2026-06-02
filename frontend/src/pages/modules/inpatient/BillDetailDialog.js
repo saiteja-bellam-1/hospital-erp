@@ -152,7 +152,7 @@ const BillDetailDialog = ({ open, onClose, admission, onFinalized }) => {
     try {
       const res = await axios.get(
         `/api/inpatient/admissions/${admission.id}/bill/pdf`,
-        { responseType: 'blob', params: { include_header: false } },
+        { responseType: 'blob', params: {} },
       );
       const url = URL.createObjectURL(res.data);
       printPdfFromUrl(url);

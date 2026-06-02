@@ -103,7 +103,7 @@ def test_description_renders_in_report_pdf(client, db_session, seed_data):
     report_id = res.json()["report_id"]
 
     # 4. Download the PDF
-    res = client.get(f"/api/lab/reports/{report_id}/download?include_header=true", headers=headers)
+    res = client.get(f"/api/lab/reports/{report_id}/download", headers=headers)
     assert res.status_code == 200, res.text
     assert res.headers["content-type"] == "application/pdf"
     pdf_bytes = res.content
@@ -174,7 +174,7 @@ def test_description_omitted_when_blank(client, db_session, seed_data):
     assert res.status_code == 200, res.text
     report_id = res.json()["report_id"]
 
-    res = client.get(f"/api/lab/reports/{report_id}/download?include_header=true", headers=headers)
+    res = client.get(f"/api/lab/reports/{report_id}/download", headers=headers)
     assert res.status_code == 200, res.text
     text = _extract_pdf_text(res.content)
     assert "Interpretation:" in text

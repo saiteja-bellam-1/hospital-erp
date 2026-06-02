@@ -57,8 +57,6 @@ const ReceptionAppointmentsPage = () => {
   const [showPrescriptionDialog, setShowPrescriptionDialog] = useState(false);
   const [prescriptionPdfUrl, setPrescriptionPdfUrl] = useState(null);
   const [prescriptionData, setPrescriptionData] = useState(null);
-  const [rxIncludeHeader, setRxIncludeHeader] = useState(false);
-
   // Lab payment dialog state
   const [showLabPaymentDialog, setShowLabPaymentDialog] = useState(false);
   const [pendingLabOrders, setPendingLabOrders] = useState([]);
@@ -67,7 +65,6 @@ const ReceptionAppointmentsPage = () => {
   const [labBillPdfUrl, setLabBillPdfUrl] = useState(null);
   const [labBillOrderIds, setLabBillOrderIds] = useState([]);
   const [showLabBillPreview, setShowLabBillPreview] = useState(false);
-  const [labPreviewHeader, setLabPreviewHeader] = useState(false);
 
   // Referrals
   const [referralList, setReferralList] = useState([]);
@@ -87,7 +84,6 @@ const ReceptionAppointmentsPage = () => {
   const [showBillPreviewDialog, setShowBillPreviewDialog] = useState(false);
   const [currentBill, setCurrentBill] = useState(null);
   const [billPdfUrl, setBillPdfUrl] = useState(null);
-  const [billIncludeHeader, setBillIncludeHeader] = useState(false);
   const [currentBillAppointmentId, setCurrentBillAppointmentId] = useState(null);
 
   // Cancel dialog
@@ -308,7 +304,7 @@ const ReceptionAppointmentsPage = () => {
         setPrescriptionData(latest);
 
         // Fetch PDF
-        await fetchPrescriptionPdf(latest.prescription_id, true);
+        await fetchPrescriptionPdf(latest.prescription_id);
       }
     } catch (error) {
       console.error('Error fetching prescription:', error);
@@ -329,10 +325,10 @@ const ReceptionAppointmentsPage = () => {
     }
   };
 
-  const fetchPrescriptionPdf = async (prescriptionId, includeHeader) => {
+  const fetchPrescriptionPdf = async (prescriptionId) => {
     try {
       const token = localStorage.getItem('token');
-      const pdfResponse = await fetch(`/api/prescriptions-simple/${prescriptionId}/download?include_header=${includeHeader}`, {
+      const pdfResponse = await fetch(`/api/prescriptions-simple/${prescriptionId}/download`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (pdfResponse.ok) {
@@ -419,7 +415,6 @@ const ReceptionAppointmentsPage = () => {
         const orderIdsHeader = res.headers.get('X-Order-Ids');
         const ids = orderIdsHeader ? orderIdsHeader.split(',').map(Number) : [];
         setLabBillOrderIds(ids);
-        setLabPreviewHeader(true);
 
         const blob = await res.blob();
         if (labBillPdfUrl) window.URL.revokeObjectURL(labBillPdfUrl);
@@ -441,12 +436,12 @@ const ReceptionAppointmentsPage = () => {
     }
   };
 
-  const downloadLabReport = async (reportId, orderNumber, includeHeader = false, packageBookingId = null) => {
+  const downloadLabReport = async (reportId, orderNumber, packageBookingId = null) => {
     try {
       const token = localStorage.getItem('token');
       const url = packageBookingId
-        ? `/api/lab/reports/package/${packageBookingId}/download?include_header=${includeHeader}`
-        : `/api/lab/reports/${reportId}/download?include_header=${includeHeader}`;
+        ? `/api/lab/reports/package/${packageBookingId}/download`
+        : `/api/lab/reports/${reportId}/download`;
       const res = await fetch(url, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
@@ -553,11 +548,10 @@ const ReceptionAppointmentsPage = () => {
   };
 
   // Bill preview functions
-  const showBillPreview = async (appointmentId, includeHeader = false) => {
+  const showBillPreview = async (appointmentId) => {
     try {
       const token = localStorage.getItem('token');
       setCurrentBillAppointmentId(appointmentId);
-      setBillIncludeHeader(includeHeader);
 
       // Fetch bill data
       const billResponse = await fetch(`/api/appointments/${appointmentId}/bill`, {
@@ -569,7 +563,7 @@ const ReceptionAppointmentsPage = () => {
         setCurrentBill(billData);
 
         // Fetch PDF for preview
-        const pdfResponse = await fetch(`/api/appointments/${appointmentId}/bill/download?include_header=${includeHeader}`, {
+        const pdfResponse = await fetch(`/api/appointments/${appointmentId}/bill/download`, {
           headers: { Authorization: `Bearer ${token}` }
         });
 
@@ -1677,29 +1671,12 @@ const ReceptionAppointmentsPage = () => {
                 <iframe src={prescriptionPdfUrl} className="w-full h-full border-0" title="Prescription Preview" />
               )}
             </div>
-            <div className="flex items-center justify-between pt-4">
-              <label className="flex items-center gap-2 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={rxIncludeHeader}
-                  onChange={async (e) => {
-                    const val = e.target.checked;
-                    setRxIncludeHeader(val);
-                    if (prescriptionData) {
-                      await fetchPrescriptionPdf(prescriptionData.prescription_id, val);
-                    }
-                  }}
-                  className="rounded border-gray-300"
-                />
-                <span className="text-sm text-gray-600">Include hospital letterhead</span>
-              </label>
-              <div className="flex gap-2">
-                <Button variant="outline" onClick={closePrescriptionPreview}>Close</Button>
-                <Button onClick={printPrescription} className="bg-purple-600 hover:bg-purple-700">
-                  <Printer className="h-4 w-4 mr-2" />
-                  Print
-                </Button>
-              </div>
+            <div className="flex justify-end gap-2 pt-4">
+              <Button variant="outline" onClick={closePrescriptionPreview}>Close</Button>
+              <Button onClick={printPrescription} className="bg-purple-600 hover:bg-purple-700">
+                <Printer className="h-4 w-4 mr-2" />
+                Print
+              </Button>
             </div>
           </div>
         </DialogContent>
@@ -1851,24 +1828,15 @@ const ReceptionAppointmentsPage = () => {
                                       <p className="text-sm">{order.test_name}</p>
                                       <p className="text-xs text-gray-400">#{order.order_number} | {order.test_code}</p>
                                     </div>
-                                    <div className="flex gap-1">
-                                      <Button size="sm" variant="outline" className="h-6 px-2 text-xs" onClick={() => downloadLabReport(order.report_id, order.order_number, true)}>
-                                        <Printer className="h-3 w-3 mr-1" />With Header
-                                      </Button>
-                                      <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => downloadLabReport(order.report_id, order.order_number, false)}>
-                                        Without Header
-                                      </Button>
-                                    </div>
+                                    <Button size="sm" variant="outline" className="h-6 px-2 text-xs" onClick={() => downloadLabReport(order.report_id, order.order_number)}>
+                                      <Printer className="h-3 w-3 mr-1" />Download
+                                    </Button>
                                   </div>
                                 ))}
-                                <div className="px-3 py-2 flex gap-1 border-t border-indigo-200">
+                                <div className="px-3 py-2 border-t border-indigo-200">
                                   <Button size="sm" variant="outline" className="h-6 px-2 text-xs border-indigo-300 text-indigo-700"
-                                    onClick={() => downloadLabReport(null, pkg.name, true, g.key)}>
-                                    <Printer className="h-3 w-3 mr-1" />All Reports (With Header)
-                                  </Button>
-                                  <Button size="sm" variant="ghost" className="h-6 px-2 text-xs text-indigo-600"
-                                    onClick={() => downloadLabReport(null, pkg.name, false, g.key)}>
-                                    Without Header
+                                    onClick={() => downloadLabReport(null, pkg.name, g.key)}>
+                                    <Printer className="h-3 w-3 mr-1" />All Reports
                                   </Button>
                                 </div>
                               </div>
@@ -1881,14 +1849,9 @@ const ReceptionAppointmentsPage = () => {
                                 <p className="font-medium text-sm">{order.test_name}</p>
                                 <p className="text-xs text-gray-500">{order.order_number} | {order.test_code}</p>
                               </div>
-                              <div className="flex gap-1">
-                                <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => downloadLabReport(order.report_id, order.order_number, true)}>
-                                  <Printer className="h-3 w-3 mr-1" />With Header
-                                </Button>
-                                <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => downloadLabReport(order.report_id, order.order_number, false)}>
-                                  Without Header
-                                </Button>
-                              </div>
+                              <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => downloadLabReport(order.report_id, order.order_number)}>
+                                <Printer className="h-3 w-3 mr-1" />Download
+                              </Button>
                             </div>
                           );
                         });
@@ -1949,20 +1912,10 @@ const ReceptionAppointmentsPage = () => {
             </div>
 
             {/* Action Buttons */}
-            <div className="flex items-center gap-3 pt-4">
-              <div className="flex items-center space-x-2">
-                <input type="checkbox" id="bill-include-header" checked={billIncludeHeader}
-                  onChange={async (e) => {
-                    const newVal = e.target.checked;
-                    setBillIncludeHeader(newVal);
-                    if (currentBillAppointmentId) {
-                      if (billPdfUrl) { window.URL.revokeObjectURL(billPdfUrl); setBillPdfUrl(null); }
-                      await showBillPreview(currentBillAppointmentId, newVal);
-                    }
-                  }}
-                  className="w-4 h-4" />
-                <Label htmlFor="bill-include-header" className="text-sm">Include header</Label>
-              </div>
+            <p className="text-xs text-muted-foreground pt-2">
+              Letterhead follows Hospital Config → Printing.
+            </p>
+            <div className="flex items-center gap-3 pt-2">
               <Button variant="outline" onClick={closeBillPreview} className="flex-1">
                 Close
               </Button>
@@ -2002,30 +1955,6 @@ const ReceptionAppointmentsPage = () => {
               )}
             </div>
             <div className="flex items-center gap-3">
-              <div className="flex items-center space-x-2">
-                <input type="checkbox" id="lab-bill-preview-header" checked={labPreviewHeader}
-                  onChange={async (e) => {
-                    const newVal = e.target.checked;
-                    setLabPreviewHeader(newVal);
-                    if (labBillOrderIds.length > 0) {
-                      try {
-                        const token = localStorage.getItem('token');
-                        const res = await fetch('/api/lab/orders/regenerate-bill', {
-                          method: 'POST',
-                          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ order_ids: labBillOrderIds, include_header: newVal }),
-                        });
-                        if (res.ok) {
-                          if (labBillPdfUrl) window.URL.revokeObjectURL(labBillPdfUrl);
-                          const blob = await res.blob();
-                          setLabBillPdfUrl(window.URL.createObjectURL(new Blob([blob], { type: 'application/pdf' })));
-                        }
-                      } catch {}
-                    }
-                  }}
-                  className="w-4 h-4" />
-                <Label htmlFor="lab-bill-preview-header" className="text-sm">Include header</Label>
-              </div>
               <Button variant="outline" onClick={() => {
                 if (labBillPdfUrl) { window.URL.revokeObjectURL(labBillPdfUrl); setLabBillPdfUrl(null); }
                 setShowLabBillPreview(false);

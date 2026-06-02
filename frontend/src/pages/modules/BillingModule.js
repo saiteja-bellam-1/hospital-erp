@@ -563,7 +563,7 @@ const BillingModule = () => {
   const handlePrintAdmissionBill = async (admissionId) => {
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch(`/api/inpatient/admissions/${admissionId}/bill/pdf?include_header=false`, {
+      const res = await fetch(`/api/inpatient/admissions/${admissionId}/bill/pdf`, {
         headers: { 'Authorization': `Bearer ${token}` },
       });
       if (res.ok) {

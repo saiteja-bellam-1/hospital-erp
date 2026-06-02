@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 import { Card, CardContent } from '../../../../components/ui/card';
-import { ShoppingCart, Receipt, AlertTriangle, Pill, RefreshCw } from 'lucide-react';
+import { ShoppingCart, Receipt, AlertTriangle, Pill, RefreshCw, CalendarX2 } from 'lucide-react';
 import { Button } from '../../../../components/ui/button';
 
 const KpiCard = ({ icon: Icon, label, value, sub, color = 'text-gray-900' }) => (
@@ -46,6 +46,19 @@ export default function DashboardTab() {
           <KpiCard icon={Receipt} label="Today's Purchases" value={`₹${data.today_purchases_total.toFixed(2)}`} sub={`${data.today_purchases_count} purchase(s)`} />
           <KpiCard icon={AlertTriangle} label="Low Stock" value={data.low_stock_count} sub="Medicines below min" color={data.low_stock_count > 0 ? 'text-orange-600' : ''} />
           <KpiCard icon={Pill} label="Pending Rx" value={data.pending_rx_count} sub="Awaiting dispensing" />
+          <KpiCard
+            icon={CalendarX2}
+            label="Expiring Soon"
+            value={data.expiring_soon_count ?? 0}
+            sub={
+              (data.already_expired_count ?? 0) > 0
+                ? `${data.already_expired_count} already expired · within 90 days`
+                : 'Batches within 90 days'
+            }
+            color={(data.already_expired_count ?? 0) > 0
+              ? 'text-red-600'
+              : (data.expiring_soon_count ?? 0) > 0 ? 'text-orange-600' : ''}
+          />
         </div>
       )}
     </div>

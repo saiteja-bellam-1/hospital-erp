@@ -2373,7 +2373,7 @@ const InpatientModule = () => {
   const handlePrintDepositReceipt = async (depositId) => {
     try {
       const res = await axios.get(
-        `/api/inpatient/deposits/${depositId}/receipt/pdf?include_header=false`,
+        `/api/inpatient/deposits/${depositId}/receipt/pdf`,
         { responseType: 'blob' },
       );
       const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
@@ -2913,7 +2913,7 @@ const InpatientModule = () => {
   };
 
   const handlePrintConsent = async (consentId) => {
-    await printPdfFromUrl(`/api/inpatient/consents/${consentId}/pdf`, { include_header: false });
+    await printPdfFromUrl(`/api/inpatient/consents/${consentId}/pdf`);
   };
 
   const handleSubmitConsentTemplate = async (e) => {
@@ -2982,7 +2982,7 @@ const InpatientModule = () => {
   };
 
   const handlePrintDeathCertificate = async (admissionId) => {
-    await printPdfFromUrl(`/api/inpatient/admissions/${admissionId}/death-certificate/pdf`, { include_header: false });
+    await printPdfFromUrl(`/api/inpatient/admissions/${admissionId}/death-certificate/pdf`);
   };
 
   // ---- Body release / mortuary tracking ----
@@ -3056,7 +3056,7 @@ const InpatientModule = () => {
   };
 
   const printBodyRelease = (admissionId) => {
-    printPdfFromUrl(`/api/inpatient/admissions/${admissionId}/body-release/pdf`, { include_header: false });
+    printPdfFromUrl(`/api/inpatient/admissions/${admissionId}/body-release/pdf`);
   };
 
   const handleSaveDama = async (e) => {
@@ -3082,7 +3082,7 @@ const InpatientModule = () => {
       setDamaAdmission(null);
       // Offer to print the signed PDF immediately
       setTimeout(() => {
-        printPdfFromUrl(`/api/inpatient/admissions/${admId}/dama/pdf`, { include_header: false });
+        printPdfFromUrl(`/api/inpatient/admissions/${admId}/dama/pdf`);
       }, 200);
     } catch (err) {
       const detail = err.response?.data?.detail;
@@ -3092,7 +3092,7 @@ const InpatientModule = () => {
   };
 
   const handlePrintDama = async (admissionId) => {
-    await printPdfFromUrl(`/api/inpatient/admissions/${admissionId}/dama/pdf`, { include_header: false });
+    await printPdfFromUrl(`/api/inpatient/admissions/${admissionId}/dama/pdf`);
   };
 
   // ICU: I/O record
@@ -3331,18 +3331,17 @@ const InpatientModule = () => {
     }
   };
 
-  const handlePrintBillPdf = async (admissionId, includeHeader = false) => {
+  const handlePrintBillPdf = async (admissionId) => {
     setBillPdfLoading(true);
     try {
       const res = await axios.get(
-        `/api/inpatient/admissions/${admissionId}/bill/pdf?include_header=${includeHeader}`,
+        `/api/inpatient/admissions/${admissionId}/bill/pdf`,
         { responseType: 'blob' },
       );
       if (billPdfUrl) URL.revokeObjectURL(billPdfUrl);
       const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
       setBillPdfUrl(url);
       setBillPdfAdmissionId(admissionId);
-      setBillPdfIncludeHeader(includeHeader);
       setShowBillPdfDialog(true);
     } catch (err) {
       let msg = 'Failed to generate bill PDF';
@@ -3461,7 +3460,7 @@ const InpatientModule = () => {
             <div className="p-6 overflow-y-auto h-full space-y-4">
           <div className="flex justify-end">
             <Button size="sm" variant="outline"
-              onClick={() => printPdfFromUrl('/api/inpatient/reports/census/pdf', { include_header: false })}>
+              onClick={() => printPdfFromUrl('/api/inpatient/reports/census/pdf')}>
               <Printer className="h-4 w-4 mr-1" /> Print daily census
             </Button>
           </div>
@@ -6136,7 +6135,7 @@ const InpatientModule = () => {
                     </Button>
                     <Button size="sm" variant="outline"
                       onClick={() => printPdfFromUrl('/api/inpatient/reports/monthly-outcomes/pdf',
-                        { month: outcomesMonth, include_header: false })}>
+                        { month: outcomesMonth})}>
                       <Printer className="h-4 w-4 mr-1" /> Print PDF
                     </Button>
                     {outcomesData && (
@@ -6290,7 +6289,7 @@ const InpatientModule = () => {
                     </Button>
                     <Button size="sm" variant="outline"
                       onClick={() => {
-                        const params = { date_from: productivityRange.from, date_to: productivityRange.to, include_header: false };
+                        const params = { date_from: productivityRange.from, date_to: productivityRange.to};
                         if (productivityRange.doctor_id) params.doctor_id = productivityRange.doctor_id;
                         printPdfFromUrl('/api/inpatient/reports/doctor-productivity/pdf', params);
                       }}>
@@ -10182,20 +10181,10 @@ const InpatientModule = () => {
               <iframe src={billPdfUrl} className="w-full h-full border-0" title="Bill Preview" style={{ minHeight: 500 }} />
             ) : null}
           </div>
-          <div className="flex items-center gap-3 pt-3 border-t">
-            <label className="flex items-center gap-2 text-sm cursor-pointer">
-              <input
-                type="checkbox"
-                checked={billPdfIncludeHeader}
-                onChange={async (e) => {
-                  const val = e.target.checked;
-                  setBillPdfIncludeHeader(val);
-                  if (billPdfAdmissionId) await handlePrintBillPdf(billPdfAdmissionId, val);
-                }}
-                className="w-4 h-4"
-              />
-              Include header
-            </label>
+          <p className="text-xs text-muted-foreground pt-3 border-t">
+            Letterhead follows Hospital Config → Printing.
+          </p>
+          <div className="flex items-center gap-3 pt-3">
             <div className="flex-1" />
             <Button variant="outline" onClick={printBillPdf} disabled={!billPdfUrl}>
               <Printer className="h-4 w-4 mr-1" /> Print
