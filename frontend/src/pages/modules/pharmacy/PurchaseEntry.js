@@ -41,6 +41,7 @@ export default function PurchaseEntry() {
   const lineFromMed = (m) => ({
     medicine_id: m.id,
     batch_number: '',
+    expiry_mm_yyyy: '',
     mrp: m.mrp || 0,
     quantity: 1,
     free_quantity: 0,
@@ -50,9 +51,29 @@ export default function PurchaseEntry() {
   });
 
   const addLine = () => setItems(s => [...s, {
-    medicine_id: null, batch_number: '', mrp: 0,
+    medicine_id: null, batch_number: '', expiry_mm_yyyy: '', mrp: 0,
     quantity: 1, free_quantity: 0, purchase_rate: 0, discount_pct: 0, hsn_id: null,
   }]);
+
+  /** Parse a "MM/YYYY" string into a YYYY-MM-DD date string set to the last
+   *  day of that month. Returns null if blank/invalid (caller decides whether
+   *  that's OK — the backend accepts null and falls back to the sentinel). */
+  const expiryToISO = (raw) => {
+    if (!raw) return null;
+    const s = String(raw).trim();
+    const m = s.match(/^(\d{1,2})\s*[/\-.]\s*(\d{2}|\d{4})$/);
+    if (!m) return undefined; // sentinel: "looks entered but invalid"
+    const mo = parseInt(m[1], 10);
+    let yr = parseInt(m[2], 10);
+    if (yr < 100) yr += 2000;
+    if (mo < 1 || mo > 12) return undefined;
+    // Last day of month: day 0 of next month.
+    const d = new Date(yr, mo, 0);
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  };
 
   const handleScan = async (e) => {
     if (e.key !== 'Enter' || !scanInput.trim()) return;
@@ -106,6 +127,8 @@ export default function PurchaseEntry() {
       const n = idx + 1;
       if (!it.medicine_id) errors.push(`Line ${n}: pick a medicine.`);
       if (!it.batch_number || !String(it.batch_number).trim()) errors.push(`Line ${n}: batch number is required.`);
+      const exp = expiryToISO(it.expiry_mm_yyyy);
+      if (exp === undefined) errors.push(`Line ${n}: expiry must be MM/YYYY (e.g. 12/2027).`);
       const q = parseFloat(it.quantity);
       if (!q || q <= 0) errors.push(`Line ${n}: quantity must be > 0.`);
       const pr = parseFloat(it.purchase_rate);
@@ -124,6 +147,7 @@ export default function PurchaseEntry() {
         items: items.map(it => ({
           medicine_id: it.medicine_id,
           batch_number: String(it.batch_number || '').trim(),
+          expiry_date: expiryToISO(it.expiry_mm_yyyy) || null,
           mrp: parseFloat(it.mrp) || 0,
           quantity: parseFloat(it.quantity) || 0,
           free_quantity: parseFloat(it.free_quantity) || 0,
@@ -246,6 +270,7 @@ export default function PurchaseEntry() {
                 <thead><tr className="border-b text-left text-gray-600">
                   <th className="py-2 pr-2">Medicine</th>
                   <th className="py-2 pr-2 w-32">Batch #</th>
+                  <th className="py-2 pr-2 w-24">Expiry</th>
                   <th className="py-2 pr-2 w-24">MRP</th>
                   <th className="py-2 pr-2 w-20">Qty</th>
                   <th className="py-2 pr-2 w-20">Free</th>
@@ -285,6 +310,19 @@ export default function PurchaseEntry() {
                             onChange={e => update(i, { batch_number: e.target.value })}
                           />
                         </td>
+                        <td className="py-2 pr-2">
+                          {(() => {
+                            const expInvalid = expiryToISO(ln.expiry_mm_yyyy) === undefined;
+                            return (
+                              <Input
+                                className={`h-8 ${expInvalid ? 'border-red-300' : ''}`}
+                                placeholder="MM/YYYY"
+                                value={ln.expiry_mm_yyyy || ''}
+                                onChange={e => update(i, { expiry_mm_yyyy: e.target.value })}
+                              />
+                            );
+                          })()}
+                        </td>
                         <td className="py-2 pr-2"><Input className="h-8" type="number" step="0.01" value={ln.mrp} onChange={e => update(i, { mrp: parseFloat(e.target.value) || 0 })} /></td>
                         <td className="py-2 pr-2"><Input className="h-8" type="number" min="0" step="0.5" value={ln.quantity} onChange={e => update(i, { quantity: parseFloat(e.target.value) || 0 })} /></td>
                         <td className="py-2 pr-2"><Input className="h-8" type="number" min="0" step="0.5" value={ln.free_quantity} onChange={e => update(i, { free_quantity: parseFloat(e.target.value) || 0 })} /></td>
@@ -307,10 +345,10 @@ export default function PurchaseEntry() {
                   })}
                 </tbody>
                 <tfoot>
-                  <tr><td colSpan={8} className="py-2 text-right font-medium">Subtotal:</td><td className="text-right">₹{totals.sub.toFixed(2)}</td><td></td></tr>
-                  <tr><td colSpan={8} className="py-1 text-right text-sm text-gray-600">Discount:</td><td className="text-right text-sm text-gray-600">−₹{totals.disc.toFixed(2)}</td><td></td></tr>
-                  <tr><td colSpan={8} className="py-1 text-right text-sm text-gray-600">Tax:</td><td className="text-right text-sm text-gray-600">+₹{totals.tax.toFixed(2)}</td><td></td></tr>
-                  <tr className="font-bold"><td colSpan={8} className="py-2 text-right">Grand Total:</td><td className="text-right">₹{totals.grand.toFixed(2)}</td><td></td></tr>
+                  <tr><td colSpan={9} className="py-2 text-right font-medium">Subtotal:</td><td className="text-right">₹{totals.sub.toFixed(2)}</td><td></td></tr>
+                  <tr><td colSpan={9} className="py-1 text-right text-sm text-gray-600">Discount:</td><td className="text-right text-sm text-gray-600">−₹{totals.disc.toFixed(2)}</td><td></td></tr>
+                  <tr><td colSpan={9} className="py-1 text-right text-sm text-gray-600">Tax:</td><td className="text-right text-sm text-gray-600">+₹{totals.tax.toFixed(2)}</td><td></td></tr>
+                  <tr className="font-bold"><td colSpan={9} className="py-2 text-right">Grand Total:</td><td className="text-right">₹{totals.grand.toFixed(2)}</td><td></td></tr>
                 </tfoot>
               </table>
             </div>

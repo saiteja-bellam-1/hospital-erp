@@ -922,6 +922,132 @@ def adjust_stock(
     }
 
 
+class ExpiringBatchOut(BaseModel):
+    batch_id: int
+    medicine_id: int
+    medicine_code: Optional[str] = None
+    medicine_name: str
+    batch_number: str
+    expiry_date: date
+    days_to_expiry: int
+    quantity_in_stock: float
+    stock_value_cost: float
+
+
+@router.get("/inventory/expiring", response_model=List[ExpiringBatchOut])
+def list_expiring_batches(
+    days: int = 90,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_expiring")),
+):
+    """Active batches with `expiry_date <= today + days` and stock > 0.
+
+    Sentinel-expiry batches (no-expiry stock) are excluded. Negative `days`
+    is accepted and returns already-expired stock (useful for the write-off
+    workflow).
+    """
+    if days < -3650 or days > 3650:
+        raise HTTPException(status_code=400, detail="days must be within ±3650")
+    today = date.today()
+    threshold = today + timedelta(days=days)
+    rows = (
+        db.query(PharmacyInventory, Medicine)
+        .join(Medicine, Medicine.id == PharmacyInventory.medicine_id)
+        .filter(
+            PharmacyInventory.hospital_id == current_user.hospital_id,
+            PharmacyInventory.is_active == True,  # noqa: E712
+            PharmacyInventory.quantity_in_stock > 0,
+            PharmacyInventory.expiry_date <= threshold,
+            PharmacyInventory.expiry_date < _EXPIRY_SENTINEL,
+        )
+        .order_by(PharmacyInventory.expiry_date.asc(), PharmacyInventory.id.asc())
+        .all()
+    )
+    out: List[ExpiringBatchOut] = []
+    for inv, med in rows:
+        qty = float(inv.quantity_in_stock or 0)
+        cost = float(inv.cost_price or 0)
+        out.append(ExpiringBatchOut(
+            batch_id=inv.id,
+            medicine_id=med.id,
+            medicine_code=med.medicine_code,
+            medicine_name=med.name,
+            batch_number=inv.batch_number,
+            expiry_date=inv.expiry_date,
+            days_to_expiry=(inv.expiry_date - today).days,
+            quantity_in_stock=qty,
+            stock_value_cost=round(qty * cost, 2),
+        ))
+    return out
+
+
+class ExpiryWriteoffIn(BaseModel):
+    batch_ids: List[int] = Field(..., min_items=1)
+    reason: str = Field(..., min_length=2, max_length=200)
+
+
+class ExpiryWriteoffOut(BaseModel):
+    batches_written_off: int
+    total_qty_written_off: float
+    total_cost_value: float
+    ledger_rows: int
+
+
+@router.post("/inventory/expire-writeoff", response_model=ExpiryWriteoffOut, status_code=201)
+def writeoff_expired_batches(
+    data: ExpiryWriteoffIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "adjust_stock")),
+):
+    """Zero out the stock on one or more expired batches and write a ledger
+    row per batch (txn_type='expiry_writeoff'). Operates only on batches the
+    caller's hospital owns and ignores anything already at zero.
+    """
+    batches = (
+        db.query(PharmacyInventory)
+        .filter(
+            PharmacyInventory.id.in_(data.batch_ids),
+            PharmacyInventory.hospital_id == current_user.hospital_id,
+            PharmacyInventory.is_active == True,  # noqa: E712
+        )
+        .with_for_update()
+        .all()
+    )
+    if not batches:
+        raise HTTPException(status_code=404, detail="No matching batches found")
+
+    total_qty = 0.0
+    total_value = 0.0
+    rows_written = 0
+    for b in batches:
+        qty = float(b.quantity_in_stock or 0)
+        if qty <= 0:
+            continue
+        cost = float(b.cost_price or 0)
+        total_qty += qty
+        total_value += qty * cost
+        b.quantity_in_stock = 0
+        db.add(PharmacyStockLedger(
+            medicine_id=b.medicine_id, batch_id=b.id,
+            txn_type="expiry_writeoff", qty_delta=-qty,
+            reference_type="expiry", reference_id=b.id,
+            performed_by=current_user.id, hospital_id=current_user.hospital_id,
+            notes=f"Expiry write-off ({b.expiry_date}): {data.reason}",
+        ))
+        rows_written += 1
+
+    db.commit()
+    _audit(db, current_user, "expiry_writeoff", "pharmacy_inventory", 0,
+           f"Wrote off {rows_written} batch(es), total qty {total_qty:g}, value ₹{round(total_value, 2)}",
+           details={"reason": data.reason, "batch_ids": data.batch_ids})
+    return ExpiryWriteoffOut(
+        batches_written_off=rows_written,
+        total_qty_written_off=total_qty,
+        total_cost_value=round(total_value, 2),
+        ledger_rows=rows_written,
+    )
+
+
 class LedgerOut(BaseModel):
     id: int
     medicine_id: int
@@ -981,9 +1107,11 @@ def list_ledger(
 # ============================================================================
 # Procurement / Purchase (Section E)
 # ----------------------------------------------------------------------------
-# `expiry_date` used to be a required field on PharmacyInventory /
-# PharmacyPurchaseItem. It is no longer entered by users; the DB column is
-# kept for backward compatibility and filled with this sentinel.
+# `expiry_date` is re-enabled as a user-entered field per Pharmacy P0 #2.
+# The frontend collects MM/YYYY and submits last-day-of-month as YYYY-MM-DD.
+# For purchases that don't carry an expiry (older imports, non-perishable
+# consumables), the column stays populated with this sentinel so the NOT NULL
+# constraint is satisfied. FEFO sort treats the sentinel as "never expires".
 # ============================================================================
 
 _EXPIRY_SENTINEL = date(2099, 12, 31)
@@ -997,11 +1125,14 @@ class PurchaseItemIn(BaseModel):
     purchase_rate: float = Field(..., ge=0)
     discount_pct: float = 0.0
     hsn_id: Optional[int] = None
+    # Last-day-of-month for the batch's expiry. Optional only for backward
+    # compatibility with the prior "no expiry" UI; frontends should always send
+    # this for perishable medicines.
+    expiry_date: Optional[date] = None
 
 
 class PurchaseItemOut(PurchaseItemIn):
     id: int
-    expiry_date: Optional[date] = None   # legacy column, no longer entered by users
     tax_amount: float
     line_total: float
     inventory_id: Optional[int] = None
@@ -1235,7 +1366,8 @@ def create_purchase(
             raise HTTPException(status_code=400, detail=f"Invalid medicine_id {item.medicine_id}")
         row = PharmacyPurchaseItem(
             purchase_id=purchase.id, medicine_id=item.medicine_id,
-            batch_number=item.batch_number, expiry_date=_EXPIRY_SENTINEL,
+            batch_number=item.batch_number,
+            expiry_date=item.expiry_date or _EXPIRY_SENTINEL,
             mrp=item.mrp, quantity=item.quantity, free_quantity=item.free_quantity,
             purchase_rate=item.purchase_rate, discount_pct=item.discount_pct,
             hsn_id=item.hsn_id,
@@ -1294,7 +1426,8 @@ def edit_purchase(
     for item in data.items:
         db.add(PharmacyPurchaseItem(
             purchase_id=purchase.id, medicine_id=item.medicine_id,
-            batch_number=item.batch_number, expiry_date=_EXPIRY_SENTINEL,
+            batch_number=item.batch_number,
+            expiry_date=item.expiry_date or _EXPIRY_SENTINEL,
             mrp=item.mrp, quantity=item.quantity, free_quantity=item.free_quantity,
             purchase_rate=item.purchase_rate, discount_pct=item.discount_pct,
             hsn_id=item.hsn_id,
@@ -1334,12 +1467,15 @@ def confirm_purchase(
     _recompute_purchase_totals(purchase, db)  # safety re-calc
 
     for item in purchase.items:
-        # Merge into existing batch row if same medicine + batch number.
-        # (expiry_date is no longer user-entered — kept only as a NOT-NULL
-        # sentinel for backward compat.)
+        # Merge into an existing inventory row only if the medicine, batch
+        # number AND expiry date all match — different expiry means it is
+        # physically a different lot even if the manufacturer reused the batch
+        # number, so it should be tracked separately for FEFO and write-off.
+        item_expiry = item.expiry_date or _EXPIRY_SENTINEL
         existing = db.query(PharmacyInventory).filter(
             PharmacyInventory.medicine_id == item.medicine_id,
             PharmacyInventory.batch_number == item.batch_number,
+            PharmacyInventory.expiry_date == item_expiry,
             PharmacyInventory.hospital_id == current_user.hospital_id,
             PharmacyInventory.is_active == True,  # noqa: E712
         ).first()
@@ -1365,7 +1501,7 @@ def confirm_purchase(
         else:
             inv = PharmacyInventory(
                 medicine_id=item.medicine_id, batch_number=item.batch_number,
-                expiry_date=_EXPIRY_SENTINEL, quantity_in_stock=added_qty,
+                expiry_date=item_expiry, quantity_in_stock=added_qty,
                 cost_price=eff_cost, selling_price=item.mrp or item.purchase_rate,
                 mrp=item.mrp, purchase_rate=item.purchase_rate,
                 free_quantity=item.free_quantity or 0, discount_pct=item.discount_pct,
@@ -1714,8 +1850,13 @@ def _flush_with_number_retry(db: Session, target, *, regen, set_attr: str, retri
 
 
 def _pick_fifo_batches(db: Session, *, medicine_id: int, qty_needed: float, hospital_id: int):
-    """Return [(batch_row, qty_to_take), ...] picking oldest batch first
-    (insertion order — expiry tracking has been removed).
+    """Return [(batch_row, qty_to_take), ...] picking nearest-expiry first
+    (First-Expiry-First-Out). Ties on expiry break on insertion order, so
+    older receipts of the same expiry date still flow out first. Sentinel
+    expiry dates (no-expiry stock) sort to the back automatically.
+
+    Function name keeps the historical _pick_fifo_batches for callsite
+    compatibility but the policy is FEFO as of Pharmacy P0 #2.
 
     Raises 400 if total available across all active batches < qty_needed.
     """
@@ -1728,7 +1869,10 @@ def _pick_fifo_batches(db: Session, *, medicine_id: int, qty_needed: float, hosp
         PharmacyInventory.hospital_id == hospital_id,
         PharmacyInventory.is_active == True,  # noqa: E712
         PharmacyInventory.quantity_in_stock > 0,
-    ).order_by(PharmacyInventory.id.asc()).with_for_update().all()
+    ).order_by(
+        PharmacyInventory.expiry_date.asc(),
+        PharmacyInventory.id.asc(),
+    ).with_for_update().all()
     total = sum((b.quantity_in_stock or 0) for b in avail)
     if total < qty_needed:
         raise HTTPException(status_code=400,
@@ -2350,6 +2494,10 @@ class DashboardSummaryOut(BaseModel):
     today_purchases_count: int
     low_stock_count: int
     pending_rx_count: int
+    # Pharmacy P0 #2 — number of batches with stock > 0 whose expiry falls
+    # within the next 90 days (or already past). Drives the dashboard tile.
+    expiring_soon_count: int = 0
+    already_expired_count: int = 0
 
 
 @router.get("/dashboard", response_model=DashboardSummaryOut)
@@ -2382,6 +2530,22 @@ def dashboard_summary(
     low = sum(1 for r in list_inventory(search=None, low_only=True, db=db, current_user=current_user))
     pending = db.query(Prescription).filter(Prescription.status.in_(["pending", "partial"])).count()
 
+    today = date.today()
+    expiring_threshold = today + timedelta(days=90)
+    expiring_soon = db.query(sa_func.count(PharmacyInventory.id)).filter(
+        PharmacyInventory.hospital_id == hid,
+        PharmacyInventory.is_active == True,  # noqa: E712
+        PharmacyInventory.quantity_in_stock > 0,
+        PharmacyInventory.expiry_date <= expiring_threshold,
+        PharmacyInventory.expiry_date < _EXPIRY_SENTINEL,
+    ).scalar() or 0
+    already_expired = db.query(sa_func.count(PharmacyInventory.id)).filter(
+        PharmacyInventory.hospital_id == hid,
+        PharmacyInventory.is_active == True,  # noqa: E712
+        PharmacyInventory.quantity_in_stock > 0,
+        PharmacyInventory.expiry_date < today,
+    ).scalar() or 0
+
     return DashboardSummaryOut(
         today_sales_total=float(sales_q[0] or 0),
         today_sales_count=int(sales_q[1] or 0),
@@ -2389,6 +2553,8 @@ def dashboard_summary(
         today_purchases_count=int(purchases_q[1] or 0),
         low_stock_count=low,
         pending_rx_count=pending,
+        expiring_soon_count=int(expiring_soon),
+        already_expired_count=int(already_expired),
     )
 
 
