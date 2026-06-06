@@ -16,7 +16,7 @@ import os
 import uuid
 
 from config.database import get_db
-from app.utils.pdf_settings import get_hospital_pdf_include_header
+from app.utils.pdf_settings import pdf_gen_kwargs
 from app.models.user import User
 from app.models.patient import Patient
 from app.models.hospital import Hospital
@@ -2005,7 +2005,7 @@ async def get_census_pdf(
         "logo_url": getattr(hospital, "logo_url", "") or "",
         "hospital_subname": getattr(hospital, "hospital_subname", "") or "",
     }
-    pdf_buffer = pdf_service.generate_census_pdf(payload, hospital_info, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
+    pdf_buffer = pdf_service.generate_census_pdf(payload, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'census'))
     return StreamingResponse(
         pdf_buffer,
         media_type="application/pdf",
@@ -2326,7 +2326,7 @@ async def get_handover_pdf(
         "on_call_contacts": rec.on_call_contacts or "",
         "notes": rec.notes or "",
     }
-    pdf_buffer = pdf_service.generate_handover_pdf(payload, hospital_info, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
+    pdf_buffer = pdf_service.generate_handover_pdf(payload, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'handover'))
     return StreamingResponse(
         pdf_buffer,
         media_type="application/pdf",
@@ -3079,7 +3079,7 @@ async def get_discharge_pdf(
         "total_charges": float(charges_now.get("subtotal") or discharge.total_charges or 0),
     }
 
-    pdf_buffer = pdf_service.generate_discharge_summary_pdf(discharge_data, hospital_info, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
+    pdf_buffer = pdf_service.generate_discharge_summary_pdf(discharge_data, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'discharge_summary'))
 
     return StreamingResponse(
         pdf_buffer,
@@ -5106,7 +5106,7 @@ async def get_bill_pdf(
     }
 
     pdf_buffer = pdf_service.generate_inpatient_bill_pdf(
-        bill_data, hospital_info, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
+        bill_data, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'inpatient_bill'))
 
     return StreamingResponse(
         io.BytesIO(pdf_buffer.getvalue()) if hasattr(pdf_buffer, "getvalue") else pdf_buffer,
@@ -7273,7 +7273,7 @@ async def gate_pass_pdf(
         "issued_by_name": f"{current_user.first_name} {current_user.last_name}".strip() or current_user.username,
     }
     pdf_buffer = pdf_service.generate_gate_pass_pdf(payload, hospital_info=hospital_info,
-                                                    include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
+                                                    **pdf_gen_kwargs(db, current_user.hospital_id, 'gate_pass'))
     return StreamingResponse(
         pdf_buffer,
         media_type="application/pdf",
@@ -8399,9 +8399,9 @@ async def get_deposit_receipt_pdf(
     }
     if (d.deposit_type or "").lower() == "refund":
         # Route to the dedicated refund template (red, all-caps amount, refund-specific layout).
-        pdf_buffer = pdf_service.generate_refund_receipt_pdf(deposit_data, hospital_info, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
+        pdf_buffer = pdf_service.generate_refund_receipt_pdf(deposit_data, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'refund_receipt'))
     else:
-        pdf_buffer = pdf_service.generate_deposit_receipt_pdf(deposit_data, hospital_info, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
+        pdf_buffer = pdf_service.generate_deposit_receipt_pdf(deposit_data, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'deposit_receipt'))
     return StreamingResponse(
         pdf_buffer,
         media_type="application/pdf",
@@ -9617,7 +9617,7 @@ async def preview_consent_pdf(
         "logo_url": getattr(hospital, "logo_url", "") or "",
         "hospital_subname": getattr(hospital, "hospital_subname", "") or "",
     }
-    pdf_buffer = pdf_service.generate_consent_pdf(consent_data, hospital_info, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
+    pdf_buffer = pdf_service.generate_consent_pdf(consent_data, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'consent'))
     return StreamingResponse(
         pdf_buffer,
         media_type="application/pdf",
@@ -9731,7 +9731,7 @@ async def get_consent_pdf(
         "logo_url": getattr(hospital, "logo_url", "") or "",
         "hospital_subname": getattr(hospital, "hospital_subname", "") or "",
     }
-    pdf_buffer = pdf_service.generate_consent_pdf(consent_data, hospital_info, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
+    pdf_buffer = pdf_service.generate_consent_pdf(consent_data, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'consent'))
     return StreamingResponse(
         pdf_buffer,
         media_type="application/pdf",
@@ -9944,7 +9944,7 @@ async def get_dama_pdf(
         "notes": rec.notes or "",
         "signed_at": rec.created_at.strftime("%d/%m/%Y %H:%M") if rec.created_at else "",
     }
-    pdf_buffer = pdf_service.generate_dama_pdf(dama_data, hospital_info, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
+    pdf_buffer = pdf_service.generate_dama_pdf(dama_data, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'dama'))
     return StreamingResponse(
         pdf_buffer,
         media_type="application/pdf",
@@ -9996,7 +9996,7 @@ async def get_mlc_register_pdf(
         "chief_complaint": admission.chief_complaint or admission.admission_reason or "",
         "doctor_name": f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else "",
     }
-    pdf_buffer = pdf_service.generate_mlc_register_pdf(mlc_data, hospital_info, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
+    pdf_buffer = pdf_service.generate_mlc_register_pdf(mlc_data, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'mlc_register'))
     return StreamingResponse(
         pdf_buffer,
         media_type="application/pdf",
@@ -10317,7 +10317,7 @@ async def get_monthly_outcomes_pdf(
         "logo_url": getattr(hospital, "logo_url", "") or "",
         "hospital_subname": getattr(hospital, "hospital_subname", "") or "",
     }
-    pdf_buffer = pdf_service.generate_monthly_outcomes_pdf(payload, hospital_info, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
+    pdf_buffer = pdf_service.generate_monthly_outcomes_pdf(payload, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'monthly_outcomes'))
     return StreamingResponse(
         pdf_buffer,
         media_type="application/pdf",
@@ -10558,7 +10558,7 @@ async def get_doctor_productivity_pdf(
         "logo_url": getattr(hospital, "logo_url", "") or "",
         "hospital_subname": getattr(hospital, "hospital_subname", "") or "",
     }
-    pdf_buffer = pdf_service.generate_doctor_productivity_pdf(payload, hospital_info, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
+    pdf_buffer = pdf_service.generate_doctor_productivity_pdf(payload, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'doctor_productivity'))
     return StreamingResponse(
         pdf_buffer,
         media_type="application/pdf",
@@ -10616,7 +10616,7 @@ async def death_certificate_pdf(
         "logo_url": getattr(hospital, "logo_url", "") or "",
         "hospital_subname": getattr(hospital, "hospital_subname", "") or "",
     }
-    pdf_buffer = pdf_service.generate_death_certificate_pdf(cert_data, hospital_info, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
+    pdf_buffer = pdf_service.generate_death_certificate_pdf(cert_data, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'death_certificate'))
     return StreamingResponse(
         pdf_buffer,
         media_type="application/pdf",
@@ -11797,7 +11797,7 @@ async def get_body_release_pdf(
         "transport_details": rec.transport_details or "",
         "notes": rec.notes or "",
     }
-    pdf_buffer = pdf_service.generate_body_release_pdf(rel_data, hospital_info, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
+    pdf_buffer = pdf_service.generate_body_release_pdf(rel_data, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'body_release'))
     return StreamingResponse(
         pdf_buffer,
         media_type="application/pdf",

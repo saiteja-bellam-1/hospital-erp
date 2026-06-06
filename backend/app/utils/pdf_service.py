@@ -9,6 +9,8 @@ from datetime import datetime
 from typing import Optional
 import os
 
+DEFAULT_LETTERHEAD_GAP_PT = 100.0
+
 
 def _get_uploads_base():
     """Get the uploads directory path. Works in both dev and bundled (.exe) mode."""
@@ -189,7 +191,7 @@ class PDFService:
             textColor=colors.darkgrey
         ))
 
-    def generate_inpatient_bill_pdf(self, bill_data, hospital_info, include_header=True):
+    def generate_inpatient_bill_pdf(self, bill_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
         """Inpatient bill — mirrors the OPD receipt layout so both bills feel
         consistent. Adds an Admission Details box for IP-specific fields, and
         the Payment Summary lists every deposit received before the balance.
@@ -305,7 +307,7 @@ class PDFService:
             elements.append(Spacer(1, 6))
             elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
         else:
-            elements.append(Spacer(1, 100))
+            elements.append(Spacer(1, letterhead_gap_pt))
 
         elements.append(Spacer(1, 4))
         bill_subtype = (bill_data.get('bill_subtype') or 'final').upper()
@@ -641,7 +643,7 @@ class PDFService:
         return buffer
 
 
-    def generate_bill_pdf(self, bill_data, hospital_info, include_header=True):
+    def generate_bill_pdf(self, bill_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
         """Generate PDF for bill/receipt in tabular format"""
         buffer = BytesIO()
 
@@ -753,7 +755,7 @@ class PDFService:
             elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
         else:
             # Leave blank space for pre-printed letterhead (~100pt ≈ 3.5cm)
-            elements.append(Spacer(1, 100))
+            elements.append(Spacer(1, letterhead_gap_pt))
 
         elements.append(Spacer(1, 4))
         elements.append(Paragraph("RECEIPT CUM REQUISITION", receipt_title_style))
@@ -1001,7 +1003,7 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_prescription_pdf(self, prescription_data, hospital_info, include_header=True):
+    def generate_prescription_pdf(self, prescription_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
         """Generate PDF for prescription matching the reference layout:
         Header → Doctor+Patient info box → Diagnosis → Vitals (left) + Medicines (right) → Instructions
         """
@@ -1115,7 +1117,7 @@ class PDFService:
             elements.append(Spacer(1, 10))
         else:
             # Leave blank space for pre-printed letterhead (~100pt ≈ 3.5cm)
-            elements.append(Spacer(1, 100))
+            elements.append(Spacer(1, letterhead_gap_pt))
 
         # ============================================================
         # PATIENT + DOCTOR INFO — bordered box (like lab report)
@@ -1420,7 +1422,7 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_lab_report_pdf(self, report_data, hospital_info, lab_config=None, include_header=True):
+    def generate_lab_report_pdf(self, report_data, hospital_info, lab_config=None, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
         """Generate PDF for lab report"""
         if lab_config is None:
             lab_config = {}
@@ -1570,7 +1572,7 @@ class PDFService:
             elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
         else:
             # Leave blank space for pre-printed letterhead (~100pt ≈ 3.5cm)
-            elements.append(Spacer(1, 100))
+            elements.append(Spacer(1, letterhead_gap_pt))
 
         elements.append(Spacer(1, 4))
         elements.append(Paragraph("LABORATORY REPORT", report_title_style))
@@ -1842,7 +1844,7 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_combined_lab_report_pdf(self, reports_list, hospital_info, lab_config=None, include_header=True):
+    def generate_combined_lab_report_pdf(self, reports_list, hospital_info, lab_config=None, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
         """Generate a single continuous PDF with all tests flowing together.
         Header repeats on every page (or blank space for pre-printed letterhead).
         Patient info on first page only, tests flow continuously, signatures at the end."""
@@ -1851,7 +1853,7 @@ class PDFService:
 
         buffer = BytesIO()
         # Reserve top margin for the header drawn via onPage callback
-        header_height = 100 if include_header else 100  # ~3.5cm
+        header_height = 100 if include_header else letterhead_gap_pt
         doc = SimpleDocTemplate(buffer, pagesize=A4,
             rightMargin=30, leftMargin=30, topMargin=30 + header_height, bottomMargin=20)
 
@@ -2221,7 +2223,7 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_discharge_summary_pdf(self, discharge_data, hospital_info, include_header=True):
+    def generate_discharge_summary_pdf(self, discharge_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
         """Generate PDF for discharge summary"""
         buffer = BytesIO()
 
@@ -2321,7 +2323,7 @@ class PDFService:
             elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
         else:
             # Leave blank space for pre-printed letterhead
-            elements.append(Spacer(1, 100))
+            elements.append(Spacer(1, letterhead_gap_pt))
 
         elements.append(Spacer(1, 4))
         elements.append(Paragraph("DISCHARGE SUMMARY", doc_title_style))
@@ -2495,7 +2497,7 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_deposit_receipt_pdf(self, deposit_data, hospital_info, include_header=True):
+    def generate_deposit_receipt_pdf(self, deposit_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
         """Advance deposit / refund receipt — mirrors the OPD bill layout
         (logo+hospital header, bordered patient/receipt info box, single-line
         item table, payment summary, amount-in-words, prepared-by footer)."""
@@ -2590,7 +2592,7 @@ class PDFService:
             elements.append(Spacer(1, 6))
             elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
         else:
-            elements.append(Spacer(1, 100))
+            elements.append(Spacer(1, letterhead_gap_pt))
 
         elements.append(Spacer(1, 4))
         elements.append(Paragraph(
@@ -2767,7 +2769,7 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_refund_receipt_pdf(self, refund_data, hospital_info, include_header=True):
+    def generate_refund_receipt_pdf(self, refund_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
         """Refund receipt for a reversed bill payment (Payment row with negative amount)."""
         buffer = BytesIO()
         doc = SimpleDocTemplate(
@@ -2804,7 +2806,7 @@ class PDFService:
             elements.append(Spacer(1, 6))
             elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
         else:
-            elements.append(Spacer(1, 90))
+            elements.append(Spacer(1, letterhead_gap_pt))
 
         elements.append(Spacer(1, 8))
         elements.append(Paragraph("REFUND RECEIPT", receipt_title_style))
@@ -2864,7 +2866,7 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_credit_note_pdf(self, cn_data, hospital_info, include_header=True):
+    def generate_credit_note_pdf(self, cn_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
         """Credit note PDF — reduces patient liability against a parent bill."""
         buffer = BytesIO()
         doc = SimpleDocTemplate(
@@ -2901,7 +2903,7 @@ class PDFService:
             elements.append(Spacer(1, 6))
             elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
         else:
-            elements.append(Spacer(1, 90))
+            elements.append(Spacer(1, letterhead_gap_pt))
 
         elements.append(Spacer(1, 8))
         elements.append(Paragraph("CREDIT NOTE", cn_title_style))
@@ -2982,7 +2984,7 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_consent_pdf(self, consent_data, hospital_info, include_header=True):
+    def generate_consent_pdf(self, consent_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
         """Signed consent form PDF."""
         buffer = BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=30, bottomMargin=30)
@@ -3066,7 +3068,7 @@ class PDFService:
             elements.append(Spacer(1, 6))
             elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
         else:
-            elements.append(Spacer(1, 90))
+            elements.append(Spacer(1, letterhead_gap_pt))
             if doc_number:
                 elements.append(Paragraph(
                     f'<b>Doc No: {doc_number}</b>',
@@ -3173,7 +3175,7 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_death_certificate_pdf(self, cert_data, hospital_info, include_header=True):
+    def generate_death_certificate_pdf(self, cert_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
         """Death certificate / mortality record."""
         buffer = BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=30, bottomMargin=30)
@@ -3200,7 +3202,7 @@ class PDFService:
             elements.append(Spacer(1, 6))
             elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
         else:
-            elements.append(Spacer(1, 90))
+            elements.append(Spacer(1, letterhead_gap_pt))
 
         elements.append(Spacer(1, 8))
         elements.append(Paragraph("DEATH CERTIFICATE", ParagraphStyle('DC', parent=self.styles['Normal'],
@@ -3271,7 +3273,7 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_dama_pdf(self, dama_data, hospital_info, include_header=True):
+    def generate_dama_pdf(self, dama_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
         """Discharge Against Medical Advice — signed liability form.
         Indian context: invokes Section 88/92 IPC ('act done in good faith for
         the benefit of a person, with consent') in the absolves clause."""
@@ -3302,7 +3304,7 @@ class PDFService:
             elements.append(Spacer(1, 6))
             elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
         else:
-            elements.append(Spacer(1, 90))
+            elements.append(Spacer(1, letterhead_gap_pt))
 
         elements.append(Spacer(1, 8))
         elements.append(Paragraph("DISCHARGE AGAINST MEDICAL ADVICE (DAMA)",
@@ -3395,7 +3397,7 @@ class PDFService:
         return buffer
 
 
-    def generate_gate_pass_pdf(self, payload, hospital_info, include_header=True):
+    def generate_gate_pass_pdf(self, payload, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
         """Printable gate pass — shown to security at exit. One half-page slip.
         Header matches the bill / lab report layout (logo + hospital name +
         subname + address + contact). Footer matches with Issued-by / Printed-by
@@ -3488,7 +3490,7 @@ class PDFService:
             elements.append(Spacer(1, 6))
             elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
         else:
-            elements.append(Spacer(1, 100))
+            elements.append(Spacer(1, letterhead_gap_pt))
 
         elements.append(Spacer(1, 6))
         elements.append(Paragraph("GATE PASS / DISCHARGE EXIT SLIP", receipt_title_style))
@@ -3583,7 +3585,7 @@ class PDFService:
         return buffer
 
 
-    def generate_doctor_productivity_pdf(self, payload, hospital_info, include_header=True):
+    def generate_doctor_productivity_pdf(self, payload, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
         """Per-doctor productivity table for revenue-share / performance review."""
         buffer = BytesIO()
         # Landscape — many columns
@@ -3675,7 +3677,7 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_monthly_outcomes_pdf(self, payload, hospital_info, include_header=True):
+    def generate_monthly_outcomes_pdf(self, payload, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
         """Monthly outcomes — mortality + readmission + LOS + occupancy."""
         buffer = BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
@@ -3807,7 +3809,7 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_handover_pdf(self, payload, hospital_info, include_header=True):
+    def generate_handover_pdf(self, payload, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
         """Nurse-to-nurse shift handover sheet."""
         buffer = BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=30, bottomMargin=30)
@@ -3893,7 +3895,7 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_census_pdf(self, payload, hospital_info, include_header=True):
+    def generate_census_pdf(self, payload, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
         """Daily census report — totals + per-ward + per-room-type breakdown."""
         buffer = BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
@@ -4023,7 +4025,7 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_mlc_register_pdf(self, mlc_data, hospital_info, include_header=True):
+    def generate_mlc_register_pdf(self, mlc_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
         """Medico-Legal Case (MLC) register entry — printable form for the police
         intimation copy and hospital MLC register. India: required for RTA,
         assault, poisoning, burns, sexual assault, attempted suicide cases."""
@@ -4048,7 +4050,7 @@ class PDFService:
             elements.append(Spacer(1, 6))
             elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
         else:
-            elements.append(Spacer(1, 90))
+            elements.append(Spacer(1, letterhead_gap_pt))
 
         elements.append(Spacer(1, 8))
         elements.append(Paragraph("MEDICO-LEGAL CASE (MLC) REGISTER ENTRY",
@@ -4118,7 +4120,7 @@ class PDFService:
         return buffer
 
 
-    def generate_body_release_pdf(self, rel, hospital_info, include_header=True):
+    def generate_body_release_pdf(self, rel, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
         """B6 — Body release / mortuary handover form. Signed receipt for the
         family member receiving the body, witnessed by another adult."""
         buffer = BytesIO()
@@ -4143,7 +4145,7 @@ class PDFService:
             elements.append(Spacer(1, 6))
             elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
         else:
-            elements.append(Spacer(1, 90))
+            elements.append(Spacer(1, letterhead_gap_pt))
 
         elements.append(Spacer(1, 8))
         elements.append(Paragraph("BODY RELEASE / HANDOVER FORM",
@@ -4233,7 +4235,8 @@ class PDFService:
     # Pharmacy PDFs (Section I)
     # ========================================================================
 
-    def _pharmacy_header(self, elements, hospital_info, include_header, title, page_width):
+    def _pharmacy_header(self, elements, hospital_info, include_header, title, page_width,
+                         letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
         """Header for pharmacy PDFs. Mirrors generate_bill_pdf — logo on the
         left, hospital name/address/contact stacked to the right, divider, then
         the receipt title."""
@@ -4299,14 +4302,14 @@ class PDFService:
             elements.append(Spacer(1, 6))
             elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
         else:
-            elements.append(Spacer(1, 100))  # leave room for pre-printed letterhead
+            elements.append(Spacer(1, letterhead_gap_pt))  # leave room for pre-printed letterhead
 
         elements.append(Spacer(1, 4))
         elements.append(Paragraph(title, receipt_title))
         elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
         elements.append(Spacer(1, 6))
 
-    def generate_pharmacy_sale_invoice_pdf(self, sale_data, hospital_info, include_header=True):
+    def generate_pharmacy_sale_invoice_pdf(self, sale_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
         """Sale invoice for `pharmacy_sales` row.
 
         Expected `sale_data` keys:
@@ -4327,7 +4330,7 @@ class PDFService:
         watermark = "VOIDED" if is_voided else None
 
         self._pharmacy_header(elements, hospital_info, include_header,
-                              "PHARMACY SALE INVOICE", page_width)
+                              "PHARMACY SALE INVOICE", page_width, letterhead_gap_pt)
 
         # ── Meta strip: sale # / date / payment ───────────────────────────
         cell = ParagraphStyle('C', parent=self.styles['Normal'], fontSize=8,
@@ -4465,7 +4468,7 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_pharmacy_purchase_pdf(self, purchase_data, hospital_info, include_header=True):
+    def generate_pharmacy_purchase_pdf(self, purchase_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
         """GRN / purchase order document for `pharmacy_purchases`.
 
         Expected keys: purchase_number, entry_date, supplier_name, invoice_number,
@@ -4481,7 +4484,7 @@ class PDFService:
         page_width = A4[0] - 60
 
         self._pharmacy_header(elements, hospital_info, include_header,
-                              "PURCHASE / GOODS RECEIPT", page_width)
+                              "PURCHASE / GOODS RECEIPT", page_width, letterhead_gap_pt)
 
         cell = ParagraphStyle('C', parent=self.styles['Normal'], fontSize=8,
             fontName='Helvetica', textColor=colors.black, leading=11)
@@ -4576,7 +4579,7 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_pharmacy_dispense_slip_pdf(self, dispense_data, hospital_info, include_header=True):
+    def generate_pharmacy_dispense_slip_pdf(self, dispense_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
         """Dispense slip — handed to the patient on Rx-linked dispensing.
 
         Expected keys: prescription_number, prescription_date, patient_name,
@@ -4590,7 +4593,7 @@ class PDFService:
         page_width = A4[0] - 60
 
         self._pharmacy_header(elements, hospital_info, include_header,
-                              "DISPENSE SLIP", page_width)
+                              "DISPENSE SLIP", page_width, letterhead_gap_pt)
 
         cell = ParagraphStyle('C', parent=self.styles['Normal'], fontSize=8,
             fontName='Helvetica', textColor=colors.black, leading=11)
@@ -4653,7 +4656,7 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_narcotic_register_pdf(self, rows, period, hospital_info, include_header=True):
+    def generate_narcotic_register_pdf(self, rows, period, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
         """Narcotic / Schedule-H register for compliance.
 
         `rows` is a list of dicts with keys: sale_date, sale_number,
@@ -4668,7 +4671,7 @@ class PDFService:
         page_width = A4[0] - 40
 
         self._pharmacy_header(elements, hospital_info, include_header,
-                              "NARCOTIC / SCHEDULE-H REGISTER", page_width)
+                              "NARCOTIC / SCHEDULE-H REGISTER", page_width, letterhead_gap_pt)
 
         cell = ParagraphStyle('C', parent=self.styles['Normal'], fontSize=7,
             fontName='Helvetica', textColor=colors.black, leading=10)
@@ -4725,7 +4728,8 @@ class PDFService:
     def generate_pharmacy_report_pdf(
         self, *, title: str, period: Optional[dict],
         columns: list, rows: list, hospital_info: dict,
-        include_header: bool = True, meta: Optional[dict] = None,
+        include_header: bool = True, letterhead_gap_pt: float = DEFAULT_LETTERHEAD_GAP_PT,
+        meta: Optional[dict] = None,
     ):
         """Generic landscape tabular PDF for Phase-2 pharmacy reports.
 
@@ -4748,7 +4752,8 @@ class PDFService:
         elements = []
         page_width = landscape(_A4)[0] - 40
 
-        self._pharmacy_header(elements, hospital_info, include_header, title, page_width)
+        self._pharmacy_header(elements, hospital_info, include_header, title, page_width,
+                              letterhead_gap_pt)
 
         cell = ParagraphStyle('GenCell', parent=self.styles['Normal'], fontSize=7,
                               fontName='Helvetica', textColor=colors.black, leading=10)

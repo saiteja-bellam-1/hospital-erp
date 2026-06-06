@@ -1913,7 +1913,7 @@ const ReceptionAppointmentsPage = () => {
 
             {/* Action Buttons */}
             <p className="text-xs text-muted-foreground pt-2">
-              Letterhead follows Hospital Config → Printing.
+              Letterhead follows Settings → Print Settings.
             </p>
             <div className="flex items-center gap-3 pt-2">
               <Button variant="outline" onClick={closeBillPreview} className="flex-1">

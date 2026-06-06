@@ -2,7 +2,7 @@ import React from 'react';
 import {
   Home, Users, Calendar, CalendarClock, Package, Share2, Receipt, TrendingUp,
   FileText, TestTube, LayoutDashboard, BedDouble, Scissors, FileCheck,
-  CalendarDays, CalendarRange, Sparkles, RotateCcw, Building2,
+  CalendarDays, CalendarRange, Sparkles, RotateCcw, Building2, Printer,
   BarChart3, ClipboardList, Shield, Database, ScrollText, Activity, Stethoscope,
   DownloadCloud, Pill, ShoppingCart, Boxes, Truck, BookOpen,
 } from 'lucide-react';
@@ -69,6 +69,13 @@ export function useNavigationSections({ roles, enabledModules }) {
       add(items, make('Reports', TrendingUp, '/dashboard/reception/reports'));
     }
     if (items.length > 0) sections.push({ label: 'Outpatient', items });
+  }
+
+  // ── PRINT SETTINGS (reception + hospital admin) ──
+  if (hasAnyRole('receptionist', 'hospital_admin', 'super_admin')) {
+    const items = [];
+    add(items, make('Print Settings', Printer, '/dashboard/print-settings'));
+    if (items.length > 0) sections.push({ label: 'Settings', items });
   }
 
   // ── DOCTOR ──

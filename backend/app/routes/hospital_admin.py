@@ -19,6 +19,7 @@ from app.models.lab import PatientLabOrder, LabTest, LabTestCategory, LabTestPac
 from app.models.billing import Bill, BillItem, Payment
 from app.models.inpatient import Admission
 from app.utils.dependencies import get_current_user
+from app.utils.pdf_settings import pdf_gen_kwargs
 
 from app.utils.paths import get_uploads_dir
 
@@ -102,6 +103,19 @@ def require_hospital_admin(current_user: User = Depends(get_current_user)):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Hospital admin access required"
+        )
+    return current_user
+
+
+def require_print_settings_editor(current_user: User = Depends(get_current_user)):
+    """Hospital admin, super admin, or receptionist may edit print settings."""
+    if not any(
+        r in current_user.role_names
+        for r in ['super_admin', 'hospital_admin', 'receptionist']
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Print settings access required",
         )
     return current_user
 
@@ -552,36 +566,87 @@ async def get_print_settings(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Hospital-wide default for letterhead on generated PDFs."""
-    from app.utils.pdf_settings import get_hospital_pdf_include_header
+    """Hospital print settings: letterhead default, gap, per-report overrides."""
+    from app.utils.pdf_settings import get_print_settings_payload
 
-    return {
-        "include_header_on_pdfs": get_hospital_pdf_include_header(db, current_user.hospital_id),
-    }
+    return get_print_settings_payload(db, current_user.hospital_id)
 
 
 class PrintSettingsUpdate(BaseModel):
-    include_header_on_pdfs: bool
+    include_header_on_pdfs: Optional[bool] = None
+    letterhead_gap_mm: Optional[float] = None
+    report_header_overrides: Optional[dict[str, str]] = None
+
+
+class PrintSettingsPreviewRequest(BaseModel):
+    report_type: str = "opd_bill"
+    include_header_on_pdfs: bool = True
+    letterhead_gap_mm: float = 35.0
+    report_header_overrides: Optional[dict[str, str]] = None
+
+
+@router.post("/print-settings/preview")
+async def preview_print_settings(
+    data: PrintSettingsPreviewRequest,
+    current_user: User = Depends(require_print_settings_editor),
+    db: Session = Depends(get_db),
+):
+    """Return a sample PDF using draft settings (no save required)."""
+    from fastapi.responses import Response
+    from app.utils.pdf_settings import MAX_LETTERHEAD_GAP_MM, MIN_LETTERHEAD_GAP_MM
+    from app.utils.print_preview import generate_print_preview_pdf
+
+    if not (MIN_LETTERHEAD_GAP_MM <= data.letterhead_gap_mm <= MAX_LETTERHEAD_GAP_MM):
+        raise HTTPException(
+            status_code=400,
+            detail=f"letterhead_gap_mm must be between {MIN_LETTERHEAD_GAP_MM} and {MAX_LETTERHEAD_GAP_MM}",
+        )
+    buf = generate_print_preview_pdf(
+        db,
+        current_user.hospital_id,
+        report_type=data.report_type,
+        include_header_on_pdfs=data.include_header_on_pdfs,
+        letterhead_gap_mm=data.letterhead_gap_mm,
+        report_header_overrides=data.report_header_overrides,
+    )
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/pdf",
+        headers={"Content-Disposition": 'inline; filename="print-preview.pdf"'},
+    )
 
 
 @router.put("/print-settings")
 async def update_print_settings(
     data: PrintSettingsUpdate,
-    current_user: User = Depends(require_hospital_admin),
+    current_user: User = Depends(require_print_settings_editor),
     db: Session = Depends(get_db),
 ):
-    from app.utils.pdf_settings import set_hospital_pdf_include_header
+    from app.utils.pdf_settings import (
+        MAX_LETTERHEAD_GAP_MM,
+        MIN_LETTERHEAD_GAP_MM,
+        update_print_settings as save_print_settings,
+    )
 
-    set_hospital_pdf_include_header(
+    if data.letterhead_gap_mm is not None:
+        if not (MIN_LETTERHEAD_GAP_MM <= data.letterhead_gap_mm <= MAX_LETTERHEAD_GAP_MM):
+            raise HTTPException(
+                status_code=400,
+                detail=f"letterhead_gap_mm must be between {MIN_LETTERHEAD_GAP_MM} and {MAX_LETTERHEAD_GAP_MM}",
+            )
+    payload = save_print_settings(
         db,
-        include_header=data.include_header_on_pdfs,
+        current_user.hospital_id,
+        include_header_on_pdfs=data.include_header_on_pdfs,
+        letterhead_gap_mm=data.letterhead_gap_mm,
+        report_header_overrides=data.report_header_overrides,
         created_by=current_user.id,
     )
     db.commit()
-    return {
-        "message": "Print settings updated",
-        "include_header_on_pdfs": data.include_header_on_pdfs,
-    }
+    from app.services.audit_service import log_action
+    log_action(db, current_user, "update_print_settings", "hospital", details=payload)
+    db.commit()
+    return {"message": "Print settings updated", **payload}
 
 
 @router.get("/dashboard-overview")
@@ -1811,7 +1876,7 @@ async def refund_receipt_pdf(
         "original_payment_number": original.payment_number if original else "",
         "original_amount": float(original.amount_paid or 0) if original else 0,
     }
-    pdf_buffer = pdf_service.generate_refund_receipt_pdf(refund_data, hospital_info, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
+    pdf_buffer = pdf_service.generate_refund_receipt_pdf(refund_data, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'refund_receipt'))
     from fastapi.responses import Response
     return Response(content=pdf_buffer.getvalue(), media_type="application/pdf",
                     headers={"Content-Disposition": f'inline; filename="refund_{refund.payment_number}.pdf"'})
@@ -2396,7 +2461,7 @@ async def get_bill_pdf(
         "hospital_subname": getattr(hospital, "hospital_subname", "") if hospital else "",
     }
     from app.utils.pdf_service import pdf_service
-    buf = pdf_service.generate_bill_pdf(bill_data, hospital_info, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
+    buf = pdf_service.generate_bill_pdf(bill_data, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'opd_bill'))
     from fastapi.responses import Response
     return Response(content=buf.getvalue(), media_type="application/pdf",
                     headers={"Content-Disposition": f'inline; filename="{bill.bill_number}.pdf"'})
@@ -2445,7 +2510,7 @@ async def credit_note_pdf(
             for it in items
         ],
     }
-    pdf_buffer = pdf_service.generate_credit_note_pdf(cn_data, hospital_info, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
+    pdf_buffer = pdf_service.generate_credit_note_pdf(cn_data, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'credit_note'))
     from fastapi.responses import Response
     return Response(content=pdf_buffer.getvalue(), media_type="application/pdf",
                     headers={"Content-Disposition": f'inline; filename="{cn.bill_number}.pdf"'})
