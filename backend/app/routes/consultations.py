@@ -8,7 +8,7 @@ import uuid
 import re
 
 from config.database import get_db
-from app.utils.pdf_settings import get_hospital_pdf_include_header
+from app.utils.pdf_settings import pdf_gen_kwargs
 from app.models.user import User
 from app.models.ehr import Consultation
 from app.models.lab import PatientLabOrder, LabTest, LabTestCategory
@@ -1248,7 +1248,7 @@ async def download_bill_pdf(
     }
     
     # Generate PDF
-    pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
+    pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'opd_bill'))
 
     # Create filename
     filename = f"bill_{bill.bill_number}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"

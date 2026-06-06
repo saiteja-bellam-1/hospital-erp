@@ -23,7 +23,7 @@ from app.models.hospital import Hospital
 from app.utils.pdf_service import pdf_service
 
 from config.database import get_db
-from app.utils.pdf_settings import get_hospital_pdf_include_header
+from app.utils.pdf_settings import pdf_gen_kwargs
 from app.models.user import User
 from datetime import date, datetime, timedelta
 
@@ -3245,7 +3245,7 @@ def sale_invoice_pdf(
     except Exception:
         pass
     hi = _hospital_info_for_pdf(db, current_user.hospital_id)
-    buf = pdf_service.generate_pharmacy_sale_invoice_pdf(shaped, hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
+    buf = pdf_service.generate_pharmacy_sale_invoice_pdf(shaped, hi, **pdf_gen_kwargs(db, current_user.hospital_id, 'pharmacy_sale_invoice'))
     return _pdf_response(buf, f"{s.sale_number}.pdf")
 
 
@@ -3264,7 +3264,7 @@ def purchase_pdf(
     shaped = _shape_purchase(p, db).model_dump()
     shaped["notes"] = p.notes
     hi = _hospital_info_for_pdf(db, current_user.hospital_id)
-    buf = pdf_service.generate_pharmacy_purchase_pdf(shaped, hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
+    buf = pdf_service.generate_pharmacy_purchase_pdf(shaped, hi, **pdf_gen_kwargs(db, current_user.hospital_id, 'pharmacy_purchase'))
     return _pdf_response(buf, f"{p.purchase_number}.pdf")
 
 
@@ -3327,7 +3327,7 @@ def dispense_slip_pdf(
         "notes": rx.notes,
     }
     hi = _hospital_info_for_pdf(db, current_user.hospital_id)
-    buf = pdf_service.generate_pharmacy_dispense_slip_pdf(data, hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
+    buf = pdf_service.generate_pharmacy_dispense_slip_pdf(data, hi, **pdf_gen_kwargs(db, current_user.hospital_id, 'pharmacy_dispense'))
     return _pdf_response(buf, f"dispense_{rx.prescription_number}.pdf")
 
 
@@ -3347,7 +3347,7 @@ def narcotic_register_pdf(
     }
     # Convert Pydantic rows → plain dicts for the generator
     row_dicts = [r.model_dump() for r in rows]
-    buf = pdf_service.generate_narcotic_register_pdf(row_dicts, period, hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id))
+    buf = pdf_service.generate_narcotic_register_pdf(row_dicts, period, hi, **pdf_gen_kwargs(db, current_user.hospital_id, 'narcotic_register'))
     return _pdf_response(buf, "narcotic_register.pdf")
 
 
@@ -3385,7 +3385,7 @@ def sales_report_pdf(
     buf = pdf_service.generate_pharmacy_report_pdf(
         title="SALES REPORT", period=_report_period(date_from, date_to),
         columns=cols, rows=[r.model_dump() for r in rows],
-        hospital_info=hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id),
+        hospital_info=hi, **pdf_gen_kwargs(db, current_user.hospital_id, 'pharmacy_report'),
         meta={"Group by": group_by},
     )
     return _pdf_response(buf, "pharmacy_sales.pdf")
@@ -3416,7 +3416,7 @@ def purchases_report_pdf(
     buf = pdf_service.generate_pharmacy_report_pdf(
         title="PURCHASES REPORT", period=_report_period(date_from, date_to),
         columns=cols, rows=[r.model_dump() for r in rows],
-        hospital_info=hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id),
+        hospital_info=hi, **pdf_gen_kwargs(db, current_user.hospital_id, 'pharmacy_report'),
         meta={"Group by": group_by},
     )
     return _pdf_response(buf, "pharmacy_purchases.pdf")
@@ -3442,7 +3442,7 @@ def stock_on_hand_pdf(
     buf = pdf_service.generate_pharmacy_report_pdf(
         title="STOCK ON HAND", period=None,
         columns=cols, rows=[r.model_dump() for r in rows],
-        hospital_info=hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id),
+        hospital_info=hi, **pdf_gen_kwargs(db, current_user.hospital_id, 'pharmacy_report'),
     )
     return _pdf_response(buf, "pharmacy_stock.pdf")
 
@@ -3471,7 +3471,7 @@ def tax_summary_pdf(
     buf = pdf_service.generate_pharmacy_report_pdf(
         title="TAX SUMMARY", period=_report_period(date_from, date_to),
         columns=cols, rows=[r.model_dump() for r in rows],
-        hospital_info=hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id),
+        hospital_info=hi, **pdf_gen_kwargs(db, current_user.hospital_id, 'pharmacy_report'),
     )
     return _pdf_response(buf, "pharmacy_tax_summary.pdf")
 
@@ -3506,7 +3506,7 @@ def daily_closeout_pdf(
     buf = pdf_service.generate_pharmacy_report_pdf(
         title="DAILY CLOSEOUT", period={"from": the_day, "to": the_day},
         columns=cols, rows=[r.model_dump() for r in rows],
-        hospital_info=hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id),
+        hospital_info=hi, **pdf_gen_kwargs(db, current_user.hospital_id, 'pharmacy_report'),
     )
     return _pdf_response(buf, f"closeout_{the_day}.pdf")
 
@@ -3533,7 +3533,7 @@ def margin_report_pdf(
     buf = pdf_service.generate_pharmacy_report_pdf(
         title="PROFIT / MARGIN", period=_report_period(date_from, date_to),
         columns=cols, rows=[r.model_dump() for r in rows],
-        hospital_info=hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id),
+        hospital_info=hi, **pdf_gen_kwargs(db, current_user.hospital_id, 'pharmacy_report'),
         meta={"Group by": group_by},
     )
     return _pdf_response(buf, "pharmacy_margin.pdf")
@@ -3561,7 +3561,7 @@ def supplier_aging_pdf(
         title="SUPPLIER OUTSTANDING (AGING)",
         period={"from": "—", "to": the_day},
         columns=cols, rows=[r.model_dump() for r in rows],
-        hospital_info=hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id),
+        hospital_info=hi, **pdf_gen_kwargs(db, current_user.hospital_id, 'pharmacy_report'),
         meta={"Note": "Interim — payments tracking ships in P4.2"},
     )
     return _pdf_response(buf, "supplier_aging.pdf")
@@ -3587,6 +3587,6 @@ def movement_report_pdf(
     buf = pdf_service.generate_pharmacy_report_pdf(
         title=f"MOVEMENT — Last {days} days", period=None,
         columns=cols, rows=[r.model_dump() for r in rows],
-        hospital_info=hi, include_header=get_hospital_pdf_include_header(db, current_user.hospital_id),
+        hospital_info=hi, **pdf_gen_kwargs(db, current_user.hospital_id, 'pharmacy_report'),
     )
     return _pdf_response(buf, "pharmacy_movement.pdf")

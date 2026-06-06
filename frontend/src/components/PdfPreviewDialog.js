@@ -1,24 +1,23 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
+import { Link } from 'react-router-dom';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { Button } from './ui/button';
 import { Printer } from 'lucide-react';
-import { usePdfPrintSettings } from '../hooks/usePdfPrintSettings';
 
 /**
- * Generic PDF preview dialog — letterhead follows Hospital Config print settings.
+ * Generic PDF preview dialog — letterhead follows Print Settings (server-side).
  *
  * Props:
  *   open    boolean
  *   onClose fn
  *   title   string
  *   path    string — API path to GET
- *   params  object — extra query params (exclude include_header)
+ *   params  object — extra query params
  */
 const PdfPreviewDialog = ({
   open, onClose, title = 'PDF Preview', path, params = {},
 }) => {
-  const { includeHeaderOnPdfs, isLoading: settingsLoading } = usePdfPrintSettings();
   const [pdfUrl, setPdfUrl] = useState(null);
   const [loading, setLoading] = useState(false);
 
@@ -26,12 +25,12 @@ const PdfPreviewDialog = ({
     let cancelled = false;
     let createdUrl = null;
     const fetchPdf = async () => {
-      if (!open || !path || settingsLoading) return;
+      if (!open || !path) return;
       setLoading(true);
       try {
         const res = await axios.get(path, {
           responseType: 'blob',
-          params: { ...params, include_header: includeHeaderOnPdfs },
+          params: { ...params },
         });
         if (cancelled) return;
         const url = window.URL.createObjectURL(
@@ -55,7 +54,7 @@ const PdfPreviewDialog = ({
         try { window.URL.revokeObjectURL(createdUrl); } catch {}
       }
     };
-  }, [open, path, includeHeaderOnPdfs, settingsLoading, JSON.stringify(params)]);
+  }, [open, path, JSON.stringify(params)]);
 
   const handleClose = () => {
     if (pdfUrl) {
@@ -87,7 +86,10 @@ const PdfPreviewDialog = ({
         </DialogHeader>
         <div className="flex flex-col space-y-4">
           <p className="text-xs text-muted-foreground">
-            Letterhead on PDFs is controlled under Hospital Config → Printing.
+            Letterhead and top gap are configured under{' '}
+            <Link to="/dashboard/print-settings" className="underline hover:text-foreground">
+              Print Settings
+            </Link>.
           </p>
           <div className="flex-1 min-h-[500px] border rounded-lg overflow-hidden bg-gray-50">
             {pdfUrl ? (
@@ -98,7 +100,7 @@ const PdfPreviewDialog = ({
               />
             ) : (
               <div className="w-full h-[500px] flex items-center justify-center text-sm text-gray-500">
-                {loading || settingsLoading ? 'Loading PDF…' : 'No PDF loaded'}
+                {loading ? 'Loading PDF…' : 'No PDF loaded'}
               </div>
             )}
           </div>

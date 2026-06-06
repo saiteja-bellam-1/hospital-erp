@@ -7,7 +7,7 @@ from datetime import datetime
 import uuid
 
 from config.database import get_db
-from app.utils.pdf_settings import get_hospital_pdf_include_header
+from app.utils.pdf_settings import pdf_gen_kwargs
 from app.models.prescriptions_simple import SimplePrescription
 from app.models.patient import Patient
 from app.models.user import User
@@ -449,7 +449,7 @@ async def download_prescription_pdf(
     }
 
     # Generate PDF
-    pdf_buffer = pdf_service.generate_prescription_pdf(prescription_pdf_data, hospital_info, get_hospital_pdf_include_header(db, current_user.hospital_id))
+    pdf_buffer = pdf_service.generate_prescription_pdf(prescription_pdf_data, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'prescription'))
 
     # Create filename
     filename = f"prescription_{prescription.prescription_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"

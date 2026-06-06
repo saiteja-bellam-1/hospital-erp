@@ -2711,7 +2711,7 @@ const DoctorDashboard = () => {
           </div>
           <div className="pt-4 border-t space-y-3">
             <p className="text-xs text-muted-foreground">
-              Letterhead follows Hospital Config → Printing.
+              Letterhead follows Settings → Print Settings.
             </p>
             <div className="flex items-center gap-4">
               <Button variant="outline" size="sm" onClick={refreshPreview}>
