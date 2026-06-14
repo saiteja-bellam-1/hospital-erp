@@ -8,7 +8,7 @@ from datetime import datetime, date, time, timedelta
 import io
 
 from config.database import get_db
-from app.utils.pdf_settings import pdf_gen_kwargs
+from app.utils.pdf_settings import bill_pdf_gen_kwargs
 from app.models.user import User
 from app.models.patient import Patient
 from app.models.outpatient import Appointment
@@ -1450,7 +1450,7 @@ async def download_appointment_bill(
             bill_data["patient_age"] = ""
 
     # Generate PDF
-    pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'opd_bill'))
+    pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, **bill_pdf_gen_kwargs(db, current_user.hospital_id, 'opd_bill'))
 
     return StreamingResponse(
         io.BytesIO(pdf_buffer.read()),

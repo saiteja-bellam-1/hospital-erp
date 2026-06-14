@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -935,11 +935,11 @@ async def download_prescription_pdf(
     # Create filename
     filename = f"prescription_{prescription.prescription_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
 
-    # Return PDF as streaming response
-    return StreamingResponse(
-        pdf_buffer,
+    # Return PDF as inline response (bytes — reliable in Windows bundled build)
+    return Response(
+        content=pdf_buffer.getvalue(),
         media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
 
 @router.delete("/{prescription_id}")

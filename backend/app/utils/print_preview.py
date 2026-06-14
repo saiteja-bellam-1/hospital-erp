@@ -57,17 +57,18 @@ def _sample_bill() -> dict:
         "patient_phone": "9999999999",
         "mrn": "MRN-PREVIEW",
         "referred_by": "Self",
-        "items": [
-            {"description": "Sample consultation", "qty": 1, "rate": 500, "amount": 500},
-            {"description": "Sample procedure", "qty": 1, "rate": 200, "amount": 200},
-        ],
-        "subtotal": 700,
-        "discount": 0,
-        "tax": 0,
-        "total": 700,
-        "amount_paid": 700,
-        "balance": 0,
         "payment_method": "Cash",
+        "items": [
+            {"item_name": "Sample consultation", "item_code": "CONS", "total_price": 500},
+            {"item_name": "Sample procedure", "item_code": "PROC", "total_price": 1000},
+        ],
+        "subtotal": 1500,
+        "discount_amount": 100,
+        "tax_amount": 0,
+        "total_amount": 1400,
+        "amount_paid": 1400,
+        "balance_due": 0,
+        "prepared_by": "Sample Receptionist",
     }
 
 
@@ -98,12 +99,12 @@ def _sample_inpatient_bill() -> dict:
             {"description": "Room charges (sample)", "code": "", "qty": 1, "rate": 1500, "amount": 1500},
         ],
         "subtotal": 1500,
-        "discount": 0,
+        "discount": 100,
         "tax": 0,
-        "total": 1500,
+        "total": 1400,
         "deposits": [],
-        "deposits_total": 0,
-        "balance_due": 1500,
+        "deposits_total": 500,
+        "balance_due": 900,
     }
 
 
@@ -168,6 +169,87 @@ def _sample_lab_report() -> dict:
                 "is_abnormal": False,
             },
         ],
+        "technician_name": "Sample Lab Tech",
+    }
+
+
+def _sample_discharge_summary() -> dict:
+    now = datetime.now()
+    return {
+        "admission_number": "ADM-PREVIEW",
+        "patient_name": "Sample Patient",
+        "mrn": "MRN-PREVIEW",
+        "patient_id": "P-PREVIEW",
+        "age": "45",
+        "gender": "F",
+        "village": "Sample Village",
+        "district": "Sample District",
+        "doctor_name": "Dr. Sample Doctor",
+        "admission_date": now.strftime("%d/%m/%Y"),
+        "discharge_date": now.strftime("%d/%m/%Y"),
+        "discharge_type": "normal",
+        "condition_on_admission": "stable",
+        "condition_on_discharge": "stable",
+        "diagnosis": "Sample diagnosis (preview only)",
+        "treatment": "Sample treatment given during stay",
+        "discharge_summary": "Sample discharge summary text for preview.",
+        "take_home_medications": [
+            {
+                "medicine_name": "Sample Medicine 500mg",
+                "dosage": "1 tablet",
+                "frequency": "BD",
+                "duration": "5 days",
+                "quantity": 10,
+                "instructions": "After food",
+            },
+        ],
+        "medications": "",
+        "follow_up": "Review in 1 week",
+        "follow_up_date": now.strftime("%d/%m/%Y"),
+        "diet_instructions": "Normal diet",
+        "activity_restrictions": "Avoid strenuous activity",
+        "total_stay_days": 3,
+        "total_charges": 15000.0,
+    }
+
+
+def _sample_consent() -> dict:
+    now = datetime.now()
+    return {
+        "consent_type": "face_sheet",
+        "doc_number": "CS-PREVIEW-0001",
+        "template_content": (
+            "FACE SHEET — ADMISSION IDENTIFICATION (preview)\n\n"
+            "Patient: Sample Patient\n"
+            "I consent to treatment at this hospital."
+        ),
+        "procedure_name": "",
+        "doctor_name": "Dr. Sample Doctor",
+        "risks_explained": "",
+        "signed_by": "patient",
+        "guardian_name": "",
+        "guardian_relationship": "",
+        "patient_signature": "",
+        "patient_signature_type": None,
+        "witness_name": "",
+        "signed_at": "",
+        "withdrawn_at": "",
+        "withdrawal_reason": "",
+        "patient_name": "Sample Patient",
+        "mrn": "MRN-PREVIEW",
+        "patient_id": "P-PREVIEW",
+        "age": "45",
+        "gender": "Female",
+        "primary_phone": "9999999999",
+        "village": "Sample Village",
+        "district": "Sample District",
+        "emergency_contact_name": "Sample Contact",
+        "emergency_contact_relation": "Spouse",
+        "emergency_contact_phone": "8888888888",
+        "admission_number": "ADM-PREVIEW",
+        "admission_date": now.strftime("%d/%m/%Y"),
+        "room_name": "101",
+        "room_type": "general",
     }
 
 
@@ -220,8 +302,11 @@ def generate_print_preview_pdf(
     *,
     report_type: str,
     include_header_on_pdfs: bool,
+    detailed_billing_on_pdfs: bool = True,
+    include_footer_on_pdfs: bool = True,
     letterhead_gap_mm: float,
     report_header_overrides: dict[str, str] | None = None,
+    report_footer_overrides: dict[str, str] | None = None,
 ):
     if report_type not in VALID_REPORT_KEYS:
         report_type = "opd_bill"
@@ -231,11 +316,19 @@ def generate_print_preview_pdf(
         letterhead_gap_mm=letterhead_gap_mm,
         report_header_overrides=report_header_overrides or {},
         report_type=report_type,
+        include_footer_on_pdfs=include_footer_on_pdfs,
+        report_footer_overrides=report_footer_overrides or {},
     )
     kwargs = {
         "include_header": opts.include_header,
         "letterhead_gap_pt": opts.letterhead_gap_pt,
     }
+    from app.utils.pdf_settings import FOOTER_REPORT_KEYS
+    if report_type in FOOTER_REPORT_KEYS:
+        kwargs["include_footer"] = opts.include_footer
+    bill_layout_keys = {"opd_bill", "lab_bill", "inpatient_bill"}
+    if report_type in bill_layout_keys:
+        kwargs["detailed_billing"] = detailed_billing_on_pdfs
     hi = _hospital_info(db, hospital_id)
 
     if report_type == "prescription":
@@ -337,16 +430,13 @@ def generate_print_preview_pdf(
 
     if report_type == "discharge_summary":
         return pdf_service.generate_discharge_summary_pdf(
-            {
-                "patient": {"name": "Sample Patient", "mrn": "MRN-PREVIEW", "age": 45, "gender": "F"},
-                "admission": {"admission_number": "ADM-PREVIEW", "admitted_at": datetime.now().isoformat()},
-                "discharge": {"discharged_at": datetime.now().isoformat(), "discharge_type": "normal"},
-                "diagnosis": "Sample diagnosis",
-                "summary": "Sample discharge summary text for preview.",
-            },
+            _sample_discharge_summary(),
             hi,
             **kwargs,
         )
+
+    if report_type == "consent":
+        return pdf_service.generate_consent_pdf(_sample_consent(), hi, **kwargs)
 
     # Default: OPD-style bill preview (covers opd_bill, lab_bill, credit_note, admin reports, etc.)
     return pdf_service.generate_bill_pdf(_sample_bill(), hi, **kwargs)

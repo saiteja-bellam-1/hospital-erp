@@ -22,6 +22,21 @@ export function resolveIncludeHeaderForReport(settings, reportType) {
   return globalDefault;
 }
 
+const FOOTER_REPORT_KEYS = new Set(['opd_bill', 'lab_bill', 'lab_report']);
+
+export function resolveIncludeFooterForReport(settings, reportType) {
+  if (!settings) return true;
+  if (reportType && !FOOTER_REPORT_KEYS.has(reportType)) return true;
+  const globalDefault = settings.include_footer_on_pdfs !== false;
+  const overrides = settings.report_footer_overrides || {};
+  if (reportType && overrides[reportType]) {
+    const ov = overrides[reportType];
+    if (ov === 'on') return true;
+    if (ov === 'off') return false;
+  }
+  return globalDefault;
+}
+
 export function usePdfPrintSettings() {
   const query = useQuery({
     queryKey: ['hospital-print-settings'],
@@ -35,16 +50,21 @@ export function usePdfPrintSettings() {
 
   const settings = query.data;
   const includeHeaderOnPdfs = settings?.include_header_on_pdfs !== false;
+  const includeFooterOnPdfs = settings?.include_footer_on_pdfs !== false;
 
   return {
     settings,
     includeHeaderOnPdfs,
+    includeFooterOnPdfs,
     letterheadGapMm: settings?.letterhead_gap_mm ?? 35,
     reportCatalog: settings?.report_catalog ?? [],
+    footerReportCatalog: settings?.footer_report_catalog ?? [],
     reportHeaderOverrides: settings?.report_header_overrides ?? {},
+    reportFooterOverrides: settings?.report_footer_overrides ?? {},
     isLoading: query.isLoading,
     refetch: query.refetch,
     resolveIncludeHeader: (reportType) => resolveIncludeHeaderForReport(settings, reportType),
+    resolveIncludeFooter: (reportType) => resolveIncludeFooterForReport(settings, reportType),
   };
 }
 

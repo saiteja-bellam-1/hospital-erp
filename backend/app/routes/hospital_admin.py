@@ -19,7 +19,7 @@ from app.models.lab import PatientLabOrder, LabTest, LabTestCategory, LabTestPac
 from app.models.billing import Bill, BillItem, Payment
 from app.models.inpatient import Admission
 from app.utils.dependencies import get_current_user
-from app.utils.pdf_settings import pdf_gen_kwargs
+from app.utils.pdf_settings import bill_pdf_gen_kwargs, pdf_gen_kwargs
 
 from app.utils.paths import get_uploads_dir
 
@@ -574,15 +574,21 @@ async def get_print_settings(
 
 class PrintSettingsUpdate(BaseModel):
     include_header_on_pdfs: Optional[bool] = None
+    include_footer_on_pdfs: Optional[bool] = None
+    detailed_billing_on_pdfs: Optional[bool] = None
     letterhead_gap_mm: Optional[float] = None
     report_header_overrides: Optional[dict[str, str]] = None
+    report_footer_overrides: Optional[dict[str, str]] = None
 
 
 class PrintSettingsPreviewRequest(BaseModel):
     report_type: str = "opd_bill"
     include_header_on_pdfs: bool = True
+    include_footer_on_pdfs: bool = True
+    detailed_billing_on_pdfs: bool = True
     letterhead_gap_mm: float = 35.0
     report_header_overrides: Optional[dict[str, str]] = None
+    report_footer_overrides: Optional[dict[str, str]] = None
 
 
 @router.post("/print-settings/preview")
@@ -606,8 +612,11 @@ async def preview_print_settings(
         current_user.hospital_id,
         report_type=data.report_type,
         include_header_on_pdfs=data.include_header_on_pdfs,
+        include_footer_on_pdfs=data.include_footer_on_pdfs,
+        detailed_billing_on_pdfs=data.detailed_billing_on_pdfs,
         letterhead_gap_mm=data.letterhead_gap_mm,
         report_header_overrides=data.report_header_overrides,
+        report_footer_overrides=data.report_footer_overrides,
     )
     return Response(
         content=buf.getvalue(),
@@ -638,8 +647,11 @@ async def update_print_settings(
         db,
         current_user.hospital_id,
         include_header_on_pdfs=data.include_header_on_pdfs,
+        include_footer_on_pdfs=data.include_footer_on_pdfs,
+        detailed_billing_on_pdfs=data.detailed_billing_on_pdfs,
         letterhead_gap_mm=data.letterhead_gap_mm,
         report_header_overrides=data.report_header_overrides,
+        report_footer_overrides=data.report_footer_overrides,
         created_by=current_user.id,
     )
     db.commit()
@@ -2461,7 +2473,7 @@ async def get_bill_pdf(
         "hospital_subname": getattr(hospital, "hospital_subname", "") if hospital else "",
     }
     from app.utils.pdf_service import pdf_service
-    buf = pdf_service.generate_bill_pdf(bill_data, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'opd_bill'))
+    buf = pdf_service.generate_bill_pdf(bill_data, hospital_info, **bill_pdf_gen_kwargs(db, current_user.hospital_id, 'opd_bill'))
     from fastapi.responses import Response
     return Response(content=buf.getvalue(), media_type="application/pdf",
                     headers={"Content-Disposition": f'inline; filename="{bill.bill_number}.pdf"'})

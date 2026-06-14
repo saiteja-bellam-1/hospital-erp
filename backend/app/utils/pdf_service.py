@@ -193,7 +193,7 @@ class PDFService:
             textColor=colors.darkgrey
         ))
 
-    def generate_inpatient_bill_pdf(self, bill_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
+    def generate_inpatient_bill_pdf(self, bill_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, detailed_billing=True):
         """Inpatient bill — mirrors the OPD receipt layout so both bills feel
         consistent. Adds an Admission Details box for IP-specific fields, and
         the Payment Summary lists every deposit received before the balance.
@@ -541,20 +541,21 @@ class PDFService:
                 Paragraph('<b>Bill Total</b>', cell_value_sm),
                 Paragraph(f"{total:,.2f}", cell_value_right),
             ])
-        payment_data.extend([
-            [Paragraph('', cell_value_sm),
-             Paragraph('<b>Deposits</b>', cell_value_sm),
-             Paragraph(f"{deposits_total:,.2f}", cell_value_right)],
-            [Paragraph('', cell_value_sm),
-             Paragraph('<b>Balance</b>'
-                       if balance > 0 else
-                       '<b>Refund Due</b>' if balance < -0.01 else
-                       '<b>Balance</b>', cell_value_sm),
-             Paragraph(
-                f"{abs(balance):,.2f}" if abs(balance) > 0.01 else "0.00",
-                ParagraphStyle('Bal', parent=cell_value_right,
-                    fontName='Helvetica-Bold'))],
-        ])
+        if detailed_billing:
+            payment_data.extend([
+                [Paragraph('', cell_value_sm),
+                 Paragraph('<b>Deposits</b>', cell_value_sm),
+                 Paragraph(f"{deposits_total:,.2f}", cell_value_right)],
+                [Paragraph('', cell_value_sm),
+                 Paragraph('<b>Balance</b>'
+                           if balance > 0 else
+                           '<b>Refund Due</b>' if balance < -0.01 else
+                           '<b>Balance</b>', cell_value_sm),
+                 Paragraph(
+                    f"{abs(balance):,.2f}" if abs(balance) > 0.01 else "0.00",
+                    ParagraphStyle('Bal', parent=cell_value_right,
+                        fontName='Helvetica-Bold'))],
+            ])
         payment_table = Table(payment_data, colWidths=[summary_label_w, code_w, rate_w])
         payment_table.setStyle(TableStyle([
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
@@ -645,7 +646,7 @@ class PDFService:
         return buffer
 
 
-    def generate_bill_pdf(self, bill_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
+    def generate_bill_pdf(self, bill_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, detailed_billing=True, include_footer=True):
         """Generate PDF for bill/receipt in tabular format"""
         buffer = BytesIO()
 
@@ -926,24 +927,70 @@ class PDFService:
         summary_label_w = page_width - code_w - rate_w
         cell_value_right = ParagraphStyle('CellValueRight', parent=cell_value_sm, alignment=2)
 
-        payment_data = [
-            [lv_sm('Paymode', pay_category), Paragraph('<b>Total Amt</b>', cell_value_sm), Paragraph(f"{total_amt:.2f}", cell_value_right)],
-            [Paragraph('', cell_value_sm), Paragraph('<b>Discount</b>', cell_value_sm), Paragraph(f"{discount:.2f}", cell_value_right)],
-        ]
-        if tax_amt:
-            payment_data.append(
-                [Paragraph('', cell_value_sm), Paragraph('<b>Tax</b>', cell_value_sm), Paragraph(f"{tax_amt:.2f}", cell_value_right)]
-            )
-        payment_data.append(
-            [Paragraph('', cell_value_sm), Paragraph('<b>Net Total</b>', cell_value_sm), Paragraph(f"{net_total:.2f}", cell_value_right)]
-        )
-        if not hide_payment_summary:
-            payment_data.append(
-                [Paragraph('', cell_value_sm), Paragraph('<b>Paid Amt</b>', cell_value_sm), Paragraph(f"{paid_amt:.2f}", cell_value_right)]
-            )
-            payment_data.append(
-                [Paragraph('', cell_value_sm), Paragraph('<b>Balance</b>', cell_value_sm), Paragraph(f"{balance:.2f}", cell_value_right)]
-            )
+        has_adjustments = (discount or 0) > 0 or (tax_amt or 0) > 0
+        payment_data = []
+        if detailed_billing:
+            payment_data.append([
+                lv_sm('Paymode', pay_category),
+                Paragraph('<b>Total Amt</b>', cell_value_sm),
+                Paragraph(f"{total_amt:.2f}", cell_value_right),
+            ])
+            payment_data.append([
+                Paragraph('', cell_value_sm),
+                Paragraph('<b>Discount</b>', cell_value_sm),
+                Paragraph(f"{discount:.2f}", cell_value_right),
+            ])
+            if tax_amt:
+                payment_data.append([
+                    Paragraph('', cell_value_sm),
+                    Paragraph('<b>Tax</b>', cell_value_sm),
+                    Paragraph(f"{tax_amt:.2f}", cell_value_right),
+                ])
+            payment_data.append([
+                Paragraph('', cell_value_sm),
+                Paragraph('<b>Net Total</b>', cell_value_sm),
+                Paragraph(f"{net_total:.2f}", cell_value_right),
+            ])
+            if not hide_payment_summary:
+                payment_data.append([
+                    Paragraph('', cell_value_sm),
+                    Paragraph('<b>Paid Amt</b>', cell_value_sm),
+                    Paragraph(f"{paid_amt:.2f}", cell_value_right),
+                ])
+                payment_data.append([
+                    Paragraph('', cell_value_sm),
+                    Paragraph('<b>Balance</b>', cell_value_sm),
+                    Paragraph(f"{balance:.2f}", cell_value_right),
+                ])
+        elif has_adjustments:
+            payment_data.append([
+                lv_sm('Paymode', pay_category),
+                Paragraph('<b>Sub Total</b>', cell_value_sm),
+                Paragraph(f"{total_amt:.2f}", cell_value_right),
+            ])
+            if discount:
+                payment_data.append([
+                    Paragraph('', cell_value_sm),
+                    Paragraph('<b>Discount</b>', cell_value_sm),
+                    Paragraph(f"{discount:.2f}", cell_value_right),
+                ])
+            if tax_amt:
+                payment_data.append([
+                    Paragraph('', cell_value_sm),
+                    Paragraph('<b>Tax</b>', cell_value_sm),
+                    Paragraph(f"{tax_amt:.2f}", cell_value_right),
+                ])
+            payment_data.append([
+                Paragraph('', cell_value_sm),
+                Paragraph('<b>Total Amt</b>', cell_value_sm),
+                Paragraph(f"{net_total:.2f}", cell_value_right),
+            ])
+        else:
+            payment_data.append([
+                lv_sm('Paymode', pay_category),
+                Paragraph('<b>Total Amt</b>', cell_value_sm),
+                Paragraph(f"{net_total:.2f}", cell_value_right),
+            ])
 
         payment_table = Table(payment_data, colWidths=[summary_label_w, code_w, rate_w])
         payment_table.setStyle(TableStyle([
@@ -987,18 +1034,19 @@ class PDFService:
         # ============================================================
         # FOOTER: prepared by / printed by
         # ============================================================
-        prepared_by = bill_data.get('prepared_by', '')
-        footer_data = [
-            [lv('Prepared by', prepared_by), lv('Printed by', prepared_by)],
-        ]
-        footer_table = Table(footer_data, colWidths=[page_width / 2, page_width / 2])
-        footer_table.setStyle(TableStyle([
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ('TOPPADDING', (0, 0), (-1, -1), 3),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
-            ('LEFTPADDING', (0, 0), (-1, -1), 6),
-        ]))
-        elements.append(footer_table)
+        if include_footer:
+            prepared_by = bill_data.get('prepared_by', '')
+            footer_data = [
+                [lv('Prepared by', prepared_by), lv('Printed by', prepared_by)],
+            ]
+            footer_table = Table(footer_data, colWidths=[page_width / 2, page_width / 2])
+            footer_table.setStyle(TableStyle([
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('TOPPADDING', (0, 0), (-1, -1), 3),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                ('LEFTPADDING', (0, 0), (-1, -1), 6),
+            ]))
+            elements.append(footer_table)
 
         # Build PDF
         _finalize(doc, elements, hospital_info)
@@ -1491,7 +1539,7 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_lab_report_pdf(self, report_data, hospital_info, lab_config=None, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
+    def generate_lab_report_pdf(self, report_data, hospital_info, lab_config=None, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, include_footer=True):
         """Generate PDF for lab report"""
         if lab_config is None:
             lab_config = {}
@@ -1530,7 +1578,7 @@ class PDFService:
             fontSize=9, fontName='Helvetica', textColor=colors.black)
 
         cell_abnormal = ParagraphStyle('LabCellAbnormal', parent=self.styles['Normal'],
-            fontSize=9, fontName='Helvetica-Bold', textColor=colors.red)
+            fontSize=10, fontName='Helvetica-Bold', textColor=colors.black)
 
         normal_text = ParagraphStyle('LabNormalText', parent=self.styles['Normal'],
             fontSize=10, spaceAfter=6, fontName='Helvetica', textColor=colors.black)
@@ -1810,21 +1858,6 @@ class PDFService:
             table_style_cmds.append(('TOPPADDING', (0, sec_row), (-1, sec_row), 5))
             table_style_cmds.append(('BOTTOMPADDING', (0, sec_row), (-1, sec_row), 5))
 
-        # Highlight abnormal rows (need to account for inserted section rows)
-        row_idx = 1  # start after header
-        current_section_2 = None
-        for r in results_list:
-            section = r.get('section', '')
-            if section and section != current_section_2:
-                current_section_2 = section
-                row_idx += 1  # skip section header row
-            elif not section and current_section_2 is not None:
-                current_section_2 = None
-
-            if r.get('is_abnormal', False):
-                table_style_cmds.append(('BACKGROUND', (0, row_idx), (-1, row_idx), colors.Color(1, 0.95, 0.95)))
-            row_idx += 1
-
         results_table.setStyle(TableStyle(table_style_cmds))
         elements.append(results_table)
         elements.append(Spacer(1, 10))
@@ -1858,62 +1891,63 @@ class PDFService:
         # ============================================================
         # SIGNATURES
         # ============================================================
-        elements.append(Spacer(1, 30))
-        tech_name = report_data.get('technician_name', '')
+        if include_footer:
+            elements.append(Spacer(1, 30))
+            tech_name = report_data.get('technician_name', '')
 
-        # Build signatory column — use pathologist info from lab config
-        pathologist_name = lab_config.get('pathologist_name', '')
-        pathologist_qual = lab_config.get('pathologist_qualification', '')
-        sig_image_path = lab_config.get('signature_image', '')
+            # Build signatory column — use pathologist info from lab config
+            pathologist_name = lab_config.get('pathologist_name', '')
+            pathologist_qual = lab_config.get('pathologist_qualification', '')
+            sig_image_path = lab_config.get('signature_image', '')
 
-        # Left column: Lab Technician
-        left_col = Paragraph(f"<b>Lab Technician:</b> {tech_name}", cell_value)
+            # Left column: Lab Technician
+            left_col = Paragraph(f"<b>Lab Technician:</b> {tech_name}", cell_value)
 
-        # Right column: Authorized Signatory with optional signature image
-        right_col_parts = []
+            # Right column: Authorized Signatory with optional signature image
+            right_col_parts = []
 
-        # Add signature image if available
-        if sig_image_path:
-            relative = sig_image_path.lstrip('/')
-            if relative.startswith('uploads/'):
-                relative = relative[len('uploads/'):]
-            full_sig_path = os.path.join(uploads_base, relative)
-            if os.path.exists(full_sig_path):
-                try:
-                    sig_img = Image(full_sig_path, width=80, height=35)
-                    sig_img.hAlign = 'LEFT'
-                    right_col_parts.append(sig_img)
-                except Exception:
-                    pass
+            # Add signature image if available
+            if sig_image_path:
+                relative = sig_image_path.lstrip('/')
+                if relative.startswith('uploads/'):
+                    relative = relative[len('uploads/'):]
+                full_sig_path = os.path.join(uploads_base, relative)
+                if os.path.exists(full_sig_path):
+                    try:
+                        sig_img = Image(full_sig_path, width=80, height=35)
+                        sig_img.hAlign = 'LEFT'
+                        right_col_parts.append(sig_img)
+                    except Exception:
+                        pass
 
-        if pathologist_name:
-            right_col_parts.append(Paragraph(f"<b>{pathologist_name}</b>", cell_value))
-        if pathologist_qual:
-            qual_style = ParagraphStyle('LabQual', parent=self.styles['Normal'],
-                fontSize=8, fontName='Helvetica', textColor=colors.grey)
-            right_col_parts.append(Paragraph(pathologist_qual, qual_style))
-        if not pathologist_name:
-            right_col_parts.append(Paragraph("<b>Authorized Signatory</b>", cell_value))
+            if pathologist_name:
+                right_col_parts.append(Paragraph(f"<b>{pathologist_name}</b>", cell_value))
+            if pathologist_qual:
+                qual_style = ParagraphStyle('LabQual', parent=self.styles['Normal'],
+                    fontSize=8, fontName='Helvetica', textColor=colors.grey)
+                right_col_parts.append(Paragraph(pathologist_qual, qual_style))
+            if not pathologist_name:
+                right_col_parts.append(Paragraph("<b>Authorized Signatory</b>", cell_value))
 
-        sig_data = [
-            [left_col, right_col_parts],
-        ]
-        sig_table = Table(sig_data, colWidths=[page_width / 2, page_width / 2])
-        sig_table.setStyle(TableStyle([
-            ('VALIGN', (0, 0), (-1, -1), 'BOTTOM'),
-            ('TOPPADDING', (0, 0), (-1, -1), 3),
-        ]))
-        elements.append(sig_table)
+            sig_data = [
+                [left_col, right_col_parts],
+            ]
+            sig_table = Table(sig_data, colWidths=[page_width / 2, page_width / 2])
+            sig_table.setStyle(TableStyle([
+                ('VALIGN', (0, 0), (-1, -1), 'BOTTOM'),
+                ('TOPPADDING', (0, 0), (-1, -1), 3),
+            ]))
+            elements.append(sig_table)
 
-        # Footer
-        elements.append(Spacer(1, 20))
-        elements.append(Paragraph(f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M:%S')}", footer_style))
+            # Footer timestamp
+            elements.append(Spacer(1, 20))
+            elements.append(Paragraph(f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M:%S')}", footer_style))
 
         _finalize(doc, elements, hospital_info)
         buffer.seek(0)
         return buffer
 
-    def generate_combined_lab_report_pdf(self, reports_list, hospital_info, lab_config=None, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
+    def generate_combined_lab_report_pdf(self, reports_list, hospital_info, lab_config=None, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, include_footer=True):
         """Generate a single continuous PDF with all tests flowing together.
         Header repeats on every page (or blank space for pre-printed letterhead).
         Patient info on first page only, tests flow continuously, signatures at the end."""
@@ -2040,7 +2074,7 @@ class PDFService:
         cell_value = ParagraphStyle('CLabCellValue', parent=self.styles['Normal'],
             fontSize=9, fontName='Helvetica', textColor=colors.black)
         cell_abnormal = ParagraphStyle('CLabCellAbnormal', parent=self.styles['Normal'],
-            fontSize=9, fontName='Helvetica-Bold', textColor=colors.red)
+            fontSize=10, fontName='Helvetica-Bold', textColor=colors.black)
         normal_text = ParagraphStyle('CLabNormalText', parent=self.styles['Normal'],
             fontSize=10, spaceAfter=6, fontName='Helvetica', textColor=colors.black)
         footer_style = ParagraphStyle('CLabFooter', parent=self.styles['Normal'],
@@ -2202,19 +2236,6 @@ class PDFService:
                 table_style_cmds.append(('TOPPADDING', (0, sec_row), (-1, sec_row), 5))
                 table_style_cmds.append(('BOTTOMPADDING', (0, sec_row), (-1, sec_row), 5))
 
-            row_idx = 1
-            current_section_2 = None
-            for r in results_list_inner:
-                section = r.get('section', '')
-                if section and section != current_section_2:
-                    current_section_2 = section
-                    row_idx += 1
-                elif not section and current_section_2 is not None:
-                    current_section_2 = None
-                if r.get('is_abnormal', False):
-                    table_style_cmds.append(('BACKGROUND', (0, row_idx), (-1, row_idx), colors.Color(1, 0.95, 0.95)))
-                row_idx += 1
-
             results_table.setStyle(TableStyle(table_style_cmds))
             elements.append(results_table)
 
@@ -2243,50 +2264,51 @@ class PDFService:
         # ============================================================
         # SIGNATURES (once at the end)
         # ============================================================
-        elements.append(Spacer(1, 30))
-        uploads_base = _get_uploads_base()
+        if include_footer:
+            elements.append(Spacer(1, 30))
+            uploads_base = _get_uploads_base()
 
-        # Collect unique technician names from all reports
-        tech_names = list(dict.fromkeys(r.get('technician_name', '') for r in reports_list if r.get('technician_name')))
-        tech_text = ", ".join(tech_names) if tech_names else ""
-        left_col = Paragraph(f"<b>Lab Technician:</b> {tech_text}", cell_value)
+            # Collect unique technician names from all reports
+            tech_names = list(dict.fromkeys(r.get('technician_name', '') for r in reports_list if r.get('technician_name')))
+            tech_text = ", ".join(tech_names) if tech_names else ""
+            left_col = Paragraph(f"<b>Lab Technician:</b> {tech_text}", cell_value)
 
-        pathologist_name = lab_config.get('pathologist_name', '')
-        pathologist_qual = lab_config.get('pathologist_qualification', '')
-        sig_image_path = lab_config.get('signature_image', '')
+            pathologist_name = lab_config.get('pathologist_name', '')
+            pathologist_qual = lab_config.get('pathologist_qualification', '')
+            sig_image_path = lab_config.get('signature_image', '')
 
-        right_col_parts = []
-        if sig_image_path:
-            relative = sig_image_path.lstrip('/')
-            if relative.startswith('uploads/'):
-                relative = relative[len('uploads/'):]
-            full_sig_path = os.path.join(uploads_base, relative)
-            if os.path.exists(full_sig_path):
-                try:
-                    sig_img = Image(full_sig_path, width=80, height=35)
-                    sig_img.hAlign = 'LEFT'
-                    right_col_parts.append(sig_img)
-                except Exception:
-                    pass
+            right_col_parts = []
+            if sig_image_path:
+                relative = sig_image_path.lstrip('/')
+                if relative.startswith('uploads/'):
+                    relative = relative[len('uploads/'):]
+                full_sig_path = os.path.join(uploads_base, relative)
+                if os.path.exists(full_sig_path):
+                    try:
+                        sig_img = Image(full_sig_path, width=80, height=35)
+                        sig_img.hAlign = 'LEFT'
+                        right_col_parts.append(sig_img)
+                    except Exception:
+                        pass
 
-        if pathologist_name:
-            right_col_parts.append(Paragraph(f"<b>{pathologist_name}</b>", cell_value))
-        if pathologist_qual:
-            qual_style = ParagraphStyle('CLabQual', parent=self.styles['Normal'],
-                fontSize=8, fontName='Helvetica', textColor=colors.grey)
-            right_col_parts.append(Paragraph(pathologist_qual, qual_style))
-        if not pathologist_name:
-            right_col_parts.append(Paragraph("<b>Authorized Signatory</b>", cell_value))
+            if pathologist_name:
+                right_col_parts.append(Paragraph(f"<b>{pathologist_name}</b>", cell_value))
+            if pathologist_qual:
+                qual_style = ParagraphStyle('CLabQual', parent=self.styles['Normal'],
+                    fontSize=8, fontName='Helvetica', textColor=colors.grey)
+                right_col_parts.append(Paragraph(pathologist_qual, qual_style))
+            if not pathologist_name:
+                right_col_parts.append(Paragraph("<b>Authorized Signatory</b>", cell_value))
 
-        sig_table = Table([[left_col, right_col_parts]], colWidths=[page_width / 2, page_width / 2])
-        sig_table.setStyle(TableStyle([
-            ('VALIGN', (0, 0), (-1, -1), 'BOTTOM'),
-            ('TOPPADDING', (0, 0), (-1, -1), 3),
-        ]))
-        elements.append(sig_table)
+            sig_table = Table([[left_col, right_col_parts]], colWidths=[page_width / 2, page_width / 2])
+            sig_table.setStyle(TableStyle([
+                ('VALIGN', (0, 0), (-1, -1), 'BOTTOM'),
+                ('TOPPADDING', (0, 0), (-1, -1), 3),
+            ]))
+            elements.append(sig_table)
 
-        elements.append(Spacer(1, 20))
-        elements.append(Paragraph(f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M:%S')}", footer_style))
+            elements.append(Spacer(1, 20))
+            elements.append(Paragraph(f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M:%S')}", footer_style))
 
         _finalize(doc, elements, hospital_info, header_cb=_draw_header)
         buffer.seek(0)

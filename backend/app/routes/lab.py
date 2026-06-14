@@ -9,7 +9,7 @@ import uuid
 import io
 
 from config.database import get_db
-from app.utils.pdf_settings import pdf_gen_kwargs
+from app.utils.pdf_settings import bill_pdf_gen_kwargs, pdf_gen_kwargs
 from app.models.user import User
 from app.models.patient import Patient
 from app.models.hospital import Hospital
@@ -759,9 +759,18 @@ async def list_tests(
     category_id: Optional[int] = None,
     search: Optional[str] = None,
     include_inactive: bool = False,
-    current_user: User = Depends(require_permission(Modules.LAB, "read")),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    _assert_can_view_lab_test_catalog(current_user, db)
+    from app.utils.auth import UserRoles
+    user_roles = set(current_user.role_names)
+    can_manage_catalog = bool(user_roles & {
+        UserRoles.SUPER_ADMIN, UserRoles.HOSPITAL_ADMIN,
+        UserRoles.LAB_ADMIN, UserRoles.LAB_TECHNICIAN,
+    })
+    if include_inactive and not can_manage_catalog:
+        include_inactive = False
     query = db.query(LabTest).filter(LabTest.hospital_id == current_user.hospital_id)
     if not include_inactive:
         query = query.filter(LabTest.is_active == True)
@@ -778,9 +787,10 @@ async def list_tests(
 @router.get("/tests/{test_id}", response_model=TestResponse)
 async def get_test(
     test_id: int,
-    current_user: User = Depends(require_permission(Modules.LAB, "read")),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    _assert_can_view_lab_test_catalog(current_user, db)
     test = db.query(LabTest).filter(
         LabTest.id == test_id,
         LabTest.hospital_id == current_user.hospital_id
@@ -1060,6 +1070,62 @@ async def check_duplicate_orders(
     duplicates = _check_duplicate_orders(db, patient_id, test_ids)
     return {"duplicates": duplicates}
 
+
+_RECEPTION_LAB_BOOK_ROLES = frozenset({"receptionist", "frontdesk", "hospital_admin", "super_admin"})
+
+_LAB_READ_PERMISSIONS = frozenset({
+    "view_appointments", "view_patients", "view_schedules", "read",
+    "view_reports", "view_records", "view_history", "view_prescriptions",
+    "view_occupancy", "view_financial_reports", "view_system_reports",
+    "view_vitals", "view_mar",
+})
+
+
+def _assert_reception_lab_book_role(current_user: User) -> None:
+    if not _RECEPTION_LAB_BOOK_ROLES & set(current_user.role_names):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only reception or admin can book lab tests",
+        )
+
+
+def _can_view_lab_test_catalog(current_user: User, db: Session) -> bool:
+    """May list active lab tests for booking/ordering (not full lab admin access)."""
+    from app.utils.auth import UserRoles
+    from app.models.permissions import RoleModulePermission
+
+    user_roles = set(current_user.role_names)
+    if user_roles & {
+        UserRoles.SUPER_ADMIN, UserRoles.HOSPITAL_ADMIN,
+        UserRoles.LAB_ADMIN, UserRoles.LAB_TECHNICIAN,
+    }:
+        return True
+    if user_roles & _RECEPTION_LAB_BOOK_ROLES:
+        return True
+
+    role_ids = [r.id for r in (current_user.roles or [])]
+    if current_user.role_id and current_user.role_id not in role_ids:
+        role_ids.append(current_user.role_id)
+
+    for rid in role_ids:
+        rp = db.query(RoleModulePermission).filter(
+            RoleModulePermission.role_id == rid,
+            RoleModulePermission.module_name == Modules.LAB,
+        ).first()
+        if rp and rp.permissions and any(p in _LAB_READ_PERMISSIONS for p in rp.permissions):
+            return True
+
+    return False
+
+
+def _assert_can_view_lab_test_catalog(current_user: User, db: Session) -> None:
+    if not _can_view_lab_test_catalog(current_user, db):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Insufficient permissions to view lab tests",
+        )
+
+
 def _can_create_lab_order(current_user: User, db: Session, admission_id: Optional[int]) -> None:
     """Permission gate for creating a lab order.
 
@@ -1198,9 +1264,7 @@ async def reception_book_lab_tests(
     db: Session = Depends(get_db)
 ):
     """Reception books individual lab tests directly for a patient with payment."""
-    allowed = ['receptionist', 'hospital_admin', 'super_admin']
-    if not any(r in current_user.role_names for r in allowed):
-        raise HTTPException(status_code=403, detail="Only reception or admin can book lab tests")
+    _assert_reception_lab_book_role(current_user)
 
     patient = db.query(Patient).filter(
         Patient.id == data.patient_id,
@@ -1311,7 +1375,7 @@ async def reception_book_lab_tests(
 
     from fastapi.responses import StreamingResponse
     order_ids = ",".join(str(o.id) for o in orders)
-    pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'lab_bill'))
+    pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, **bill_pdf_gen_kwargs(db, current_user.hospital_id, 'lab_bill'))
     filename = f"lab_bill_{bill_data['bill_number']}.pdf"
     return StreamingResponse(pdf_buffer, media_type="application/pdf",
         headers={
@@ -1515,7 +1579,7 @@ async def download_order_bill(
 
     from app.utils.pdf_service import pdf_service
     from fastapi.responses import StreamingResponse
-    pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'lab_bill'))
+    pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, **bill_pdf_gen_kwargs(db, current_user.hospital_id, 'lab_bill'))
     filename = f"lab_bill_{order.order_number}.pdf"
     return StreamingResponse(pdf_buffer, media_type="application/pdf",
         headers={"Content-Disposition": f"attachment; filename={filename}"})
@@ -1596,7 +1660,7 @@ async def regenerate_lab_bill(
 
     from app.utils.pdf_service import pdf_service
     from fastapi.responses import StreamingResponse
-    pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'lab_bill'))
+    pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, **bill_pdf_gen_kwargs(db, current_user.hospital_id, 'lab_bill'))
     return StreamingResponse(pdf_buffer, media_type="application/pdf",
         headers={"Content-Disposition": f"attachment; filename=lab_bill.pdf"})
 
@@ -1701,7 +1765,7 @@ async def download_grouped_lab_bill(
 
     from app.utils.pdf_service import pdf_service
     from fastapi.responses import StreamingResponse
-    pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'lab_bill'))
+    pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, **bill_pdf_gen_kwargs(db, current_user.hospital_id, 'lab_bill'))
     filename = f"lab_bill_{bill_number}.pdf"
     return StreamingResponse(pdf_buffer, media_type="application/pdf",
         headers={"Content-Disposition": f"attachment; filename={filename}"})
@@ -1718,9 +1782,7 @@ async def update_order_payment(
     db: Session = Depends(get_db)
 ):
     """Mark a lab order as paid. Accessible by receptionist, hospital_admin, super_admin."""
-    allowed = ['receptionist', 'hospital_admin', 'super_admin']
-    if not any(r in current_user.role_names for r in allowed):
-        raise HTTPException(status_code=403, detail="Only reception or admin can collect lab payments")
+    _assert_reception_lab_book_role(current_user)
 
     order = db.query(PatientLabOrder).join(Patient).filter(
         PatientLabOrder.id == order_id,
@@ -1769,9 +1831,7 @@ async def generate_lab_bill(
 ):
     """Pay all pending lab orders for a patient and generate a combined PDF bill.
     Uses lab config provider details if available, falls back to hospital info."""
-    allowed = ['receptionist', 'hospital_admin', 'super_admin']
-    if not any(r in current_user.role_names for r in allowed):
-        raise HTTPException(status_code=403, detail="Only reception or admin can generate lab bills")
+    _assert_reception_lab_book_role(current_user)
 
     # Get pending orders
     orders = db.query(PatientLabOrder).join(Patient).filter(
@@ -1866,7 +1926,7 @@ async def generate_lab_bill(
 
     try:
         order_ids_str = ",".join(str(o.id) for o in orders)
-        pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'lab_bill'))
+        pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, **bill_pdf_gen_kwargs(db, current_user.hospital_id, 'lab_bill'))
         filename = f"lab_bill_{bill_number}.pdf"
         return StreamingResponse(
             pdf_buffer,
@@ -2559,9 +2619,7 @@ async def book_package(
     db: Session = Depends(get_db)
 ):
     """Book a test package for a patient. Creates individual lab orders, marks as paid, returns bill PDF."""
-    allowed = ['receptionist', 'hospital_admin', 'super_admin']
-    if not any(r in current_user.role_names for r in allowed):
-        raise HTTPException(status_code=403, detail="Only reception or admin can book packages")
+    _assert_reception_lab_book_role(current_user)
 
     # Validate package
     pkg = db.query(LabTestPackage).filter(
@@ -2679,7 +2737,7 @@ async def book_package(
 
     try:
         order_ids = ",".join(str(o.id) for o in orders)
-        pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'lab_bill'))
+        pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, **bill_pdf_gen_kwargs(db, current_user.hospital_id, 'lab_bill'))
         filename = f"lab_package_bill_{bill_number}.pdf"
         return StreamingResponse(
             pdf_buffer,
