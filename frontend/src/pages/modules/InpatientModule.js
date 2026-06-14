@@ -2871,7 +2871,10 @@ const InpatientModule = () => {
   };
 
   const handlePrintConsent = async (consentId) => {
-    await printPdfFromUrl(`/api/inpatient/consents/${consentId}/pdf`);
+    const ok = await printPdfFromUrl(`/api/inpatient/consents/${consentId}/pdf`);
+    if (!ok) {
+      toast({ variant: 'destructive', title: 'Print failed', description: 'Could not load or print the consent PDF.' });
+    }
   };
 
   const handleSubmitConsentTemplate = async (e) => {
@@ -3268,12 +3271,9 @@ const InpatientModule = () => {
 
   // PDF
   const handlePrintDischargePdf = async (admissionId) => {
-    try {
-      const res = await axios.get(`/api/inpatient/admissions/${admissionId}/discharge/pdf`, { responseType: 'blob' });
-      const url = URL.createObjectURL(res.data);
-      printPdfFromUrl(url);
-    } catch {
-      toast({ variant: 'destructive', title: 'Error', description: 'Failed to generate discharge PDF' });
+    const ok = await printPdfFromUrl(`/api/inpatient/admissions/${admissionId}/discharge/pdf`);
+    if (!ok) {
+      toast({ variant: 'destructive', title: 'Error', description: 'Failed to generate or print discharge PDF' });
     }
   };
 

@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File, Form
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import StreamingResponse, FileResponse, Response
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func as sqlfunc, and_, cast, Date, update as sa_update
 from pydantic import BaseModel, Field
@@ -11,12 +11,25 @@ def _now_utc() -> datetime:
     """Timezone-aware UTC 'now'. Use everywhere instead of the deprecated
     _now_utc() (which returned a naive datetime)."""
     return datetime.now(timezone.utc)
+
+
+def _inline_pdf_response(pdf_buffer, filename: str) -> Response:
+    """Return PDF bytes inline — more reliable than StreamingResponse(BytesIO)
+    in the Windows bundled build."""
+    data = pdf_buffer.getvalue() if hasattr(pdf_buffer, "getvalue") else pdf_buffer
+    return Response(
+        content=data,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
+
+
 import io
 import os
 import uuid
 
 from config.database import get_db
-from app.utils.pdf_settings import pdf_gen_kwargs
+from app.utils.pdf_settings import bill_pdf_gen_kwargs, pdf_gen_kwargs
 from app.models.user import User
 from app.models.patient import Patient
 from app.models.hospital import Hospital
@@ -3081,11 +3094,7 @@ async def get_discharge_pdf(
 
     pdf_buffer = pdf_service.generate_discharge_summary_pdf(discharge_data, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'discharge_summary'))
 
-    return StreamingResponse(
-        pdf_buffer,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f"inline; filename=discharge_{admission.admission_number}.pdf"}
-    )
+    return _inline_pdf_response(pdf_buffer, f"discharge_{admission.admission_number}.pdf")
 
 
 # ============================================================
@@ -5106,7 +5115,7 @@ async def get_bill_pdf(
     }
 
     pdf_buffer = pdf_service.generate_inpatient_bill_pdf(
-        bill_data, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'inpatient_bill'))
+        bill_data, hospital_info, **bill_pdf_gen_kwargs(db, current_user.hospital_id, 'inpatient_bill'))
 
     return StreamingResponse(
         io.BytesIO(pdf_buffer.getvalue()) if hasattr(pdf_buffer, "getvalue") else pdf_buffer,
@@ -9618,11 +9627,7 @@ async def preview_consent_pdf(
         "hospital_subname": getattr(hospital, "hospital_subname", "") or "",
     }
     pdf_buffer = pdf_service.generate_consent_pdf(consent_data, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'consent'))
-    return StreamingResponse(
-        pdf_buffer,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'inline; filename="consent-{template.consent_type}-preview.pdf"'},
-    )
+    return _inline_pdf_response(pdf_buffer, f"consent-{template.consent_type}-preview.pdf")
 
 
 @router.get("/consents/{consent_id}/pdf")
@@ -9732,11 +9737,7 @@ async def get_consent_pdf(
         "hospital_subname": getattr(hospital, "hospital_subname", "") or "",
     }
     pdf_buffer = pdf_service.generate_consent_pdf(consent_data, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'consent'))
-    return StreamingResponse(
-        pdf_buffer,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'inline; filename="consent-{c.id}.pdf"'},
-    )
+    return _inline_pdf_response(pdf_buffer, f"consent-{c.id}.pdf")
 
 
 # ============================================================

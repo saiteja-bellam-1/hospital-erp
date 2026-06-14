@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '../../../components/ui/card';
 import { Button } from '../../../components/ui/button';
@@ -33,7 +33,7 @@ const ReceptionPatientsPage = () => {
   const { toast } = useToast();
   const navigate = useNavigate();
   const [patients, setPatients] = useState([]);
-  const [filteredPatients, setFilteredPatients] = useState([]);
+  const [searchMetadata, setSearchMetadata] = useState({ total_count: 0, page: 1, per_page: 10, total_pages: 0 });
   const [loading, setLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedPatient, setSelectedPatient] = useState(null);
@@ -65,6 +65,8 @@ const ReceptionPatientsPage = () => {
   const [showFilters, setShowFilters] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const patientsPerPage = 10;
+  const filterKey = `${searchTerm}|${filterGender}|${filterBloodGroup}`;
+  const prevFilterKey = useRef(filterKey);
 
   // Forms
   const [patientForm, setPatientForm] = useState({
@@ -88,11 +90,6 @@ const ReceptionPatientsPage = () => {
     district: '',
     referred_by: '',
   });
-
-  // Load initial data
-  useEffect(() => {
-    fetchPatients();
-  }, []);
 
   // Referral list
   const [referralList, setReferralList] = useState([]);
@@ -129,63 +126,48 @@ const ReceptionPatientsPage = () => {
     fetchMods();
   }, []);
 
-  // Filter and sort patients: matches come first, rest follow
+  // Fetch patients from API with server-side pagination
   useEffect(() => {
-    let filtered = patients;
+    const filtersChanged = prevFilterKey.current !== filterKey;
+    prevFilterKey.current = filterKey;
 
-    // Gender filter
-    if (filterGender && filterGender !== 'all') {
-      filtered = filtered.filter(patient => patient.gender === filterGender);
+    if (filtersChanged && currentPage !== 1) {
+      setCurrentPage(1);
+      return;
     }
 
-    // Blood group filter
-    if (filterBloodGroup && filterBloodGroup !== 'all') {
-      filtered = filtered.filter(patient => patient.blood_group === filterBloodGroup);
-    }
+    const pageToFetch = filtersChanged ? 1 : currentPage;
+    const timer = setTimeout(() => {
+      fetchPatients(pageToFetch);
+    }, searchTerm ? 300 : 0);
+    return () => clearTimeout(timer);
+  }, [currentPage, filterKey, searchTerm]);
 
-    // Search: bring matching patients to top instead of hiding others
-    if (searchTerm) {
-      const q = searchTerm.toLowerCase();
-      const matched = [];
-      const rest = [];
-      for (const patient of filtered) {
-        const isMatch =
-          patient.first_name?.toLowerCase().includes(q) ||
-          patient.last_name?.toLowerCase().includes(q) ||
-          patient.primary_phone?.includes(searchTerm) ||
-          patient.patient_id?.toLowerCase().includes(q);
-        if (isMatch) {
-          matched.push({ ...patient, _isMatch: true });
-        } else {
-          rest.push({ ...patient, _isMatch: false });
-        }
-      }
-      setFilteredPatients([...matched, ...rest]);
-    } else {
-      setFilteredPatients(filtered.map(p => ({ ...p, _isMatch: false })));
-    }
-    setCurrentPage(1);
-  }, [patients, searchTerm, filterGender, filterBloodGroup]);
-
-  const fetchPatients = async () => {
+  const fetchPatients = async (page = currentPage) => {
     setLoading(true);
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch('/api/patients/search', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          search_term: '',
-          sort_by: 'name',
-          sort_order: 'asc'
-        })
-      });
+      const response = await fetch(
+        `/api/patients/search?page=${page}&per_page=${patientsPerPage}`,
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            search_term: searchTerm || '',
+            sort_by: 'name',
+            sort_order: 'asc',
+            gender: filterGender !== 'all' ? filterGender : null,
+            blood_group: filterBloodGroup !== 'all' ? filterBloodGroup : null,
+          })
+        }
+      );
       if (response.ok) {
         const data = await response.json();
-        setPatients(data.patients);
+        setPatients(data.patients || []);
+        setSearchMetadata(data.metadata || { total_count: 0, page: 1, per_page: patientsPerPage, total_pages: 0 });
       }
     } catch (error) {
       console.error('Error fetching patients:', error);
@@ -234,9 +216,10 @@ const ReceptionPatientsPage = () => {
       });
       if (response.ok) {
         const newPatient = await response.json();
-        setPatients([newPatient, ...patients]);
         setSelectedPatient(newPatient);
         setShowPatientDialog(false);
+        setCurrentPage(1);
+        fetchPatients(1);
         setPatientForm({
           first_name: '',
           last_name: '',
@@ -337,7 +320,13 @@ const ReceptionPatientsPage = () => {
     setSearchTerm('');
     setFilterGender('all');
     setFilterBloodGroup('all');
+    setCurrentPage(1);
   };
+
+  const totalPatients = searchMetadata.total_count || 0;
+  const totalPages = searchMetadata.total_pages || 0;
+  const pageStart = totalPatients === 0 ? 0 : (currentPage - 1) * patientsPerPage + 1;
+  const pageEnd = Math.min(currentPage * patientsPerPage, totalPatients);
 
   const openEditPatient = (patient) => {
     setSelectedPatient(patient);
@@ -564,7 +553,7 @@ const ReceptionPatientsPage = () => {
       {/* Patients List */}
       <Card>
         <CardHeader>
-          <CardTitle>Patients ({filteredPatients.length})</CardTitle>
+          <CardTitle>Patients ({totalPatients})</CardTitle>
         </CardHeader>
         <CardContent>
           {loading ? (
@@ -572,7 +561,7 @@ const ReceptionPatientsPage = () => {
               <RefreshCw className="h-6 w-6 animate-spin mr-2" />
               <span>Loading patients...</span>
             </div>
-          ) : filteredPatients.length === 0 ? (
+          ) : patients.length === 0 ? (
             <div className="text-center py-8">
               <User className="h-12 w-12 text-gray-400 mx-auto mb-3" />
               <p className="text-gray-500 mb-3">
@@ -593,11 +582,11 @@ const ReceptionPatientsPage = () => {
           ) : (
             <>
               <div className="text-xs text-gray-500 mb-2">
-                Showing {Math.min((currentPage - 1) * patientsPerPage + 1, filteredPatients.length)}–{Math.min(currentPage * patientsPerPage, filteredPatients.length)} of {filteredPatients.length} patients
+                Showing {pageStart}–{pageEnd} of {totalPatients} patients
               </div>
               <div className="space-y-3">
-                {filteredPatients.slice((currentPage - 1) * patientsPerPage, currentPage * patientsPerPage).map((patient) => (
-                  <div key={patient.patient_id} className={`border rounded-lg p-4 hover:bg-gray-50 ${patient._isMatch ? 'bg-yellow-50 border-yellow-200' : ''}`}>
+                {patients.map((patient) => (
+                  <div key={patient.patient_id} className="border rounded-lg p-4 hover:bg-gray-50">
                     <div className="flex justify-between items-start">
                       <div className="flex-1 grid grid-cols-1 md:grid-cols-3 gap-4">
                         <div>
@@ -670,7 +659,7 @@ const ReceptionPatientsPage = () => {
               </div>
 
               {/* Pagination */}
-              {Math.ceil(filteredPatients.length / patientsPerPage) > 1 && (
+              {totalPages > 1 && (
                 <div className="flex items-center justify-between mt-4">
                   <Button
                     variant="outline" size="sm"
@@ -680,8 +669,8 @@ const ReceptionPatientsPage = () => {
                     <ChevronLeft className="h-4 w-4 mr-1" /> Previous
                   </Button>
                   <div className="flex items-center gap-1">
-                    {Array.from({ length: Math.ceil(filteredPatients.length / patientsPerPage) }, (_, i) => i + 1)
-                      .filter(page => page === 1 || page === Math.ceil(filteredPatients.length / patientsPerPage) || Math.abs(page - currentPage) <= 2)
+                    {Array.from({ length: totalPages }, (_, i) => i + 1)
+                      .filter(page => page === 1 || page === totalPages || Math.abs(page - currentPage) <= 2)
                       .map((page, idx, arr) => (
                         <React.Fragment key={page}>
                           {idx > 0 && arr[idx - 1] !== page - 1 && <span className="px-1 text-gray-400">...</span>}
@@ -699,7 +688,7 @@ const ReceptionPatientsPage = () => {
                   </div>
                   <Button
                     variant="outline" size="sm"
-                    disabled={currentPage >= Math.ceil(filteredPatients.length / patientsPerPage)}
+                    disabled={currentPage >= totalPages}
                     onClick={() => setCurrentPage(prev => prev + 1)}
                   >
                     Next <ChevronRight className="h-4 w-4 ml-1" />

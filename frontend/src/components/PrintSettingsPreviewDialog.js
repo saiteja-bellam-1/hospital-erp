@@ -42,8 +42,11 @@ const PrintSettingsPreviewDialog = ({
         {
           report_type: reportType,
           include_header_on_pdfs: draftSettings.includeHeaderOnPdfs,
+          include_footer_on_pdfs: draftSettings.includeFooterOnPdfs !== false,
+          detailed_billing_on_pdfs: draftSettings.detailedBillingOnPdfs !== false,
           letterhead_gap_mm: gap,
           report_header_overrides: draftSettings.overrides || {},
+          report_footer_overrides: draftSettings.footerOverrides || {},
         },
         { responseType: 'blob' }
       );
@@ -94,6 +97,8 @@ const PrintSettingsPreviewDialog = ({
 
   const headerOn = draftSettings?.resolveIncludeHeader?.(reportType)
     ?? draftSettings?.includeHeaderOnPdfs;
+  const footerOn = draftSettings?.resolveIncludeFooter?.(reportType)
+    ?? draftSettings?.includeFooterOnPdfs;
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) handleClose(); }}>
@@ -108,6 +113,12 @@ const PrintSettingsPreviewDialog = ({
               Letterhead: <strong>{headerOn ? 'On' : 'Off'}</strong>
               {!headerOn && (
                 <> · Gap: <strong>{draftSettings?.letterheadGapMm} mm</strong></>
+              )}
+              {['opd_bill', 'lab_bill', 'inpatient_bill'].includes(reportType) && (
+                <> · Bill summary: <strong>{draftSettings?.detailedBillingOnPdfs !== false ? 'Detailed' : 'Simple'}</strong></>
+              )}
+              {['opd_bill', 'lab_bill', 'lab_report'].includes(reportType) && (
+                <> · Staff footer: <strong>{footerOn ? 'On' : 'Off'}</strong></>
               )}
             </span>
             <Button

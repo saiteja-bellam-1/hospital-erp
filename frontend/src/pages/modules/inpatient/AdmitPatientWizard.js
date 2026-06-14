@@ -784,6 +784,7 @@ const DeclarationCard = ({
   title, subtitle, template, signed, onToggle, docNumber,
   patientId, roomId, doctorId, referringDoctorId, admissionReason,
 }) => {
+  const { toast } = useToast();
   const [previewOpen, setPreviewOpen] = useState(false);
   const [printing, setPrinting] = useState(false);
 
@@ -802,7 +803,10 @@ const DeclarationCard = ({
       if (referringDoctorId) params.referring_doctor_id = referringDoctorId;
       if (admissionReason) params.admission_reason = admissionReason;
       if (docNumber) params.doc_number = docNumber;
-      await printPdfFromUrl('/api/inpatient/consents/preview-pdf', { params });
+      const ok = await printPdfFromUrl('/api/inpatient/consents/preview-pdf', { params });
+      if (!ok) {
+        toast({ variant: 'destructive', title: 'Print failed', description: 'Could not load or print the consent form.' });
+      }
     } finally {
       setPrinting(false);
     }

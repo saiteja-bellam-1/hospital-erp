@@ -64,18 +64,10 @@ const PdfPreviewDialog = ({
     onClose && onClose();
   };
 
-  const handlePrint = () => {
+  const handlePrint = async () => {
     if (!pdfUrl) return;
-    const iframe = document.createElement('iframe');
-    iframe.style.display = 'none';
-    document.body.appendChild(iframe);
-    iframe.src = pdfUrl;
-    iframe.onload = () => {
-      try { iframe.contentWindow.print(); } catch (e) { console.error(e); }
-      setTimeout(() => {
-        try { document.body.removeChild(iframe); } catch {}
-      }, 1000);
-    };
+    const { printPdfFromUrl } = await import('../utils/printPdf');
+    await printPdfFromUrl(pdfUrl);
   };
 
   return (
