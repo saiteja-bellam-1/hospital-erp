@@ -1,6 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import LabTestBookingDialog from '../../../components/LabTestBookingDialog';
+import QuickAppointmentWizard from '../../../components/QuickAppointmentWizard';
+import PatientRegisterFormFields, {
+  EMPTY_PATIENT_FORM,
+  buildPatientPayload,
+  validatePatientForm,
+} from '../../../components/PatientRegisterFormFields';
 import { Card, CardContent, CardHeader, CardTitle } from '../../../components/ui/card';
 import { Button } from '../../../components/ui/button';
 import { Badge } from '../../../components/ui/badge';
@@ -46,15 +52,9 @@ const ReceptionDashboard = () => {
 
   // Register patient dialog
   const [showRegisterDialog, setShowRegisterDialog] = useState(false);
+  const [showQuickAppointment, setShowQuickAppointment] = useState(false);
   const [registerLoading, setRegisterLoading] = useState(false);
-  const emptyPatientForm = {
-    first_name: '', last_name: '', date_of_birth: '', gender: '',
-    blood_group: '', marital_status: '', abha_id: '', email: '',
-    primary_phone: '', emergency_contact_name: '', emergency_contact_phone: '',
-    emergency_contact_relation: '', address_line1: '', address_line2: '',
-    village: '', mandal: '', district: '',
-  };
-  const [patientForm, setPatientForm] = useState(emptyPatientForm);
+  const [patientForm, setPatientForm] = useState(EMPTY_PATIENT_FORM);
   const [loading, setLoading] = useState(true);
 
   // Lab test booking dialog
@@ -180,22 +180,27 @@ const ReceptionDashboard = () => {
   };
 
   const createPatient = async () => {
+    const err = validatePatientForm(patientForm);
+    if (err) {
+      toast({ variant: 'destructive', title: 'Missing fields', description: err });
+      return;
+    }
     setRegisterLoading(true);
     try {
       const token = localStorage.getItem('token');
       const response = await fetch('/api/patients/', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(patientForm)
+        body: JSON.stringify(buildPatientPayload(patientForm))
       });
       if (response.ok) {
         setShowRegisterDialog(false);
-        setPatientForm(emptyPatientForm);
+        setPatientForm(EMPTY_PATIENT_FORM);
         toast({ title: 'Success', description: 'Patient registered successfully!' });
         fetchDashboardData();
       } else {
-        const err = await response.json();
-        const errMsg = typeof err.detail === 'string' ? err.detail : Array.isArray(err.detail) ? err.detail.map(e => e.msg || JSON.stringify(e)).join(', ') : 'Registration failed';
+        const errData = await response.json();
+        const errMsg = typeof errData.detail === 'string' ? errData.detail : Array.isArray(errData.detail) ? errData.detail.map(e => e.msg || JSON.stringify(e)).join(', ') : 'Registration failed';
         toast({ title: 'Registration Failed', description: errMsg, variant: 'destructive' });
       }
     } catch (error) {
@@ -400,19 +405,21 @@ const ReceptionDashboard = () => {
           <p className="text-gray-600">Welcome to the reception management center</p>
         </div>
         <div className="flex space-x-3">
-          <Link to="/dashboard/reception/patients">
-            <Button className="flex items-center space-x-2">
-              <UserPlus className="h-4 w-4" />
-              <span>Manage Patients</span>
-            </Button>
-          </Link>
+          <Button
+            className="flex items-center space-x-2"
+            onClick={() => { setPatientForm(EMPTY_PATIENT_FORM); setShowRegisterDialog(true); }}
+          >
+            <UserPlus className="h-4 w-4" />
+            <span>Register Patient</span>
+          </Button>
           {enabledModules.outpatient && (
-            <Link to="/dashboard/reception/appointments">
-              <Button className="flex items-center space-x-2">
-                <CalendarPlus className="h-4 w-4" />
-                <span>Manage Appointments</span>
-              </Button>
-            </Link>
+            <Button
+              className="flex items-center space-x-2"
+              onClick={() => setShowQuickAppointment(true)}
+            >
+              <CalendarPlus className="h-4 w-4" />
+              <span>Quick Appointment</span>
+            </Button>
           )}
           {enabledModules.lab && (
             <Button variant="outline" className="flex items-center space-x-2" onClick={() => setShowLabBooking(true)}>
@@ -561,7 +568,7 @@ const ReceptionDashboard = () => {
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-1 gap-3">
-              <Button variant="outline" className="w-full justify-start" onClick={() => { setPatientForm(emptyPatientForm); setShowRegisterDialog(true); }}>
+              <Button variant="outline" className="w-full justify-start" onClick={() => { setPatientForm(EMPTY_PATIENT_FORM); setShowRegisterDialog(true); }}>
                 <UserPlus className="h-4 w-4 mr-2" />
                 Register New Patient
               </Button>
@@ -953,129 +960,22 @@ const ReceptionDashboard = () => {
           <DialogHeader>
             <DialogTitle>Register New Patient</DialogTitle>
           </DialogHeader>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <Label>First Name *</Label>
-              <Input value={patientForm.first_name} onChange={(e) => setPatientForm({...patientForm, first_name: e.target.value})} />
-            </div>
-            <div>
-              <Label>Last Name *</Label>
-              <Input value={patientForm.last_name} onChange={(e) => setPatientForm({...patientForm, last_name: e.target.value})} />
-            </div>
-            <div>
-              <Label>Date of Birth</Label>
-              <Input type="date" value={patientForm.date_of_birth} onChange={(e) => setPatientForm({...patientForm, date_of_birth: e.target.value})} />
-            </div>
-            <div>
-              <Label>Gender</Label>
-              <Select value={patientForm.gender} onValueChange={(v) => setPatientForm({...patientForm, gender: v})}>
-                <SelectTrigger><SelectValue placeholder="Select Gender" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="Male">Male</SelectItem>
-                  <SelectItem value="Female">Female</SelectItem>
-                  <SelectItem value="Other">Other</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <Label>Blood Group</Label>
-              <Select value={patientForm.blood_group} onValueChange={(v) => setPatientForm({...patientForm, blood_group: v})}>
-                <SelectTrigger><SelectValue placeholder="Select Blood Group" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="A+">A+</SelectItem>
-                  <SelectItem value="A-">A-</SelectItem>
-                  <SelectItem value="B+">B+</SelectItem>
-                  <SelectItem value="B-">B-</SelectItem>
-                  <SelectItem value="AB+">AB+</SelectItem>
-                  <SelectItem value="AB-">AB-</SelectItem>
-                  <SelectItem value="O+">O+</SelectItem>
-                  <SelectItem value="O-">O-</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <Label>Marital Status</Label>
-              <Select value={patientForm.marital_status} onValueChange={(v) => setPatientForm({...patientForm, marital_status: v})}>
-                <SelectTrigger><SelectValue placeholder="Select Status" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="Single">Single</SelectItem>
-                  <SelectItem value="Married">Married</SelectItem>
-                  <SelectItem value="Widowed">Widowed</SelectItem>
-                  <SelectItem value="Divorced">Divorced</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <Label>ABHA ID</Label>
-              <Input value={patientForm.abha_id} onChange={(e) => setPatientForm({...patientForm, abha_id: e.target.value})} placeholder="14-digit ABHA number" />
-            </div>
-            <div>
-              <Label>Email</Label>
-              <Input type="email" value={patientForm.email} onChange={(e) => setPatientForm({...patientForm, email: e.target.value})} />
-            </div>
-            <div>
-              <Label>Primary Phone *</Label>
-              <Input value={patientForm.primary_phone} onChange={(e) => setPatientForm({...patientForm, primary_phone: e.target.value})} />
-            </div>
-
-            <div className="col-span-2 border-t pt-3 mt-2">
-              <Label className="text-sm font-semibold text-gray-700">Emergency Contact</Label>
-            </div>
-            <div>
-              <Label>Contact Name</Label>
-              <Input value={patientForm.emergency_contact_name} onChange={(e) => setPatientForm({...patientForm, emergency_contact_name: e.target.value})} />
-            </div>
-            <div>
-              <Label>Contact Phone</Label>
-              <Input value={patientForm.emergency_contact_phone} onChange={(e) => setPatientForm({...patientForm, emergency_contact_phone: e.target.value})} />
-            </div>
-            <div>
-              <Label>Relation</Label>
-              <Select value={patientForm.emergency_contact_relation} onValueChange={(v) => setPatientForm({...patientForm, emergency_contact_relation: v})}>
-                <SelectTrigger><SelectValue placeholder="Select Relation" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="Spouse">Spouse</SelectItem>
-                  <SelectItem value="Parent">Parent</SelectItem>
-                  <SelectItem value="Child">Child</SelectItem>
-                  <SelectItem value="Sibling">Sibling</SelectItem>
-                  <SelectItem value="Friend">Friend</SelectItem>
-                  <SelectItem value="Other">Other</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="col-span-2 border-t pt-3 mt-2">
-              <Label className="text-sm font-semibold text-gray-700">Address</Label>
-            </div>
-            <div className="col-span-2">
-              <Label>Address Line 1</Label>
-              <Input value={patientForm.address_line1} onChange={(e) => setPatientForm({...patientForm, address_line1: e.target.value})} placeholder="House/Flat No, Street" />
-            </div>
-            <div className="col-span-2">
-              <Label>Address Line 2</Label>
-              <Input value={patientForm.address_line2} onChange={(e) => setPatientForm({...patientForm, address_line2: e.target.value})} placeholder="Area, Landmark" />
-            </div>
-            <div>
-              <Label>Village / Town</Label>
-              <Input value={patientForm.village} onChange={(e) => setPatientForm({...patientForm, village: e.target.value})} />
-            </div>
-            <div>
-              <Label>Mandal / Taluka</Label>
-              <Input value={patientForm.mandal} onChange={(e) => setPatientForm({...patientForm, mandal: e.target.value})} />
-            </div>
-            <div>
-              <Label>District</Label>
-              <Input value={patientForm.district} onChange={(e) => setPatientForm({...patientForm, district: e.target.value})} />
-            </div>
-          </div>
+          <PatientRegisterFormFields form={patientForm} onChange={setPatientForm} />
           <div className="flex gap-2 pt-4">
             <Button variant="outline" onClick={() => setShowRegisterDialog(false)} className="flex-1">Cancel</Button>
-            <Button onClick={createPatient} disabled={registerLoading || !patientForm.first_name || !patientForm.last_name || !patientForm.primary_phone} className="flex-1">
+            <Button onClick={createPatient} disabled={registerLoading} className="flex-1">
               {registerLoading ? 'Registering...' : 'Register Patient'}
             </Button>
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Quick Appointment Wizard (header button) */}
+      <QuickAppointmentWizard
+        open={showQuickAppointment}
+        onOpenChange={setShowQuickAppointment}
+        onBooked={() => fetchDashboardData()}
+      />
 
       {/* Lab Test Booking Dialog */}
       <LabTestBookingDialog

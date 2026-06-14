@@ -105,12 +105,52 @@ const ConsultationPage = () => {
     }
   }, [patientUuid]);
 
-  // Load existing prescription for this consultation
+  // Load existing prescription for this consultation or appointment
   useEffect(() => {
     if (activeConsultation?.id) {
       fetchConsultationPrescription(activeConsultation.id);
+    } else if (appointmentId) {
+      fetchAppointmentPrescription(parseInt(appointmentId, 10));
     }
-  }, [activeConsultation?.id]);
+  }, [activeConsultation?.id, appointmentId]);
+
+  const applyPrescriptionToForm = (existing) => {
+    setCurrentPrescriptionId(existing.prescription_id);
+    setSavedPrescription(existing);
+    const meds = (existing.medicines || []).map(m => ({
+      medicine_name: m.name || '',
+      quantity_prescribed: m.quantity ? parseInt(m.quantity) || 1 : 1,
+      dosage: m.dosage || '',
+      frequency_schedule: m.frequency_schedule || '1-0-0',
+      food_timing: m.food_timing || 'after_food',
+      duration: m.duration || '',
+      instructions: m.instructions || ''
+    }));
+    setPrescriptionForm(prev => ({
+      ...prev,
+      medications: meds.length > 0 ? meds : prev.medications,
+      diagnosis: existing.diagnosis || prev.diagnosis,
+      notes: existing.notes || prev.notes
+    }));
+    if (existing.prescription_id) {
+      fetchRxPdf(existing.prescription_id);
+    }
+  };
+
+  const fetchAppointmentPrescription = async (aptId) => {
+    try {
+      const res = await fetch(`/api/prescriptions-simple/?appointment_id=${aptId}`, { headers });
+      if (res.ok) {
+        const data = await res.json();
+        const prescriptions = Array.isArray(data) ? data : data.prescriptions || [];
+        if (prescriptions.length > 0) {
+          applyPrescriptionToForm(prescriptions[0]);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch appointment prescription:', err);
+    }
+  };
 
   // BMI auto-calc
   useEffect(() => {
@@ -220,25 +260,7 @@ const ConsultationPage = () => {
         const data = await res.json();
         const prescriptions = Array.isArray(data) ? data : data.prescriptions || [];
         if (prescriptions.length > 0) {
-          const existing = prescriptions[0];
-          setCurrentPrescriptionId(existing.prescription_id);
-          setSavedPrescription(existing);
-          // Load medicines into the form
-          const meds = (existing.medicines || []).map(m => ({
-            medicine_name: m.name || '',
-            quantity_prescribed: m.quantity ? parseInt(m.quantity) || 1 : 1,
-            dosage: m.dosage || '',
-            frequency_schedule: m.frequency_schedule || '1-0-0',
-            food_timing: m.food_timing || 'after_food',
-            duration: m.duration || '',
-            instructions: m.instructions || ''
-          }));
-          setPrescriptionForm(prev => ({
-            ...prev,
-            medications: meds.length > 0 ? meds : prev.medications,
-            diagnosis: existing.diagnosis || prev.diagnosis,
-            notes: existing.notes || prev.notes
-          }));
+          applyPrescriptionToForm(prescriptions[0]);
         }
       }
     } catch (err) {
@@ -423,6 +445,7 @@ const ConsultationPage = () => {
           method: 'POST', headers,
           body: JSON.stringify({
             patient_id: patientUuid,
+            appointment_id: appointmentId ? parseInt(appointmentId, 10) : null,
             consultation_id: activeConsultation?.id || null,
             medicines: medicinesPayload,
             diagnosis: prescriptionForm.diagnosis || null,

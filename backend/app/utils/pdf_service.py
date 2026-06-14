@@ -109,13 +109,15 @@ def _patient_address_line(data):
     if not isinstance(data, dict):
         return ''
     village = (data.get('village') or '').strip()
+    mandal = (data.get('mandal') or '').strip()
     district = (data.get('district') or '').strip()
-    if not village and not district:
+    if not village and not mandal and not district:
         nested = data.get('patient')
         if isinstance(nested, dict):
             village = (nested.get('village') or '').strip()
+            mandal = (nested.get('mandal') or '').strip()
             district = (nested.get('district') or '').strip()
-    parts = [p for p in (village, district) if p]
+    parts = [p for p in (village, mandal, district) if p]
     return ', '.join(parts)
 
 
@@ -1003,9 +1005,11 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_prescription_pdf(self, prescription_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
+    def generate_prescription_pdf(self, prescription_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, blank_mode=False):
         """Generate PDF for prescription matching the reference layout:
         Header → Doctor+Patient info box → Diagnosis → Vitals (left) + Medicines (right) → Instructions
+
+        When blank_mode=True, vitals show labeled empty rows for handwritten entry.
         """
         buffer = BytesIO()
 
@@ -1044,6 +1048,9 @@ class PDFService:
 
         cell_val_sm = ParagraphStyle('RxCellValSm', parent=self.styles['Normal'],
             fontSize=8, fontName='Helvetica', textColor=text_dark)
+
+        blank_line_style = ParagraphStyle('RxBlankLine', parent=self.styles['Normal'],
+            fontSize=10, fontName='Helvetica', textColor=text_dark, leading=18)
 
         footer_style = ParagraphStyle('RxFooter', parent=self.styles['Normal'],
             fontSize=7, alignment=1, fontName='Helvetica', textColor=colors.grey)
@@ -1125,6 +1132,7 @@ class PDFService:
         doctor_name = prescription_data.get('doctor_name', '')
         doctor_spec = prescription_data.get('doctor_specialization', '')
         doctor_reg = prescription_data.get('doctor_registration_number', '')
+        prescription_number = prescription_data.get('prescription_number', '')
         patient_name = prescription_data.get('patient_name', '')
         patient_age = prescription_data.get('patient_age', '')
         patient_gender = prescription_data.get('patient_gender', '')
@@ -1141,11 +1149,18 @@ class PDFService:
             doctor_display = f"{doctor_name} ({doctor_spec})"
 
         col_w = page_width / 2
+        reg_or_rx_label = "Rx No." if blank_mode else "Reg. No."
+        reg_or_rx_value = (prescription_number or '—') if blank_mode else (doctor_reg or '—')
+        appointment_number = prescription_data.get('appointment_number', '')
         info_data = [
             [Paragraph(f"<b>Name</b> :  {patient_name}", cell_val), Paragraph(f"<b>Prescribed By</b> :  {doctor_display}", cell_val)],
-            [Paragraph(f"<b>Age / Gender</b> :  {age_sex}", cell_val), Paragraph(f"<b>Reg. No.</b> :  {doctor_reg or '—'}", cell_val)],
+            [Paragraph(f"<b>Age / Gender</b> :  {age_sex}", cell_val), Paragraph(f"<b>{reg_or_rx_label}</b> :  {reg_or_rx_value}", cell_val)],
             [Paragraph(f"<b>Phone</b> :  {patient_phone}", cell_val), Paragraph(f"<b>Date</b> :  {rx_date}", cell_val)],
-            [Paragraph(f"<b>MRN</b> :  {patient_id}", cell_val), Paragraph(f"<b>Blood Group</b> :  {patient_blood_group or '—'}", cell_val)],
+            [Paragraph(f"<b>MRN</b> :  {patient_id}", cell_val), Paragraph(
+                f"<b>Appointment</b> :  {appointment_number or '—'}" if blank_mode and appointment_number
+                else f"<b>Blood Group</b> :  {patient_blood_group or '—'}",
+                cell_val
+            )],
         ]
 
         info_style = [
@@ -1162,50 +1177,56 @@ class PDFService:
             info_data.append([Paragraph(f"<b>Address</b> :  {_rx_addr}", cell_val), ''])
             info_style.append(('SPAN', (0, _addr_row_idx), (1, _addr_row_idx)))
 
+        referred_by = (prescription_data.get('referred_by') or '').strip()
+        if referred_by:
+            _ref_row_idx = len(info_data)
+            info_data.append([Paragraph(f"<b>Referred By</b> :  {referred_by}", cell_val), ''])
+            info_style.append(('SPAN', (0, _ref_row_idx), (1, _ref_row_idx)))
+
         info_table = Table(info_data, colWidths=[col_w, col_w])
         info_table.setStyle(TableStyle(info_style))
         elements.append(info_table)
         elements.append(Spacer(1, 10))
 
         # ============================================================
-        # DIAGNOSIS — bordered section
+        # DIAGNOSIS — full-width section (filled prescriptions only)
         # ============================================================
         diagnosis_text = prescription_data.get('diagnosis', '')
         consultation = prescription_data.get('consultation')
-        # Add appointment reason if available
         appointment_reason = prescription_data.get('appointment_reason', '')
 
-        diag_content = []
-        if appointment_reason:
-            diag_content.append(Paragraph(f"Appointment Reason: {appointment_reason}", cell_val))
-        if diagnosis_text:
-            diag_content.append(Paragraph(diagnosis_text, cell_val))
-        if consultation:
-            if consultation.get('chief_complaint'):
-                diag_content.append(Paragraph(f"Chief Complaint: {consultation['chief_complaint']}", cell_val))
-            if consultation.get('examination_findings'):
-                diag_content.append(Paragraph(f"Examination: {consultation['examination_findings']}", cell_val))
+        if not blank_mode:
+            diag_content = []
+            if appointment_reason:
+                diag_content.append(Paragraph(f"Appointment Reason: {appointment_reason}", cell_val))
+            if diagnosis_text:
+                diag_content.append(Paragraph(diagnosis_text, cell_val))
+            if consultation:
+                if consultation.get('chief_complaint'):
+                    diag_content.append(Paragraph(f"Chief Complaint: {consultation['chief_complaint']}", cell_val))
+                if consultation.get('examination_findings'):
+                    diag_content.append(Paragraph(f"Examination: {consultation['examination_findings']}", cell_val))
 
-        if not diag_content:
-            diag_content.append(Paragraph('', cell_val))
+            if not diag_content:
+                diag_content.append(Paragraph('', cell_val))
 
-        diag_rows = [
-            [Paragraph('<b>Diagnosis</b>', section_hdr)],
-        ] + [[c] for c in diag_content]
+            diag_rows = [
+                [Paragraph('<b>Diagnosis</b>', section_hdr)],
+            ] + [[c] for c in diag_content]
 
-        diag_table = Table(diag_rows, colWidths=[page_width])
-        diag_table.setStyle(TableStyle([
-            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-            ('TOPPADDING', (0, 0), (-1, -1), 4),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-            ('LEFTPADDING', (0, 0), (-1, -1), 8),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 8),
-        ]))
-        elements.append(diag_table)
-        elements.append(Spacer(1, 10))
+            diag_table = Table(diag_rows, colWidths=[page_width])
+            diag_table.setStyle(TableStyle([
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('TOPPADDING', (0, 0), (-1, -1), 4),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                ('LEFTPADDING', (0, 0), (-1, -1), 8),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+            ]))
+            elements.append(diag_table)
+            elements.append(Spacer(1, 10))
 
         # ============================================================
-        # VITALS (left) + MEDICINES TABLE (right) — side by side
+        # VITALS (left) + MEDICINES / DIAGNOSIS (right) — side by side
         # ============================================================
         vitals = prescription_data.get('vitals')
         vitals_left_width = page_width * 0.25
@@ -1213,8 +1234,24 @@ class PDFService:
         gap = page_width * 0.02
 
         # --- Build vitals sub-table ---
+        blank_vital_fields = (
+            ('Height', 'cms'),
+            ('Weight', 'Kg'),
+            ('Blood\nPressure', ''),
+            ('Pulse', '/min'),
+            ('Temperature', '°F'),
+            ('Resp. Rate', '/min'),
+            ('SpO2', '%'),
+        )
         vitals_rows = [[Paragraph('<b><u>Vitals</u></b>', cell_lbl), '']]
-        if vitals and vitals.get('vital_signs'):
+        if blank_mode:
+            for label, unit_hint in blank_vital_fields:
+                hint = f" <font size='7' color='#888888'>{unit_hint}</font>" if unit_hint else ''
+                vitals_rows.append([
+                    lbl(label),
+                    Paragraph(hint or '&nbsp;', cell_val),
+                ])
+        elif vitals and vitals.get('vital_signs'):
             vs = vitals['vital_signs']
             if vs.get('height'):
                 vitals_rows.append([lbl('Height'), val(f"{vs['height']} cms")])
@@ -1236,26 +1273,36 @@ class PDFService:
             vitals_rows.append([Paragraph('No vitals recorded', cell_val_sm), ''])
 
         vitals_table = Table(vitals_rows, colWidths=[vitals_left_width * 0.55, vitals_left_width * 0.45])
-        vitals_table.setStyle(TableStyle([
+        vitals_style = [
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
             ('TOPPADDING', (0, 0), (-1, -1), 3),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
             ('LEFTPADDING', (0, 0), (-1, -1), 2),
             ('RIGHTPADDING', (0, 0), (-1, -1), 2),
             ('SPAN', (0, 0), (1, 0)),  # header spans
-        ]))
+        ]
+        if blank_mode:
+            vitals_style.extend([
+                ('TOPPADDING', (0, 1), (-1, -1), 6),
+                ('BOTTOMPADDING', (0, 1), (-1, -1), 10),
+                ('LINEBELOW', (1, 1), (1, -1), 0.5, border_color),
+            ])
+        vitals_table.setStyle(TableStyle(vitals_style))
 
-        # --- Lab tests ordered (below vitals) ---
+        # --- Lab tests (left column) ---
         lab_tests = prescription_data.get('lab_tests', [])
         lab_rows = []
         if lab_tests:
-            lab_rows.append([Paragraph('<b><u>Tests Done</u></b>', cell_lbl), ''])
+            header = '<b><u>Tests Ordered</u></b>' if blank_mode else '<b><u>Tests Done</u></b>'
+            lab_rows.append([Paragraph(header, cell_lbl), ''])
             for t in lab_tests:
                 status_text = (t.get('status', '') or '').capitalize()
                 lab_rows.append([
                     Paragraph(f"&bull; {t.get('test_name', '')}", cell_val_sm),
                     Paragraph(status_text, cell_val_sm),
                 ])
+        elif blank_mode:
+            lab_rows.append([Paragraph('<b><u>Lab Tests</u></b>', cell_lbl), ''])
 
         lab_tests_table = None
         if lab_rows:
@@ -1272,7 +1319,7 @@ class PDFService:
         # Combine vitals + lab tests into left column
         left_col_parts = [[vitals_table]]
         if lab_tests_table:
-            left_col_parts.append([Spacer(1, 8)])
+            left_col_parts.append([Spacer(1, 14 if blank_mode else 8)])
             left_col_parts.append([lab_tests_table])
         left_col_wrapper = Table(left_col_parts, colWidths=[vitals_left_width])
         left_col_wrapper.setStyle(TableStyle([
@@ -1303,20 +1350,23 @@ class PDFService:
         ]
 
         med_data = [med_header]
-        for idx, item in enumerate(prescription_data.get('items', []), 1):
-            freq = item.get('frequency_schedule', '1-0-0')
-            food = food_timing_map.get(item.get('food_timing', 'after_food'), 'After food')
-            freq_text = f"{freq}\n{food}"
+        if blank_mode:
+            pass
+        else:
+            for idx, item in enumerate(prescription_data.get('items', []), 1):
+                freq = item.get('frequency_schedule', '1-0-0')
+                food = food_timing_map.get(item.get('food_timing', 'after_food'), 'After food')
+                freq_text = f"{freq}\n{food}"
 
-            med_data.append([
-                Paragraph(str(idx), cell_val),
-                Paragraph(f"<b>{item.get('medicine_name', '')}</b>", cell_val),
-                Paragraph(item.get('dosage', 'As directed'), cell_val_sm),
-                Paragraph(freq_text, cell_val_sm),
-                Paragraph(item.get('duration', '—'), cell_val),
-            ])
+                med_data.append([
+                    Paragraph(str(idx), cell_val),
+                    Paragraph(f"<b>{item.get('medicine_name', '')}</b>", cell_val),
+                    Paragraph(item.get('dosage', 'As directed'), cell_val_sm),
+                    Paragraph(freq_text, cell_val_sm),
+                    Paragraph(item.get('duration', '—'), cell_val),
+                ])
 
-        # No empty padding rows — only show actual medicines
+        # No empty padding rows — only show actual medicines (filled mode)
 
         meds_header_row = [[Paragraph('<b>Medicines</b>', section_hdr)]]
         meds_title_table = Table(meds_header_row, colWidths=[meds_right_width])
@@ -1338,8 +1388,19 @@ class PDFService:
             ('LINEBELOW', (0, 0), (-1, 0), 1, border_color),
         ]))
 
-        # Combine vitals + medicines into right column
+        # Combine medicines (+ blank diagnosis) into right column
         meds_combined = [[meds_title_table], [med_table]]
+        if blank_mode:
+            diag_right_rows = [[Paragraph('<b>Diagnosis</b>', section_hdr)]]
+            diag_right_table = Table(diag_right_rows, colWidths=[meds_right_width])
+            diag_right_table.setStyle(TableStyle([
+                ('LEFTPADDING', (0, 0), (-1, -1), 8),
+                ('TOPPADDING', (0, 0), (-1, -1), 2),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+            ]))
+            meds_combined.append([Spacer(1, 8)])
+            meds_combined.append([diag_right_table])
+
         meds_wrapper = Table(meds_combined, colWidths=[meds_right_width])
         meds_wrapper.setStyle(TableStyle([
             ('LEFTPADDING', (0, 0), (-1, -1), 0),
@@ -1362,48 +1423,56 @@ class PDFService:
             ('LINEAFTER', (0, 0), (0, -1), 0.5, colors.Color(0.7, 0.7, 0.7)),  # Vertical divider line
         ]))
         elements.append(layout_table)
-        elements.append(Spacer(1, 10))
 
         # ============================================================
-        # INSTRUCTIONS — bordered section
+        # INSTRUCTIONS — filled prescriptions only
         # ============================================================
-        notes = prescription_data.get('notes', '')
-        follow_up = None
-        if consultation and consultation.get('follow_up_date'):
-            follow_up = consultation['follow_up_date']
+        if not blank_mode:
+            elements.append(Spacer(1, 10))
+            notes = prescription_data.get('notes', '')
+            follow_up = None
+            if consultation and consultation.get('follow_up_date'):
+                follow_up = consultation['follow_up_date']
 
-        instr_content = []
-        if notes:
-            instr_content.append(Paragraph(notes, cell_val))
-        if follow_up:
-            instr_content.append(Paragraph(f"<b>Follow-up:</b> {follow_up}", cell_val))
-        if not instr_content:
-            instr_content.append(Paragraph('', cell_val))
+            instr_content = []
+            if notes:
+                instr_content.append(Paragraph(notes, cell_val))
+            if follow_up:
+                instr_content.append(Paragraph(f"<b>Follow-up:</b> {follow_up}", cell_val))
+            if not instr_content:
+                instr_content.append(Paragraph('', cell_val))
 
-        instr_rows = [
-            [Paragraph('<b>Instructions</b>', section_hdr)],
-        ] + [[c] for c in instr_content]
+            instr_rows = [
+                [Paragraph('<b>Instructions</b>', section_hdr)],
+            ] + [[c] for c in instr_content]
 
-        instr_table = Table(instr_rows, colWidths=[page_width])
-        instr_table.setStyle(TableStyle([
-            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-            ('TOPPADDING', (0, 0), (-1, -1), 4),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-            ('LEFTPADDING', (0, 0), (-1, -1), 8),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 8),
-        ]))
-        elements.append(instr_table)
+            instr_table = Table(instr_rows, colWidths=[page_width])
+            instr_table.setStyle(TableStyle([
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('TOPPADDING', (0, 0), (-1, -1), 4),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                ('LEFTPADDING', (0, 0), (-1, -1), 8),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+            ]))
+            elements.append(instr_table)
+        else:
+            elements.append(Spacer(1, 10))
 
         # ============================================================
         # SIGNATURE
         # ============================================================
         elements.append(Spacer(1, 30))
+        if blank_mode and prescription_number:
+            sig_doctor_detail = (f"<b>{doctor_name}</b><br/>{doctor_spec}<br/>"
+                                 f"Rx No: {prescription_number}")
+        elif doctor_reg:
+            sig_doctor_detail = (f"<b>{doctor_name}</b><br/>{doctor_spec}<br/>"
+                                 f"Reg. No: {doctor_reg}")
+        else:
+            sig_doctor_detail = f"<b>{doctor_name}</b><br/>{doctor_spec}"
         sig_rows = [[
             Paragraph(f"Date: {rx_date}", cell_val),
-            Paragraph(f"<b>{doctor_name}</b><br/>"
-                      f"{doctor_spec}<br/>"
-                      f"Reg. No: {doctor_reg}" if doctor_reg else
-                      f"<b>{doctor_name}</b><br/>{doctor_spec}",
+            Paragraph(sig_doctor_detail,
                       ParagraphStyle('SigStyle', parent=cell_val_sm, alignment=2))
         ]]
         sig_table = Table(sig_rows, colWidths=[page_width * 0.50, page_width * 0.50])

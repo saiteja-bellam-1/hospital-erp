@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from datetime import datetime, date, time, timedelta
@@ -88,6 +89,8 @@ class AppointmentResponse(BaseModel):
     discount_amount: float = 0.0
     final_amount: float = 0.0
     referred_by: Optional[str] = None
+    override_availability: bool = False
+    override_reason: Optional[str] = None
 
     created_at: datetime
 
@@ -247,6 +250,60 @@ def generate_appointment_number() -> str:
     import uuid
     return f"APT-{str(uuid.uuid4())[:8].upper()}"
 
+
+def _enrich_appointment_dict(apt: Appointment) -> dict:
+    """Build a consistent appointment payload for list/create responses."""
+    patient = apt.patient
+    doctor = apt.doctor
+    apt_date = apt.appointment_date
+    if isinstance(apt_date, datetime):
+        apt_date_value = apt_date.date()
+    else:
+        apt_date_value = apt_date
+
+    return {
+        "id": apt.id,
+        "appointment_number": apt.appointment_number,
+        "patient_id": apt.patient_id,
+        "doctor_id": apt.doctor_id,
+        "appointment_date": apt_date_value,
+        "appointment_time": apt.appointment_time,
+        "duration_minutes": apt.duration_minutes,
+        "appointment_type": apt.appointment_type,
+        "reason": apt.reason,
+        "status": apt.status,
+        "priority": apt.priority,
+        "notes": apt.notes,
+        "created_at": apt.created_at,
+        "patient_name": (
+            f"{patient.first_name} {patient.last_name}" if patient else None
+        ),
+        "patient_uuid": patient.patient_id if patient else None,
+        "doctor_name": (
+            f"Dr. {doctor.first_name} {doctor.last_name}"
+            if doctor else None
+        ),
+        "token_number": apt.token_number,
+        "queue_position": apt.queue_position,
+        "token_status": apt.token_status,
+        "priority_boost": apt.priority_boost or 0,
+        "checked_in_at": apt.checked_in_at,
+        "checked_out_at": apt.checked_out_at,
+        "cancellation_reason": apt.cancellation_reason,
+        "consultation_fee": apt.consultation_fee or 0.0,
+        "registration_fee": apt.registration_fee or 0.0,
+        "payment_status": apt.payment_status or "pending",
+        "payment_method": apt.payment_method,
+        "payment_date": apt.payment_date,
+        "payment_notes": apt.payment_notes,
+        "discount_amount": apt.discount_amount or 0.0,
+        "final_amount": apt.final_amount or 0.0,
+        "referred_by": apt.referred_by,
+        "override_availability": bool(apt.override_availability),
+        "override_reason": apt.override_reason,
+    }
+
+
 @router.post("/", response_model=AppointmentResponse)
 async def create_appointment(
     appointment_data: AppointmentCreate,
@@ -334,12 +391,12 @@ async def create_appointment(
     # Calculate final amount after discount
     final_amount = consultation_fee + registration_fee - appointment_data.discount_amount
 
-    # Create appointment
+    # Create appointment — store date at local midnight for reliable day filtering
     appointment = Appointment(
         appointment_number=generate_appointment_number(),
         patient_id=patient.id,
         doctor_id=appointment_data.doctor_id,
-        appointment_date=appointment_data.appointment_date,
+        appointment_date=datetime.combine(appointment_data.appointment_date, time.min),
         appointment_time=appointment_data.appointment_time,
         duration_minutes=appointment_data.duration_minutes,
         appointment_type=appointment_data.appointment_type,
@@ -394,7 +451,7 @@ async def create_appointment(
     except Exception:
         pass
 
-    return appointment
+    return _enrich_appointment_dict(appointment)
 
 @router.get("/", response_model=List[AppointmentResponse])
 async def get_appointments(
@@ -414,15 +471,11 @@ async def get_appointments(
     # Filter by hospital
     query = query.filter(Patient.hospital_id == current_user.hospital_id)
     
-    # Apply filters
+    # Apply filters — compare calendar dates so override/off-hours bookings still match
     if date_from:
-        # Convert date to datetime for proper comparison
-        date_from_dt = datetime.combine(date_from, datetime.min.time())
-        query = query.filter(Appointment.appointment_date >= date_from_dt)
+        query = query.filter(func.date(Appointment.appointment_date) >= date_from)
     if date_to:
-        # Convert date to datetime and set to end of day for proper comparison
-        date_to_dt = datetime.combine(date_to, datetime.max.time())
-        query = query.filter(Appointment.appointment_date <= date_to_dt)
+        query = query.filter(func.date(Appointment.appointment_date) <= date_to)
     if doctor_id:
         query = query.filter(Appointment.doctor_id == doctor_id)
     if patient_id:
@@ -436,47 +489,8 @@ async def get_appointments(
     query = query.order_by(Appointment.appointment_date, Appointment.appointment_time)
     
     appointments = query.offset(skip).limit(limit).all()
-    
-    # Enhance with patient and doctor names
-    result = []
-    for apt in appointments:
-        apt_dict = {
-            "id": apt.id,
-            "appointment_number": apt.appointment_number,
-            "patient_id": apt.patient_id,
-            "doctor_id": apt.doctor_id,
-            "appointment_date": apt.appointment_date,
-            "appointment_time": apt.appointment_time,
-            "duration_minutes": apt.duration_minutes,
-            "appointment_type": apt.appointment_type,
-            "reason": apt.reason,
-            "status": apt.status,
-            "priority": apt.priority,
-            "notes": apt.notes,
-            "created_at": apt.created_at,
-            "patient_name": f"{apt.patient.first_name} {apt.patient.last_name}",
-            "patient_uuid": apt.patient.patient_id if apt.patient else None,
-            "doctor_name": f"Dr. {apt.doctor.first_name} {apt.doctor.last_name}" if hasattr(apt, 'doctor') and apt.doctor else None,
-            # Queue / check-in fields
-            "token_number": apt.token_number,
-            "queue_position": apt.queue_position,
-            "token_status": apt.token_status,
-            "priority_boost": apt.priority_boost or 0,
-            "checked_in_at": apt.checked_in_at,
-            "checked_out_at": apt.checked_out_at,
-            "cancellation_reason": apt.cancellation_reason,
-            # Payment fields
-            "consultation_fee": apt.consultation_fee or 0.0,
-            "payment_status": apt.payment_status or "pending",
-            "payment_method": apt.payment_method,
-            "payment_date": apt.payment_date,
-            "payment_notes": apt.payment_notes,
-            "discount_amount": apt.discount_amount or 0.0,
-            "final_amount": apt.final_amount or 0.0
-        }
-        result.append(apt_dict)
 
-    return result
+    return [_enrich_appointment_dict(apt) for apt in appointments]
 
 @router.get("/{appointment_id}", response_model=AppointmentResponse)
 async def get_appointment(
@@ -552,13 +566,9 @@ async def get_doctor_appointments(
     
     # Apply date filters
     if date_from:
-        # Convert date to datetime for proper comparison
-        date_from_dt = datetime.combine(date_from, datetime.min.time())
-        query = query.filter(Appointment.appointment_date >= date_from_dt)
+        query = query.filter(func.date(Appointment.appointment_date) >= date_from)
     if date_to:
-        # Convert date to datetime and set to end of day for proper comparison
-        date_to_dt = datetime.combine(date_to, datetime.max.time())
-        query = query.filter(Appointment.appointment_date <= date_to_dt)
+        query = query.filter(func.date(Appointment.appointment_date) <= date_to)
     if status:
         query = query.filter(Appointment.status == status)
     

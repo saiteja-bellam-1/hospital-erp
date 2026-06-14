@@ -652,7 +652,9 @@ const ReceptionPatientsPage = () => {
                           Edit
                         </Button>
                         {enabledModules.outpatient && (
-                          <Button size="sm" onClick={() => navigate('/dashboard/reception/appointments')}>
+                          <Button size="sm" onClick={() => navigate(
+                            `/dashboard/reception/appointments?action=schedule&patientUuid=${encodeURIComponent(patient.patient_id)}`
+                          )}>
                             Book Appointment
                           </Button>
                         )}
@@ -1258,6 +1260,7 @@ const ReceptionPatientsPage = () => {
         patient={labBookingPatient}
         onClose={(success) => { setShowLabBooking(false); setLabBookingPatient(null); }}
         referralList={referralList}
+        onReferralsChange={setReferralList}
       />
     </div>
   );

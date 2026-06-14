@@ -3,7 +3,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, time
 import uuid
 
 from config.database import get_db
@@ -13,6 +13,7 @@ from app.models.patient import Patient
 from app.models.user import User
 from app.models.ehr import Consultation
 from app.models.hospital import Hospital
+from app.models.outpatient import Appointment
 from app.utils.dependencies import get_current_user, require_permission
 from app.utils.auth import Modules
 from app.utils.pdf_service import pdf_service
@@ -32,6 +33,7 @@ class MedicineItem(BaseModel):
 class PrescriptionCreate(BaseModel):
     patient_id: str = Field(..., description="Patient UUID")
     consultation_id: Optional[int] = Field(None, description="Consultation ID if linked")
+    appointment_id: Optional[int] = Field(None, description="Appointment ID if linked")
     admission_id: Optional[int] = Field(None, description="Inpatient admission ID if linked")
     medicines: List[MedicineItem] = Field(..., min_items=1, description="List of medicines")
     diagnosis: Optional[str] = Field(None, description="Diagnosis")
@@ -41,7 +43,13 @@ class PrescriptionUpdate(BaseModel):
     medicines: Optional[List[MedicineItem]] = None
     diagnosis: Optional[str] = None
     notes: Optional[str] = None
-    status: Optional[str] = Field(None, pattern="^(active|cancelled|completed)$")
+    status: Optional[str] = Field(None, pattern="^(active|cancelled|completed|blank)$")
+
+
+class BlankPrescriptionCreate(BaseModel):
+    patient_id: Optional[str] = Field(None, description="Patient UUID")
+    doctor_id: Optional[int] = Field(None, description="Prescribing doctor user id")
+    appointment_id: Optional[int] = Field(None, description="Linked appointment id")
 
 class PrescriptionResponse(BaseModel):
     id: int
@@ -51,6 +59,7 @@ class PrescriptionResponse(BaseModel):
     doctor_id: int
     doctor_name: str
     consultation_id: Optional[int]
+    appointment_id: Optional[int] = None
     admission_id: Optional[int] = None
     medicines: List[dict]
     diagnosis: Optional[str]
@@ -63,10 +72,408 @@ class PrescriptionResponse(BaseModel):
         from_attributes = True
 
 def generate_prescription_id() -> str:
-    """Generate unique prescription ID"""
+    """Generate unique prescription ID when no appointment is linked."""
     timestamp = datetime.now().strftime('%Y%m%d')
     unique_id = str(uuid.uuid4()).split('-')[0].upper()
     return f"RX-{timestamp}-{unique_id}"
+
+
+def _prescription_id_for_appointment(appointment: Appointment) -> str:
+    """One stable Rx code per appointment — reused for blank and doctor-filled Rx."""
+    return f"RX-{appointment.appointment_number}"
+
+
+def _find_prescription_for_appointment(
+    db: Session,
+    hospital_id: int,
+    appointment_id: int,
+) -> Optional[SimplePrescription]:
+    row = (
+        db.query(SimplePrescription)
+        .filter(
+            SimplePrescription.hospital_id == hospital_id,
+            SimplePrescription.appointment_id == appointment_id,
+        )
+        .order_by(SimplePrescription.created_at.desc())
+        .first()
+    )
+    if row:
+        return row
+
+    tag = _blank_appointment_notes(appointment_id)
+    return (
+        db.query(SimplePrescription)
+        .filter(
+            SimplePrescription.hospital_id == hospital_id,
+            SimplePrescription.notes == tag,
+        )
+        .order_by(SimplePrescription.created_at.desc())
+        .first()
+    )
+
+
+def _resolve_appointment_id(
+    db: Session,
+    *,
+    appointment_id: Optional[int],
+    consultation_id: Optional[int],
+) -> Optional[int]:
+    if appointment_id is not None:
+        return appointment_id
+    if consultation_id is None:
+        return None
+    consultation = db.query(Consultation).filter(Consultation.id == consultation_id).first()
+    return consultation.appointment_id if consultation else None
+
+
+BLANK_APT_NOTES_PREFIX = "__blank_appointment:"
+
+
+def _blank_appointment_notes(appointment_id: int) -> str:
+    return f"{BLANK_APT_NOTES_PREFIX}{appointment_id}__"
+
+
+def _parse_blank_appointment_id(notes: Optional[str]) -> Optional[int]:
+    if not notes or not notes.startswith(BLANK_APT_NOTES_PREFIX):
+        return None
+    try:
+        return int(notes[len(BLANK_APT_NOTES_PREFIX):].rstrip("_"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_blank_prescription_context(
+    db: Session,
+    hospital_id: int,
+    *,
+    patient_id: Optional[str],
+    doctor_id: Optional[int],
+    appointment_id: Optional[int],
+) -> tuple[Patient, User, Optional[Appointment]]:
+    appointment = None
+    if appointment_id is not None:
+        appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+        if not appointment:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Appointment not found",
+            )
+
+    patient = None
+    if patient_id:
+        patient = db.query(Patient).filter(Patient.patient_id == patient_id).first()
+    elif appointment:
+        patient = db.query(Patient).filter(Patient.id == appointment.patient_id).first()
+
+    if not patient:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Patient not found",
+        )
+    if patient.hospital_id != hospital_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied",
+        )
+    if appointment and appointment.patient_id != patient.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Appointment does not belong to the specified patient",
+        )
+
+    resolved_doctor_id = doctor_id
+    if appointment and not resolved_doctor_id:
+        resolved_doctor_id = appointment.doctor_id
+    if not resolved_doctor_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="doctor_id is required (or provide appointment_id with a doctor)",
+        )
+
+    doctor = db.query(User).filter(User.id == resolved_doctor_id).first()
+    if not doctor:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Doctor not found",
+        )
+    if doctor.hospital_id != hospital_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied",
+        )
+
+    return patient, doctor, appointment
+
+
+def _get_or_create_blank_prescription(
+    db: Session,
+    hospital_id: int,
+    patient: Patient,
+    doctor: User,
+    *,
+    appointment: Optional[Appointment] = None,
+) -> SimplePrescription:
+    """Reuse one prescription per appointment (blank or already filled by doctor)."""
+    if appointment:
+        existing = _find_prescription_for_appointment(db, hospital_id, appointment.id)
+        if existing:
+            if not existing.appointment_id:
+                existing.appointment_id = appointment.id
+                db.commit()
+                db.refresh(existing)
+            return existing
+
+        prescription = SimplePrescription(
+            prescription_id=_prescription_id_for_appointment(appointment),
+            patient_id=patient.patient_id,
+            doctor_id=doctor.id,
+            appointment_id=appointment.id,
+            medicines=[],
+            diagnosis=None,
+            notes=_blank_appointment_notes(appointment.id),
+            hospital_id=hospital_id,
+            status="blank",
+        )
+        db.add(prescription)
+        db.commit()
+        db.refresh(prescription)
+        return prescription
+
+    prescription = SimplePrescription(
+        prescription_id=generate_prescription_id(),
+        patient_id=patient.patient_id,
+        doctor_id=doctor.id,
+        medicines=[],
+        diagnosis=None,
+        notes="Blank prescription form",
+        hospital_id=hospital_id,
+        status="blank",
+    )
+    db.add(prescription)
+    db.commit()
+    db.refresh(prescription)
+    return prescription
+
+
+def _blank_prescription_pdf_response(
+    prescription: SimplePrescription,
+    patient: Patient,
+    doctor: User,
+    *,
+    appointment: Optional[Appointment],
+    db: Session,
+    hospital_id: int,
+) -> StreamingResponse:
+    prescription_pdf_data = _build_blank_prescription_pdf_data(
+        db,
+        patient,
+        doctor,
+        appointment=appointment,
+    )
+    prescription_pdf_data["prescription_number"] = prescription.prescription_id
+    if prescription.prescription_date:
+        prescription_pdf_data["prescription_date"] = prescription.prescription_date.isoformat()
+
+    hospital_info = _hospital_info_for_pdf(db, hospital_id)
+    pdf_buffer = pdf_service.generate_prescription_pdf(
+        prescription_pdf_data,
+        hospital_info,
+        blank_mode=True,
+        **pdf_gen_kwargs(db, hospital_id, 'prescription'),
+    )
+
+    filename = f"prescription_{prescription.prescription_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+    return StreamingResponse(
+        pdf_buffer,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename={filename}",
+            "X-Prescription-Id": prescription.prescription_id,
+        },
+    )
+
+
+def _patient_age_years(patient: Patient) -> Optional[int]:
+    if patient.date_of_birth:
+        from datetime import date
+        today = date.today()
+        return today.year - patient.date_of_birth.year - (
+            (today.month, today.day) < (patient.date_of_birth.month, patient.date_of_birth.day)
+        )
+    if patient.age is not None:
+        return patient.age
+    return None
+
+
+def _hospital_info_for_pdf(db: Session, hospital_id: int) -> dict:
+    hospital = db.query(Hospital).filter(Hospital.id == hospital_id).first()
+    return {
+        "name": hospital.name if hospital else "General Hospital",
+        "address": hospital.address if hospital else "Hospital Address",
+        "phone": hospital.phone if hospital else "+1-000-000-0000",
+        "email": hospital.email if hospital else "info@hospital.com",
+        "logo_url": hospital.logo_url if hospital and hasattr(hospital, 'logo_url') else '',
+    }
+
+
+def _build_patient_prescription_fields(patient: Patient) -> dict:
+    """Patient fields shared by filled and blank prescription PDFs."""
+    return {
+        "patient_name": f"{patient.first_name} {patient.last_name}",
+        "patient_age": _patient_age_years(patient),
+        "patient_gender": (patient.gender or '').capitalize(),
+        "patient_phone": patient.primary_phone or '',
+        "patient_blood_group": patient.blood_group or '',
+        "mrn": patient.mrn or "",
+        "village": patient.village or "",
+        "mandal": patient.mandal or "",
+        "district": patient.district or "",
+        "address_line1": patient.address_line1 or "",
+        "address_line2": patient.address_line2 or "",
+        "patient_id_display": patient.patient_id,
+    }
+
+
+def _fetch_lab_tests_for_appointment(
+    db: Session,
+    patient: Patient,
+    appointment_id: Optional[int] = None,
+) -> list:
+    from app.models.lab import PatientLabOrder, LabTest
+
+    lab_query = (
+        db.query(PatientLabOrder, LabTest)
+        .join(LabTest, PatientLabOrder.test_id == LabTest.id)
+        .filter(PatientLabOrder.patient_id == patient.id)
+    )
+    if appointment_id:
+        lab_query = lab_query.filter(PatientLabOrder.appointment_id == appointment_id)
+
+    lab_orders = lab_query.order_by(PatientLabOrder.order_date.desc()).limit(10).all()
+    return [
+        {
+            "test_name": test.name,
+            "test_code": test.test_code,
+            "status": order.status,
+            "order_date": order.order_date.strftime('%d/%m/%Y') if order.order_date else '',
+        }
+        for order, test in lab_orders
+    ]
+
+
+def _resolve_referred_by(patient: Patient, appointment: Optional[Appointment] = None) -> str:
+    if appointment and appointment.referred_by:
+        return appointment.referred_by.strip()
+    if patient.referred_by:
+        return patient.referred_by.strip()
+    return ''
+
+
+def _build_blank_prescription_pdf_data(
+    db: Session,
+    patient: Patient,
+    doctor: User,
+    *,
+    appointment: Optional[Appointment] = None,
+) -> dict:
+    now = datetime.now()
+    rx_dt = now
+
+    if appointment:
+        if appointment.appointment_date:
+            apt_date = appointment.appointment_date
+            if isinstance(apt_date, datetime):
+                rx_dt = apt_date
+            else:
+                rx_dt = datetime.combine(apt_date, time.min)
+
+    apt_id = appointment.id if appointment else None
+
+    return {
+        **_build_patient_prescription_fields(patient),
+        "prescription_number": None,
+        "appointment_number": appointment.appointment_number if appointment else None,
+        "appointment_id": appointment.id if appointment else None,
+        "prescription_date": rx_dt.isoformat(),
+        "doctor_name": f"Dr. {doctor.first_name} {doctor.last_name}",
+        "doctor_specialization": doctor.specialization if hasattr(doctor, 'specialization') else '',
+        "doctor_registration_number": doctor.license_number if hasattr(doctor, 'license_number') else '',
+        "referred_by": _resolve_referred_by(patient, appointment),
+        "status": "blank",
+        "notes": None,
+        "diagnosis": None,
+        "vitals": None,
+        "consultation": None,
+        "lab_tests": _fetch_lab_tests_for_appointment(db, patient, apt_id),
+        "items": [],
+    }
+
+
+@router.post("/blank")
+async def issue_blank_prescription(
+    body: BlankPrescriptionCreate,
+    current_user: User = Depends(require_permission(Modules.OUTPATIENT, "read")),
+    db: Session = Depends(get_db),
+):
+    """Create (or reuse) a numbered blank prescription and return its PDF."""
+    return _issue_blank_prescription(
+        db,
+        current_user,
+        patient_id=body.patient_id,
+        doctor_id=body.doctor_id,
+        appointment_id=body.appointment_id,
+    )
+
+
+@router.get("/blank/download")
+async def issue_blank_prescription_download(
+    patient_id: Optional[str] = None,
+    doctor_id: Optional[int] = None,
+    appointment_id: Optional[int] = None,
+    current_user: User = Depends(require_permission(Modules.OUTPATIENT, "read")),
+    db: Session = Depends(get_db),
+):
+    """Legacy GET alias — prefer POST /blank."""
+    return _issue_blank_prescription(
+        db,
+        current_user,
+        patient_id=patient_id,
+        doctor_id=doctor_id,
+        appointment_id=appointment_id,
+    )
+
+
+def _issue_blank_prescription(
+    db: Session,
+    current_user: User,
+    *,
+    patient_id: Optional[str],
+    doctor_id: Optional[int],
+    appointment_id: Optional[int],
+) -> StreamingResponse:
+    patient, doctor, appointment = _resolve_blank_prescription_context(
+        db,
+        current_user.hospital_id,
+        patient_id=patient_id,
+        doctor_id=doctor_id,
+        appointment_id=appointment_id,
+    )
+    prescription = _get_or_create_blank_prescription(
+        db,
+        current_user.hospital_id,
+        patient,
+        doctor,
+        appointment=appointment,
+    )
+    return _blank_prescription_pdf_response(
+        prescription,
+        patient,
+        doctor,
+        appointment=appointment,
+        db=db,
+        hospital_id=current_user.hospital_id,
+    )
+
 
 @router.post("/", response_model=PrescriptionResponse)
 async def create_prescription(
@@ -92,6 +499,7 @@ async def create_prescription(
         )
     
     # Verify consultation exists if provided
+    consultation = None
     if prescription_data.consultation_id:
         consultation = db.query(Consultation).filter(
             Consultation.id == prescription_data.consultation_id
@@ -105,6 +513,27 @@ async def create_prescription(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Consultation does not belong to the specified patient"
+            )
+
+    resolved_appointment_id = _resolve_appointment_id(
+        db,
+        appointment_id=prescription_data.appointment_id,
+        consultation_id=prescription_data.consultation_id,
+    )
+    linked_appointment = None
+    if resolved_appointment_id is not None:
+        linked_appointment = db.query(Appointment).filter(
+            Appointment.id == resolved_appointment_id
+        ).first()
+        if not linked_appointment:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Appointment not found",
+            )
+        if linked_appointment.patient_id != patient.id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Appointment does not belong to the specified patient",
             )
     
     # Convert medicines to JSON format
@@ -120,13 +549,37 @@ async def create_prescription(
         }
         for medicine in prescription_data.medicines
     ]
+
+    existing = None
+    if resolved_appointment_id is not None:
+        existing = _find_prescription_for_appointment(
+            db, current_user.hospital_id, resolved_appointment_id
+        )
+
+    if existing:
+        existing.medicines = medicines_json
+        existing.diagnosis = prescription_data.diagnosis
+        existing.notes = prescription_data.notes
+        existing.consultation_id = prescription_data.consultation_id
+        existing.appointment_id = resolved_appointment_id
+        existing.doctor_id = current_user.id
+        existing.status = "active"
+        db.commit()
+        db.refresh(existing)
+        return build_prescription_response(existing, db)
     
     # Create prescription
+    rx_code = (
+        _prescription_id_for_appointment(linked_appointment)
+        if linked_appointment
+        else generate_prescription_id()
+    )
     prescription = SimplePrescription(
-        prescription_id=generate_prescription_id(),
+        prescription_id=rx_code,
         patient_id=prescription_data.patient_id,
         doctor_id=current_user.id,
         consultation_id=prescription_data.consultation_id,
+        appointment_id=resolved_appointment_id,
         admission_id=prescription_data.admission_id,
         medicines=medicines_json,
         diagnosis=prescription_data.diagnosis,
@@ -146,6 +599,7 @@ async def get_prescriptions(
     patient_id: Optional[str] = None,
     doctor_id: Optional[int] = None,
     consultation_id: Optional[int] = None,
+    appointment_id: Optional[int] = None,
     admission_id: Optional[int] = None,
     status: Optional[str] = None,
     limit: int = 50,
@@ -167,6 +621,9 @@ async def get_prescriptions(
 
     if consultation_id:
         query = query.filter(SimplePrescription.consultation_id == consultation_id)
+
+    if appointment_id:
+        query = query.filter(SimplePrescription.appointment_id == appointment_id)
 
     if admission_id:
         query = query.filter(SimplePrescription.admission_id == admission_id)
@@ -292,9 +749,32 @@ async def download_prescription_pdf(
             detail="Prescription not found"
         )
 
+    medicines = prescription.medicines or []
+    is_blank_rx = prescription.status == "blank" or len(medicines) == 0
+
     # Get patient and doctor info
     patient = db.query(Patient).filter(Patient.patient_id == prescription.patient_id).first()
     doctor = db.query(User).filter(User.id == prescription.doctor_id).first()
+
+    linked_appointment = None
+    if prescription.appointment_id:
+        linked_appointment = db.query(Appointment).filter(
+            Appointment.id == prescription.appointment_id
+        ).first()
+    if not linked_appointment:
+        apt_id = _parse_blank_appointment_id(prescription.notes)
+        if apt_id:
+            linked_appointment = db.query(Appointment).filter(Appointment.id == apt_id).first()
+
+    if is_blank_rx and patient and doctor:
+        return _blank_prescription_pdf_response(
+            prescription,
+            patient,
+            doctor,
+            appointment=linked_appointment,
+            db=db,
+            hospital_id=current_user.hospital_id,
+        )
 
     # --- Fetch consultation findings first (needed to check its vitals too) ---
     consultation_data = None
@@ -414,6 +894,7 @@ async def download_prescription_pdf(
         "patient_blood_group": patient_blood_group,
         "mrn": (patient.mrn or "") if patient else "",
         "village": (patient.village or "") if patient else "",
+        "mandal": (patient.mandal or "") if patient else "",
         "district": (patient.district or "") if patient else "",
         "patient_id_display": prescription.patient_id,
         "doctor_name": f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else "Unknown",
@@ -435,7 +916,7 @@ async def download_prescription_pdf(
                 "frequency_schedule": med.get("frequency_schedule", "1-0-0"),
                 "food_timing": med.get("food_timing", "after_food")
             }
-            for med in prescription.medicines
+            for med in medicines
         ]
     }
 
@@ -505,6 +986,8 @@ def build_prescription_response(prescription: SimplePrescription, db: Session) -
         doctor_id=prescription.doctor_id,
         doctor_name=f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else "Unknown",
         consultation_id=prescription.consultation_id,
+        appointment_id=prescription.appointment_id,
+        admission_id=getattr(prescription, 'admission_id', None),
         medicines=prescription.medicines,
         diagnosis=prescription.diagnosis,
         notes=prescription.notes,

@@ -15,6 +15,7 @@ import {
   Building2, Stethoscope, FlaskConical, BedDouble, Printer, FileText
 } from 'lucide-react';
 import { printPdfFromUrl } from '../../utils/printPdf';
+import PatientSearchPicker from '../../components/PatientSearchPicker';
 
 const BillingModule = () => {
   const [bills, setBills] = useState([]);
@@ -78,8 +79,6 @@ const BillingModule = () => {
 
   // Consolidate dialog
   const [consolidateOpen, setConsolidateOpen] = useState(false);
-  const [consolidatePatientQuery, setConsolidatePatientQuery] = useState('');
-  const [consolidatePatients, setConsolidatePatients] = useState([]);
   const [consolidatePatient, setConsolidatePatient] = useState(null);
   const [consolidatePreview, setConsolidatePreview] = useState(null);
   const [consolidatePicked, setConsolidatePicked] = useState({ consultations: new Set(), labs: new Set() });
@@ -396,31 +395,14 @@ const BillingModule = () => {
   };
 
   const openConsolidateDialog = () => {
-    setConsolidatePatientQuery('');
-    setConsolidatePatients([]);
     setConsolidatePatient(null);
     setConsolidatePreview(null);
     setConsolidatePicked({ consultations: new Set(), labs: new Set() });
     setConsolidateOpen(true);
   };
 
-  const searchConsolidatePatients = async (q) => {
-    setConsolidatePatientQuery(q);
-    if (q.trim().length < 2) {
-      setConsolidatePatients([]);
-      return;
-    }
-    try {
-      const res = await axios.post('/api/patients/search', { search_term: q.trim() });
-      setConsolidatePatients(res.data?.patients?.slice(0, 8) || []);
-    } catch (_) {
-      setConsolidatePatients([]);
-    }
-  };
-
   const selectConsolidatePatient = async (p) => {
     setConsolidatePatient(p);
-    setConsolidatePatients([]);
     try {
       const res = await axios.get(`/api/hospital/billing/consolidate/preview?patient_id=${p.id}`);
       setConsolidatePreview(res.data);
@@ -1338,36 +1320,19 @@ const BillingModule = () => {
           </DialogHeader>
           <div className="space-y-4">
             {/* Patient search */}
-            <div className="relative">
-              <Label className="text-xs">Patient</Label>
-              {consolidatePatient ? (
-                <div className="flex items-center justify-between bg-blue-50 rounded p-2 mt-1">
-                  <span className="text-sm">
-                    {consolidatePatient.first_name} {consolidatePatient.last_name}
-                    <span className="text-xs text-gray-500 ml-2">{consolidatePatient.primary_phone}</span>
-                  </span>
-                  <Button size="sm" variant="ghost" onClick={() => { setConsolidatePatient(null); setConsolidatePreview(null); }}>
-                    Change
-                  </Button>
-                </div>
-              ) : (
-                <>
-                  <Input placeholder="Search by name or phone..." value={consolidatePatientQuery}
-                    onChange={(e) => searchConsolidatePatients(e.target.value)} />
-                  {consolidatePatients.length > 0 && (
-                    <div className="absolute z-10 mt-1 w-full bg-white border rounded shadow max-h-48 overflow-auto">
-                      {consolidatePatients.map((p) => (
-                        <button key={p.id} className="block w-full text-left px-3 py-2 text-sm hover:bg-gray-100"
-                          onClick={() => selectConsolidatePatient(p)}>
-                          {p.first_name} {p.last_name}
-                          <span className="text-xs text-gray-500 ml-2">{p.primary_phone}</span>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
+            <PatientSearchPicker
+              value={consolidatePatient}
+              onChange={(p) => {
+                if (!p) {
+                  setConsolidatePatient(null);
+                  setConsolidatePreview(null);
+                  return;
+                }
+                selectConsolidatePatient(p);
+              }}
+              label="Patient"
+              compact
+            />
 
             {/* Preview lists */}
             {consolidatePreview && (
