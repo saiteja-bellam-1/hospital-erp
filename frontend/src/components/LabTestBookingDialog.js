@@ -7,13 +7,13 @@ import { Badge } from './ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Search, X, TestTube, Loader2, Plus, Printer } from 'lucide-react';
 import { printPdfFromUrl } from '../utils/printPdf';
+import PatientSearchPicker from './PatientSearchPicker';
+import ReferralSelectWithCreate from './ReferralSelectWithCreate';
 
-const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = [] }) => {
+const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = [], onReferralsChange }) => {
   const token = localStorage.getItem('token');
   const [loading, setLoading] = useState(false);
 
-  const [patientSearch, setPatientSearch] = useState('');
-  const [patientResults, setPatientResults] = useState([]);
   const [selectedPatient, setSelectedPatient] = useState(patient);
 
   const [tests, setTests] = useState([]);
@@ -60,15 +60,6 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.ok) setDoctors(await res.json());
-    } catch {}
-  };
-
-  const searchPatients = async (q) => {
-    setPatientSearch(q);
-    if (q.length < 2) { setPatientResults([]); return; }
-    try {
-      const res = await fetch(`/api/patients/?search=${q}`, { headers: { Authorization: `Bearer ${token}` } });
-      if (res.ok) setPatientResults(await res.json());
     } catch {}
   };
 
@@ -209,41 +200,20 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
         </DialogHeader>
 
         <div className="space-y-4">
-          {!selectedPatient ? (
-            <div>
-              <Label>Search Patient *</Label>
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
-                <Input value={patientSearch} onChange={(e) => searchPatients(e.target.value)}
-                  placeholder="Search by name or phone..." className="pl-10" />
-              </div>
-              {patientResults.length > 0 && (
-                <div className="border rounded-lg mt-1 max-h-40 overflow-y-auto divide-y">
-                  {patientResults.map(p => (
-                    <div key={p.id} className="p-2 hover:bg-gray-50 cursor-pointer flex justify-between items-center"
-                      onClick={() => { setSelectedPatient(p); setPatientResults([]); setPatientSearch(''); }}>
-                      <div>
-                        <p className="text-sm font-medium">{p.first_name} {p.last_name}</p>
-                        <p className="text-xs text-gray-400">{p.primary_phone} | {p.gender}</p>
-                      </div>
-                      <Plus className="h-4 w-4 text-blue-500" />
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          ) : (
+          {patient ? (
             <div className="flex items-center justify-between bg-blue-50 rounded-lg p-3">
               <div>
-                <p className="text-sm font-semibold">{selectedPatient.first_name} {selectedPatient.last_name}</p>
-                <p className="text-xs text-gray-500">{selectedPatient.primary_phone} | {selectedPatient.gender} | ID: {selectedPatient.patient_id}</p>
+                <p className="text-sm font-semibold">{selectedPatient?.first_name} {selectedPatient?.last_name}</p>
+                <p className="text-xs text-gray-500">{selectedPatient?.primary_phone} | {selectedPatient?.gender} | ID: {selectedPatient?.patient_id}</p>
               </div>
-              {!patient && (
-                <Button size="sm" variant="ghost" onClick={() => setSelectedPatient(null)}>
-                  <X className="h-4 w-4" />
-                </Button>
-              )}
             </div>
+          ) : (
+            <PatientSearchPicker
+              value={selectedPatient}
+              onChange={setSelectedPatient}
+              label="Search Patient"
+              required
+            />
           )}
 
           <div>
@@ -318,22 +288,12 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
               </Select>
             </div>
           </div>
-          <div>
-            <Label>Referred By</Label>
-            {referralList.length > 0 ? (
-              <Select value={referredBy || '_none'} onValueChange={v => setReferredBy(v === '_none' ? '' : v)}>
-                <SelectTrigger><SelectValue placeholder="Select..." /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="_none">Self / None</SelectItem>
-                  {referralList.map(r => (
-                    <SelectItem key={r.id} value={r.name}>{r.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            ) : (
-              <Input value={referredBy} onChange={e => setReferredBy(e.target.value)} placeholder="Referral name" />
-            )}
-          </div>
+          <ReferralSelectWithCreate
+            value={referredBy}
+            onValueChange={setReferredBy}
+            referrals={referralList}
+            onReferralsChange={onReferralsChange}
+          />
 
           {selectedTests.length > 0 && (
             <div className="bg-gray-50 rounded-lg p-3 space-y-1.5">

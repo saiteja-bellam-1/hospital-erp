@@ -518,7 +518,7 @@ const DoctorDashboard = () => {
           notes: data.notes || '',
           follow_up_date: data.follow_up_date ? data.follow_up_date.split('T')[0] : ''
         });
-        // Load existing prescription for this consultation
+        // Load existing prescription for this consultation or appointment (incl. blank Rx from reception)
         const rxRes = await fetch(`/api/prescriptions-simple/?consultation_id=${data.id}`, {
           headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
         });
@@ -527,6 +527,15 @@ const DoctorDashboard = () => {
           if (rxData.length > 0) {
             setCreatedPrescription(rxData[0]);
           }
+        }
+      }
+      const rxByAptRes = await fetch(`/api/prescriptions-simple/?appointment_id=${appointment.id}`, {
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
+      });
+      if (rxByAptRes.ok) {
+        const rxByApt = await rxByAptRes.json();
+        if (rxByApt.length > 0) {
+          setCreatedPrescription(rxByApt[0]);
         }
       }
     } catch (err) {
@@ -689,6 +698,7 @@ const DoctorDashboard = () => {
 
       const prescriptionData = {
         patient_id: patient_uuid,
+        appointment_id: selectedAppointment.id,
         consultation_id: activeConsultation?.id || null,
         medicines: prescriptionForm.medications
           .filter(med => med.medicine_name && med.medicine_name.trim() !== '')

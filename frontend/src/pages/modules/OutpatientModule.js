@@ -12,6 +12,12 @@ import { Plus, Search, Calendar as CalendarIcon, Clock, User, Trash2 } from 'luc
 import { format } from 'date-fns';
 import { useToast } from '../../hooks/use-toast';
 import { ConfirmDialog } from '../../components/ui/confirm-dialog';
+import AppointmentAvailabilityOverride from '../../components/AppointmentAvailabilityOverride';
+import {
+  APPOINTMENT_OVERRIDE_DEFAULTS,
+  needsOverrideReason,
+  validateAppointmentBooking,
+} from '../../utils/appointmentBooking';
 
 const OutpatientModule = () => {
   const { toast } = useToast();
@@ -75,7 +81,8 @@ const OutpatientModule = () => {
     payment_status: 'pending',
     payment_method: '',
     discount_amount: 0,
-    payment_notes: ''
+    payment_notes: '',
+    ...APPOINTMENT_OVERRIDE_DEFAULTS,
   });
 
   const [loading, setLoading] = useState(false);
@@ -285,6 +292,15 @@ const OutpatientModule = () => {
 
   const createAppointment = async (e) => {
     e.preventDefault();
+
+    const validationError = validateAppointmentBooking(appointmentForm, {
+      selectedPatient: !!appointmentForm.patient_id,
+    });
+    if (validationError) {
+      toast({ variant: 'destructive', title: 'Cannot book', description: validationError });
+      return;
+    }
+
     setLoading(true);
     
     try {
@@ -316,7 +332,8 @@ const OutpatientModule = () => {
           payment_status: 'pending',
           payment_method: '',
           discount_amount: 0,
-          payment_notes: ''
+          payment_notes: '',
+          ...APPOINTMENT_OVERRIDE_DEFAULTS,
         });
         setSelectedPatient(null);
         setSearchPhone('');
@@ -1077,6 +1094,13 @@ const OutpatientModule = () => {
                     onChange={(e) => setAppointmentForm(prev => ({ ...prev, appointment_time: e.target.value }))}
                   />
                 </div>
+
+                <AppointmentAvailabilityOverride
+                  overrideAvailability={appointmentForm.override_availability}
+                  overrideReason={appointmentForm.override_reason}
+                  onChange={(patch) => setAppointmentForm((prev) => ({ ...prev, ...patch }))}
+                />
+
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <Label htmlFor="appointment_type">Type</Label>
@@ -1120,7 +1144,18 @@ const OutpatientModule = () => {
                     placeholder="Brief description of the visit reason"
                   />
                 </div>
-                <Button type="submit" disabled={loading} className="w-full">
+                <Button
+                  type="submit"
+                  disabled={
+                    loading
+                    || !appointmentForm.patient_id
+                    || !appointmentForm.doctor_id
+                    || !appointmentForm.appointment_date
+                    || !appointmentForm.appointment_time
+                    || needsOverrideReason(appointmentForm)
+                  }
+                  className="w-full"
+                >
                   {loading ? 'Booking...' : 'Book Appointment'}
                 </Button>
               </form>

@@ -57,6 +57,7 @@ NEW_COLUMNS = [
     ("bills", "referred_by", "VARCHAR(100)"),
     ("prescriptions", "admission_id", "INTEGER"),
     ("prescriptions_simple", "admission_id", "INTEGER"),
+    ("prescriptions_simple", "appointment_id", "INTEGER REFERENCES appointments(id)"),
     ("admissions", "insurance_provider", "VARCHAR(200)"),
     ("admissions", "policy_number", "VARCHAR(100)"),
     ("admissions", "claim_reference", "VARCHAR(100)"),

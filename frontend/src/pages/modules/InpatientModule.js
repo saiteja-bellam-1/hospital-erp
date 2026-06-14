@@ -14,6 +14,7 @@ import { useToast } from '../../hooks/use-toast';
 import { useAuth } from '../../contexts/AuthContext';
 import { printPdfFromUrl } from '../../utils/printPdf';
 import AdmitPatientWizard from './inpatient/AdmitPatientWizard';
+import PatientSearchPicker from '../../components/PatientSearchPicker';
 import PendingAcceptanceList from './inpatient/PendingAcceptanceList';
 import AdmissionDetailHeader from './inpatient/AdmissionDetailHeader';
 import VisitDialog from './inpatient/VisitDialog';
@@ -182,11 +183,9 @@ const InpatientModule = () => {
     is_observation: false, deposit_waived: false, deposit_waiver_reason: '',
     emergency_contact: '',
   });
-  const [patientSearchResults, setPatientSearchResults] = useState([]);
-  const [patientSearchQuery, setPatientSearchQuery] = useState('');
   const [selectedPatientName, setSelectedPatientName] = useState('');
   const [selectedPatient, setSelectedPatient] = useState(null);
-  const [patientSearching, setPatientSearching] = useState(false);
+  const [otSelectedPatient, setOtSelectedPatient] = useState(null);
   const [doctorsList, setDoctorsList] = useState([]);
   const [availableRooms, setAvailableRooms] = useState([]);
 
@@ -376,8 +375,6 @@ const InpatientModule = () => {
   const [activePreauth, setActivePreauth] = useState(null);
   const [showPreauthDecisionDialog, setShowPreauthDecisionDialog] = useState(false);
   const [preauthDecisionForm, setPreauthDecisionForm] = useState({ status: 'approved', approved_amount: '', validity_days: '', approval_reference: '', notes: '' });
-  const [preauthPatientSearch, setPreauthPatientSearch] = useState('');
-  const [preauthPatientResults, setPreauthPatientResults] = useState([]);
   const [preauthSelectedPatient, setPreauthSelectedPatient] = useState(null);
 
   // Phase 2: Bill split
@@ -405,8 +402,6 @@ const InpatientModule = () => {
   const [reservations, setReservations] = useState([]);
   const [showReservationDialog, setShowReservationDialog] = useState(false);
   const [reservationForm, setReservationForm] = useState({ patient_id: '', bed_id: '', room_id: '', room_type: '', reserved_for_date: '', reservation_reason: 'elective', notes: '' });
-  const [reservationPatientSearch, setReservationPatientSearch] = useState('');
-  const [reservationPatientResults, setReservationPatientResults] = useState([]);
   const [reservationSelectedPatient, setReservationSelectedPatient] = useState(null);
   const [showConvertReservationDialog, setShowConvertReservationDialog] = useState(false);
   const [convertingReservation, setConvertingReservation] = useState(null);
@@ -1163,29 +1158,6 @@ const InpatientModule = () => {
     if (activeTab === 'ot') fetchProcedures(true);  // OT scheduling needs the active catalog
   }, [activeTab, admissionsPage, dischargePage, fetchAdmissions, fetchRooms, fetchDashboard, fetchAvailableRooms, fetchOTSchedules, fetchPreauths, fetchAncillaryServices, fetchPackages, fetchTpaList, fetchRoomTypeRates, fetchCleaningBeds, fetchTurnoverStats, fetchPendingTransfers, fetchReservations, fetchReadmissions, fetchMortalityList, fetchRosterGrid, fetchRosterCoverage, fetchNursesList, fetchProcedures, fetchTriageQueue]);
 
-  // ============================================================
-  // Patient search typeahead
-  // ============================================================
-  useEffect(() => {
-    if (!patientSearchQuery.trim()) { setPatientSearchResults([]); setPatientSearching(false); return; }
-    setPatientSearching(true);
-    const timer = setTimeout(async () => {
-      try {
-        const res = await axios.post('/api/patients/search', {
-          search_term: patientSearchQuery.trim(),
-          sort_by: 'name',
-          sort_order: 'asc',
-        });
-        setPatientSearchResults(res.data?.patients || []);
-      } catch {
-        setPatientSearchResults([]);
-      } finally {
-        setPatientSearching(false);
-      }
-    }, 300);
-    return () => clearTimeout(timer);
-  }, [patientSearchQuery]);
-
   // Re-fetch MAR when the date changes for an open admission
   useEffect(() => {
     if (activityAdmission && activityTab === 'mar') {
@@ -1283,8 +1255,6 @@ const InpatientModule = () => {
       is_observation: false, deposit_waived: false, deposit_waiver_reason: '' });
     setSelectedPatientName('');
     setSelectedPatient(null);
-    setPatientSearchQuery('');
-    setPatientSearchResults([]);
   };
 
   // Activity
@@ -2831,18 +2801,6 @@ const InpatientModule = () => {
     } finally { setLoading(false); }
   };
 
-  // Patient typeahead for reservations
-  useEffect(() => {
-    if (reservationPatientSearch.length < 2) { setReservationPatientResults([]); return; }
-    const t = setTimeout(async () => {
-      try {
-        const res = await axios.get('/api/patients/', { params: { search: reservationPatientSearch } });
-        setReservationPatientResults(res.data.patients || res.data || []);
-      } catch { setReservationPatientResults([]); }
-    }, 300);
-    return () => clearTimeout(t);
-  }, [reservationPatientSearch]);
-
   // Phase 3: Nurse assignment
   const handleAssignNurse = async (e) => {
     e.preventDefault();
@@ -3244,18 +3202,6 @@ const InpatientModule = () => {
     d.setDate(d.getDate() + deltaDays);
     setRosterWeekStart(d);
   };
-
-  // Patient typeahead for pre-auth
-  useEffect(() => {
-    if (preauthPatientSearch.length < 2) { setPreauthPatientResults([]); return; }
-    const t = setTimeout(async () => {
-      try {
-        const res = await axios.get('/api/patients/', { params: { search: preauthPatientSearch } });
-        setPreauthPatientResults(res.data.patients || res.data || []);
-      } catch { setPreauthPatientResults([]); }
-    }, 300);
-    return () => clearTimeout(t);
-  }, [preauthPatientSearch]);
 
   const handleRecordPRN = async (e) => {
     e.preventDefault();
@@ -6602,82 +6548,21 @@ const InpatientModule = () => {
           <DialogHeader><DialogTitle>New Admission</DialogTitle></DialogHeader>
           <form onSubmit={handleCreateAdmission} className="space-y-4">
             {/* Patient search */}
-            <div>
-              <Label>Patient *</Label>
-              {selectedPatient && admissionForm.patient_id ? (
-                <div className="flex items-center justify-between p-3 bg-green-50 border border-green-200 rounded-lg mt-1">
-                  <div>
-                    <p className="font-medium text-green-900">{selectedPatient.first_name} {selectedPatient.last_name}</p>
-                    <p className="text-sm text-green-600">ID: {selectedPatient.patient_id} • Phone: {selectedPatient.primary_phone}</p>
-                  </div>
-                  <Button type="button" variant="ghost" size="sm" onClick={() => {
-                    setSelectedPatient(null);
-                    setSelectedPatientName('');
-                    setAdmissionForm(p => ({ ...p, patient_id: '' }));
-                    setPatientSearchQuery('');
-                    setPatientSearchResults([]);
-                  }}>
-                    <XCircle className="h-4 w-4" />
-                  </Button>
-                </div>
-              ) : (
-                <>
-                  <div className="relative mt-1">
-                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-                    <Input
-                      className="pl-9"
-                      placeholder="Type patient name, phone number, or ID..."
-                      value={patientSearchQuery}
-                      onChange={e => setPatientSearchQuery(e.target.value)}
-                    />
-                    {patientSearching && (
-                      <div className="absolute right-3 top-1/2 transform -translate-y-1/2">
-                        <Loader2 className="h-4 w-4 animate-spin text-gray-400" />
-                      </div>
-                    )}
-                  </div>
-                  {!patientSearchQuery.trim() && (
-                    <p className="text-gray-400 text-xs mt-1.5">Start typing to search patients...</p>
-                  )}
-                  {patientSearchQuery.trim() && (
-                    <div className="mt-1 border rounded-lg max-h-48 overflow-y-auto">
-                      {patientSearching ? (
-                        <div className="flex items-center justify-center py-4 gap-2 text-gray-400">
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                          <span className="text-sm">Searching...</span>
-                        </div>
-                      ) : patientSearchResults.length === 0 ? (
-                        <p className="text-gray-500 text-sm text-center py-4">No patients found. Please register the patient first.</p>
-                      ) : (
-                        patientSearchResults.map(p => (
-                          <div
-                            key={p.patient_id}
-                            className="px-4 py-2.5 hover:bg-blue-50 cursor-pointer border-b last:border-b-0"
-                            onClick={() => {
-                              setAdmissionForm(prev => ({ ...prev, patient_id: p.id }));
-                              setSelectedPatient(p);
-                              setSelectedPatientName(`${p.first_name} ${p.last_name}`);
-                              setPatientSearchQuery('');
-                              setPatientSearchResults([]);
-                            }}
-                          >
-                            <div className="flex justify-between items-center">
-                              <div>
-                                <p className="font-medium text-gray-900 text-sm">{p.first_name} {p.last_name}</p>
-                                <p className="text-xs text-gray-500">{p.primary_phone} • ID: {p.patient_id?.slice(0, 8)}...</p>
-                              </div>
-                              <Badge variant="outline" className="text-xs">
-                                {p.gender || 'N/A'}{p.age != null ? ` • ${p.age}y` : (p.date_of_birth ? ` • ${new Date().getFullYear() - new Date(p.date_of_birth).getFullYear()}y` : '')}
-                              </Badge>
-                            </div>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
+            <PatientSearchPicker
+              value={selectedPatient}
+              onChange={(p) => {
+                setSelectedPatient(p);
+                if (p) {
+                  setAdmissionForm((prev) => ({ ...prev, patient_id: p.id }));
+                  setSelectedPatientName(`${p.first_name} ${p.last_name}`);
+                } else {
+                  setAdmissionForm((prev) => ({ ...prev, patient_id: '' }));
+                  setSelectedPatientName('');
+                }
+              }}
+              label="Patient"
+              required
+            />
 
             <div className="grid grid-cols-2 gap-4">
               <div>
@@ -7736,32 +7621,16 @@ const InpatientModule = () => {
       </Dialog>
 
       {/* Pre-auth Create Dialog */}
-      <Dialog open={showPreauthDialog} onOpenChange={(open) => { setShowPreauthDialog(open); if (!open) { setPreauthSelectedPatient(null); setPreauthPatientSearch(''); } }}>
+      <Dialog open={showPreauthDialog} onOpenChange={(open) => { setShowPreauthDialog(open); if (!open) setPreauthSelectedPatient(null); }}>
         <DialogContent className="max-w-lg">
           <DialogHeader><DialogTitle>New Pre-Authorisation Request</DialogTitle></DialogHeader>
           <form onSubmit={handleCreatePreauth} className="space-y-3">
-            <div>
-              <Label>Patient *</Label>
-              {preauthSelectedPatient ? (
-                <div className="flex justify-between items-center p-2 border rounded text-sm">
-                  <span>{preauthSelectedPatient.first_name} {preauthSelectedPatient.last_name} ({preauthSelectedPatient.patient_id?.slice(0, 8)}…)</span>
-                  <Button type="button" variant="ghost" size="sm" onClick={() => { setPreauthSelectedPatient(null); setPreauthPatientSearch(''); }}><X className="h-4 w-4" /></Button>
-                </div>
-              ) : (
-                <>
-                  <Input value={preauthPatientSearch} onChange={e => setPreauthPatientSearch(e.target.value)} placeholder="Search by name or phone..." />
-                  {preauthPatientResults.length > 0 && (
-                    <div className="border rounded max-h-40 overflow-y-auto mt-1">
-                      {preauthPatientResults.slice(0, 10).map(p => (
-                        <div key={p.id} className="p-2 hover:bg-gray-50 cursor-pointer text-sm" onClick={() => { setPreauthSelectedPatient(p); setPreauthPatientSearch(''); setPreauthPatientResults([]); }}>
-                          {p.first_name} {p.last_name} — {p.primary_phone}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
+            <PatientSearchPicker
+              value={preauthSelectedPatient}
+              onChange={setPreauthSelectedPatient}
+              label="Patient"
+              required
+            />
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <Label>Insurance Provider *</Label>
@@ -8861,32 +8730,16 @@ const InpatientModule = () => {
       </Dialog>
 
       {/* Reservation Dialog */}
-      <Dialog open={showReservationDialog} onOpenChange={(open) => { setShowReservationDialog(open); if (!open) { setReservationSelectedPatient(null); setReservationPatientSearch(''); } }}>
+      <Dialog open={showReservationDialog} onOpenChange={(open) => { setShowReservationDialog(open); if (!open) setReservationSelectedPatient(null); }}>
         <DialogContent className="max-w-md">
           <DialogHeader><DialogTitle>New Bed Reservation</DialogTitle></DialogHeader>
           <form onSubmit={handleCreateReservation} className="space-y-3">
-            <div>
-              <Label>Patient *</Label>
-              {reservationSelectedPatient ? (
-                <div className="flex justify-between items-center p-2 border rounded text-sm">
-                  <span>{reservationSelectedPatient.first_name} {reservationSelectedPatient.last_name}</span>
-                  <Button type="button" variant="ghost" size="sm" onClick={() => { setReservationSelectedPatient(null); setReservationPatientSearch(''); }}><X className="h-4 w-4" /></Button>
-                </div>
-              ) : (
-                <>
-                  <Input value={reservationPatientSearch} onChange={e => setReservationPatientSearch(e.target.value)} placeholder="Search by name or phone..." />
-                  {reservationPatientResults.length > 0 && (
-                    <div className="border rounded max-h-40 overflow-y-auto mt-1">
-                      {reservationPatientResults.slice(0, 10).map(p => (
-                        <div key={p.id} className="p-2 hover:bg-gray-50 cursor-pointer text-sm" onClick={() => { setReservationSelectedPatient(p); setReservationPatientSearch(''); setReservationPatientResults([]); }}>
-                          {p.first_name} {p.last_name} — {p.primary_phone}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
+            <PatientSearchPicker
+              value={reservationSelectedPatient}
+              onChange={setReservationSelectedPatient}
+              label="Patient"
+              required
+            />
             <div>
               <Label>Reserved For *</Label>
               <Input type="datetime-local" value={reservationForm.reserved_for_date} onChange={e => setReservationForm(p => ({ ...p, reserved_for_date: e.target.value }))} required />
@@ -9971,28 +9824,20 @@ const InpatientModule = () => {
       </Dialog>
 
       {/* OT Schedule Dialog */}
-      <Dialog open={showOTDialog} onOpenChange={setShowOTDialog}>
+      <Dialog open={showOTDialog} onOpenChange={(open) => { setShowOTDialog(open); if (!open) setOtSelectedPatient(null); }}>
         <DialogContent className="max-w-md">
           <DialogHeader><DialogTitle>Schedule OT</DialogTitle></DialogHeader>
           <form onSubmit={handleCreateOT} className="space-y-4">
-            <div>
-              <Label>Patient *</Label>
-              <div className="relative">
-                <Input placeholder="Search patient..." value={patientSearchQuery}
-                  onChange={e => { setPatientSearchQuery(e.target.value); setOtForm(p => ({ ...p, patient_id: '' })); setSelectedPatientName(''); }} />
-                {selectedPatientName && otForm.patient_id && <p className="text-sm text-green-600 mt-1">Selected: {selectedPatientName}</p>}
-                {patientSearchResults.length > 0 && !otForm.patient_id && (
-                  <div className="absolute z-10 w-full bg-white border rounded-lg shadow-lg mt-1 max-h-40 overflow-y-auto">
-                    {patientSearchResults.map(p => (
-                      <div key={p.id} className="px-3 py-2 hover:bg-gray-100 cursor-pointer text-sm"
-                        onClick={() => { setOtForm(prev => ({ ...prev, patient_id: p.id })); setSelectedPatientName(`${p.first_name} ${p.last_name}`); setPatientSearchQuery(''); setPatientSearchResults([]); }}>
-                        {p.first_name} {p.last_name} <span className="text-gray-400">{p.phone}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
+            <PatientSearchPicker
+              value={otSelectedPatient}
+              onChange={(p) => {
+                setOtSelectedPatient(p);
+                setOtForm((prev) => ({ ...prev, patient_id: p?.id || '' }));
+                setSelectedPatientName(p ? `${p.first_name} ${p.last_name}` : '');
+              }}
+              label="Patient"
+              required
+            />
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <Label>Surgeon *</Label>

@@ -11,6 +11,8 @@ import {
   Package, Search, TestTube, RefreshCw, ShoppingCart, Loader2, Printer, Receipt
 } from 'lucide-react';
 import axios from 'axios';
+import PatientSearchPicker from '../../../components/PatientSearchPicker';
+import ReferralSelectWithCreate from '../../../components/ReferralSelectWithCreate';
 
 const ReceptionPackagesPage = () => {
   const { toast } = useToast();
@@ -23,8 +25,6 @@ const ReceptionPackagesPage = () => {
   // Booking dialog
   const [showBookingDialog, setShowBookingDialog] = useState(false);
   const [selectedPackage, setSelectedPackage] = useState(null);
-  const [patientSearch, setPatientSearch] = useState('');
-  const [patientResults, setPatientResults] = useState([]);
   const [selectedPatient, setSelectedPatient] = useState(null);
   const [paymentMethod, setPaymentMethod] = useState('cash');
   const [priority, setPriority] = useState('normal');
@@ -76,31 +76,9 @@ const ReceptionPackagesPage = () => {
   useEffect(() => { fetchCategories(); }, [fetchCategories]);
   useEffect(() => { fetchPackages(); }, [fetchPackages]);
 
-  // Patient search
-  const searchPatients = async (term) => {
-    setPatientSearch(term);
-    if (term.length < 2) { setPatientResults([]); return; }
-    try {
-      const token = localStorage.getItem('token');
-      const res = await fetch('/api/patients/search', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ search_term: term, sort_by: 'name', sort_order: 'asc' })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setPatientResults(data.patients || []);
-      }
-    } catch (err) {
-      console.error('Patient search failed:', err);
-    }
-  };
-
   const openBooking = (pkg) => {
     setSelectedPackage(pkg);
     setSelectedPatient(null);
-    setPatientSearch('');
-    setPatientResults([]);
     setPaymentMethod('cash');
     setPriority('normal');
     setNotes('');
@@ -311,41 +289,12 @@ const ReceptionPackagesPage = () => {
                 </div>
               </div>
 
-              {/* Patient Selection */}
-              <div>
-                <Label className="font-semibold">Patient *</Label>
-                {selectedPatient ? (
-                  <div className="flex items-center justify-between p-3 bg-green-50 rounded-lg mt-1">
-                    <div>
-                      <p className="font-medium">{selectedPatient.first_name} {selectedPatient.last_name}</p>
-                      <p className="text-xs text-gray-500">{selectedPatient.primary_phone} | {selectedPatient.patient_id}</p>
-                    </div>
-                    <Button variant="ghost" size="sm" onClick={() => { setSelectedPatient(null); setPatientSearch(''); setPatientResults([]); }}>
-                      Change
-                    </Button>
-                  </div>
-                ) : (
-                  <div className="mt-1">
-                    <div className="relative">
-                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
-                      <Input placeholder="Search patient by name or phone..."
-                        value={patientSearch} onChange={(e) => searchPatients(e.target.value)}
-                        className="pl-10" />
-                    </div>
-                    {patientResults.length > 0 && (
-                      <div className="border rounded-lg mt-1 max-h-36 overflow-y-auto">
-                        {patientResults.slice(0, 8).map(p => (
-                          <div key={p.id} className="px-3 py-2 hover:bg-gray-50 cursor-pointer flex justify-between"
-                            onClick={() => { setSelectedPatient(p); setPatientResults([]); }}>
-                            <span className="text-sm font-medium">{p.first_name} {p.last_name}</span>
-                            <span className="text-xs text-gray-400">{p.primary_phone}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
+              <PatientSearchPicker
+                value={selectedPatient}
+                onChange={setSelectedPatient}
+                label="Patient"
+                required
+              />
 
               {/* Options */}
               <div className="grid grid-cols-2 gap-4">
@@ -376,20 +325,12 @@ const ReceptionPackagesPage = () => {
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <Label>Referred By</Label>
-                  <Select value={referredBy || '_none'} onValueChange={(v) => setReferredBy(v === '_none' ? '' : v)}>
-                    <SelectTrigger><SelectValue placeholder="Select referral" /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="_none">Self / None</SelectItem>
-                      {referralList.map(r => (
-                        <SelectItem key={r.id} value={r.name}>
-                          {r.name}{r.village ? ` — ${r.village}` : ''}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+                <ReferralSelectWithCreate
+                  value={referredBy}
+                  onValueChange={setReferredBy}
+                  referrals={referralList}
+                  onReferralsChange={setReferralList}
+                />
                 <div>
                   <Label>Notes</Label>
                   <Input value={notes} onChange={(e) => setNotes(e.target.value)}

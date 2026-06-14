@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '../../../components/ui/card';
 import { Button } from '../../../components/ui/button';
@@ -10,6 +10,16 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Textarea } from '../../../components/ui/textarea';
 import { useToast } from '../../../hooks/use-toast';
 import { ConfirmDialog } from '../../../components/ui/confirm-dialog';
+import PatientSearchPicker from '../../../components/PatientSearchPicker';
+import ReferralSelectWithCreate from '../../../components/ReferralSelectWithCreate';
+import AppointmentAvailabilityOverride from '../../../components/AppointmentAvailabilityOverride';
+import AppointmentTimeField from '../../../components/AppointmentTimeField';
+import {
+  APPOINTMENT_OVERRIDE_DEFAULTS,
+  isAppointmentSubmitDisabled,
+  validateAppointmentBooking,
+} from '../../../utils/appointmentBooking';
+import { localDateString } from '../../../utils/localDate';
 import {
   Calendar,
   Clock,
@@ -42,16 +52,12 @@ const ReceptionAppointmentsPage = () => {
   const [confirmState, setConfirmState] = useState({ open: false });
   const [selectedPatient, setSelectedPatient] = useState(null);
   const [doctors, setDoctors] = useState([]);
-  const [todayAppointments, setTodayAppointments] = useState([]);
+  const [allAppointments, setAllAppointments] = useState([]);
   const [loading, setLoading] = useState(false);
   const [availableSlots, setAvailableSlots] = useState([]);
   const [availabilityChecking, setAvailabilityChecking] = useState(false);
 
   // Patient search state
-  const [patientSearchQuery, setPatientSearchQuery] = useState('');
-  const [patientSearchResults, setPatientSearchResults] = useState([]);
-  const [patientSearching, setPatientSearching] = useState(false);
-  const [showPatientResults, setShowPatientResults] = useState(true);
 
   // Prescription dialog state
   const [showPrescriptionDialog, setShowPrescriptionDialog] = useState(false);
@@ -108,14 +114,14 @@ const ReceptionAppointmentsPage = () => {
 
   // Search and filter states
   const [searchTerm, setSearchTerm] = useState('');
-  const [filterDate, setFilterDate] = useState(new Date().toISOString().split('T')[0]);
+  const [filterDate, setFilterDate] = useState(localDateString());
   const [filterDoctor, setFilterDoctor] = useState('all');
   const [filterStatus, setFilterStatus] = useState('all');
 
   // Forms
   const [appointmentForm, setAppointmentForm] = useState({
     doctor_id: '',
-    appointment_date: new Date().toISOString().split('T')[0],
+    appointment_date: localDateString(),
     appointment_time: '',
     duration_minutes: 10,
     appointment_type: 'consultation',
@@ -126,20 +132,53 @@ const ReceptionAppointmentsPage = () => {
     discount_amount: 0,
     payment_notes: '',
     referred_by: '',
-    override_availability: false,
-    override_reason: ''
+    ...APPOINTMENT_OVERRIDE_DEFAULTS,
   });
 
   // Load initial data
   useEffect(() => {
     fetchDoctors();
     fetchTodayAppointments();
-    // Auto-open schedule dialog if navigated with ?action=schedule
-    if (searchParams.get('action') === 'schedule') {
-      setShowAppointmentDialog(true);
-      setSearchParams({}, { replace: true });
-    }
   }, []);
+
+  // Deep-link: ?action=schedule&patientUuid=… (e.g. from Patients page "Book Appointment")
+  useEffect(() => {
+    const action = searchParams.get('action');
+    if (action !== 'schedule') return;
+
+    const patientUuid = searchParams.get('patientUuid');
+    setShowAppointmentDialog(true);
+    setSearchParams({}, { replace: true });
+
+    if (!patientUuid) return;
+
+    (async () => {
+      try {
+        const token = localStorage.getItem('token');
+        const response = await fetch(`/api/patients/${encodeURIComponent(patientUuid)}`, {
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        });
+        if (response.ok) {
+          const patient = await response.json();
+          setSelectedPatient(patient);
+          fetchPatientFeeInfo(patient.patient_id);
+        } else {
+          toast({
+            variant: 'destructive',
+            title: 'Patient not found',
+            description: 'Could not load the selected patient. Please search again.',
+          });
+        }
+      } catch {
+        toast({
+          variant: 'destructive',
+          title: 'Error',
+          description: 'Could not load the selected patient.',
+        });
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   // Fetch appointments when filter date changes
   useEffect(() => {
@@ -167,8 +206,7 @@ const ReceptionAppointmentsPage = () => {
   };
 
   const fetchTodayAppointments = () => {
-    const today = new Date().toISOString().split('T')[0];
-    fetchAppointmentsByDate(today);
+    fetchAppointmentsByDate(localDateString());
   };
 
   const fetchAppointmentsByDate = async (date) => {
@@ -182,32 +220,42 @@ const ReceptionAppointmentsPage = () => {
       });
       if (response.ok) {
         const data = await response.json();
-        let appointments = Array.isArray(data) ? data : [];
-        
-        // Apply filters
-        if (filterDoctor && filterDoctor !== 'all') {
-          appointments = appointments.filter(apt => apt.doctor_id.toString() === filterDoctor);
-        }
-        if (filterStatus && filterStatus !== 'all') {
-          appointments = appointments.filter(apt => apt.status === filterStatus);
-        }
-        if (searchTerm) {
-          appointments = appointments.filter(apt => 
-            apt.patient_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-            apt.doctor_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-            apt.appointment_number?.toLowerCase().includes(searchTerm.toLowerCase())
-          );
-        }
-        
-        setTodayAppointments(appointments);
+        setAllAppointments(Array.isArray(data) ? data : []);
       } else {
         console.error('Failed to fetch appointments:', response.status, response.statusText);
-        setTodayAppointments([]);
+        setAllAppointments([]);
       }
     } catch (error) {
       console.error('Error fetching appointments:', error);
-      setTodayAppointments([]);
+      setAllAppointments([]);
     }
+  };
+
+  const displayedAppointments = useMemo(() => {
+    let appointments = allAppointments;
+    if (filterDoctor && filterDoctor !== 'all') {
+      appointments = appointments.filter(apt => apt.doctor_id.toString() === filterDoctor);
+    }
+    if (filterStatus && filterStatus !== 'all') {
+      appointments = appointments.filter(apt => apt.status === filterStatus);
+    }
+    if (searchTerm) {
+      const q = searchTerm.toLowerCase();
+      appointments = appointments.filter(apt =>
+        apt.patient_name?.toLowerCase().includes(q) ||
+        apt.doctor_name?.toLowerCase().includes(q) ||
+        apt.appointment_number?.toLowerCase().includes(q)
+      );
+    }
+    return appointments;
+  }, [allAppointments, filterDoctor, filterStatus, searchTerm]);
+
+  const refreshAfterBooking = async (bookedDate) => {
+    setFilterDate(bookedDate);
+    setSearchTerm('');
+    setFilterDoctor('all');
+    setFilterStatus('all');
+    await fetchAppointmentsByDate(bookedDate);
   };
 
   const searchPatientByPhone = async (phone) => {
@@ -231,38 +279,6 @@ const ReceptionAppointmentsPage = () => {
     return null;
   };
 
-  // Real-time patient search with debounce
-  useEffect(() => {
-    if (!patientSearchQuery.trim()) {
-      setPatientSearchResults([]);
-      setShowPatientResults(false);
-      return;
-    }
-
-    const debounceTimer = setTimeout(async () => {
-      setPatientSearching(true);
-      setShowPatientResults(true);
-      try {
-        const token = localStorage.getItem('token');
-        const response = await fetch('/api/patients/search', {
-          method: 'POST',
-          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ search_term: patientSearchQuery.trim(), sort_by: 'name', sort_order: 'asc' })
-        });
-        if (response.ok) {
-          const data = await response.json();
-          setPatientSearchResults(data.patients || []);
-        }
-      } catch (error) {
-        console.error('Error searching patients:', error);
-      } finally {
-        setPatientSearching(false);
-      }
-    }, 300);
-
-    return () => clearTimeout(debounceTimer);
-  }, [patientSearchQuery]);
-
   const fetchPatientFeeInfo = async (patientUuid) => {
     try {
       const token = localStorage.getItem('token');
@@ -278,11 +294,9 @@ const ReceptionAppointmentsPage = () => {
     }
   };
 
-  const selectPatient = (patient) => {
+  const handlePatientSelected = (patient) => {
     setSelectedPatient(patient);
-    setPatientSearchQuery('');
-    setShowPatientResults(false);
-    fetchPatientFeeInfo(patient.patient_id);
+    if (patient?.patient_id) fetchPatientFeeInfo(patient.patient_id);
   };
 
   // Prescription preview
@@ -322,6 +336,52 @@ const ReceptionAppointmentsPage = () => {
         iframe.contentWindow.print();
         setTimeout(() => document.body.removeChild(iframe), 1000);
       };
+    }
+  };
+
+  const printBlankPrescription = async (appointment) => {
+    try {
+      const token = localStorage.getItem('token');
+      const payload = {
+        doctor_id: appointment.doctor_id,
+        appointment_id: appointment.id,
+      };
+      if (appointment.patient_uuid) {
+        payload.patient_id = appointment.patient_uuid;
+      }
+      const response = await fetch('/api/prescriptions-simple/blank', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+      if (response.ok) {
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const iframe = document.createElement('iframe');
+        iframe.style.display = 'none';
+        document.body.appendChild(iframe);
+        iframe.src = url;
+        iframe.onload = () => {
+          iframe.contentWindow.print();
+          setTimeout(() => {
+            document.body.removeChild(iframe);
+            window.URL.revokeObjectURL(url);
+          }, 1000);
+        };
+      } else {
+        const err = await response.json().catch(() => ({}));
+        toast({
+          variant: 'destructive',
+          title: 'Print Failed',
+          description: typeof err.detail === 'string' ? err.detail : 'Failed to print blank prescription',
+        });
+      }
+    } catch (error) {
+      console.error('Error printing blank prescription:', error);
+      toast({ variant: 'destructive', title: 'Error', description: 'Error printing blank prescription' });
     }
   };
 
@@ -465,10 +525,10 @@ const ReceptionAppointmentsPage = () => {
 
   const createAppointment = async () => {
     if (!selectedPatient) return;
-    
-    // If overriding availability, require a reason
-    if (appointmentForm.override_availability && !(appointmentForm.override_reason || '').trim()) {
-      toast({ variant: 'destructive', title: 'Reason required', description: 'Please provide a reason for overriding doctor availability.' });
+
+    const validationError = validateAppointmentBooking(appointmentForm, { selectedPatient: true });
+    if (validationError) {
+      toast({ variant: 'destructive', title: 'Cannot book', description: validationError });
       return;
     }
 
@@ -506,11 +566,12 @@ const ReceptionAppointmentsPage = () => {
 
       if (response.ok) {
         const appointmentData = await response.json();
+        const bookedDate = appointmentForm.appointment_date;
         setShowAppointmentDialog(false);
-        fetchTodayAppointments();
+        await refreshAfterBooking(bookedDate);
         setAppointmentForm({
           doctor_id: '',
-          appointment_date: new Date().toISOString().split('T')[0],
+          appointment_date: localDateString(),
           appointment_time: '',
           duration_minutes: 10,
           appointment_type: 'consultation',
@@ -521,8 +582,7 @@ const ReceptionAppointmentsPage = () => {
           discount_amount: 0,
           payment_notes: '',
           referred_by: '',
-          override_availability: false,
-          override_reason: ''
+          ...APPOINTMENT_OVERRIDE_DEFAULTS,
         });
         setAvailableSlots([]);
         setSelectedPatient(null);
@@ -959,17 +1019,12 @@ const ReceptionAppointmentsPage = () => {
             <RefreshCw className="h-4 w-4" />
             <span>Refresh</span>
           </Button>
-          <Dialog open={showAppointmentDialog} onOpenChange={(open) => {
-            setShowAppointmentDialog(open);
-            if (open) {
-              setSelectedPatient(null);
-              setPatientSearchQuery('');
-              setPatientSearchResults([]);
-              setShowPatientResults(false);
-            }
-          }}>
+          <Dialog open={showAppointmentDialog} onOpenChange={setShowAppointmentDialog}>
             <DialogTrigger asChild>
-              <Button className="flex items-center space-x-2">
+              <Button
+                className="flex items-center space-x-2"
+                onClick={() => setSelectedPatient(null)}
+              >
                 <CalendarPlus className="h-4 w-4" />
                 <span>Schedule Appointment</span>
               </Button>
@@ -1048,18 +1103,18 @@ const ReceptionAppointmentsPage = () => {
       <Card>
         <CardHeader>
           <CardTitle>
-            Appointments for {new Date(filterDate).toLocaleDateString()} ({todayAppointments.length})
+            Appointments for {new Date(filterDate).toLocaleDateString()} ({displayedAppointments.length})
           </CardTitle>
         </CardHeader>
         <CardContent>
-          {todayAppointments.length === 0 ? (
+          {displayedAppointments.length === 0 ? (
             <div className="text-center py-8">
               <Calendar className="h-12 w-12 text-gray-400 mx-auto mb-3" />
               <p className="text-gray-500">No appointments found for the selected criteria</p>
             </div>
           ) : (
             <div className="space-y-3">
-              {todayAppointments.map((appointment) => (
+              {displayedAppointments.map((appointment) => (
                 <div key={appointment.id} className="border border-gray-200 rounded-xl overflow-hidden hover:border-gray-300 transition-colors">
                   {/* Top row: Patient info */}
                   <div className="px-4 py-3 flex items-start justify-between gap-4">
@@ -1084,9 +1139,16 @@ const ReceptionAppointmentsPage = () => {
 
                       <div>
                         <p className="font-medium text-gray-800">{formatTime(appointment.appointment_time)}</p>
-                        <Badge className={`${getStatusBadge(appointment.status)} mt-0.5`}>
-                          {appointment.status.replace('_', ' ')}
-                        </Badge>
+                        <div className="flex flex-wrap items-center gap-1 mt-0.5">
+                          <Badge className={getStatusBadge(appointment.status)}>
+                            {appointment.status.replace('_', ' ')}
+                          </Badge>
+                          {appointment.override_availability && (
+                            <Badge variant="outline" className="text-amber-700 border-amber-300 bg-amber-50">
+                              Override
+                            </Badge>
+                          )}
+                        </div>
                         {appointment.cancellation_reason && (
                           <p className="text-xs text-red-500 mt-0.5 truncate" title={appointment.cancellation_reason}>Reason: {appointment.cancellation_reason}</p>
                         )}
@@ -1182,6 +1244,11 @@ const ReceptionAppointmentsPage = () => {
                         View Bill
                       </Button>
                     )}
+                    {appointment.patient_uuid && appointment.doctor_id && !['cancelled', 'no_show'].includes(appointment.status) && (
+                      <Button size="sm" variant="ghost" className="h-7 px-3 text-xs text-indigo-600 hover:text-indigo-800" onClick={() => printBlankPrescription(appointment)}>
+                        Blank Rx
+                      </Button>
+                    )}
                     {['completed', 'in_progress'].includes(appointment.status) && appointment.patient_uuid && (
                       <Button size="sm" variant="ghost" className="h-7 px-3 text-xs text-purple-600 hover:text-purple-800" onClick={() => showPrescriptionPreview(appointment.id, appointment.patient_uuid)}>
                         Prescription
@@ -1205,78 +1272,13 @@ const ReceptionAppointmentsPage = () => {
             <DialogTitle>Schedule New Appointment</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
-            {/* Patient Search */}
-            <div>
-              <Label htmlFor="patient_search">Search Patient (Name, Phone, or ID)</Label>
-              {selectedPatient ? (
-                <div className="mt-1 p-3 bg-green-50 rounded-lg flex justify-between items-center">
-                  <div>
-                    <p className="font-medium text-green-800">
-                      Selected: {selectedPatient.first_name} {selectedPatient.last_name}
-                    </p>
-                    <p className="text-sm text-green-600">ID: {selectedPatient.patient_id} • Phone: {selectedPatient.primary_phone}</p>
-                  </div>
-                  <Button variant="ghost" size="sm" onClick={() => {
-                    setSelectedPatient(null);
-                    setPatientSearchQuery('');
-                    setShowPatientResults(true);
-                  }}>
-                    <XCircle className="h-4 w-4" />
-                  </Button>
-                </div>
-              ) : (
-                <>
-                  <div className="relative mt-1">
-                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-                    <Input
-                      id="patient_search"
-                      className="pl-9"
-                      placeholder="Type patient name, phone number, or ID..."
-                      value={patientSearchQuery}
-                      onChange={(e) => setPatientSearchQuery(e.target.value)}
-                    />
-                    {patientSearching && (
-                      <div className="absolute right-3 top-1/2 transform -translate-y-1/2">
-                        <RefreshCw className="h-4 w-4 animate-spin text-gray-400" />
-                      </div>
-                    )}
-                  </div>
-                  {!patientSearchQuery.trim() && !showPatientResults && (
-                    <p className="text-gray-400 text-xs mt-1.5">Start typing to search patients...</p>
-                  )}
-                  {showPatientResults && (
-                    <div className="mt-1 border rounded-lg max-h-48 overflow-y-auto">
-                      {patientSearching ? (
-                        <div className="flex items-center justify-center py-4 gap-2 text-gray-400">
-                          <RefreshCw className="h-4 w-4 animate-spin" />
-                          <span className="text-sm">Searching...</span>
-                        </div>
-                      ) : patientSearchResults.length === 0 ? (
-                        <p className="text-gray-500 text-sm text-center py-4">No patients found. Please register the patient first.</p>
-                      ) : (
-                        patientSearchResults.map((patient) => (
-                          <div
-                            key={patient.patient_id}
-                            className="px-4 py-2.5 hover:bg-blue-50 cursor-pointer border-b last:border-b-0"
-                            onClick={() => selectPatient(patient)}
-                          >
-                            <div className="flex justify-between items-center">
-                              <div>
-                                <p className="font-medium text-gray-900 text-sm">{patient.first_name} {patient.last_name}</p>
-                                <p className="text-xs text-gray-500">{patient.primary_phone} • ID: {patient.patient_id?.slice(0, 8)}...</p>
-                              </div>
-                              <Badge variant="outline" className="text-xs">
-                                {patient.gender || 'N/A'} {patient.date_of_birth ? `• ${new Date().getFullYear() - new Date(patient.date_of_birth).getFullYear()}y` : ''}
-                              </Badge>
-                            </div>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
+            <PatientSearchPicker
+              value={selectedPatient}
+              onChange={handlePatientSelected}
+              label="Search Patient (Name, Phone, or ID)"
+              placeholder="Type patient name, phone number, or ID..."
+              required
+            />
 
             <div className="grid grid-cols-2 gap-4">
               <div>
@@ -1320,79 +1322,22 @@ const ReceptionAppointmentsPage = () => {
                 />
               </div>
 
-              <div>
-                <Label htmlFor="appointment_time">Time *</Label>
-                {(!appointmentForm.override_availability && availableSlots.length > 0) ? (
-                  <Select value={appointmentForm.appointment_time} onValueChange={(value) => setAppointmentForm({...appointmentForm, appointment_time: value})}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select Available Time" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {availabilityChecking ? (
-                        <SelectItem value="loading" disabled>Loading available times...</SelectItem>
-                      ) : availableSlots.length === 0 ? (
-                        <SelectItem value="no_slots" disabled>No available slots</SelectItem>
-                      ) : (
-                        availableSlots.map((slot, index) => (
-                          <SelectItem key={index} value={slot.start_time}>
-                            {slot.start_time} - {slot.end_time} ({slot.duration} min)
-                          </SelectItem>
-                        ))
-                      )}
-                    </SelectContent>
-                  </Select>
-                ) : (
-                  <Input
-                    id="appointment_time"
-                    type="time"
-                    value={appointmentForm.appointment_time}
-                    onChange={(e) => setAppointmentForm({...appointmentForm, appointment_time: e.target.value})}
-                    required
-                    placeholder={appointmentForm.override_availability ? 'Enter time (any)' : 'Select doctor and date first'}
-                  />
-                )}
-                {availabilityChecking && !appointmentForm.override_availability && (
-                  <p className="text-sm text-blue-600 mt-1">Checking availability...</p>
-                )}
-                {!appointmentForm.override_availability && appointmentForm.doctor_id && appointmentForm.appointment_date && availableSlots.length === 0 && !availabilityChecking && (
-                  <p className="text-sm text-red-600 mt-1">No available slots for selected date</p>
-                )}
-              </div>
+              <AppointmentTimeField
+                appointmentTime={appointmentForm.appointment_time}
+                overrideAvailability={appointmentForm.override_availability}
+                availableSlots={availableSlots}
+                availabilityChecking={availabilityChecking}
+                doctorId={appointmentForm.doctor_id}
+                appointmentDate={appointmentForm.appointment_date}
+                onTimeChange={(value) => setAppointmentForm({ ...appointmentForm, appointment_time: value })}
+              />
 
-              {/* Availability Override — receptionist/admin only (backend-enforced) */}
-              <div className="md:col-span-2 border border-amber-200 bg-amber-50 rounded-md p-3 space-y-2">
-                <label className="flex items-start gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    className="mt-1"
-                    checked={!!appointmentForm.override_availability}
-                    onChange={(e) => setAppointmentForm({
-                      ...appointmentForm,
-                      override_availability: e.target.checked,
-                      override_reason: e.target.checked ? appointmentForm.override_reason : ''
-                    })}
-                  />
-                  <div className="text-sm">
-                    <div className="font-medium text-amber-900">Override doctor availability</div>
-                    <div className="text-amber-700 text-xs">
-                      Allows booking outside doctor's schedule (leave, off-hours, breaks). Double-booking the same slot is still blocked. The override is audit-logged.
-                    </div>
-                  </div>
-                </label>
-                {appointmentForm.override_availability && (
-                  <div>
-                    <Label htmlFor="override_reason" className="text-amber-900">Reason for override *</Label>
-                    <Input
-                      id="override_reason"
-                      value={appointmentForm.override_reason}
-                      onChange={(e) => setAppointmentForm({...appointmentForm, override_reason: e.target.value})}
-                      placeholder="e.g. emergency walk-in, doctor agreed by phone"
-                      maxLength={500}
-                    />
-                  </div>
-                )}
-              </div>
-
+              <AppointmentAvailabilityOverride
+                className="md:col-span-2"
+                overrideAvailability={appointmentForm.override_availability}
+                overrideReason={appointmentForm.override_reason}
+                onChange={(patch) => setAppointmentForm({ ...appointmentForm, ...patch })}
+              />
 
               <div>
                 <Label htmlFor="appointment_type">Type</Label>
@@ -1495,20 +1440,12 @@ const ReceptionAppointmentsPage = () => {
               />
             </div>
 
-            <div>
-              <Label>Referred By</Label>
-              <Select value={appointmentForm.referred_by || '_none'} onValueChange={(v) => setAppointmentForm({...appointmentForm, referred_by: v === '_none' ? '' : v})}>
-                <SelectTrigger><SelectValue placeholder="Select referral" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="_none">Self / None</SelectItem>
-                  {referralList.map(r => (
-                    <SelectItem key={r.id} value={r.name}>
-                      {r.name}{r.village ? ` — ${r.village}` : ''}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+            <ReferralSelectWithCreate
+              value={appointmentForm.referred_by}
+              onValueChange={(name) => setAppointmentForm({ ...appointmentForm, referred_by: name })}
+              referrals={referralList}
+              onReferralsChange={setReferralList}
+            />
 
             <div className="flex gap-2">
               <Button variant="outline" onClick={() => setShowAppointmentDialog(false)} className="flex-1">
@@ -1516,7 +1453,7 @@ const ReceptionAppointmentsPage = () => {
               </Button>
               <Button
                 onClick={createAppointment}
-                disabled={loading || !appointmentForm.doctor_id || !appointmentForm.appointment_date || !appointmentForm.appointment_time || (appointmentForm.override_availability && !(appointmentForm.override_reason || '').trim())}
+                disabled={isAppointmentSubmitDisabled(appointmentForm, { loading, selectedPatient: !!selectedPatient })}
                 className="flex-1"
               >
                 {loading ? 'Booking...' : 'Book Appointment'}
@@ -1977,6 +1914,8 @@ const ReceptionAppointmentsPage = () => {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Blank Rx is available from each appointment row only — not after booking */}
     </div>
   );
 };

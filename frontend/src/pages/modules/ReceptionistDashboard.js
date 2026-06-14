@@ -26,6 +26,12 @@ import {
 import BillingManager from '../../components/billing/BillingManager';
 import VitalsForm from '../../components/vitals/VitalsForm';
 import { useToast } from '../../hooks/use-toast';
+import AppointmentAvailabilityOverride from '../../components/AppointmentAvailabilityOverride';
+import {
+  APPOINTMENT_OVERRIDE_DEFAULTS,
+  isAppointmentSubmitDisabled,
+  validateAppointmentBooking,
+} from '../../utils/appointmentBooking';
 
 const ReceptionistDashboard = () => {
   const { toast } = useToast();
@@ -84,7 +90,8 @@ const ReceptionistDashboard = () => {
     payment_status: 'paid',
     payment_method: 'cash',
     discount_amount: 0,
-    payment_notes: ''
+    payment_notes: '',
+    ...APPOINTMENT_OVERRIDE_DEFAULTS,
   });
 
   // Load initial data
@@ -259,6 +266,12 @@ const ReceptionistDashboard = () => {
   const createAppointment = async () => {
     if (!selectedPatient) return;
 
+    const validationError = validateAppointmentBooking(appointmentForm, { selectedPatient: true });
+    if (validationError) {
+      toast({ variant: 'destructive', title: 'Cannot book', description: validationError });
+      return;
+    }
+
     setLoading(true);
     try {
       const token = localStorage.getItem('token');
@@ -289,7 +302,8 @@ const ReceptionistDashboard = () => {
           payment_status: 'paid',
           payment_method: 'cash',
           discount_amount: 0,
-          payment_notes: ''
+          payment_notes: '',
+          ...APPOINTMENT_OVERRIDE_DEFAULTS,
         });
         
         // Show bill preview if consultation fee exists
@@ -963,6 +977,12 @@ const ReceptionistDashboard = () => {
               </div>
             </div>
 
+            <AppointmentAvailabilityOverride
+              overrideAvailability={appointmentForm.override_availability}
+              overrideReason={appointmentForm.override_reason}
+              onChange={(patch) => setAppointmentForm({ ...appointmentForm, ...patch })}
+            />
+
             <div>
               <Label>Reason for Visit</Label>
               <Textarea
@@ -978,7 +998,7 @@ const ReceptionistDashboard = () => {
               </Button>
               <Button
                 onClick={createAppointment}
-                disabled={loading || !appointmentForm.doctor_id || !appointmentForm.appointment_date || !appointmentForm.appointment_time}
+                disabled={isAppointmentSubmitDisabled(appointmentForm, { loading, selectedPatient: !!selectedPatient })}
                 className="flex-1"
               >
                 {loading ? 'Booking...' : 'Book Appointment'}

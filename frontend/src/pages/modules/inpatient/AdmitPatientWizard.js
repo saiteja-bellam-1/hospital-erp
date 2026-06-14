@@ -12,6 +12,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue
 } from '../../../components/ui/select';
 import { useToast } from '../../../hooks/use-toast';
+import PatientSearchPicker from '../../../components/PatientSearchPicker';
 import { printPdfFromUrl } from '../../../utils/printPdf';
 import {
   Search, ChevronLeft, ChevronRight, Loader2,
@@ -132,10 +133,20 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
   const [bedsInRoom, setBedsInRoom] = useState([]);
   const [schemes, setSchemes] = useState([]);
   const [templates, setTemplates] = useState([]);  // consent templates (face/case sheet)
-  // patient search
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState([]);
-  const [searching, setSearching] = useState(false);
+  const [selectedPatient, setSelectedPatient] = useState(null);
+
+  const patientFromDraftLabel = (saved) => {
+    if (!saved?.patient_id) return null;
+    const namePart = (saved.patient_label || '').split(' · ')[0] || '';
+    const parts = namePart.trim().split(/\s+/).filter(Boolean);
+    return {
+      id: saved.patient_id,
+      first_name: parts[0] || 'Patient',
+      last_name: parts.slice(1).join(' '),
+      patient_id: saved.patient_id,
+      primary_phone: '',
+    };
+  };
 
   // restore draft on open
   useEffect(() => {
@@ -146,10 +157,15 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
       if (raw) {
         const saved = JSON.parse(raw);
         setDraft({ ...EMPTY_DRAFT, ...saved });
+        setSelectedPatient(patientFromDraftLabel(saved));
       } else {
         setDraft(EMPTY_DRAFT);
+        setSelectedPatient(null);
       }
-    } catch { setDraft(EMPTY_DRAFT); }
+    } catch {
+      setDraft(EMPTY_DRAFT);
+      setSelectedPatient(null);
+    }
   }, [open]);
 
   // persist draft as user edits
@@ -177,23 +193,6 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
       .then(r => setBedsInRoom((r.data || []).filter(b => b.status === 'available')))
       .catch(() => setBedsInRoom([]));
   }, [draft.room_id]);
-
-  // patient search (debounced)
-  useEffect(() => {
-    if (!searchQuery.trim()) { setSearchResults([]); return; }
-    setSearching(true);
-    const t = setTimeout(async () => {
-      try {
-        const res = await axios.post('/api/patients/search', {
-          search_term: searchQuery.trim(),
-          sort_by: 'name', sort_order: 'asc',
-        });
-        setSearchResults(res.data?.patients || []);
-      } catch { setSearchResults([]); }
-      finally { setSearching(false); }
-    }, 300);
-    return () => clearTimeout(t);
-  }, [searchQuery]);
 
   const selectedScheme = useMemo(
     () => schemes.find(s => s.id === parseInt(draft.payer_scheme_id, 10)) || null,
@@ -405,54 +404,22 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
         {step === 1 && (
           <div className="space-y-4">
             <section>
-              <Label>Patient *</Label>
-              {draft.patient_id ? (
-                <div className="flex items-center justify-between border rounded p-2 bg-blue-50">
-                  <div>
-                    <div className="font-medium text-sm">{draft.patient_label}</div>
-                  </div>
-                  <Button size="sm" variant="ghost"
-                          onClick={() => update({ patient_id: '', patient_label: '' })}>
-                    <X className="h-4 w-4" /> Change
-                  </Button>
-                </div>
-              ) : (
-                <>
-                  <div className="relative">
-                    <Search className="h-4 w-4 absolute left-2 top-2.5 text-gray-400" />
-                    <Input
-                      className="pl-8"
-                      placeholder="Search patient by name, MRN, or phone…"
-                      value={searchQuery}
-                      onChange={e => setSearchQuery(e.target.value)}
-                    />
-                  </div>
-                  {searching && <p className="text-xs text-gray-500 mt-1">Searching…</p>}
-                  {searchResults.length > 0 && (
-                    <div className="border rounded max-h-48 overflow-y-auto mt-1">
-                      {searchResults.slice(0, 8).map(p => (
-                        <button
-                          key={p.id}
-                          type="button"
-                          className="w-full text-left px-3 py-2 hover:bg-gray-100 text-sm border-b last:border-0"
-                          onClick={() => {
-                            update({
-                              patient_id: p.id,
-                              patient_label: `${p.first_name} ${p.last_name} · ${p.gender || '—'} · MRN ${p.mrn || p.patient_id}`,
-                            });
-                            setSearchQuery(''); setSearchResults([]);
-                          }}
-                        >
-                          <div className="font-medium">{p.first_name} {p.last_name}</div>
-                          <div className="text-xs text-gray-500">
-                            {p.gender || '—'} · MRN {p.mrn || p.patient_id} · {p.primary_phone || '—'}
-                          </div>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </>
-              )}
+              <PatientSearchPicker
+                value={selectedPatient}
+                onChange={(p) => {
+                  setSelectedPatient(p);
+                  if (p) {
+                    update({
+                      patient_id: p.id,
+                      patient_label: `${p.first_name} ${p.last_name} · ${p.gender || '—'} · MRN ${p.mrn || p.patient_id}`,
+                    });
+                  } else {
+                    update({ patient_id: '', patient_label: '' });
+                  }
+                }}
+                label="Patient"
+                required
+              />
             </section>
 
             <section className="grid grid-cols-2 gap-3">

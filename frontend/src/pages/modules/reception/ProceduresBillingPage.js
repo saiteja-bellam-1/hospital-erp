@@ -15,6 +15,8 @@ import { printPdfFromUrl } from '../../../utils/printPdf';
 import {
   Loader2, Plus, Trash2, Printer, Receipt, Edit2, FileText, RefreshCw,
 } from 'lucide-react';
+import PatientSearchPicker from '../../../components/PatientSearchPicker';
+import ReferralSelectWithCreate from '../../../components/ReferralSelectWithCreate';
 
 const fmt = (n) => `₹${Number(n || 0).toFixed(2)}`;
 
@@ -37,8 +39,6 @@ const ProceduresBillingPage = () => {
   const [referredBy, setReferredBy] = useState('');
 
   // Patient search
-  const [patientQuery, setPatientQuery] = useState('');
-  const [patientResults, setPatientResults] = useState([]);
   const [patient, setPatient] = useState(null);
 
   // Bill builder
@@ -79,16 +79,6 @@ const ProceduresBillingPage = () => {
 
   useEffect(() => { fetchProcedures(); fetchRecent(); fetchReferrals(); }, [fetchProcedures, fetchRecent, fetchReferrals]);
 
-  // ------- Patient search -------
-  const searchPatients = async (q) => {
-    setPatientQuery(q);
-    if (q.trim().length < 2) { setPatientResults([]); return; }
-    try {
-      const res = await axios.post('/api/patients/search', { search_term: q.trim() });
-      setPatientResults((res.data?.patients || []).slice(0, 8));
-    } catch (_) { setPatientResults([]); }
-  };
-
   // ------- Bill builder helpers -------
   const updateLine = (idx, patch) => {
     setLines((prev) => {
@@ -118,7 +108,6 @@ const ProceduresBillingPage = () => {
 
   const resetBuilder = () => {
     setPatient(null);
-    setPatientQuery('');
     setLines([{ kind: 'catalog', procedure_id: '', item_name: '', quantity: 1, unit_price: '' }]);
     setDiscount(''); setTaxPct(''); setNotes(''); setReferredBy('');
   };
@@ -257,53 +246,22 @@ const ProceduresBillingPage = () => {
             <CardContent className="pt-4 space-y-4">
               {/* Patient + Referred-by row */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                <div className="md:col-span-2 relative">
-                  <Label className="text-xs">Patient *</Label>
-                  {patient ? (
-                    <div className="flex items-center justify-between bg-blue-50 rounded p-2 mt-1">
-                      <span className="text-sm">
-                        <span className="font-semibold">{patient.first_name} {patient.last_name}</span>
-                        <span className="text-xs text-gray-500 ml-2">{patient.primary_phone}</span>
-                        <span className="text-xs text-gray-400 ml-2">MRN: {patient.patient_id}</span>
-                      </span>
-                      <Button size="sm" variant="ghost" onClick={() => { setPatient(null); setPatientResults([]); }}>Change</Button>
-                    </div>
-                  ) : (
-                    <>
-                      <Input placeholder="Search by name or phone..." value={patientQuery}
-                        onChange={(e) => searchPatients(e.target.value)} />
-                      {patientResults.length > 0 && (
-                        <div className="absolute z-20 mt-1 w-full bg-white border rounded shadow max-h-48 overflow-auto">
-                          {patientResults.map((p) => (
-                            <button key={p.id} type="button"
-                              className="block w-full text-left px-3 py-2 text-sm hover:bg-gray-100"
-                              onClick={() => { setPatient(p); setPatientResults([]); }}>
-                              {p.first_name} {p.last_name}
-                              <span className="text-xs text-gray-500 ml-2">{p.primary_phone}</span>
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </>
-                  )}
+                <div className="md:col-span-2">
+                  <PatientSearchPicker
+                    value={patient}
+                    onChange={setPatient}
+                    label="Patient"
+                    required
+                    compact
+                  />
                 </div>
-                <div>
-                  <Label className="text-xs">Referred by</Label>
-                  <Select value={referredBy || '__none__'} onValueChange={(v) => setReferredBy(v === '__none__' ? '' : v)}>
-                    <SelectTrigger><SelectValue placeholder="Self" /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="__none__">Self</SelectItem>
-                      {referrals.length === 0 && (
-                        <SelectItem value="_empty" disabled>No referrals configured</SelectItem>
-                      )}
-                      {referrals.map((r) => (
-                        <SelectItem key={r.id} value={r.name}>
-                          {r.name}{r.specialization ? ` — ${r.specialization}` : ''}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+                <ReferralSelectWithCreate
+                  value={referredBy}
+                  onValueChange={setReferredBy}
+                  referrals={referrals}
+                  onReferralsChange={setReferrals}
+                  label="Referred by"
+                />
               </div>
 
               <div className="border-t pt-3">
