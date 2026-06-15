@@ -48,7 +48,13 @@ from app.models.inpatient import (
 from app.models.pharmacy import Prescription, PrescriptionItem, Medicine
 from app.models.prescriptions_simple import SimplePrescription
 from app.models.lab import PatientLabOrder, LabTest, LabReport
-from app.utils.dependencies import get_current_user, require_permission, require_feature_permission
+from app.utils.dependencies import (
+    get_current_user,
+    require_permission,
+    require_feature_permission,
+    require_feature_permission_any,
+    user_has_feature_permission,
+)
 from app.utils.auth import Modules
 from app.utils.pdf_service import pdf_service
 from app.services.audit_service import log_action
@@ -9199,6 +9205,8 @@ async def my_assigned_patients(
 # ============================================================
 
 CONSENT_TYPES = {"surgical", "anaesthesia", "blood_transfusion", "high_risk_procedure", "general_treatment", "research", "face_sheet", "case_sheet_declaration"}
+# Face/case sheets are part of the admit wizard — staff with admit_patients may print/record them.
+ADMISSION_WIZARD_CONSENT_TYPES = frozenset({"face_sheet", "case_sheet_declaration"})
 
 
 class ConsentTemplateCreate(BaseModel):
@@ -9356,9 +9364,25 @@ def _consent_to_response(c: Consent, db: Session) -> dict:
 async def create_consent(
     admission_id: int,
     data: ConsentCreate,
-    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "record_consent")),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    if data.consent_type in ADMISSION_WIZARD_CONSENT_TYPES:
+        allowed = (
+            user_has_feature_permission(db, current_user, Modules.INPATIENT, "admit_patients")
+            or user_has_feature_permission(db, current_user, Modules.INPATIENT, "record_consent")
+        )
+        if not allowed:
+            raise HTTPException(
+                status_code=403,
+                detail="Permission 'admit_patients' or 'record_consent' required on inpatient",
+            )
+    elif not user_has_feature_permission(db, current_user, Modules.INPATIENT, "record_consent"):
+        raise HTTPException(
+            status_code=403,
+            detail="Permission 'record_consent' required on inpatient",
+        )
+
     hospital = _get_hospital(db, current_user)
     admission = db.query(Admission).filter(Admission.id == admission_id).first()
     if not admission:
@@ -9451,7 +9475,9 @@ class ConsentReserveRequest(BaseModel):
 @router.post("/consents/reserve-doc-number")
 async def reserve_consent_doc_number(
     data: ConsentReserveRequest,
-    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "record_consent")),
+    current_user: User = Depends(require_feature_permission_any(
+        Modules.INPATIENT, "admit_patients", "record_consent"
+    )),
     db: Session = Depends(get_db),
 ):
     """Allocate (and persist) a CS-YYYYMMDD-NNNN doc number before the
@@ -9505,7 +9531,9 @@ async def preview_consent_pdf(
     referring_doctor_id: Optional[int] = None,
     admission_reason: Optional[str] = None,
     doc_number: Optional[str] = None,
-    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "record_consent")),
+    current_user: User = Depends(require_feature_permission_any(
+        Modules.INPATIENT, "admit_patients", "record_consent"
+    )),
     db: Session = Depends(get_db),
 ):
     """Generate a prefilled (unsigned) consent PDF for a patient before the

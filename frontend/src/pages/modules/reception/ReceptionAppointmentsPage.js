@@ -20,6 +20,7 @@ import {
   validateAppointmentBooking,
 } from '../../../utils/appointmentBooking';
 import { localDateString } from '../../../utils/localDate';
+import { printPdfFromUrl } from '../../../utils/printPdf';
 import {
   Calendar,
   Clock,
@@ -327,62 +328,24 @@ const ReceptionAppointmentsPage = () => {
   };
 
   const printPrescription = () => {
-    if (prescriptionPdfUrl) {
-      const iframe = document.createElement('iframe');
-      iframe.style.display = 'none';
-      document.body.appendChild(iframe);
-      iframe.src = prescriptionPdfUrl;
-      iframe.onload = () => {
-        iframe.contentWindow.print();
-        setTimeout(() => document.body.removeChild(iframe), 1000);
-      };
-    }
+    if (!prescriptionPdfUrl) return;
+    printPdfFromUrl(prescriptionPdfUrl, {
+      onError: (message) => toast({ variant: 'destructive', title: 'Print Failed', description: message }),
+    });
   };
 
   const printBlankPrescription = async (appointment) => {
-    try {
-      const token = localStorage.getItem('token');
-      const payload = {
-        doctor_id: appointment.doctor_id,
-        appointment_id: appointment.id,
-      };
-      if (appointment.patient_uuid) {
-        payload.patient_id = appointment.patient_uuid;
-      }
-      const response = await fetch('/api/prescriptions-simple/blank', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-      });
-      if (response.ok) {
-        const blob = await response.blob();
-        const url = window.URL.createObjectURL(blob);
-        const iframe = document.createElement('iframe');
-        iframe.style.display = 'none';
-        document.body.appendChild(iframe);
-        iframe.src = url;
-        iframe.onload = () => {
-          iframe.contentWindow.print();
-          setTimeout(() => {
-            document.body.removeChild(iframe);
-            window.URL.revokeObjectURL(url);
-          }, 1000);
-        };
-      } else {
-        const err = await response.json().catch(() => ({}));
-        toast({
-          variant: 'destructive',
-          title: 'Print Failed',
-          description: typeof err.detail === 'string' ? err.detail : 'Failed to print blank prescription',
-        });
-      }
-    } catch (error) {
-      console.error('Error printing blank prescription:', error);
-      toast({ variant: 'destructive', title: 'Error', description: 'Error printing blank prescription' });
+    const params = {
+      doctor_id: appointment.doctor_id,
+      appointment_id: appointment.id,
+    };
+    if (appointment.patient_uuid) {
+      params.patient_id = appointment.patient_uuid;
     }
+    await printPdfFromUrl('/api/prescriptions-simple/blank/download', {
+      params,
+      onError: (message) => toast({ variant: 'destructive', title: 'Print Failed', description: message }),
+    });
   };
 
   const fetchPrescriptionPdf = async (prescriptionId) => {

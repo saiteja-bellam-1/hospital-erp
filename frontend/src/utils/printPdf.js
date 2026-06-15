@@ -19,6 +19,21 @@ async function isPdfBlob(blob, contentType = '') {
 }
 
 /**
+ * Parse a FastAPI error body from a blob response.
+ */
+async function parseApiErrorFromBlob(blob) {
+  try {
+    const text = await blob.text();
+    const json = JSON.parse(text);
+    if (typeof json.detail === 'string') return json.detail;
+    if (json.detail?.message) return json.detail.message;
+    return text.slice(0, 200);
+  } catch {
+    return 'Server returned an unexpected response';
+  }
+}
+
+/**
  * Print a PDF using an off-screen iframe.
  *
  * Accepts either:
@@ -34,10 +49,16 @@ async function isPdfBlob(blob, contentType = '') {
  * @param {object} [options]
  *   params {object}  Extra query params (API-path mode only).
  *   filename {string}  Reserved; informational only.
+ *   onError {function(string)}  Called with a user-facing message on failure.
  * @returns {Promise<boolean>} false when fetch/validation/print failed
  */
 export const printPdfFromUrl = async (urlOrPath, options = {}) => {
   if (!urlOrPath) return false;
+
+  const fail = (message) => {
+    if (options.onError) options.onError(message);
+    return false;
+  };
 
   let blobUrl = urlOrPath;
   let createdBlobHere = false;
@@ -49,17 +70,21 @@ export const printPdfFromUrl = async (urlOrPath, options = {}) => {
       const res = await axios.get(urlOrPath, { responseType: 'blob', params });
       const contentType = res.headers['content-type'] || '';
       if (!(await isPdfBlob(res.data, contentType))) {
-        try {
-          const text = await res.data.text();
-          console.error('printPdfFromUrl: server returned non-PDF response', text.slice(0, 500));
-        } catch (_) { /* ignore */ }
-        return false;
+        const msg = await parseApiErrorFromBlob(res.data);
+        console.error('printPdfFromUrl: server returned non-PDF response', msg);
+        return fail(msg);
       }
       blobUrl = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
       createdBlobHere = true;
     } catch (err) {
       console.error('printPdfFromUrl: failed to fetch PDF', err);
-      return false;
+      const blob = err.response?.data;
+      if (blob instanceof Blob) {
+        return fail(await parseApiErrorFromBlob(blob));
+      }
+      return fail(typeof err.response?.data?.detail === 'string'
+        ? err.response.data.detail
+        : 'Could not load the PDF');
     }
   }
 
@@ -91,6 +116,7 @@ export const printPdfFromUrl = async (urlOrPath, options = {}) => {
             try { URL.revokeObjectURL(blobUrl); } catch (_) { /* ignore */ }
           }
           try { document.body.removeChild(iframe); } catch (_) { /* ignore */ }
+          if (options.onError) options.onError('Print dialog could not be opened');
           resolve(false);
           return;
         }

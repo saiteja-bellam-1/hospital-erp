@@ -792,20 +792,32 @@ const DeclarationCard = ({
 
   const handlePrint = async () => {
     if (!canPrefill || printing) return;
+    if (!template?.id) {
+      toast({ variant: 'destructive', title: 'Print failed', description: 'Consent template is not configured.' });
+      return;
+    }
     setPrinting(true);
     try {
       const params = {
         patient_id: String(patientId),
         template_id: template.id,
       };
-      if (roomId) params.room_id = roomId;
-      if (doctorId) params.admitting_doctor_id = doctorId;
-      if (referringDoctorId) params.referring_doctor_id = referringDoctorId;
+      if (roomId) params.room_id = parseInt(roomId, 10);
+      if (doctorId) params.admitting_doctor_id = parseInt(doctorId, 10);
+      if (referringDoctorId) params.referring_doctor_id = parseInt(referringDoctorId, 10);
       if (admissionReason) params.admission_reason = admissionReason;
       if (docNumber) params.doc_number = docNumber;
-      const ok = await printPdfFromUrl('/api/inpatient/consents/preview-pdf', { params });
+      let errMsg = null;
+      const ok = await printPdfFromUrl('/api/inpatient/consents/preview-pdf', {
+        params,
+        onError: (msg) => { errMsg = msg; },
+      });
       if (!ok) {
-        toast({ variant: 'destructive', title: 'Print failed', description: 'Could not load or print the consent form.' });
+        toast({
+          variant: 'destructive',
+          title: 'Print failed',
+          description: errMsg || 'Could not load or print the consent form.',
+        });
       }
     } finally {
       setPrinting(false);

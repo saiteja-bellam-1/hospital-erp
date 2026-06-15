@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -263,7 +263,7 @@ def _blank_prescription_pdf_response(
     appointment: Optional[Appointment],
     db: Session,
     hospital_id: int,
-) -> StreamingResponse:
+) -> Response:
     prescription_pdf_data = _build_blank_prescription_pdf_data(
         db,
         patient,
@@ -283,8 +283,8 @@ def _blank_prescription_pdf_response(
     )
 
     filename = f"prescription_{prescription.prescription_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-    return StreamingResponse(
-        pdf_buffer,
+    return Response(
+        content=pdf_buffer.getvalue(),
         media_type="application/pdf",
         headers={
             "Content-Disposition": f"attachment; filename={filename}",
@@ -450,7 +450,7 @@ def _issue_blank_prescription(
     patient_id: Optional[str],
     doctor_id: Optional[int],
     appointment_id: Optional[int],
-) -> StreamingResponse:
+) -> Response:
     patient, doctor, appointment = _resolve_blank_prescription_context(
         db,
         current_user.hospital_id,

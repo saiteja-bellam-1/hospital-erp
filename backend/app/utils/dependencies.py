@@ -222,6 +222,92 @@ def require_feature_permission(module: str, permission_name: str):
     return feature_checker
 
 
+def user_has_feature_permission(
+    db: Session,
+    current_user: User,
+    module: str,
+    permission_name: str,
+) -> bool:
+    """Return True if the user holds a specific module permission (admins bypass)."""
+    user_roles = set(current_user.role_names)
+    if UserRoles.SUPER_ADMIN in user_roles or UserRoles.HOSPITAL_ADMIN in user_roles:
+        return True
+
+    from app.models.system import SystemModule
+    sys_module = db.query(SystemModule).filter(
+        SystemModule.module_name == module
+    ).first()
+    if sys_module and not sys_module.is_enabled:
+        return False
+
+    from app.services.license_service import get_current_license
+    license_record = get_current_license(db)
+    if license_record and license_record.features:
+        if module not in license_record.features:
+            return False
+
+    from app.models.permissions import RoleModulePermission
+
+    role_ids = [r.id for r in (current_user.roles or [])]
+    if current_user.role_id and current_user.role_id not in role_ids:
+        role_ids.append(current_user.role_id)
+
+    for rid in role_ids:
+        rp = db.query(RoleModulePermission).filter(
+            RoleModulePermission.role_id == rid,
+            RoleModulePermission.module_name == module,
+        ).first()
+        if rp and rp.permissions and permission_name in rp.permissions:
+            return True
+    return False
+
+
+def require_feature_permission_any(module: str, *permission_names: str):
+    """Require at least one of the listed permission keys on the module."""
+    names = tuple(permission_names)
+    if not names:
+        raise ValueError("require_feature_permission_any needs at least one permission")
+
+    def feature_checker(
+        current_user: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ):
+        user_roles = set(current_user.role_names)
+        if UserRoles.SUPER_ADMIN in user_roles or UserRoles.HOSPITAL_ADMIN in user_roles:
+            return current_user
+
+        from app.models.system import SystemModule
+        sys_module = db.query(SystemModule).filter(
+            SystemModule.module_name == module
+        ).first()
+        if sys_module and not sys_module.is_enabled:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Module '{module}' is not enabled",
+            )
+
+        from app.services.license_service import get_current_license
+        license_record = get_current_license(db)
+        if license_record and license_record.features:
+            if module not in license_record.features:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Module '{module}' is not included in your license",
+                )
+
+        for permission_name in names:
+            if user_has_feature_permission(db, current_user, module, permission_name):
+                return current_user
+
+        joined = "', '".join(names)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"One of '{joined}' required on {module}",
+        )
+
+    return feature_checker
+
+
 def require_role(required_roles: list):
     def role_checker(current_user: User = Depends(get_current_user)):
         if not _user_has_any_role(current_user, required_roles):
