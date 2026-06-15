@@ -323,6 +323,51 @@ def _acquire_single_instance(exe_dir):
         return True
 
 
+def _wait_for_exe_readable(exe_path, timeout_sec=30, log=None):
+    """After an in-place upgrade the installer may relaunch us while the new
+    one-file .exe is still locked or mid-copy. PyInstaller must read
+    sys.executable to import app code — retry until the file opens."""
+    if not getattr(sys, 'frozen', False) or os.name != 'nt':
+        return
+    deadline = time.time() + timeout_sec
+    last_err = None
+    while time.time() < deadline:
+        try:
+            with open(exe_path, 'rb') as f:
+                f.read(4096)
+            return
+        except PermissionError as e:
+            last_err = e
+            if log:
+                log.warning("Waiting for .exe to become readable: %s", e)
+            time.sleep(0.5)
+        except OSError as e:
+            last_err = e
+            if log:
+                log.warning("Waiting for .exe to become readable: %s", e)
+            time.sleep(0.5)
+    msg = (
+        f"Cannot read application executable:\n{exe_path}\n\n"
+        f"Error: {last_err}\n\n"
+        "This usually happens right after an upgrade when the file is still locked.\n"
+        "Wait 30 seconds and try again, or reboot the PC.\n"
+        "If it persists, run the installer again as Administrator or reinstall to "
+        "C:\\Program Files\\KTHEALTHERP."
+    )
+    if log:
+        log.error(msg)
+    print(msg)
+    if os.name == 'nt':
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(
+                None, msg, "KT HEALTH ERP — Startup failed", 0x10,
+            )
+        except Exception:
+            pass
+    raise PermissionError(last_err or "Application executable is not readable")
+
+
 def main():
     debug_mode = _is_debug_requested()
 
@@ -377,6 +422,7 @@ def main():
         elif outcome == "upgrade":
             print(f"Upgrade detected: {previous} -> {APP_VERSION}")
             log.warning("Upgrade detected from %s to %s", previous, APP_VERSION)
+            _wait_for_exe_readable(sys.executable, timeout_sec=45, log=log)
         else:
             log.info("Same version as previous launch")
 
@@ -435,6 +481,8 @@ def main():
 
     # Import and run the app
     import uvicorn
+    if getattr(sys, 'frozen', False):
+        _wait_for_exe_readable(sys.executable, timeout_sec=15)
     try:
         uvicorn.run(
             "main:app",

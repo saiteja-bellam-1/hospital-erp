@@ -83,8 +83,9 @@ Name: "{commondesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; IconFilenam
 Filename: "netsh"; Parameters: "advfirewall firewall add rule name=""KT HEALTH ERP"" dir=in action=allow protocol=TCP localport=8000-8020"; Flags: runhidden; Tasks: firewall; Check: GetIsFreshInstall
 ; Fresh install: offer "Launch now" on the Finished page (interactive only).
 Filename: "{app}\{#AppExeName}"; Description: "Launch {#AppName} now"; Flags: nowait postinstall skipifsilent; Check: GetIsFreshInstall
-; Upgrade / self-update: always relaunch, including under /VERYSILENT.
-Filename: "{app}\{#AppExeName}"; Flags: nowait postinstall; Check: GetIsUpgrade
+; Upgrade / self-update: relaunch after a short delay so the replaced .exe
+; is fully written and unlocked (avoids PyInstaller PermissionError on boot).
+Filename: "{cmd}"; Parameters: "/C ping 127.0.0.1 -n 6 > nul && start """" /D ""{app}"" ""{app}\{#AppExeName}"""; Flags: nowait postinstall; Check: GetIsUpgrade
 
 [UninstallRun]
 Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""KT HEALTH ERP"""; Flags: runhidden
@@ -1176,7 +1177,7 @@ begin
   if not FileExists(ExePath) then
     Exit;
   Waited := 0;
-  while (Waited < 30000) and FileIsLocked(ExePath) do
+  while (Waited < 60000) and FileIsLocked(ExePath) do
   begin
     Sleep(500);
     Waited := Waited + 500;
@@ -1626,13 +1627,27 @@ begin
   end;
 end;
 
+procedure GrantExePermissions;
+var
+  ResultCode: Integer;
+begin
+  // Ensure standard users can read+execute the one-file bundle after an
+  // admin-run install/upgrade (custom paths like D:\KTHEALTHERP included).
+  Exec('icacls', ExpandConstant('"{app}\{#AppExeName}"') +
+    ' /grant *S-1-5-32-545:(RX)'), '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   // On upgrade, never write a seed — the existing data folder + config.json
   // already bind the DB; launcher.consume_seed_if_present() then no-ops and
   // startup migrations bring the schema forward.
-  if (CurStep = ssPostInstall) and (not IsUpgrade) then
-    WriteSeedFile;
+  if CurStep = ssPostInstall then
+  begin
+    GrantExePermissions;
+    if not IsUpgrade then
+      WriteSeedFile;
+  end;
 end;
 
 // ----------------------------------------------------------------------------
