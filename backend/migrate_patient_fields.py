@@ -229,6 +229,79 @@ NEW_COLUMNS = [
 # B6 — body release table is created via create_all on startup; no column adds.
 
 
+def _migrate_appointments_time_nullable(conn):
+    """Allow appointments without a scheduled time (SQLite table rebuild)."""
+    from sqlalchemy import text
+
+    rows = conn.execute(text("PRAGMA table_info(appointments)")).fetchall()
+    time_col = next((r for r in rows if r[1] == "appointment_time"), None)
+    if not time_col or time_col[3] == 0:
+        print("  appointments.appointment_time already nullable")
+        return
+
+    print("  Migrating appointments.appointment_time to nullable...")
+    colnames = [r[1] for r in rows]
+    cols_csv = ", ".join(colnames)
+
+    conn.execute(text("PRAGMA foreign_keys=OFF"))
+    conn.execute(text("""
+        CREATE TABLE appointments_new (
+            id INTEGER NOT NULL PRIMARY KEY,
+            appointment_number VARCHAR(50) NOT NULL UNIQUE,
+            patient_id INTEGER NOT NULL REFERENCES patients(id),
+            doctor_id INTEGER NOT NULL REFERENCES users(id),
+            appointment_date DATETIME NOT NULL,
+            appointment_time TIME,
+            duration_minutes INTEGER,
+            appointment_type VARCHAR(20),
+            reason TEXT,
+            status VARCHAR(20),
+            priority VARCHAR(10),
+            notes TEXT,
+            booking_source VARCHAR(20),
+            booked_by_id INTEGER REFERENCES users(id),
+            confirmed_at DATETIME,
+            checked_in_at DATETIME,
+            consultation_started_at DATETIME,
+            consultation_ended_at DATETIME,
+            checked_out_at DATETIME,
+            token_number INTEGER,
+            queue_position INTEGER,
+            cancellation_reason TEXT,
+            rescheduled_from_id INTEGER REFERENCES appointments(id),
+            consultation_fee FLOAT,
+            registration_fee FLOAT,
+            payment_status VARCHAR(20),
+            payment_method VARCHAR(50),
+            payment_date DATETIME,
+            payment_notes TEXT,
+            discount_amount FLOAT,
+            final_amount FLOAT,
+            referred_by VARCHAR(100),
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME,
+            bill_cancelled_reason TEXT,
+            bill_cancelled_by INTEGER REFERENCES users(id),
+            bill_cancelled_at DATETIME,
+            token_status VARCHAR(20),
+            token_called_at DATETIME,
+            token_skipped_at DATETIME,
+            token_recalled_at DATETIME,
+            priority_boost INTEGER DEFAULT 0,
+            override_availability BOOLEAN DEFAULT 0,
+            override_reason TEXT
+        )
+    """))
+    conn.execute(text(
+        f"INSERT INTO appointments_new ({cols_csv}) SELECT {cols_csv} FROM appointments"
+    ))
+    conn.execute(text("DROP TABLE appointments"))
+    conn.execute(text("ALTER TABLE appointments_new RENAME TO appointments"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_appointments_id ON appointments (id)"))
+    conn.execute(text("PRAGMA foreign_keys=ON"))
+    print("  appointments.appointment_time is now nullable")
+
+
 def migrate():
     from sqlalchemy import text
     with engine.connect() as conn:
@@ -244,6 +317,9 @@ def migrate():
                 print(f"  Added column: {table}.{col}")
             else:
                 print(f"  Already exists: {table}.{col}")
+
+        _migrate_appointments_time_nullable(conn)
+
         # Remove unique constraint on patients.primary_phone (SQLite requires table rebuild)
         try:
             result = conn.execute(text("PRAGMA index_list(patients)"))

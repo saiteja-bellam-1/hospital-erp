@@ -35,7 +35,7 @@ class AppointmentCreate(BaseModel):
     patient_id: str
     doctor_id: int
     appointment_date: date
-    appointment_time: time
+    appointment_time: Optional[time] = None
     duration_minutes: int = Field(default=10, ge=2, le=180)
     appointment_type: str = Field(default="consultation", pattern="^(consultation|followup|checkup)$")
     reason: Optional[str] = None
@@ -61,7 +61,7 @@ class AppointmentResponse(BaseModel):
     patient_id: int
     doctor_id: int
     appointment_date: date
-    appointment_time: time
+    appointment_time: Optional[time] = None
     duration_minutes: int
     appointment_type: str
     reason: Optional[str]
@@ -336,29 +336,30 @@ async def create_appointment(
     if current_user.role and current_user.role.name:
         user_roles.add(current_user.role.name)
 
-    if appointment_data.override_availability:
-        if not (user_roles & allowed_override_roles):
-            raise HTTPException(status_code=403, detail="You are not allowed to override doctor availability")
-        if not (appointment_data.override_reason and appointment_data.override_reason.strip()):
-            raise HTTPException(status_code=400, detail="A reason is required when overriding doctor availability")
-        # Still block double-booking
-        has_conflict, conflict_reason = availability_service.has_appointment_conflict(
-            doctor_id=appointment_data.doctor_id,
-            appointment_date=appointment_data.appointment_date,
-            appointment_time=appointment_data.appointment_time,
-            duration_minutes=appointment_data.duration_minutes,
-        )
-        if has_conflict:
-            raise HTTPException(status_code=400, detail=f"Cannot override: {conflict_reason}")
-    else:
-        is_available, reason = availability_service.is_doctor_available(
-            doctor_id=appointment_data.doctor_id,
-            appointment_date=appointment_data.appointment_date,
-            appointment_time=appointment_data.appointment_time,
-            duration_minutes=appointment_data.duration_minutes
-        )
-        if not is_available:
-            raise HTTPException(status_code=400, detail=f"Doctor not available: {reason}")
+    if appointment_data.appointment_time is not None:
+        if appointment_data.override_availability:
+            if not (user_roles & allowed_override_roles):
+                raise HTTPException(status_code=403, detail="You are not allowed to override doctor availability")
+            if not (appointment_data.override_reason and appointment_data.override_reason.strip()):
+                raise HTTPException(status_code=400, detail="A reason is required when overriding doctor availability")
+            # Still block double-booking
+            has_conflict, conflict_reason = availability_service.has_appointment_conflict(
+                doctor_id=appointment_data.doctor_id,
+                appointment_date=appointment_data.appointment_date,
+                appointment_time=appointment_data.appointment_time,
+                duration_minutes=appointment_data.duration_minutes,
+            )
+            if has_conflict:
+                raise HTTPException(status_code=400, detail=f"Cannot override: {conflict_reason}")
+        else:
+            is_available, reason = availability_service.is_doctor_available(
+                doctor_id=appointment_data.doctor_id,
+                appointment_date=appointment_data.appointment_date,
+                appointment_time=appointment_data.appointment_time,
+                duration_minutes=appointment_data.duration_minutes
+            )
+            if not is_available:
+                raise HTTPException(status_code=400, detail=f"Doctor not available: {reason}")
     
     # Calculate consultation fee from doctor's rates.
     # Follow-up visits are free — the patient already paid for the initial
@@ -444,8 +445,12 @@ async def create_appointment(
             f" [AVAILABILITY OVERRIDDEN — reason: {appointment.override_reason}]"
             if appointment.override_availability else ""
         )
+        time_label = (
+            f" at {appointment_data.appointment_time}"
+            if appointment_data.appointment_time is not None else ""
+        )
         log_action(db, current_user, "book_appointment", "appointment", "Appointment", appointment.id,
-            f"Booked appointment for {patient_name} with {doctor_name} on {appointment_data.appointment_date} at {appointment_data.appointment_time}, Fee: ₹{appointment.final_amount or 0}{override_suffix}",
+            f"Booked appointment for {patient_name} with {doctor_name} on {appointment_data.appointment_date}{time_label}, Fee: ₹{appointment.final_amount or 0}{override_suffix}",
             details={"patient": patient_name, "doctor": doctor_name, "date": str(appointment_data.appointment_date), "amount": appointment.final_amount,
                      "override_availability": appointment.override_availability, "override_reason": appointment.override_reason})
     except Exception:

@@ -16,6 +16,7 @@ import AppointmentAvailabilityOverride from '../../../components/AppointmentAvai
 import AppointmentTimeField from '../../../components/AppointmentTimeField';
 import {
   APPOINTMENT_OVERRIDE_DEFAULTS,
+  buildAppointmentCreatePayload,
   isAppointmentSubmitDisabled,
   validateAppointmentBooking,
 } from '../../../utils/appointmentBooking';
@@ -499,7 +500,7 @@ const ReceptionAppointmentsPage = () => {
     // still blocks double-booking)
     setLoading(true);
     try {
-      if (!appointmentForm.override_availability) {
+      if (!appointmentForm.override_availability && appointmentForm.appointment_time) {
         const availabilityCheck = await checkAvailability(
           appointmentForm.doctor_id,
           appointmentForm.appointment_date,
@@ -521,10 +522,9 @@ const ReceptionAppointmentsPage = () => {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({
+        body: JSON.stringify(buildAppointmentCreatePayload(appointmentForm, {
           patient_id: selectedPatient.patient_id,
-          ...appointmentForm
-        })
+        }))
       });
 
       if (response.ok) {

@@ -46,6 +46,7 @@ import ReceptionReportsPage from './modules/reception/ReceptionReportsPage';
 import ReceptionPackagesPage from './modules/reception/ReceptionPackagesPage';
 import ProceduresBillingPage from './modules/reception/ProceduresBillingPage';
 import ReferralManagementPage from './modules/reception/ReferralManagementPage';
+import ReceptionLabOrdersPage from './modules/reception/ReceptionLabOrdersPage';
 import NurseDashboard from './modules/NurseDashboard';
 import AvailabilityModule from './modules/AvailabilityModule';
 import LabTechDashboard from './modules/LabTechDashboard';
@@ -494,6 +495,7 @@ const Dashboard = () => {
             <Route path="/reception/doctor-availability" element={<DoctorAvailabilityPage />} />
             <Route path="/reception/reports" element={<ReceptionReportsPage />} />
             <Route path="/reception/packages" element={<ReceptionPackagesPage />} />
+            <Route path="/reception/lab-orders" element={<ReceptionLabOrdersPage />} />
             <Route path="/reception/procedures" element={<ProceduresBillingPage />} />
             <Route path="/reception/referrals" element={<ReferralManagementPage />} />
             <Route path="/patients/*" element={<PatientsModule />} />

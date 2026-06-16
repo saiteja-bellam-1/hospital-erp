@@ -29,6 +29,7 @@ import { useToast } from '../../hooks/use-toast';
 import AppointmentAvailabilityOverride from '../../components/AppointmentAvailabilityOverride';
 import {
   APPOINTMENT_OVERRIDE_DEFAULTS,
+  buildAppointmentCreatePayload,
   isAppointmentSubmitDisabled,
   validateAppointmentBooking,
 } from '../../utils/appointmentBooking';
@@ -281,10 +282,9 @@ const ReceptionistDashboard = () => {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({
+        body: JSON.stringify(buildAppointmentCreatePayload(appointmentForm, {
           patient_id: selectedPatient.patient_id,
-          ...appointmentForm
-        })
+        }))
       });
 
       if (response.ok) {
@@ -949,7 +949,7 @@ const ReceptionistDashboard = () => {
 
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <Label>Time *</Label>
+                <Label>Time</Label>
                 <Input
                   type="time"
                   value={appointmentForm.appointment_time}

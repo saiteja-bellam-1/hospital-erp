@@ -45,7 +45,7 @@ const EMPTY_DRAFT = {
   referring_external_name: '',
   admitting_doctor_id: '',
   attending_physician_id: '',
-  require_acceptance: true,
+  require_acceptance: false,
   // Step 2 — payer
   payer_scheme_id: '',
   scheme_member_id: '',

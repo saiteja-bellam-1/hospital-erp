@@ -59,6 +59,7 @@ export function useNavigationSections({ roles, enabledModules }) {
     }
     if (enabledModules.lab) {
       add(items, make('Lab Packages', Package, '/dashboard/reception/packages'));
+      add(items, make('Lab Orders', TestTube, '/dashboard/reception/lab-orders'));
     }
     add(items, make('Day Care', Stethoscope, '/dashboard/reception/procedures'));
     add(items, make('Referrals', Share2, '/dashboard/reception/referrals'));

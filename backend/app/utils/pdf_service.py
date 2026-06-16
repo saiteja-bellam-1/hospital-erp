@@ -157,6 +157,124 @@ def _finalize(doc, elements, hospital_info, header_cb=None, watermark=None):
     doc.build(elements, onFirstPage=cb, onLaterPages=cb)
 
 
+def _escape_pdf_inline(s):
+    if not s:
+        return ''
+    return str(s).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+
+def _lab_results_show_notes_column(results_list):
+    return any((r.get('notes') or '').strip() for r in (results_list or []))
+
+
+def _build_lab_results_table(results_list, *, page_width, cell_label, cell_value, cell_abnormal, section_label_style):
+    """Build a lab results table. Adds a NOTES column after METHOD only when any parameter has notes."""
+    show_notes = _lab_results_show_notes_column(results_list)
+
+    if show_notes:
+        col_widths = [
+            page_width * 0.24,
+            page_width * 0.13,
+            page_width * 0.10,
+            page_width * 0.20,
+            page_width * 0.16,
+            page_width * 0.17,
+        ]
+        header = [
+            Paragraph('<b>TEST DESCRIPTION</b>', cell_label),
+            Paragraph('<b>RESULT</b>', cell_label),
+            Paragraph('<b>UNIT</b>', cell_label),
+            Paragraph('<b>BIO. REF. RANGE</b>', cell_label),
+            Paragraph('<b>METHOD</b>', cell_label),
+            Paragraph('<b>NOTES</b>', cell_label),
+        ]
+    else:
+        col_widths = [
+            page_width * 0.28,
+            page_width * 0.15,
+            page_width * 0.12,
+            page_width * 0.25,
+            page_width * 0.20,
+        ]
+        header = [
+            Paragraph('<b>TEST DESCRIPTION</b>', cell_label),
+            Paragraph('<b>RESULT</b>', cell_label),
+            Paragraph('<b>UNIT</b>', cell_label),
+            Paragraph('<b>BIO. REF. RANGE</b>', cell_label),
+            Paragraph('<b>METHOD</b>', cell_label),
+        ]
+
+    results_data = [header]
+    section_row_indices = []
+    current_section = None
+    empty_cell = Paragraph('', cell_value)
+
+    for r in results_list or []:
+        section = r.get('section', '')
+        if section and section != current_section:
+            current_section = section
+            section_row_indices.append(len(results_data))
+            row = [Paragraph(f'<b>{section}</b>', section_label_style)]
+            row.extend([empty_cell] * (len(col_widths) - 1))
+            results_data.append(row)
+        elif not section and current_section is not None:
+            current_section = None
+
+        is_abnormal = r.get('is_abnormal', False)
+        value_style = cell_abnormal if is_abnormal else cell_value
+
+        ref_range = '-'
+        ref_min = r.get('reference_min')
+        ref_max = r.get('reference_max')
+        normal_val = r.get('normal_value')
+        if ref_min is not None and ref_max is not None:
+            ref_range = f"{ref_min} - {ref_max}"
+        elif ref_min is not None:
+            ref_range = f"&gt; {ref_min}"
+        elif ref_max is not None:
+            ref_range = f"&lt; {ref_max}"
+        elif normal_val:
+            ref_range = normal_val
+
+        param_text = r.get('parameter_name', '')
+        remarks = r.get('remarks', '')
+        if remarks:
+            param_text = f"{param_text}<br/><i><font size='7' color='grey'>{_escape_pdf_inline(remarks)}</font></i>"
+
+        method_text = r.get('method', '') or ''
+        row = [
+            Paragraph(param_text, cell_value),
+            Paragraph(str(r.get('value', '')), value_style),
+            Paragraph(r.get('unit', '') or '-', cell_value),
+            Paragraph(ref_range, cell_value),
+            Paragraph(_escape_pdf_inline(method_text), cell_value),
+        ]
+        if show_notes:
+            notes_text = (r.get('notes') or '').strip()
+            row.append(Paragraph(_escape_pdf_inline(notes_text) if notes_text else '-', cell_value))
+
+        results_data.append(row)
+
+    table_style_cmds = [
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ('LEFTPADDING', (0, 0), (-1, -1), 6),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('LINEBELOW', (0, 0), (-1, 0), 1, colors.black),
+    ]
+    for sec_row in section_row_indices:
+        table_style_cmds.append(('SPAN', (0, sec_row), (-1, sec_row)))
+        table_style_cmds.append(('BACKGROUND', (0, sec_row), (-1, sec_row), colors.Color(0.92, 0.93, 0.97)))
+        table_style_cmds.append(('TOPPADDING', (0, sec_row), (-1, sec_row), 5))
+        table_style_cmds.append(('BOTTOMPADDING', (0, sec_row), (-1, sec_row), 5))
+
+    results_table = Table(results_data, colWidths=col_widths)
+    results_table.setStyle(TableStyle(table_style_cmds))
+    return results_table
+
+
 class PDFService:
     def __init__(self):
         self.styles = getSampleStyleSheet()
@@ -1767,98 +1885,16 @@ class PDFService:
         # ============================================================
         # RESULTS TABLE
         # ============================================================
-        param_w = page_width * 0.28
-        result_w = page_width * 0.15
-        unit_w = page_width * 0.12
-        ref_w = page_width * 0.25
-        method_w = page_width * 0.20
-
-        # Section header style
-        section_label_style = ParagraphStyle('LabSectionLabel', parent=self.styles['Normal'],
-            fontSize=9, fontName='Helvetica-Bold', textColor=colors.Color(0.2, 0.2, 0.5))
-
-        results_header = [
-            Paragraph('<b>TEST DESCRIPTION</b>', cell_label),
-            Paragraph('<b>RESULT</b>', cell_label),
-            Paragraph('<b>UNIT</b>', cell_label),
-            Paragraph('<b>BIO. REF. RANGE</b>', cell_label),
-            Paragraph('<b>METHOD</b>', cell_label),
-        ]
-
-        results_data = [results_header]
         results_list = report_data.get('results', [])
-
-        # Track section rows for styling
-        section_row_indices = []
-        current_section = None
-
-        for r in results_list:
-            # Insert section header row if section changed
-            section = r.get('section', '')
-            if section and section != current_section:
-                current_section = section
-                section_row_indices.append(len(results_data))
-                results_data.append([
-                    Paragraph(f'<b>{section}</b>', section_label_style),
-                    Paragraph('', cell_value),
-                    Paragraph('', cell_value),
-                    Paragraph('', cell_value),
-                    Paragraph('', cell_value),
-                ])
-            elif not section and current_section is not None:
-                current_section = None
-
-            is_abnormal = r.get('is_abnormal', False)
-            value_style = cell_abnormal if is_abnormal else cell_value
-
-            ref_range = '-'
-            ref_min = r.get('reference_min')
-            ref_max = r.get('reference_max')
-            normal_val = r.get('normal_value')
-            if ref_min is not None and ref_max is not None:
-                ref_range = f"{ref_min} - {ref_max}"
-            elif ref_min is not None:
-                ref_range = f"&gt; {ref_min}"
-            elif ref_max is not None:
-                ref_range = f"&lt; {ref_max}"
-            elif normal_val:
-                ref_range = normal_val
-
-            param_text = r.get('parameter_name', '')
-            remarks = r.get('remarks', '')
-            if remarks:
-                param_text = f"{param_text}<br/><i><font size='7' color='grey'>{remarks}</font></i>"
-
-            method_text = r.get('method', '') or ''
-
-            results_data.append([
-                Paragraph(param_text, cell_value),
-                Paragraph(str(r.get('value', '')), value_style),
-                Paragraph(r.get('unit', '') or '-', cell_value),
-                Paragraph(ref_range, cell_value),
-                Paragraph(method_text, cell_value),
-            ])
-
-        results_table = Table(results_data, colWidths=[param_w, result_w, unit_w, ref_w, method_w])
-
-        table_style_cmds = [
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ('TOPPADDING', (0, 0), (-1, -1), 4),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-            ('LEFTPADDING', (0, 0), (-1, -1), 6),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('LINEBELOW', (0, 0), (-1, 0), 1, colors.black),
-        ]
-
-        # Style section header rows — span across all columns, light background
-        for sec_row in section_row_indices:
-            table_style_cmds.append(('SPAN', (0, sec_row), (-1, sec_row)))
-            table_style_cmds.append(('BACKGROUND', (0, sec_row), (-1, sec_row), colors.Color(0.92, 0.93, 0.97)))
-            table_style_cmds.append(('TOPPADDING', (0, sec_row), (-1, sec_row), 5))
-            table_style_cmds.append(('BOTTOMPADDING', (0, sec_row), (-1, sec_row), 5))
-
-        results_table.setStyle(TableStyle(table_style_cmds))
+        results_table = _build_lab_results_table(
+            results_list,
+            page_width=page_width,
+            cell_label=cell_label,
+            cell_value=cell_value,
+            cell_abnormal=cell_abnormal,
+            section_label_style=ParagraphStyle('LabSectionLabel', parent=self.styles['Normal'],
+                fontSize=9, fontName='Helvetica-Bold', textColor=colors.Color(0.2, 0.2, 0.5)),
+        )
         elements.append(results_table)
         elements.append(Spacer(1, 10))
 
@@ -2138,15 +2174,6 @@ class PDFService:
         elements.append(Spacer(1, 10))
 
         # ============================================================
-        # RESULTS TABLE COLUMN WIDTHS
-        # ============================================================
-        param_w = page_width * 0.28
-        result_w = page_width * 0.15
-        unit_w = page_width * 0.12
-        ref_w = page_width * 0.25
-        method_w = page_width * 0.20
-
-        # ============================================================
         # LOOP THROUGH EACH TEST — continuous flow
         # ============================================================
         for idx, report_data in enumerate(reports_list):
@@ -2162,81 +2189,15 @@ class PDFService:
             elements.append(Paragraph(test_display, test_name_style))
             elements.append(Spacer(1, 4))
 
-            # Results table
-            results_header = [
-                Paragraph('<b>TEST DESCRIPTION</b>', cell_label),
-                Paragraph('<b>RESULT</b>', cell_label),
-                Paragraph('<b>UNIT</b>', cell_label),
-                Paragraph('<b>BIO. REF. RANGE</b>', cell_label),
-                Paragraph('<b>METHOD</b>', cell_label),
-            ]
-            results_data = [results_header]
             results_list_inner = report_data.get('results', [])
-
-            section_row_indices = []
-            current_section = None
-
-            for r in results_list_inner:
-                section = r.get('section', '')
-                if section and section != current_section:
-                    current_section = section
-                    section_row_indices.append(len(results_data))
-                    results_data.append([
-                        Paragraph(f'<b>{section}</b>', section_label_style),
-                        Paragraph('', cell_value), Paragraph('', cell_value),
-                        Paragraph('', cell_value), Paragraph('', cell_value),
-                    ])
-                elif not section and current_section is not None:
-                    current_section = None
-
-                is_abnormal = r.get('is_abnormal', False)
-                value_style = cell_abnormal if is_abnormal else cell_value
-
-                ref_range = '-'
-                ref_min = r.get('reference_min')
-                ref_max = r.get('reference_max')
-                normal_val = r.get('normal_value')
-                if ref_min is not None and ref_max is not None:
-                    ref_range = f"{ref_min} - {ref_max}"
-                elif ref_min is not None:
-                    ref_range = f"&gt; {ref_min}"
-                elif ref_max is not None:
-                    ref_range = f"&lt; {ref_max}"
-                elif normal_val:
-                    ref_range = normal_val
-
-                param_text = r.get('parameter_name', '')
-                remarks = r.get('remarks', '')
-                if remarks:
-                    param_text = f"{param_text}<br/><i><font size='7' color='grey'>{remarks}</font></i>"
-
-                method_text = r.get('method', '') or ''
-
-                results_data.append([
-                    Paragraph(param_text, cell_value),
-                    Paragraph(str(r.get('value', '')), value_style),
-                    Paragraph(r.get('unit', '') or '-', cell_value),
-                    Paragraph(ref_range, cell_value),
-                    Paragraph(method_text, cell_value),
-                ])
-
-            results_table = Table(results_data, colWidths=[param_w, result_w, unit_w, ref_w, method_w])
-
-            table_style_cmds = [
-                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-                ('TOPPADDING', (0, 0), (-1, -1), 4), ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-                ('LEFTPADDING', (0, 0), (-1, -1), 6), ('RIGHTPADDING', (0, 0), (-1, -1), 6),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('LINEBELOW', (0, 0), (-1, 0), 1, colors.black),
-            ]
-
-            for sec_row in section_row_indices:
-                table_style_cmds.append(('SPAN', (0, sec_row), (-1, sec_row)))
-                table_style_cmds.append(('BACKGROUND', (0, sec_row), (-1, sec_row), colors.Color(0.92, 0.93, 0.97)))
-                table_style_cmds.append(('TOPPADDING', (0, sec_row), (-1, sec_row), 5))
-                table_style_cmds.append(('BOTTOMPADDING', (0, sec_row), (-1, sec_row), 5))
-
-            results_table.setStyle(TableStyle(table_style_cmds))
+            results_table = _build_lab_results_table(
+                results_list_inner,
+                page_width=page_width,
+                cell_label=cell_label,
+                cell_value=cell_value,
+                cell_abnormal=cell_abnormal,
+                section_label_style=section_label_style,
+            )
             elements.append(results_table)
 
             # Interpretation (per test, if any) — strictly literal (preserve whitespace + newlines)

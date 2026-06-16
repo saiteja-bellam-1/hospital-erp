@@ -7,7 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
  * Doctor time picker: slot dropdown when slots exist, free time input when override is on or no slots.
  */
 export default function AppointmentTimeField({
-  label = 'Time *',
+  label = 'Time',
   timeId = 'appointment_time',
   appointmentTime,
   overrideAvailability,
@@ -46,7 +46,6 @@ export default function AppointmentTimeField({
           type="time"
           value={appointmentTime}
           onChange={(e) => onTimeChange(e.target.value)}
-          required
           placeholder={overrideAvailability ? 'Enter time (any)' : 'Select doctor and date first'}
         />
       )}

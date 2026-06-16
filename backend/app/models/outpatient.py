@@ -11,7 +11,7 @@ class Appointment(Base):
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
     doctor_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     appointment_date = Column(DateTime, nullable=False)
-    appointment_time = Column(Time, nullable=False)
+    appointment_time = Column(Time, nullable=True)
     duration_minutes = Column(Integer, default=30)
     appointment_type = Column(String(20), default="consultation")  # consultation, followup, checkup
     reason = Column(Text)

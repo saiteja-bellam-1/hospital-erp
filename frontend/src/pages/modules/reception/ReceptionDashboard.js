@@ -622,7 +622,7 @@ const ReceptionDashboard = () => {
                     <Package className="h-3.5 w-3.5 mr-1" /> Book Package
                   </Button>
                 </Link>
-                <Link to="/dashboard/reception/appointments">
+                <Link to="/dashboard/reception/lab-orders">
                   <Button variant="ghost" size="sm" className="text-xs text-gray-500">
                     View All <ArrowRight className="h-3 w-3 ml-1" />
                   </Button>

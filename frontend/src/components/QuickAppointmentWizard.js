@@ -7,9 +7,11 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
-import { Loader2, ChevronLeft } from 'lucide-react';
+import { Loader2, ChevronLeft, Receipt, Printer } from 'lucide-react';
 import { useToast } from '../hooks/use-toast';
 import { errorDetail } from '../utils/apiErrors';
+import { printPdfFromUrl } from '../utils/printPdf';
+import { Badge } from './ui/badge';
 import PatientSearchPicker from './PatientSearchPicker';
 import ReferralSelectWithCreate from './ReferralSelectWithCreate';
 import PatientRegisterFormFields, {
@@ -21,7 +23,9 @@ import AppointmentAvailabilityOverride from './AppointmentAvailabilityOverride';
 import AppointmentTimeField from './AppointmentTimeField';
 import {
   APPOINTMENT_OVERRIDE_DEFAULTS,
+  buildAppointmentCreatePayload,
   isAppointmentSubmitDisabled,
+  shouldShowAppointmentBill,
   validateAppointmentBooking,
 } from '../utils/appointmentBooking';
 
@@ -56,6 +60,11 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
   const [availabilityChecking, setAvailabilityChecking] = useState(false);
   const [patientFeeInfo, setPatientFeeInfo] = useState({ is_new_patient: false, registration_fee: 0 });
   const [booking, setBooking] = useState(false);
+  const [showBillPreview, setShowBillPreview] = useState(false);
+  const [billPdfUrl, setBillPdfUrl] = useState(null);
+  const [currentBill, setCurrentBill] = useState(null);
+  const [bookedAppointment, setBookedAppointment] = useState(null);
+  const [billLoading, setBillLoading] = useState(false);
 
   const reset = () => {
     setStep(1);
@@ -65,6 +74,13 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
     setAppointmentForm(EMPTY_APPOINTMENT);
     setAvailableSlots([]);
     setPatientFeeInfo({ is_new_patient: false, registration_fee: 0 });
+    setShowBillPreview(false);
+    setCurrentBill(null);
+    setBookedAppointment(null);
+    if (billPdfUrl) {
+      window.URL.revokeObjectURL(billPdfUrl);
+      setBillPdfUrl(null);
+    }
   };
 
   useEffect(() => {
@@ -172,6 +188,43 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
     }
   };
 
+  const finishBooking = (appointmentData) => {
+    onOpenChange(false);
+    onBooked?.(appointmentData);
+  };
+
+  const loadBillPreview = async (appointmentData) => {
+    setBillLoading(true);
+    setBookedAppointment(appointmentData);
+    try {
+      const [billRes, pdfRes] = await Promise.all([
+        axios.get(`/api/appointments/${appointmentData.id}/bill`),
+        axios.get(`/api/appointments/${appointmentData.id}/bill/download`, { responseType: 'blob' }),
+      ]);
+      setCurrentBill(billRes.data);
+      if (billPdfUrl) window.URL.revokeObjectURL(billPdfUrl);
+      setBillPdfUrl(window.URL.createObjectURL(new Blob([pdfRes.data], { type: 'application/pdf' })));
+      setShowBillPreview(true);
+    } catch (e) {
+      toast({ variant: 'destructive', title: 'Error', description: errorDetail(e, 'Failed to load bill preview') });
+      finishBooking(appointmentData);
+    } finally {
+      setBillLoading(false);
+    }
+  };
+
+  const closeBillPreview = () => {
+    if (billPdfUrl) {
+      window.URL.revokeObjectURL(billPdfUrl);
+      setBillPdfUrl(null);
+    }
+    setShowBillPreview(false);
+    const apt = bookedAppointment;
+    setCurrentBill(null);
+    setBookedAppointment(null);
+    finishBooking(apt);
+  };
+
   const handleBook = async () => {
     if (!selectedPatient) return;
     const validationError = validateAppointmentBooking(appointmentForm, { selectedPatient: true });
@@ -182,7 +235,7 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
 
     setBooking(true);
     try {
-      if (!appointmentForm.override_availability) {
+      if (!appointmentForm.override_availability && appointmentForm.appointment_time) {
         const check = await checkAvailability(
           appointmentForm.doctor_id,
           appointmentForm.appointment_date,
@@ -196,13 +249,16 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
         }
       }
 
-      const res = await axios.post('/api/appointments/', {
+      const res = await axios.post('/api/appointments/', buildAppointmentCreatePayload(appointmentForm, {
         patient_id: selectedPatient.patient_id,
-        ...appointmentForm,
-      });
-      toast({ title: 'Appointment booked', description: 'Patient registered and appointment scheduled.' });
-      onOpenChange(false);
-      onBooked?.(res.data);
+      }));
+
+      if (shouldShowAppointmentBill(res.data)) {
+        await loadBillPreview(res.data);
+      } else {
+        toast({ title: 'Success', description: 'Appointment booked successfully!' });
+        finishBooking(res.data);
+      }
     } catch (e) {
       toast({ variant: 'destructive', title: 'Booking failed', description: errorDetail(e) });
     } finally {
@@ -216,6 +272,63 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
     : 0;
   const consultFee = appointmentForm.appointment_type === 'followup' ? 0 : baseFee;
   const regFee = patientFeeInfo.is_new_patient ? patientFeeInfo.registration_fee : 0;
+
+  if (showBillPreview) {
+    return (
+      <Dialog open={true} onOpenChange={closeBillPreview}>
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-hidden">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Receipt className="h-5 w-5" />
+              Bill Preview{currentBill?.bill_number ? ` — ${currentBill.bill_number}` : ''}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col space-y-4">
+            {currentBill && (
+              <div className="grid grid-cols-2 gap-4 p-4 bg-gray-50 rounded-lg">
+                <div>
+                  <p className="text-sm text-gray-600">Patient</p>
+                  <p className="font-semibold">{currentBill.patient_name}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-gray-600">Doctor</p>
+                  <p className="font-semibold">{currentBill.doctor_name}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-gray-600">Total Amount</p>
+                  <p className="font-semibold text-green-600">₹{currentBill.total_amount?.toFixed(2)}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-gray-600">Payment Status</p>
+                  <Badge variant={currentBill.balance_due === 0 ? 'default' : 'secondary'}>
+                    {currentBill.balance_due === 0 ? 'Paid' : 'Pending'}
+                  </Badge>
+                </div>
+              </div>
+            )}
+            <p className="text-xs text-muted-foreground">
+              Letterhead follows Settings → Print Settings.
+            </p>
+            <div className="flex-1 min-h-[400px] border rounded-lg overflow-hidden">
+              {billPdfUrl && (
+                <iframe src={billPdfUrl} className="w-full h-full min-h-[400px] border-0" title="Bill Preview" />
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              <Button variant="outline" onClick={closeBillPreview} className="flex-1">Close</Button>
+              <Button
+                onClick={() => printPdfFromUrl(billPdfUrl)}
+                className="flex-1 bg-blue-600 hover:bg-blue-700"
+                disabled={!billPdfUrl}
+              >
+                <Printer className="h-4 w-4 mr-2" /> Print Bill
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    );
+  }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -390,10 +503,10 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
               <Button
                 type="button"
                 className="flex-1"
-                disabled={isAppointmentSubmitDisabled(appointmentForm, { loading: booking, selectedPatient: !!selectedPatient })}
+                disabled={isAppointmentSubmitDisabled(appointmentForm, { loading: booking || billLoading, selectedPatient: !!selectedPatient })}
                 onClick={handleBook}
               >
-                {booking ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Booking…</> : 'Book appointment'}
+                {booking || billLoading ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Booking…</> : 'Book appointment'}
               </Button>
             </div>
           </div>

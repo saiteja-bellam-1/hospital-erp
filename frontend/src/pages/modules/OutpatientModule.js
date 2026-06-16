@@ -15,6 +15,7 @@ import { ConfirmDialog } from '../../components/ui/confirm-dialog';
 import AppointmentAvailabilityOverride from '../../components/AppointmentAvailabilityOverride';
 import {
   APPOINTMENT_OVERRIDE_DEFAULTS,
+  buildAppointmentCreatePayload,
   needsOverrideReason,
   validateAppointmentBooking,
 } from '../../utils/appointmentBooking';
@@ -311,7 +312,7 @@ const OutpatientModule = () => {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`
         },
-        body: JSON.stringify(appointmentForm)
+        body: JSON.stringify(buildAppointmentCreatePayload(appointmentForm))
       });
       
       if (response.ok) {
@@ -1085,7 +1086,7 @@ const OutpatientModule = () => {
                   />
                 </div>
                 <div>
-                  <Label htmlFor="appointment_time">Time *</Label>
+                  <Label htmlFor="appointment_time">Time</Label>
                   <Input
                     id="appointment_time"
                     type="time"
@@ -1151,7 +1152,6 @@ const OutpatientModule = () => {
                     || !appointmentForm.patient_id
                     || !appointmentForm.doctor_id
                     || !appointmentForm.appointment_date
-                    || !appointmentForm.appointment_time
                     || needsOverrideReason(appointmentForm)
                   }
                   className="w-full"

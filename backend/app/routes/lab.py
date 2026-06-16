@@ -547,7 +547,8 @@ def _build_report_response(report: LabReport, db: Session) -> dict:
             "normal_value": param.normal_value,
             "is_abnormal": is_abnormal,
             "field_type": param.field_type,
-            "remarks": rv.get("remarks", "")
+            "remarks": rv.get("remarks", ""),
+            "notes": param.notes or "",
         })
 
     # Determine referral label: doctor = "Prescribed By", referral/self = "Referred By"
@@ -2298,6 +2299,7 @@ async def generate_sample_report(
             "reference_max": ref_max,
             "is_abnormal": False,
             "field_type": p.field_type,
+            "notes": p.notes or "",
         })
 
     report_data = {
