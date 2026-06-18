@@ -1630,11 +1630,12 @@ end;
 procedure GrantExePermissions;
 var
   ResultCode: Integer;
+  ExePath: String;
 begin
   // Ensure standard users can read+execute the one-file bundle after an
   // admin-run install/upgrade (custom paths like D:\KTHEALTHERP included).
-  Exec('icacls', ExpandConstant('"{app}\{#AppExeName}"') +
-    ' /grant *S-1-5-32-545:(RX)'), '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  ExePath := ExpandConstant('"{app}\{#AppExeName}"');
+  Exec('icacls', ExePath + ' /grant *S-1-5-32-545:(RX)', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
