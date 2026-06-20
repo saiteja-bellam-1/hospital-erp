@@ -20,10 +20,7 @@ const LabTestParametersPage = () => {
   const { user } = useAuth();
   const { testId } = useParams();
   const navigate = useNavigate();
-
-  if (!canAccessLabAdminDashboard(normalizeUserRoles(user))) {
-    return <Navigate to="/dashboard/lab-home" replace />;
-  }
+  const hasLabAdminAccess = canAccessLabAdminDashboard(normalizeUserRoles(user));
 
   const [test, setTest] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -79,7 +76,14 @@ const LabTestParametersPage = () => {
     }
   }, [testId]);
 
-  useEffect(() => { fetchTest(); }, [fetchTest]);
+  useEffect(() => {
+    if (!hasLabAdminAccess) return;
+    fetchTest();
+  }, [fetchTest, hasLabAdminAccess]);
+
+  if (!hasLabAdminAccess) {
+    return <Navigate to="/dashboard/lab-home" replace />;
+  }
 
   // ============ Helpers ============
 
