@@ -10,6 +10,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { useToast } from '../../../hooks/use-toast';
 import { ArrowLeft, Plus, Trash2, Save, CheckCircle2, ScanLine } from 'lucide-react';
 import { errMsg } from '../PharmacyModule';
+import PharmacyMasterSelectWithCreate from '../../../components/pharmacy/PharmacyMasterSelectWithCreate';
+import QuickMedicineDialog from '../../../components/pharmacy/QuickMedicineDialog';
 
 const TODAY = new Date().toISOString().split('T')[0];
 
@@ -28,6 +30,9 @@ export default function PurchaseEntry() {
   const [draftId, setDraftId] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [scanInput, setScanInput] = useState('');
+  const [medicineDialogOpen, setMedicineDialogOpen] = useState(false);
+  const [medicinePrefill, setMedicinePrefill] = useState({});
+  const [medicineDialogLineIndex, setMedicineDialogLineIndex] = useState(null);
   const scanRef = useRef(null);
 
   useEffect(() => {
@@ -88,7 +93,9 @@ export default function PurchaseEntry() {
         matches = res.data || [];
       }
       if (matches.length === 0) {
-        toast({ variant: 'destructive', title: 'No medicine found', description: `Nothing matches "${code}"` });
+        setMedicinePrefill({ name: code, medicine_code: code });
+        setMedicineDialogLineIndex(null);
+        setMedicineDialogOpen(true);
       } else if (matches.length > 1) {
         toast({ variant: 'destructive', title: 'Ambiguous scan', description: `${matches.length} matches — type a more specific code` });
       } else {
@@ -204,6 +211,30 @@ export default function PurchaseEntry() {
     } finally { setSubmitting(false); }
   };
 
+  const openMedicineCreate = (lineIndex = null, prefill = {}) => {
+    setMedicineDialogLineIndex(lineIndex);
+    setMedicinePrefill(prefill);
+    setMedicineDialogOpen(true);
+  };
+
+  const handleMedicineCreated = (med) => {
+    setMedicines((prev) => {
+      if (prev.some((m) => m.id === med.id)) return prev;
+      return [...prev, med].sort((a, b) => a.name.localeCompare(b.name));
+    });
+    if (medicineDialogLineIndex != null) {
+      update(medicineDialogLineIndex, {
+        medicine_id: med.id,
+        purchase_rate: med.purchase_rate || 0,
+        mrp: med.mrp || 0,
+        hsn_id: med.hsn_id || null,
+      });
+    } else {
+      setItems((s) => [...s, lineFromMed(med)]);
+    }
+    setMedicineDialogLineIndex(null);
+  };
+
   const setH = (k, v) => setHeader(s => ({ ...s, [k]: v }));
 
   return (
@@ -219,12 +250,14 @@ export default function PurchaseEntry() {
           <div><Label className="text-xs">Entry Date</Label><Input type="date" value={header.entry_date} onChange={e => setH('entry_date', e.target.value)} /></div>
           <div>
             <Label className="text-xs">Supplier *</Label>
-            <Select value={header.supplier_id ? String(header.supplier_id) : ''} onValueChange={v => setH('supplier_id', Number(v))}>
-              <SelectTrigger><SelectValue placeholder="Pick supplier" /></SelectTrigger>
-              <SelectContent>
-                {suppliers.map(s => <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>)}
-              </SelectContent>
-            </Select>
+            <PharmacyMasterSelectWithCreate
+              path="suppliers"
+              value={header.supplier_id}
+              onChange={(v) => setH('supplier_id', v)}
+              options={suppliers}
+              onOptionsChange={setSuppliers}
+              placeholder="Pick supplier"
+            />
           </div>
           <div><Label className="text-xs">Invoice #</Label><Input value={header.invoice_number} onChange={e => setH('invoice_number', e.target.value)} /></div>
           <div><Label className="text-xs">Bill Date</Label><Input type="date" value={header.bill_date} onChange={e => setH('bill_date', e.target.value)} /></div>
@@ -288,19 +321,25 @@ export default function PurchaseEntry() {
                     return (
                       <tr key={i} className={`border-b ${lineInvalid ? 'bg-red-50/50' : ''}`}>
                         <td className="py-2 pr-2 min-w-[200px]">
-                          <Select value={ln.medicine_id ? String(ln.medicine_id) : ''}
-                            onValueChange={v => {
-                              const m = medicines.find(x => x.id === Number(v));
-                              update(i, { medicine_id: Number(v),
-                                          purchase_rate: m?.purchase_rate || 0,
-                                          mrp: m?.mrp || 0,
-                                          hsn_id: m?.hsn_id || null });
-                            }}>
-                            <SelectTrigger className="h-8"><SelectValue placeholder="Pick" /></SelectTrigger>
-                            <SelectContent>
-                              {medicines.map(m => <SelectItem key={m.id} value={String(m.id)}>{m.name}</SelectItem>)}
-                            </SelectContent>
-                          </Select>
+                          <div className="flex gap-1 items-center">
+                            <Select value={ln.medicine_id ? String(ln.medicine_id) : ''}
+                              onValueChange={v => {
+                                const m = medicines.find(x => x.id === Number(v));
+                                update(i, { medicine_id: Number(v),
+                                            purchase_rate: m?.purchase_rate || 0,
+                                            mrp: m?.mrp || 0,
+                                            hsn_id: m?.hsn_id || null });
+                              }}>
+                              <SelectTrigger className="h-8 flex-1 min-w-0"><SelectValue placeholder="Pick" /></SelectTrigger>
+                              <SelectContent>
+                                {medicines.map(m => <SelectItem key={m.id} value={String(m.id)}>{m.name}</SelectItem>)}
+                              </SelectContent>
+                            </Select>
+                            <Button type="button" size="icon" variant="outline" className="h-8 w-8 shrink-0"
+                              title="Add medicine" onClick={() => openMedicineCreate(i)}>
+                              <Plus className="h-3 w-3" />
+                            </Button>
+                          </div>
                         </td>
                         <td className="py-2 pr-2">
                           <Input
@@ -329,14 +368,17 @@ export default function PurchaseEntry() {
                         <td className="py-2 pr-2"><Input className="h-8" type="number" step="0.01" value={ln.purchase_rate} onChange={e => update(i, { purchase_rate: parseFloat(e.target.value) || 0 })} /></td>
                         <td className="py-2 pr-2"><Input className="h-8" type="number" min="0" max="100" step="0.5" value={ln.discount_pct} onChange={e => update(i, { discount_pct: parseFloat(e.target.value) || 0 })} /></td>
                         <td className="py-2 pr-2">
-                          <Select value={ln.hsn_id ? String(ln.hsn_id) : '__none'}
-                            onValueChange={v => update(i, { hsn_id: v === '__none' ? null : Number(v) })}>
-                            <SelectTrigger className="h-8"><SelectValue placeholder="—" /></SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="__none">(none)</SelectItem>
-                              {hsnList.map(h => <SelectItem key={h.id} value={String(h.id)}>{h.code}</SelectItem>)}
-                            </SelectContent>
-                          </Select>
+                          <PharmacyMasterSelectWithCreate
+                            path="hsn"
+                            value={ln.hsn_id}
+                            onChange={(v) => update(i, { hsn_id: v })}
+                            options={hsnList}
+                            onOptionsChange={setHsnList}
+                            placeholder="—"
+                            allowEmpty
+                            labelKey="code"
+                            compact
+                          />
                         </td>
                         <td className="py-2 pr-2 text-right">₹{c.total.toFixed(2)}</td>
                         <td className="py-2"><Button size="sm" variant="ghost" onClick={() => remove(i)}><Trash2 className="h-3 w-3 text-red-500" /></Button></td>
@@ -362,6 +404,13 @@ export default function PurchaseEntry() {
           <CheckCircle2 className="h-4 w-4 mr-2" /> Confirm & Commit
         </Button>
       </div>
+
+      <QuickMedicineDialog
+        open={medicineDialogOpen}
+        onOpenChange={setMedicineDialogOpen}
+        prefill={medicinePrefill}
+        onCreated={handleMedicineCreated}
+      />
     </div>
   );
 }

@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { useToast } from '../../../../hooks/use-toast';
 import { Plus, Pencil, Trash2, RefreshCw, Search } from 'lucide-react';
 import { errMsg } from '../../PharmacyModule';
+import PharmacyMasterSelectWithCreate from '../../../../components/pharmacy/PharmacyMasterSelectWithCreate';
 
 const BLANK = {
   medicine_code: '', name: '', generic_name: '', manufacturer: '',
@@ -222,19 +223,29 @@ export default function MedicinesTab() {
               <F label="Name *"><Input value={form.name} onChange={e => set('name', e.target.value)} /></F>
               <F label="Generic Name"><Input value={form.generic_name} onChange={e => set('generic_name', e.target.value)} /></F>
               <F label="Category *">
-                <SelectFK options={categories} value={form.category_id} onChange={v => set('category_id', v)} placeholder="Pick category" />
+                <PharmacyMasterSelectWithCreate path="categories" value={form.category_id}
+                  onChange={v => set('category_id', v)} options={categories} onOptionsChange={setCategories}
+                  placeholder="Pick category" />
               </F>
               <F label="Company">
-                <SelectFK options={companies} value={form.company_id} onChange={v => set('company_id', v)} placeholder="(none)" allowEmpty />
+                <PharmacyMasterSelectWithCreate path="companies" value={form.company_id}
+                  onChange={v => set('company_id', v)} options={companies} onOptionsChange={setCompanies}
+                  placeholder="(none)" allowEmpty />
               </F>
               <F label="Salt / Composition">
-                <SelectFK options={salts} value={form.salt_id} onChange={v => set('salt_id', v)} placeholder="(none)" allowEmpty />
+                <PharmacyMasterSelectWithCreate path="salts" value={form.salt_id}
+                  onChange={v => set('salt_id', v)} options={salts} onOptionsChange={setSalts}
+                  placeholder="(none)" allowEmpty />
               </F>
               <F label="Rack">
-                <SelectFK options={racks} value={form.rack_id} onChange={v => set('rack_id', v)} placeholder="(none)" allowEmpty labelKey="code" />
+                <PharmacyMasterSelectWithCreate path="racks" value={form.rack_id}
+                  onChange={v => set('rack_id', v)} options={racks} onOptionsChange={setRacks}
+                  placeholder="(none)" allowEmpty labelKey="code" />
               </F>
               <F label="Unit of Measure">
-                <SelectFK options={uoms} value={form.uom_id} onChange={v => set('uom_id', v)} placeholder="(none)" allowEmpty
+                <PharmacyMasterSelectWithCreate path="uoms" value={form.uom_id}
+                  onChange={v => set('uom_id', v)} options={uoms} onOptionsChange={setUoms}
+                  placeholder="(none)" allowEmpty
                   format={u => `${u.name}${u.abbreviation ? ` (${u.abbreviation})` : ''}`} />
               </F>
               <F label="Dosage Form"><Input value={form.dosage_form || ''} onChange={e => set('dosage_form', e.target.value)} placeholder="tablet / syrup / inj" /></F>
@@ -264,7 +275,9 @@ export default function MedicinesTab() {
               <F label="Default Discount %"><Num value={form.default_discount_pct} onChange={v => set('default_discount_pct', v)} /></F>
               <F label="Item-level Discount %"><Num value={form.item_discount_pct} onChange={v => set('item_discount_pct', v)} /></F>
               <F label="HSN / Tax">
-                <SelectFK options={hsnList} value={form.hsn_id} onChange={v => set('hsn_id', v)} placeholder="(none)" allowEmpty
+                <PharmacyMasterSelectWithCreate path="hsn" value={form.hsn_id}
+                  onChange={v => set('hsn_id', v)} options={hsnList} onOptionsChange={setHsnList}
+                  placeholder="(none)" allowEmpty labelKey="code"
                   format={h => `${h.code} (SGST ${h.sgst_pct}% + CGST ${h.cgst_pct}%)`} />
               </F>
             </Grid>
@@ -331,13 +344,4 @@ const Check = ({ checked, onChange }) => (
   <label className="flex items-center gap-2 text-sm pt-1">
     <input type="checkbox" checked={!!checked} onChange={e => onChange(e.target.checked)} />
   </label>
-);
-const SelectFK = ({ options, value, onChange, placeholder, allowEmpty, labelKey = 'name', format }) => (
-  <Select value={value == null ? '__none' : String(value)} onValueChange={v => onChange(v === '__none' ? null : Number(v))}>
-    <SelectTrigger><SelectValue placeholder={placeholder} /></SelectTrigger>
-    <SelectContent>
-      {allowEmpty && <SelectItem value="__none">(none)</SelectItem>}
-      {options.map(o => <SelectItem key={o.id} value={String(o.id)}>{format ? format(o) : o[labelKey]}</SelectItem>)}
-    </SelectContent>
-  </Select>
 );

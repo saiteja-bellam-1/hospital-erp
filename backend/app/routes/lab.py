@@ -1393,6 +1393,7 @@ async def list_orders(
     date_to: Optional[str] = None,
     patient_id: Optional[int] = None,
     appointment_id: Optional[int] = None,
+    reception_view: bool = False,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -1415,10 +1416,16 @@ async def list_orders(
     if current_user.has_role('doctor'):
         query = query.filter(PatientLabOrder.doctor_id == current_user.id)
 
-    # Lab technicians only see paid orders (payment gate).
+    # Lab technicians only see paid orders on the lab workflow (payment gate).
     # IPD orders bypass this gate — they're billed on the admission account
     # and stay 'pending' until the IPD bill is settled.
-    if current_user.has_role('lab_technician'):
+    # Reception pages pass reception_view=true so dual-role users still see
+    # unpaid OPD orders when collecting payment at the front desk.
+    skip_payment_gate = (
+        reception_view
+        and bool(_RECEPTION_LAB_BOOK_ROLES & set(current_user.role_names))
+    )
+    if current_user.has_role('lab_technician') and not skip_payment_gate:
         query = query.filter(
             (PatientLabOrder.payment_status == 'paid')
             | (PatientLabOrder.admission_id.isnot(None))

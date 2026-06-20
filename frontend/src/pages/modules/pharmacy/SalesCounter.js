@@ -7,9 +7,11 @@ import { Input } from '../../../components/ui/input';
 import { Label } from '../../../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../../components/ui/select';
 import { useToast } from '../../../hooks/use-toast';
-import { Search, Trash2, ShoppingCart, ArrowLeft, Receipt, Printer } from 'lucide-react';
+import { Search, Trash2, ShoppingCart, ArrowLeft, Receipt, Printer, Plus } from 'lucide-react';
 import { errMsg } from '../PharmacyModule';
 import PdfPreviewDialog from '../../../components/PdfPreviewDialog';
+import PatientSearchPicker from '../../../components/PatientSearchPicker';
+import QuickMedicineDialog from '../../../components/pharmacy/QuickMedicineDialog';
 
 export default function SalesCounter() {
   const { toast } = useToast();
@@ -22,10 +24,13 @@ export default function SalesCounter() {
   const [items, setItems] = useState([]);   // each: { medicine, quantity, rate, rate_tier, discount_pct, batch_id }
   const [lookupQ, setLookupQ] = useState('');
   const [lookupResults, setLookupResults] = useState([]);
-  const [, setSearching] = useState(false);
+  const [searching, setSearching] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [lastSale, setLastSale] = useState(null);
   const [previewSaleId, setPreviewSaleId] = useState(null);
+  const [selectedPatient, setSelectedPatient] = useState(null);
+  const [medicineDialogOpen, setMedicineDialogOpen] = useState(false);
+  const [medicinePrefill, setMedicinePrefill] = useState({});
 
   const lookup = useCallback(async (q, isBarcode = false) => {
     if (!q || q.length < 2) { setLookupResults([]); return; }
@@ -39,6 +44,42 @@ export default function SalesCounter() {
   }, []);
 
   const onLookupChange = (v) => { setLookupQ(v); lookup(v); };
+
+  const openMedicineCreate = () => {
+    setMedicinePrefill({ name: lookupQ.trim(), medicine_code: lookupQ.trim() });
+    setMedicineDialogOpen(true);
+  };
+
+  const handleMedicineCreated = async (med) => {
+    try {
+      const r = await axios.get('/api/pharmacy/medicines/lookup', { params: { q: med.name } });
+      const match = (r.data || []).find((m) => m.id === med.id) || med;
+      addLine(match);
+    } catch {
+      addLine(med);
+    }
+    setLookupQ('');
+    setLookupResults([]);
+  };
+
+  const handlePatientChange = (patient) => {
+    setSelectedPatient(patient);
+    if (!patient) {
+      setCustomer({
+        patient_phone: '', patient_ip_id: '', patient_name: '', patient_address: '',
+        doctor_number: '', doctor_name: '', payment_type: customer.payment_type,
+      });
+      return;
+    }
+    const name = [patient.first_name, patient.last_name].filter(Boolean).join(' ').trim();
+    setCustomer((s) => ({
+      ...s,
+      patient_phone: patient.primary_phone || '',
+      patient_ip_id: patient.patient_id || '',
+      patient_name: name,
+      patient_address: patient.address || patient.village || '',
+    }));
+  };
 
   const addLine = (med) => {
     setItems(s => [...s, {
@@ -90,6 +131,7 @@ export default function SalesCounter() {
       toast({ title: `Sale ${r.data.sale_number} saved (₹${r.data.grand_total})` });
       setLastSale(r.data);
       setItems([]);
+      setSelectedPatient(null);
       setCustomer({ patient_phone: '', patient_ip_id: '', patient_name: '', patient_address: '', doctor_number: '', doctor_name: '', payment_type: 'cash' });
     } catch (e) {
       toast({ variant: 'destructive', title: 'Sale failed', description: errMsg(e) });
@@ -117,22 +159,30 @@ export default function SalesCounter() {
 
       <Card>
         <CardHeader className="pb-3"><CardTitle className="text-base">Patient & Doctor</CardTitle></CardHeader>
-        <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <div><Label className="text-xs">Phone</Label><Input value={customer.patient_phone} onChange={e => setC('patient_phone', e.target.value)} /></div>
-          <div><Label className="text-xs">IP-ID</Label><Input value={customer.patient_ip_id} onChange={e => setC('patient_ip_id', e.target.value)} /></div>
-          <div><Label className="text-xs">Patient Name</Label><Input value={customer.patient_name} onChange={e => setC('patient_name', e.target.value)} /></div>
-          <div className="col-span-2"><Label className="text-xs">Address</Label><Input value={customer.patient_address} onChange={e => setC('patient_address', e.target.value)} /></div>
-          <div><Label className="text-xs">Doctor #</Label><Input value={customer.doctor_number} onChange={e => setC('doctor_number', e.target.value)} /></div>
-          <div><Label className="text-xs">Doctor Name</Label><Input value={customer.doctor_name} onChange={e => setC('doctor_name', e.target.value)} /></div>
-          <div>
-            <Label className="text-xs">Payment</Label>
-            <Select value={customer.payment_type} onValueChange={v => setC('payment_type', v)}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="cash">Cash</SelectItem>
-                <SelectItem value="credit">Credit</SelectItem>
-              </SelectContent>
-            </Select>
+        <CardContent className="space-y-3">
+          <PatientSearchPicker
+            value={selectedPatient}
+            onChange={handlePatientChange}
+            label="Patient"
+            compact
+          />
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div><Label className="text-xs">Phone</Label><Input value={customer.patient_phone} onChange={e => setC('patient_phone', e.target.value)} /></div>
+            <div><Label className="text-xs">IP-ID</Label><Input value={customer.patient_ip_id} onChange={e => setC('patient_ip_id', e.target.value)} /></div>
+            <div><Label className="text-xs">Patient Name</Label><Input value={customer.patient_name} onChange={e => setC('patient_name', e.target.value)} /></div>
+            <div className="col-span-2"><Label className="text-xs">Address</Label><Input value={customer.patient_address} onChange={e => setC('patient_address', e.target.value)} /></div>
+            <div><Label className="text-xs">Doctor #</Label><Input value={customer.doctor_number} onChange={e => setC('doctor_number', e.target.value)} /></div>
+            <div><Label className="text-xs">Doctor Name</Label><Input value={customer.doctor_name} onChange={e => setC('doctor_name', e.target.value)} /></div>
+            <div>
+              <Label className="text-xs">Payment</Label>
+              <Select value={customer.payment_type} onValueChange={v => setC('payment_type', v)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="cash">Cash</SelectItem>
+                  <SelectItem value="credit">Credit</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -157,6 +207,19 @@ export default function SalesCounter() {
                       <div className="text-xs text-gray-500">{m.medicine_code} • Rate A ₹{m.rate_a || m.unit_price} / Rate B ₹{m.rate_b || '—'}</div>
                     </div>
                   ))}
+                  <div className="px-3 py-2 border-t bg-gray-50">
+                    <Button type="button" size="sm" variant="ghost" className="w-full text-blue-700" onClick={openMedicineCreate}>
+                      <Plus className="h-4 w-4 mr-1.5" /> Add new medicine
+                    </Button>
+                  </div>
+                </div>
+              )}
+              {lookupQ.length >= 2 && !searching && lookupResults.length === 0 && (
+                <div className="absolute z-10 left-0 right-0 mt-1 border bg-white rounded shadow-lg p-3 text-center space-y-2">
+                  <p className="text-sm text-gray-500">No medicines found for &ldquo;{lookupQ.trim()}&rdquo;</p>
+                  <Button type="button" size="sm" variant="outline" onClick={openMedicineCreate}>
+                    <Plus className="h-4 w-4 mr-1.5" /> Add new medicine
+                  </Button>
                 </div>
               )}
             </div>
@@ -223,7 +286,7 @@ export default function SalesCounter() {
       </Card>
 
       <div className="flex justify-end gap-2">
-        <Button variant="outline" onClick={() => { setItems([]); setLastSale(null); }}>Reset</Button>
+        <Button variant="outline" onClick={() => { setItems([]); setLastSale(null); setSelectedPatient(null); setCustomer({ patient_phone: '', patient_ip_id: '', patient_name: '', patient_address: '', doctor_number: '', doctor_name: '', payment_type: 'cash' }); }}>Reset</Button>
         <Button onClick={submitSale} disabled={submitting || items.length === 0}>
           <Receipt className="h-4 w-4 mr-2" /> Save Sale
         </Button>
@@ -234,6 +297,13 @@ export default function SalesCounter() {
         onClose={() => setPreviewSaleId(null)}
         title="Sale Invoice Preview"
         path={previewSaleId ? `/api/pharmacy/sales/${previewSaleId}/invoice/pdf` : null}
+      />
+
+      <QuickMedicineDialog
+        open={medicineDialogOpen}
+        onOpenChange={setMedicineDialogOpen}
+        prefill={medicinePrefill}
+        onCreated={handleMedicineCreated}
       />
     </div>
   );

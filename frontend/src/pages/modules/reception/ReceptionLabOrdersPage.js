@@ -64,6 +64,7 @@ const ReceptionLabOrdersPage = () => {
         status: 'completed',
         date_from: dateFrom,
         date_to: dateTo,
+        reception_view: 'true',
       });
       const res = await fetch(`/api/lab/orders?${params}`, {
         headers: { Authorization: `Bearer ${token}` },

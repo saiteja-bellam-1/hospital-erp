@@ -390,7 +390,7 @@ const ReceptionAppointmentsPage = () => {
       const token = localStorage.getItem('token');
       const aptFilter = appointmentId ? `&appointment_id=${appointmentId}` : '';
       // Fetch pending payment orders for this appointment
-      const res = await fetch(`/api/lab/orders?patient_id=${patientId}${aptFilter}`, {
+      const res = await fetch(`/api/lab/orders?patient_id=${patientId}${aptFilter}&reception_view=true`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (res.ok) {

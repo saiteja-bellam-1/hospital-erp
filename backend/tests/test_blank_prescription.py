@@ -163,7 +163,57 @@ def test_issue_blank_prescription_requires_doctor(client, auth_headers, db_sessi
     assert response.status_code == 400
 
 
+def test_doctor_put_fills_blank_prescription_and_download_shows_medicines(
+    client, auth_headers, db_session, seed_data
+):
+    """PUT on a reception-issued blank Rx must produce a filled PDF, not blank layout."""
+    patient = db_session.query(Patient).filter(Patient.id == seed_data["patient_id"]).first()
+    appointment = _create_appointment(db_session, seed_data)
+
+    blank = client.post(
+        "/api/prescriptions-simple/blank",
+        json={
+            "patient_id": patient.patient_id,
+            "doctor_id": seed_data["doctor_user_id"],
+            "appointment_id": appointment.id,
+        },
+        headers=auth_headers,
+    )
+    assert blank.status_code == 200
+    blank_rx_id = blank.headers["x-prescription-id"]
+
+    filled = client.put(
+        f"/api/prescriptions-simple/{blank_rx_id}",
+        json={
+            "medicines": [
+                {
+                    "name": "Paracetamol 500mg",
+                    "dosage": "1 tab twice daily",
+                    "duration": "3 days",
+                }
+            ],
+            "diagnosis": "Fever",
+            "notes": "Rest and fluids",
+        },
+        headers=auth_headers,
+    )
+    assert filled.status_code == 200
+    data = filled.json()
+    assert data["status"] == "active"
+    assert len(data["medicines"]) == 1
+
+    download = client.get(
+        f"/api/prescriptions-simple/{blank_rx_id}/download",
+        headers=auth_headers,
+    )
+    assert download.status_code == 200
+    text = _extract_pdf_text(download.content)
+    assert "Paracetamol 500mg" in text
+    assert "Fever" in text
+
+
 def test_download_blank_prescription_by_id(client, auth_headers, db_session, seed_data):
+    """Blank forms must use the dedicated blank download API, not /{id}/download."""
     patient = db_session.query(Patient).filter(Patient.id == seed_data["patient_id"]).first()
     appointment = _create_appointment(db_session, seed_data)
     issue = client.post(
@@ -181,6 +231,17 @@ def test_download_blank_prescription_by_id(client, auth_headers, db_session, see
         f"/api/prescriptions-simple/{rx_id}/download",
         headers=auth_headers,
     )
-    assert download.status_code == 200
-    assert download.headers["content-type"] == "application/pdf"
-    assert download.content[:4] == b"%PDF"
+    assert download.status_code == 409
+
+    blank_download = client.get(
+        "/api/prescriptions-simple/blank/download",
+        params={
+            "patient_id": patient.patient_id,
+            "doctor_id": seed_data["doctor_user_id"],
+            "appointment_id": appointment.id,
+        },
+        headers=auth_headers,
+    )
+    assert blank_download.status_code == 200
+    assert blank_download.headers["content-type"] == "application/pdf"
+    assert blank_download.content[:4] == b"%PDF"

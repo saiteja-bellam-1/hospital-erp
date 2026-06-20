@@ -712,7 +712,9 @@ async def update_prescription(
             for medicine in prescription_data.medicines
         ]
         prescription.medicines = medicines_json
-        
+        if medicines_json and prescription.status == "blank":
+            prescription.status = "active"
+
     if prescription_data.diagnosis is not None:
         prescription.diagnosis = prescription_data.diagnosis
         
@@ -733,7 +735,10 @@ async def download_prescription_pdf(
     current_user: User = Depends(require_permission(Modules.OUTPATIENT, "read")),
     db: Session = Depends(get_db)
 ):
-    """Download prescription as PDF with vitals, findings, medicines, tests, follow-up"""
+    """Download a doctor-filled prescription PDF (vitals, findings, medicines, tests).
+
+    For blank/empty forms use POST /blank or GET /blank/download instead.
+    """
     import json as json_lib
     from app.models.ehr import Consultation
     from app.models.lab import PatientLabOrder, LabTest
@@ -750,7 +755,11 @@ async def download_prescription_pdf(
         )
 
     medicines = prescription.medicines or []
-    is_blank_rx = prescription.status == "blank" or len(medicines) == 0
+    if prescription.status == "blank" and len(medicines) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Prescription is still blank; use /api/prescriptions-simple/blank/download",
+        )
 
     # Get patient and doctor info
     patient = db.query(Patient).filter(Patient.patient_id == prescription.patient_id).first()
@@ -765,16 +774,6 @@ async def download_prescription_pdf(
         apt_id = _parse_blank_appointment_id(prescription.notes)
         if apt_id:
             linked_appointment = db.query(Appointment).filter(Appointment.id == apt_id).first()
-
-    if is_blank_rx and patient and doctor:
-        return _blank_prescription_pdf_response(
-            prescription,
-            patient,
-            doctor,
-            appointment=linked_appointment,
-            db=db,
-            hospital_id=current_user.hospital_id,
-        )
 
     # --- Fetch consultation findings first (needed to check its vitals too) ---
     consultation_data = None
@@ -883,7 +882,11 @@ async def download_prescription_pdf(
         if latest_apt and latest_apt.reason:
             appointment_reason = latest_apt.reason
 
-    # Format prescription data for PDF
+    # Format prescription data for PDF (filled layout — never blank_mode)
+    display_notes = prescription.notes
+    if display_notes and display_notes.startswith(BLANK_APT_NOTES_PREFIX):
+        display_notes = None
+
     prescription_pdf_data = {
         "prescription_number": prescription.prescription_id,
         "prescription_date": prescription.prescription_date.isoformat(),
@@ -902,7 +905,7 @@ async def download_prescription_pdf(
         "doctor_registration_number": doctor.license_number if doctor and hasattr(doctor, 'license_number') else '',
         "appointment_reason": appointment_reason,
         "status": prescription.status,
-        "notes": prescription.notes,
+        "notes": display_notes,
         "diagnosis": prescription.diagnosis,
         "vitals": vitals_data,
         "consultation": consultation_data,

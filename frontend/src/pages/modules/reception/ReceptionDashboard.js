@@ -148,7 +148,7 @@ const ReceptionDashboard = () => {
 
       // Fetch today's lab orders
       try {
-        const labResponse = await fetch(`/api/lab/orders?date_from=${today}&date_to=${today}`, {
+        const labResponse = await fetch(`/api/lab/orders?date_from=${today}&date_to=${today}&reception_view=true`, {
           headers: { 'Authorization': `Bearer ${token}` }
         });
         if (labResponse.ok) {
@@ -367,6 +367,111 @@ const ReceptionDashboard = () => {
     };
     return colors[status] || 'bg-gray-100 text-gray-800';
   };
+
+  const groupLabOrders = (orders) => {
+    const groups = [];
+    const pkgMap = {};
+    for (const order of orders) {
+      if (order.package_booking_id) {
+        if (!pkgMap[order.package_booking_id]) {
+          pkgMap[order.package_booking_id] = { name: order.package_name || 'Package', orders: [] };
+          groups.push({ type: 'package', key: order.package_booking_id, data: pkgMap[order.package_booking_id] });
+        }
+        pkgMap[order.package_booking_id].orders.push(order);
+      } else {
+        groups.push({ type: 'single', key: order.id, data: order });
+      }
+    }
+    return groups;
+  };
+
+  const renderLabOrderGroups = (orders) => groupLabOrders(orders).map((g) => {
+    if (g.type === 'package') {
+      const pkg = g.data;
+      const first = pkg.orders[0];
+      return (
+        <div key={g.key} className="border-2 border-indigo-200 bg-indigo-50/30 rounded-lg p-3">
+          <div className="flex items-center gap-2 mb-2 pb-2 border-b border-indigo-200">
+            <Package className="h-4 w-4 text-indigo-600" />
+            <span className="font-semibold text-indigo-700 text-sm">{pkg.name}</span>
+            <Badge className="bg-indigo-100 text-indigo-700 text-xs">{pkg.orders.length} tests</Badge>
+            <span className="text-xs text-gray-500 ml-auto">{first.patient_name} • {first.doctor_name}</span>
+          </div>
+          <div className="space-y-1.5">
+            {pkg.orders.map((order) => (
+              <div key={order.id} className="flex items-center justify-between bg-white rounded p-2 border border-indigo-100">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium truncate">{order.test_name}</span>
+                    <Badge className={`text-xs ${getLabStatusColor(order.status)}`}>{order.status}</Badge>
+                    <Badge className={`text-xs ${order.payment_status === 'paid' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+                      {order.payment_status === 'paid' ? 'Paid' : 'Unpaid'}
+                    </Badge>
+                  </div>
+                  <p className="text-xs text-gray-400">#{order.order_number}</p>
+                </div>
+                <div className="flex items-center gap-1 ml-2">
+                  {order.has_report && (
+                    <Button size="sm" variant="outline" className="h-6 px-2 text-xs"
+                      onClick={() => downloadLabReport(order.report_id, order.order_number)}>
+                      <Download className="h-3 w-3 mr-1" />Download
+                    </Button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="mt-2 pt-2 border-t border-indigo-200 flex gap-2 flex-wrap">
+            {pkg.orders.some((o) => o.payment_status !== 'paid') && (
+              <Button size="sm" className="h-7 px-3 text-xs"
+                onClick={() => openLabPaymentDialog(first.patient_id)}>
+                Collect Payment
+              </Button>
+            )}
+            {pkg.orders.some((o) => o.has_report) && (
+              <Button size="sm" variant="outline" className="h-7 px-2 text-xs border-indigo-300 text-indigo-700"
+                onClick={() => downloadLabReport(null, pkg.name, g.key)}>
+                <Download className="h-3 w-3 mr-1" />All Reports
+              </Button>
+            )}
+          </div>
+        </div>
+      );
+    }
+    const order = g.data;
+    return (
+      <div key={order.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center space-x-2">
+            <p className="font-medium text-gray-900 truncate">{order.patient_name}</p>
+            <Badge className={`text-xs ${getLabStatusColor(order.status)}`}>{order.status}</Badge>
+            <Badge className={`text-xs ${order.payment_status === 'paid' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+              {order.payment_status === 'paid' ? 'Paid' : 'Unpaid'}
+            </Badge>
+          </div>
+          <p className="text-sm text-gray-600 truncate">{order.test_name} — ₹{(order.amount || 0).toFixed(0)}</p>
+          <p className="text-xs text-gray-400">#{order.order_number} • {order.doctor_name}</p>
+        </div>
+        <div className="flex items-center gap-1 ml-2">
+          {order.payment_status !== 'paid' && (
+            <Button size="sm" className="h-7 px-2 text-xs"
+              onClick={() => openLabPaymentDialog(order.patient_id)}>
+              Collect Payment
+            </Button>
+          )}
+          {order.has_report && (
+            <Button size="sm" variant="outline" className="h-7 px-2 text-xs"
+              onClick={() => downloadLabReport(order.report_id, order.order_number)}>
+              <Download className="h-3 w-3 mr-1" />Download
+            </Button>
+          )}
+        </div>
+      </div>
+    );
+  });
+
+  const unpaidLabOrders = labOrders.filter((o) => o.payment_status !== 'paid' && o.status !== 'cancelled');
+  const paidLabOrders = labOrders.filter((o) => o.payment_status === 'paid');
 
   const getStatusBadge = (status) => {
     const colors = {
@@ -615,6 +720,12 @@ const ReceptionDashboard = () => {
                 <TestTube className="h-5 w-5" />
                 <span>Today's Lab Orders</span>
                 <Badge variant="outline" className="ml-2">{labOrders.length}</Badge>
+                {unpaidLabOrders.length > 0 && (
+                  <Badge className="bg-red-100 text-red-800 text-xs">{unpaidLabOrders.length} unpaid</Badge>
+                )}
+                {paidLabOrders.length > 0 && (
+                  <Badge className="bg-green-100 text-green-800 text-xs">{paidLabOrders.length} paid</Badge>
+                )}
               </CardTitle>
               <div className="flex gap-2">
                 <Link to="/dashboard/reception/packages">
@@ -637,106 +748,29 @@ const ReceptionDashboard = () => {
                 <p className="text-gray-500 text-sm">No lab orders for today</p>
               </div>
             ) : (
-              <div className="space-y-3 max-h-[400px] overflow-y-auto">
-                {(() => {
-                  const groups = [];
-                  const pkgMap = {};
-                  for (const order of labOrders) {
-                    if (order.package_booking_id) {
-                      if (!pkgMap[order.package_booking_id]) {
-                        pkgMap[order.package_booking_id] = { name: order.package_name || 'Package', orders: [] };
-                        groups.push({ type: 'package', key: order.package_booking_id, data: pkgMap[order.package_booking_id] });
-                      }
-                      pkgMap[order.package_booking_id].orders.push(order);
-                    } else {
-                      groups.push({ type: 'single', key: order.id, data: order });
-                    }
-                  }
-                  return groups.map(g => {
-                    if (g.type === 'package') {
-                      const pkg = g.data;
-                      const first = pkg.orders[0];
-                      return (
-                        <div key={g.key} className="border-2 border-indigo-200 bg-indigo-50/30 rounded-lg p-3">
-                          <div className="flex items-center gap-2 mb-2 pb-2 border-b border-indigo-200">
-                            <Package className="h-4 w-4 text-indigo-600" />
-                            <span className="font-semibold text-indigo-700 text-sm">{pkg.name}</span>
-                            <Badge className="bg-indigo-100 text-indigo-700 text-xs">{pkg.orders.length} tests</Badge>
-                            <span className="text-xs text-gray-500 ml-auto">{first.patient_name} • {first.doctor_name}</span>
-                          </div>
-                          <div className="space-y-1.5">
-                            {pkg.orders.map(order => (
-                              <div key={order.id} className="flex items-center justify-between bg-white rounded p-2 border border-indigo-100">
-                                <div className="flex-1 min-w-0">
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-sm font-medium truncate">{order.test_name}</span>
-                                    <Badge className={`text-xs ${getLabStatusColor(order.status)}`}>{order.status}</Badge>
-                                    <Badge className={`text-xs ${order.payment_status === 'paid' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
-                                      {order.payment_status === 'paid' ? 'Paid' : 'Unpaid'}
-                                    </Badge>
-                                  </div>
-                                  <p className="text-xs text-gray-400">#{order.order_number}</p>
-                                </div>
-                                <div className="flex items-center gap-1 ml-2">
-                                  {order.has_report && (
-                                    <Button size="sm" variant="outline" className="h-6 px-2 text-xs"
-                                      onClick={() => downloadLabReport(order.report_id, order.order_number)}>
-                                      <Download className="h-3 w-3 mr-1" />Download
-                                    </Button>
-                                  )}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                          <div className="mt-2 pt-2 border-t border-indigo-200 flex gap-2 flex-wrap">
-                            {pkg.orders.some(o => o.payment_status !== 'paid') && (
-                              <Button size="sm" className="h-7 px-3 text-xs"
-                                onClick={() => openLabPaymentDialog(first.patient_id)}>
-                                Collect Payment
-                              </Button>
-                            )}
-                            {pkg.orders.some(o => o.has_report) && (
-                              <Button size="sm" variant="outline" className="h-7 px-2 text-xs border-indigo-300 text-indigo-700"
-                                onClick={() => downloadLabReport(null, pkg.name, g.key)}>
-                                <Download className="h-3 w-3 mr-1" />All Reports
-                              </Button>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    }
-                    const order = g.data;
-                    return (
-                      <div key={order.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center space-x-2">
-                            <p className="font-medium text-gray-900 truncate">{order.patient_name}</p>
-                            <Badge className={`text-xs ${getLabStatusColor(order.status)}`}>{order.status}</Badge>
-                            <Badge className={`text-xs ${order.payment_status === 'paid' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
-                              {order.payment_status === 'paid' ? 'Paid' : 'Unpaid'}
-                            </Badge>
-                          </div>
-                          <p className="text-sm text-gray-600 truncate">{order.test_name} — ₹{(order.amount || 0).toFixed(0)}</p>
-                          <p className="text-xs text-gray-400">#{order.order_number} • {order.doctor_name}</p>
-                        </div>
-                        <div className="flex items-center gap-1 ml-2">
-                          {order.payment_status !== 'paid' && (
-                            <Button size="sm" className="h-7 px-2 text-xs"
-                              onClick={() => openLabPaymentDialog(order.patient_id)}>
-                              Collect Payment
-                            </Button>
-                          )}
-                          {order.has_report && (
-                            <Button size="sm" variant="outline" className="h-7 px-2 text-xs"
-                              onClick={() => downloadLabReport(order.report_id, order.order_number)}>
-                              <Download className="h-3 w-3 mr-1" />Download
-                            </Button>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  });
-                })()}
+              <div className="space-y-4 max-h-[400px] overflow-y-auto">
+                {unpaidLabOrders.length > 0 && (
+                  <div>
+                    <div className="flex items-center gap-2 mb-2 sticky top-0 bg-white py-1 z-10">
+                      <AlertCircle className="h-4 w-4 text-red-600" />
+                      <h4 className="text-sm font-semibold text-red-700">
+                        Awaiting Payment ({unpaidLabOrders.length})
+                      </h4>
+                    </div>
+                    <div className="space-y-3">{renderLabOrderGroups(unpaidLabOrders)}</div>
+                  </div>
+                )}
+                {paidLabOrders.length > 0 && (
+                  <div>
+                    <div className="flex items-center gap-2 mb-2 sticky top-0 bg-white py-1 z-10">
+                      <CheckCircle className="h-4 w-4 text-green-600" />
+                      <h4 className="text-sm font-semibold text-green-700">
+                        Paid ({paidLabOrders.length})
+                      </h4>
+                    </div>
+                    <div className="space-y-3">{renderLabOrderGroups(paidLabOrders)}</div>
+                  </div>
+                )}
               </div>
             )}
           </CardContent>
