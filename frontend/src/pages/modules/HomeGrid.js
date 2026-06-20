@@ -13,7 +13,13 @@ const HomeGrid = ({ enabledModules, pwaInstallPrompt, onOpenSupport }) => {
   const navigate = useNavigate();
   const { user, logout, licenseStatus } = useAuth();
 
-  const roles = user?.roles || (user?.role ? [user.role] : []);
+  const roles = (() => {
+    const r = user?.roles;
+    if (Array.isArray(r) && r.length > 0) {
+      return r.map((x) => (typeof x === 'string' ? x : x?.name)).filter(Boolean);
+    }
+    return user?.role ? [user.role] : [];
+  })();
   const { sections } = useNavigationSections({ roles, enabledModules: enabledModules || {} });
 
   // Drop the duplicated "Dashboard" home tile — it appears in Tools instead.

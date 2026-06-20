@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, Navigate } from 'react-router-dom';
+import { useAuth } from '../../contexts/AuthContext';
+import { normalizeUserRoles, canAccessLabAdminDashboard } from '../../hooks/useNavigationSections';
 import { Card, CardContent } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
@@ -15,8 +17,13 @@ import {
 import axios from 'axios';
 
 const LabTestParametersPage = () => {
+  const { user } = useAuth();
   const { testId } = useParams();
   const navigate = useNavigate();
+
+  if (!canAccessLabAdminDashboard(normalizeUserRoles(user))) {
+    return <Navigate to="/dashboard/lab-home" replace />;
+  }
 
   const [test, setTest] = useState(null);
   const [loading, setLoading] = useState(true);

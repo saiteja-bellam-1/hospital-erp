@@ -60,8 +60,8 @@ def require_permission(module: str, action: str):
         if UserRoles.HOSPITAL_ADMIN in user_roles:
             return current_user
 
-        # Lab roles always have access to lab module
-        if module == Modules.LAB and user_roles & {UserRoles.LAB_ADMIN, UserRoles.LAB_TECHNICIAN}:
+        # Lab admin gets full lab-module decorator access; technicians use role grants.
+        if module == Modules.LAB and UserRoles.LAB_ADMIN in user_roles:
             return current_user
 
         # Check if module is enabled in system settings

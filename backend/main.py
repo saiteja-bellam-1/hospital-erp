@@ -415,6 +415,7 @@ async def health_check():
 @app.get("/profile")
 async def get_user_profile(current_user: User = Depends(get_current_user)):
     return {
+        "id": current_user.id,
         "user_id": current_user.user_id,
         "username": current_user.username,
         "email": current_user.email,
@@ -422,7 +423,8 @@ async def get_user_profile(current_user: User = Depends(get_current_user)):
         "role": current_user.role.name,
         "roles": current_user.role_names,
         "hospital_id": current_user.hospital_id,
-        "is_active": current_user.is_active
+        "is_active": current_user.is_active,
+        "must_change_password": bool(getattr(current_user, "must_change_password", False)),
     }
 
 # Include routers

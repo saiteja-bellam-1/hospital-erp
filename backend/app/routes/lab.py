@@ -300,7 +300,7 @@ class PackageBooking(BaseModel):
 # ============================================================
 
 def _require_lab_admin(current_user: User):
-    if not any(r in current_user.role_names for r in ['super_admin', 'hospital_admin', 'lab_admin', 'lab_technician']):
+    if not any(r in current_user.role_names for r in ['super_admin', 'hospital_admin', 'lab_admin']):
         raise HTTPException(status_code=403, detail="Lab admin access required")
 
 def _require_lab_access(current_user: User):
@@ -768,7 +768,7 @@ async def list_tests(
     user_roles = set(current_user.role_names)
     can_manage_catalog = bool(user_roles & {
         UserRoles.SUPER_ADMIN, UserRoles.HOSPITAL_ADMIN,
-        UserRoles.LAB_ADMIN, UserRoles.LAB_TECHNICIAN,
+        UserRoles.LAB_ADMIN,
     })
     if include_inactive and not can_manage_catalog:
         include_inactive = False
@@ -1098,7 +1098,7 @@ def _can_view_lab_test_catalog(current_user: User, db: Session) -> bool:
     user_roles = set(current_user.role_names)
     if user_roles & {
         UserRoles.SUPER_ADMIN, UserRoles.HOSPITAL_ADMIN,
-        UserRoles.LAB_ADMIN, UserRoles.LAB_TECHNICIAN,
+        UserRoles.LAB_ADMIN,
     }:
         return True
     if user_roles & _RECEPTION_LAB_BOOK_ROLES:
@@ -2756,6 +2756,77 @@ async def book_package(
         raise HTTPException(status_code=500, detail=f"PDF generation error: {str(e)}")
 
 
+def _legacy_from_seed_param(param: dict) -> dict:
+    """Map legacy seed keys to LabTestParameter columns."""
+    return {
+        "reference_min_male": param.get("min_m"),
+        "reference_max_male": param.get("max_m"),
+        "reference_min_female": param.get("min_f"),
+        "reference_max_female": param.get("max_f"),
+        "reference_min_default": param.get("min_d"),
+        "reference_max_default": param.get("max_d"),
+        "reference_min_child": param.get("min_c"),
+        "reference_max_child": param.get("max_c"),
+    }
+
+
+def _legacy_from_reference_ranges(reference_ranges: Optional[list]) -> dict:
+    legacy = {
+        "reference_min_male": None,
+        "reference_max_male": None,
+        "reference_min_female": None,
+        "reference_max_female": None,
+        "reference_min_default": None,
+        "reference_max_default": None,
+        "reference_min_child": None,
+        "reference_max_child": None,
+    }
+    if not reference_ranges:
+        return legacy
+
+    for row in reference_ranges:
+        gender = row.get("gender") or "common"
+        if gender == "male":
+            legacy["reference_min_male"] = row.get("min")
+            legacy["reference_max_male"] = row.get("max")
+        elif gender == "female":
+            legacy["reference_min_female"] = row.get("min")
+            legacy["reference_max_female"] = row.get("max")
+        elif gender == "child":
+            legacy["reference_min_child"] = row.get("min")
+            legacy["reference_max_child"] = row.get("max")
+        else:
+            legacy["reference_min_default"] = row.get("min")
+            legacy["reference_max_default"] = row.get("max")
+    return legacy
+
+
+def _create_seed_parameter(test_id: int, param: dict, display_order: int) -> LabTestParameter:
+    reference_ranges = param.get("reference_ranges")
+    legacy = (
+        _legacy_from_reference_ranges(reference_ranges)
+        if reference_ranges is not None
+        else _legacy_from_seed_param(param)
+    )
+    return LabTestParameter(
+        test_id=test_id,
+        parameter_name=param["name"],
+        unit=param.get("unit"),
+        method=param.get("method"),
+        section=param.get("section"),
+        field_type=param.get("field_type", "numeric"),
+        reference_ranges=reference_ranges,
+        possible_values=param.get("possible_values"),
+        abnormal_values=param.get("abnormal_values"),
+        normal_value=param.get("normal_value"),
+        notes=param.get("notes"),
+        critical_low=param.get("critical_low"),
+        critical_high=param.get("critical_high"),
+        display_order=display_order,
+        **legacy,
+    )
+
+
 @router.post("/seed-defaults")
 async def seed_default_tests(
     current_user: User = Depends(require_permission(Modules.LAB, "write")),
@@ -2784,6 +2855,7 @@ async def seed_default_tests(
                 description=test_info.get("description", ""),
                 category_id=cat.id, cost=test_info.get("cost", 0),
                 sample_type=test_info.get("sample_type", "Blood"),
+                method=test_info.get("method"),
                 preparation_instructions=test_info.get("instructions", ""),
                 hospital_id=hospital_id
             )
@@ -2791,21 +2863,7 @@ async def seed_default_tests(
             db.flush()
 
             for i, param in enumerate(test_info.get("parameters", [])):
-                p = LabTestParameter(
-                    test_id=test.id,
-                    parameter_name=param["name"],
-                    unit=param.get("unit"),
-                    field_type=param.get("field_type", "numeric"),
-                    reference_min_male=param.get("min_m"),
-                    reference_max_male=param.get("max_m"),
-                    reference_min_female=param.get("min_f"),
-                    reference_max_female=param.get("max_f"),
-                    reference_min_default=param.get("min_d"),
-                    reference_max_default=param.get("max_d"),
-                    possible_values=param.get("possible_values"),
-                    display_order=i
-                )
-                db.add(p)
+                db.add(_create_seed_parameter(test.id, param, i))
             created_tests += 1
 
     db.commit()
@@ -2814,77 +2872,53 @@ async def seed_default_tests(
 
 def _get_seed_data():
     return {
-        "Hematology": [
-            {
-                "code": "CBC", "name": "Complete Blood Count (CBC)",
-                "description": "Measures different components of blood",
-                "cost": 350, "sample_type": "Blood (EDTA)", "instructions": "No special preparation",
-                "parameters": [
-                    {"name": "Hemoglobin", "unit": "g/dL", "min_m": 13.0, "max_m": 17.0, "min_f": 12.0, "max_f": 16.0},
-                    {"name": "RBC Count", "unit": "million/µL", "min_m": 4.5, "max_m": 5.5, "min_f": 4.0, "max_f": 5.0},
-                    {"name": "WBC Count", "unit": "cells/µL", "min_d": 4000, "max_d": 11000},
-                    {"name": "Platelet Count", "unit": "lakh/µL", "min_d": 1.5, "max_d": 4.0},
-                    {"name": "PCV / Hematocrit", "unit": "%", "min_m": 40, "max_m": 50, "min_f": 36, "max_f": 44},
-                    {"name": "MCV", "unit": "fL", "min_d": 80, "max_d": 100},
-                    {"name": "MCH", "unit": "pg", "min_d": 27, "max_d": 33},
-                    {"name": "MCHC", "unit": "g/dL", "min_d": 32, "max_d": 36},
-                    {"name": "ESR", "unit": "mm/hr", "min_m": 0, "max_m": 15, "min_f": 0, "max_f": 20},
-                ]
-            },
-        ],
         "Biochemistry": [
             {
                 "code": "LFT", "name": "Liver Function Test (LFT)",
                 "description": "Assesses liver health",
-                "cost": 600, "sample_type": "Blood (Serum)", "instructions": "Fasting 8-12 hours preferred",
+                "cost": 600,
+                "sample_type": "Blood (Serum)",
+                "instructions": "Fasting 8-12 hours preferred",
                 "parameters": [
-                    {"name": "Total Bilirubin", "unit": "mg/dL", "min_d": 0.1, "max_d": 1.2},
-                    {"name": "Direct Bilirubin", "unit": "mg/dL", "min_d": 0.0, "max_d": 0.3},
-                    {"name": "Indirect Bilirubin", "unit": "mg/dL", "min_d": 0.1, "max_d": 0.9},
-                    {"name": "SGOT (AST)", "unit": "U/L", "min_d": 5, "max_d": 40},
-                    {"name": "SGPT (ALT)", "unit": "U/L", "min_d": 7, "max_d": 56},
-                    {"name": "Alkaline Phosphatase (ALP)", "unit": "U/L", "min_d": 44, "max_d": 147},
-                    {"name": "Total Protein", "unit": "g/dL", "min_d": 6.0, "max_d": 8.3},
-                    {"name": "Albumin", "unit": "g/dL", "min_d": 3.5, "max_d": 5.5},
-                    {"name": "Globulin", "unit": "g/dL", "min_d": 2.0, "max_d": 3.5},
-                ]
-            },
-            {
-                "code": "RFT", "name": "Renal Function Test (RFT)",
-                "description": "Evaluates kidney function",
-                "cost": 500, "sample_type": "Blood (Serum)", "instructions": "Fasting 8-12 hours preferred",
-                "parameters": [
-                    {"name": "Blood Urea", "unit": "mg/dL", "min_d": 15, "max_d": 40},
-                    {"name": "Serum Creatinine", "unit": "mg/dL", "min_m": 0.7, "max_m": 1.3, "min_f": 0.6, "max_f": 1.1},
-                    {"name": "Uric Acid", "unit": "mg/dL", "min_m": 3.5, "max_m": 7.2, "min_f": 2.6, "max_f": 6.0},
-                    {"name": "BUN", "unit": "mg/dL", "min_d": 7, "max_d": 20},
-                    {"name": "Sodium", "unit": "mEq/L", "min_d": 136, "max_d": 145},
-                    {"name": "Potassium", "unit": "mEq/L", "min_d": 3.5, "max_d": 5.1},
-                    {"name": "Chloride", "unit": "mEq/L", "min_d": 98, "max_d": 106},
+                    {"name": "Total Bilirubin", "unit": "mg/dL", "reference_ranges": [{"min": 0.1, "max": 1.2}]},
+                    {"name": "Direct Bilirubin", "unit": "mg/dL", "reference_ranges": [{"min": 0.0, "max": 0.3}]},
+                    {"name": "Indirect Bilirubin", "unit": "mg/dL", "reference_ranges": [{"min": 0.1, "max": 0.9}]},
+                    {"name": "SGOT (AST)", "unit": "U/L", "reference_ranges": [{"min": 5.0, "max": 40.0}]},
+                    {"name": "SGPT (ALT)", "unit": "U/L", "reference_ranges": [{"min": 7.0, "max": 56.0}]},
+                    {"name": "Alkaline Phosphatase (ALP)", "unit": "U/L", "reference_ranges": [{"min": 44.0, "max": 147.0}]},
+                    {"name": "Total Protein", "unit": "g/dL", "reference_ranges": [{"min": 6.0, "max": 8.3}]},
+                    {"name": "Albumin", "unit": "g/dL", "reference_ranges": [{"min": 3.5, "max": 5.5}]},
+                    {"name": "Globulin", "unit": "g/dL", "reference_ranges": [{"min": 2.0, "max": 3.5}]},
                 ]
             },
             {
                 "code": "LIPID", "name": "Lipid Profile",
                 "description": "Measures cholesterol and triglyceride levels",
-                "cost": 500, "sample_type": "Blood (Serum)", "instructions": "Fasting 12 hours required",
+                "cost": 500,
+                "sample_type": "Blood (Serum)",
+                "instructions": "Fasting 12 hours required",
                 "parameters": [
-                    {"name": "Total Cholesterol", "unit": "mg/dL", "min_d": 0, "max_d": 200},
-                    {"name": "Triglycerides", "unit": "mg/dL", "min_d": 0, "max_d": 150},
-                    {"name": "HDL Cholesterol", "unit": "mg/dL", "min_m": 40, "max_m": 999, "min_f": 50, "max_f": 999},
-                    {"name": "LDL Cholesterol", "unit": "mg/dL", "min_d": 0, "max_d": 100},
-                    {"name": "VLDL Cholesterol", "unit": "mg/dL", "min_d": 5, "max_d": 40},
+                    {"name": "Total Cholesterol", "unit": "mg/dL", "reference_ranges": [{"min": 0.0, "max": 200.0}]},
+                    {"name": "Triglycerides", "unit": "mg/dL", "reference_ranges": [{"min": 0.0, "max": 150.0}]},
+                    {"name": "HDL Cholesterol", "unit": "mg/dL", "reference_ranges": [{"min": 40.0, "max": 999.0, "gender": "male"}, {"min": 50.0, "max": 999.0, "gender": "female"}]},
+                    {"name": "LDL Cholesterol", "unit": "mg/dL", "reference_ranges": [{"min": 0.0, "max": 100.0}]},
+                    {"name": "VLDL Cholesterol", "unit": "mg/dL", "reference_ranges": [{"min": 5.0, "max": 40.0}]},
                 ]
             },
-        ],
-        "Thyroid": [
             {
-                "code": "THYROID", "name": "Thyroid Profile",
-                "description": "Evaluates thyroid gland function",
-                "cost": 700, "sample_type": "Blood (Serum)", "instructions": "No special preparation",
+                "code": "RFT", "name": "Renal Function Test (RFT)",
+                "description": "Evaluates kidney function",
+                "cost": 500,
+                "sample_type": "Blood (Serum)",
+                "instructions": "Fasting 8-12 hours preferred",
                 "parameters": [
-                    {"name": "T3 (Triiodothyronine)", "unit": "ng/dL", "min_d": 80, "max_d": 200},
-                    {"name": "T4 (Thyroxine)", "unit": "µg/dL", "min_d": 4.5, "max_d": 12.5},
-                    {"name": "TSH", "unit": "µIU/mL", "min_d": 0.4, "max_d": 4.0},
+                    {"name": "Blood Urea", "unit": "mg/dL", "reference_ranges": [{"min": 15.0, "max": 40.0}]},
+                    {"name": "Serum Creatinine", "unit": "mg/dL", "reference_ranges": [{"min": 0.7, "max": 1.3, "gender": "male"}, {"min": 0.6, "max": 1.1, "gender": "female"}]},
+                    {"name": "Uric Acid", "unit": "mg/dL", "reference_ranges": [{"min": 3.5, "max": 7.2, "gender": "male"}, {"min": 2.6, "max": 6.0, "gender": "female"}]},
+                    {"name": "BUN", "unit": "mg/dL", "reference_ranges": [{"min": 7.0, "max": 20.0}]},
+                    {"name": "Sodium", "unit": "mEq/L", "reference_ranges": [{"min": 136.0, "max": 145.0}]},
+                    {"name": "Potassium", "unit": "mEq/L", "reference_ranges": [{"min": 3.5, "max": 5.1}]},
+                    {"name": "Chloride", "unit": "mEq/L", "reference_ranges": [{"min": 98.0, "max": 106.0}]},
                 ]
             },
         ],
@@ -2892,33 +2926,75 @@ def _get_seed_data():
             {
                 "code": "FBS", "name": "Fasting Blood Sugar",
                 "description": "Measures blood glucose after fasting",
-                "cost": 100, "sample_type": "Blood (Fluoride)", "instructions": "Fasting 8-12 hours required",
+                "cost": 100,
+                "sample_type": "Blood (Fluoride)",
+                "instructions": "Fasting 8-12 hours required",
                 "parameters": [
-                    {"name": "Fasting Blood Glucose", "unit": "mg/dL", "min_d": 70, "max_d": 100},
-                ]
-            },
-            {
-                "code": "PPBS", "name": "Post Prandial Blood Sugar",
-                "description": "Measures blood glucose 2 hours after eating",
-                "cost": 100, "sample_type": "Blood (Fluoride)", "instructions": "2 hours after meal",
-                "parameters": [
-                    {"name": "PP Blood Glucose", "unit": "mg/dL", "min_d": 70, "max_d": 140},
-                ]
-            },
-            {
-                "code": "RBS", "name": "Random Blood Sugar",
-                "description": "Random blood glucose measurement",
-                "cost": 80, "sample_type": "Blood (Fluoride)", "instructions": "No special preparation",
-                "parameters": [
-                    {"name": "Random Blood Glucose", "unit": "mg/dL", "min_d": 70, "max_d": 140},
+                    {"name": "Fasting Blood Glucose", "unit": "mg/dL", "reference_ranges": [{"min": 70.0, "max": 100.0}]},
                 ]
             },
             {
                 "code": "HBA1C", "name": "Glycated Hemoglobin (HbA1c)",
                 "description": "Average blood sugar over 2-3 months",
-                "cost": 450, "sample_type": "Blood (EDTA)", "instructions": "No special preparation",
+                "cost": 450,
+                "sample_type": "Blood (EDTA)",
+                "instructions": "No special preparation",
                 "parameters": [
-                    {"name": "HbA1c", "unit": "%", "min_d": 4.0, "max_d": 5.6},
+                    {"name": "HbA1c", "unit": "%", "reference_ranges": [{"min": 4.0, "max": 5.6}]},
+                ]
+            },
+            {
+                "code": "PPBS", "name": "Post Prandial Blood Sugar",
+                "description": "Measures blood glucose 2 hours after eating",
+                "cost": 100,
+                "sample_type": "Blood (Fluoride)",
+                "instructions": "2 hours after meal",
+                "parameters": [
+                    {"name": "PP Blood Glucose", "unit": "mg/dL", "reference_ranges": [{"min": 70.0, "max": 140.0}]},
+                ]
+            },
+            {
+                "code": "RBS", "name": "Random Blood Sugar",
+                "description": "Random blood glucose measurement",
+                "cost": 80,
+                "sample_type": "Blood (Fluoride)",
+                "instructions": "No special preparation",
+                "parameters": [
+                    {"name": "Random Blood Glucose", "unit": "mg/dL", "reference_ranges": [{"min": 70.0, "max": 140.0}]},
+                ]
+            },
+        ],
+        "Hematology": [
+            {
+                "code": "CBC", "name": "Complete Blood Count (CBC)",
+                "description": "Measures different components of blood",
+                "cost": 350,
+                "sample_type": "Blood (EDTA)",
+                "instructions": "No special preparation",
+                "parameters": [
+                    {"name": "Hemoglobin", "unit": "g/dL", "reference_ranges": [{"min": 13.0, "max": 17.0, "gender": "male"}, {"min": 12.0, "max": 16.0, "gender": "female"}]},
+                    {"name": "RBC Count", "unit": "million/\u00b5L", "reference_ranges": [{"min": 4.5, "max": 5.5, "gender": "male"}, {"min": 4.0, "max": 5.0, "gender": "female"}]},
+                    {"name": "WBC Count", "unit": "cells/\u00b5L", "reference_ranges": [{"min": 4000.0, "max": 11000.0}]},
+                    {"name": "Platelet Count", "unit": "lakh/\u00b5L", "reference_ranges": [{"min": 1.5, "max": 4.0}]},
+                    {"name": "PCV / Hematocrit", "unit": "%", "reference_ranges": [{"min": 40.0, "max": 50.0, "gender": "male"}, {"min": 36.0, "max": 44.0, "gender": "female"}]},
+                    {"name": "MCV", "unit": "fL", "reference_ranges": [{"min": 80.0, "max": 100.0}]},
+                    {"name": "MCH", "unit": "pg", "reference_ranges": [{"min": 27.0, "max": 33.0}]},
+                    {"name": "MCHC", "unit": "g/dL", "reference_ranges": [{"min": 32.0, "max": 36.0}]},
+                    {"name": "ESR", "unit": "mm/hr", "reference_ranges": [{"min": 0.0, "max": 15.0, "gender": "male"}, {"min": 0.0, "max": 20.0, "gender": "female"}]},
+                ]
+            },
+        ],
+        "Thyroid": [
+            {
+                "code": "THYROID", "name": "Thyroid Profile",
+                "description": "Evaluates thyroid gland function",
+                "cost": 700,
+                "sample_type": "Blood (Serum)",
+                "instructions": "No special preparation",
+                "parameters": [
+                    {"name": "T3 (Triiodothyronine)", "unit": "ng/dL", "reference_ranges": [{"min": 80.0, "max": 200.0}]},
+                    {"name": "T4 (Thyroxine)", "unit": "\u00b5g/dL", "reference_ranges": [{"min": 4.5, "max": 12.5}]},
+                    {"name": "TSH", "unit": "\u00b5IU/mL", "reference_ranges": [{"min": 0.4, "max": 4.0}]},
                 ]
             },
         ],
@@ -2926,17 +3002,19 @@ def _get_seed_data():
             {
                 "code": "URINE-R", "name": "Urine Routine & Microscopy",
                 "description": "Physical, chemical and microscopic examination of urine",
-                "cost": 150, "sample_type": "Urine (Mid-stream)", "instructions": "Mid-stream clean catch sample",
+                "cost": 150,
+                "sample_type": "Urine (Mid-stream)",
+                "instructions": "Mid-stream clean catch sample",
                 "parameters": [
-                    {"name": "Color", "unit": None, "field_type": "text"},
-                    {"name": "Appearance", "unit": None, "field_type": "select", "possible_values": ["Clear", "Slightly Turbid", "Turbid"]},
-                    {"name": "pH", "unit": None, "min_d": 4.5, "max_d": 8.0},
-                    {"name": "Specific Gravity", "unit": None, "min_d": 1.005, "max_d": 1.030},
-                    {"name": "Protein", "unit": None, "field_type": "select", "possible_values": ["Nil", "Trace", "+", "++", "+++"]},
-                    {"name": "Glucose", "unit": None, "field_type": "select", "possible_values": ["Nil", "Trace", "+", "++", "+++"]},
-                    {"name": "Ketones", "unit": None, "field_type": "select", "possible_values": ["Nil", "Trace", "+", "++", "+++"]},
-                    {"name": "RBC", "unit": "/HPF", "min_d": 0, "max_d": 2},
-                    {"name": "Pus Cells (WBC)", "unit": "/HPF", "min_d": 0, "max_d": 5},
+                    {"name": "Color", "field_type": "text"},
+                    {"name": "Appearance", "field_type": "select", "possible_values": ["Clear", "Slightly Turbid", "Turbid"]},
+                    {"name": "pH", "reference_ranges": [{"min": 4.5, "max": 8.0}]},
+                    {"name": "Specific Gravity", "reference_ranges": [{"min": 1.005, "max": 1.03}]},
+                    {"name": "Protein", "field_type": "select", "possible_values": ["Nil", "Trace", "+", "++", "+++"]},
+                    {"name": "Glucose", "field_type": "select", "possible_values": ["Nil", "Trace", "+", "++", "+++"]},
+                    {"name": "Ketones", "field_type": "select", "possible_values": ["Nil", "Trace", "+", "++", "+++"]},
+                    {"name": "RBC", "unit": "/HPF", "reference_ranges": [{"min": 0.0, "max": 2.0}]},
+                    {"name": "Pus Cells (WBC)", "unit": "/HPF", "reference_ranges": [{"min": 0.0, "max": 5.0}]},
                     {"name": "Epithelial Cells", "unit": "/HPF", "field_type": "select", "possible_values": ["Few", "Moderate", "Many"]},
                 ]
             },

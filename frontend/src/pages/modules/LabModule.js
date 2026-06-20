@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Routes, Route, useNavigate } from 'react-router-dom';
+import { Routes, Route, useNavigate, Navigate } from 'react-router-dom';
+import { useAuth } from '../../contexts/AuthContext';
+import { normalizeUserRoles, canAccessLabAdminDashboard } from '../../hooks/useNavigationSections';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
@@ -1166,13 +1168,23 @@ const LabModuleMain = () => {
   );
 };
 
+const LabAdminRouteGuard = ({ children }) => {
+  const { user } = useAuth();
+  if (!canAccessLabAdminDashboard(normalizeUserRoles(user))) {
+    return <Navigate to="/dashboard/lab-home" replace />;
+  }
+  return children;
+};
+
 // Routing wrapper
 const LabModule = () => {
   return (
-    <Routes>
-      <Route path="/" element={<LabModuleMain />} />
-      <Route path="/tests/:testId/parameters" element={<LabTestParametersPage />} />
-    </Routes>
+    <LabAdminRouteGuard>
+      <Routes>
+        <Route path="/" element={<LabModuleMain />} />
+        <Route path="/tests/:testId/parameters" element={<LabTestParametersPage />} />
+      </Routes>
+    </LabAdminRouteGuard>
   );
 };
 

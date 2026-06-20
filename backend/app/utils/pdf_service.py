@@ -266,7 +266,7 @@ def _build_lab_results_table(results_list, *, page_width, cell_label, cell_value
     ]
     for sec_row in section_row_indices:
         table_style_cmds.append(('SPAN', (0, sec_row), (-1, sec_row)))
-        table_style_cmds.append(('BACKGROUND', (0, sec_row), (-1, sec_row), colors.Color(0.92, 0.93, 0.97)))
+        table_style_cmds.append(('FONTNAME', (0, sec_row), (-1, sec_row), 'Helvetica-Bold'))
         table_style_cmds.append(('TOPPADDING', (0, sec_row), (-1, sec_row), 5))
         table_style_cmds.append(('BOTTOMPADDING', (0, sec_row), (-1, sec_row), 5))
 
@@ -1893,7 +1893,7 @@ class PDFService:
             cell_value=cell_value,
             cell_abnormal=cell_abnormal,
             section_label_style=ParagraphStyle('LabSectionLabel', parent=self.styles['Normal'],
-                fontSize=9, fontName='Helvetica-Bold', textColor=colors.Color(0.2, 0.2, 0.5)),
+                fontSize=9, fontName='Helvetica-Bold', textColor=colors.black),
         )
         elements.append(results_table)
         elements.append(Spacer(1, 10))
@@ -2116,7 +2116,7 @@ class PDFService:
         footer_style = ParagraphStyle('CLabFooter', parent=self.styles['Normal'],
             fontSize=8, alignment=1, fontName='Helvetica', textColor=colors.grey)
         section_label_style = ParagraphStyle('CLabSectionLabel', parent=self.styles['Normal'],
-            fontSize=9, fontName='Helvetica-Bold', textColor=colors.Color(0.2, 0.2, 0.5))
+            fontSize=9, fontName='Helvetica-Bold', textColor=colors.black)
 
         def lv(label, value):
             return Paragraph(f"<b>{label}</b> :  {value}", cell_value)

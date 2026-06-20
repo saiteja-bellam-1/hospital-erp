@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Routes, Route, useLocation, useNavigate, Link } from 'react-router-dom';
+import { Routes, Route, useLocation, useNavigate, Link, Navigate } from 'react-router-dom';
 import {
   Menu,
   LogOut,
@@ -56,14 +56,15 @@ import BackupManagement from './modules/BackupManagement';
 import SoftwareUpdate from './modules/SoftwareUpdate';
 import LicenseBanner from '../components/LicenseBanner';
 import BackupHealthBanner from '../components/BackupHealthBanner';
-import { useNavigationSections } from '../hooks/useNavigationSections';
+import { useNavigationSections, normalizeUserRoles, canAccessLabAdminDashboard } from '../hooks/useNavigationSections';
 import HomeGrid from './modules/HomeGrid';
 
 const HomeDashboard = ({ hasRole, enabledModules }) => {
   // Priority-based: show the most relevant dashboard for the user
   if (hasRole('super_admin')) return <SuperAdminDashboard />;
   if (hasRole('hospital_admin')) return <HospitalAdminDashboard />;
-  if (hasRole('doctor') && enabledModules.outpatient) return <DoctorDashboard />;
+  // Doctors always get their dashboard (same pattern as lab staff below).
+  if (hasRole('doctor')) return <DoctorDashboard />;
   if (hasRole('lab_admin') || hasRole('lab_technician')) return <LabTechDashboard />;
   if (hasRole('receptionist') && enabledModules.outpatient) return <ReceptionDashboard />;
   if (hasRole('receptionist') && enabledModules.lab) return <LabTechDashboard />;
@@ -119,6 +120,23 @@ const Dashboard = () => {
   };
 
   useEffect(() => {
+    if (!user) return;
+    const roleList = (() => {
+      const r = user?.roles;
+      if (Array.isArray(r) && r.length > 0) {
+        return r.map((x) => (typeof x === 'string' ? x : x?.name)).filter(Boolean);
+      }
+      return user?.role ? [user.role] : [];
+    })();
+    if (roleList.some((name) => name === 'lab_admin' || name === 'lab_technician')) {
+      setEnabledModules((prev) => ({ ...prev, lab: true }));
+    }
+    if (roleList.some((name) => name === 'doctor')) {
+      setEnabledModules((prev) => ({ ...prev, outpatient: true }));
+    }
+  }, [user]);
+
+  useEffect(() => {
     const fetchEnabledModules = async () => {
       try {
         const response = await axios.get('/api/system/enabled-modules');
@@ -131,13 +149,33 @@ const Dashboard = () => {
         // gated on enabledModules.billing don't silently disappear.
         if (moduleMap.billing === undefined) moduleMap.billing = true;
         if (moduleMap.admin === undefined) moduleMap.admin = true;
+        // Lab staff must always see lab navigation even while modules are loading.
+        const r = user?.roles;
+        const roleList = Array.isArray(r) && r.length > 0
+          ? r.map((x) => (typeof x === 'string' ? x : x?.name)).filter(Boolean)
+          : (user?.role ? [user.role] : []);
+        if (roleList.some((name) => name === 'lab_admin' || name === 'lab_technician')) {
+          moduleMap.lab = true;
+        }
+        if (roleList.some((name) => name === 'doctor')) {
+          moduleMap.outpatient = true;
+        }
         setEnabledModules(moduleMap);
       } catch (error) {
         console.error('Failed to fetch enabled modules:', error);
+        const roleList = (() => {
+          const r = user?.roles;
+          if (Array.isArray(r) && r.length > 0) {
+            return r.map((x) => (typeof x === 'string' ? x : x?.name)).filter(Boolean);
+          }
+          return user?.role ? [user.role] : [];
+        })();
+        const isLabStaff = roleList.some((name) => name === 'lab_admin' || name === 'lab_technician');
+        const isDoctor = roleList.some((name) => name === 'doctor');
         setEnabledModules({
-          outpatient: false,
+          outpatient: isDoctor,
           inpatient: false,
-          lab: false,
+          lab: isLabStaff,
           pharmacy: false,
           ehr: false,
           billing: true,
@@ -172,8 +210,7 @@ const Dashboard = () => {
     setSidebarOpen(false);
   }, [location.pathname]);
 
-  // Multi-role helper
-  const roles = user.roles || [user.role];
+  const roles = normalizeUserRoles(user);
   const hasRole = (r) => roles.includes(r);
   const hasAnyRole = (...r) => r.some(x => roles.includes(x));
 
@@ -499,7 +536,14 @@ const Dashboard = () => {
             <Route path="/reception/procedures" element={<ProceduresBillingPage />} />
             <Route path="/reception/referrals" element={<ReferralManagementPage />} />
             <Route path="/patients/*" element={<PatientsModule />} />
-            <Route path="/lab/*" element={<LabModule />} />
+            <Route
+              path="lab/*"
+              element={
+                canAccessLabAdminDashboard(roles)
+                  ? <LabModule />
+                  : <Navigate to="/dashboard/lab-home" replace />
+              }
+            />
             <Route path="/pharmacy/*" element={<PharmacyModule />} />
             <Route path="/billing/*" element={<BillingModule />} />
             <Route path="/ehr/*" element={<EHRModule />} />

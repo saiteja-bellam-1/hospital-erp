@@ -124,6 +124,7 @@ export const AuthProvider = ({ children }) => {
     try {
       const response = await axios.get('/profile');
       setUser(response.data);
+      localStorage.setItem('user', JSON.stringify(response.data));
     } catch (error) {
       logout();
     } finally {

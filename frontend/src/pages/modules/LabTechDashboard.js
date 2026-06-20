@@ -12,21 +12,33 @@ import {
   TestTube, Clock, CheckCircle, AlertCircle, RefreshCw, Loader2,
   User, FileText, Activity, Search, Beaker, Package, Printer, Eye
 } from 'lucide-react';
+import { useAuth } from '../../contexts/AuthContext';
 import axios from 'axios';
 import { format } from 'date-fns';
 import JsBarcode from 'jsbarcode';
 
 const LabTechDashboard = () => {
+  const { user } = useAuth();
+  const roles = (() => {
+    const r = user?.roles;
+    if (Array.isArray(r) && r.length > 0) {
+      return r.map((x) => (typeof x === 'string' ? x : x?.name)).filter(Boolean);
+    }
+    return user?.role ? [user.role] : [];
+  })();
+  const isLabAdmin = roles.includes('lab_admin');
   const [orders, setOrders] = useState([]);
   const [completedOrders, setCompletedOrders] = useState([]);
   const [loading, setLoading] = useState(false);
-
-  // Detect role for title
-  const userData = JSON.parse(localStorage.getItem('user') || '{}');
-  const isLabAdmin = userData.role === 'lab_admin';
   const [activeTab, setActiveTab] = useState('pending');
   const [statusFilter, setStatusFilter] = useState('all_pending');
   const [searchQuery, setSearchQuery] = useState('');
+  const [completedSearchQuery, setCompletedSearchQuery] = useState('');
+  const today = new Date().toISOString().split('T')[0];
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  const [completedDateFrom, setCompletedDateFrom] = useState(thirtyDaysAgo);
+  const [completedDateTo, setCompletedDateTo] = useState(today);
+  const [completedLoading, setCompletedLoading] = useState(false);
 
   // Result entry
   const [showEntryDialog, setShowEntryDialog] = useState(false);
@@ -97,19 +109,36 @@ const LabTechDashboard = () => {
   const fetchOrders = useCallback(async () => {
     setLoading(true);
     try {
-      // Fetch pending orders (ordered, collected, processing)
       const pendingRes = await axios.get('/api/lab/orders');
-      const allOrders = pendingRes.data;
-      const pending = allOrders.filter(o => ['ordered', 'collected', 'processing'].includes(o.status));
-      const completed = allOrders.filter(o => o.status === 'completed');
+      const pending = (pendingRes.data || []).filter(
+        (o) => ['ordered', 'collected', 'processing'].includes(o.status)
+      );
       setOrders(pending);
-      setCompletedOrders(completed);
     } catch (err) {
       console.error('Failed to fetch orders:', err);
     } finally {
       setLoading(false);
     }
   }, []);
+
+  const fetchCompletedOrders = useCallback(async () => {
+    setCompletedLoading(true);
+    try {
+      const res = await axios.get('/api/lab/orders', {
+        params: {
+          status: 'completed',
+          date_from: completedDateFrom,
+          date_to: completedDateTo,
+        },
+      });
+      setCompletedOrders(Array.isArray(res.data) ? res.data : []);
+    } catch (err) {
+      console.error('Failed to fetch completed orders:', err);
+      setCompletedOrders([]);
+    } finally {
+      setCompletedLoading(false);
+    }
+  }, [completedDateFrom, completedDateTo]);
 
   const fetchStats = useCallback(async () => {
     try {
@@ -123,16 +152,26 @@ const LabTechDashboard = () => {
   useEffect(() => {
     fetchOrders();
     fetchStats();
-  }, [fetchOrders, fetchStats]);
+    fetchCompletedOrders();
+  }, [fetchOrders, fetchStats, fetchCompletedOrders]);
 
   // Auto-refresh every 30 seconds
   useEffect(() => {
     const interval = setInterval(() => {
       fetchOrders();
       fetchStats();
+      if (activeTab === 'completed') {
+        fetchCompletedOrders();
+      }
     }, 30000);
     return () => clearInterval(interval);
-  }, [fetchOrders, fetchStats]);
+  }, [fetchOrders, fetchStats, fetchCompletedOrders, activeTab]);
+
+  useEffect(() => {
+    if (activeTab === 'completed') {
+      fetchCompletedOrders();
+    }
+  }, [activeTab, completedDateFrom, completedDateTo, fetchCompletedOrders]);
 
   // ============ Status update ============
 
@@ -375,18 +414,25 @@ const LabTechDashboard = () => {
     }
   };
 
+  const matchesOrderSearch = (order, q) => (
+    order.patient_name?.toLowerCase().includes(q) ||
+    order.test_name?.toLowerCase().includes(q) ||
+    order.order_number?.toLowerCase().includes(q) ||
+    order.doctor_name?.toLowerCase().includes(q) ||
+    order.package_name?.toLowerCase().includes(q)
+  );
+
   const filteredOrders = orders.filter(order => {
     if (statusFilter !== 'all_pending' && order.status !== statusFilter) return false;
     if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      return (
-        order.patient_name?.toLowerCase().includes(q) ||
-        order.test_name?.toLowerCase().includes(q) ||
-        order.order_number?.toLowerCase().includes(q) ||
-        order.package_name?.toLowerCase().includes(q)
-      );
+      return matchesOrderSearch(order, searchQuery.toLowerCase());
     }
     return true;
+  });
+
+  const filteredCompletedOrders = completedOrders.filter(order => {
+    if (!completedSearchQuery) return true;
+    return matchesOrderSearch(order, completedSearchQuery.toLowerCase());
   });
 
   // Group orders: package orders by package_booking_id, then by patient+sample_type, rest standalone
@@ -770,19 +816,75 @@ const LabTechDashboard = () => {
   );
 
   const renderCompletedTab = () => (
-    <div className="space-y-3">
-      {completedOrders.length === 0 ? (
+    <div className="space-y-4">
+      <Card>
+        <CardContent className="p-6">
+          <div className="flex flex-wrap items-end gap-4">
+            <div>
+              <Label>From</Label>
+              <Input
+                type="date"
+                value={completedDateFrom}
+                onChange={(e) => setCompletedDateFrom(e.target.value)}
+              />
+            </div>
+            <div>
+              <Label>To</Label>
+              <Input
+                type="date"
+                value={completedDateTo}
+                onChange={(e) => setCompletedDateTo(e.target.value)}
+              />
+            </div>
+            <Button variant="outline" onClick={() => { setCompletedDateFrom(today); setCompletedDateTo(today); }}>
+              Today
+            </Button>
+            <Button variant="outline" onClick={() => { setCompletedDateFrom(thirtyDaysAgo); setCompletedDateTo(today); }}>
+              Last 30 days
+            </Button>
+            <div className="flex-1 min-w-[200px]">
+              <Label>Search</Label>
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+                <Input
+                  className="pl-9"
+                  placeholder="Patient, test, order #, doctor..."
+                  value={completedSearchQuery}
+                  onChange={(e) => setCompletedSearchQuery(e.target.value)}
+                />
+              </div>
+            </div>
+            <Button variant="outline" onClick={fetchCompletedOrders} disabled={completedLoading}>
+              <RefreshCw className={`h-4 w-4 ${completedLoading ? 'animate-spin' : ''}`} />
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {completedLoading ? (
+        <div className="flex items-center justify-center py-12">
+          <Loader2 className="h-8 w-8 animate-spin text-gray-400" />
+        </div>
+      ) : completedOrders.length === 0 ? (
         <Card>
           <CardContent className="py-12 text-center text-gray-500">
-            No completed orders yet.
+            No completed orders found for this period.
+          </CardContent>
+        </Card>
+      ) : filteredCompletedOrders.length === 0 ? (
+        <Card>
+          <CardContent className="py-12 text-center text-gray-500">
+            No completed orders match your search.
           </CardContent>
         </Card>
       ) : (
-        groupOrders(completedOrders).map((group, gi) =>
-          group.type === 'package' ? renderPackageGroup(group, gi)
-            : group.type === 'sample_group' ? renderSampleGroup(group, gi)
-            : renderOrderCard(group.order)
-        )
+        <div className="space-y-3">
+          {groupOrders(filteredCompletedOrders).map((group, gi) =>
+            group.type === 'package' ? renderPackageGroup(group, gi)
+              : group.type === 'sample_group' ? renderSampleGroup(group, gi)
+              : renderOrderCard(group.order)
+          )}
+        </div>
       )}
     </div>
   );
@@ -1038,9 +1140,9 @@ const LabTechDashboard = () => {
     <div className="space-y-6">
       {renderFeedback()}
 
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <h1 className="text-3xl font-bold text-gray-900">{isLabAdmin ? 'Lab Admin Dashboard' : 'Lab Technician Dashboard'}</h1>
-        <Button variant="outline" onClick={() => { fetchOrders(); fetchStats(); }}>
+        <Button variant="outline" onClick={() => { fetchOrders(); fetchStats(); fetchCompletedOrders(); }}>
           <RefreshCw className="h-4 w-4 mr-2" /> Refresh
         </Button>
       </div>

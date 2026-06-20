@@ -10,6 +10,25 @@ import {
 const I = (Icon) => <Icon className="h-[18px] w-[18px]" />;
 const B = (Icon) => <Icon className="h-7 w-7" />;
 
+const LAB_ADMIN_DASHBOARD_ROLES = ['lab_admin', 'hospital_admin', 'super_admin'];
+
+/** Normalize role entries from login/profile user objects or raw arrays. */
+export function normalizeUserRoles(userOrRoles) {
+  if (Array.isArray(userOrRoles)) {
+    return userOrRoles.map((r) => (typeof r === 'string' ? r : r?.name)).filter(Boolean);
+  }
+  const r = userOrRoles?.roles;
+  if (Array.isArray(r) && r.length > 0) {
+    return r.map((x) => (typeof x === 'string' ? x : x?.name)).filter(Boolean);
+  }
+  return userOrRoles?.role ? [userOrRoles.role] : [];
+}
+
+export function canAccessLabAdminDashboard(roles) {
+  const normalized = normalizeUserRoles(roles);
+  return normalized.some((r) => LAB_ADMIN_DASHBOARD_ROLES.includes(r));
+}
+
 /**
  * Builds the same role+module-aware section list used by the sidebar and HomeGrid.
  * Single source of truth — keep both views in sync.
@@ -17,9 +36,16 @@ const B = (Icon) => <Icon className="h-7 w-7" />;
  * @param {{ roles: string[], enabledModules: Record<string, boolean> }} args
  * @returns {{ sections: Array<{ label: string, items: Array<{ text, icon, bigIcon, path }> }> }}
  */
-export function useNavigationSections({ roles, enabledModules }) {
+export function useNavigationSections({ roles: rawRoles, enabledModules }) {
+  const roles = normalizeUserRoles(rawRoles);
   const hasRole = (r) => roles.includes(r);
-  const hasAnyRole = (...r) => r.some(x => roles.includes(x));
+  const hasAnyRole = (...r) => r.some((x) => roles.includes(x));
+  const isLabStaff = hasAnyRole('lab_admin', 'lab_technician');
+  const isDoctor = hasRole('doctor');
+  // Lab staff always get lab nav; doctors always get OPD nav — other roles
+  // still respect the module toggle.
+  const labEnabled = isLabStaff || !!enabledModules.lab;
+  const outpatientEnabled = isDoctor || !!enabledModules.outpatient;
 
   const addedPaths = new Set();
   const sections = [];
@@ -33,10 +59,10 @@ export function useNavigationSections({ roles, enabledModules }) {
   // If the user has more than one role-specific dashboard, surface each as its
   // own sidebar item (e.g. "Reception Dashboard", "Lab Tech Dashboard") so
   // nothing gets shadowed by the priority fallback at /dashboard.
-  const roleDashboards = getRoleDashboards({ hasRole, hasAnyRole, enabledModules });
+  const roleDashboards = getRoleDashboards({ hasRole, hasAnyRole, enabledModules, isLabStaff });
   const homeItems = [];
-  if (roleDashboards.length > 1) {
-    roleDashboards.forEach(d => {
+  if (roleDashboards.length > 0) {
+    roleDashboards.forEach((d) => {
       homeItems.push(make(d.label, Home, d.path));
       addedPaths.add(d.path);
     });
@@ -80,7 +106,7 @@ export function useNavigationSections({ roles, enabledModules }) {
   }
 
   // ── DOCTOR ──
-  if (hasRole('doctor') && enabledModules.outpatient) {
+  if (isDoctor && outpatientEnabled) {
     const items = [];
     add(items, make('Availability', CalendarClock, '/dashboard/availability'));
     if (enabledModules.ehr) {
@@ -90,10 +116,10 @@ export function useNavigationSections({ roles, enabledModules }) {
     if (items.length > 0) sections.push({ label: 'Doctor', items });
   }
 
-  // ── LAB ──
-  if (hasAnyRole('lab_technician', 'lab_admin', 'hospital_admin', 'super_admin') && enabledModules.lab) {
+  // ── LAB (configuration — lab admin / hospital admin only) ──
+  if (canAccessLabAdminDashboard(roles) && labEnabled) {
     const items = [];
-    add(items, make('Lab Dashboard', TestTube, '/dashboard/lab'));
+    add(items, make('Lab Admin Dashboard', TestTube, '/dashboard/lab'));
     if (items.length > 0) sections.push({ label: 'Laboratory', items });
   }
 
@@ -188,7 +214,7 @@ export function useNavigationSections({ roles, enabledModules }) {
  * Mirrors the legacy HomeDashboard switch in Dashboard.js so the sidebar and
  * the /dashboard fallback agree on what counts as a "dashboard".
  */
-export function getRoleDashboards({ hasRole, hasAnyRole, enabledModules }) {
+export function getRoleDashboards({ hasRole, hasAnyRole, enabledModules, isLabStaff = false }) {
   const out = [];
   if (hasRole('super_admin')) {
     out.push({ key: 'super_admin', label: 'Admin Dashboard', path: '/dashboard/admin-home' });
@@ -196,10 +222,10 @@ export function getRoleDashboards({ hasRole, hasAnyRole, enabledModules }) {
   if (hasRole('hospital_admin') && !hasRole('super_admin')) {
     out.push({ key: 'hospital_admin', label: 'Admin Dashboard', path: '/dashboard/hospital-admin-home' });
   }
-  if (hasRole('doctor') && enabledModules.outpatient) {
+  if (hasRole('doctor')) {
     out.push({ key: 'doctor', label: 'Doctor Dashboard', path: '/dashboard/doctor-home' });
   }
-  if (hasAnyRole('lab_admin', 'lab_technician') && enabledModules.lab) {
+  if (isLabStaff || (hasAnyRole('lab_admin', 'lab_technician') && enabledModules.lab)) {
     out.push({ key: 'lab', label: 'Lab Tech Dashboard', path: '/dashboard/lab-home' });
   }
   if (hasRole('receptionist') && enabledModules.outpatient) {

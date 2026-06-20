@@ -6,14 +6,16 @@ import { Badge } from '../../../components/ui/badge';
 import { Input } from '../../../components/ui/input';
 import { Label } from '../../../components/ui/label';
 import { useToast } from '../../../hooks/use-toast';
+import { useAuth } from '../../../contexts/AuthContext';
 import {
   TestTube,
   RefreshCw,
-  Download,
+  Printer,
   Search,
   Package,
   ArrowLeft,
 } from 'lucide-react';
+import PdfPreviewDialog from '../../../components/PdfPreviewDialog';
 
 const getLabStatusColor = (status) => {
   const colors = {
@@ -33,6 +35,17 @@ const formatDate = (value) => {
 
 const ReceptionLabOrdersPage = () => {
   const { toast } = useToast();
+  const { user } = useAuth();
+  const roles = (() => {
+    const r = user?.roles;
+    if (Array.isArray(r) && r.length > 0) {
+      return r.map((x) => (typeof x === 'string' ? x : x?.name)).filter(Boolean);
+    }
+    return user?.role ? [user.role] : [];
+  })();
+  const dashboardPath = roles.some((role) => ['lab_admin', 'lab_technician'].includes(role))
+    ? '/dashboard/lab-home'
+    : '/dashboard/reception-home';
   const today = new Date().toISOString().split('T')[0];
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
@@ -41,6 +54,7 @@ const ReceptionLabOrdersPage = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [dateFrom, setDateFrom] = useState(thirtyDaysAgo);
   const [dateTo, setDateTo] = useState(today);
+  const [reportPreview, setReportPreview] = useState(null);
 
   const fetchOrders = useCallback(async () => {
     setLoading(true);
@@ -74,30 +88,17 @@ const ReceptionLabOrdersPage = () => {
     fetchOrders();
   }, [fetchOrders]);
 
-  const downloadLabReport = async (reportId, orderNumber, packageBookingId = null) => {
-    try {
-      const token = localStorage.getItem('token');
-      const url = packageBookingId
-        ? `/api/lab/reports/package/${packageBookingId}/download`
-        : `/api/lab/reports/${reportId}/download`;
-      const res = await fetch(url, {
-        headers: { Authorization: `Bearer ${token}` },
+  const openReportPreview = (reportId, orderNumber, packageBookingId = null) => {
+    if (packageBookingId) {
+      setReportPreview({
+        path: `/api/lab/reports/package/${packageBookingId}/download`,
+        title: `${orderNumber} — All Reports`,
       });
-      if (res.ok) {
-        const blob = await res.blob();
-        const blobUrl = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = blobUrl;
-        a.download = packageBookingId ? `${orderNumber}_report.pdf` : `lab_report_${orderNumber}.pdf`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        window.URL.revokeObjectURL(blobUrl);
-      } else {
-        toast({ variant: 'destructive', title: 'Error', description: 'Failed to download report' });
-      }
-    } catch {
-      toast({ variant: 'destructive', title: 'Error', description: 'Failed to download report' });
+    } else {
+      setReportPreview({
+        path: `/api/lab/reports/${reportId}/download`,
+        title: `Lab Report — ${orderNumber}`,
+      });
     }
   };
 
@@ -136,14 +137,14 @@ const ReceptionLabOrdersPage = () => {
       <div className="flex justify-between items-center">
         <div>
           <div className="flex items-center gap-2 mb-1">
-            <Link to="/dashboard/reception-home">
+            <Link to={dashboardPath}>
               <Button variant="ghost" size="sm" className="text-gray-500 -ml-2">
                 <ArrowLeft className="h-4 w-4 mr-1" /> Dashboard
               </Button>
             </Link>
           </div>
           <h1 className="text-3xl font-bold text-gray-900">Completed Lab Orders</h1>
-          <p className="text-gray-600">View and download reports for completed lab tests</p>
+          <p className="text-gray-600">View and print reports for completed lab tests</p>
         </div>
         <Button variant="outline" onClick={fetchOrders} disabled={loading}>
           <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
@@ -219,9 +220,9 @@ const ReceptionLabOrdersPage = () => {
                         size="sm"
                         variant="outline"
                         className="h-7 text-xs border-indigo-300 text-indigo-700"
-                        onClick={() => downloadLabReport(null, pkg.name, Number(bookingId))}
+                        onClick={() => openReportPreview(null, pkg.name, Number(bookingId))}
                       >
-                        <Download className="h-3 w-3 mr-1" /> All Reports
+                        <Printer className="h-3 w-3 mr-1" /> All Reports
                       </Button>
                     )}
                   </div>
@@ -245,9 +246,9 @@ const ReceptionLabOrdersPage = () => {
                             size="sm"
                             variant="outline"
                             className="h-7 text-xs ml-2"
-                            onClick={() => downloadLabReport(order.report_id, order.order_number)}
+                            onClick={() => openReportPreview(order.report_id, order.order_number)}
                           >
-                            <Download className="h-3 w-3 mr-1" /> Report
+                            <Printer className="h-3 w-3 mr-1" /> Report
                           </Button>
                         )}
                       </div>
@@ -283,9 +284,9 @@ const ReceptionLabOrdersPage = () => {
                       size="sm"
                       variant="outline"
                       className="h-8 text-xs ml-2"
-                      onClick={() => downloadLabReport(order.report_id, order.order_number)}
+                      onClick={() => openReportPreview(order.report_id, order.order_number)}
                     >
-                      <Download className="h-3 w-3 mr-1" /> Download Report
+                      <Printer className="h-3 w-3 mr-1" /> View Report
                     </Button>
                   )}
                 </div>
@@ -294,6 +295,13 @@ const ReceptionLabOrdersPage = () => {
           )}
         </CardContent>
       </Card>
+
+      <PdfPreviewDialog
+        open={!!reportPreview}
+        onClose={() => setReportPreview(null)}
+        title={reportPreview?.title || 'Lab Report Preview'}
+        path={reportPreview?.path || null}
+      />
     </div>
   );
 };
