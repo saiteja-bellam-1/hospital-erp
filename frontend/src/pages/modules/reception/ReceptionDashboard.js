@@ -956,12 +956,14 @@ const ReceptionDashboard = () => {
 
       {/* Register Patient Dialog */}
       <Dialog open={showRegisterDialog} onOpenChange={setShowRegisterDialog}>
-        <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto">
-          <DialogHeader>
+        <DialogContent className="w-[98vw] max-w-7xl max-h-[95vh] flex flex-col gap-3 p-4 overflow-hidden">
+          <DialogHeader className="shrink-0">
             <DialogTitle>Register New Patient</DialogTitle>
           </DialogHeader>
-          <PatientRegisterFormFields form={patientForm} onChange={setPatientForm} />
-          <div className="flex gap-2 pt-4">
+          <div className="flex-1 min-h-0 overflow-y-auto pr-1">
+            <PatientRegisterFormFields form={patientForm} onChange={setPatientForm} />
+          </div>
+          <div className="flex gap-2 pt-2 border-t shrink-0">
             <Button variant="outline" onClick={() => setShowRegisterDialog(false)} className="flex-1">Cancel</Button>
             <Button onClick={createPatient} disabled={registerLoading} className="flex-1">
               {registerLoading ? 'Registering...' : 'Register Patient'}

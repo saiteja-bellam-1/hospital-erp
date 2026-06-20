@@ -29,7 +29,7 @@ export default function PatientRegisterFormFields({ form, onChange }) {
   const set = (key, val) => onChange({ ...form, [key]: val });
 
   return (
-    <div className="grid grid-cols-2 gap-4">
+    <div className="grid grid-cols-4 gap-x-3 gap-y-1.5">
       <div>
         <Label>First Name *</Label>
         <Input value={form.first_name} onChange={(e) => set('first_name', e.target.value)} />
@@ -118,7 +118,7 @@ export default function PatientRegisterFormFields({ form, onChange }) {
         <Input type="email" value={form.email} onChange={(e) => set('email', e.target.value)} />
       </div>
 
-      <div className="col-span-2 border-t pt-3 mt-2">
+      <div className="col-span-full border-t pt-2 mt-1">
         <Label className="text-sm font-semibold text-gray-700">Emergency Contact</Label>
       </div>
       <div>
@@ -141,7 +141,7 @@ export default function PatientRegisterFormFields({ form, onChange }) {
         </Select>
       </div>
 
-      <div className="col-span-2 border-t pt-3 mt-2">
+      <div className="col-span-full border-t pt-2 mt-1">
         <Label className="text-sm font-semibold text-gray-700">Address</Label>
       </div>
       <div className="col-span-2">

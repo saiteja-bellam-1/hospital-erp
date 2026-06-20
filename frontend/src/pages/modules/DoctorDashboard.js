@@ -1004,12 +1004,13 @@ const DoctorDashboard = () => {
   };
 
   const getTimeSlotStatus = (appointmentTime, status) => {
+    if (status === 'completed') return 'completed';
+    if (status === 'cancelled' || status === 'no_show') return 'cancelled';
+    if (!appointmentTime) return 'scheduled';
     const currentTime = new Date();
     const [hours, minutes] = appointmentTime.split(':');
     const appointmentDate = new Date();
-    appointmentDate.setHours(parseInt(hours), parseInt(minutes));
-    if (status === 'completed') return 'completed';
-    if (status === 'cancelled' || status === 'no_show') return 'cancelled';
+    appointmentDate.setHours(parseInt(hours, 10), parseInt(minutes, 10));
     if (appointmentDate < currentTime) return 'overdue';
     if (appointmentDate.getTime() - currentTime.getTime() <= 30 * 60 * 1000) return 'upcoming';
     return 'scheduled';

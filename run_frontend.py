@@ -38,7 +38,8 @@ def main():
     print("🌐 Starting KT HEALTH ERP Frontend...")
     print("====================================")
     print(f"Working directory: {frontend_dir}")
-    print("Starting React development server on http://localhost:3000")
+    print("Starting React development server on http://localhost:3003")
+    print("(Dedicated port avoids conflicts with other local apps)")
     print("Press Ctrl+C to stop the server")
     print("")
     

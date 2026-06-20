@@ -332,45 +332,47 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl max-h-[92vh] overflow-y-auto">
-        <DialogHeader>
+      <DialogContent className="w-[98vw] max-w-7xl max-h-[95vh] flex flex-col gap-3 p-4 overflow-hidden">
+        <DialogHeader className="shrink-0">
           <DialogTitle>
             Quick Appointment — Step {step} of 2: {step === 1 ? 'Patient' : 'Appointment'}
           </DialogTitle>
         </DialogHeader>
 
         {step === 1 ? (
-          <div className="space-y-4">
-            {registerMode === 'register' ? (
-              <button
-                type="button"
-                className="text-sm text-blue-600 hover:underline"
-                onClick={() => setRegisterMode('search')}
-              >
-                Patient already registered? Search instead
-              </button>
-            ) : (
-              <button
-                type="button"
-                className="text-sm text-blue-600 hover:underline"
-                onClick={() => { setRegisterMode('register'); setSelectedPatient(null); }}
-              >
-                Register a new patient instead
-              </button>
-            )}
+          <>
+            <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-3">
+              {registerMode === 'register' ? (
+                <button
+                  type="button"
+                  className="text-sm text-blue-600 hover:underline"
+                  onClick={() => setRegisterMode('search')}
+                >
+                  Patient already registered? Search instead
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="text-sm text-blue-600 hover:underline"
+                  onClick={() => { setRegisterMode('register'); setSelectedPatient(null); }}
+                >
+                  Register a new patient instead
+                </button>
+              )}
 
-            {registerMode === 'register' ? (
-              <PatientRegisterFormFields form={patientForm} onChange={setPatientForm} />
-            ) : (
-              <PatientSearchPicker
-                value={selectedPatient}
-                onChange={setSelectedPatient}
-                label="Find patient"
-                required
-              />
-            )}
+              {registerMode === 'register' ? (
+                <PatientRegisterFormFields form={patientForm} onChange={setPatientForm} />
+              ) : (
+                <PatientSearchPicker
+                  value={selectedPatient}
+                  onChange={setSelectedPatient}
+                  label="Find patient"
+                  required
+                />
+              )}
+            </div>
 
-            <div className="flex gap-2 pt-2">
+            <div className="flex gap-2 pt-2 border-t shrink-0">
               <Button type="button" variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
                 Cancel
               </Button>
@@ -378,122 +380,126 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
                 {step1Loading ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Saving…</> : 'Next: Book appointment'}
               </Button>
             </div>
-          </div>
+          </>
         ) : (
-          <div className="space-y-4">
-            <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-sm">
-              <span className="font-medium text-green-900">
-                {selectedPatient?.first_name} {selectedPatient?.last_name}
-              </span>
-              <span className="text-green-700 ml-2">{selectedPatient?.primary_phone}</span>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <Label>Doctor *</Label>
-                <Select
-                  value={appointmentForm.doctor_id}
-                  onValueChange={(value) => {
-                    setAppointmentForm({ ...appointmentForm, doctor_id: value });
-                    fetchAvailableSlots(value, appointmentForm.appointment_date);
-                  }}
-                >
-                  <SelectTrigger><SelectValue placeholder="Select doctor" /></SelectTrigger>
-                  <SelectContent>
-                    {doctors.map((d) => (
-                      <SelectItem key={d.id} value={d.id.toString()}>
-                        Dr. {d.first_name} {d.last_name} — {d.specialization || 'General'}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+          <>
+            <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-3">
+              <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-sm">
+                <span className="font-medium text-green-900">
+                  {selectedPatient?.first_name} {selectedPatient?.last_name}
+                </span>
+                <span className="text-green-700 ml-2">{selectedPatient?.primary_phone}</span>
               </div>
-              <div>
-                <Label>Date *</Label>
-                <Input
-                  type="date"
-                  value={appointmentForm.appointment_date}
-                  min={new Date().toISOString().split('T')[0]}
-                  onChange={(e) => {
-                    setAppointmentForm({ ...appointmentForm, appointment_date: e.target.value });
-                    if (appointmentForm.doctor_id) {
-                      fetchAvailableSlots(appointmentForm.doctor_id, e.target.value);
-                    }
-                  }}
+
+              <div className="grid grid-cols-4 gap-x-3 gap-y-1.5">
+                <div>
+                  <Label>Doctor *</Label>
+                  <Select
+                    value={appointmentForm.doctor_id}
+                    onValueChange={(value) => {
+                      setAppointmentForm({ ...appointmentForm, doctor_id: value });
+                      fetchAvailableSlots(value, appointmentForm.appointment_date);
+                    }}
+                  >
+                    <SelectTrigger><SelectValue placeholder="Select doctor" /></SelectTrigger>
+                    <SelectContent>
+                      {doctors.map((d) => (
+                        <SelectItem key={d.id} value={d.id.toString()}>
+                          Dr. {d.first_name} {d.last_name} — {d.specialization || 'General'}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Date *</Label>
+                  <Input
+                    type="date"
+                    value={appointmentForm.appointment_date}
+                    min={new Date().toISOString().split('T')[0]}
+                    onChange={(e) => {
+                      setAppointmentForm({ ...appointmentForm, appointment_date: e.target.value });
+                      if (appointmentForm.doctor_id) {
+                        fetchAvailableSlots(appointmentForm.doctor_id, e.target.value);
+                      }
+                    }}
+                  />
+                </div>
+                <AppointmentTimeField
+                  appointmentTime={appointmentForm.appointment_time}
+                  overrideAvailability={appointmentForm.override_availability}
+                  availableSlots={availableSlots}
+                  availabilityChecking={availabilityChecking}
+                  doctorId={appointmentForm.doctor_id}
+                  appointmentDate={appointmentForm.appointment_date}
+                  onTimeChange={(value) => setAppointmentForm({ ...appointmentForm, appointment_time: value })}
                 />
-              </div>
-              <AppointmentTimeField
-                appointmentTime={appointmentForm.appointment_time}
-                overrideAvailability={appointmentForm.override_availability}
-                availableSlots={availableSlots}
-                availabilityChecking={availabilityChecking}
-                doctorId={appointmentForm.doctor_id}
-                appointmentDate={appointmentForm.appointment_date}
-                onTimeChange={(value) => setAppointmentForm({ ...appointmentForm, appointment_time: value })}
-              />
-              <div>
-                <Label>Type</Label>
-                <Select
-                  value={appointmentForm.appointment_type}
-                  onValueChange={(v) => setAppointmentForm({ ...appointmentForm, appointment_type: v })}
-                >
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="consultation">Consultation</SelectItem>
-                    <SelectItem value="followup">Follow-up</SelectItem>
-                    <SelectItem value="checkup">Check-up</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label>Payment method</Label>
-                <Select
-                  value={appointmentForm.payment_method}
-                  onValueChange={(v) => setAppointmentForm({ ...appointmentForm, payment_method: v })}
-                >
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {['cash', 'card', 'upi', 'online', 'insurance', 'cheque'].map((m) => (
-                      <SelectItem key={m} value={m}>{m.charAt(0).toUpperCase() + m.slice(1)}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <div>
+                  <Label>Type</Label>
+                  <Select
+                    value={appointmentForm.appointment_type}
+                    onValueChange={(v) => setAppointmentForm({ ...appointmentForm, appointment_type: v })}
+                  >
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="consultation">Consultation</SelectItem>
+                      <SelectItem value="followup">Follow-up</SelectItem>
+                      <SelectItem value="checkup">Check-up</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Payment method</Label>
+                  <Select
+                    value={appointmentForm.payment_method}
+                    onValueChange={(v) => setAppointmentForm({ ...appointmentForm, payment_method: v })}
+                  >
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {['cash', 'card', 'upi', 'online', 'insurance', 'cheque'].map((m) => (
+                        <SelectItem key={m} value={m}>{m.charAt(0).toUpperCase() + m.slice(1)}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <AppointmentAvailabilityOverride
+                  className="col-span-4"
+                  overrideAvailability={appointmentForm.override_availability}
+                  overrideReason={appointmentForm.override_reason}
+                  onChange={(patch) => setAppointmentForm({ ...appointmentForm, ...patch })}
+                />
+
+                <div className="col-span-2">
+                  <Label>Reason for visit</Label>
+                  <Input
+                    value={appointmentForm.reason}
+                    onChange={(e) => setAppointmentForm({ ...appointmentForm, reason: e.target.value })}
+                    placeholder="Brief description"
+                  />
+                </div>
+
+                <div className="col-span-2">
+                  <ReferralSelectWithCreate
+                    value={appointmentForm.referred_by}
+                    onValueChange={(name) => setAppointmentForm({ ...appointmentForm, referred_by: name })}
+                    referrals={referralList}
+                    onReferralsChange={setReferralList}
+                  />
+                </div>
+
+                {appointmentForm.doctor_id && (
+                  <div className="col-span-4 bg-gray-50 rounded-lg p-3 border text-sm space-y-1">
+                    <p className="font-medium">Fee summary</p>
+                    {regFee > 0 && <p>Registration fee: ₹{regFee.toFixed(2)}</p>}
+                    <p>Consultation: ₹{consultFee.toFixed(2)}</p>
+                    <p className="font-semibold">Total: ₹{(regFee + consultFee).toFixed(2)}</p>
+                  </div>
+                )}
               </div>
             </div>
 
-            <AppointmentAvailabilityOverride
-              className="md:col-span-2"
-              overrideAvailability={appointmentForm.override_availability}
-              overrideReason={appointmentForm.override_reason}
-              onChange={(patch) => setAppointmentForm({ ...appointmentForm, ...patch })}
-            />
-
-            <div>
-              <Label>Reason for visit</Label>
-              <Input
-                value={appointmentForm.reason}
-                onChange={(e) => setAppointmentForm({ ...appointmentForm, reason: e.target.value })}
-                placeholder="Brief description"
-              />
-            </div>
-
-            <ReferralSelectWithCreate
-              value={appointmentForm.referred_by}
-              onValueChange={(name) => setAppointmentForm({ ...appointmentForm, referred_by: name })}
-              referrals={referralList}
-              onReferralsChange={setReferralList}
-            />
-
-            {appointmentForm.doctor_id && (
-              <div className="bg-gray-50 rounded-lg p-3 border text-sm space-y-1">
-                <p className="font-medium">Fee summary</p>
-                {regFee > 0 && <p>Registration fee: ₹{regFee.toFixed(2)}</p>}
-                <p>Consultation: ₹{consultFee.toFixed(2)}</p>
-                <p className="font-semibold">Total: ₹{(regFee + consultFee).toFixed(2)}</p>
-              </div>
-            )}
-
-            <div className="flex gap-2 pt-2">
+            <div className="flex gap-2 pt-2 border-t shrink-0">
               <Button type="button" variant="outline" onClick={() => setStep(1)}>
                 <ChevronLeft className="h-4 w-4 mr-1" /> Back
               </Button>
@@ -509,7 +515,7 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
                 {booking || billLoading ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Booking…</> : 'Book appointment'}
               </Button>
             </div>
-          </div>
+          </>
         )}
       </DialogContent>
     </Dialog>
