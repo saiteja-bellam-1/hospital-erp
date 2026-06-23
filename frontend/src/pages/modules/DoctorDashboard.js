@@ -1675,7 +1675,6 @@ const DoctorDashboard = () => {
                 </Button>
                 <Button size="sm" variant="outline" onClick={() => {
                   setInpatientRxForm({ notes: '', items: [{ ...RX_BLANK_ITEM }] });
-                  setMedicineSuggestions([]);
                   setShowInpatientRxDialog(true);
                 }}>
                   <Pill className="h-3.5 w-3.5 mr-1" /> Add Prescription
