@@ -3539,10 +3539,11 @@ def _compute_admission_charges(db: Session, admission: Admission, unbilled_only:
     ancillary_total = sum(float(c.total_amount or 0) for c in anc_entries)
     ancillary_breakdown = [_ancillary_to_response(c, db) for c in anc_entries]
 
-    # Pharmacy
+    # Pharmacy — exclude Rx already paid at the pharmacy counter
     rx_q = db.query(Prescription).filter(
         Prescription.admission_id == admission.id,
         Prescription.status.in_(["dispensed", "partial"]),
+        Prescription.pharmacy_sale_id.is_(None),
     )
     if unbilled_only:
         rx_q = rx_q.filter(Prescription.inpatient_bill_id.is_(None))
@@ -5438,6 +5439,56 @@ async def get_available_lab_tests(
     ).order_by(LabTest.name).all()
 
     return [{"id": t.id, "name": t.name, "test_code": t.test_code, "cost": t.cost or 0.0, "category": t.category} for t in tests]
+
+
+@router.get("/admissions/{admission_id}/medicines-lookup")
+async def lookup_medicines_for_admission(
+    admission_id: int,
+    q: Optional[str] = Query(None, min_length=1),
+    limit: int = Query(20, ge=1, le=50),
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "prescribe_medications")),
+    db: Session = Depends(get_db),
+):
+    """Search the pharmacy catalog from inpatient prescribing context.
+
+    Does not require pharmacy-module permissions — mirrors lab-tests-available.
+    Returns name + sale rate only (no stock levels).
+    """
+    from sqlalchemy import or_
+    from app.utils.pharmacy_pricing import medicine_sale_rate
+
+    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    if not admission:
+        raise HTTPException(status_code=404, detail="Admission not found")
+
+    query = db.query(Medicine).filter(
+        Medicine.hospital_id == current_user.hospital_id,
+        Medicine.is_active == True,  # noqa: E712
+        Medicine.is_hidden == False,  # noqa: E712
+    )
+    if q:
+        like = f"%{q.strip().lower()}%"
+        query = query.filter(or_(
+            Medicine.name.ilike(like),
+            Medicine.generic_name.ilike(like),
+            Medicine.medicine_code.ilike(like),
+        ))
+    else:
+        return []
+
+    medicines = query.order_by(Medicine.name).limit(limit).all()
+    return [
+        {
+            "id": m.id,
+            "name": m.name,
+            "generic_name": m.generic_name,
+            "strength": m.strength,
+            "dosage_form": m.dosage_form,
+            "medicine_code": m.medicine_code,
+            "unit_price": medicine_sale_rate(m),
+        }
+        for m in medicines
+    ]
 
 
 # ============================================================
@@ -9531,25 +9582,18 @@ async def preview_consent_pdf(
     referring_doctor_id: Optional[int] = None,
     admission_reason: Optional[str] = None,
     doc_number: Optional[str] = None,
+    admission_id: Optional[int] = None,
     current_user: User = Depends(require_feature_permission_any(
         Modules.INPATIENT, "admit_patients", "record_consent"
     )),
     db: Session = Depends(get_db),
 ):
-    """Generate a prefilled (unsigned) consent PDF for a patient before the
-    admission record is created. Used by the Admit-Patient wizard so staff
-    can print a face/case sheet with patient demographics already filled in
-    and hand it to the patient for physical signing. No DB writes.
+    """Generate a prefilled (unsigned) consent PDF for the admit wizard.
 
-    Note: the doc number printed here is the *next* number that would be
-    allocated; the real allocation happens when the consent is actually
-    recorded after admission, so they may differ if another consent gets
-    recorded in between.
-    """
-    """Generate a prefilled (unsigned) consent PDF for a patient before the
-    admission record is created. Used by the Admit-Patient wizard so staff
-    can print a face/case sheet with patient demographics already filled in
-    and hand it to the patient for physical signing. No DB writes.
+    When ``admission_id`` is supplied (post-admit declarations step), the
+    printed form includes the real admission number, bed, and admission date.
+    Without it, demographics are prefilled but admission number stays blank.
+    No DB writes.
     """
     # patient_id may be either the integer Patient.id (what the admit wizard
     # holds) or the UUID Patient.patient_id — accept both.
@@ -9563,9 +9607,27 @@ async def preview_consent_pdf(
     template = db.query(ConsentTemplate).filter(ConsentTemplate.id == template_id).first()
     if not template:
         raise HTTPException(status_code=404, detail="Consent template not found")
-    room = db.query(RoomManagement).filter(RoomManagement.id == room_id).first() if room_id else None
-    doctor = db.query(User).filter(User.id == admitting_doctor_id).first() if admitting_doctor_id else None
-    referring_doctor = db.query(User).filter(User.id == referring_doctor_id).first() if referring_doctor_id else None
+
+    admission = None
+    if admission_id is not None:
+        admission = db.query(Admission).filter(Admission.id == admission_id).first()
+        if not admission:
+            raise HTTPException(status_code=404, detail="Admission not found")
+        if admission.patient_id != patient.id:
+            raise HTTPException(status_code=400, detail="Admission does not belong to this patient")
+
+    effective_room_id = room_id or (admission.room_id if admission else None)
+    effective_doctor_id = admitting_doctor_id or (admission.admitting_doctor_id if admission else None)
+    effective_referring_id = referring_doctor_id or (admission.referring_doctor_id if admission else None)
+    effective_reason = admission_reason or (admission.admission_reason if admission else None)
+
+    room = db.query(RoomManagement).filter(RoomManagement.id == effective_room_id).first() if effective_room_id else None
+    doctor = db.query(User).filter(User.id == effective_doctor_id).first() if effective_doctor_id else None
+    referring_doctor = db.query(User).filter(User.id == effective_referring_id).first() if effective_referring_id else None
+    if admission and admission.referring_external_name and not referring_doctor:
+        referring_name_override = admission.referring_external_name
+    else:
+        referring_name_override = None
     hospital = _get_hospital(db, current_user)
 
     def _age_str(p):
@@ -9582,9 +9644,21 @@ async def preview_consent_pdf(
     doctor_name = f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else ""
     referring_name = (
         f"Dr. {referring_doctor.first_name} {referring_doctor.last_name}"
-        if referring_doctor else ""
+        if referring_doctor else (referring_name_override or "")
     )
     room_label = room.room_number if room else ""
+    bed_label = ""
+    if admission:
+        bed_label = admission.bed_number or ""
+        if not bed_label and admission.bed_id:
+            bed_obj = db.query(Bed).filter(Bed.id == admission.bed_id).first()
+            bed_label = bed_obj.bed_label if bed_obj else ""
+    admission_number = admission.admission_number if admission else ""
+    admission_date_str = (
+        admission.admission_date.strftime("%d/%m/%Y")
+        if admission and admission.admission_date
+        else datetime.now().strftime("%d/%m/%Y")
+    )
     token_ctx = {
         "patient_name": patient_name,
         "name": patient_name,
@@ -9595,19 +9669,19 @@ async def preview_consent_pdf(
         "patient_id": patient.patient_id,
         "primary_phone": getattr(patient, "primary_phone", None) or "",
         "phone": getattr(patient, "primary_phone", None) or "",
-        "admission_number": "",
-        "admission_date": datetime.now().strftime("%d/%m/%Y"),
+        "admission_number": admission_number,
+        "admission_date": admission_date_str,
         "ward": getattr(room, "ward", "") if room else "",
         "room": room_label,
         "room_name": room_label,
         "room_number": room_label,
-        "bed": "",
+        "bed": bed_label,
         "admitting_doctor": doctor_name,
         "doctor": doctor_name,
         "doctor_name": doctor_name,
         "referring_doctor": referring_name,
-        "admission_reason": admission_reason or "",
-        "diagnosis": admission_reason or "",
+        "admission_reason": effective_reason or "",
+        "diagnosis": effective_reason or "",
         "emergency_contact_name": getattr(patient, "emergency_contact_name", None) or "",
         "emergency_contact_relation": getattr(patient, "emergency_contact_relation", None) or "",
         "emergency_contact_phone": getattr(patient, "emergency_contact_phone", None) or "",
@@ -9641,8 +9715,8 @@ async def preview_consent_pdf(
         "emergency_contact_name": token_ctx["emergency_contact_name"],
         "emergency_contact_relation": token_ctx["emergency_contact_relation"],
         "emergency_contact_phone": token_ctx["emergency_contact_phone"],
-        "admission_number": "",
-        "admission_date": "",
+        "admission_number": admission_number,
+        "admission_date": admission_date_str,
         "room_name": room_label,
         "room_type": room.room_type if room else "",
     }

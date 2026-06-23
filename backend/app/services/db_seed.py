@@ -312,7 +312,7 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
                 "record_vitals", "view_vitals", "record_io", "view_io",
                 "administer_medications", "view_mar",
                 "manage_nursing_notes", "manage_allergies", "record_visits",
-                "order_labs",
+                "order_labs", "prescribe_medications",
                 "record_consent",
                 "accept_ward_transfer", "manage_housekeeping",
                 "acknowledge_critical_alert",

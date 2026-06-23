@@ -20,6 +20,9 @@ import AdmissionDetailHeader from './inpatient/AdmissionDetailHeader';
 import VisitDialog from './inpatient/VisitDialog';
 import DoctorRosterTab, { OnDutyNowPanel } from './inpatient/DoctorRosterTab';
 import DischargeWizard from './inpatient/DischargeWizard';
+import MedicineLookupInput from '../../components/inpatient/MedicineLookupInput';
+import PrescriptionScheduleFields from '../../components/prescription/PrescriptionScheduleFields';
+import { BLANK_INPATIENT_RX_ITEM } from '../../utils/prescriptionSchedule';
 import BillingDischargePage from './inpatient/BillingDischargePage';
 import BillingDischargeList from './inpatient/BillingDischargeList';
 import {
@@ -203,11 +206,9 @@ const InpatientModule = () => {
   const [labOrderForm, setLabOrderForm] = useState({ test_ids: [], priority: 'normal', notes: '' });
   const [labTestSearch, setLabTestSearch] = useState('');
   // Inpatient prescription (Add Medication) state
-  const BLANK_RX_ITEM = { medicine_id: '', medicine_name: '', dosage: '', duration: '', quantity_prescribed: 1, instructions: '' };
+  const BLANK_RX_ITEM = BLANK_INPATIENT_RX_ITEM;
   const [showPrescriptionDialog, setShowPrescriptionDialog] = useState(false);
   const [prescriptionForm, setPrescriptionForm] = useState({ notes: '', items: [{ ...BLANK_RX_ITEM }] });
-  const [medicineSearchResults, setMedicineSearchResults] = useState([]);
-  const [medicineSearchTargetIdx, setMedicineSearchTargetIdx] = useState(null);
 
   // Rooms
   const [rooms, setRooms] = useState([]);
@@ -1348,15 +1349,6 @@ const InpatientModule = () => {
   };
 
   // Inpatient prescription
-  const searchMedicines = useCallback(async (query, idx) => {
-    setMedicineSearchTargetIdx(idx);
-    if (!query || query.trim().length < 2) { setMedicineSearchResults([]); return; }
-    try {
-      const res = await axios.get('/api/medicines/', { params: { search: query.trim(), limit: 15 } });
-      setMedicineSearchResults(res.data || []);
-    } catch { setMedicineSearchResults([]); }
-  }, []);
-
   const handleCreateInpatientPrescription = async (e) => {
     e.preventDefault();
     const items = prescriptionForm.items
@@ -1366,6 +1358,8 @@ const InpatientModule = () => {
         quantity_prescribed: Math.max(1, parseInt(it.quantity_prescribed) || 1),
         dosage: it.dosage?.trim() || '',
         duration: it.duration?.trim() || '',
+        frequency_schedule: it.frequency_schedule || '1-0-0',
+        food_timing: it.food_timing || 'after_food',
         instructions: it.instructions?.trim() || null,
       }))
       .filter(it => (it.medicine_id || it.medicine_name) && it.dosage && it.duration);
@@ -1384,7 +1378,6 @@ const InpatientModule = () => {
       toast({ title: 'Prescription created' });
       setShowPrescriptionDialog(false);
       setPrescriptionForm({ notes: '', items: [{ ...BLANK_RX_ITEM }] });
-      setMedicineSearchResults([]);
       fetchMedications(activityAdmission.id);
       fetchBill(activityAdmission.id);
     } catch (err) {
@@ -3990,7 +3983,6 @@ const InpatientModule = () => {
                           <div className="flex justify-end">
                             <Button size="sm" onClick={() => {
                               setPrescriptionForm({ notes: '', items: [{ ...BLANK_RX_ITEM }] });
-                              setMedicineSearchResults([]);
                               setShowPrescriptionDialog(true);
                             }}>
                               <Plus className="h-4 w-4 mr-1" /> Add Prescription
@@ -8933,7 +8925,7 @@ const InpatientModule = () => {
       </Dialog>
 
       {/* Inpatient Prescription Dialog */}
-      <Dialog open={showPrescriptionDialog} onOpenChange={(o) => { setShowPrescriptionDialog(o); if (!o) setMedicineSearchResults([]); }}>
+      <Dialog open={showPrescriptionDialog} onOpenChange={setShowPrescriptionDialog}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader><DialogTitle>Add Prescription</DialogTitle></DialogHeader>
           <form onSubmit={handleCreateInpatientPrescription} className="space-y-3">
@@ -8956,47 +8948,17 @@ const InpatientModule = () => {
               {prescriptionForm.items.map((it, idx) => (
                 <div key={idx} className="border rounded p-2 space-y-2 bg-gray-50">
                   <div className="flex items-start gap-2">
-                    <div className="flex-1 relative">
-                      <Input
-                        placeholder="Medicine name (search inventory or type free-text)"
+                    <div className="flex-1">
+                      <MedicineLookupInput
+                        admissionId={activityAdmission?.id}
                         value={it.medicine_name}
-                        onChange={e => {
-                          const v = e.target.value;
-                          setPrescriptionForm(p => {
-                            const next = [...p.items];
-                            next[idx] = { ...next[idx], medicine_name: v, medicine_id: '' };
-                            return { ...p, items: next };
-                          });
-                          searchMedicines(v, idx);
-                        }}
+                        medicineId={it.medicine_id}
+                        onChange={({ medicine_id, medicine_name }) => setPrescriptionForm(p => {
+                          const next = [...p.items];
+                          next[idx] = { ...next[idx], medicine_id, medicine_name };
+                          return { ...p, items: next };
+                        })}
                       />
-                      {medicineSearchTargetIdx === idx && medicineSearchResults.length > 0 && !it.medicine_id && (
-                        <div className="absolute z-20 w-full bg-white border rounded shadow-lg mt-1 max-h-40 overflow-y-auto">
-                          {medicineSearchResults.map(m => (
-                            <div
-                              key={m.id}
-                              className="px-3 py-1.5 hover:bg-blue-50 cursor-pointer text-xs"
-                              onClick={() => {
-                                setPrescriptionForm(p => {
-                                  const next = [...p.items];
-                                  next[idx] = {
-                                    ...next[idx],
-                                    medicine_id: m.id,
-                                    medicine_name: `${m.name}${m.strength ? ' ' + m.strength : ''}${m.dosage_form ? ' (' + m.dosage_form + ')' : ''}`,
-                                  };
-                                  return { ...p, items: next };
-                                });
-                                setMedicineSearchResults([]);
-                              }}
-                            >
-                              <span className="font-medium">{m.name}</span>
-                              {m.strength && <span className="text-gray-500"> · {m.strength}</span>}
-                              {m.dosage_form && <span className="text-gray-500"> · {m.dosage_form}</span>}
-                              <span className="text-gray-400 ml-1">₹{Number(m.unit_price || 0).toFixed(2)}</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
                     </div>
                     <Button
                       type="button"
@@ -9009,17 +8971,27 @@ const InpatientModule = () => {
                       <Trash2 className="h-4 w-4 text-red-500" />
                     </Button>
                   </div>
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                     <div>
                       <Label className="text-[10px] text-gray-500">Dosage *</Label>
                       <Input
-                        placeholder="1 tab BD"
+                        placeholder="1 tab"
                         value={it.dosage}
                         onChange={e => setPrescriptionForm(p => {
                           const next = [...p.items]; next[idx] = { ...next[idx], dosage: e.target.value }; return { ...p, items: next };
                         })}
                       />
                     </div>
+                    <PrescriptionScheduleFields
+                      frequencySchedule={it.frequency_schedule}
+                      foodTiming={it.food_timing}
+                      onFrequencyChange={(v) => setPrescriptionForm(p => {
+                        const next = [...p.items]; next[idx] = { ...next[idx], frequency_schedule: v }; return { ...p, items: next };
+                      })}
+                      onFoodTimingChange={(v) => setPrescriptionForm(p => {
+                        const next = [...p.items]; next[idx] = { ...next[idx], food_timing: v }; return { ...p, items: next };
+                      })}
+                    />
                     <div>
                       <Label className="text-[10px] text-gray-500">Duration *</Label>
                       <Input
@@ -9043,9 +9015,9 @@ const InpatientModule = () => {
                     </div>
                   </div>
                   <div>
-                    <Label className="text-[10px] text-gray-500">Instructions (optional)</Label>
+                    <Label className="text-[10px] text-gray-500">Extra instructions (optional)</Label>
                     <Input
-                      placeholder="After food, with water, etc."
+                      placeholder="With water, avoid alcohol, etc."
                       value={it.instructions}
                       onChange={e => setPrescriptionForm(p => {
                         const next = [...p.items]; next[idx] = { ...next[idx], instructions: e.target.value }; return { ...p, items: next };
@@ -9054,7 +9026,7 @@ const InpatientModule = () => {
                   </div>
                 </div>
               ))}
-              <p className="text-[11px] text-gray-500">Linking a row to inventory (by clicking a search suggestion) bills it via pharmacy. Free-text rows are advisory only and won't be billed.</p>
+              <p className="text-[11px] text-gray-500">Catalog picks use pharmacy Rate-A for inpatient billing. Free-text entries appear under Pharmacy → Unmapped Medicines for pricing before dispense.</p>
             </div>
             <Button type="submit" className="w-full" disabled={loading}>
               {loading ? 'Saving…' : 'Create Prescription'}

@@ -617,6 +617,7 @@ async def create_consultation_lab_orders(
             test_id=test_id,
             doctor_id=consultation.doctor_id,
             consultation_id=consultation_id,
+            appointment_id=consultation.appointment_id,
             priority=lab_order_data.priority,
             notes=lab_order_data.notes,
             status="ordered",

@@ -62,8 +62,8 @@ class LabTestParameter(Base):
     unit = Column(String(50))
     method = Column(String(200), nullable=True)
     section = Column(String(200), nullable=True)  # For grouping parameters within a test
-    field_type = Column(String(20), default="numeric")  # numeric, less_than, greater_than, positive_negative, reactive, presence_absence, cloudy_clear, colour, manual, select
-    reference_ranges = Column(JSON, nullable=True)  # [{min, max, gender, age_min, age_max, description}]
+    field_type = Column(String(20), default="numeric")  # numeric, tiered_numeric, less_than, greater_than, positive_negative, reactive, presence_absence, cloudy_clear, colour, manual, select
+    reference_ranges = Column(JSON, nullable=True)  # [{min, max, gender, age_min, age_max, description, is_normal}]
     # Legacy columns kept for backward compatibility
     reference_min_male = Column(Float, nullable=True)
     reference_max_male = Column(Float, nullable=True)

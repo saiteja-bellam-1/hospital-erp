@@ -16,6 +16,7 @@ import {
   ChevronLeft, ChevronRight, Loader2, Plus, Trash2,
   Pill, Stethoscope, FileSignature, AlertTriangle,
 } from 'lucide-react';
+import MedicineLookupInput from '../../../components/inpatient/MedicineLookupInput';
 
 const EMPTY_FORM = {
   // Step 1
@@ -73,15 +74,20 @@ const Stepper = ({ step, totalSteps = 3, labels }) => (
 );
 
 
-const MedicineCard = ({ med, idx, onChange, onRemove }) => (
+const MedicineCard = ({ med, idx, onChange, onRemove, admissionId }) => (
   <div className="border rounded-lg p-3 bg-white space-y-2">
     <div className="flex items-start gap-2">
       <div className="flex-1">
         <Label className="text-[11px] text-gray-500">Medicine *</Label>
-        <Input
-          placeholder="e.g. Paracetamol 500 mg"
+        <MedicineLookupInput
+          admissionId={admissionId}
           value={med.medicine_name}
-          onChange={e => onChange(idx, 'medicine_name', e.target.value)}
+          medicineId={med.medicine_id}
+          placeholder="Search catalog or type free-text"
+          onChange={({ medicine_id, medicine_name }) => {
+            onChange(idx, 'medicine_id', medicine_id || '');
+            onChange(idx, 'medicine_name', medicine_name);
+          }}
         />
       </div>
       <Button type="button" size="sm" variant="ghost" className="h-9 w-9 p-0 mt-5"
@@ -504,6 +510,7 @@ const DischargeWizard = ({
                 <div className="space-y-2">
                   {form.take_home_medications.map((m, idx) => (
                     <MedicineCard key={idx} med={m} idx={idx}
+                                  admissionId={admission?.id}
                                   onChange={updateMed} onRemove={removeMed} />
                   ))}
                 </div>

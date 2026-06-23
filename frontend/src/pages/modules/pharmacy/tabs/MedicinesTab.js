@@ -12,6 +12,7 @@ import { useToast } from '../../../../hooks/use-toast';
 import { Plus, Pencil, Trash2, RefreshCw, Search } from 'lucide-react';
 import { errMsg } from '../../PharmacyModule';
 import PharmacyMasterSelectWithCreate from '../../../../components/pharmacy/PharmacyMasterSelectWithCreate';
+import { perTabFromMrp } from '../../../../utils/pharmacyUnits';
 
 const BLANK = {
   medicine_code: '', name: '', generic_name: '', manufacturer: '',
@@ -251,10 +252,11 @@ export default function MedicinesTab() {
               <F label="Dosage Form"><Input value={form.dosage_form || ''} onChange={e => set('dosage_form', e.target.value)} placeholder="tablet / syrup / inj" /></F>
               <F label="Strength"><Input value={form.strength || ''} onChange={e => set('strength', e.target.value)} placeholder="500mg" /></F>
               <F label="Barcode"><Input value={form.barcode || ''} onChange={e => set('barcode', e.target.value)} /></F>
-              <F label="Packaging"><Input value={form.packaging || ''} onChange={e => set('packaging', e.target.value)} placeholder="10 tabs x 10 strips" /></F>
-              <F label="Strip Conversion Factor">
-                <Input type="number" value={form.strip_conversion_factor ?? 1}
-                  onChange={e => set('strip_conversion_factor', e.target.value === '' ? 1 : parseInt(e.target.value))} />
+              <F label="Packaging (display only)"><Input value={form.packaging || ''} onChange={e => set('packaging', e.target.value)} placeholder="e.g. box of 10 strips" /></F>
+              <F label="Tablets per strip (sheet)">
+                <Input type="number" min="1" value={form.strip_conversion_factor ?? 1}
+                  onChange={e => set('strip_conversion_factor', e.target.value === '' ? 1 : Math.max(1, parseInt(e.target.value, 10) || 1))} />
+                <p className="text-[10px] text-gray-500 mt-0.5">Tabs in one strip. MRP and Rate A/B are per strip; POS tab price = MRP ÷ this number.</p>
               </F>
               <F label="Decimal supported">
                 <Check checked={form.decimal_supported} onChange={v => set('decimal_supported', v)} />
@@ -267,10 +269,16 @@ export default function MedicinesTab() {
           {/* ─── Pricing & Tax ─── */}
           <Section title="Pricing & Tax">
             <Grid>
-              <F label="MRP"><Num value={form.mrp} onChange={v => set('mrp', v)} /></F>
+              <F label="MRP (per strip)"><Num value={form.mrp} onChange={v => set('mrp', v)} /></F>
+              {(form.strip_conversion_factor || 1) > 1 && form.mrp > 0 && (
+                <F label="Per tab (auto)">
+                  <p className="text-sm pt-2 font-medium">₹{perTabFromMrp(form).toFixed(2)}</p>
+                  <p className="text-[10px] text-gray-500">MRP ÷ {form.strip_conversion_factor} tabs</p>
+                </F>
+              )}
               <F label="Purchase Rate (P-Rate)"><Num value={form.purchase_rate} onChange={v => set('purchase_rate', v)} /></F>
-              <F label="Rate A"><Num value={form.rate_a} onChange={v => set('rate_a', v)} /></F>
-              <F label="Rate B"><Num value={form.rate_b} onChange={v => set('rate_b', v)} /></F>
+              <F label="Rate A (per strip)"><Num value={form.rate_a} onChange={v => set('rate_a', v)} /></F>
+              <F label="Rate B (per strip)"><Num value={form.rate_b} onChange={v => set('rate_b', v)} /></F>
               <F label="Cost / piece"><Num value={form.cost_pcs} onChange={v => set('cost_pcs', v)} /></F>
               <F label="Default Discount %"><Num value={form.default_discount_pct} onChange={v => set('default_discount_pct', v)} /></F>
               <F label="Item-level Discount %"><Num value={form.item_discount_pct} onChange={v => set('item_discount_pct', v)} /></F>

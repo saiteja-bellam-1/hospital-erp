@@ -223,9 +223,10 @@ class Medicine(Base):
 
     # Catalog metadata (Section B)
     barcode = Column(String(50), index=True)
-    packaging = Column(String(100))  # e.g. "10 tabs x 10 strips"
+    packaging = Column(String(100))  # e.g. "10 tabs x 10 strips" (display only)
     decimal_supported = Column(Boolean, default=False)
-    strip_conversion_factor = Column(Integer, default=1)  # units per strip
+    strip_conversion_factor = Column(Integer, default=1)  # tablets per strip/sheet
+    rate_unit = Column(String(10), default="tablet")  # tablet | strip — what MRP/rate_a/rate_b mean
 
     # Master FKs
     company_id = Column(Integer, ForeignKey("pharmacy_companies.id"), nullable=True)
@@ -445,9 +446,13 @@ class PharmacySaleItem(Base):
     sale_id = Column(Integer, ForeignKey("pharmacy_sales.id"), nullable=False)
     medicine_id = Column(Integer, ForeignKey("medicines.id"), nullable=False)
     batch_id = Column(Integer, ForeignKey("pharmacy_inventory.id"), nullable=False)
-    quantity = Column(Float, nullable=False)
+    quantity = Column(Float, nullable=False)  # base tablets deducted from stock
     free_quantity = Column(Float, default=0.0)
-    rate = Column(Float, nullable=False)
+    sale_qty = Column(Float, nullable=True)  # legacy single-unit qty (first batch row)
+    sale_qty_unit = Column(String(10), default="tablet")  # legacy: tablet | strip
+    sale_qty_tabs = Column(Float, nullable=True)
+    sale_qty_strips = Column(Float, nullable=True)
+    rate = Column(Float, nullable=False)  # per-tablet rate used for billing
     rate_tier = Column(String(10), default="A")   # A | B
     discount_pct = Column(Float, default=0.0)
     tax_pct = Column(Float, default=0.0)
@@ -501,6 +506,7 @@ class Prescription(Base):
     dispensed_by_id = Column(Integer, ForeignKey("users.id"))
     dispensed_date = Column(DateTime)
     inpatient_bill_id = Column(Integer, ForeignKey("bills.id"), nullable=True)  # which admission bill consumed this Rx
+    pharmacy_sale_id = Column(Integer, ForeignKey("pharmacy_sales.id"), nullable=True)  # set when paid at pharmacy counter
 
     # Cancellation metadata. status='cancelled' is set at the same time these
     # are stamped; see app/services/pharmacy_reversal.py.

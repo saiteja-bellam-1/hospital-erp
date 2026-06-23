@@ -48,7 +48,16 @@ from app.models.pharmacy import (
 )
 from sqlalchemy import func as sa_func
 from app.utils.auth import Modules
-from app.utils.dependencies import get_current_user, require_feature_permission
+from app.utils.dependencies import get_current_user, require_feature_permission, require_feature_permission_any
+from app.utils.pharmacy_pricing import (
+    medicine_sale_rate,
+    is_free_text_medicine,
+    resolve_pos_sale_line,
+    combined_base_qty,
+    format_sale_qty_display,
+    tab_sale_rate,
+    strip_sale_rate,
+)
 from app.services.audit_service import log_action
 
 
@@ -457,7 +466,8 @@ class MedicineIn(BaseModel):
     barcode: Optional[str] = None
     packaging: Optional[str] = None
     decimal_supported: bool = False
-    strip_conversion_factor: int = 1
+    strip_conversion_factor: int = Field(1, ge=1)
+    rate_unit: str = Field("tablet", pattern="^(tablet|strip)$")
 
     # Master FKs
     company_id: Optional[int] = None
@@ -551,6 +561,108 @@ def lookup_medicine(
     else:
         return []
     return query.order_by(Medicine.name).limit(limit).all()
+
+
+class UnmappedMedicineOut(BaseModel):
+    id: int
+    medicine_code: str
+    name: str
+    created_at: Optional[datetime] = None
+    unit_price: float = 0.0
+    rate_a: float = 0.0
+
+    class Config:
+        from_attributes = True
+
+
+class MapUnmappedMedicineIn(BaseModel):
+    rate_a: float = Field(..., gt=0)
+    category_id: int
+    generic_name: Optional[str] = None
+    strength: Optional[str] = None
+    dosage_form: Optional[str] = None
+    merge_into_medicine_id: Optional[int] = None
+
+
+@router.get("/medicines/unmapped", response_model=List[UnmappedMedicineOut])
+def list_unmapped_medicines(
+    search: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=500),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission_any(Modules.PHARMACY, "manage_medicines", "dispense_rx")),
+):
+    """Free-text medicines auto-created from inpatient orders — hidden from catalog until mapped."""
+    q = db.query(Medicine).filter(
+        Medicine.hospital_id == current_user.hospital_id,
+        Medicine.is_active == True,  # noqa: E712
+        Medicine.is_hidden == True,  # noqa: E712
+        Medicine.medicine_code.like("TXT-%"),
+    )
+    if search:
+        like = f"%{search.lower()}%"
+        q = q.filter(or_(
+            Medicine.name.ilike(like),
+            Medicine.medicine_code.ilike(like),
+        ))
+    rows = q.order_by(Medicine.created_at.desc()).limit(limit).all()
+    return rows
+
+
+@router.post("/medicines/{mid}/map", response_model=MedicineOut)
+def map_unmapped_medicine(
+    mid: int,
+    data: MapUnmappedMedicineIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission_any(Modules.PHARMACY, "manage_medicines", "dispense_rx")),
+):
+    """Promote a free-text stub to the catalog, or merge it into an existing medicine."""
+    stub = db.query(Medicine).filter(
+        Medicine.id == mid,
+        Medicine.hospital_id == current_user.hospital_id,
+        Medicine.is_hidden == True,  # noqa: E712
+    ).first()
+    if not stub or not is_free_text_medicine(stub):
+        raise HTTPException(status_code=404, detail="Unmapped medicine not found")
+
+    cat = db.query(MedicineCategory).filter(
+        MedicineCategory.id == data.category_id,
+        MedicineCategory.hospital_id == current_user.hospital_id,
+    ).first()
+    if not cat:
+        raise HTTPException(status_code=400, detail="Invalid category")
+
+    if data.merge_into_medicine_id:
+        target = db.query(Medicine).filter(
+            Medicine.id == data.merge_into_medicine_id,
+            Medicine.hospital_id == current_user.hospital_id,
+            Medicine.is_active == True,  # noqa: E712
+            Medicine.is_hidden == False,  # noqa: E712
+        ).first()
+        if not target:
+            raise HTTPException(status_code=400, detail="Target medicine not found")
+        db.query(PrescriptionItem).filter(PrescriptionItem.medicine_id == stub.id).update(
+            {PrescriptionItem.medicine_id: target.id},
+            synchronize_session=False,
+        )
+        stub.is_active = False
+        db.commit()
+        db.refresh(target)
+        _audit(db, current_user, "map_medicine", "medicine", target.id,
+               f"Merged free-text stub #{stub.id} into {target.name}")
+        return target
+
+    stub.category_id = data.category_id
+    stub.rate_a = data.rate_a
+    stub.unit_price = data.rate_a
+    stub.generic_name = data.generic_name
+    stub.strength = data.strength
+    stub.dosage_form = data.dosage_form
+    stub.is_hidden = False
+    db.commit()
+    db.refresh(stub)
+    _audit(db, current_user, "map_medicine", "medicine", stub.id,
+           f"Promoted free-text medicine {stub.name} to catalog at ₹{data.rate_a}")
+    return stub
 
 
 @router.get("/medicines/{mid}", response_model=MedicineOut)
@@ -1750,10 +1862,14 @@ def get_purchase(
 
 class SaleItemIn(BaseModel):
     medicine_id: int
-    quantity: float = Field(..., gt=0)
+    qty_tabs: float = 0.0
+    qty_strips: float = 0.0
+    # Legacy single-unit payload (still accepted for older clients)
+    quantity: Optional[float] = None
+    qty_unit: Optional[str] = Field(None, pattern="^(tablet|strip)$")
     free_quantity: float = 0.0
-    batch_id: Optional[int] = None  # explicit batch; if None → FIFO by expiry
-    rate: Optional[float] = None    # overrides medicine.rate_a/b if set
+    batch_id: Optional[int] = None
+    rate: Optional[float] = None    # optional override: strip rate (MRP-equivalent)
     rate_tier: str = Field("A", pattern="^[AB]$")
     discount_pct: float = 0.0
     barcode_scanned: bool = False
@@ -1767,6 +1883,11 @@ class SaleItemOut(BaseModel):
     batch_number: Optional[str] = None
     quantity: float
     free_quantity: float
+    sale_qty: Optional[float] = None
+    sale_qty_unit: Optional[str] = None
+    sale_qty_tabs: Optional[float] = None
+    sale_qty_strips: Optional[float] = None
+    qty_display: Optional[str] = None
     rate: float
     rate_tier: str
     discount_pct: float
@@ -1808,6 +1929,24 @@ class SaleOut(BaseModel):
     created_at: datetime
 
     class Config: from_attributes = True
+
+
+def _parse_sale_item_qty(line: SaleItemIn, med: Medicine) -> tuple[float, float]:
+    """Normalize POS line to (qty_tabs, qty_strips)."""
+    tabs = float(line.qty_tabs or 0)
+    strips = float(line.qty_strips or 0)
+    if tabs > 0 or strips > 0:
+        return tabs, strips
+    # Legacy: single quantity + unit
+    if line.quantity is not None and float(line.quantity) > 0:
+        qty = float(line.quantity)
+        if line.qty_unit == "strip":
+            return 0.0, qty
+        if line.qty_unit == "tablet":
+            return qty, 0.0
+        # Default unknown legacy to tablets
+        return qty, 0.0
+    return tabs, strips
 
 
 def _next_sale_number(db: Session, hospital_id: int) -> str:
@@ -1898,6 +2037,15 @@ def _shape_sale(s: PharmacySale, db: Session) -> SaleOut:
             medicine_name=med.name if med else None,
             batch_id=it.batch_id, batch_number=batch.batch_number if batch else None,
             quantity=it.quantity, free_quantity=it.free_quantity or 0.0,
+            sale_qty=it.sale_qty, sale_qty_unit=it.sale_qty_unit,
+            sale_qty_tabs=it.sale_qty_tabs, sale_qty_strips=it.sale_qty_strips,
+            qty_display=format_sale_qty_display(
+                quantity=it.quantity or 0,
+                sale_qty_tabs=it.sale_qty_tabs,
+                sale_qty_strips=it.sale_qty_strips,
+                sale_qty=it.sale_qty,
+                sale_qty_unit=it.sale_qty_unit,
+            ),
             rate=it.rate, rate_tier=it.rate_tier or "A",
             discount_pct=it.discount_pct or 0.0, tax_pct=it.tax_pct or 0.0,
             line_total=it.line_total or 0.0, barcode_scanned=bool(it.barcode_scanned),
@@ -1996,16 +2144,20 @@ def create_sale(
         if not med:
             raise HTTPException(status_code=400, detail=f"Invalid medicine_id {line.medicine_id}")
 
-        # Determine effective rate
-        rate = line.rate if line.rate is not None else (
-            med.rate_b if line.rate_tier == "B" else med.rate_a
+        qty_tabs, qty_strips = _parse_sale_item_qty(line, med)
+        if qty_tabs <= 0 and qty_strips <= 0:
+            raise HTTPException(status_code=400, detail=f"Enter tab or strip qty for {med.name}")
+
+        base_qty_needed, rate_per_tab, strip_rate, qty_tabs, qty_strips = resolve_pos_sale_line(
+            med,
+            qty_tabs=qty_tabs,
+            qty_strips=qty_strips,
+            tier=line.rate_tier,
+            override_strip_rate=line.rate,
         )
-        if not rate:
-            # Fall back to legacy unit_price if no tiered rate is set
-            rate = med.unit_price or 0.0
-        if rate <= 0:
+        if rate_per_tab <= 0:
             raise HTTPException(status_code=400,
-                                detail=f"No price set on medicine {med.name}")
+                                detail=f"No MRP / rate set on medicine {med.name}")
 
         # P3.7: surface stacking instead of silently clamping at 100. The user
         # can either lower their line discount or unset the medicine-level one.
@@ -2029,7 +2181,7 @@ def create_sale(
 
         # Resolve batch(es): explicit batch_id or FIFO across as many as needed
         picks = []
-        qty_needed = float(line.quantity)
+        qty_needed = base_qty_needed
         if line.batch_id:
             # P3.2: lock the batch row during this sale.
             batch = db.query(PharmacyInventory).filter(
@@ -2066,24 +2218,28 @@ def create_sale(
         else:
             free_alloc = [0.0] * len(picks)
 
+        first_batch_row = True
         for (batch, take_qty), free_for_batch in zip(picks, free_alloc):
-            base = take_qty * rate
+            base = take_qty * rate_per_tab
             base_after_disc = base * (1 - disc / 100.0)
             # P3.9: include free portion in taxable base when the hospital opts in.
             if tax_on_free and free_for_batch:
-                base_after_disc += free_for_batch * rate * (1 - disc / 100.0)
+                base_after_disc += free_for_batch * rate_per_tab * (1 - disc / 100.0)
             tax_amt = base_after_disc * (tax_pct / 100.0)
             line_total = round(base_after_disc + tax_amt, 2)
 
             item_row = PharmacySaleItem(
                 sale_id=sale.id, medicine_id=med.id, batch_id=batch.id,
                 quantity=take_qty, free_quantity=free_for_batch,
-                rate=rate, rate_tier=line.rate_tier,
+                sale_qty_tabs=qty_tabs if first_batch_row else None,
+                sale_qty_strips=qty_strips if first_batch_row else None,
+                rate=rate_per_tab, rate_tier=line.rate_tier,
                 discount_pct=disc, tax_pct=tax_pct,
                 sgst_pct=sgst_snap, cgst_pct=cgst_snap, igst_pct=igst_snap,
                 line_total=line_total, barcode_scanned=line.barcode_scanned,
             )
             db.add(item_row)
+            first_batch_row = False
 
             # Deduct inventory + ledger
             batch.quantity_in_stock = (batch.quantity_in_stock or 0) - take_qty - free_for_batch
@@ -2254,6 +2410,9 @@ class PendingRxItemOut(BaseModel):
     quantity_prescribed: float
     quantity_dispensed: float
     quantity_remaining: float
+    unit_price: float = 0.0
+    strip_conversion_factor: int = 1
+    is_unmapped: bool = False
     dosage: Optional[str] = None
     duration: Optional[str] = None
     status: str
@@ -2265,6 +2424,8 @@ class PendingRxOut(BaseModel):
     prescription_date: datetime
     status: str
     notes: Optional[str] = None
+    admission_id: Optional[int] = None
+    patient_name: Optional[str] = None
     items: List[PendingRxItemOut] = Field(default_factory=list)
 
 
@@ -2275,12 +2436,15 @@ def list_pending_prescriptions(
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_dispense_queue")),
 ):
     """List prescriptions awaiting (full or partial) dispensing."""
+    from app.models.patient import Patient
+
     rxs = db.query(Prescription).filter(
         Prescription.status.in_(["pending", "partial"]),
     ).order_by(Prescription.prescription_date.desc()).limit(limit).all()
 
     out = []
     for rx in rxs:
+        patient = db.query(Patient).filter(Patient.id == rx.patient_id).first()
         items = []
         for it in rx.items:
             med = db.query(Medicine).filter(Medicine.id == it.medicine_id).first()
@@ -2291,25 +2455,42 @@ def list_pending_prescriptions(
                 quantity_prescribed=float(it.quantity_prescribed or 0),
                 quantity_dispensed=float(it.quantity_dispensed or 0),
                 quantity_remaining=rem,
+                unit_price=float(it.unit_price or 0),
+                strip_conversion_factor=int(med.strip_conversion_factor or 1) if med else 1,
+                is_unmapped=bool(med and is_free_text_medicine(med)),
                 dosage=it.dosage, duration=it.duration, status=it.status or "pending",
             ))
         out.append(PendingRxOut(
             id=rx.id, prescription_number=rx.prescription_number,
             prescription_date=rx.prescription_date, status=rx.status,
-            notes=rx.notes, items=items,
+            notes=rx.notes,
+            admission_id=rx.admission_id,
+            patient_name=(
+                f"{patient.first_name} {patient.last_name}" if patient else None
+            ),
+            items=items,
         ))
     return out
 
 
 class DispenseItemIn(BaseModel):
-    item_id: int                     # PrescriptionItem.id
-    quantity: float = Field(..., gt=0)
-    batch_id: Optional[int] = None  # FIFO if None
+    item_id: int
+    qty_tabs: float = 0.0
+    qty_strips: float = 0.0
+    quantity: Optional[float] = None  # legacy
+    qty_unit: Optional[str] = Field(None, pattern="^(tablet|strip)$")
+    batch_id: Optional[int] = None
 
 
 class DispenseIn(BaseModel):
     items: List[DispenseItemIn] = Field(..., min_length=1)
     notes: Optional[str] = None
+    billing_mode: str = Field(
+        "inpatient_bill",
+        pattern="^(inpatient_bill|cash_at_pharmacy)$",
+        description="inpatient_bill: charge on admission bill; cash_at_pharmacy: collect payment now",
+    )
+    payment_type: str = Field("cash", pattern="^(cash|credit)$")
 
 
 class DispenseLineOut(BaseModel):
@@ -2319,12 +2500,18 @@ class DispenseLineOut(BaseModel):
     batch_id: int
     batch_number: Optional[str] = None
     quantity: float
+    unit_price: float = 0.0
+    line_total: float = 0.0
 
 
 class DispenseResultOut(BaseModel):
     prescription_id: int
     prescription_number: str
     status: str
+    billing_mode: str
+    pharmacy_sale_id: Optional[int] = None
+    pharmacy_sale_number: Optional[str] = None
+    grand_total: Optional[float] = None
     lines: List[DispenseLineOut]
 
 
@@ -2360,6 +2547,8 @@ def dispense_prescription(
         raise HTTPException(status_code=404, detail="Prescription not found")
     if rx.status in ("dispensed", "cancelled"):
         raise HTTPException(status_code=400, detail=f"Prescription already {rx.status}")
+    if data.billing_mode == "cash_at_pharmacy" and rx.pharmacy_sale_id:
+        raise HTTPException(status_code=400, detail="Prescription already paid at pharmacy counter")
 
     lines_out: List[DispenseLineOut] = []
     for req in data.items:
@@ -2369,14 +2558,39 @@ def dispense_prescription(
         ).first()
         if not rxi:
             raise HTTPException(status_code=400, detail=f"Item {req.item_id} not on Rx {rx.id}")
-        remaining = float((rxi.quantity_prescribed or 0) - (rxi.quantity_dispensed or 0))
-        if req.quantity > remaining:
-            raise HTTPException(status_code=400,
-                                detail=f"Item {rxi.id}: cannot dispense {req.quantity} — only {remaining} remaining")
 
-        # Resolve batch picks: explicit or FIFO
+        med = db.query(Medicine).filter(Medicine.id == rxi.medicine_id).first()
+        qty_tabs = float(req.qty_tabs or 0)
+        qty_strips = float(req.qty_strips or 0)
+        if qty_tabs <= 0 and qty_strips <= 0 and req.quantity:
+            if req.qty_unit == "strip":
+                qty_strips = float(req.quantity)
+            else:
+                qty_tabs = float(req.quantity)
+        base_qty = combined_base_qty(qty_tabs, qty_strips, med) if med else qty_tabs + qty_strips
+        if base_qty <= 0:
+            raise HTTPException(status_code=400, detail=f"Item {rxi.id}: enter tab or strip qty")
+        remaining = float((rxi.quantity_prescribed or 0) - (rxi.quantity_dispensed or 0))
+        if base_qty > remaining:
+            raise HTTPException(status_code=400,
+                                detail=f"Item {rxi.id}: cannot dispense {base_qty:g} tab(s) — only {remaining:g} remaining")
+
+        unit_price = float(rxi.unit_price or 0)
+        if unit_price <= 0 and med:
+            unit_price = medicine_sale_rate(med)
+        if unit_price <= 0:
+            med_name = med.name if med else f"item #{rxi.id}"
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"No price set for {med_name}. "
+                    "Map it under Pharmacy → Unmapped Medicines before dispensing."
+                ),
+            )
+        rxi.unit_price = unit_price
+        rxi.total_price = unit_price * float(rxi.quantity_prescribed or 0)
+
         if req.batch_id:
-            # P3.2: lock the batch row for the duration of this dispense.
             batch = db.query(PharmacyInventory).filter(
                 PharmacyInventory.id == req.batch_id,
                 PharmacyInventory.hospital_id == current_user.hospital_id,
@@ -2384,17 +2598,16 @@ def dispense_prescription(
             ).with_for_update().first()
             if not batch:
                 raise HTTPException(status_code=400, detail=f"Invalid batch_id {req.batch_id}")
-            if (batch.quantity_in_stock or 0) < req.quantity:
+            if (batch.quantity_in_stock or 0) < base_qty:
                 raise HTTPException(status_code=400,
                                     detail=f"Batch {batch.batch_number} has only {batch.quantity_in_stock}")
-            picks = [(batch, req.quantity)]
+            picks = [(batch, base_qty)]
         else:
             picks = _pick_fifo_batches(
-                db, medicine_id=rxi.medicine_id, qty_needed=req.quantity,
+                db, medicine_id=rxi.medicine_id, qty_needed=base_qty,
                 hospital_id=current_user.hospital_id,
             )
 
-        med = db.query(Medicine).filter(Medicine.id == rxi.medicine_id).first()
         for batch, take in picks:
             batch.quantity_in_stock = (batch.quantity_in_stock or 0) - take
             db.add(PharmacyStockLedger(
@@ -2403,21 +2616,23 @@ def dispense_prescription(
                 performed_by=current_user.id, hospital_id=current_user.hospital_id,
                 notes=f"Dispensed Rx {rx.prescription_number} item #{rxi.id}",
             ))
+            line_total = unit_price * take
             lines_out.append(DispenseLineOut(
                 item_id=rxi.id, medicine_id=rxi.medicine_id,
                 medicine_name=med.name if med else None,
                 batch_id=batch.id, batch_number=batch.batch_number, quantity=take,
+                unit_price=unit_price, line_total=line_total,
             ))
 
-        rxi.quantity_dispensed = (rxi.quantity_dispensed or 0) + req.quantity
+        rxi.quantity_dispensed = (rxi.quantity_dispensed or 0) + base_qty
         if rxi.quantity_dispensed >= (rxi.quantity_prescribed or 0):
             rxi.status = "dispensed"
         else:
             rxi.status = "partial"
 
-    # Recompute overall Rx status
     db.flush()
     all_items = db.query(PrescriptionItem).filter(PrescriptionItem.prescription_id == rx.id).all()
+    rx.total_amount = sum(float(i.unit_price or 0) * float(i.quantity_prescribed or 0) for i in all_items)
     if all(i.status == "dispensed" for i in all_items):
         rx.status = "dispensed"
         rx.dispensed_by_id = current_user.id
@@ -2425,13 +2640,82 @@ def dispense_prescription(
     else:
         rx.status = "partial"
 
-    db.commit(); db.refresh(rx)
-    _audit(db, current_user, "dispense_rx", "prescription", rx.id,
-           f"Dispensed against Rx {rx.prescription_number} ({len(lines_out)} batch lines)",
-           details={"notes": data.notes} if data.notes else None)
+    sale_id = None
+    sale_number = None
+    grand_total = None
+    if data.billing_mode == "cash_at_pharmacy" and lines_out:
+        patient = db.query(_PatientForRx).filter(_PatientForRx.id == rx.patient_id).first()
+        doctor = db.query(User).filter(User.id == rx.doctor_id).first()
+        sale = PharmacySale(
+            sale_number=_next_sale_number(db, current_user.hospital_id),
+            payment_type=data.payment_type,
+            patient_ip_id=patient.patient_id if patient else None,
+            patient_name=(
+                f"{patient.first_name} {patient.last_name}" if patient else None
+            ),
+            doctor_name=(
+                f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else None
+            ),
+            status="completed",
+            created_by=current_user.id,
+            hospital_id=current_user.hospital_id,
+        )
+        db.add(sale)
+        _flush_with_number_retry(
+            db, sale,
+            regen=lambda: _next_sale_number(db, current_user.hospital_id),
+            set_attr="sale_number",
+        )
+        subtotal = 0.0
+        tax_total = 0.0
+        for line in lines_out:
+            med = db.query(Medicine).filter(Medicine.id == line.medicine_id).first()
+            hsn_row = (
+                db.query(PharmacyHSN).filter(PharmacyHSN.id == med.hsn_id).first()
+                if med and med.hsn_id else None
+            )
+            tax_pct = (
+                (hsn_row.sgst_pct or 0) + (hsn_row.cgst_pct or 0) + (hsn_row.igst_pct or 0)
+                if hsn_row else 0.0
+            )
+            line_total = line.line_total
+            tax_amt = line_total * tax_pct / 100.0
+            subtotal += line_total
+            tax_total += tax_amt
+            db.add(PharmacySaleItem(
+                sale_id=sale.id,
+                medicine_id=line.medicine_id,
+                batch_id=line.batch_id,
+                quantity=line.quantity,
+                rate=line.unit_price,
+                rate_tier="A",
+                tax_pct=tax_pct,
+                sgst_pct=(hsn_row.sgst_pct or 0) if hsn_row else 0.0,
+                cgst_pct=(hsn_row.cgst_pct or 0) if hsn_row else 0.0,
+                igst_pct=(hsn_row.igst_pct or 0) if hsn_row else 0.0,
+                line_total=line_total + tax_amt,
+            ))
+        sale.subtotal = subtotal
+        sale.tax_total = tax_total
+        sale.discount_total = 0.0
+        sale.grand_total = subtotal + tax_total
+        rx.pharmacy_sale_id = sale.id
+        sale_id = sale.id
+        sale_number = sale.sale_number
+        grand_total = sale.grand_total
+
+    db.commit()
+    db.refresh(rx)
+    _audit(
+        db, current_user, "dispense_rx", "prescription", rx.id,
+        f"Dispensed Rx {rx.prescription_number} ({len(lines_out)} batch lines, {data.billing_mode})",
+        details={"notes": data.notes, "billing_mode": data.billing_mode} if data.notes else {"billing_mode": data.billing_mode},
+    )
     return DispenseResultOut(
         prescription_id=rx.id, prescription_number=rx.prescription_number,
-        status=rx.status, lines=lines_out,
+        status=rx.status, billing_mode=data.billing_mode,
+        pharmacy_sale_id=sale_id, pharmacy_sale_number=sale_number,
+        grand_total=grand_total, lines=lines_out,
     )
 
 

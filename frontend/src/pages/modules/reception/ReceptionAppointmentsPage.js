@@ -381,22 +381,22 @@ const ReceptionAppointmentsPage = () => {
   // Lab Payment functions
   const [allLabOrders, setAllLabOrders] = useState([]);
 
-  const openLabPaymentDialog = async (patientId, appointmentId = null) => {
+  const openLabPaymentDialog = async (patientId) => {
     setLabPaymentLoading(true);
     setShowLabPaymentDialog(true);
     setPendingLabOrders([]);
     setAllLabOrders([]);
     try {
       const token = localStorage.getItem('token');
-      const aptFilter = appointmentId ? `&appointment_id=${appointmentId}` : '';
-      // Fetch pending payment orders for this appointment
-      const res = await fetch(`/api/lab/orders?patient_id=${patientId}${aptFilter}&reception_view=true`, {
+      // Fetch all lab orders for the patient — many orders (consultation,
+      // walk-in) are not linked to appointment_id, so do not filter by apt.
+      const res = await fetch(`/api/lab/orders?patient_id=${patientId}&reception_view=true`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (res.ok) {
         const orders = await res.json();
-        setPendingLabOrders(orders.filter(o => o.payment_status === 'pending' && o.status !== 'cancelled'));
-        setAllLabOrders(orders);
+        setPendingLabOrders(orders.filter((o) => o.payment_status !== 'paid' && o.status !== 'cancelled'));
+        setAllLabOrders(Array.isArray(orders) ? orders : []);
       }
     } catch (err) {
       console.error('Failed to fetch lab orders:', err);
@@ -404,6 +404,11 @@ const ReceptionAppointmentsPage = () => {
       setLabPaymentLoading(false);
     }
   };
+
+  const labReportOrders = allLabOrders.filter((o) => o.has_report);
+  const labInProgressOrders = allLabOrders.filter(
+    (o) => o.payment_status === 'paid' && o.status !== 'completed' && o.status !== 'cancelled'
+  );
 
   const collectLabPayment = async (orderId) => {
     try {
@@ -1217,7 +1222,7 @@ const ReceptionAppointmentsPage = () => {
                         Prescription
                       </Button>
                     )}
-                    <Button size="sm" variant="ghost" className="h-7 px-3 text-xs text-teal-600 hover:text-teal-800" onClick={() => openLabPaymentDialog(appointment.patient_id, appointment.id)}>
+                    <Button size="sm" variant="ghost" className="h-7 px-3 text-xs text-teal-600 hover:text-teal-800" onClick={() => openLabPaymentDialog(appointment.patient_id)}>
                       Lab Orders
                     </Button>
                   </div>
@@ -1597,10 +1602,10 @@ const ReceptionAppointmentsPage = () => {
                 <RefreshCw className="h-6 w-6 animate-spin mx-auto mb-2" />
                 Loading pending orders...
               </div>
-            ) : pendingLabOrders.length === 0 && allLabOrders.filter(o => o.has_report).length === 0 ? (
+            ) : allLabOrders.length === 0 ? (
               <div className="text-center py-8 text-gray-400">
                 <TestTube className="h-10 w-10 mx-auto mb-2 text-gray-300" />
-                <p>No pending lab payments for this patient.</p>
+                <p>No lab orders for this patient.</p>
               </div>
             ) : (
               <div className="space-y-4">
@@ -1691,14 +1696,37 @@ const ReceptionAppointmentsPage = () => {
                   </>
                 )}
 
-                {/* Completed Reports - Download */}
-                {allLabOrders.filter(o => o.has_report).length > 0 && (
+                {/* Paid, in progress */}
+                {labInProgressOrders.length > 0 && (
                   <>
-                    {pendingLabOrders.length > 0 && <hr className="my-2" />}
+                    {(pendingLabOrders.length > 0) && <hr className="my-2" />}
+                    <p className="text-sm font-medium text-gray-700">
+                      In Progress ({labInProgressOrders.length})
+                    </p>
+                    <div className="border rounded-lg divide-y max-h-48 overflow-y-auto">
+                      {labInProgressOrders.map((order) => (
+                        <div key={order.id} className="p-3 flex items-center justify-between">
+                          <div>
+                            <p className="font-medium text-sm">{order.test_name}</p>
+                            <p className="text-xs text-gray-500">
+                              {order.order_number} | {order.test_code} | Dr. {order.doctor_name?.replace('Dr. ', '')}
+                            </p>
+                          </div>
+                          <Badge variant="secondary" className="text-xs capitalize">{order.status}</Badge>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+
+                {/* Completed Reports - Download */}
+                {labReportOrders.length > 0 && (
+                  <>
+                    {(pendingLabOrders.length > 0 || labInProgressOrders.length > 0) && <hr className="my-2" />}
                     <p className="text-sm font-medium text-gray-700">Completed Reports</p>
                     <div className="border rounded-lg divide-y max-h-48 overflow-y-auto">
                       {(() => {
-                        const reportOrders = allLabOrders.filter(o => o.has_report);
+                        const reportOrders = labReportOrders;
                         const groups = [];
                         const pkgMap = {};
                         for (const order of reportOrders) {

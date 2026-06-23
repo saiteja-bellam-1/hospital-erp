@@ -167,41 +167,61 @@ def _lab_results_show_notes_column(results_list):
     return any((r.get('notes') or '').strip() for r in (results_list or []))
 
 
-def _build_lab_results_table(results_list, *, page_width, cell_label, cell_value, cell_abnormal, section_label_style):
-    """Build a lab results table. Adds a NOTES column after METHOD only when any parameter has notes."""
+def _format_lab_result_with_unit(value, unit):
+    raw = str(value or '').strip()
+    unit_text = (unit or '').strip()
+    if not raw:
+        return '-'
+    if unit_text:
+        return f"{raw} {_escape_pdf_inline(unit_text)}"
+    return raw
+
+
+def _format_lab_parameter_cell(parameter_name, method='', remarks=''):
+    """Parameter name with optional method on the next line in parentheses."""
+    param_text = _escape_pdf_inline(parameter_name or '')
+    method_text = (method or '').strip()
+    if method_text:
+        param_text = (
+            f"{param_text}<br/><font size='8'>"
+            f"({_escape_pdf_inline(method_text)})</font>"
+        )
+    if remarks:
+        param_text = (
+            f"{param_text}<br/><i><font size='7' color='grey'>"
+            f"{_escape_pdf_inline(remarks)}</font></i>"
+        )
+    return param_text
+
+
+def _build_lab_results_table(results_list, *, page_width, cell_label, cell_value, cell_abnormal, section_label_style, cell_ref_range=None):
+    """Build a lab results table. Adds a NOTES column only when any parameter has notes."""
+    ref_cell_style = cell_ref_range or cell_value
     show_notes = _lab_results_show_notes_column(results_list)
 
     if show_notes:
         col_widths = [
-            page_width * 0.24,
-            page_width * 0.13,
-            page_width * 0.10,
+            page_width * 0.30,
+            page_width * 0.22,
+            page_width * 0.28,
             page_width * 0.20,
-            page_width * 0.16,
-            page_width * 0.17,
         ]
         header = [
-            Paragraph('<b>TEST DESCRIPTION</b>', cell_label),
+            Paragraph('<b>PARAMETER</b>', cell_label),
             Paragraph('<b>RESULT</b>', cell_label),
-            Paragraph('<b>UNIT</b>', cell_label),
             Paragraph('<b>BIO. REF. RANGE</b>', cell_label),
-            Paragraph('<b>METHOD</b>', cell_label),
             Paragraph('<b>NOTES</b>', cell_label),
         ]
     else:
         col_widths = [
+            page_width * 0.32,
             page_width * 0.28,
-            page_width * 0.15,
-            page_width * 0.12,
-            page_width * 0.25,
-            page_width * 0.20,
+            page_width * 0.40,
         ]
         header = [
-            Paragraph('<b>TEST DESCRIPTION</b>', cell_label),
+            Paragraph('<b>PARAMETER</b>', cell_label),
             Paragraph('<b>RESULT</b>', cell_label),
-            Paragraph('<b>UNIT</b>', cell_label),
             Paragraph('<b>BIO. REF. RANGE</b>', cell_label),
-            Paragraph('<b>METHOD</b>', cell_label),
         ]
 
     results_data = [header]
@@ -224,30 +244,34 @@ def _build_lab_results_table(results_list, *, page_width, cell_label, cell_value
         value_style = cell_abnormal if is_abnormal else cell_value
 
         ref_range = '-'
-        ref_min = r.get('reference_min')
-        ref_max = r.get('reference_max')
-        normal_val = r.get('normal_value')
-        if ref_min is not None and ref_max is not None:
-            ref_range = f"{ref_min} - {ref_max}"
-        elif ref_min is not None:
-            ref_range = f"&gt; {ref_min}"
-        elif ref_max is not None:
-            ref_range = f"&lt; {ref_max}"
-        elif normal_val:
-            ref_range = normal_val
+        ref_display = (r.get('reference_range_display') or '').strip()
+        if ref_display:
+            ref_range = ref_display
+            ref_style = ref_cell_style if '<br/>' in ref_display else cell_value
+        else:
+            ref_style = cell_value
+            ref_min = r.get('reference_min')
+            ref_max = r.get('reference_max')
+            normal_val = r.get('normal_value')
+            if ref_min is not None and ref_max is not None:
+                ref_range = f"{ref_min} - {ref_max}"
+            elif ref_min is not None:
+                ref_range = f"&gt; {ref_min}"
+            elif ref_max is not None:
+                ref_range = f"&lt; {ref_max}"
+            elif normal_val:
+                ref_range = normal_val
 
-        param_text = r.get('parameter_name', '')
-        remarks = r.get('remarks', '')
-        if remarks:
-            param_text = f"{param_text}<br/><i><font size='7' color='grey'>{_escape_pdf_inline(remarks)}</font></i>"
-
-        method_text = r.get('method', '') or ''
+        param_text = _format_lab_parameter_cell(
+            r.get('parameter_name', ''),
+            r.get('method', ''),
+            r.get('remarks', ''),
+        )
+        result_text = _format_lab_result_with_unit(r.get('value', ''), r.get('unit', ''))
         row = [
             Paragraph(param_text, cell_value),
-            Paragraph(str(r.get('value', '')), value_style),
-            Paragraph(r.get('unit', '') or '-', cell_value),
-            Paragraph(ref_range, cell_value),
-            Paragraph(_escape_pdf_inline(method_text), cell_value),
+            Paragraph(result_text, value_style),
+            Paragraph(ref_range, ref_style),
         ]
         if show_notes:
             notes_text = (r.get('notes') or '').strip()
@@ -1698,6 +1722,9 @@ class PDFService:
         cell_abnormal = ParagraphStyle('LabCellAbnormal', parent=self.styles['Normal'],
             fontSize=10, fontName='Helvetica-Bold', textColor=colors.black)
 
+        cell_ref_range = ParagraphStyle('LabCellRefRange', parent=cell_value,
+            fontSize=7, leading=9, textColor=colors.black)
+
         normal_text = ParagraphStyle('LabNormalText', parent=self.styles['Normal'],
             fontSize=10, spaceAfter=6, fontName='Helvetica', textColor=colors.black)
 
@@ -1892,6 +1919,7 @@ class PDFService:
             cell_label=cell_label,
             cell_value=cell_value,
             cell_abnormal=cell_abnormal,
+            cell_ref_range=cell_ref_range,
             section_label_style=ParagraphStyle('LabSectionLabel', parent=self.styles['Normal'],
                 fontSize=9, fontName='Helvetica-Bold', textColor=colors.black),
         )
@@ -2111,6 +2139,8 @@ class PDFService:
             fontSize=9, fontName='Helvetica', textColor=colors.black)
         cell_abnormal = ParagraphStyle('CLabCellAbnormal', parent=self.styles['Normal'],
             fontSize=10, fontName='Helvetica-Bold', textColor=colors.black)
+        cell_ref_range = ParagraphStyle('CLabCellRefRange', parent=cell_value,
+            fontSize=7, leading=9, textColor=colors.black)
         normal_text = ParagraphStyle('CLabNormalText', parent=self.styles['Normal'],
             fontSize=10, spaceAfter=6, fontName='Helvetica', textColor=colors.black)
         footer_style = ParagraphStyle('CLabFooter', parent=self.styles['Normal'],
@@ -2196,6 +2226,7 @@ class PDFService:
                 cell_label=cell_label,
                 cell_value=cell_value,
                 cell_abnormal=cell_abnormal,
+                cell_ref_range=cell_ref_range,
                 section_label_style=section_label_style,
             )
             elements.append(results_table)
@@ -4451,11 +4482,12 @@ class PDFService:
             Paragraph("Tax%", header_p), Paragraph("Amount", header_p),
         ]]
         for i, it in enumerate(sale_data.get('items') or [], start=1):
+            qty_text = it.get('qty_display') or f"{it.get('quantity', 0)}"
             rows.append([
                 Paragraph(str(i), cell),
                 Paragraph(str(it.get('medicine_name') or ''), cell),
                 Paragraph(str(it.get('batch_number') or '—'), cell),
-                Paragraph(f"{it.get('quantity', 0)}", cell),
+                Paragraph(str(qty_text), cell),
                 Paragraph(f"{it.get('free_quantity', 0)}", cell),
                 Paragraph(f"Rs. {it.get('rate', 0):.2f}", cell),
                 Paragraph(str(it.get('rate_tier') or '—'), cell),

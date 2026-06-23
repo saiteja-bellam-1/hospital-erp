@@ -31,7 +31,7 @@ const LabTestParametersPage = () => {
   const [editingParam, setEditingParam] = useState(null);
   const [paramForm, setParamForm] = useState({
     parameter_name: '', unit: '', method: '', section: '', field_type: 'numeric',
-    reference_ranges: [{ min: '', max: '', gender: 'common', age_min: '', age_max: '', description: '' }],
+    reference_ranges: [{ min: '', max: '', gender: 'common', age_min: '', age_max: '', description: '', is_normal: false }],
     possible_values: '', abnormal_values: '', normal_value: '', notes: '', display_order: 0
   });
 
@@ -87,6 +87,44 @@ const LabTestParametersPage = () => {
 
   // ============ Helpers ============
 
+  const formatRangeTier = (row, unit = '') => {
+    const desc = row.description ? `${row.description}: ` : '';
+    const unitSuffix = unit ? ` ${unit}` : '';
+    const min = row.min !== '' && row.min != null ? row.min : null;
+    const max = row.max !== '' && row.max != null ? row.max : null;
+    if (min != null && max != null) return `${desc}${min} - ${max}${unitSuffix}`;
+    if (max != null) return `${desc}< ${max}${unitSuffix}`;
+    if (min != null) return `${desc}> ${min}${unitSuffix}`;
+    return desc || '–';
+  };
+
+  const formatParamReferenceSummary = (param) => {
+    if (param.reference_ranges?.length) {
+      return param.reference_ranges.map((row) => formatRangeTier(row, param.unit || '')).join(' · ');
+    }
+    const parts = [];
+    if (param.reference_min_male != null || param.reference_max_male != null) {
+      parts.push(`M: ${param.reference_min_male ?? '–'} – ${param.reference_max_male ?? '–'}`);
+    }
+    if (param.reference_min_female != null || param.reference_max_female != null) {
+      parts.push(`F: ${param.reference_min_female ?? '–'} – ${param.reference_max_female ?? '–'}`);
+    }
+    if (param.reference_min_default != null || param.reference_max_default != null) {
+      parts.push(`${param.reference_min_default ?? '–'} – ${param.reference_max_default ?? '–'}`);
+    }
+    return parts.length ? parts.join(' · ') : '–';
+  };
+
+  const emptyReferenceRow = (fieldType, isFirst = false) => ({
+    min: '',
+    max: '',
+    gender: 'common',
+    age_min: '',
+    age_max: '',
+    description: '',
+    is_normal: fieldType === 'tiered_numeric' && isFirst,
+  });
+
   const getGroupedParams = () => {
     if (!test?.parameters) return { sections: [], sectionMap: {} };
     const sectionMap = {};
@@ -129,7 +167,7 @@ const LabTestParametersPage = () => {
           ranges.push({ min: param.reference_min_child ?? '', max: param.reference_max_child ?? '', gender: 'common', age_min: '0', age_max: '12', description: 'Child' });
         }
         if (ranges.length === 0) {
-          ranges = [{ min: '', max: '', gender: 'common', age_min: '', age_max: '', description: '' }];
+          ranges = [emptyReferenceRow(param.field_type || 'numeric', true)];
         }
       }
       setParamForm({
@@ -138,7 +176,16 @@ const LabTestParametersPage = () => {
         method: param.method || '',
         section: param.section || '',
         field_type: param.field_type || 'numeric',
-        reference_ranges: ranges,
+        reference_ranges: ranges.map((row, idx) => ({
+          ...emptyReferenceRow(param.field_type || 'numeric', idx === 0),
+          ...row,
+          min: row.min ?? '',
+          max: row.max ?? '',
+          age_min: row.age_min ?? '',
+          age_max: row.age_max ?? '',
+          description: row.description || '',
+          is_normal: row.is_normal ?? (param.field_type === 'tiered_numeric' && idx === 0),
+        })),
         possible_values: param.possible_values ? param.possible_values.join(', ') : '',
         abnormal_values: param.abnormal_values ? param.abnormal_values.join(', ') : '',
         normal_value: param.normal_value || '',
@@ -149,7 +196,7 @@ const LabTestParametersPage = () => {
       setEditingParam(null);
       setParamForm({
         parameter_name: '', unit: '', method: '', section: defaultSection, field_type: 'numeric',
-        reference_ranges: [{ min: '', max: '', gender: 'common', age_min: '', age_max: '', description: '' }],
+        reference_ranges: [emptyReferenceRow('numeric', true)],
         possible_values: '', abnormal_values: '', normal_value: '', notes: '', display_order: 0
       });
     }
@@ -161,14 +208,18 @@ const LabTestParametersPage = () => {
     // Build clean reference_ranges — filter out empty rows
     const cleanRanges = (paramForm.reference_ranges || [])
       .filter(r => r.min !== '' || r.max !== '' || r.description)
-      .map(r => ({
+      .map((r, idx) => ({
         min: r.min !== '' ? parseFloat(r.min) : null,
         max: r.max !== '' ? parseFloat(r.max) : null,
-        gender: r.gender || 'common',
-        age_min: r.age_min !== '' ? parseFloat(r.age_min) : null,
-        age_max: r.age_max !== '' ? parseFloat(r.age_max) : null,
+        gender: paramForm.field_type === 'tiered_numeric' ? 'common' : (r.gender || 'common'),
+        age_min: paramForm.field_type === 'tiered_numeric' || r.age_min === '' ? null : parseFloat(r.age_min),
+        age_max: paramForm.field_type === 'tiered_numeric' || r.age_max === '' ? null : parseFloat(r.age_max),
         description: r.description || '',
+        is_normal: paramForm.field_type === 'tiered_numeric' ? !!r.is_normal : false,
       }));
+    if (paramForm.field_type === 'tiered_numeric' && cleanRanges.length > 0 && !cleanRanges.some((r) => r.is_normal)) {
+      cleanRanges[0].is_normal = true;
+    }
 
     const payload = {
       parameter_name: paramForm.parameter_name,
@@ -180,10 +231,10 @@ const LabTestParametersPage = () => {
       possible_values: paramForm.field_type === 'select' && paramForm.possible_values
         ? paramForm.possible_values.split(',').map(v => v.trim()).filter(Boolean)
         : null,
-      abnormal_values: !['numeric', 'less_than', 'greater_than'].includes(paramForm.field_type) && paramForm.abnormal_values
+      abnormal_values: !['numeric', 'tiered_numeric', 'less_than', 'greater_than'].includes(paramForm.field_type) && paramForm.abnormal_values
         ? paramForm.abnormal_values.split(',').map(v => v.trim()).filter(Boolean)
         : null,
-      normal_value: !['numeric', 'less_than', 'greater_than'].includes(paramForm.field_type) && paramForm.normal_value
+      normal_value: !['numeric', 'tiered_numeric', 'less_than', 'greater_than'].includes(paramForm.field_type) && paramForm.normal_value
         ? paramForm.normal_value.trim()
         : null,
       notes: paramForm.notes || null,
@@ -613,9 +664,7 @@ const LabTestParametersPage = () => {
                             <th className="py-2 px-3">Method</th>
                             <th className="py-2 px-3 w-20">Unit</th>
                             <th className="py-2 px-3 w-20">Type</th>
-                            <th className="py-2 px-3">Range (M)</th>
-                            <th className="py-2 px-3">Range (F)</th>
-                            <th className="py-2 px-3">Range (Default)</th>
+                            <th className="py-2 px-3">Reference Ranges</th>
                             <th className="py-2 px-3 w-20"></th>
                           </tr>
                         </thead>
@@ -651,24 +700,15 @@ const LabTestParametersPage = () => {
                                 <td className="py-2 px-3">
                                   <span className={`inline-flex items-center text-[10px] font-medium px-1.5 py-0.5 rounded ${
                                     param.field_type === 'numeric' ? 'bg-blue-50 text-blue-600' :
+                                    param.field_type === 'tiered_numeric' ? 'bg-violet-50 text-violet-600' :
                                     param.field_type === 'select' ? 'bg-amber-50 text-amber-600' :
                                     'bg-slate-100 text-slate-500'
-                                  }`}>{param.field_type}</span>
+                                  }`}>{param.field_type === 'tiered_numeric' ? 'tiered' : param.field_type}</span>
                                 </td>
-                                <td className="py-2 px-3 text-xs font-mono text-slate-500">
-                                  {param.reference_min_male != null || param.reference_max_male != null
-                                    ? `${param.reference_min_male ?? '–'} – ${param.reference_max_male ?? '–'}`
-                                    : <span className="text-slate-300">–</span>}
-                                </td>
-                                <td className="py-2 px-3 text-xs font-mono text-slate-500">
-                                  {param.reference_min_female != null || param.reference_max_female != null
-                                    ? `${param.reference_min_female ?? '–'} – ${param.reference_max_female ?? '–'}`
-                                    : <span className="text-slate-300">–</span>}
-                                </td>
-                                <td className="py-2 px-3 text-xs font-mono text-slate-500">
-                                  {param.reference_min_default != null || param.reference_max_default != null
-                                    ? `${param.reference_min_default ?? '–'} – ${param.reference_max_default ?? '–'}`
-                                    : <span className="text-slate-300">–</span>}
+                                <td className="py-2 px-3 text-xs text-slate-500 max-w-xs">
+                                  <span className="line-clamp-2" title={formatParamReferenceSummary(param)}>
+                                    {formatParamReferenceSummary(param)}
+                                  </span>
                                 </td>
                                 <td className="py-2 px-3">
                                   <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -766,11 +806,16 @@ const LabTestParametersPage = () => {
               <div>
                 <Label className="text-xs font-medium text-slate-600">Field Type</Label>
                 <Select value={paramForm.field_type}
-                  onValueChange={(v) => setParamForm({ ...paramForm, field_type: v })}>
+                  onValueChange={(v) => setParamForm({
+                    ...paramForm,
+                    field_type: v,
+                    reference_ranges: [emptyReferenceRow(v, true)],
+                  })}>
                   <SelectTrigger className="mt-1">
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent position="item-aligned" className="z-[200]">
+                    <SelectItem value="tiered_numeric">Tiered Ranges (Multiple Levels)</SelectItem>
                     <SelectItem value="numeric">Range (Min - Max)</SelectItem>
                     <SelectItem value="greater_than">Greater Than (&gt;)</SelectItem>
                     <SelectItem value="less_than">Less Than (&lt;)</SelectItem>
@@ -782,6 +827,9 @@ const LabTestParametersPage = () => {
                     <SelectItem value="select">Select (Custom Dropdown)</SelectItem>
                   </SelectContent>
                 </Select>
+                <p className="text-[10px] text-slate-400 mt-1">
+                  Use <span className="font-medium text-violet-600">Tiered Ranges</span> for lipid-style levels (Desirable / Borderline / High / Very High).
+                </p>
               </div>
             </div>
 
@@ -808,7 +856,7 @@ const LabTestParametersPage = () => {
             )}
 
             {/* Abnormal detection for non-numeric types */}
-            {!['numeric', 'less_than', 'greater_than', 'manual'].includes(paramForm.field_type) && (
+            {!['numeric', 'tiered_numeric', 'less_than', 'greater_than', 'manual'].includes(paramForm.field_type) && (
               <div className="border border-amber-100 rounded-lg p-3 space-y-3 bg-amber-50/30">
                 <h4 className="text-xs font-semibold text-amber-700 uppercase tracking-wider">Abnormal Detection</h4>
                 <div className="grid grid-cols-2 gap-3">
@@ -831,15 +879,60 @@ const LabTestParametersPage = () => {
             )}
 
             {/* Reference Ranges Table — for numeric types (Range, Less Than, Greater Than) */}
-            {['numeric', 'less_than', 'greater_than'].includes(paramForm.field_type) && (
+            {['numeric', 'tiered_numeric', 'less_than', 'greater_than'].includes(paramForm.field_type) && (
+              <div className="space-y-2">
+                <div className="flex flex-wrap gap-2">
+                  <span className="text-xs font-medium text-slate-600 self-center">Bio. reference style:</span>
+                  {[
+                    { value: 'tiered_numeric', label: 'Multiple levels' },
+                    { value: 'numeric', label: 'Single range' },
+                    { value: 'less_than', label: 'Less than' },
+                    { value: 'greater_than', label: 'Greater than' },
+                  ].map((opt) => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => setParamForm({
+                        ...paramForm,
+                        field_type: opt.value,
+                        reference_ranges: [emptyReferenceRow(opt.value, true)],
+                      })}
+                      className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
+                        paramForm.field_type === opt.value
+                          ? 'bg-violet-600 text-white border-violet-600'
+                          : 'bg-white text-slate-600 border-slate-200 hover:border-violet-300'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
               <div className="border border-slate-200 rounded-lg overflow-hidden">
+                {paramForm.field_type === 'tiered_numeric' && (
+                  <div className="px-3 py-2 bg-violet-50 border-b text-[11px] text-violet-700">
+                    Add multiple clinical levels (e.g. Desirable &lt;150, Borderline 150–199, High 200–499, Very High &gt;500).
+                    Mark one level as <span className="font-semibold">Normal</span> — results outside it are flagged abnormal on the report.
+                    Leave Min or Max empty for open-ended bounds.
+                  </div>
+                )}
                 <table className="w-full text-xs">
                   <thead>
                     <tr className="bg-slate-50 border-b text-slate-600">
-                      <th className="text-left px-3 py-2 font-semibold">Range</th>
-                      <th className="text-left px-3 py-2 font-semibold">Gender</th>
-                      <th className="text-left px-3 py-2 font-semibold">Age Range</th>
-                      <th className="text-left px-3 py-2 font-semibold">Description</th>
+                      <th className="text-left px-3 py-2 font-semibold">
+                        {paramForm.field_type === 'tiered_numeric' ? 'Bounds (Min / Max)' : 'Range'}
+                      </th>
+                      {paramForm.field_type !== 'tiered_numeric' && (
+                        <>
+                          <th className="text-left px-3 py-2 font-semibold">Gender</th>
+                          <th className="text-left px-3 py-2 font-semibold">Age Range</th>
+                        </>
+                      )}
+                      <th className="text-left px-3 py-2 font-semibold">
+                        {paramForm.field_type === 'tiered_numeric' ? 'Level Label' : 'Description'}
+                      </th>
+                      {paramForm.field_type === 'tiered_numeric' && (
+                        <th className="text-center px-3 py-2 font-semibold w-16">Normal</th>
+                      )}
                       <th className="px-2 py-2 w-8"></th>
                     </tr>
                   </thead>
@@ -848,7 +941,7 @@ const LabTestParametersPage = () => {
                       <tr key={idx} className="border-b last:border-b-0">
                         <td className="px-3 py-2">
                           <div className="flex gap-1">
-                            {paramForm.field_type === 'numeric' && (
+                            {(paramForm.field_type === 'numeric' || paramForm.field_type === 'tiered_numeric') && (
                               <>
                                 <Input type="number" step="any" value={row.min} placeholder="Min"
                                   onChange={(e) => { const r = [...paramForm.reference_ranges]; r[idx] = { ...r[idx], min: e.target.value }; setParamForm({ ...paramForm, reference_ranges: r }); }}
@@ -876,33 +969,56 @@ const LabTestParametersPage = () => {
                             )}
                           </div>
                         </td>
+                        {paramForm.field_type !== 'tiered_numeric' && (
+                          <>
+                            <td className="px-3 py-2">
+                              <div className="space-y-0.5">
+                                {['male', 'female', 'common'].map(g => (
+                                  <label key={g} className="flex items-center gap-1 cursor-pointer">
+                                    <input type="radio" name={`gender-${idx}`} value={g} checked={row.gender === g}
+                                      onChange={() => { const r = [...paramForm.reference_ranges]; r[idx] = { ...r[idx], gender: g }; setParamForm({ ...paramForm, reference_ranges: r }); }}
+                                      className="w-3 h-3" />
+                                    <span className="text-[11px] uppercase">{g}</span>
+                                  </label>
+                                ))}
+                              </div>
+                            </td>
+                            <td className="px-3 py-2">
+                              <div className="flex gap-1">
+                                <Input type="number" value={row.age_min} placeholder="0"
+                                  onChange={(e) => { const r = [...paramForm.reference_ranges]; r[idx] = { ...r[idx], age_min: e.target.value }; setParamForm({ ...paramForm, reference_ranges: r }); }}
+                                  className="w-14 h-7 text-xs" />
+                                <Input type="number" value={row.age_max} placeholder="100"
+                                  onChange={(e) => { const r = [...paramForm.reference_ranges]; r[idx] = { ...r[idx], age_max: e.target.value }; setParamForm({ ...paramForm, reference_ranges: r }); }}
+                                  className="w-14 h-7 text-xs" />
+                              </div>
+                            </td>
+                          </>
+                        )}
                         <td className="px-3 py-2">
-                          <div className="space-y-0.5">
-                            {['male', 'female', 'common'].map(g => (
-                              <label key={g} className="flex items-center gap-1 cursor-pointer">
-                                <input type="radio" name={`gender-${idx}`} value={g} checked={row.gender === g}
-                                  onChange={() => { const r = [...paramForm.reference_ranges]; r[idx] = { ...r[idx], gender: g }; setParamForm({ ...paramForm, reference_ranges: r }); }}
-                                  className="w-3 h-3" />
-                                <span className="text-[11px] uppercase">{g}</span>
-                              </label>
-                            ))}
-                          </div>
-                        </td>
-                        <td className="px-3 py-2">
-                          <div className="flex gap-1">
-                            <Input type="number" value={row.age_min} placeholder="0"
-                              onChange={(e) => { const r = [...paramForm.reference_ranges]; r[idx] = { ...r[idx], age_min: e.target.value }; setParamForm({ ...paramForm, reference_ranges: r }); }}
-                              className="w-14 h-7 text-xs" />
-                            <Input type="number" value={row.age_max} placeholder="100"
-                              onChange={(e) => { const r = [...paramForm.reference_ranges]; r[idx] = { ...r[idx], age_max: e.target.value }; setParamForm({ ...paramForm, reference_ranges: r }); }}
-                              className="w-14 h-7 text-xs" />
-                          </div>
-                        </td>
-                        <td className="px-3 py-2">
-                          <Input value={row.description} placeholder="Description"
+                          <Input
+                            value={row.description}
+                            placeholder={paramForm.field_type === 'tiered_numeric' ? 'e.g. Desirable Level' : 'Description'}
                             onChange={(e) => { const r = [...paramForm.reference_ranges]; r[idx] = { ...r[idx], description: e.target.value }; setParamForm({ ...paramForm, reference_ranges: r }); }}
-                            className="w-full h-7 text-xs" />
+                            className="w-full h-7 text-xs"
+                          />
                         </td>
+                        {paramForm.field_type === 'tiered_numeric' && (
+                          <td className="px-3 py-2 text-center">
+                            <input
+                              type="checkbox"
+                              checked={!!row.is_normal}
+                              onChange={() => {
+                                const r = paramForm.reference_ranges.map((entry, i) => ({
+                                  ...entry,
+                                  is_normal: i === idx,
+                                }));
+                                setParamForm({ ...paramForm, reference_ranges: r });
+                              }}
+                              className="w-3.5 h-3.5"
+                            />
+                          </td>
+                        )}
                         <td className="px-2 py-2">
                           {paramForm.reference_ranges.length > 1 && (
                             <button onClick={() => {
@@ -917,11 +1033,18 @@ const LabTestParametersPage = () => {
                 </table>
                 <div className="px-3 py-2 bg-slate-50 border-t">
                   <button onClick={() => {
-                    setParamForm({ ...paramForm, reference_ranges: [...(paramForm.reference_ranges || []), { min: '', max: '', gender: 'common', age_min: '', age_max: '', description: '' }] });
+                    setParamForm({
+                      ...paramForm,
+                      reference_ranges: [
+                        ...(paramForm.reference_ranges || []),
+                        emptyReferenceRow(paramForm.field_type, false),
+                      ],
+                    });
                   }} className="text-xs text-indigo-600 hover:text-indigo-800 font-medium flex items-center gap-1">
-                    + Add Range
+                    + {paramForm.field_type === 'tiered_numeric' ? 'Add Level' : 'Add Range'}
                   </button>
                 </div>
+              </div>
               </div>
             )}
 

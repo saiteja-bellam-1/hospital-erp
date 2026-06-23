@@ -205,7 +205,7 @@ export default function PurchaseEntry() {
       }
       const r2 = await axios.post(`/api/pharmacy/purchases/${id}/confirm`);
       toast({ title: `Confirmed ${r2.data.purchase_number}` });
-      navigate('/dashboard/pharmacy');
+      navigate('/dashboard/pharmacy/purchases');
     } catch (e) {
       toast({ variant: 'destructive', title: 'Confirm failed', description: errMsg(e) });
     } finally { setSubmitting(false); }
@@ -240,7 +240,7 @@ export default function PurchaseEntry() {
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3">
-        <Button size="sm" variant="outline" onClick={() => navigate('/dashboard/pharmacy')}><ArrowLeft className="h-3 w-3 mr-1" /> Back</Button>
+        <Button size="sm" variant="outline" onClick={() => navigate('/dashboard/pharmacy/purchases')}><ArrowLeft className="h-3 w-3 mr-1" /> Back</Button>
         <h1 className="text-2xl font-bold">New Purchase {draftId && <span className="text-sm text-gray-500">(draft #{draftId})</span>}</h1>
       </div>
 

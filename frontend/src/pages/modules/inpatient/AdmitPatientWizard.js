@@ -20,7 +20,7 @@ import {
   CheckCircle2, AlertTriangle, FileText, X, Printer
 } from 'lucide-react';
 
-const DRAFT_KEY = 'kt_admit_wizard_draft_v1';
+const DRAFT_KEY = 'kt_admit_wizard_draft_v2';
 
 const SCHEME_ICONS = {
   cash:              Banknote,
@@ -58,15 +58,19 @@ const EMPTY_DRAFT = {
   deposit_reference: '',
   deposit_waived: false,
   deposit_waiver_reason: '',
-  // Step 3
+  // Step 4 — declarations (after admission exists)
+  admission_id: '',
+  admission_number: '',
   face_sheet_signed: false,
   case_sheet_signed: false,
   face_sheet_doc_number: '',
   case_sheet_doc_number: '',
 };
 
+const TOTAL_STEPS = 4;
+
 const Stepper = ({ step }) => {
-  const labels = ['Identity & Bed', 'Doctors · Payer · Deposit', 'Declarations'];
+  const labels = ['Identity & Bed', 'Doctors · Payer · Deposit', 'Admit & Deposit', 'Declarations'];
   return (
     <div className="flex items-center gap-3 text-xs">
       {labels.map((label, i) => {
@@ -151,20 +155,24 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
   // restore draft on open
   useEffect(() => {
     if (!open) return;
-    setStep(1);
     try {
       const raw = localStorage.getItem(DRAFT_KEY);
       if (raw) {
         const saved = JSON.parse(raw);
-        setDraft({ ...EMPTY_DRAFT, ...saved });
+        const merged = { ...EMPTY_DRAFT, ...saved };
+        setDraft(merged);
         setSelectedPatient(patientFromDraftLabel(saved));
+        // Resume at declarations if admission was already created
+        setStep(merged.admission_id ? 4 : 1);
       } else {
         setDraft(EMPTY_DRAFT);
         setSelectedPatient(null);
+        setStep(1);
       }
     } catch {
       setDraft(EMPTY_DRAFT);
       setSelectedPatient(null);
+      setStep(1);
     }
   }, [open]);
 
@@ -206,11 +214,9 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
   const faceTpl = useMemo(() => templates.find(t => t.consent_type === 'face_sheet'), [templates]);
   const caseTpl = useMemo(() => templates.find(t => t.consent_type === 'case_sheet_declaration'), [templates]);
 
-  // Pre-reserve doc numbers as soon as the user reaches Step 3 with a
-  // patient selected, so the wizard can print/show them. Idempotent on
-  // the backend — repeated calls return the same unconsumed reservation.
+  // Pre-reserve doc numbers on the declarations step (after admission exists).
   useEffect(() => {
-    if (step !== 3 || !draft.patient_id) return;
+    if (step !== 4 || !draft.patient_id) return;
     const reserve = async (tpl, draftKey) => {
       if (!tpl || draft[draftKey]) return;
       try {
@@ -260,18 +266,60 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
     }
     return null;
   };
-  const validateStep3 = () => {
+  const validateStep4 = () => {
     if (!draft.face_sheet_signed) return 'Face sheet must be marked signed.';
     if (!draft.case_sheet_signed) return 'Case sheet must be marked signed.';
     return null;
   };
+
+  const buildAdmissionPayload = () => ({
+    patient_id: parseInt(draft.patient_id, 10),
+    admitting_doctor_id: parseInt(draft.admitting_doctor_id, 10),
+    attending_physician_id: draft.attending_physician_id
+      ? parseInt(draft.attending_physician_id, 10) : null,
+    room_id: parseInt(draft.room_id, 10),
+    bed_id: draft.bed_id ? parseInt(draft.bed_id, 10) : null,
+    admission_type: draft.admission_type,
+    admission_reason: draft.admission_reason || null,
+    estimated_stay_days: draft.estimated_stay_days
+      ? parseInt(draft.estimated_stay_days, 10) : null,
+    triage_level: draft.admission_type === 'emergency' && draft.triage_level
+      ? parseInt(draft.triage_level, 10) : null,
+    referring_doctor_id: draft.referring_doctor_kind === 'internal' && draft.referring_doctor_id
+      ? parseInt(draft.referring_doctor_id, 10) : null,
+    referring_external_name: draft.referring_doctor_kind === 'external'
+      ? (draft.referring_external_name.trim() || null) : null,
+    payer_scheme_id: parseInt(draft.payer_scheme_id, 10),
+    scheme_member_id: draft.scheme_member_id || null,
+    scheme_approval_status: draft.scheme_approval_status || 'none',
+    scheme_approval_ref: draft.scheme_approval_ref || null,
+    scheme_approval_amount: draft.scheme_approval_amount
+      ? parseFloat(draft.scheme_approval_amount) : null,
+    require_acceptance: !!draft.require_acceptance,
+    deposit_waived: !!draft.deposit_waived,
+    deposit_waiver_reason: draft.deposit_waived ? draft.deposit_waiver_reason : null,
+  });
 
   const goNext = () => {
     const err = step === 1 ? validateStep1() : step === 2 ? validateStep2() : null;
     if (err) { toast({ variant: 'destructive', title: 'Check fields', description: err }); return; }
     setStep(s => s + 1);
   };
-  const goBack = () => setStep(s => Math.max(1, s - 1));
+  const goBack = () => {
+    if (step === 4 && draft.admission_id) {
+      setStep(3);
+      return;
+    }
+    if (step === 3 && draft.admission_id) {
+      toast({
+        variant: 'destructive',
+        title: 'Admission already created',
+        description: 'Complete the declarations step or cancel and manage the admission from the list.',
+      });
+      return;
+    }
+    setStep(s => Math.max(1, s - 1));
+  };
 
   const closeAndClear = () => {
     try { localStorage.removeItem(DRAFT_KEY); } catch {}
@@ -284,46 +332,23 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
     onClose?.();
   };
 
-  const submit = async () => {
-    const err = validateStep3();
-    if (err) { toast({ variant: 'destructive', title: 'Cannot admit', description: err }); return; }
+  const createAdmission = async () => {
+    if (draft.admission_id) {
+      setStep(4);
+      return;
+    }
+    const err = validateStep2();
+    if (err) { toast({ variant: 'destructive', title: 'Check fields', description: err }); return; }
     setSaving(true);
     try {
-      const payload = {
-        patient_id: parseInt(draft.patient_id, 10),
-        admitting_doctor_id: parseInt(draft.admitting_doctor_id, 10),
-        attending_physician_id: draft.attending_physician_id
-          ? parseInt(draft.attending_physician_id, 10) : null,
-        room_id: parseInt(draft.room_id, 10),
-        bed_id: draft.bed_id ? parseInt(draft.bed_id, 10) : null,
-        admission_type: draft.admission_type,
-        admission_reason: draft.admission_reason || null,
-        estimated_stay_days: draft.estimated_stay_days
-          ? parseInt(draft.estimated_stay_days, 10) : null,
-        triage_level: draft.admission_type === 'emergency' && draft.triage_level
-          ? parseInt(draft.triage_level, 10) : null,
-        // Referring
-        referring_doctor_id: draft.referring_doctor_kind === 'internal' && draft.referring_doctor_id
-          ? parseInt(draft.referring_doctor_id, 10) : null,
-        referring_external_name: draft.referring_doctor_kind === 'external'
-          ? (draft.referring_external_name.trim() || null) : null,
-        // Payer
-        payer_scheme_id: parseInt(draft.payer_scheme_id, 10),
-        scheme_member_id: draft.scheme_member_id || null,
-        scheme_approval_status: draft.scheme_approval_status || 'none',
-        scheme_approval_ref: draft.scheme_approval_ref || null,
-        scheme_approval_amount: draft.scheme_approval_amount
-          ? parseFloat(draft.scheme_approval_amount) : null,
-        // Acceptance
-        require_acceptance: !!draft.require_acceptance,
-        // Waiver
-        deposit_waived: !!draft.deposit_waived,
-        deposit_waiver_reason: draft.deposit_waived ? draft.deposit_waiver_reason : null,
-      };
+      const payload = buildAdmissionPayload();
       const admRes = await axios.post('/api/inpatient/admissions', payload);
       const newAdm = admRes.data;
+      update({
+        admission_id: String(newAdm.id),
+        admission_number: newAdm.admission_number || '',
+      });
 
-      // Deposit (only if not waived and amount > 0)
       if (!draft.deposit_waived && draft.deposit_amount && parseFloat(draft.deposit_amount) > 0) {
         try {
           const dep = await axios.post(`/api/inpatient/admissions/${newAdm.id}/deposits`, {
@@ -332,7 +357,6 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
             payment_method: draft.deposit_method,
             reference_number: draft.deposit_reference || null,
           });
-          // Auto-print the deposit receipt so the receptionist can hand it over
           try {
             const pdfRes = await axios.get(
               `/api/inpatient/deposits/${dep.data.id}/receipt/pdf`,
@@ -341,18 +365,45 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
             const url = URL.createObjectURL(new Blob([pdfRes.data], { type: 'application/pdf' }));
             printPdfFromUrl(url);
             setTimeout(() => URL.revokeObjectURL(url), 60_000);
-          } catch (_) { /* receipt is best-effort; admission already saved */ }
-        } catch (dErr) {
-          toast({ variant: 'destructive', title: 'Deposit not recorded',
-            description: 'Admission created but deposit failed. Add it from the admission detail.' });
+          } catch (_) { /* receipt is best-effort */ }
+        } catch {
+          toast({
+            variant: 'destructive',
+            title: 'Deposit not recorded',
+            description: 'Admission created but deposit failed. Add it from the admission detail.',
+          });
         }
       }
 
-      // Record the two consent acknowledgements (face + case sheet)
+      toast({
+        title: 'Admission created',
+        description: `${newAdm.admission_number} — print face sheet and case sheet on the next step.`,
+      });
+      setStep(4);
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string'
+        ? err.response.data.detail
+        : 'Failed to create admission';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const finishDeclarations = async () => {
+    const err = validateStep4();
+    if (err) { toast({ variant: 'destructive', title: 'Cannot finish', description: err }); return; }
+    if (!draft.admission_id) {
+      toast({ variant: 'destructive', title: 'No admission', description: 'Create the admission first.' });
+      return;
+    }
+    setSaving(true);
+    try {
+      const admissionId = parseInt(draft.admission_id, 10);
       const recordConsent = async (template, reservedDocNumber) => {
         if (!template) return null;
         try {
-          const res = await axios.post(`/api/inpatient/admissions/${newAdm.id}/consents`, {
+          const res = await axios.post(`/api/inpatient/admissions/${admissionId}/consents`, {
             consent_type: template.consent_type,
             template_id: template.id,
             language: template.language || 'english',
@@ -361,25 +412,37 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
             signed_by: 'patient',
             doc_number: reservedDocNumber || undefined,
           });
-          return res.data?.doc_number || null;
+          return res.data || null;
         } catch { return null; }
       };
-      const faceDocNum = await recordConsent(faceTpl, draft.face_sheet_doc_number);
-      const caseDocNum = await recordConsent(caseTpl, draft.case_sheet_doc_number);
-      if (faceDocNum) update({ face_sheet_doc_number: faceDocNum });
-      if (caseDocNum) update({ case_sheet_doc_number: caseDocNum });
+      const faceConsent = await recordConsent(faceTpl, draft.face_sheet_doc_number);
+      const caseConsent = await recordConsent(caseTpl, draft.case_sheet_doc_number);
+      if (faceConsent?.doc_number) update({ face_sheet_doc_number: faceConsent.doc_number });
+      if (caseConsent?.doc_number) update({ case_sheet_doc_number: caseConsent.doc_number });
+
+      // Auto-print signed forms with the real admission number
+      const printConsentPdf = async (consent) => {
+        if (!consent?.id) return;
+        try {
+          await printPdfFromUrl(`/api/inpatient/consents/${consent.id}/pdf`);
+        } catch (_) { /* best-effort */ }
+      };
+      await printConsentPdf(faceConsent);
+      await printConsentPdf(caseConsent);
 
       try { localStorage.removeItem(DRAFT_KEY); } catch {}
-      toast({ title: 'Patient admitted',
-        description: payload.require_acceptance
+      toast({
+        title: 'Patient admitted',
+        description: draft.require_acceptance
           ? 'Awaiting IP doctor acceptance.'
-          : 'Admission accepted.' });
-      onCreated?.(newAdm);
+          : 'Admission complete.',
+      });
+      onCreated?.({ id: admissionId, admission_number: draft.admission_number });
       onClose?.();
     } catch (err) {
       const msg = typeof err.response?.data?.detail === 'string'
         ? err.response.data.detail
-        : 'Failed to create admission';
+        : 'Failed to record declarations';
       toast({ variant: 'destructive', title: 'Error', description: msg });
     } finally {
       setSaving(false);
@@ -392,7 +455,7 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
         <DialogHeader>
           <DialogTitle className="flex items-center justify-between">
             <span>Admit Patient</span>
-            <span className="text-xs font-normal text-gray-500">Step {step} of 3</span>
+            <span className="text-xs font-normal text-gray-500">Step {step} of {TOTAL_STEPS}</span>
           </DialogTitle>
         </DialogHeader>
 
@@ -701,13 +764,62 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
           </div>
         )}
 
-        {/* ---------- STEP 3 ---------- */}
+        {/* ---------- STEP 3 — create admission + deposit ---------- */}
         {step === 3 && (
           <div className="space-y-4">
+            {draft.admission_id ? (
+              <div className="rounded-lg border border-green-200 bg-green-50 p-4 space-y-2">
+                <div className="flex items-center gap-2 text-green-800 font-medium">
+                  <CheckCircle2 className="h-5 w-5" />
+                  Admission created
+                </div>
+                <p className="text-sm text-green-900">
+                  <span className="font-semibold">{draft.admission_number}</span>
+                  {' '}for {draft.patient_label.split(' · ')[0] || 'patient'}.
+                  Continue to print face sheet and case sheet with this admission number.
+                </p>
+              </div>
+            ) : (
+              <>
+                <p className="text-sm text-gray-700">
+                  Review the summary below, then create the admission and record the advance deposit.
+                  Face sheet and case sheet are printed on the next step once the admission number is assigned.
+                </p>
+                <div className="rounded-lg border bg-gray-50 p-4 text-sm space-y-2">
+                  <div><span className="text-gray-500">Patient:</span> {draft.patient_label || '—'}</div>
+                  <div>
+                    <span className="text-gray-500">Room / bed:</span>{' '}
+                    {selectedRoom ? selectedRoom.room_number : '—'}
+                    {draft.bed_id && bedsInRoom.length
+                      ? ` · Bed ${bedsInRoom.find(b => String(b.id) === String(draft.bed_id))?.bed_label || ''}`
+                      : ''}
+                  </div>
+                  <div><span className="text-gray-500">Type:</span> {draft.admission_type}</div>
+                  <div><span className="text-gray-500">Payer:</span> {selectedScheme?.name || '—'}</div>
+                  <div>
+                    <span className="text-gray-500">Deposit:</span>{' '}
+                    {draft.deposit_waived
+                      ? `Waived — ${draft.deposit_waiver_reason || 'no reason given'}`
+                      : `₹${draft.deposit_amount || '0'} (${draft.deposit_method})`}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* ---------- STEP 4 — declarations ---------- */}
+        {step === 4 && (
+          <div className="space-y-4">
+            {draft.admission_number && (
+              <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900">
+                Admission No: <span className="font-semibold">{draft.admission_number}</span>
+                {' '}— printed forms will include this number.
+              </div>
+            )}
             <p className="text-sm text-gray-700">
-              Both declarations must be signed before the admission is created.
-              The templates below come from
-              Hospital Administration → Consent Templates and can be edited there.
+              Print the face sheet and case sheet for the patient to sign, then mark each as signed.
+              Templates can be edited in Hospital Administration → Consent Templates.
             </p>
             <div className="grid grid-cols-2 gap-3">
               <DeclarationCard
@@ -718,6 +830,7 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
                 onToggle={v => update({ face_sheet_signed: v })}
                 docNumber={draft.face_sheet_doc_number}
                 patientId={draft.patient_id}
+                admissionId={draft.admission_id}
                 roomId={draft.room_id}
                 doctorId={draft.admitting_doctor_id}
                 referringDoctorId={draft.referring_doctor_kind === 'internal' ? draft.referring_doctor_id : ''}
@@ -731,6 +844,7 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
                 onToggle={v => update({ case_sheet_signed: v })}
                 docNumber={draft.case_sheet_doc_number}
                 patientId={draft.patient_id}
+                admissionId={draft.admission_id}
                 roomId={draft.room_id}
                 doctorId={draft.admitting_doctor_id}
                 referringDoctorId={draft.referring_doctor_kind === 'internal' ? draft.referring_doctor_id : ''}
@@ -767,9 +881,15 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
               </Button>
             )}
             {step === 3 && (
-              <Button onClick={submit} disabled={saving}>
+              <Button onClick={createAdmission} disabled={saving}>
                 {saving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                Admit patient
+                {draft.admission_id ? 'Continue to declarations' : 'Create admission & deposit'}
+              </Button>
+            )}
+            {step === 4 && (
+              <Button onClick={finishDeclarations} disabled={saving}>
+                {saving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                Complete admission
               </Button>
             )}
           </div>
@@ -782,13 +902,13 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
 
 const DeclarationCard = ({
   title, subtitle, template, signed, onToggle, docNumber,
-  patientId, roomId, doctorId, referringDoctorId, admissionReason,
+  patientId, admissionId, roomId, doctorId, referringDoctorId, admissionReason,
 }) => {
   const { toast } = useToast();
   const [previewOpen, setPreviewOpen] = useState(false);
   const [printing, setPrinting] = useState(false);
 
-  const canPrefill = Boolean(template && patientId);
+  const canPrefill = Boolean(template && patientId && admissionId);
 
   const handlePrint = async () => {
     if (!canPrefill || printing) return;
@@ -801,6 +921,7 @@ const DeclarationCard = ({
       const params = {
         patient_id: String(patientId),
         template_id: template.id,
+        admission_id: parseInt(admissionId, 10),
       };
       if (roomId) params.room_id = parseInt(roomId, 10);
       if (doctorId) params.admitting_doctor_id = parseInt(doctorId, 10);
@@ -843,7 +964,7 @@ const DeclarationCard = ({
         </Button>
         <Button size="sm" variant="outline" onClick={handlePrint}
                 disabled={!canPrefill || printing}
-                title={!patientId ? 'Select a patient first' : 'Print prefilled form for patient signature'}>
+                title={!admissionId ? 'Create the admission first' : 'Print prefilled form for patient signature'}>
           {printing
             ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" /> Printing…</>
             : <><Printer className="h-4 w-4 mr-1" /> Print</>}

@@ -12,6 +12,12 @@ import { errMsg } from '../PharmacyModule';
 import PdfPreviewDialog from '../../../components/PdfPreviewDialog';
 import PatientSearchPicker from '../../../components/PatientSearchPicker';
 import QuickMedicineDialog from '../../../components/pharmacy/QuickMedicineDialog';
+import {
+  calcLineSubtotal,
+  combinedBaseQty,
+  formatRatesHint,
+  supportsStripSale,
+} from '../../../utils/pharmacyUnits';
 
 export default function SalesCounter() {
   const { toast } = useToast();
@@ -21,7 +27,7 @@ export default function SalesCounter() {
     patient_phone: '', patient_ip_id: '', patient_name: '', patient_address: '',
     doctor_number: '', doctor_name: '', payment_type: 'cash',
   });
-  const [items, setItems] = useState([]);   // each: { medicine, quantity, rate, rate_tier, discount_pct, batch_id }
+  const [items, setItems] = useState([]);
   const [lookupQ, setLookupQ] = useState('');
   const [lookupResults, setLookupResults] = useState([]);
   const [searching, setSearching] = useState(false);
@@ -84,34 +90,31 @@ export default function SalesCounter() {
   const addLine = (med) => {
     setItems(s => [...s, {
       medicine: med,
-      quantity: 1,
-      rate: med.rate_a || med.unit_price || 0,
+      qty_tabs: 1,
+      qty_strips: 0,
       rate_tier: 'A',
       discount_pct: med.default_discount_pct || 0,
-      batch_id: null,           // FIFO
+      batch_id: null,
       barcode_scanned: false,
     }]);
     setLookupQ(''); setLookupResults([]);
   };
+
   const updateLine = (i, patch) => setItems(s => s.map((x, idx) => idx === i ? { ...x, ...patch } : x));
   const removeLine = (i) => setItems(s => s.filter((_, idx) => idx !== i));
 
-  const setTier = (i, tier) => {
-    const ln = items[i];
-    const rate = tier === 'B' ? (ln.medicine.rate_b || ln.medicine.unit_price) : (ln.medicine.rate_a || ln.medicine.unit_price);
-    updateLine(i, { rate_tier: tier, rate });
-  };
+  const setTier = (i, tier) => updateLine(i, { rate_tier: tier });
 
-  const calcLine = (ln) => {
-    const base = (ln.quantity || 0) * (ln.rate || 0);
-    const afterDisc = base * (1 - (ln.discount_pct || 0) / 100);
-    return afterDisc;  // tax computed server-side from HSN; counter displays pre-tax for now
-  };
+  const calcLine = (ln) => calcLineSubtotal(ln);
   const total = items.reduce((acc, ln) => acc + calcLine(ln), 0);
 
   const submitSale = async () => {
     if (items.length === 0) {
       toast({ variant: 'destructive', title: 'Add at least one item' }); return;
+    }
+    const invalid = items.find(ln => combinedBaseQty(ln.qty_tabs, ln.qty_strips, ln.medicine) <= 0);
+    if (invalid) {
+      toast({ variant: 'destructive', title: 'Enter tab or strip qty on each line' }); return;
     }
     setSubmitting(true);
     try {
@@ -119,8 +122,8 @@ export default function SalesCounter() {
         ...customer,
         items: items.map(ln => ({
           medicine_id: ln.medicine.id,
-          quantity: parseFloat(ln.quantity),
-          rate: parseFloat(ln.rate),
+          qty_tabs: parseFloat(ln.qty_tabs) || 0,
+          qty_strips: parseFloat(ln.qty_strips) || 0,
           rate_tier: ln.rate_tier,
           discount_pct: parseFloat(ln.discount_pct || 0),
           batch_id: ln.batch_id || null,
@@ -204,7 +207,7 @@ export default function SalesCounter() {
                   {lookupResults.map(m => (
                     <div key={m.id} className="px-3 py-2 hover:bg-gray-100 cursor-pointer text-sm" onClick={() => addLine(m)}>
                       <div className="font-medium">{m.name}</div>
-                      <div className="text-xs text-gray-500">{m.medicine_code} • Rate A ₹{m.rate_a || m.unit_price} / Rate B ₹{m.rate_b || '—'}</div>
+                      <div className="text-xs text-gray-500">{m.medicine_code} · {formatRatesHint(m)}</div>
                     </div>
                   ))}
                   <div className="px-3 py-2 border-t bg-gray-50">
@@ -228,60 +231,72 @@ export default function SalesCounter() {
           {items.length === 0 ? (
             <p className="text-center py-4 text-sm text-gray-500">No items yet — search above or scan a barcode.</p>
           ) : (
-            <table className="w-full text-sm">
-              <thead><tr className="border-b text-left text-gray-600">
-                <th className="py-2 pr-2">Medicine</th>
-                <th className="py-2 pr-2 w-20">Qty</th>
-                <th className="py-2 pr-2 w-24">Rate</th>
-                <th className="py-2 pr-2 w-16">Tier</th>
-                <th className="py-2 pr-2 w-20">Disc %</th>
-                <th className="py-2 pr-2 text-right">Subtotal</th>
-                <th className="py-2 w-8"></th>
-              </tr></thead>
-              <tbody>
-                {items.map((ln, i) => (
-                  <tr key={i} className="border-b">
-                    <td className="py-2 pr-2">
-                      <div className="font-medium">{ln.medicine.name}</div>
-                      <div className="text-xs text-gray-500">{ln.medicine.medicine_code}</div>
-                    </td>
-                    <td className="py-2 pr-2">
-                      <Input className="h-8" type="number" min="1" step={ln.medicine.decimal_supported ? '0.5' : '1'}
-                        value={ln.quantity} onChange={e => updateLine(i, { quantity: parseFloat(e.target.value) || 0 })} />
-                    </td>
-                    <td className="py-2 pr-2">
-                      <Input className="h-8" type="number" step="0.01"
-                        value={ln.rate} onChange={e => updateLine(i, { rate: parseFloat(e.target.value) || 0 })} />
-                    </td>
-                    <td className="py-2 pr-2">
-                      <Select value={ln.rate_tier} onValueChange={v => setTier(i, v)}>
-                        <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="A">A</SelectItem>
-                          <SelectItem value="B">B</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </td>
-                    <td className="py-2 pr-2">
-                      <Input className="h-8" type="number" min="0" max="100" step="0.5"
-                        value={ln.discount_pct} onChange={e => updateLine(i, { discount_pct: parseFloat(e.target.value) || 0 })} />
-                    </td>
-                    <td className="py-2 pr-2 text-right">₹{calcLine(ln).toFixed(2)}</td>
-                    <td className="py-2">
-                      <Button size="sm" variant="ghost" onClick={() => removeLine(i)}><Trash2 className="h-3 w-3 text-red-500" /></Button>
-                    </td>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm min-w-[720px]">
+                <thead><tr className="border-b text-left text-gray-600">
+                  <th className="py-2 pr-2">Medicine</th>
+                  <th className="py-2 pr-2 w-20">Qty Tab</th>
+                  <th className="py-2 pr-2 w-20">Qty Strip</th>
+                  <th className="py-2 pr-2 w-16">Tier</th>
+                  <th className="py-2 pr-2 w-20">Disc %</th>
+                  <th className="py-2 pr-2 text-right">Subtotal</th>
+                  <th className="py-2 w-8"></th>
+                </tr></thead>
+                <tbody>
+                  {items.map((ln, i) => (
+                    <tr key={i} className="border-b">
+                      <td className="py-2 pr-2">
+                        <div className="font-medium">{ln.medicine.name}</div>
+                        <div className="text-xs text-gray-500">{ln.medicine.medicine_code}</div>
+                        <div className="text-[10px] text-gray-500">{formatRatesHint(ln.medicine, ln.rate_tier)}</div>
+                      </td>
+                      <td className="py-2 pr-2">
+                        <Input className="h-8" type="number" min="0" step={ln.medicine.decimal_supported ? '0.5' : '1'}
+                          value={ln.qty_tabs ?? 0}
+                          onChange={e => updateLine(i, { qty_tabs: parseFloat(e.target.value) || 0 })} />
+                      </td>
+                      <td className="py-2 pr-2">
+                        {supportsStripSale(ln.medicine) ? (
+                          <Input className="h-8" type="number" min="0" step="1"
+                            value={ln.qty_strips ?? 0}
+                            onChange={e => updateLine(i, { qty_strips: parseFloat(e.target.value) || 0 })} />
+                        ) : (
+                          <span className="text-xs text-gray-400">—</span>
+                        )}
+                      </td>
+                      <td className="py-2 pr-2">
+                        <Select value={ln.rate_tier} onValueChange={v => setTier(i, v)}>
+                          <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="A">A</SelectItem>
+                            <SelectItem value="B">B</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </td>
+                      <td className="py-2 pr-2">
+                        <Input className="h-8" type="number" min="0" max="100" step="0.5"
+                          value={ln.discount_pct} onChange={e => updateLine(i, { discount_pct: parseFloat(e.target.value) || 0 })} />
+                      </td>
+                      <td className="py-2 pr-2 text-right">₹{calcLine(ln).toFixed(2)}</td>
+                      <td className="py-2">
+                        <Button size="sm" variant="ghost" onClick={() => removeLine(i)}><Trash2 className="h-3 w-3 text-red-500" /></Button>
+                      </td>
+                    </tr>
+                  ))}
+                  <tr className="font-medium">
+                    <td colSpan={5} className="py-3 text-right pr-2">Subtotal (excl. tax):</td>
+                    <td className="py-3 pr-2 text-right">₹{total.toFixed(2)}</td>
+                    <td></td>
                   </tr>
-                ))}
-                <tr className="font-medium">
-                  <td colSpan={5} className="py-3 text-right pr-2">Subtotal (excl. tax):</td>
-                  <td className="py-3 pr-2 text-right">₹{total.toFixed(2)}</td>
-                  <td></td>
-                </tr>
-              </tbody>
-            </table>
+                </tbody>
+              </table>
+            </div>
           )}
 
-          <p className="text-xs text-gray-500 mt-2">Tax is computed server-side from each medicine's HSN code and reflected on the saved sale.</p>
+          <p className="text-xs text-gray-500 mt-2">
+            Tab price = MRP (or Rate A/B) ÷ tablets per strip. Enter qty in Tab and/or Strip columns — both can be used on the same line.
+            Tax is computed server-side from each medicine&apos;s HSN code.
+          </p>
         </CardContent>
       </Card>
 

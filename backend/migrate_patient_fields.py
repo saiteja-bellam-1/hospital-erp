@@ -85,6 +85,7 @@ NEW_COLUMNS = [
     ("ot_schedules", "billed", "BOOLEAN DEFAULT 0"),
     ("ot_schedules", "bill_id", "INTEGER REFERENCES bills(id)"),
     ("prescriptions", "inpatient_bill_id", "INTEGER REFERENCES bills(id)"),
+    ("prescriptions", "pharmacy_sale_id", "INTEGER REFERENCES pharmacy_sales(id)"),
     ("patient_lab_orders", "inpatient_bill_id", "INTEGER REFERENCES bills(id)"),
     # Outpatient lab bill grouping — shared across all orders on the same
     # combined bill so the Billing dashboard can render one row per bill

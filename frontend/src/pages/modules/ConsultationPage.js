@@ -14,7 +14,7 @@ import {
   ChevronRight, ChevronDown, History
 } from 'lucide-react';
 import { format } from 'date-fns';
-import axios from 'axios';
+import { FREQUENCY_OPTIONS } from '../../utils/prescriptionSchedule';
 
 const ConsultationPage = () => {
   const [searchParams] = useSearchParams();
@@ -510,7 +510,14 @@ const ConsultationPage = () => {
       if (selectedLabTests.length > 0) {
         const res = await fetch('/api/lab/orders', {
           method: 'POST', headers,
-          body: JSON.stringify({ patient_id: parseInt(patientId), test_ids: selectedLabTests, priority: labOrderPriority, force: force, notes: combinedNotes || null })
+          body: JSON.stringify({
+            patient_id: parseInt(patientId),
+            appointment_id: appointmentId ? parseInt(appointmentId, 10) : null,
+            test_ids: selectedLabTests,
+            priority: labOrderPriority,
+            force: force,
+            notes: combinedNotes || null,
+          })
         });
         if (res.status === 409) {
           const err = await res.json();
@@ -606,15 +613,7 @@ const ConsultationPage = () => {
     setActiveTab(newTab);
   };
 
-  const frequencyOptions = [
-    { value: '1-0-0', label: 'Morning only' },
-    { value: '0-1-0', label: 'Afternoon only' },
-    { value: '0-0-1', label: 'Night only' },
-    { value: '1-0-1', label: 'Morning & Night' },
-    { value: '1-1-0', label: 'Morning & Afternoon' },
-    { value: '1-1-1', label: 'Three times a day' },
-    { value: '0-1-1', label: 'Afternoon & Night' },
-  ];
+  const frequencyOptions = FREQUENCY_OPTIONS;
 
   return (
     <div className="space-y-4">

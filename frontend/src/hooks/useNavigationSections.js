@@ -4,7 +4,8 @@ import {
   FileText, TestTube, LayoutDashboard, BedDouble, Scissors, FileCheck,
   CalendarDays, CalendarRange, Sparkles, RotateCcw, Building2, Printer,
   BarChart3, ClipboardList, Shield, Database, ScrollText, Activity, Stethoscope,
-  DownloadCloud, Pill, ShoppingCart, Boxes, Truck, BookOpen,
+  DownloadCloud, Pill, ShoppingCart, Boxes, Truck, BookOpen, LayoutGrid, Plus,
+  Warehouse, Tags, Layers, Ruler, Percent, Link2,
 } from 'lucide-react';
 
 const I = (Icon) => <Icon className="h-[18px] w-[18px]" />;
@@ -123,17 +124,30 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
     if (items.length > 0) sections.push({ label: 'Laboratory', items });
   }
 
-  // ── PHARMACY ──
+  // ── PHARMACY ── (flat routes — one sidebar item per screen)
   if (enabledModules.pharmacy && hasAnyRole('pharmacist', 'pharmacy_admin', 'hospital_admin', 'super_admin')) {
-    const items = [];
-    add(items, make('Pharmacy', Pill, '/dashboard/pharmacy'));
-    add(items, make('Sales Counter', ShoppingCart, '/dashboard/pharmacy/sales-counter'));
-    add(items, make('Sales & Rx', Receipt, '/dashboard/pharmacy/sales'));
-    add(items, make('Inventory', Boxes, '/dashboard/pharmacy/inventory'));
-    add(items, make('Procurement', Truck, '/dashboard/pharmacy/procurement'));
-    add(items, make('Catalog', BookOpen, '/dashboard/pharmacy/catalog'));
-    add(items, make('Pharmacy Reports', BarChart3, '/dashboard/pharmacy/reports'));
-    if (items.length > 0) sections.push({ label: 'Pharmacy', items });
+    const ops = [];
+    add(ops, make('Dashboard', LayoutDashboard, '/dashboard/pharmacy'));
+    add(ops, make('Sales Counter', ShoppingCart, '/dashboard/pharmacy/sales-counter'));
+    add(ops, make('Pending Rx', Pill, '/dashboard/pharmacy/pending-rx'));
+    add(ops, make('Unmapped Medicines', Link2, '/dashboard/pharmacy/unmapped-medicines'));
+    add(ops, make('Sales History', Receipt, '/dashboard/pharmacy/sales'));
+    add(ops, make('New Purchase', Plus, '/dashboard/pharmacy/purchases/new'));
+    add(ops, make('Purchases', Truck, '/dashboard/pharmacy/purchases'));
+    add(ops, make('Stock', Boxes, '/dashboard/pharmacy/inventory'));
+    if (ops.length > 0) sections.push({ label: 'Pharmacy', items: ops });
+
+    const setup = [];
+    add(setup, make('Medicines', BookOpen, '/dashboard/pharmacy/medicines'));
+    add(setup, make('Suppliers', Warehouse, '/dashboard/pharmacy/suppliers'));
+    add(setup, make('Categories', Tags, '/dashboard/pharmacy/masters/categories'));
+    add(setup, make('Companies', Building2, '/dashboard/pharmacy/masters/companies'));
+    add(setup, make('Salts', Layers, '/dashboard/pharmacy/masters/salts'));
+    add(setup, make('Tax / HSN', Percent, '/dashboard/pharmacy/masters/hsn'));
+    add(setup, make('Racks', LayoutGrid, '/dashboard/pharmacy/masters/racks'));
+    add(setup, make('Units of Measure', Ruler, '/dashboard/pharmacy/masters/uoms'));
+    add(setup, make('Reports', BarChart3, '/dashboard/pharmacy/reports'));
+    if (setup.length > 0) sections.push({ label: 'Pharmacy Setup', items: setup });
   }
 
   // ── EHR (admin who isn't a doctor) ──

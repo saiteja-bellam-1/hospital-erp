@@ -22,6 +22,16 @@ from app.models.lab import (
 from app.utils.dependencies import get_current_user, require_permission
 from app.utils.auth import Modules
 from app.utils.pdf_service import pdf_service
+from app.utils.lab_reference import (
+    match_reference_range as _match_reference_range,
+    filter_reference_ranges,
+    format_reference_ranges_display,
+    find_normal_tier,
+    is_value_abnormal_for_tiers,
+    is_value_abnormal_for_bounds,
+    uses_tiered_abnormal_check,
+    _coerce_float,
+)
 
 router = APIRouter()
 
@@ -60,8 +70,8 @@ class ParameterCreate(BaseModel):
     unit: Optional[str] = None
     method: Optional[str] = None
     section: Optional[str] = None
-    field_type: str = Field(default="numeric", pattern="^(numeric|less_than|greater_than|positive_negative|reactive|presence_absence|cloudy_clear|colour|manual|text|select)$")
-    reference_ranges: Optional[list] = None  # [{min, max, gender, age_min, age_max, description}]
+    field_type: str = Field(default="numeric", pattern="^(numeric|tiered_numeric|less_than|greater_than|positive_negative|reactive|presence_absence|cloudy_clear|colour|manual|text|select)$")
+    reference_ranges: Optional[list] = None  # [{min, max, gender, age_min, age_max, description, is_normal}]
     possible_values: Optional[list] = None
     abnormal_values: Optional[list] = None
     normal_value: Optional[str] = None
@@ -322,57 +332,12 @@ def _patient_age(patient):
         age = patient.age
     return age
 
-def _match_reference_range(ranges, gender, age):
-    """Find the best matching reference range entry for a patient's gender and age.
-    Returns (ref_min, ref_max, description).
-    Priority: exact gender+age match > gender match > common+age match > common."""
-    if not ranges:
-        return None, None, ""
-    best = None
-    best_score = -1
-    for r in ranges:
-        score = 0
-        r_gender = (r.get('gender') or 'common').lower()
-        r_age_min = r.get('age_min')
-        r_age_max = r.get('age_max')
-
-        # Gender match
-        if gender and r_gender == gender:
-            score += 2
-        elif r_gender == 'common':
-            score += 1
-        else:
-            continue  # wrong gender, skip
-
-        # Age match
-        if age is not None and r_age_min is not None and r_age_max is not None:
-            try:
-                if float(r_age_min) <= age <= float(r_age_max):
-                    score += 2
-                else:
-                    continue  # outside age range, skip
-            except (ValueError, TypeError):
-                pass
-        elif r_age_min is None and r_age_max is None:
-            score += 1  # no age restriction, broad match
-
-        if score > best_score:
-            best_score = score
-            best = r
-
-    if best:
-        ref_min = best.get('min')
-        ref_max = best.get('max')
-        try:
-            ref_min = float(ref_min) if ref_min is not None and ref_min != '' else None
-        except (ValueError, TypeError):
-            ref_min = None
-        try:
-            ref_max = float(ref_max) if ref_max is not None and ref_max != '' else None
-        except (ValueError, TypeError):
-            ref_max = None
-        return ref_min, ref_max, best.get('description', '')
-    return None, None, ""
+def _sync_parameter_reference_fields(param: LabTestParameter, data: ParameterCreate) -> None:
+    """Persist reference_ranges and mirror the first demographic row into legacy columns."""
+    param.reference_ranges = data.reference_ranges
+    legacy = _legacy_from_reference_ranges(data.reference_ranges)
+    for field, val in legacy.items():
+        setattr(param, field, val)
 
 
 def _build_test_response(test: LabTest, db: Session) -> dict:
@@ -404,15 +369,21 @@ def _build_test_response(test: LabTest, db: Session) -> dict:
                 "method": p.method,
                 "section": p.section,
                 "field_type": p.field_type,
+                "reference_ranges": p.reference_ranges,
                 "reference_min_male": p.reference_min_male,
                 "reference_max_male": p.reference_max_male,
                 "reference_min_female": p.reference_min_female,
                 "reference_max_female": p.reference_max_female,
                 "reference_min_default": p.reference_min_default,
                 "reference_max_default": p.reference_max_default,
+                "reference_min_child": p.reference_min_child,
+                "reference_max_child": p.reference_max_child,
                 "possible_values": p.possible_values,
+                "abnormal_values": p.abnormal_values,
+                "normal_value": p.normal_value,
+                "notes": p.notes,
                 "display_order": p.display_order,
-                "is_active": p.is_active
+                "is_active": p.is_active,
             } for p in params
         ]
     }
@@ -480,8 +451,21 @@ def _build_report_response(report: LabReport, db: Session) -> dict:
         ref_min = None
         ref_max = None
         matched_desc = ""
+        matched_ranges = []
+        reference_range_display = ""
         if param.reference_ranges:
-            ref_min, ref_max, matched_desc = _match_reference_range(param.reference_ranges, gender, age)
+            matched_ranges = filter_reference_ranges(param.reference_ranges, gender, age)
+            if matched_ranges:
+                reference_range_display = format_reference_ranges_display(
+                    matched_ranges, param.unit or "", html=True
+                )
+            if uses_tiered_abnormal_check(param.field_type, matched_ranges):
+                normal_tier = find_normal_tier(matched_ranges)
+                if normal_tier:
+                    ref_min = _coerce_float(normal_tier.get("min"))
+                    ref_max = _coerce_float(normal_tier.get("max"))
+            else:
+                ref_min, ref_max, matched_desc = _match_reference_range(param.reference_ranges, gender, age)
         else:
             # Legacy fallback
             if gender == "male" and param.reference_min_male is not None:
@@ -497,31 +481,16 @@ def _build_report_response(report: LabReport, db: Session) -> dict:
         # Check abnormal
         is_abnormal = False
         raw_value = rv.get("value", "")
-        if param.field_type in ("numeric", "less_than", "greater_than") and raw_value:
+        if param.field_type in ("numeric", "less_than", "greater_than", "tiered_numeric") and raw_value:
             try:
                 clean_val = raw_value.strip().lstrip('<>').strip()
                 val = float(clean_val)
-                if param.field_type == "less_than":
-                    # Value should be < ref_max to be normal
-                    if ref_max is not None and val >= ref_max:
-                        is_abnormal = True
-                elif param.field_type == "greater_than":
-                    # Value should be > ref_min to be normal
-                    if ref_min is not None and val <= ref_min:
-                        is_abnormal = True
+                if uses_tiered_abnormal_check(param.field_type, matched_ranges):
+                    is_abnormal = is_value_abnormal_for_tiers(val, matched_ranges)
                 else:
-                    # Range: check both bounds, also handle < > prefixed values
-                    if raw_value.strip().startswith('<'):
-                        if ref_min is not None and val <= ref_min:
-                            is_abnormal = True
-                    elif raw_value.strip().startswith('>'):
-                        if ref_max is not None and val >= ref_max:
-                            is_abnormal = True
-                    else:
-                        if ref_min is not None and val < ref_min:
-                            is_abnormal = True
-                        if ref_max is not None and val > ref_max:
-                            is_abnormal = True
+                    is_abnormal = is_value_abnormal_for_bounds(
+                        val, raw_value, param.field_type, ref_min, ref_max
+                    )
             except (ValueError, TypeError):
                 pass
         elif param.field_type in ("select", "text", "colour", "manual",
@@ -544,6 +513,7 @@ def _build_report_response(report: LabReport, db: Session) -> dict:
             "section": param.section or "",
             "reference_min": ref_min,
             "reference_max": ref_max,
+            "reference_range_display": reference_range_display,
             "normal_value": param.normal_value,
             "is_abnormal": is_abnormal,
             "field_type": param.field_type,
@@ -906,7 +876,8 @@ async def add_parameter(
     if not test:
         raise HTTPException(status_code=404, detail="Test not found")
 
-    param = LabTestParameter(test_id=test_id, **data.dict())
+    param = LabTestParameter(test_id=test_id, **{k: v for k, v in data.dict().items() if k != "reference_ranges"})
+    _sync_parameter_reference_fields(param, data)
     db.add(param)
     db.commit()
     db.refresh(param)
@@ -979,7 +950,10 @@ async def update_parameter(
     # Update all fields from data (including nullable fields like section, method)
     update_data = data.dict()
     for field, val in update_data.items():
+        if field == "reference_ranges":
+            continue
         setattr(param, field, val)
+    _sync_parameter_reference_fields(param, data)
 
     db.commit()
     db.refresh(param)

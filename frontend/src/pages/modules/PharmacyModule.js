@@ -1,9 +1,8 @@
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
-import { Routes, Route, useNavigate, useParams } from 'react-router-dom';
+import { Routes, Route, Navigate, Outlet, useLocation } from 'react-router-dom';
 import axios from 'axios';
 
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/tabs';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
@@ -11,10 +10,7 @@ import { Textarea } from '../../components/ui/textarea';
 import { Badge } from '../../components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../../components/ui/dialog';
 import { useToast } from '../../hooks/use-toast';
-import {
-  Plus, Pencil, Trash2, RefreshCw, Search, Pill, ShoppingCart,
-  LayoutDashboard, Receipt, Boxes, Truck, BookOpen, BarChart3,
-} from 'lucide-react';
+import { Plus, Pencil, Trash2, RefreshCw, Search, Pill } from 'lucide-react';
 
 import SalesCounter from './pharmacy/SalesCounter';
 import PurchaseEntry from './pharmacy/PurchaseEntry';
@@ -24,13 +20,12 @@ import InventoryTabImpl from './pharmacy/tabs/InventoryTab';
 import PurchasesTabImpl from './pharmacy/tabs/PurchasesTab';
 import SalesTabImpl from './pharmacy/tabs/SalesTab';
 import PendingRxTabImpl from './pharmacy/tabs/PendingRxTab';
+import UnmappedMedicinesTabImpl from './pharmacy/tabs/UnmappedMedicinesTab';
 import ReportsTabImpl from './pharmacy/tabs/ReportsTab';
 import SuppliersTabImpl from './pharmacy/tabs/SuppliersTab';
 
 // ────────────────────────────────────────────────────────────────────────────
-// Generic master CRUD table. Used for the 7 simple master tabs (categories,
-// companies, suppliers, salts, racks, uoms, HSN). Each caller supplies fields
-// + the API path; everything else is shared.
+// Generic master CRUD table. Used for the simple catalog/inventory masters.
 // ────────────────────────────────────────────────────────────────────────────
 
 export function MasterTable({ title, path, fields, displayColumns }) {
@@ -191,8 +186,7 @@ export function errMsg(e) {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Pre-configured MasterTable instances for the simple catalog/inventory masters.
-// Defined once so each section can render them without re-declaring field specs.
+// Master table pages — one route each under /masters/*
 // ────────────────────────────────────────────────────────────────────────────
 
 const CategoriesMaster = () => (
@@ -294,138 +288,85 @@ const HsnMaster = () => (
 );
 
 // ────────────────────────────────────────────────────────────────────────────
-// Section definitions — six top-level groups, each rendered as its own page.
-// Sections with multiple panels use a secondary inner tab strip.
+// Flat page metadata — one entry per sidebar route
 // ────────────────────────────────────────────────────────────────────────────
 
-const SECTIONS = [
-  {
-    key: 'dashboard',
-    label: 'Dashboard',
-    icon: LayoutDashboard,
-    panels: [{ key: 'overview', label: 'Overview', render: () => <DashboardTabImpl /> }],
-  },
-  {
-    key: 'sales',
-    label: 'Sales & Rx',
-    icon: Receipt,
-    panels: [
-      { key: 'history', label: 'Sales History', render: () => <SalesTabImpl /> },
-      { key: 'pending_rx', label: 'Pending Rx', render: () => <PendingRxTabImpl /> },
-    ],
-  },
-  {
-    key: 'inventory',
-    label: 'Inventory',
-    icon: Boxes,
-    panels: [
-      { key: 'stock', label: 'Stock', render: () => <InventoryTabImpl /> },
-      { key: 'racks', label: 'Racks', render: () => <RacksMaster /> },
-      { key: 'uoms', label: 'Units of Measure', render: () => <UomsMaster /> },
-    ],
-  },
-  {
-    key: 'procurement',
-    label: 'Procurement',
-    icon: Truck,
-    panels: [
-      { key: 'purchases', label: 'Purchases', render: () => <PurchasesTabImpl /> },
-      { key: 'suppliers', label: 'Suppliers', render: () => <SuppliersTabImpl /> },
-    ],
-  },
-  {
-    key: 'catalog',
-    label: 'Catalog',
-    icon: BookOpen,
-    panels: [
-      { key: 'medicines', label: 'Medicines', render: () => <MedicinesTabImpl /> },
-      { key: 'categories', label: 'Categories', render: () => <CategoriesMaster /> },
-      { key: 'companies', label: 'Companies', render: () => <CompaniesMaster /> },
-      { key: 'salts', label: 'Salts', render: () => <SaltsMaster /> },
-      { key: 'hsn', label: 'Tax / HSN', render: () => <HsnMaster /> },
-    ],
-  },
-  {
-    key: 'reports',
-    label: 'Reports',
-    icon: BarChart3,
-    panels: [{ key: 'reports', label: 'Reports', render: () => <ReportsTabImpl /> }],
-  },
-];
-
-const SECTION_KEYS = SECTIONS.map(s => s.key);
-
-// ────────────────────────────────────────────────────────────────────────────
-// Module shell — six grouped top-level sections, each with optional sub-tabs.
-// ────────────────────────────────────────────────────────────────────────────
-
-const SECTION_BLURBS = {
-  dashboard: 'Today\'s pharmacy activity at a glance',
-  sales: 'Completed sales and pending prescriptions',
-  inventory: 'Live stock, rack layout, and units of measure',
-  procurement: 'Goods received and supplier directory',
-  catalog: 'Medicines and supporting masters',
-  reports: 'Sales, stock, and tax reports',
+export const PHARMACY_PAGE_META = {
+  '': { title: 'Dashboard', blurb: "Today's pharmacy activity at a glance" },
+  'pending-rx': { title: 'Pending Rx', blurb: 'Prescriptions awaiting dispensing' },
+  'unmapped-medicines': { title: 'Unmapped Medicines', blurb: 'Free-text inpatient orders awaiting catalog mapping' },
+  'sales': { title: 'Sales History', blurb: 'Completed counter sales and voids' },
+  'purchases': { title: 'Purchases', blurb: 'Confirmed and draft goods received' },
+  'inventory': { title: 'Stock', blurb: 'Live stock, batches, low-stock alerts, and ledger' },
+  'medicines': { title: 'Medicines', blurb: 'Drug catalog — pricing, flags, and barcodes' },
+  'suppliers': { title: 'Suppliers', blurb: 'Vendor directory and GST details' },
+  'masters/categories': { title: 'Categories', blurb: 'Medicine category master' },
+  'masters/companies': { title: 'Companies', blurb: 'Manufacturer / marketing company master' },
+  'masters/salts': { title: 'Salts / Compositions', blurb: 'Active ingredient master' },
+  'masters/hsn': { title: 'Tax / HSN', blurb: 'HSN codes and GST rates' },
+  'masters/racks': { title: 'Racks', blurb: 'Shelf and rack location codes' },
+  'masters/uoms': { title: 'Units of Measure', blurb: 'Sale and stock units' },
+  'reports': { title: 'Reports', blurb: 'Sales, stock, tax, and register reports' },
 };
 
-const PharmacyAdmin = () => {
-  const navigate = useNavigate();
-  const { section: sectionParam } = useParams();
-  const section = SECTION_KEYS.includes(sectionParam) ? sectionParam : 'dashboard';
-  const current = SECTIONS.find(s => s.key === section) || SECTIONS[0];
-  const hasSubTabs = current.panels.length > 1;
+function pharmacyPathKey(pathname) {
+  const prefix = '/dashboard/pharmacy';
+  if (!pathname.startsWith(prefix)) return '';
+  const rest = pathname.slice(prefix.length).replace(/^\//, '');
+  return rest;
+}
+
+function PharmacyPageShell() {
+  const { pathname } = useLocation();
+  const key = pharmacyPathKey(pathname);
+  const meta = PHARMACY_PAGE_META[key] || { title: 'Pharmacy', blurb: '' };
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900 flex items-center gap-2">
-            <Pill className="h-7 w-7" /> Pharmacy · {current.label}
-          </h1>
-          <p className="text-gray-600">{SECTION_BLURBS[current.key]}</p>
-        </div>
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={() => navigate('/dashboard/pharmacy/sales-counter')}>
-            <ShoppingCart className="h-4 w-4 mr-2" /> Sales Counter
-          </Button>
-          <Button variant="outline" onClick={() => navigate('/dashboard/pharmacy/purchases/new')}>
-            <Plus className="h-4 w-4 mr-2" /> New Purchase
-          </Button>
-        </div>
+      <div>
+        <h1 className="text-3xl font-bold text-gray-900 flex items-center gap-2">
+          <Pill className="h-7 w-7" /> Pharmacy · {meta.title}
+        </h1>
+        {meta.blurb && <p className="text-gray-600">{meta.blurb}</p>}
       </div>
-
-      {hasSubTabs ? (
-        <Tabs defaultValue={current.panels[0].key}>
-          <TabsList className="flex flex-wrap h-auto">
-            {current.panels.map(p => (
-              <TabsTrigger key={p.key} value={p.key}>{p.label}</TabsTrigger>
-            ))}
-          </TabsList>
-          {current.panels.map(p => (
-            <TabsContent key={p.key} value={p.key}>{p.render()}</TabsContent>
-          ))}
-        </Tabs>
-      ) : (
-        current.panels[0].render()
-      )}
+      <Outlet />
     </div>
   );
-};
+}
 
 // ────────────────────────────────────────────────────────────────────────────
-// Top-level export wires routes — admin shell at /dashboard/pharmacy plus
-// dedicated full-page sub-routes for the POS and purchase entry workflows.
-// `/dashboard/pharmacy/:section` lets the sidebar (and bookmarks) deep-link
-// directly to a section like Inventory.
+// Routes — flat nav (one screen per URL); full-page workflows stay separate
 // ────────────────────────────────────────────────────────────────────────────
 
 const PharmacyModule = () => (
   <Routes>
-    <Route index element={<PharmacyAdmin />} />
     <Route path="sales-counter" element={<SalesCounter />} />
     <Route path="purchases/new" element={<PurchaseEntry />} />
-    <Route path=":section" element={<PharmacyAdmin />} />
-    <Route path="*" element={<PharmacyAdmin />} />
+
+    <Route element={<PharmacyPageShell />}>
+      <Route index element={<DashboardTabImpl />} />
+      <Route path="pending-rx" element={<PendingRxTabImpl />} />
+      <Route path="unmapped-medicines" element={<UnmappedMedicinesTabImpl />} />
+      <Route path="sales" element={<SalesTabImpl />} />
+      <Route path="purchases" element={<PurchasesTabImpl />} />
+      <Route path="inventory" element={<InventoryTabImpl />} />
+      <Route path="medicines" element={<MedicinesTabImpl />} />
+      <Route path="suppliers" element={<SuppliersTabImpl />} />
+      <Route path="masters/categories" element={<CategoriesMaster />} />
+      <Route path="masters/companies" element={<CompaniesMaster />} />
+      <Route path="masters/salts" element={<SaltsMaster />} />
+      <Route path="masters/hsn" element={<HsnMaster />} />
+      <Route path="masters/racks" element={<RacksMaster />} />
+      <Route path="masters/uoms" element={<UomsMaster />} />
+      <Route path="reports" element={<ReportsTabImpl />} />
+
+      {/* Legacy section URLs → flat routes */}
+      <Route path="dashboard" element={<Navigate to="/dashboard/pharmacy" replace />} />
+      <Route path="procurement" element={<Navigate to="/dashboard/pharmacy/purchases" replace />} />
+      <Route path="catalog" element={<Navigate to="/dashboard/pharmacy/medicines" replace />} />
+    </Route>
+
+    <Route path="*" element={<Navigate to="/dashboard/pharmacy" replace />} />
   </Routes>
 );
 
