@@ -45,7 +45,7 @@ from app.models.inpatient import (
     RoomTypeRateConfig, DoctorRoomTypeRate, RoomType,
     MealPlan, FoodOrder,
 )
-from app.models.pharmacy import Prescription, PrescriptionItem, Medicine
+from app.models.pharmacy import Prescription, PrescriptionItem, Medicine, PharmacySale, PharmacySaleItem
 from app.models.prescriptions_simple import SimplePrescription
 from app.models.lab import PatientLabOrder, LabTest, LabReport
 from app.utils.dependencies import (
@@ -58,22 +58,22 @@ from app.utils.dependencies import (
 from app.utils.auth import Modules
 from app.utils.pdf_service import pdf_service
 from app.services.audit_service import log_action
+from app.services.admission_clinical_summary_service import build_admission_clinical_summary
 
 router = APIRouter()
 
 # ============================================================
 # Age helper — prefer DOB-derived age, fall back to stored age
 # ============================================================
+from app.utils.patient_age import format_patient_age, patient_age_years_int
+
+
 def _patient_age(patient):
-    if not patient:
-        return None
-    if patient.date_of_birth:
-        today = date.today()
-        dob = patient.date_of_birth
-        return today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
-    if getattr(patient, "age", None) is not None:
-        return patient.age
-    return None
+    return patient_age_years_int(patient)
+
+
+def _patient_age_display(patient):
+    return format_patient_age(patient)
 
 # ============================================================
 # Pydantic Models
@@ -249,6 +249,11 @@ class AdmissionCreate(BaseModel):
     policy_number: Optional[str] = None
     claim_reference: Optional[str] = None
     emergency_contact: Optional[str] = None
+    admitting_person_name: Optional[str] = Field(default=None, max_length=200)
+    admitting_person_relationship: Optional[str] = Field(default=None, max_length=100)
+    admitting_person_address: Optional[str] = None
+    admitting_person_phone: Optional[str] = Field(default=None, max_length=20)
+    admitting_person_id_proof: Optional[str] = Field(default=None, max_length=200)
     attending_physician_id: Optional[int] = None
     bed_number: Optional[str] = None
     bed_id: Optional[int] = None
@@ -293,6 +298,11 @@ class AdmissionUpdate(BaseModel):
     policy_number: Optional[str] = None
     claim_reference: Optional[str] = None
     emergency_contact: Optional[str] = None
+    admitting_person_name: Optional[str] = Field(default=None, max_length=200)
+    admitting_person_relationship: Optional[str] = Field(default=None, max_length=100)
+    admitting_person_address: Optional[str] = None
+    admitting_person_phone: Optional[str] = Field(default=None, max_length=20)
+    admitting_person_id_proof: Optional[str] = Field(default=None, max_length=200)
     attending_physician_id: Optional[int] = None
     bed_number: Optional[str] = None
     # Required when the update changes room/bed — used to populate BedTransferHistory
@@ -351,6 +361,11 @@ class AdmissionResponse(BaseModel):
     claim_submitted_at: Optional[datetime] = None
     claim_notes: Optional[str] = None
     emergency_contact: Optional[str]
+    admitting_person_name: Optional[str] = None
+    admitting_person_relationship: Optional[str] = None
+    admitting_person_address: Optional[str] = None
+    admitting_person_phone: Optional[str] = None
+    admitting_person_id_proof: Optional[str] = None
     attending_physician_id: Optional[int]
     bed_number: Optional[str]
     bed_id: Optional[int] = None
@@ -463,6 +478,8 @@ class TakeHomeMedItem(BaseModel):
     medicine_name: str = Field(..., min_length=1, max_length=200)
     dosage: Optional[str] = Field(default=None, max_length=100)
     frequency: Optional[str] = Field(default=None, max_length=100)
+    frequency_schedule: Optional[str] = Field(default=None, max_length=20)
+    food_timing: Optional[str] = Field(default=None, max_length=30)
     duration: Optional[str] = Field(default=None, max_length=100)
     quantity: Optional[int] = Field(default=None, ge=1)
     instructions: Optional[str] = None
@@ -621,7 +638,7 @@ class BillItemOverride(BaseModel):
     items so the source record's `bill_id` (or `billed` flag) is set correctly
     when the bill is committed. `source=None` is a custom add-on line that has
     no source record."""
-    source: Optional[str] = Field(default=None, pattern=r"^(room|visit|ot|ancillary|pharmacy_rx|lab_order|package|custom)$")
+    source: Optional[str] = Field(default=None, pattern=r"^(room|visit|ot|ancillary|pharmacy_rx|pharmacy_pos|lab_order|package|custom)$")
     source_id: Optional[int] = None
     item_type: str = Field(..., max_length=40)
     item_name: str = Field(..., min_length=1, max_length=300)
@@ -1405,6 +1422,45 @@ def _substitute_template_tokens(content: str, ctx: dict) -> str:
         val = ctx.get(key)
         return str(val) if val not in (None, "") else "________________"
     return re.sub(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}", repl, content)
+
+
+def _admitting_person_token_ctx(admission: Optional[Admission]) -> dict:
+    """Tokens for the responsible person / attendant on the admission face sheet."""
+    if not admission:
+        empty = ""
+        return {
+            "admitting_person_name": empty,
+            "attendant_name": empty,
+            "responsible_person_name": empty,
+            "admitting_person_relationship": empty,
+            "attendant_relationship": empty,
+            "responsible_person_relationship": empty,
+            "admitting_person_address": empty,
+            "attendant_address": empty,
+            "admitting_person_phone": empty,
+            "attendant_phone": empty,
+            "admitting_person_id_proof": empty,
+            "attendant_id_proof": empty,
+        }
+    name = (admission.admitting_person_name or "").strip()
+    rel = (admission.admitting_person_relationship or "").strip()
+    addr = (admission.admitting_person_address or "").strip()
+    phone = (admission.admitting_person_phone or "").strip()
+    id_proof = (admission.admitting_person_id_proof or "").strip()
+    return {
+        "admitting_person_name": name,
+        "attendant_name": name,
+        "responsible_person_name": name,
+        "admitting_person_relationship": rel,
+        "attendant_relationship": rel,
+        "responsible_person_relationship": rel,
+        "admitting_person_address": addr,
+        "attendant_address": addr,
+        "admitting_person_phone": phone,
+        "attendant_phone": phone,
+        "admitting_person_id_proof": id_proof,
+        "attendant_id_proof": id_proof,
+    }
 
 
 @router.post("/admissions", response_model=AdmissionResponse, status_code=status.HTTP_201_CREATED)
@@ -3073,6 +3129,7 @@ async def get_discharge_pdf(
         "mrn": (patient.mrn or "") if patient else "",
         "patient_id": patient.patient_id if patient else "N/A",
         "age": _patient_age(patient) or "",
+        "age_display": _patient_age_display(patient),
         "gender": patient.gender if patient else "",
         "village": (patient.village or "") if patient else "",
         "district": (patient.district or "") if patient else "",
@@ -3101,6 +3158,78 @@ async def get_discharge_pdf(
     pdf_buffer = pdf_service.generate_discharge_summary_pdf(discharge_data, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'discharge_summary'))
 
     return _inline_pdf_response(pdf_buffer, f"discharge_{admission.admission_number}.pdf")
+
+
+@router.get("/admissions/{admission_id}/admission-detail/pdf")
+async def get_admission_detail_pdf(
+    admission_id: int,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
+    db: Session = Depends(get_db),
+):
+    """Detailed Admission Summary — full clinical dossier for active or discharged stays."""
+    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    if not admission:
+        raise HTTPException(status_code=404, detail="Admission not found")
+
+    include_mar = user_has_feature_permission(db, current_user, Modules.INPATIENT, "view_mar")
+    try:
+        payload = build_admission_clinical_summary(db, admission_id, include_mar=include_mar)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    hospital = _get_hospital(db, current_user)
+    hospital_info = {
+        "name": hospital.name,
+        "address": hospital.address or "",
+        "phone": hospital.phone or "",
+        "email": hospital.email or "",
+        "logo_url": hospital.logo_url if hasattr(hospital, "logo_url") else "",
+        "hospital_subname": hospital.hospital_subname if hasattr(hospital, "hospital_subname") else "",
+    }
+
+    pdf_buffer = pdf_service.generate_admission_detail_pdf(
+        payload,
+        hospital_info,
+        **pdf_gen_kwargs(db, current_user.hospital_id, "admission_detail"),
+    )
+    return _inline_pdf_response(
+        pdf_buffer,
+        f"admission_detail_{admission.admission_number}.pdf",
+    )
+
+
+@router.get("/admissions/{admission_id}/ot")
+async def list_admission_ot_schedules(
+    admission_id: int,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
+    db: Session = Depends(get_db),
+):
+    """OT schedules linked to a specific admission."""
+    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    if not admission:
+        raise HTTPException(status_code=404, detail="Admission not found")
+
+    rows = (
+        db.query(OTSchedule)
+        .filter(OTSchedule.admission_id == admission_id)
+        .order_by(OTSchedule.scheduled_date.desc())
+        .all()
+    )
+    results = []
+    for ot in rows:
+        surgeon = db.query(User).filter(User.id == ot.surgeon_id).first()
+        anaesthetist = (
+            db.query(User).filter(User.id == ot.anaesthetist_id).first()
+            if ot.anaesthetist_id else None
+        )
+        results.append({
+            **{c.name: getattr(ot, c.name) for c in ot.__table__.columns},
+            "surgeon_name": f"Dr. {surgeon.first_name} {surgeon.last_name}" if surgeon else None,
+            "anaesthetist_name": (
+                f"Dr. {anaesthetist.first_name} {anaesthetist.last_name}" if anaesthetist else None
+            ),
+        })
+    return results
 
 
 # ============================================================
@@ -3161,6 +3290,7 @@ async def get_admission_prescriptions(
             "notes": rx.notes,
             "medicines": med_list,
             "inpatient_bill_id": rx.inpatient_bill_id,
+            "pharmacy_sale_id": rx.pharmacy_sale_id,
         })
 
     # Simple prescriptions
@@ -3201,6 +3331,43 @@ _PKG_CAT_SURGERY = "surgery"
 _PKG_CAT_PHARMACY = "pharmacy"
 _PKG_CAT_LAB = "lab"
 _PKG_CAT_ANCILLARY = "ancillary"
+
+
+def _pharmacy_rx_billable_amount(db: Session, rx: Prescription) -> float:
+    """Bill only what was actually dispensed (partial fills bill partial qty)."""
+    items = db.query(PrescriptionItem).filter(
+        PrescriptionItem.prescription_id == rx.id,
+    ).all()
+    return round(
+        sum(float(i.unit_price or 0) * float(i.quantity_dispensed or 0) for i in items),
+        2,
+    )
+
+
+def _pharmacy_pos_sale_entries(db: Session, sales: list) -> list:
+    """Serialize deferred POS sales for bill preview / review UI."""
+    out = []
+    for sale in sales:
+        line_items = []
+        for item in (sale.items or []):
+            med = db.query(Medicine).filter(Medicine.id == item.medicine_id).first()
+            line_items.append({
+                "id": item.id,
+                "medicine_id": item.medicine_id,
+                "name": med.name if med else "Medicine",
+                "quantity": float(item.quantity or 0),
+                "unit_price": float(item.rate or 0),
+                "total_price": float(item.line_total or 0),
+            })
+        out.append({
+            "id": sale.id,
+            "sale_number": sale.sale_number,
+            "date": sale.sale_date.isoformat() if sale.sale_date else None,
+            "grand_total": float(sale.grand_total or 0),
+            "billed": sale.inpatient_bill_id is not None,
+            "items": line_items,
+        })
+    return out
 
 
 def _pkg_covers(boundary, when) -> bool:
@@ -3548,7 +3715,20 @@ def _compute_admission_charges(db: Session, admission: Admission, unbilled_only:
     if unbilled_only:
         rx_q = rx_q.filter(Prescription.inpatient_bill_id.is_(None))
     pharmacy_rxs = rx_q.all()
-    pharmacy_total = sum(float(rx.total_amount or 0) for rx in pharmacy_rxs)
+    pharmacy_rx_total = sum(_pharmacy_rx_billable_amount(db, rx) for rx in pharmacy_rxs)
+
+    # POS counter sales deferred to the admission bill (not paid at counter).
+    pos_q = db.query(PharmacySale).options(joinedload(PharmacySale.items)).filter(
+        PharmacySale.admission_id == admission.id,
+        PharmacySale.billing_mode == "inpatient_bill",
+        PharmacySale.status == "completed",
+    )
+    if unbilled_only:
+        pos_q = pos_q.filter(PharmacySale.inpatient_bill_id.is_(None))
+    pharmacy_pos_sales = pos_q.order_by(PharmacySale.sale_date.asc()).all()
+    pharmacy_pos_total = sum(float(s.grand_total or 0) for s in pharmacy_pos_sales)
+    pharmacy_total = round(pharmacy_rx_total + pharmacy_pos_total, 2)
+    pharmacy_pos_entries = _pharmacy_pos_sale_entries(db, pharmacy_pos_sales)
 
     # Lab — build a per-order breakdown so the bill display can mark each
     # individual lab test as covered or billed when the package uses granular
@@ -3741,11 +3921,20 @@ def _compute_admission_charges(db: Session, admission: Admission, unbilled_only:
             pkg_pharmacy_covered_total = 0.0
             for rx in pharmacy_rxs:
                 rx_dt = getattr(rx, "dispensed_date", None) or getattr(rx, "prescription_date", None)
+                amt = _pharmacy_rx_billable_amount(db, rx)
                 covers = rx_type_in_pkg and _pkg_covers(pkg_boundary, rx_dt)
                 if covers:
-                    pkg_pharmacy_covered_total += float(rx.total_amount or 0)
+                    pkg_pharmacy_covered_total += amt
                 else:
-                    pkg_pharmacy_total += float(rx.total_amount or 0)
+                    pkg_pharmacy_total += amt
+            for sale in pharmacy_pos_sales:
+                sale_dt = getattr(sale, "sale_date", None)
+                amt = float(sale.grand_total or 0)
+                covers = rx_type_in_pkg and _pkg_covers(pkg_boundary, sale_dt)
+                if covers:
+                    pkg_pharmacy_covered_total += amt
+                else:
+                    pkg_pharmacy_total += amt
             pkg_pharmacy_total = round(pkg_pharmacy_total, 2)
             pkg_pharmacy_covered_total = round(pkg_pharmacy_covered_total, 2)
 
@@ -3822,6 +4011,7 @@ def _compute_admission_charges(db: Session, admission: Admission, unbilled_only:
         "ancillary_entries": ancillary_breakdown,
         "ancillary_total": ancillary_total,
         "pharmacy_total": pharmacy_total,
+        "pharmacy_pos_entries": pharmacy_pos_entries,
         "lab_total": lab_total,
         "lab_entries": lab_entries,
         "food_entries": food_entries,
@@ -3834,6 +4024,7 @@ def _compute_admission_charges(db: Session, admission: Admission, unbilled_only:
         "_ot": ot_entries,
         "_ancillary": anc_entries,
         "_pharmacy_rxs": pharmacy_rxs,
+        "_pharmacy_pos_sales": pharmacy_pos_sales,
         "_lab_orders": lab_orders,
         "_food_orders": food_orders,
         "_room_unbilled_total": room_total if unbilled_only else 0.0,
@@ -4061,6 +4252,10 @@ async def cancel_admission_bill(
         rx_released = rx_q.count()
         rx_q.update({Prescription.inpatient_bill_id: None}, synchronize_session=False)
 
+        pos_q = db.query(PharmacySale).filter(PharmacySale.inpatient_bill_id == bill.id)
+        pos_released = pos_q.count()
+        pos_q.update({PharmacySale.inpatient_bill_id: None}, synchronize_session=False)
+
         lab_q = db.query(PatientLabOrder).filter(PatientLabOrder.inpatient_bill_id == bill.id)
         lab_released = lab_q.count()
         lab_q.update({PatientLabOrder.inpatient_bill_id: None}, synchronize_session=False)
@@ -4088,6 +4283,7 @@ async def cancel_admission_bill(
                        "ot": ot_released,
                        "ancillary": anc_released,
                        "prescriptions": rx_released,
+                       "pharmacy_pos_sales": pos_released,
                        "lab_orders": lab_released,
                        "food_orders": food_released,
                    },
@@ -4101,6 +4297,7 @@ async def cancel_admission_bill(
             "ot": ot_released,
             "ancillary": anc_released,
             "prescriptions": rx_released,
+            "pharmacy_pos_sales": pos_released,
             "lab_orders": lab_released,
             "food_orders": food_released,
         },
@@ -4221,6 +4418,8 @@ def _create_admission_bill_record_inner(
             c.bill_id = bill.id
         for rx in breakdown["_pharmacy_rxs"]:
             rx.inpatient_bill_id = bill.id
+        for sale in breakdown.get("_pharmacy_pos_sales", []):
+            sale.inpatient_bill_id = bill.id
         for lo in breakdown["_lab_orders"]:
             lo.inpatient_bill_id = bill.id
         for f in breakdown.get("_food_orders", []):
@@ -4352,6 +4551,10 @@ def _create_admission_bill_record_inner(
         if not covers:
             rx_items = db.query(PrescriptionItem).filter(PrescriptionItem.prescription_id == rx.id).all()
             for item in rx_items:
+                qty = float(item.quantity_dispensed or 0)
+                if qty <= 0:
+                    continue
+                line_total = round(float(item.unit_price or 0) * qty, 2)
                 medicine = db.query(Medicine).filter(Medicine.id == item.medicine_id).first()
                 label = f"Rx: {medicine.name if medicine else 'Medicine'} ({item.dosage or ''})"
                 if rx_type_in_pkg and not covers:
@@ -4360,13 +4563,34 @@ def _create_admission_bill_record_inner(
                     bill_id=bill.id,
                     item_type="pharmacy",
                     item_name=label,
-                    quantity=item.quantity_dispensed or item.quantity_prescribed,
+                    quantity=int(qty) if qty.is_integer() else qty,
                     unit_price=item.unit_price,
-                    total_price=item.total_price,
+                    total_price=line_total,
                     source_ref_type="prescription_item",
                     source_ref_id=item.id,
                 ))
         rx.inpatient_bill_id = bill.id
+
+    for sale in breakdown.get("_pharmacy_pos_sales", []):
+        sale_dt = getattr(sale, "sale_date", None)
+        covers = rx_type_in_pkg and _pkg_covers(pkg_boundary_dt, sale_dt)
+        if not covers:
+            for item in (sale.items or []):
+                med = db.query(Medicine).filter(Medicine.id == item.medicine_id).first()
+                label = f"POS: {med.name if med else 'Medicine'} ({sale.sale_number})"
+                if rx_type_in_pkg and not covers:
+                    label += " (excess stay)"
+                db.add(BillItem(
+                    bill_id=bill.id,
+                    item_type="pharmacy",
+                    item_name=label,
+                    quantity=float(item.quantity or 0),
+                    unit_price=float(item.rate or 0),
+                    total_price=float(item.line_total or 0),
+                    source_ref_type="pharmacy_sale_item",
+                    source_ref_id=item.id,
+                ))
+        sale.inpatient_bill_id = bill.id
 
     # Lab — covered iff per-test whitelist matches AND order is inside the
     # boundary. Either failing → bill at full rate.
@@ -5080,6 +5304,7 @@ async def get_bill_pdf(
             "mrn": patient.mrn if patient else "",
             "patient_id": patient.patient_id if patient else "",
             "age": _patient_age(patient),
+            "age_display": _patient_age_display(patient),
             "gender": patient.gender if patient else "",
             "phone": patient.primary_phone if patient else "",
             "address": ", ".join(filter(None, [
@@ -9685,6 +9910,7 @@ async def preview_consent_pdf(
         "emergency_contact_name": getattr(patient, "emergency_contact_name", None) or "",
         "emergency_contact_relation": getattr(patient, "emergency_contact_relation", None) or "",
         "emergency_contact_phone": getattr(patient, "emergency_contact_phone", None) or "",
+        **_admitting_person_token_ctx(admission),
     }
     rendered_content = _substitute_template_tokens(template.content or "", token_ctx)
 
@@ -9796,6 +10022,7 @@ async def get_consent_pdf(
         "emergency_contact_name": (getattr(patient, "emergency_contact_name", None) or "") if patient else "",
         "emergency_contact_relation": (getattr(patient, "emergency_contact_relation", None) or "") if patient else "",
         "emergency_contact_phone": (getattr(patient, "emergency_contact_phone", None) or "") if patient else "",
+        **_admitting_person_token_ctx(admission),
     }
     rendered_content = _substitute_template_tokens(template.content if template else "", token_ctx)
     consent_data = {
@@ -10026,6 +10253,7 @@ async def get_dama_pdf(
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "",
         "patient_id": patient.patient_id if patient else "",
         "age": _patient_age(patient) or "",
+        "age_display": _patient_age_display(patient),
         "gender": patient.gender if patient else "",
         "village": (patient.village or "") if patient else "",
         "district": (patient.district or "") if patient else "",
@@ -10090,6 +10318,7 @@ async def get_mlc_register_pdf(
         "admission_date": admission.admission_date.strftime("%d/%m/%Y %H:%M") if admission.admission_date else "",
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "",
         "age": _patient_age(patient) or "",
+        "age_display": _patient_age_display(patient),
         "gender": patient.gender if patient else "",
         "phone": patient.primary_phone if patient else "",
         "address": addr,
@@ -10693,6 +10922,7 @@ async def death_certificate_pdf(
         "mrn": (patient.mrn or "") if patient else "",
         "patient_id": patient.patient_id if patient else "",
         "age": _patient_age(patient) or "",
+        "age_display": _patient_age_display(patient),
         "gender": patient.gender if patient else "",
         "village": (patient.village or "") if patient else "",
         "district": (patient.district or "") if patient else "",
@@ -11868,6 +12098,7 @@ async def get_body_release_pdf(
         "mrn": (patient.mrn or "") if patient else "",
         "patient_id": patient.patient_id if patient else "",
         "age": _patient_age(patient) or "",
+        "age_display": _patient_age_display(patient),
         "gender": patient.gender if patient else "",
         "doctor_name": f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else "",
         "death_date": discharge.discharge_date.strftime("%d/%m/%Y %H:%M") if discharge and discharge.discharge_date else "",

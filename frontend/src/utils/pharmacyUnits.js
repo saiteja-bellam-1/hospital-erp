@@ -44,6 +44,12 @@ export function perTabFromMrp(medicine) {
   return mrp / unitsPerStrip(medicine);
 }
 
+/** Cost per smallest unit (tab) — same as per-tab sale price from MRP. */
+export function costPcsFromMrp(medicine) {
+  const v = perTabFromMrp(medicine);
+  return v > 0 ? Math.round(v * 100) / 100 : 0;
+}
+
 export function formatRatesHint(medicine, tier = 'A') {
   const stripR = stripSaleRate(medicine, tier);
   const tabR = tabSaleRate(medicine, tier, stripR);

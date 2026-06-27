@@ -3,6 +3,7 @@ import axios from 'axios';
 import { Card, CardContent } from '../../../../components/ui/card';
 import { ShoppingCart, Receipt, AlertTriangle, Pill, RefreshCw, CalendarX2 } from 'lucide-react';
 import { Button } from '../../../../components/ui/button';
+import { usePharmacyStore } from '../../../../contexts/PharmacyStoreContext';
 
 const KpiCard = ({ icon: Icon, label, value, sub, color = 'text-gray-900' }) => (
   <Card>
@@ -22,16 +23,17 @@ const KpiCard = ({ icon: Icon, label, value, sub, color = 'text-gray-900' }) => 
 export default function DashboardTab() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const { storeParams } = usePharmacyStore();
 
   const load = async () => {
     setLoading(true);
     try {
-      const r = await axios.get('/api/pharmacy/dashboard');
+      const r = await axios.get('/api/pharmacy/dashboard', { params: storeParams });
       setData(r.data);
     } catch (e) { /* silent — dashboard tab is best-effort */ }
     finally { setLoading(false); }
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [storeParams]);
 
   return (
     <div className="space-y-4">

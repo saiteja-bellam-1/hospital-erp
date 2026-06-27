@@ -43,7 +43,7 @@ export default function ReferralSelectWithCreate({
   const [loading, setLoading] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [form, setForm] = useState({ name: '', phone: '', village: '' });
+  const [form, setForm] = useState({ name: '', phone: '', village: '', mandal: '', district: '' });
 
   const referrals = controlledReferrals ?? internalReferrals;
   const setReferrals = (list) => {
@@ -66,7 +66,7 @@ export default function ReferralSelectWithCreate({
   }, [controlledReferrals]);
 
   const openCreate = () => {
-    setForm({ name: '', phone: '', village: '' });
+    setForm({ name: '', phone: '', village: '', mandal: '', district: '' });
     setDialogOpen(true);
   };
 
@@ -82,6 +82,8 @@ export default function ReferralSelectWithCreate({
         name: form.name.trim(),
         phone: form.phone.trim() || null,
         village: form.village.trim() || null,
+        mandal: form.mandal.trim() || null,
+        district: form.district.trim() || null,
       });
       const next = [...referrals, res.data].sort((a, b) => a.name.localeCompare(b.name));
       setReferrals(next);
@@ -129,7 +131,7 @@ export default function ReferralSelectWithCreate({
       </div>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-sm">
+        <DialogContent className="max-w-md" formNav="grid">
           <DialogHeader>
             <DialogTitle>Add Referral</DialogTitle>
           </DialogHeader>
@@ -159,6 +161,24 @@ export default function ReferralSelectWithCreate({
                 id="ref-village"
                 value={form.village}
                 onChange={(e) => setForm((p) => ({ ...p, village: e.target.value }))}
+                placeholder="Optional"
+              />
+            </div>
+            <div>
+              <Label htmlFor="ref-mandal">Mandal</Label>
+              <Input
+                id="ref-mandal"
+                value={form.mandal}
+                onChange={(e) => setForm((p) => ({ ...p, mandal: e.target.value }))}
+                placeholder="Optional"
+              />
+            </div>
+            <div>
+              <Label htmlFor="ref-district">District</Label>
+              <Input
+                id="ref-district"
+                value={form.district}
+                onChange={(e) => setForm((p) => ({ ...p, district: e.target.value }))}
                 placeholder="Optional"
               />
             </div>

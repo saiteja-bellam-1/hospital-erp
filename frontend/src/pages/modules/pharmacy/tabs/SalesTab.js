@@ -12,10 +12,12 @@ import { useToast } from '../../../../hooks/use-toast';
 import { Plus, RefreshCw, Ban, Printer } from 'lucide-react';
 import { errMsg } from '../../PharmacyModule';
 import PdfPreviewDialog from '../../../../components/PdfPreviewDialog';
+import { usePharmacyStore } from '../../../../contexts/PharmacyStoreContext';
 
 export default function SalesTab() {
   const { toast } = useToast();
   const navigate = useNavigate();
+  const { storeParams } = usePharmacyStore();
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
@@ -27,13 +29,13 @@ export default function SalesTab() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const params = {};
+      const params = { ...storeParams };
       if (search) params.search = search;
       const r = await axios.get('/api/pharmacy/sales', { params });
       setRows(r.data || []);
     } catch { /* ignore */ }
     finally { setLoading(false); }
-  }, [search]);
+  }, [search, storeParams]);
   useEffect(() => { load(); }, [load]);
 
   const submitVoid = async () => {
@@ -53,7 +55,9 @@ export default function SalesTab() {
           <span>Sales ({rows.length})</span>
           <div className="flex gap-2 items-center">
             <Input className="h-8 w-56" placeholder="Search sale # / patient / doctor…"
-              value={search} onChange={e => setSearch(e.target.value)} onKeyDown={e => e.key === 'Enter' && load()} />
+              value={search} onChange={e => setSearch(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); load(); } }}
+              data-nav-skip />
             <Button size="sm" variant="outline" onClick={load}><RefreshCw className="h-3 w-3" /></Button>
             <Button size="sm" onClick={() => navigate('/dashboard/pharmacy/sales-counter')}>
               <Plus className="h-3 w-3 mr-1" /> Sales Counter

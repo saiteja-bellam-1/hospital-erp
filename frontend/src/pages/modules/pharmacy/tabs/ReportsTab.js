@@ -7,6 +7,8 @@ import { Label } from '../../../../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../../../components/ui/select';
 import { Download, Play, Printer } from 'lucide-react';
 import { printPdfFromUrl } from '../../../../utils/printPdf';
+import PharmacyStoreSelector from '../../../../components/pharmacy/PharmacyStoreSelector';
+import { usePharmacyStore } from '../../../../contexts/PharmacyStoreContext';
 
 // Each report definition can opt into:
 //   dateRange:    show From / To inputs
@@ -44,6 +46,7 @@ const REPORTS = [
 const TODAY = () => new Date().toISOString().split('T')[0];
 
 export default function ReportsTab() {
+  const { storeParams, multiStoreEnabled } = usePharmacyStore();
   const [report, setReport] = useState('sales');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
@@ -56,7 +59,7 @@ export default function ReportsTab() {
   const def = REPORTS.find(r => r.key === report);
 
   const buildParams = () => {
-    const params = {};
+    const params = { ...storeParams };
     if (def.dateRange) {
       if (dateFrom) params.date_from = dateFrom;
       if (dateTo) params.date_to = dateTo;
@@ -143,6 +146,12 @@ export default function ReportsTab() {
                   {def.groupOptions.map(g => <SelectItem key={g} value={g}>{g}</SelectItem>)}
                 </SelectContent>
               </Select>
+            </div>
+          )}
+          {multiStoreEnabled && (
+            <div>
+              <Label className="text-xs">Store</Label>
+              <PharmacyStoreSelector compact />
             </div>
           )}
           <Button onClick={run} disabled={loading}><Play className="h-3 w-3 mr-1" /> Run</Button>

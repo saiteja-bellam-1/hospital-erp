@@ -12,6 +12,7 @@ from app.services.patient_service import PatientService
 from app.utils.dependencies import get_current_user, require_permission, require_feature_permission
 from app.utils.auth import Modules
 from app.services.audit_service import log_action
+from app.utils.patient_age import has_valid_age, normalize_stored_age
 
 router = APIRouter()
 
@@ -20,6 +21,7 @@ class PatientCreate(BaseModel):
     last_name: str = Field(..., min_length=1, max_length=50)
     date_of_birth: Optional[date] = None
     age: Optional[int] = Field(None, ge=0, le=150)
+    age_months: Optional[int] = Field(None, ge=0, le=11)
     gender: Optional[str] = Field(None, max_length=10)
     blood_group: Optional[str] = Field(None, max_length=5)
     marital_status: Optional[str] = Field(None, max_length=20)
@@ -45,6 +47,7 @@ class PatientResponse(BaseModel):
     last_name: str
     date_of_birth: Optional[date]
     age: Optional[int] = None
+    age_months: Optional[int] = None
     gender: Optional[str]
     blood_group: Optional[str]
     marital_status: Optional[str] = None
@@ -74,6 +77,7 @@ class PatientSearchResponse(BaseModel):
     last_name: str
     date_of_birth: Optional[date]
     age: Optional[int]
+    age_months: Optional[int] = None
     gender: Optional[str]
     blood_group: Optional[str]
     marital_status: Optional[str] = None
@@ -123,6 +127,7 @@ class PatientUpdate(BaseModel):
     last_name: Optional[str] = Field(None, min_length=1, max_length=50)
     date_of_birth: Optional[date] = None
     age: Optional[int] = Field(None, ge=0, le=150)
+    age_months: Optional[int] = Field(None, ge=0, le=11)
     gender: Optional[str] = Field(None, max_length=10)
     blood_group: Optional[str] = Field(None, max_length=5)
     marital_status: Optional[str] = Field(None, max_length=20)
@@ -154,18 +159,24 @@ async def create_patient(
     patient_dict = patient_data.dict()
     patient_dict["hospital_id"] = current_user.hospital_id
 
-    # Auto-calculate age from DOB if DOB is provided but age is not
-    if patient_dict.get("date_of_birth") and patient_dict.get("age") is None:
-        from datetime import date as date_type
-        today = date_type.today()
-        dob = patient_dict["date_of_birth"]
-        patient_dict["age"] = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
-
-    if patient_dict.get("age") is None:
+    # Normalize age fields from DOB or manual years/months entry
+    if not has_valid_age(
+        date_of_birth=patient_dict.get("date_of_birth"),
+        age=patient_dict.get("age"),
+        age_months=patient_dict.get("age_months"),
+    ):
         raise HTTPException(
             status_code=400,
-            detail="Age is required. Provide age directly or a date of birth.",
+            detail="Age is required. Provide age (years and/or months) or a date of birth.",
         )
+
+    patient_dict.update(
+        normalize_stored_age(
+            date_of_birth=patient_dict.get("date_of_birth"),
+            age=patient_dict.get("age"),
+            age_months=patient_dict.get("age_months"),
+        )
+    )
 
     patient = patient_service.create_patient(patient_dict)
 
@@ -273,15 +284,20 @@ async def update_patient(
     update_data = {k: v for k, v in patient_update.dict().items() if v is not None}
 
     # Keep age in sync with DOB:
-    # - If DOB is being updated, recompute age (overrides any stale age in payload).
-    # - If only age is being updated, clear DOB so they don't disagree.
+    # - If DOB is being updated, recompute age + age_months (overrides stale values).
+    # - If only age/age_months are being updated, clear DOB so they don't disagree.
     if update_data.get("date_of_birth"):
-        from datetime import date as date_type
-        today = date_type.today()
-        dob = update_data["date_of_birth"]
-        update_data["age"] = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
-    elif "age" in update_data and patient.date_of_birth:
+        update_data.update(
+            normalize_stored_age(date_of_birth=update_data["date_of_birth"])
+        )
+    elif ("age" in update_data or "age_months" in update_data) and patient.date_of_birth:
         update_data["date_of_birth"] = None
+        update_data.update(
+            normalize_stored_age(
+                age=update_data.get("age", patient.age),
+                age_months=update_data.get("age_months", getattr(patient, "age_months", None)),
+            )
+        )
 
     updated_patient = patient_service.update_patient(patient_id, update_data)
     

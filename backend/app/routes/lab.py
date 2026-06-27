@@ -225,7 +225,8 @@ class ReportResponse(BaseModel):
     patient_id: int
     patient_name: str
     patient_gender: Optional[str] = None
-    patient_age: Optional[int] = None
+    patient_age: Optional[float] = None
+    patient_age_display: Optional[str] = None
     test_id: int
     test_name: str
     test_code: str
@@ -317,20 +318,16 @@ def _require_lab_access(current_user: User):
     if not any(r in current_user.role_names for r in ['super_admin', 'hospital_admin', 'lab_admin', 'lab_technician', 'doctor']):
         raise HTTPException(status_code=403, detail="Lab access required")
 
-def _calculate_age(dob):
-    if not dob:
-        return None
-    today = date.today()
-    return today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+from app.utils.patient_age import format_patient_age, patient_age_years_float, patient_age_years_int
+
 
 def _patient_age(patient):
-    """Resolve patient age: prefer DOB-derived, fall back to stored `age` column."""
-    if not patient:
-        return None
-    age = _calculate_age(patient.date_of_birth) if patient.date_of_birth else None
-    if age is None and getattr(patient, "age", None) is not None:
-        age = patient.age
-    return age
+    """Age in fractional years for lab reference-range matching."""
+    return patient_age_years_float(patient)
+
+
+def _patient_age_display(patient):
+    return format_patient_age(patient)
 
 def _sync_parameter_reference_fields(param: LabTestParameter, data: ParameterCreate) -> None:
     """Persist reference_ranges and mirror the first demographic row into legacy columns."""
@@ -542,7 +539,8 @@ def _build_report_response(report: LabReport, db: Session) -> dict:
         "patient_phone": patient.primary_phone if patient else "",
         "mrn": (patient.mrn or "") if patient else "",
         "patient_gender": patient.gender if patient else None,
-        "patient_age": age,
+        "patient_age": patient_age_years_int(patient),
+        "patient_age_display": _patient_age_display(patient),
         "village": (patient.village or "") if patient else "",
         "district": (patient.district or "") if patient else "",
         "test_id": test.id if test else 0,
@@ -1326,7 +1324,8 @@ async def reception_book_lab_tests(
         "bill_number": bill_number,
         "bill_date": now.isoformat(),
         "patient_name": f"{patient.first_name} {patient.last_name}",
-        "patient_age": age,
+        "patient_age": patient_age_years_int(patient),
+        "patient_age_display": _patient_age_display(patient),
         "patient_gender": patient.gender,
         "patient_phone": patient.primary_phone or "",
         "mrn": patient.mrn or "",
@@ -1541,7 +1540,8 @@ async def download_order_bill(
         "bill_number": f"LB-{order.order_number}",
         "bill_date": order.order_date.isoformat() if order.order_date else datetime.now().isoformat(),
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "Unknown",
-        "patient_age": age,
+        "patient_age": patient_age_years_int(patient),
+        "patient_age_display": _patient_age_display(patient),
         "patient_gender": patient.gender if patient else "",
         "patient_phone": patient.primary_phone if patient else "",
         "mrn": (patient.mrn or "") if patient else "",
@@ -1621,7 +1621,8 @@ async def regenerate_lab_bill(
         "bill_number": f"LB-{now.strftime('%Y%m%d%H%M%S')}-{patient.id}" if patient else "LB-UNKNOWN",
         "bill_date": now.isoformat(),
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "Unknown",
-        "patient_age": age,
+        "patient_age": patient_age_years_int(patient),
+        "patient_age_display": _patient_age_display(patient),
         "patient_gender": patient.gender if patient else "",
         "patient_phone": patient.primary_phone if patient else "",
         "mrn": (patient.mrn or "") if patient else "",
@@ -1724,7 +1725,8 @@ async def download_grouped_lab_bill(
         "bill_number": bill_number,
         "bill_date": bill_date.isoformat() if hasattr(bill_date, "isoformat") else str(bill_date),
         "patient_name": f"{patient.first_name} {patient.last_name}",
-        "patient_age": age,
+        "patient_age": patient_age_years_int(patient),
+        "patient_age_display": _patient_age_display(patient),
         "patient_gender": patient.gender,
         "patient_phone": patient.primary_phone or "",
         "mrn": patient.mrn or "",
@@ -1887,7 +1889,8 @@ async def generate_lab_bill(
         "bill_number": bill_number,
         "bill_date": now.isoformat(),
         "patient_name": f"{patient.first_name} {patient.last_name}",
-        "patient_age": age,
+        "patient_age": patient_age_years_int(patient),
+        "patient_age_display": _patient_age_display(patient),
         "patient_gender": patient.gender,
         "patient_phone": patient.primary_phone or "",
         "mrn": patient.mrn or "",
@@ -2700,7 +2703,8 @@ async def book_package(
         "bill_number": bill_number,
         "bill_date": now.isoformat(),
         "patient_name": f"{patient.first_name} {patient.last_name}",
-        "patient_age": age,
+        "patient_age": patient_age_years_int(patient),
+        "patient_age_display": _patient_age_display(patient),
         "patient_gender": patient.gender,
         "patient_phone": patient.primary_phone or "",
         "mrn": patient.mrn or "",

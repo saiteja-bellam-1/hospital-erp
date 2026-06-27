@@ -13,10 +13,11 @@ import {
 } from '../../../components/ui/select';
 import { useToast } from '../../../hooks/use-toast';
 import {
-  ChevronLeft, ChevronRight, Loader2, Plus, Trash2,
-  Pill, Stethoscope, FileSignature, AlertTriangle,
+  ChevronLeft, ChevronRight, Loader2,
+  Stethoscope, FileSignature, AlertTriangle,
 } from 'lucide-react';
-import MedicineLookupInput from '../../../components/inpatient/MedicineLookupInput';
+import TakeHomeMedicinesSection from '../../../components/prescription/TakeHomeMedicinesSection';
+import { serializeTakeHomeMed } from '../../../utils/prescriptionSchedule';
 
 const EMPTY_FORM = {
   // Step 1
@@ -70,58 +71,6 @@ const Stepper = ({ step, totalSteps = 3, labels }) => (
         </React.Fragment>
       );
     })}
-  </div>
-);
-
-
-const MedicineCard = ({ med, idx, onChange, onRemove, admissionId }) => (
-  <div className="border rounded-lg p-3 bg-white space-y-2">
-    <div className="flex items-start gap-2">
-      <div className="flex-1">
-        <Label className="text-[11px] text-gray-500">Medicine *</Label>
-        <MedicineLookupInput
-          admissionId={admissionId}
-          value={med.medicine_name}
-          medicineId={med.medicine_id}
-          placeholder="Search catalog or type free-text"
-          onChange={({ medicine_id, medicine_name }) => {
-            onChange(idx, 'medicine_id', medicine_id || '');
-            onChange(idx, 'medicine_name', medicine_name);
-          }}
-        />
-      </div>
-      <Button type="button" size="sm" variant="ghost" className="h-9 w-9 p-0 mt-5"
-              onClick={() => onRemove(idx)}>
-        <Trash2 className="h-4 w-4 text-red-500" />
-      </Button>
-    </div>
-    <div className="grid grid-cols-2 gap-2">
-      <div>
-        <Label className="text-[11px] text-gray-500">Dosage</Label>
-        <Input placeholder="500 mg" value={med.dosage}
-               onChange={e => onChange(idx, 'dosage', e.target.value)} />
-      </div>
-      <div>
-        <Label className="text-[11px] text-gray-500">Frequency</Label>
-        <Input placeholder="BD / TID" value={med.frequency}
-               onChange={e => onChange(idx, 'frequency', e.target.value)} />
-      </div>
-      <div>
-        <Label className="text-[11px] text-gray-500">Duration</Label>
-        <Input placeholder="5 days" value={med.duration}
-               onChange={e => onChange(idx, 'duration', e.target.value)} />
-      </div>
-      <div>
-        <Label className="text-[11px] text-gray-500">Quantity</Label>
-        <Input type="number" min="1" placeholder="10" value={med.quantity}
-               onChange={e => onChange(idx, 'quantity', e.target.value)} />
-      </div>
-    </div>
-    <div>
-      <Label className="text-[11px] text-gray-500">Instructions</Label>
-      <Input placeholder="After meals, with water…" value={med.instructions}
-             onChange={e => onChange(idx, 'instructions', e.target.value)} />
-    </div>
   </div>
 );
 
@@ -189,22 +138,6 @@ const DischargeWizard = ({
   const labels = ['Clinical', 'Take-home Rx & Follow-up', 'Declarations'];
 
   const update = (patch) => setForm(p => ({ ...p, ...patch }));
-  const updateMed = (idx, key, val) => {
-    setForm(p => {
-      const next = [...(p.take_home_medications || [])];
-      next[idx] = { ...next[idx], [key]: val };
-      return { ...p, take_home_medications: next };
-    });
-  };
-  const addMed = () => update({
-    take_home_medications: [
-      ...(form.take_home_medications || []),
-      { medicine_id: '', medicine_name: '', dosage: '', frequency: '', duration: '', quantity: '', instructions: '' },
-    ],
-  });
-  const removeMed = (idx) => update({
-    take_home_medications: (form.take_home_medications || []).filter((_, i) => i !== idx),
-  });
 
   const validateStep1 = () => {
     if (!form.discharge_type) return 'Discharge type is required.';
@@ -247,15 +180,7 @@ const DischargeWizard = ({
     try {
       const meds = (form.take_home_medications || [])
         .filter(m => (m.medicine_name || '').trim())
-        .map(m => ({
-          medicine_id: m.medicine_id ? parseInt(m.medicine_id, 10) : null,
-          medicine_name: m.medicine_name.trim(),
-          dosage: m.dosage?.trim() || null,
-          frequency: m.frequency?.trim() || null,
-          duration: m.duration?.trim() || null,
-          quantity: m.quantity ? parseInt(m.quantity, 10) : null,
-          instructions: m.instructions?.trim() || null,
-        }));
+        .map(serializeTakeHomeMed);
 
       const dischargePayload = {
         discharge_type: form.discharge_type,
@@ -490,32 +415,12 @@ const DischargeWizard = ({
         {/* ---------- STEP 2 — Rx + Follow-up ---------- */}
         {step === 2 && (
           <div className="space-y-5">
-            <section>
-              <div className="flex items-center justify-between mb-2">
-                <h3 className="font-semibold text-sm text-gray-700 flex items-center gap-2">
-                  <Pill className="h-4 w-4" /> Take-home medications
-                </h3>
-                <Button type="button" size="sm" variant="outline" onClick={addMed}>
-                  <Plus className="h-3 w-3 mr-1" /> Add medicine
-                </Button>
-              </div>
-              <p className="text-xs text-gray-500 mb-2">
-                Prescription the patient takes home. Separate from drugs given during the stay.
-              </p>
-              {(form.take_home_medications || []).length === 0 ? (
-                <p className="text-xs text-gray-500 italic border rounded p-3 bg-gray-50">
-                  No take-home medications yet. Click <b>Add medicine</b> to add one.
-                </p>
-              ) : (
-                <div className="space-y-2">
-                  {form.take_home_medications.map((m, idx) => (
-                    <MedicineCard key={idx} med={m} idx={idx}
-                                  admissionId={admission?.id}
-                                  onChange={updateMed} onRemove={removeMed} />
-                  ))}
-                </div>
-              )}
-            </section>
+            <TakeHomeMedicinesSection
+              medications={form.take_home_medications || []}
+              onMedicationsChange={(meds) => update({ take_home_medications: meds })}
+              admissionId={admission?.id}
+              description="Prescription the patient takes home. Separate from drugs given during the stay."
+            />
 
             <section>
               <h3 className="font-semibold text-sm text-gray-700 flex items-center gap-2 mb-2">

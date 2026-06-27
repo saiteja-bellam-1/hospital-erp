@@ -33,6 +33,12 @@ class Hospital(Base):
     # When True, free quantity included on a sale line contributes to the
     # taxable base. Default off — most pharmacies do not tax freebies.
     pharmacy_tax_on_free = Column(Boolean, default=False)
+    # When False (default), pharmacy behaves as a single store using the default
+    # master store. Admin enables this to manage satellite pharmacies.
+    pharmacy_multi_store_enabled = Column(Boolean, default=False)
+    # When True (and multi-store enabled), staff must be explicitly assigned to a
+    # store; unassigned users cannot fall back to the default master store.
+    pharmacy_require_store_assignment = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 

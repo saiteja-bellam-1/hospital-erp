@@ -1073,7 +1073,7 @@ const LabTechDashboard = () => {
           <div className="space-y-2 mb-4">
             <p className="text-sm">Patient: <strong>{viewingReport.patient_name}</strong>
               {viewingReport.patient_gender && ` (${viewingReport.patient_gender})`}
-              {viewingReport.patient_age && `, ${viewingReport.patient_age} yrs`}
+              {(viewingReport.patient_age_display || viewingReport.patient_age) && `, ${viewingReport.patient_age_display || `${viewingReport.patient_age} yrs`}`}
             </p>
             <p className="text-sm text-gray-500">Order: #{viewingReport.order_number}</p>
             <p className="text-sm text-gray-500">Date: {formatDate(viewingReport.report_date)}</p>

@@ -7,6 +7,7 @@ from app.models.hospital import Hospital
 from app.models.outpatient import Appointment
 from typing import Optional, List, Dict, Any, Tuple
 from datetime import date, datetime, timedelta
+from app.utils.patient_age import compute_age_parts_from_dob
 
 
 def _next_mrn_for(db: Session, hospital_id: int) -> str:
@@ -41,7 +42,7 @@ class PatientService:
 
     def create_patient(self, patient_data: Dict[str, Any]) -> Patient:
         allowed = {
-            "first_name", "last_name", "date_of_birth", "age", "gender",
+            "first_name", "last_name", "date_of_birth", "age", "age_months", "gender",
             "blood_group", "marital_status", "abha_id", "email",
             "primary_phone", "emergency_contact_phone", "emergency_contact_name",
             "emergency_contact_relation", "address_line1", "address_line2",
@@ -143,11 +144,11 @@ class PatientService:
         ).all()
     
     def calculate_age(self, date_of_birth: date) -> int:
-        """Calculate age from date of birth"""
+        """Calculate whole years from date of birth."""
         if not date_of_birth:
             return None
-        today = date.today()
-        return today.year - date_of_birth.year - ((today.month, today.day) < (date_of_birth.month, date_of_birth.day))
+        years, _, _ = compute_age_parts_from_dob(date_of_birth)
+        return years
     
     def advanced_search_patients(self, filters: Dict[str, Any], hospital_id: int, page: int = 1, per_page: int = 20) -> Tuple[List[Dict], Dict]:
         """Enhanced patient search with filters, metadata, and appointment info"""

@@ -43,6 +43,7 @@ from app.models.pharmacy import (
     PharmacyPurchaseItem,
     PharmacySale,
     PharmacySaleItem,
+    PharmacyStore,
     Prescription,
     PrescriptionItem,
 )
@@ -57,11 +58,21 @@ from app.utils.pharmacy_pricing import (
     format_sale_qty_display,
     tab_sale_rate,
     strip_sale_rate,
+    apply_cost_pcs_from_mrp,
 )
 from app.services.audit_service import log_action
+from app.services.pharmacy_store_service import (
+    resolve_store_id,
+    resolve_report_store_filter,
+    get_master_store_id,
+    sum_store_stock,
+)
 
 
 router = APIRouter()
+
+from app.routes.pharmacy_stores import router as _stores_router  # noqa: E402
+router.include_router(_stores_router)
 
 
 # ============================================================================
@@ -116,6 +127,13 @@ def _audit(db, user, action, resource_type, resource_id, description, details=No
         resource_type=resource_type, resource_id=resource_id,
         description=description, details=details,
     )
+
+
+def _store_label(db: Session, store_id: Optional[int]) -> Optional[str]:
+    if not store_id:
+        return None
+    s = db.query(PharmacyStore).filter(PharmacyStore.id == store_id).first()
+    return f"{s.code} — {s.name}" if s else None
 
 
 def _ensure_active_or_404(obj, what: str):
@@ -488,6 +506,11 @@ class MedicineOut(MedicineIn):
         from_attributes = True
 
 
+class MedicineLookupOut(MedicineOut):
+    store_stock_qty: float = 0.0
+    master_stock_qty: float = 0.0
+
+
 @router.get("/medicines", response_model=List[MedicineOut])
 def list_medicines(
     search: Optional[str] = None,
@@ -535,15 +558,20 @@ def list_medicines(
     return q.order_by(Medicine.name).limit(limit).all()
 
 
-@router.get("/medicines/lookup", response_model=List[MedicineOut])
+@router.get("/medicines/lookup", response_model=List[MedicineLookupOut])
 def lookup_medicine(
     q: Optional[str] = None,
     barcode: Optional[str] = None,
+    store_id: Optional[int] = None,
     limit: int = 20,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_catalog")),
 ):
-    """Lightweight search used by sales counter (name / code / barcode)."""
+    """Lightweight search used by sales counter (name / code / barcode).
+
+    When store_id is supplied, each row includes stock at that store and at master
+    (for transfer guidance — master qty is informational only).
+    """
     query = db.query(Medicine).filter(
         Medicine.hospital_id == current_user.hospital_id,
         Medicine.is_active == True,  # noqa: E712
@@ -560,7 +588,33 @@ def lookup_medicine(
         ))
     else:
         return []
-    return query.order_by(Medicine.name).limit(limit).all()
+    meds = query.order_by(Medicine.name).limit(limit).all()
+
+    lookup_store_id = None
+    if store_id is not None:
+        lookup_store_id = resolve_store_id(db, current_user, store_id)
+    master_id = get_master_store_id(db, current_user.hospital_id)
+
+    out = []
+    for med in meds:
+        row = MedicineLookupOut.model_validate(med)
+        if lookup_store_id is not None:
+            row.store_stock_qty = sum_store_stock(
+                db, medicine_id=med.id, hospital_id=current_user.hospital_id,
+                store_id=lookup_store_id,
+            )
+        if master_id is not None and master_id != lookup_store_id:
+            row.master_stock_qty = sum_store_stock(
+                db, medicine_id=med.id, hospital_id=current_user.hospital_id,
+                store_id=master_id,
+            )
+        elif master_id is not None and lookup_store_id is None:
+            row.master_stock_qty = sum_store_stock(
+                db, medicine_id=med.id, hospital_id=current_user.hospital_id,
+                store_id=master_id,
+            )
+        out.append(row)
+    return out
 
 
 class UnmappedMedicineOut(BaseModel):
@@ -697,6 +751,7 @@ def create_medicine(
         hospital_id=current_user.hospital_id,
         **data.model_dump(),
     )
+    apply_cost_pcs_from_mrp(row)
     db.add(row); db.commit(); db.refresh(row)
     _audit(db, current_user, "create_medicine", "medicine", row.id,
            f"Created medicine '{row.name}' ({row.medicine_code})")
@@ -715,6 +770,7 @@ def update_medicine(
     _ensure_active_or_404(row, "Medicine")
     for k, v in data.model_dump().items():
         setattr(row, k, v)
+    apply_cost_pcs_from_mrp(row)
     db.commit(); db.refresh(row)
     _audit(db, current_user, "update_medicine", "medicine", row.id,
            f"Updated medicine #{row.id}")
@@ -852,6 +908,8 @@ def update_medicine_pricing(
     # Keep legacy unit_price tracking rate_a when rate_a changes
     if "rate_a" in diff and (data.rate_a is not None):
         row.unit_price = data.rate_a
+    if "mrp" in diff or "strip_conversion_factor" in diff:
+        apply_cost_pcs_from_mrp(row)
     db.commit(); db.refresh(row)
     _audit(db, current_user, "update_medicine_pricing", "medicine", row.id,
            f"Pricing changed for medicine #{row.id}", details=diff)
@@ -898,10 +956,12 @@ class BatchOut(BaseModel):
 def list_inventory(
     search: Optional[str] = None,
     low_only: bool = False,
+    store_id: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_inventory")),
 ):
     """Per-medicine stock summary across batches with low-stock flag."""
+    sid = resolve_store_id(db, current_user, store_id)
     # Aggregate stock + nearest expiry per medicine
     agg = db.query(
         PharmacyInventory.medicine_id,
@@ -909,6 +969,7 @@ def list_inventory(
         sa_func.count(PharmacyInventory.id).label("batches"),
     ).filter(
         PharmacyInventory.hospital_id == current_user.hospital_id,
+        PharmacyInventory.store_id == sid,
         PharmacyInventory.is_active == True,  # noqa: E712
     ).group_by(PharmacyInventory.medicine_id).subquery()
 
@@ -944,15 +1005,18 @@ def list_inventory(
 def list_batches(
     medicine_id: Optional[int] = None,
     supplier_id: Optional[int] = None,
+    store_id: Optional[int] = None,
     active_only: bool = True,
     limit: int = 500,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_inventory")),
 ):
+    sid = resolve_store_id(db, current_user, store_id)
     q = db.query(PharmacyInventory, Medicine, PharmacySupplier).join(
         Medicine, Medicine.id == PharmacyInventory.medicine_id,
     ).outerjoin(PharmacySupplier, PharmacySupplier.id == PharmacyInventory.supplier_id).filter(
         PharmacyInventory.hospital_id == current_user.hospital_id,
+        PharmacyInventory.store_id == sid,
     )
     if active_only:
         q = q.filter(PharmacyInventory.is_active == True)  # noqa: E712
@@ -976,12 +1040,12 @@ def list_batches(
 
 @router.get("/inventory/low-stock", response_model=List[InventoryRowOut])
 def list_low_stock(
+    store_id: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_low_stock")),
 ):
     """All medicines whose total stock ≤ min_qty (and min_qty > 0)."""
-    # Reuse list_inventory with low_only=True
-    return list_inventory(search=None, low_only=True, db=db, current_user=current_user)
+    return list_inventory(search=None, low_only=True, store_id=store_id, db=db, current_user=current_user)
 
 
 class StockAdjustIn(BaseModel):
@@ -1011,7 +1075,8 @@ def adjust_stock(
     adj = PharmacyStockAdjustment(
         medicine_id=batch.medicine_id, batch_id=batch.id,
         qty_change=data.qty_change, reason=data.reason,
-        performed_by=current_user.id, hospital_id=current_user.hospital_id,
+        performed_by=current_user.id, store_id=batch.store_id,
+        hospital_id=current_user.hospital_id,
     )
     db.add(adj)
     db.flush()  # need adj.id for the ledger reference
@@ -1019,7 +1084,7 @@ def adjust_stock(
         medicine_id=batch.medicine_id, batch_id=batch.id,
         txn_type="adjustment", qty_delta=data.qty_change,
         reference_type="adjustment", reference_id=adj.id,
-        performed_by=current_user.id, notes=data.reason,
+        performed_by=current_user.id, store_id=batch.store_id, notes=data.reason,
         hospital_id=current_user.hospital_id,
     )
     db.add(led)
@@ -1049,6 +1114,7 @@ class ExpiringBatchOut(BaseModel):
 @router.get("/inventory/expiring", response_model=List[ExpiringBatchOut])
 def list_expiring_batches(
     days: int = 90,
+    store_id: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_expiring")),
 ):
@@ -1062,11 +1128,13 @@ def list_expiring_batches(
         raise HTTPException(status_code=400, detail="days must be within ±3650")
     today = date.today()
     threshold = today + timedelta(days=days)
+    sid = resolve_store_id(db, current_user, store_id)
     rows = (
         db.query(PharmacyInventory, Medicine)
         .join(Medicine, Medicine.id == PharmacyInventory.medicine_id)
         .filter(
             PharmacyInventory.hospital_id == current_user.hospital_id,
+            PharmacyInventory.store_id == sid,
             PharmacyInventory.is_active == True,  # noqa: E712
             PharmacyInventory.quantity_in_stock > 0,
             PharmacyInventory.expiry_date <= threshold,
@@ -1180,6 +1248,7 @@ def list_ledger(
     medicine_id: Optional[int] = None,
     batch_id: Optional[int] = None,
     txn_type: Optional[str] = None,
+    store_id: Optional[int] = None,
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
     limit: int = 500,
@@ -1193,6 +1262,9 @@ def list_ledger(
     ).outerjoin(User, User.id == PharmacyStockLedger.performed_by).filter(
         PharmacyStockLedger.hospital_id == current_user.hospital_id,
     )
+    if store_id is not None:
+        sid = resolve_store_id(db, current_user, store_id)
+        q = q.filter(PharmacyStockLedger.store_id == sid)
     if medicine_id:
         q = q.filter(PharmacyStockLedger.medicine_id == medicine_id)
     if batch_id:
@@ -1256,12 +1328,18 @@ class PurchaseItemOut(PurchaseItemIn):
 class PurchaseIn(BaseModel):
     entry_date: date
     supplier_id: int
+    store_id: Optional[int] = None
     invoice_number: Optional[str] = None
     bill_date: Optional[date] = None
     payment_type: str = Field("cash", pattern="^(cash|credit)$")
     purchase_type: Optional[str] = None
     notes: Optional[str] = None
     items: List[PurchaseItemIn] = Field(default_factory=list)
+
+
+class PurchaseEditIn(PurchaseIn):
+    """Draft edits ignore `reason`; confirmed edits require it."""
+    reason: Optional[str] = Field(None, max_length=500)
 
 
 class PurchaseOut(BaseModel):
@@ -1285,6 +1363,8 @@ class PurchaseOut(BaseModel):
     confirmed_at: Optional[datetime] = None
     revoked_at: Optional[datetime] = None
     revoke_reason: Optional[str] = None
+    edited_at: Optional[datetime] = None
+    edit_reason: Optional[str] = None
 
     class Config: from_attributes = True
 
@@ -1381,6 +1461,148 @@ def _recompute_purchase_totals(purchase: PharmacyPurchase, db: Session) -> None:
     purchase.grand_total = round(grand, 2)
 
 
+def _batch_key(medicine_id: int, batch_number: str, expiry_date: date) -> tuple:
+    return (medicine_id, batch_number, expiry_date or _EXPIRY_SENTINEL)
+
+
+def _sold_qty_for_batch(db: Session, batch_id: Optional[int]) -> float:
+    if not batch_id:
+        return 0.0
+    sold_total = db.query(sa_func.coalesce(sa_func.sum(PharmacyStockLedger.qty_delta), 0)).filter(
+        PharmacyStockLedger.batch_id == batch_id,
+        PharmacyStockLedger.txn_type.in_(("sale", "rx_dispense")),
+    ).scalar() or 0
+    return abs(float(sold_total))
+
+
+def _validate_confirmed_purchase_edit(
+    db: Session, purchase: PharmacyPurchase, new_items: List[PurchaseItemIn],
+) -> None:
+    """Ensure new lines do not drop below already sold/dispensed quantities."""
+    new_map: dict = {}
+    for item in new_items:
+        key = _batch_key(item.medicine_id, item.batch_number, item.expiry_date or _EXPIRY_SENTINEL)
+        recv = float((item.quantity or 0) + (item.free_quantity or 0))
+        new_map[key] = new_map.get(key, 0.0) + recv
+
+    for old in purchase.items:
+        key = _batch_key(old.medicine_id, old.batch_number, old.expiry_date or _EXPIRY_SENTINEL)
+        sold = _sold_qty_for_batch(db, old.inventory_id)
+        new_recv = new_map.get(key)
+        if new_recv is None:
+            if sold > 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Cannot remove batch {old.batch_number} — "
+                        f"{sold:g} unit(s) already sold or dispensed"
+                    ),
+                )
+        elif new_recv + 1e-9 < sold:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Batch {old.batch_number} new quantity ({new_recv:g}) is below "
+                    f"already sold/dispensed ({sold:g})"
+                ),
+            )
+
+
+def _reverse_purchase_item_stock(
+    db: Session, item: PharmacyPurchaseItem, purchase: PharmacyPurchase,
+    user: User, reason: str,
+) -> float:
+    """Reverse the un-sold portion of a confirmed purchase line."""
+    received = float((item.quantity or 0) + (item.free_quantity or 0))
+    batch_id = item.inventory_id
+    sold = _sold_qty_for_batch(db, batch_id)
+    reversible = max(0.0, received - sold)
+    if reversible <= 0 or not batch_id:
+        return 0.0
+    batch = db.query(PharmacyInventory).filter(PharmacyInventory.id == batch_id).first()
+    if not batch:
+        return 0.0
+    take = min(reversible, float(batch.quantity_in_stock or 0))
+    batch.quantity_in_stock = float(batch.quantity_in_stock or 0) - take
+    if (batch.quantity_in_stock or 0) <= 0:
+        batch.quantity_in_stock = 0
+        batch.is_active = False
+    if take > 0:
+        db.add(PharmacyStockLedger(
+            medicine_id=item.medicine_id, batch_id=batch.id,
+            txn_type="purchase_edit_reverse", qty_delta=-take,
+            reference_type="purchase", reference_id=purchase.id,
+            performed_by=user.id, store_id=purchase.store_id,
+            hospital_id=purchase.hospital_id,
+            notes=f"Edit purchase {purchase.purchase_number}: {reason}",
+        ))
+    return take
+
+
+def _apply_purchase_item_to_inventory(
+    db: Session, item: PharmacyPurchaseItem, purchase: PharmacyPurchase,
+    user: User, purchase_store_id: int, ledger_notes: str,
+) -> PharmacyInventory:
+    """Create or merge an inventory batch for a purchase line; write ledger entry."""
+    item_expiry = item.expiry_date or _EXPIRY_SENTINEL
+    existing = db.query(PharmacyInventory).filter(
+        PharmacyInventory.medicine_id == item.medicine_id,
+        PharmacyInventory.batch_number == item.batch_number,
+        PharmacyInventory.expiry_date == item_expiry,
+        PharmacyInventory.store_id == purchase_store_id,
+        PharmacyInventory.hospital_id == user.hospital_id,
+        PharmacyInventory.is_active == True,  # noqa: E712
+    ).first()
+    added_qty = (item.quantity or 0) + (item.free_quantity or 0)
+    eff_cost = _effective_cost(item.quantity, item.free_quantity, item.purchase_rate)
+    if existing:
+        existing.quantity_in_stock = (existing.quantity_in_stock or 0) + added_qty
+        existing.mrp = item.mrp or existing.mrp
+        existing.purchase_rate = item.purchase_rate or existing.purchase_rate
+        if item.purchase_rate:
+            existing.cost_price = eff_cost
+        existing.supplier_id = purchase.supplier_id
+        existing.purchase_id = purchase.id
+        existing.hsn_id = item.hsn_id or existing.hsn_id
+        existing.free_quantity = (existing.free_quantity or 0) + (item.free_quantity or 0)
+        existing.discount_pct = item.discount_pct
+        inv = existing
+    else:
+        inv = PharmacyInventory(
+            medicine_id=item.medicine_id, batch_number=item.batch_number,
+            expiry_date=item_expiry, quantity_in_stock=added_qty,
+            cost_price=eff_cost, selling_price=item.mrp or item.purchase_rate,
+            mrp=item.mrp, purchase_rate=item.purchase_rate,
+            free_quantity=item.free_quantity or 0, discount_pct=item.discount_pct,
+            hsn_id=item.hsn_id, supplier_id=purchase.supplier_id,
+            purchase_id=purchase.id, purchase_date=purchase.entry_date,
+            store_id=purchase_store_id,
+            is_active=True, hospital_id=user.hospital_id,
+        )
+        db.add(inv)
+        db.flush()
+
+    db.add(PharmacyStockLedger(
+        medicine_id=item.medicine_id, batch_id=inv.id, txn_type="purchase",
+        qty_delta=added_qty, reference_type="purchase", reference_id=purchase.id,
+        performed_by=user.id, store_id=purchase_store_id,
+        hospital_id=user.hospital_id,
+        notes=ledger_notes,
+    ))
+
+    med = db.query(Medicine).filter(Medicine.id == item.medicine_id).first()
+    if med:
+        last = med.last_purchase_date
+        if last is None or purchase.entry_date >= last:
+            if item.purchase_rate:
+                med.purchase_rate = item.purchase_rate
+            if item.mrp:
+                med.mrp = item.mrp
+            med.last_purchase_date = purchase.entry_date
+
+    return inv
+
+
 def _shape_purchase(p: PharmacyPurchase, db: Session) -> PurchaseOut:
     items_out: List[PurchaseItemOut] = []
     for it in p.items:
@@ -1388,6 +1610,7 @@ def _shape_purchase(p: PharmacyPurchase, db: Session) -> PurchaseOut:
         items_out.append(PurchaseItemOut(
             id=it.id, medicine_id=it.medicine_id, medicine_name=med.name if med else None,
             batch_number=it.batch_number,
+            expiry_date=it.expiry_date if it.expiry_date != _EXPIRY_SENTINEL else None,
             mrp=it.mrp or 0.0, quantity=it.quantity, free_quantity=it.free_quantity or 0.0,
             purchase_rate=it.purchase_rate, discount_pct=it.discount_pct or 0.0,
             hsn_id=it.hsn_id, tax_amount=it.tax_amount or 0.0,
@@ -1403,6 +1626,7 @@ def _shape_purchase(p: PharmacyPurchase, db: Session) -> PurchaseOut:
         notes=p.notes, items=items_out,
         created_at=p.created_at, confirmed_at=p.confirmed_at,
         revoked_at=p.revoked_at, revoke_reason=p.revoke_reason,
+        edited_at=p.edited_at, edit_reason=p.edit_reason,
     )
 
 
@@ -1454,13 +1678,18 @@ def create_purchase(
         supplier_id=data.supplier_id, invoice_number=data.invoice_number,
     )
 
+    purchase_store_id = resolve_store_id(
+        db, current_user, data.store_id, require_purchase_store=True,
+    )
+
     purchase = PharmacyPurchase(
         purchase_number=_next_purchase_number(db, current_user.hospital_id),
         entry_date=data.entry_date, supplier_id=data.supplier_id,
         invoice_number=data.invoice_number, bill_date=data.bill_date,
         payment_type=data.payment_type, purchase_type=data.purchase_type,
         status="draft", notes=data.notes,
-        created_by=current_user.id, hospital_id=current_user.hospital_id,
+        created_by=current_user.id, store_id=purchase_store_id,
+        hospital_id=current_user.hospital_id,
     )
     db.add(purchase)
     # P3.3: handle concurrent-draft race on the per-day sequence.
@@ -1497,7 +1726,7 @@ def create_purchase(
 
 @router.put("/purchases/{pid}", response_model=PurchaseOut)
 def edit_purchase(
-    pid: int, data: PurchaseIn,
+    pid: int, data: PurchaseEditIn,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "edit_purchase")),
 ):
@@ -1507,8 +1736,16 @@ def edit_purchase(
     ).first()
     if not purchase:
         raise HTTPException(status_code=404, detail="Purchase not found")
-    if purchase.status != "draft":
+    if purchase.status not in ("draft", "confirmed"):
         raise HTTPException(status_code=400, detail=f"Cannot edit a {purchase.status} purchase")
+
+    is_confirmed = purchase.status == "confirmed"
+    reason = (data.reason or "").strip()
+    if is_confirmed:
+        if len(reason) < 2:
+            raise HTTPException(status_code=400, detail="Reason is required to edit a confirmed purchase")
+        if not data.items:
+            raise HTTPException(status_code=400, detail="Cannot leave purchase empty")
 
     sup = db.query(PharmacySupplier).filter(
         PharmacySupplier.id == data.supplier_id,
@@ -1523,6 +1760,20 @@ def edit_purchase(
         exclude_purchase_id=purchase.id,
     )
 
+    if is_confirmed:
+        _validate_confirmed_purchase_edit(db, purchase, data.items)
+        if data.store_id is not None:
+            new_store = resolve_store_id(
+                db, current_user, data.store_id, require_purchase_store=True,
+            )
+            if new_store != purchase.store_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot change store on a confirmed purchase",
+                )
+        for old in list(purchase.items):
+            _reverse_purchase_item_stock(db, old, purchase, current_user, reason)
+
     purchase.entry_date = data.entry_date
     purchase.supplier_id = data.supplier_id
     purchase.invoice_number = data.invoice_number
@@ -1530,8 +1781,11 @@ def edit_purchase(
     purchase.payment_type = data.payment_type
     purchase.purchase_type = data.purchase_type
     purchase.notes = data.notes
+    if data.store_id is not None and not is_confirmed:
+        purchase.store_id = resolve_store_id(
+            db, current_user, data.store_id, require_purchase_store=True,
+        )
 
-    # Replace items wholesale — simpler than diffing and the draft is editable only
     for old in list(purchase.items):
         db.delete(old)
     db.flush()
@@ -1546,6 +1800,28 @@ def edit_purchase(
         ))
     db.flush(); db.refresh(purchase)
     _recompute_purchase_totals(purchase, db)
+
+    if is_confirmed:
+        purchase_store_id = purchase.store_id or resolve_store_id(
+            db, current_user, None, require_purchase_store=True,
+        )
+        purchase.store_id = purchase_store_id
+        for item in purchase.items:
+            inv = _apply_purchase_item_to_inventory(
+                db, item, purchase, current_user, purchase_store_id,
+                ledger_notes=f"Edited purchase {purchase.purchase_number}: {reason}",
+            )
+            item.inventory_id = inv.id
+        purchase.edited_by = current_user.id
+        purchase.edited_at = datetime.now()
+        purchase.edit_reason = reason
+        db.commit(); db.refresh(purchase)
+        _audit(
+            db, current_user, "edit_purchase", "pharmacy_purchase", purchase.id,
+            f"Edited confirmed purchase {purchase.purchase_number}: {reason}",
+        )
+        return _shape_purchase(purchase, db)
+
     db.commit(); db.refresh(purchase)
     _audit(db, current_user, "edit_purchase", "pharmacy_purchase", purchase.id,
            f"Edited draft purchase {purchase.purchase_number}")
@@ -1576,75 +1852,19 @@ def confirm_purchase(
     if not purchase.items:
         raise HTTPException(status_code=400, detail="Cannot confirm an empty purchase")
 
+    purchase_store_id = purchase.store_id or resolve_store_id(
+        db, current_user, None, require_purchase_store=True,
+    )
+    purchase.store_id = purchase_store_id
+
     _recompute_purchase_totals(purchase, db)  # safety re-calc
 
     for item in purchase.items:
-        # Merge into an existing inventory row only if the medicine, batch
-        # number AND expiry date all match — different expiry means it is
-        # physically a different lot even if the manufacturer reused the batch
-        # number, so it should be tracked separately for FEFO and write-off.
-        item_expiry = item.expiry_date or _EXPIRY_SENTINEL
-        existing = db.query(PharmacyInventory).filter(
-            PharmacyInventory.medicine_id == item.medicine_id,
-            PharmacyInventory.batch_number == item.batch_number,
-            PharmacyInventory.expiry_date == item_expiry,
-            PharmacyInventory.hospital_id == current_user.hospital_id,
-            PharmacyInventory.is_active == True,  # noqa: E712
-        ).first()
-        added_qty = (item.quantity or 0) + (item.free_quantity or 0)
-        # P1.5: drop free portion from per-unit valuation. purchase_rate keeps
-        # the gross rate (defaults next purchase); cost_price gets the effective.
-        eff_cost = _effective_cost(item.quantity, item.free_quantity, item.purchase_rate)
-        if existing:
-            existing.quantity_in_stock = (existing.quantity_in_stock or 0) + added_qty
-            existing.mrp = item.mrp or existing.mrp
-            existing.purchase_rate = item.purchase_rate or existing.purchase_rate
-            # P1.4: keep cost_price in sync (was previously only set on insert).
-            # P1.5: cost_price = effective cost (drops free portion). Latest-cost
-            # policy → newest receipt's effective cost wins.
-            if item.purchase_rate:
-                existing.cost_price = eff_cost
-            existing.supplier_id = purchase.supplier_id
-            existing.purchase_id = purchase.id
-            existing.hsn_id = item.hsn_id or existing.hsn_id
-            existing.free_quantity = (existing.free_quantity or 0) + (item.free_quantity or 0)
-            existing.discount_pct = item.discount_pct
-            inv = existing
-        else:
-            inv = PharmacyInventory(
-                medicine_id=item.medicine_id, batch_number=item.batch_number,
-                expiry_date=item_expiry, quantity_in_stock=added_qty,
-                cost_price=eff_cost, selling_price=item.mrp or item.purchase_rate,
-                mrp=item.mrp, purchase_rate=item.purchase_rate,
-                free_quantity=item.free_quantity or 0, discount_pct=item.discount_pct,
-                hsn_id=item.hsn_id, supplier_id=purchase.supplier_id,
-                purchase_id=purchase.id, purchase_date=purchase.entry_date,
-                is_active=True, hospital_id=current_user.hospital_id,
-            )
-            db.add(inv); db.flush()
+        inv = _apply_purchase_item_to_inventory(
+            db, item, purchase, current_user, purchase_store_id,
+            ledger_notes=f"Confirmed purchase {purchase.purchase_number}",
+        )
         item.inventory_id = inv.id
-
-        # Ledger
-        db.add(PharmacyStockLedger(
-            medicine_id=item.medicine_id, batch_id=inv.id, txn_type="purchase",
-            qty_delta=added_qty, reference_type="purchase", reference_id=purchase.id,
-            performed_by=current_user.id, hospital_id=current_user.hospital_id,
-            notes=f"Confirmed purchase {purchase.purchase_number}",
-        ))
-
-        # Push P-Rate + MRP back to medicine master so future purchases default in.
-        # P1.3: only update if this purchase's entry_date is at least as recent as
-        # the last purchase that touched the master — back-dated entries must not
-        # clobber a newer master price.
-        med = db.query(Medicine).filter(Medicine.id == item.medicine_id).first()
-        if med:
-            last = med.last_purchase_date
-            if last is None or purchase.entry_date >= last:
-                if item.purchase_rate:
-                    med.purchase_rate = item.purchase_rate
-                if item.mrp:
-                    med.mrp = item.mrp
-                med.last_purchase_date = purchase.entry_date
 
     purchase.status = "confirmed"
     purchase.confirmed_by = current_user.id
@@ -1822,6 +2042,7 @@ def revoke_purchase(
 def list_purchases(
     status: Optional[str] = None,
     supplier_id: Optional[int] = None,
+    store_id: Optional[int] = None,
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
     limit: int = 200,
@@ -1829,6 +2050,9 @@ def list_purchases(
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_purchases")),
 ):
     q = db.query(PharmacyPurchase).filter(PharmacyPurchase.hospital_id == current_user.hospital_id)
+    if store_id is not None:
+        sid = resolve_store_id(db, current_user, store_id)
+        q = q.filter(PharmacyPurchase.store_id == sid)
     if status:
         q = q.filter(PharmacyPurchase.status == status)
     if supplier_id:
@@ -1900,6 +2124,12 @@ class SaleItemOut(BaseModel):
 
 class SaleIn(BaseModel):
     payment_type: str = Field("cash", pattern="^(cash|credit)$")
+    store_id: Optional[int] = None
+    billing_mode: str = Field(
+        "cash_at_pharmacy",
+        pattern="^(inpatient_bill|cash_at_pharmacy)$",
+        description="inpatient_bill: defer to admission bill; cash_at_pharmacy: collect now",
+    )
     patient_phone: Optional[str] = None
     patient_ip_id: Optional[str] = None
     patient_name: Optional[str] = None
@@ -1925,6 +2155,9 @@ class SaleOut(BaseModel):
     tax_total: float
     grand_total: float
     status: str
+    billing_mode: str = "cash_at_pharmacy"
+    admission_id: Optional[int] = None
+    inpatient_bill_id: Optional[int] = None
     items: List[SaleItemOut] = Field(default_factory=list)
     created_at: datetime
 
@@ -1988,7 +2221,7 @@ def _flush_with_number_retry(db: Session, target, *, regen, set_attr: str, retri
     raise last_err  # propagated, caller decides how to surface
 
 
-def _pick_fifo_batches(db: Session, *, medicine_id: int, qty_needed: float, hospital_id: int):
+def _pick_fifo_batches(db: Session, *, medicine_id: int, qty_needed: float, hospital_id: int, store_id: Optional[int] = None):
     """Return [(batch_row, qty_to_take), ...] picking nearest-expiry first
     (First-Expiry-First-Out). Ties on expiry break on insertion order, so
     older receipts of the same expiry date still flow out first. Sentinel
@@ -2008,7 +2241,10 @@ def _pick_fifo_batches(db: Session, *, medicine_id: int, qty_needed: float, hosp
         PharmacyInventory.hospital_id == hospital_id,
         PharmacyInventory.is_active == True,  # noqa: E712
         PharmacyInventory.quantity_in_stock > 0,
-    ).order_by(
+    )
+    if store_id is not None:
+        avail = avail.filter(PharmacyInventory.store_id == store_id)
+    avail = avail.order_by(
         PharmacyInventory.expiry_date.asc(),
         PharmacyInventory.id.asc(),
     ).with_for_update().all()
@@ -2059,6 +2295,9 @@ def _shape_sale(s: PharmacySale, db: Session) -> SaleOut:
         subtotal=s.subtotal or 0.0, discount_total=s.discount_total or 0.0,
         tax_total=s.tax_total or 0.0, grand_total=s.grand_total or 0.0,
         status=s.status, items=items_out, created_at=s.created_at,
+        billing_mode=getattr(s, "billing_mode", None) or "cash_at_pharmacy",
+        admission_id=getattr(s, "admission_id", None),
+        inpatient_bill_id=getattr(s, "inpatient_bill_id", None),
     )
 
 
@@ -2086,6 +2325,8 @@ def create_sale(
     _hosp = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
     tax_on_free = bool(getattr(_hosp, "pharmacy_tax_on_free", False))
 
+    billing_mode = data.billing_mode or "cash_at_pharmacy"
+    ip_admission_id = None
     if data.patient_ip_id:
         from app.models.patient import Patient as _IPPatient
         from app.models.inpatient import Admission as _IPAdmission
@@ -2102,7 +2343,17 @@ def create_sale(
             _IPAdmission.patient_id == pat.id,
             _IPAdmission.status == "admitted",
         ).first()
-        if not active:
+        if billing_mode == "inpatient_bill":
+            if not active:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Patient {data.patient_ip_id} has no active admission. "
+                        "Use cash-at-pharmacy or leave patient blank for walk-in sales."
+                    ),
+                )
+            ip_admission_id = active.id
+        elif not active:
             raise HTTPException(
                 status_code=400,
                 detail=(
@@ -2110,6 +2361,13 @@ def create_sale(
                     "Leave patient_ip_id blank for OP / walk-in sales."
                 ),
             )
+    elif billing_mode == "inpatient_bill":
+        raise HTTPException(
+            status_code=400,
+            detail="Select an admitted patient to charge medicines to the inpatient bill.",
+        )
+
+    sale_store_id = resolve_store_id(db, current_user, data.store_id)
 
     sale = PharmacySale(
         sale_number=_next_sale_number(db, current_user.hospital_id),
@@ -2118,7 +2376,10 @@ def create_sale(
         patient_name=data.patient_name, patient_address=data.patient_address,
         doctor_number=data.doctor_number, doctor_name=data.doctor_name,
         status="completed", created_by=current_user.id,
+        store_id=sale_store_id,
         hospital_id=current_user.hospital_id,
+        admission_id=ip_admission_id,
+        billing_mode=billing_mode,
     )
     db.add(sale)
     # P3.3: two concurrent sales can compute the same MAX-seq and produce the
@@ -2191,6 +2452,11 @@ def create_sale(
             ).with_for_update().first()
             if not batch:
                 raise HTTPException(status_code=400, detail=f"Invalid batch_id {line.batch_id}")
+            if batch.store_id != sale_store_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Batch {batch.batch_number} belongs to a different store",
+                )
             if (batch.quantity_in_stock or 0) < qty_needed:
                 raise HTTPException(status_code=400,
                                     detail=f"Batch {batch.batch_number} has only {batch.quantity_in_stock}, need {qty_needed}")
@@ -2198,7 +2464,7 @@ def create_sale(
         else:
             picks = _pick_fifo_batches(
                 db, medicine_id=med.id, qty_needed=qty_needed,
-                hospital_id=current_user.hospital_id,
+                hospital_id=current_user.hospital_id, store_id=sale_store_id,
             )
 
         # P3.8: distribute free_quantity across picked batches so that the per-
@@ -2247,7 +2513,8 @@ def create_sale(
                 medicine_id=med.id, batch_id=batch.id, txn_type="sale",
                 qty_delta=-(take_qty + free_for_batch),
                 reference_type="sale", reference_id=sale.id,
-                performed_by=current_user.id, hospital_id=current_user.hospital_id,
+                performed_by=current_user.id, store_id=sale_store_id,
+                hospital_id=current_user.hospital_id,
                 notes=f"Sale {sale.sale_number}",
             ))
 
@@ -2270,6 +2537,7 @@ def create_sale(
 def list_sales(
     status: Optional[str] = None,
     payment_type: Optional[str] = None,
+    store_id: Optional[int] = None,
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
     search: Optional[str] = None,
@@ -2278,6 +2546,9 @@ def list_sales(
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_sales")),
 ):
     q = db.query(PharmacySale).filter(PharmacySale.hospital_id == current_user.hospital_id)
+    if store_id is not None:
+        sid = resolve_store_id(db, current_user, store_id)
+        q = q.filter(PharmacySale.store_id == sid)
     if status:
         q = q.filter(PharmacySale.status == status)
     if payment_type:
@@ -2324,19 +2595,10 @@ def void_sale(
 ):
     """Reverse a completed sale: restore qty to each batch + write reverse ledger entries.
 
-    P3.5: rejects sales older than `hospital.pharmacy_void_window_days` (when > 0)
-    unless the caller also has the `void_sale_legacy` permission.
-
-    POS sales never appear on an inpatient bill — `_persist_bill()` in
-    routes/inpatient.py only emits BillItem rows from Prescription records, not
-    from PharmacySale. So voiding a POS sale (even one with `patient_ip_id`
-    set) does not need to touch any inpatient bill. The audit log still flags
-    the IP linkage for human reconciliation in case the patient's counter
-    purchase was being tracked off-bill.
-
-    For Rx-driven dispenses against an admitted patient, use the Rx cancel
-    flow (POST /api/pharmacy/prescriptions/{id}/cancel) — that path is wired
-    to reverse stock AND issue a credit-note when the bill is locked.
+    When the sale was deferred to an inpatient bill (`billing_mode=inpatient_bill`)
+    and already included on an admission bill, bill lines are reversed per the
+    hybrid policy in `app/services/pharmacy_reversal.py` (in-place on draft bills,
+    credit-note on locked/final bills).
     """
     sale = db.query(PharmacySale).filter(
         PharmacySale.id == sid,
@@ -2380,27 +2642,33 @@ def void_sale(
             notes=f"Void sale {sale.sale_number}: {data.reason}",
         ))
 
+    bill_reversal = {}
+    if (getattr(sale, "billing_mode", None) or "cash_at_pharmacy") == "inpatient_bill":
+        from app.services.pharmacy_reversal import reverse_inpatient_pos_sale_bill
+        bill_reversal = reverse_inpatient_pos_sale_bill(
+            db, sale, user_id=current_user.id, reason=data.reason,
+        )
+
     sale.status = "voided"
     sale.voided_by = current_user.id
     sale.voided_at = datetime.now()
     sale.void_reason = data.reason
     db.commit(); db.refresh(sale)
 
-    # POS sales aren't on inpatient bills (only Prescriptions are), so there
-    # is no IP bill line to reverse here. Still log the IP tag so the floor
-    # team can reconcile if the patient was tracking the counter purchase.
-    ip_note = f" (IP linkage: {sale.patient_ip_id} — POS sale, not on IP bill)" if sale.patient_ip_id else ""
+    ip_note = ""
+    if sale.patient_ip_id:
+        if (getattr(sale, "billing_mode", None) or "") == "inpatient_bill":
+            ip_note = f" (IP bill linkage: admission {sale.admission_id})"
+        else:
+            ip_note = f" (IP linkage: {sale.patient_ip_id} — paid at counter, not on IP bill)"
     _audit(db, current_user, "void_sale", "pharmacy_sale", sale.id,
-           f"Voided sale {sale.sale_number}: {data.reason}{ip_note}")
+           f"Voided sale {sale.sale_number}: {data.reason}{ip_note}",
+           details=bill_reversal if bill_reversal else None)
     return _shape_sale(sale, db)
 
 
 # ============================================================================
 # Rx-linked dispensing (Section G)
-# ----------------------------------------------------------------------------
-# Reuses existing Prescription / PrescriptionItem models. NOT integrated with
-# inpatient billing (no Prescription.inpatient_bill_id wiring) — that's a
-# later phase.
 # ============================================================================
 
 class PendingRxItemOut(BaseModel):
@@ -2484,6 +2752,7 @@ class DispenseItemIn(BaseModel):
 
 class DispenseIn(BaseModel):
     items: List[DispenseItemIn] = Field(..., min_length=1)
+    store_id: Optional[int] = None
     notes: Optional[str] = None
     billing_mode: str = Field(
         "inpatient_bill",
@@ -2550,6 +2819,9 @@ def dispense_prescription(
     if data.billing_mode == "cash_at_pharmacy" and rx.pharmacy_sale_id:
         raise HTTPException(status_code=400, detail="Prescription already paid at pharmacy counter")
 
+    dispense_store_id = resolve_store_id(db, current_user, data.store_id)
+    rx.dispense_store_id = dispense_store_id
+
     lines_out: List[DispenseLineOut] = []
     for req in data.items:
         rxi = db.query(PrescriptionItem).filter(
@@ -2594,6 +2866,7 @@ def dispense_prescription(
             batch = db.query(PharmacyInventory).filter(
                 PharmacyInventory.id == req.batch_id,
                 PharmacyInventory.hospital_id == current_user.hospital_id,
+                PharmacyInventory.store_id == dispense_store_id,
                 PharmacyInventory.is_active == True,  # noqa: E712
             ).with_for_update().first()
             if not batch:
@@ -2605,7 +2878,7 @@ def dispense_prescription(
         else:
             picks = _pick_fifo_batches(
                 db, medicine_id=rxi.medicine_id, qty_needed=base_qty,
-                hospital_id=current_user.hospital_id,
+                hospital_id=current_user.hospital_id, store_id=dispense_store_id,
             )
 
         for batch, take in picks:
@@ -2613,7 +2886,8 @@ def dispense_prescription(
             db.add(PharmacyStockLedger(
                 medicine_id=rxi.medicine_id, batch_id=batch.id, txn_type="rx_dispense",
                 qty_delta=-take, reference_type="prescription", reference_id=rx.id,
-                performed_by=current_user.id, hospital_id=current_user.hospital_id,
+                performed_by=current_user.id, store_id=dispense_store_id,
+                hospital_id=current_user.hospital_id,
                 notes=f"Dispensed Rx {rx.prescription_number} item #{rxi.id}",
             ))
             line_total = unit_price * take
@@ -2786,32 +3060,42 @@ class DashboardSummaryOut(BaseModel):
 
 @router.get("/dashboard", response_model=DashboardSummaryOut)
 def dashboard_summary(
+    store_id: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
 ):
     today_start = datetime.combine(date.today(), datetime.min.time())
     today_end = datetime.combine(date.today(), datetime.max.time())
     hid = current_user.hospital_id
+    report_store = resolve_report_store_filter(db, current_user, store_id)
 
-    sales_q = db.query(
+    sales_filter = db.query(
         sa_func.coalesce(sa_func.sum(PharmacySale.grand_total), 0),
         sa_func.count(PharmacySale.id),
     ).filter(
         PharmacySale.hospital_id == hid, PharmacySale.status == "completed",
         PharmacySale.sale_date >= today_start, PharmacySale.sale_date <= today_end,
-    ).one()
+    )
+    if report_store is not None:
+        sales_filter = sales_filter.filter(PharmacySale.store_id == report_store)
+    sales_q = sales_filter.one()
 
-    purchases_q = db.query(
+    purchases_filter = db.query(
         sa_func.coalesce(sa_func.sum(PharmacyPurchase.grand_total), 0),
         sa_func.count(PharmacyPurchase.id),
     ).filter(
         PharmacyPurchase.hospital_id == hid,
         PharmacyPurchase.status == "confirmed",
         PharmacyPurchase.entry_date == date.today(),
-    ).one()
+    )
+    if report_store is not None:
+        purchases_filter = purchases_filter.filter(PharmacyPurchase.store_id == report_store)
+    purchases_q = purchases_filter.one()
 
     # Reuse the live inventory queries
-    low = sum(1 for r in list_inventory(search=None, low_only=True, db=db, current_user=current_user))
+    low = sum(1 for r in list_inventory(
+        search=None, low_only=True, store_id=report_store, db=db, current_user=current_user,
+    ))
     pending = db.query(Prescription).filter(Prescription.status.in_(["pending", "partial"])).count()
 
     today = date.today()
@@ -2822,12 +3106,14 @@ def dashboard_summary(
         PharmacyInventory.quantity_in_stock > 0,
         PharmacyInventory.expiry_date <= expiring_threshold,
         PharmacyInventory.expiry_date < _EXPIRY_SENTINEL,
+        *([PharmacyInventory.store_id == report_store] if report_store is not None else []),
     ).scalar() or 0
     already_expired = db.query(sa_func.count(PharmacyInventory.id)).filter(
         PharmacyInventory.hospital_id == hid,
         PharmacyInventory.is_active == True,  # noqa: E712
         PharmacyInventory.quantity_in_stock > 0,
         PharmacyInventory.expiry_date < today,
+        *([PharmacyInventory.store_id == report_store] if report_store is not None else []),
     ).scalar() or 0
 
     return DashboardSummaryOut(
@@ -2857,14 +3143,18 @@ def sales_report(
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
     group_by: str = Query("day", pattern="^(day|medicine|doctor|payment_type)$"),
+    store_id: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
 ):
     hid = current_user.hospital_id
+    report_store = resolve_report_store_filter(db, current_user, store_id)
     q_sales = db.query(PharmacySale).filter(
         PharmacySale.hospital_id == hid,
         PharmacySale.status == "completed",
     )
+    if report_store is not None:
+        q_sales = q_sales.filter(PharmacySale.store_id == report_store)
     start, end = _date_range(date_from, date_to)
     if start:
         q_sales = q_sales.filter(PharmacySale.sale_date >= start)
@@ -2942,13 +3232,17 @@ def purchases_report(
     date_to: Optional[date] = None,
     supplier_id: Optional[int] = None,
     group_by: str = Query("day", pattern="^(day|supplier)$"),
+    store_id: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
 ):
+    report_store = resolve_report_store_filter(db, current_user, store_id)
     q = db.query(PharmacyPurchase).filter(
         PharmacyPurchase.hospital_id == current_user.hospital_id,
         PharmacyPurchase.status == "confirmed",
     )
+    if report_store is not None:
+        q = q.filter(PharmacyPurchase.store_id == report_store)
     if date_from:
         q = q.filter(PharmacyPurchase.entry_date >= date_from)
     if date_to:
@@ -2989,9 +3283,14 @@ class StockOnHandRow(BaseModel):
 
 @router.get("/reports/stock-on-hand", response_model=List[StockOnHandRow])
 def stock_on_hand_report(
+    store_id: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
 ):
+    report_store = resolve_report_store_filter(db, current_user, store_id)
+    inv_join = (PharmacyInventory.medicine_id == Medicine.id) & (PharmacyInventory.is_active == True)  # noqa: E712
+    if report_store is not None:
+        inv_join = inv_join & (PharmacyInventory.store_id == report_store)
     rows = db.query(
         Medicine.id, Medicine.medicine_code, Medicine.name,
         sa_func.coalesce(sa_func.sum(PharmacyInventory.quantity_in_stock), 0).label("total"),
@@ -3000,7 +3299,7 @@ def stock_on_hand_report(
         sa_func.coalesce(sa_func.sum(PharmacyInventory.quantity_in_stock * PharmacyInventory.cost_price), 0).label("v_cost"),
         sa_func.coalesce(sa_func.sum(PharmacyInventory.quantity_in_stock * PharmacyInventory.mrp), 0).label("v_mrp"),
     ).outerjoin(
-        PharmacyInventory, (PharmacyInventory.medicine_id == Medicine.id) & (PharmacyInventory.is_active == True),  # noqa: E712
+        PharmacyInventory, inv_join,
     ).filter(
         Medicine.hospital_id == current_user.hospital_id,
         Medicine.is_active == True,  # noqa: E712
@@ -3032,6 +3331,7 @@ class NarcoticRow(BaseModel):
 def narcotic_register(
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
+    store_id: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_narcotic_register")),
 ):
@@ -3040,6 +3340,7 @@ def narcotic_register(
     P2.2: voided sales remain on the register (with status='voided') — controlled
     substance compliance requires every movement be visible.
     """
+    report_store = resolve_report_store_filter(db, current_user, store_id)
     q = db.query(PharmacySaleItem, PharmacySale, Medicine, PharmacyInventory).join(
         PharmacySale, PharmacySale.id == PharmacySaleItem.sale_id,
     ).join(
@@ -3056,6 +3357,8 @@ def narcotic_register(
             Medicine.is_controlled == True,      # noqa: E712
         ),
     )
+    if report_store is not None:
+        q = q.filter(PharmacySale.store_id == report_store)
     start, end = _date_range(date_from, date_to)
     if start:
         q = q.filter(PharmacySale.sale_date >= start)
@@ -3099,6 +3402,7 @@ class TaxSummaryRow(BaseModel):
 def tax_summary_report(
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
+    store_id: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
 ):
@@ -3110,6 +3414,7 @@ def tax_summary_report(
     we fall back to the medicine's current HSN row in that case so legacy
     rows keep producing sensible output.
     """
+    report_store = resolve_report_store_filter(db, current_user, store_id)
     q = db.query(PharmacySaleItem, PharmacySale, Medicine, PharmacyHSN).join(
         PharmacySale, PharmacySale.id == PharmacySaleItem.sale_id,
     ).join(
@@ -3120,6 +3425,8 @@ def tax_summary_report(
         PharmacySale.hospital_id == current_user.hospital_id,
         PharmacySale.status == "completed",
     )
+    if report_store is not None:
+        q = q.filter(PharmacySale.store_id == report_store)
     start, end = _date_range(date_from, date_to)
     if start:
         q = q.filter(PharmacySale.sale_date >= start)
@@ -3184,6 +3491,7 @@ class DailyCloseRow(BaseModel):
 def daily_closeout_report(
     date: Optional[date] = Query(None, description="Defaults to today (server local date)"),
     cashier_id: Optional[int] = None,
+    store_id: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
 ):
@@ -3196,11 +3504,14 @@ def daily_closeout_report(
     start = datetime.combine(the_day, datetime.min.time())
     end = datetime.combine(the_day, datetime.max.time())
 
+    report_store = resolve_report_store_filter(db, current_user, store_id)
     q = db.query(PharmacySale).filter(
         PharmacySale.hospital_id == current_user.hospital_id,
         PharmacySale.sale_date >= start,
         PharmacySale.sale_date <= end,
     )
+    if report_store is not None:
+        q = q.filter(PharmacySale.store_id == report_store)
     if cashier_id is not None:
         q = q.filter(PharmacySale.created_by == cashier_id)
     sales = q.all()
@@ -3270,6 +3581,7 @@ def margin_report(
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
     group_by: str = Query("day", pattern="^(day|medicine)$"),
+    store_id: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
 ):
@@ -3281,6 +3593,7 @@ def margin_report(
 
     Voided sales are excluded.
     """
+    report_store = resolve_report_store_filter(db, current_user, store_id)
     q = db.query(PharmacySaleItem, PharmacySale, PharmacyInventory).join(
         PharmacySale, PharmacySale.id == PharmacySaleItem.sale_id,
     ).outerjoin(
@@ -3289,6 +3602,8 @@ def margin_report(
         PharmacySale.hospital_id == current_user.hospital_id,
         PharmacySale.status == "completed",
     )
+    if report_store is not None:
+        q = q.filter(PharmacySale.store_id == report_store)
     start, end = _date_range(date_from, date_to)
     if start:
         q = q.filter(PharmacySale.sale_date >= start)
@@ -3407,20 +3722,25 @@ class MovementRow(BaseModel):
 @router.get("/reports/movement", response_model=List[MovementRow])
 def movement_report(
     days: int = Query(90, ge=1, le=365),
+    store_id: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
 ):
     """Per-medicine sales velocity over the last `days` days, classified ABC
     by Pareto on revenue (top 80% revenue → A, next 15% → B, bottom 5% → C).
     """
+    report_store = resolve_report_store_filter(db, current_user, store_id)
     window_start = datetime.now() - timedelta(days=days)
-    rows = db.query(PharmacySaleItem, PharmacySale).join(
+    q = db.query(PharmacySaleItem, PharmacySale).join(
         PharmacySale, PharmacySale.id == PharmacySaleItem.sale_id,
     ).filter(
         PharmacySale.hospital_id == current_user.hospital_id,
         PharmacySale.status == "completed",
         PharmacySale.sale_date >= window_start,
-    ).all()
+    )
+    if report_store is not None:
+        q = q.filter(PharmacySale.store_id == report_store)
+    rows = q.all()
 
     by_med: dict = {}
     for it, s in rows:
@@ -3432,11 +3752,14 @@ def movement_report(
     # Stock on hand per medicine, including the ones with zero sales (for slow movers).
     stock_map: dict = {}
     name_map: dict = {}
+    inv_join = (PharmacyInventory.medicine_id == Medicine.id) & (PharmacyInventory.is_active == True)  # noqa: E712
+    if report_store is not None:
+        inv_join = inv_join & (PharmacyInventory.store_id == report_store)
     for mid, name, stock in db.query(
         Medicine.id, Medicine.name,
         sa_func.coalesce(sa_func.sum(PharmacyInventory.quantity_in_stock), 0),
     ).outerjoin(
-        PharmacyInventory, (PharmacyInventory.medicine_id == Medicine.id) & (PharmacyInventory.is_active == True),  # noqa: E712
+        PharmacyInventory, inv_join,
     ).filter(
         Medicine.hospital_id == current_user.hospital_id,
         Medicine.is_active == True,  # noqa: E712
@@ -3517,6 +3840,7 @@ def sale_invoice_pdf(
         raise HTTPException(status_code=404, detail="Sale not found")
     shaped = _shape_sale(s, db).model_dump()
     shaped["void_reason"] = s.void_reason
+    shaped["store_name"] = _store_label(db, s.store_id)
     # Pharmacy sales link to an existing Patient by ip_id when applicable;
     # surface village/district so the address row renders in the invoice.
     try:
@@ -3547,6 +3871,7 @@ def purchase_pdf(
         raise HTTPException(status_code=404, detail="Purchase not found")
     shaped = _shape_purchase(p, db).model_dump()
     shaped["notes"] = p.notes
+    shaped["store_name"] = _store_label(db, p.store_id)
     hi = _hospital_info_for_pdf(db, current_user.hospital_id)
     buf = pdf_service.generate_pharmacy_purchase_pdf(shaped, hi, **pdf_gen_kwargs(db, current_user.hospital_id, 'pharmacy_purchase'))
     return _pdf_response(buf, f"{p.purchase_number}.pdf")
@@ -3607,6 +3932,7 @@ def dispense_slip_pdf(
         "village": patient_village,
         "district": patient_district,
         "dispensed_by": f"{current_user.first_name} {current_user.last_name}",
+        "store_name": _store_label(db, rx.dispense_store_id),
         "lines": lines,
         "notes": rx.notes,
     }
@@ -3619,10 +3945,11 @@ def dispense_slip_pdf(
 def narcotic_register_pdf(
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
+    store_id: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_narcotic_register")),
 ):
-    rows = narcotic_register(date_from=date_from, date_to=date_to,
+    rows = narcotic_register(date_from=date_from, date_to=date_to, store_id=store_id,
                              db=db, current_user=current_user)
     hi = _hospital_info_for_pdf(db, current_user.hospital_id)
     period = {
@@ -3646,16 +3973,31 @@ def _report_period(date_from: Optional[date], date_to: Optional[date]) -> dict:
     }
 
 
+def _report_pdf_meta(
+    db: Session,
+    user: User,
+    store_id: Optional[int],
+    extra: Optional[dict] = None,
+) -> dict:
+    meta = dict(extra or {})
+    report_store = resolve_report_store_filter(db, user, store_id)
+    label = _store_label(db, report_store)
+    if label:
+        meta["Store"] = label
+    return meta
+
+
 @router.get("/reports/sales/pdf")
 def sales_report_pdf(
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
     group_by: str = Query("day", pattern="^(day|medicine|doctor|payment_type)$"),
+    store_id: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
 ):
     rows = sales_report(date_from=date_from, date_to=date_to, group_by=group_by,
-                        db=db, current_user=current_user)
+                        store_id=store_id, db=db, current_user=current_user)
     hi = _hospital_info_for_pdf(db, current_user.hospital_id)
     cols = [
         {"key": "bucket", "label": group_by.replace("_", " ").title(), "width": 3},
@@ -3670,7 +4012,7 @@ def sales_report_pdf(
         title="SALES REPORT", period=_report_period(date_from, date_to),
         columns=cols, rows=[r.model_dump() for r in rows],
         hospital_info=hi, **pdf_gen_kwargs(db, current_user.hospital_id, 'pharmacy_report'),
-        meta={"Group by": group_by},
+        meta=_report_pdf_meta(db, current_user, store_id, {"Group by": group_by}),
     )
     return _pdf_response(buf, "pharmacy_sales.pdf")
 
@@ -3681,12 +4023,13 @@ def purchases_report_pdf(
     date_to: Optional[date] = None,
     supplier_id: Optional[int] = None,
     group_by: str = Query("day", pattern="^(day|supplier)$"),
+    store_id: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
 ):
     rows = purchases_report(date_from=date_from, date_to=date_to,
                             supplier_id=supplier_id, group_by=group_by,
-                            db=db, current_user=current_user)
+                            store_id=store_id, db=db, current_user=current_user)
     hi = _hospital_info_for_pdf(db, current_user.hospital_id)
     cols = [
         {"key": "bucket", "label": group_by.title(), "width": 3},
@@ -3701,17 +4044,18 @@ def purchases_report_pdf(
         title="PURCHASES REPORT", period=_report_period(date_from, date_to),
         columns=cols, rows=[r.model_dump() for r in rows],
         hospital_info=hi, **pdf_gen_kwargs(db, current_user.hospital_id, 'pharmacy_report'),
-        meta={"Group by": group_by},
+        meta=_report_pdf_meta(db, current_user, store_id, {"Group by": group_by}),
     )
     return _pdf_response(buf, "pharmacy_purchases.pdf")
 
 
 @router.get("/reports/stock-on-hand/pdf")
 def stock_on_hand_pdf(
+    store_id: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
 ):
-    rows = stock_on_hand_report(db=db, current_user=current_user)
+    rows = stock_on_hand_report(store_id=store_id, db=db, current_user=current_user)
     hi = _hospital_info_for_pdf(db, current_user.hospital_id)
     cols = [
         {"key": "medicine_code", "label": "Code", "width": 1.2},
@@ -3727,6 +4071,7 @@ def stock_on_hand_pdf(
         title="STOCK ON HAND", period=None,
         columns=cols, rows=[r.model_dump() for r in rows],
         hospital_info=hi, **pdf_gen_kwargs(db, current_user.hospital_id, 'pharmacy_report'),
+        meta=_report_pdf_meta(db, current_user, store_id),
     )
     return _pdf_response(buf, "pharmacy_stock.pdf")
 
@@ -3735,10 +4080,11 @@ def stock_on_hand_pdf(
 def tax_summary_pdf(
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
+    store_id: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
 ):
-    rows = tax_summary_report(date_from=date_from, date_to=date_to,
+    rows = tax_summary_report(date_from=date_from, date_to=date_to, store_id=store_id,
                               db=db, current_user=current_user)
     hi = _hospital_info_for_pdf(db, current_user.hospital_id)
     cols = [
@@ -3756,6 +4102,7 @@ def tax_summary_pdf(
         title="TAX SUMMARY", period=_report_period(date_from, date_to),
         columns=cols, rows=[r.model_dump() for r in rows],
         hospital_info=hi, **pdf_gen_kwargs(db, current_user.hospital_id, 'pharmacy_report'),
+        meta=_report_pdf_meta(db, current_user, store_id),
     )
     return _pdf_response(buf, "pharmacy_tax_summary.pdf")
 
@@ -3764,10 +4111,11 @@ def tax_summary_pdf(
 def daily_closeout_pdf(
     date: Optional[date] = None,
     cashier_id: Optional[int] = None,
+    store_id: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
 ):
-    rows = daily_closeout_report(date=date, cashier_id=cashier_id,
+    rows = daily_closeout_report(date=date, cashier_id=cashier_id, store_id=store_id,
                                  db=db, current_user=current_user)
     hi = _hospital_info_for_pdf(db, current_user.hospital_id)
     cols = [
@@ -3791,6 +4139,7 @@ def daily_closeout_pdf(
         title="DAILY CLOSEOUT", period={"from": the_day, "to": the_day},
         columns=cols, rows=[r.model_dump() for r in rows],
         hospital_info=hi, **pdf_gen_kwargs(db, current_user.hospital_id, 'pharmacy_report'),
+        meta=_report_pdf_meta(db, current_user, store_id),
     )
     return _pdf_response(buf, f"closeout_{the_day}.pdf")
 
@@ -3800,11 +4149,12 @@ def margin_report_pdf(
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
     group_by: str = Query("day", pattern="^(day|medicine)$"),
+    store_id: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
 ):
     rows = margin_report(date_from=date_from, date_to=date_to, group_by=group_by,
-                         db=db, current_user=current_user)
+                         store_id=store_id, db=db, current_user=current_user)
     hi = _hospital_info_for_pdf(db, current_user.hospital_id)
     cols = [
         {"key": "bucket", "label": group_by.title(), "width": 3},
@@ -3818,7 +4168,7 @@ def margin_report_pdf(
         title="PROFIT / MARGIN", period=_report_period(date_from, date_to),
         columns=cols, rows=[r.model_dump() for r in rows],
         hospital_info=hi, **pdf_gen_kwargs(db, current_user.hospital_id, 'pharmacy_report'),
-        meta={"Group by": group_by},
+        meta=_report_pdf_meta(db, current_user, store_id, {"Group by": group_by}),
     )
     return _pdf_response(buf, "pharmacy_margin.pdf")
 
@@ -3854,10 +4204,11 @@ def supplier_aging_pdf(
 @router.get("/reports/movement/pdf")
 def movement_report_pdf(
     days: int = Query(90, ge=1, le=365),
+    store_id: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_reports")),
 ):
-    rows = movement_report(days=days, db=db, current_user=current_user)
+    rows = movement_report(days=days, store_id=store_id, db=db, current_user=current_user)
     hi = _hospital_info_for_pdf(db, current_user.hospital_id)
     cols = [
         {"key": "medicine_name", "label": "Medicine", "width": 3},
@@ -3872,5 +4223,6 @@ def movement_report_pdf(
         title=f"MOVEMENT — Last {days} days", period=None,
         columns=cols, rows=[r.model_dump() for r in rows],
         hospital_info=hi, **pdf_gen_kwargs(db, current_user.hospital_id, 'pharmacy_report'),
+        meta=_report_pdf_meta(db, current_user, store_id),
     )
     return _pdf_response(buf, "pharmacy_movement.pdf")

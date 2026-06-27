@@ -100,6 +100,22 @@ def format_sale_qty_display(
     return f"{quantity:g} tab{'s' if quantity != 1 else ''}"
 
 
+def cost_pcs_from_mrp(mrp: float, strip_conversion_factor: int) -> float:
+    """Cost per tab = MRP per strip ÷ tablets per strip."""
+    factor = max(1, int(strip_conversion_factor or 1))
+    val = float(mrp or 0)
+    if val <= 0:
+        return 0.0
+    return round(val / factor, 2)
+
+
+def apply_cost_pcs_from_mrp(medicine: "Medicine") -> None:
+    medicine.cost_pcs = cost_pcs_from_mrp(
+        float(medicine.mrp or 0),
+        int(medicine.strip_conversion_factor or 1),
+    )
+
+
 def is_free_text_medicine(medicine: "Medicine") -> bool:
     """True for auto-created hidden stubs from inpatient free-text entry."""
     code = (medicine.medicine_code or "").upper()

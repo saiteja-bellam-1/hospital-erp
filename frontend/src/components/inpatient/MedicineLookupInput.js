@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { NAV_SKIP_ATTR } from '../../utils/formNavigation';
 import axios from 'axios';
 import { Input } from '../ui/input';
 
@@ -63,6 +64,7 @@ export default function MedicineLookupInput({
         onChange={(e) => handleInput(e.target.value)}
         onFocus={() => { if (results.length > 0 && !medicineId) setOpen(true); }}
         onBlur={() => setTimeout(() => setOpen(false), 150)}
+        {...{ [NAV_SKIP_ATTR]: '' }}
       />
       {open && results.length > 0 && !medicineId && (
         <div className="absolute z-20 w-full bg-white border rounded shadow-lg mt-1 max-h-40 overflow-y-auto">

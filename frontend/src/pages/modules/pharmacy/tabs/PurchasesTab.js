@@ -9,14 +9,16 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter,
   DialogHeader, DialogTitle,
 } from '../../../../components/ui/dialog';
-import { Plus, RefreshCw, Printer, Undo2 } from 'lucide-react';
+import { Plus, RefreshCw, Printer, Undo2, Pencil } from 'lucide-react';
 import { printPdfFromUrl } from '../../../../utils/printPdf';
 import { useToast } from '../../../../hooks/use-toast';
 import { errMsg } from '../../PharmacyModule';
+import { usePharmacyStore } from '../../../../contexts/PharmacyStoreContext';
 
 export default function PurchasesTab() {
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { storeParams } = usePharmacyStore();
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [revokeTarget, setRevokeTarget] = useState(null);
@@ -26,12 +28,12 @@ export default function PurchasesTab() {
   const load = async () => {
     setLoading(true);
     try {
-      const r = await axios.get('/api/pharmacy/purchases');
+      const r = await axios.get('/api/pharmacy/purchases', { params: storeParams });
       setRows(r.data || []);
     } catch { /* ignore */ }
     finally { setLoading(false); }
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [storeParams]);
 
   const submitRevoke = async () => {
     if (!revokeTarget) return;
@@ -102,6 +104,12 @@ export default function PurchasesTab() {
                       <Badge variant="outline" className={`text-xs ${statusColor(p.status)}`}>{p.status}</Badge>
                     </td>
                     <td className="py-2 text-right">
+                      {(p.status === 'draft' || p.status === 'confirmed') && (
+                        <Button size="sm" variant="ghost" title="Edit purchase"
+                          onClick={() => navigate(`/dashboard/pharmacy/purchases/${p.id}/edit`)}>
+                          <Pencil className="h-3 w-3" />
+                        </Button>
+                      )}
                       <Button size="sm" variant="ghost" title="Print purchase"
                         onClick={() => printPdfFromUrl(`/api/pharmacy/purchases/${p.id}/pdf`)}>
                         <Printer className="h-3 w-3" />

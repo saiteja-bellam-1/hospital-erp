@@ -17,6 +17,7 @@ from app.models.permissions import HospitalSettings
 from app.utils.dependencies import get_current_user, require_permission
 from app.utils.auth import Modules
 from app.utils.pdf_service import pdf_service
+from app.utils.patient_age import format_patient_age, patient_age_years_int
 from app.services.availability_service import AvailabilityService
 
 router = APIRouter()
@@ -1333,11 +1334,17 @@ async def get_appointment_bill(
 
     subtotal = (appointment.consultation_fee or 0.0) + reg_fee
 
+    patient = appointment.patient
+    age_display = format_patient_age(patient)
+
     # Prepare bill data
     bill_data = {
         "bill_number": bill_number,
         "bill_date": appointment.created_at.isoformat(),
-        "patient_name": f"{appointment.patient.first_name} {appointment.patient.last_name}",
+        "patient_name": f"{patient.first_name} {patient.last_name}",
+        "patient_age": patient_age_years_int(patient),
+        "patient_age_display": age_display,
+        "patient_gender": patient.gender or "",
         "doctor_name": f"Dr. {appointment.doctor.first_name} {appointment.doctor.last_name}",
         "token_number": appointment.token_number,
         "status": "generated",
@@ -1400,18 +1407,22 @@ async def download_appointment_bill(
             booked_by_name = f"{booked_by.first_name} {booked_by.last_name}"
 
     # Prepare bill data for PDF
+    patient = appointment.patient
+    age_display = format_patient_age(patient)
+
     bill_data = {
         "bill_number": bill_number,
         "bill_date": appointment.created_at.isoformat(),
         "print_date": datetime.now().isoformat(),
-        "patient_name": f"{appointment.patient.first_name} {appointment.patient.last_name}",
-        "patient_phone": appointment.patient.primary_phone or "",
-        "patient_id": appointment.patient.patient_id or "",
-        "mrn": appointment.patient.mrn or "",
-        "patient_age": "",
-        "patient_gender": appointment.patient.gender or "",
-        "village": appointment.patient.village or "",
-        "district": appointment.patient.district or "",
+        "patient_name": f"{patient.first_name} {patient.last_name}",
+        "patient_phone": patient.primary_phone or "",
+        "patient_id": patient.patient_id or "",
+        "mrn": patient.mrn or "",
+        "patient_age": patient_age_years_int(patient),
+        "patient_age_display": age_display,
+        "patient_gender": patient.gender or "",
+        "village": patient.village or "",
+        "district": patient.district or "",
         "reg_no": appointment.appointment_number,
         "token_number": appointment.token_number,
         "doctor_name": f"Dr. {appointment.doctor.first_name} {appointment.doctor.last_name}",
@@ -1441,18 +1452,6 @@ async def download_appointment_bill(
         "amount_paid": appointment.final_amount if appointment.payment_status == "paid" else 0.0,
         "balance_due": 0.0 if appointment.payment_status == "paid" else appointment.final_amount or 0.0
     }
-
-    # Calculate patient age if date_of_birth exists
-    if appointment.patient.date_of_birth:
-        from dateutil.relativedelta import relativedelta
-        try:
-            dob = appointment.patient.date_of_birth
-            if isinstance(dob, str):
-                dob = datetime.fromisoformat(dob).date()
-            age = relativedelta(datetime.now().date(), dob)
-            bill_data["patient_age"] = f"{age.years} Years"
-        except Exception:
-            bill_data["patient_age"] = ""
 
     # Generate PDF
     pdf_buffer = pdf_service.generate_bill_pdf(bill_data, hospital_info, **bill_pdf_gen_kwargs(db, current_user.hospital_id, 'opd_bill'))

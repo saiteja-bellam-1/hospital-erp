@@ -272,6 +272,8 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
     : 0;
   const consultFee = appointmentForm.appointment_type === 'followup' ? 0 : baseFee;
   const regFee = patientFeeInfo.is_new_patient ? patientFeeInfo.registration_fee : 0;
+  const discount = parseFloat(appointmentForm.discount_amount) || 0;
+  const feeTotal = consultFee + regFee - discount;
 
   if (showBillPreview) {
     return (
@@ -493,7 +495,25 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
                     <p className="font-medium">Fee summary</p>
                     {regFee > 0 && <p>Registration fee: ₹{regFee.toFixed(2)}</p>}
                     <p>Consultation: ₹{consultFee.toFixed(2)}</p>
-                    <p className="font-semibold">Total: ₹{(regFee + consultFee).toFixed(2)}</p>
+                    <div className="flex items-center justify-between gap-2">
+                      <span>Discount</span>
+                      <div className="flex items-center gap-1">
+                        <span className="text-gray-400">₹</span>
+                        <Input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={appointmentForm.discount_amount || ''}
+                          onChange={(e) => setAppointmentForm({
+                            ...appointmentForm,
+                            discount_amount: parseFloat(e.target.value) || 0,
+                          })}
+                          placeholder="0"
+                          className="w-24 h-7 text-right text-sm"
+                        />
+                      </div>
+                    </div>
+                    <p className="font-semibold pt-1 border-t">Total: ₹{feeTotal.toFixed(2)}</p>
                   </div>
                 )}
               </div>

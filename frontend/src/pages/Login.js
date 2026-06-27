@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { useAuth } from '../contexts/AuthContext';
 import { Button } from '../components/ui/button';
+import FormNavContainer from '../components/FormNavContainer';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { useToast } from '../hooks/use-toast';
@@ -87,7 +88,7 @@ const Login = () => {
 
           {/* Form section */}
           <div className="px-8 pb-8 pt-2">
-            <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
+            <FormNavContainer tag="form" onSubmit={handleSubmit(onSubmit)} className="space-y-5">
               <div className="space-y-1.5">
                 <Label htmlFor="username" className="text-sm font-medium text-gray-700">
                   Username
@@ -145,7 +146,7 @@ const Login = () => {
                   </span>
                 ) : 'Sign In'}
               </Button>
-            </form>
+            </FormNavContainer>
           </div>
         </div>
 

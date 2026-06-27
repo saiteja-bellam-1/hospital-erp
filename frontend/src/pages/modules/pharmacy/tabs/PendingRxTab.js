@@ -13,9 +13,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { errMsg } from '../../PharmacyModule';
 import { printPdfFromUrl } from '../../../../utils/printPdf';
 import { supportsStripSale } from '../../../../utils/pharmacyUnits';
+import { usePharmacyStore } from '../../../../contexts/PharmacyStoreContext';
 
 export default function PendingRxTab() {
   const { toast } = useToast();
+  const { activeStoreId } = usePharmacyStore();
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
@@ -68,6 +70,7 @@ export default function PendingRxTab() {
     try {
       const r = await axios.post(`/api/pharmacy/prescriptions/${target.id}/dispense`, {
         items,
+        store_id: activeStoreId || null,
         billing_mode: billingMode,
         payment_type: paymentType,
       });

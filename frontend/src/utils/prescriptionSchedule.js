@@ -45,3 +45,42 @@ export const BLANK_INPATIENT_RX_ITEM = {
   quantity_prescribed: 1,
   instructions: '',
 };
+
+/** Take-home meds on discharge — same schedule fields as consultation Rx. */
+export const BLANK_TAKE_HOME_MED = {
+  medicine_id: '',
+  medicine_name: '',
+  dosage: '',
+  frequency_schedule: '1-0-0',
+  food_timing: 'after_food',
+  duration: '',
+  quantity: '',
+  instructions: '',
+};
+
+export function frequencyScheduleLabel(schedule = '1-0-0') {
+  return FREQUENCY_OPTIONS.find((o) => o.value === schedule)?.label || schedule;
+}
+
+export function foodTimingLabel(timing = 'after_food') {
+  return FOOD_TIMING_OPTIONS.find((o) => o.value === timing)?.label || timing;
+}
+
+/** Map a take-home med form row to the discharge API payload. */
+export function serializeTakeHomeMed(m) {
+  const schedule = m.frequency_schedule || '1-0-0';
+  const food = m.food_timing || 'after_food';
+  const extra = m.instructions?.trim() || '';
+  const foodLabel = foodTimingLabel(food);
+  return {
+    medicine_id: m.medicine_id ? parseInt(m.medicine_id, 10) : null,
+    medicine_name: m.medicine_name.trim(),
+    dosage: m.dosage?.trim() || null,
+    frequency: frequencyScheduleLabel(schedule),
+    duration: m.duration?.trim() || null,
+    quantity: m.quantity ? parseInt(m.quantity, 10) : null,
+    instructions: extra ? `${foodLabel}. ${extra}` : foodLabel,
+    frequency_schedule: schedule,
+    food_timing: food,
+  };
+}

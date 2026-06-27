@@ -2511,7 +2511,7 @@ const DoctorDashboard = () => {
               <div className="text-sm space-y-1">
                 <p>Patient: <strong>{viewingLabReport.patient_name}</strong>
                   {viewingLabReport.patient_gender && ` (${viewingLabReport.patient_gender})`}
-                  {viewingLabReport.patient_age && `, ${viewingLabReport.patient_age} yrs`}
+                  {(viewingLabReport.patient_age_display || viewingLabReport.patient_age) && `, ${viewingLabReport.patient_age_display || `${viewingLabReport.patient_age} yrs`}`}
                 </p>
                 <p className="text-gray-500">Order: #{viewingLabReport.order_number} | Date: {format(new Date(viewingLabReport.report_date), 'dd MMM yyyy, hh:mm a')}</p>
               </div>

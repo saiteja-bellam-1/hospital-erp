@@ -34,6 +34,9 @@ SYSTEM_ROLES = [
     ("lab_technician", "Laboratory Technician — performs lab tests and generates reports"),
     ("pharmacy_admin", "Pharmacy Administrator — manages inventory, drug rates, suppliers"),
     ("pharmacist", "Pharmacist — medication dispensing and pharmacy operations"),
+    ("satellite_pharmacy_admin", "Satellite pharmacy in-charge — store-scoped admin at ward/satellite counters"),
+    ("pharmacy_pos_operator", "Pharmacy POS operator — satellite counter sales only"),
+    ("pharmacy_transfer_clerk", "Pharmacy transfer clerk — master store stock movements to satellites"),
     ("billing_admin", "Billing Administrator — manages rates, insurance, financial operations"),
     ("inpatient_admin", "Inpatient Administrator — manages beds, wards, room rates, ward operations"),
     ("frontdesk", "Front Desk Staff — appointments, patient registration, scheduling"),
@@ -86,9 +89,12 @@ _PHARMACY_ALL = [
     # Sales — POS
     "create_sale", "void_sale", "void_sale_legacy", "view_sales", "apply_discount", "select_rate_tier",
     # Sales — Rx
-    "dispense_rx", "view_dispense_queue",
+    "dispense_rx", "view_dispense_queue", "cancel_rx",
     # Reports
     "view_reports",
+    # Multi-store
+    "manage_stores", "view_all_stores",
+    "create_transfer", "edit_transfer", "confirm_transfer", "revoke_transfer", "view_transfers",
 ]
 
 # Pharmacist (counter operator) default permission set.
@@ -99,6 +105,28 @@ _PHARMACIST_DEFAULT = [
     "create_sale", "view_sales", "apply_discount", "select_rate_tier",
     "dispense_rx", "view_dispense_queue",
     "view_narcotic_register", "view_reports",
+]
+
+# Satellite POS counter — minimal billing permissions.
+_PHARMACY_POS_OPERATOR = [
+    "view_catalog",
+    "create_sale", "view_sales", "apply_discount", "select_rate_tier",
+    "dispense_rx", "view_dispense_queue",
+]
+
+# Satellite store in-charge — POS plus local inventory/reports.
+_SATELLITE_PHARMACY_ADMIN = [
+    "view_catalog",
+    "create_sale", "view_sales", "apply_discount", "select_rate_tier", "void_sale",
+    "dispense_rx", "view_dispense_queue",
+    "view_inventory", "view_low_stock", "view_expiring", "view_reports",
+    "view_narcotic_register", "confirm_transfer",
+]
+
+# Master back-office — inter-store transfers.
+_PHARMACY_TRANSFER_CLERK = [
+    "view_catalog", "view_inventory",
+    "view_transfers", "create_transfer", "edit_transfer", "confirm_transfer",
 ]
 
 
@@ -148,7 +176,7 @@ def _seed_module_permissions(db, ModulePermission):
         {"module_name": "pharmacy", "permission_name": "view_expiring", "permission_description": "View expiring batches alert", "category": "user"},
         # Procurement
         {"module_name": "pharmacy", "permission_name": "create_purchase", "permission_description": "Create purchase drafts", "category": "user"},
-        {"module_name": "pharmacy", "permission_name": "edit_purchase", "permission_description": "Edit purchase drafts", "category": "user"},
+        {"module_name": "pharmacy", "permission_name": "edit_purchase", "permission_description": "Edit purchase drafts and confirmed purchases (with reason)", "category": "user"},
         {"module_name": "pharmacy", "permission_name": "confirm_purchase", "permission_description": "Confirm a purchase and commit batches to inventory", "category": "admin"},
         {"module_name": "pharmacy", "permission_name": "revoke_purchase", "permission_description": "Revoke a confirmed purchase (proportional reversal of un-sold qty)", "category": "admin"},
         {"module_name": "pharmacy", "permission_name": "view_purchases", "permission_description": "View purchases list and detail", "category": "user"},
@@ -162,8 +190,17 @@ def _seed_module_permissions(db, ModulePermission):
         # Sales — Rx
         {"module_name": "pharmacy", "permission_name": "dispense_rx", "permission_description": "Dispense items against a doctor's prescription", "category": "user"},
         {"module_name": "pharmacy", "permission_name": "view_dispense_queue", "permission_description": "View pending prescriptions awaiting dispensing", "category": "user"},
+        {"module_name": "pharmacy", "permission_name": "cancel_rx", "permission_description": "Cancel a prescription (reverses dispensed stock and issues credit-note when bill is locked)", "category": "admin"},
         # Reports
         {"module_name": "pharmacy", "permission_name": "view_reports", "permission_description": "Run pharmacy reports (sales, purchases, stock, tax, narcotic)", "category": "user"},
+        # Multi-store
+        {"module_name": "pharmacy", "permission_name": "manage_stores", "permission_description": "Create and manage pharmacy stores and user assignments", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "view_all_stores", "permission_description": "View consolidated data across all pharmacy stores", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "create_transfer", "permission_description": "Create inter-store stock transfer drafts", "category": "user"},
+        {"module_name": "pharmacy", "permission_name": "edit_transfer", "permission_description": "Edit inter-store stock transfer drafts", "category": "user"},
+        {"module_name": "pharmacy", "permission_name": "confirm_transfer", "permission_description": "Confirm inter-store stock transfers", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "revoke_transfer", "permission_description": "Revoke confirmed inter-store transfers", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "view_transfers", "permission_description": "View inter-store transfer list and detail", "category": "user"},
         # Billing
         {"module_name": "billing", "permission_name": "manage_rates", "permission_description": "Manage service rates and pricing", "category": "admin"},
         {"module_name": "billing", "permission_name": "process_payments", "permission_description": "Process patient payments", "category": "user"},
@@ -390,6 +427,15 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
         },
         "pharmacist": {
             "pharmacy": list(_PHARMACIST_DEFAULT),
+        },
+        "pharmacy_pos_operator": {
+            "pharmacy": list(_PHARMACY_POS_OPERATOR),
+        },
+        "satellite_pharmacy_admin": {
+            "pharmacy": list(_SATELLITE_PHARMACY_ADMIN),
+        },
+        "pharmacy_transfer_clerk": {
+            "pharmacy": list(_PHARMACY_TRANSFER_CLERK),
         },
     }
 

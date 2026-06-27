@@ -23,6 +23,7 @@ NEW_COLUMNS = [
     ("appointments", "registration_fee", "FLOAT DEFAULT 0.0"),
     ("consultations", "appointment_id", "INTEGER REFERENCES appointments(id)"),
     ("patients", "age", "INTEGER"),
+    ("patients", "age_months", "INTEGER"),
     ("lab_test_parameters", "method", "VARCHAR(200)"),
     ("lab_test_parameters", "section", "VARCHAR(200)"),
     ("patient_lab_orders", "package_id", "INTEGER REFERENCES lab_test_packages(id)"),
@@ -86,6 +87,9 @@ NEW_COLUMNS = [
     ("ot_schedules", "bill_id", "INTEGER REFERENCES bills(id)"),
     ("prescriptions", "inpatient_bill_id", "INTEGER REFERENCES bills(id)"),
     ("prescriptions", "pharmacy_sale_id", "INTEGER REFERENCES pharmacy_sales(id)"),
+    ("pharmacy_sales", "admission_id", "INTEGER REFERENCES admissions(id)"),
+    ("pharmacy_sales", "billing_mode", "VARCHAR(30) DEFAULT 'cash_at_pharmacy'"),
+    ("pharmacy_sales", "inpatient_bill_id", "INTEGER REFERENCES bills(id)"),
     ("patient_lab_orders", "inpatient_bill_id", "INTEGER REFERENCES bills(id)"),
     # Outpatient lab bill grouping — shared across all orders on the same
     # combined bill so the Billing dashboard can render one row per bill
@@ -172,6 +176,12 @@ NEW_COLUMNS = [
     ("admissions", "accepted_by_doctor_id", "INTEGER REFERENCES users(id)"),
     ("admissions", "accepted_at", "DATETIME"),
     ("admissions", "rejection_reason", "TEXT"),
+    # Person admitting / accompanying patient (face sheet)
+    ("admissions", "admitting_person_name", "VARCHAR(200)"),
+    ("admissions", "admitting_person_relationship", "VARCHAR(100)"),
+    ("admissions", "admitting_person_address", "TEXT"),
+    ("admissions", "admitting_person_phone", "VARCHAR(20)"),
+    ("admissions", "admitting_person_id_proof", "VARCHAR(200)"),
     # B4 — Duty-doctor visit rate (separate from consultant per-visit fee)
     ("inpatient_rate_configs", "duty_visit_rate", "NUMERIC(10, 2) DEFAULT 0.00"),
     # Room-level ward assignment and per-room nursing charge
@@ -204,6 +214,9 @@ NEW_COLUMNS = [
     ("pharmacy_purchases", "revoked_by", "INTEGER REFERENCES users(id)"),
     ("pharmacy_purchases", "revoked_at", "DATETIME"),
     ("pharmacy_purchases", "revoke_reason", "TEXT"),
+    ("pharmacy_purchases", "edited_by", "INTEGER REFERENCES users(id)"),
+    ("pharmacy_purchases", "edited_at", "DATETIME"),
+    ("pharmacy_purchases", "edit_reason", "TEXT"),
     # P2.1: snapshot HSN tax breakdown onto line items so historical reports
     # are stable even when the HSN master rates change later.
     ("pharmacy_sale_items", "sgst_pct", "FLOAT DEFAULT 0.0"),

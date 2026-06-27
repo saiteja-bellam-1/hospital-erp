@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
 import axios from 'axios';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '../../../components/ui/card';
 import { Button } from '../../../components/ui/button';
 import { Input } from '../../../components/ui/input';
@@ -12,28 +12,47 @@ import { ArrowLeft, Plus, Trash2, Save, CheckCircle2, ScanLine } from 'lucide-re
 import { errMsg } from '../PharmacyModule';
 import PharmacyMasterSelectWithCreate from '../../../components/pharmacy/PharmacyMasterSelectWithCreate';
 import QuickMedicineDialog from '../../../components/pharmacy/QuickMedicineDialog';
+import { usePharmacyStore } from '../../../contexts/PharmacyStoreContext';
+import FormNavContainer from '../../../components/FormNavContainer';
+import { NAV_SKIP_ATTR, navCellProps } from '../../../utils/formNavigation';
 
 const TODAY = new Date().toISOString().split('T')[0];
+
+const expiryToDisplay = (iso) => {
+  if (!iso) return '';
+  const d = new Date(`${iso}T12:00:00`);
+  if (Number.isNaN(d.getTime()) || d.getFullYear() >= 2099) return '';
+  return `${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+};
 
 export default function PurchaseEntry() {
   const { toast } = useToast();
   const navigate = useNavigate();
+  const { id: routeId } = useParams();
+  const { stores } = usePharmacyStore();
+  const masterStore = stores.find((s) => s.store_type === 'master');
 
   const [header, setHeader] = useState({
     entry_date: TODAY, supplier_id: null, invoice_number: '', bill_date: TODAY,
     payment_type: 'cash', purchase_type: 'local', notes: '',
   });
-  const [items, setItems] = useState([]);   // { medicine_id, batch_number, mrp, quantity, free_quantity, purchase_rate, discount_pct, hsn_id }
+  const [items, setItems] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
   const [medicines, setMedicines] = useState([]);
   const [hsnList, setHsnList] = useState([]);
   const [draftId, setDraftId] = useState(null);
+  const [purchaseStatus, setPurchaseStatus] = useState(null);
+  const [purchaseNumber, setPurchaseNumber] = useState('');
+  const [editReason, setEditReason] = useState('');
+  const [loadingPurchase, setLoadingPurchase] = useState(Boolean(routeId));
   const [submitting, setSubmitting] = useState(false);
   const [scanInput, setScanInput] = useState('');
   const [medicineDialogOpen, setMedicineDialogOpen] = useState(false);
   const [medicinePrefill, setMedicinePrefill] = useState({});
   const [medicineDialogLineIndex, setMedicineDialogLineIndex] = useState(null);
   const scanRef = useRef(null);
+
+  const isConfirmed = purchaseStatus === 'confirmed';
 
   useEffect(() => {
     Promise.all([
@@ -42,6 +61,52 @@ export default function PurchaseEntry() {
       axios.get('/api/pharmacy/hsn').then(r => setHsnList(r.data || [])),
     ]).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (!routeId) return;
+    setLoadingPurchase(true);
+    axios.get(`/api/pharmacy/purchases/${routeId}`)
+      .then((r) => {
+        const p = r.data;
+        if (!['draft', 'confirmed'].includes(p.status)) {
+          toast({
+            variant: 'destructive',
+            title: 'Cannot edit',
+            description: `This purchase is ${p.status} and can no longer be edited.`,
+          });
+          navigate('/dashboard/pharmacy/purchases');
+          return;
+        }
+        setDraftId(p.id);
+        setPurchaseStatus(p.status);
+        setPurchaseNumber(p.purchase_number || '');
+        setHeader({
+          entry_date: p.entry_date || TODAY,
+          supplier_id: p.supplier_id,
+          invoice_number: p.invoice_number || '',
+          bill_date: p.bill_date || TODAY,
+          payment_type: p.payment_type || 'cash',
+          purchase_type: p.purchase_type || 'local',
+          notes: p.notes || '',
+        });
+        setItems((p.items || []).map((it) => ({
+          medicine_id: it.medicine_id,
+          batch_number: it.batch_number || '',
+          expiry_mm_yyyy: expiryToDisplay(it.expiry_date),
+          mrp: it.mrp || 0,
+          quantity: it.quantity ?? 1,
+          free_quantity: it.free_quantity || 0,
+          purchase_rate: it.purchase_rate || 0,
+          discount_pct: it.discount_pct || 0,
+          hsn_id: it.hsn_id || null,
+        })));
+      })
+      .catch((e) => {
+        toast({ variant: 'destructive', title: 'Load failed', description: errMsg(e) });
+        navigate('/dashboard/pharmacy/purchases');
+      })
+      .finally(() => setLoadingPurchase(false));
+  }, [routeId, navigate, toast]);
 
   const lineFromMed = (m) => ({
     medicine_id: m.id,
@@ -60,19 +125,15 @@ export default function PurchaseEntry() {
     quantity: 1, free_quantity: 0, purchase_rate: 0, discount_pct: 0, hsn_id: null,
   }]);
 
-  /** Parse a "MM/YYYY" string into a YYYY-MM-DD date string set to the last
-   *  day of that month. Returns null if blank/invalid (caller decides whether
-   *  that's OK — the backend accepts null and falls back to the sentinel). */
   const expiryToISO = (raw) => {
     if (!raw) return null;
     const s = String(raw).trim();
     const m = s.match(/^(\d{1,2})\s*[/\-.]\s*(\d{2}|\d{4})$/);
-    if (!m) return undefined; // sentinel: "looks entered but invalid"
+    if (!m) return undefined;
     const mo = parseInt(m[1], 10);
     let yr = parseInt(m[2], 10);
     if (yr < 100) yr += 2000;
     if (mo < 1 || mo > 12) return undefined;
-    // Last day of month: day 0 of next month.
     const d = new Date(yr, mo, 0);
     const yyyy = d.getFullYear();
     const mm = String(d.getMonth() + 1).padStart(2, '0');
@@ -85,7 +146,6 @@ export default function PurchaseEntry() {
     e.preventDefault();
     const code = scanInput.trim();
     try {
-      // Try barcode-exact first, then fall back to free-text (medicine code / name)
       let res = await axios.get('/api/pharmacy/medicines/lookup', { params: { barcode: code } });
       let matches = res.data || [];
       if (matches.length === 0) {
@@ -124,8 +184,6 @@ export default function PurchaseEntry() {
     return { sub: acc.sub + c.base, disc: acc.disc + (c.base - c.afterDisc), tax: acc.tax + c.tax, grand: acc.grand + c.total };
   }, { sub: 0, disc: 0, tax: 0, grand: 0 });
 
-  /** Validate UI rows. Returns { errors: string[], payload } — when errors is
-   *  empty, payload is safe to POST. */
   const buildPayload = () => {
     const errors = [];
     if (!header.supplier_id) errors.push('Pick a supplier.');
@@ -141,16 +199,21 @@ export default function PurchaseEntry() {
       const pr = parseFloat(it.purchase_rate);
       if (pr === undefined || pr < 0 || Number.isNaN(pr)) errors.push(`Line ${n}: purchase rate must be ≥ 0.`);
     });
+    if (isConfirmed && editReason.trim().length < 2) {
+      errors.push('Enter a reason for editing this confirmed purchase.');
+    }
     return {
       errors,
       payload: {
         entry_date: header.entry_date,
         supplier_id: header.supplier_id,
+        store_id: masterStore?.id || null,
         invoice_number: header.invoice_number || null,
         bill_date: header.bill_date || null,
         payment_type: header.payment_type,
         purchase_type: header.purchase_type || null,
         notes: header.notes || null,
+        ...(isConfirmed ? { reason: editReason.trim() } : {}),
         items: items.map(it => ({
           medicine_id: it.medicine_id,
           batch_number: String(it.batch_number || '').trim(),
@@ -183,7 +246,22 @@ export default function PurchaseEntry() {
         ? await axios.put(`/api/pharmacy/purchases/${draftId}`, payload)
         : await axios.post('/api/pharmacy/purchases', payload);
       setDraftId(r.data.id);
+      setPurchaseStatus(r.data.status);
+      setPurchaseNumber(r.data.purchase_number || '');
       toast({ title: `Draft saved: ${r.data.purchase_number}` });
+    } catch (e) {
+      toast({ variant: 'destructive', title: 'Save failed', description: errMsg(e) });
+    } finally { setSubmitting(false); }
+  };
+
+  const saveConfirmedEdit = async () => {
+    const { errors, payload } = buildPayload();
+    if (errors.length) { showValidationErrors(errors); return; }
+    setSubmitting(true);
+    try {
+      const r = await axios.put(`/api/pharmacy/purchases/${draftId}`, payload);
+      toast({ title: `Updated ${r.data.purchase_number}`, description: 'Inventory adjusted for the changes.' });
+      navigate('/dashboard/pharmacy/purchases');
     } catch (e) {
       toast({ variant: 'destructive', title: 'Save failed', description: errMsg(e) });
     } finally { setSubmitting(false); }
@@ -200,7 +278,6 @@ export default function PurchaseEntry() {
         id = r.data.id;
         setDraftId(id);
       } else {
-        // Push latest edits to the draft first
         await axios.put(`/api/pharmacy/purchases/${id}`, payload);
       }
       const r2 = await axios.post(`/api/pharmacy/purchases/${id}/confirm`);
@@ -237,12 +314,44 @@ export default function PurchaseEntry() {
 
   const setH = (k, v) => setHeader(s => ({ ...s, [k]: v }));
 
+  const pageTitle = isConfirmed
+    ? `Edit Purchase ${purchaseNumber}`
+    : draftId
+      ? `Edit Draft ${purchaseNumber || `#${draftId}`}`
+      : 'New Purchase';
+
+  if (loadingPurchase) {
+    return <p className="text-center py-12 text-sm text-gray-500">Loading purchase…</p>;
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3">
         <Button size="sm" variant="outline" onClick={() => navigate('/dashboard/pharmacy/purchases')}><ArrowLeft className="h-3 w-3 mr-1" /> Back</Button>
-        <h1 className="text-2xl font-bold">New Purchase {draftId && <span className="text-sm text-gray-500">(draft #{draftId})</span>}</h1>
+        <h1 className="text-2xl font-bold">{pageTitle}</h1>
       </div>
+
+      <FormNavContainer mode="grid" className="space-y-4">
+
+      {isConfirmed && (
+        <Card className="border-amber-200 bg-amber-50/50">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Edit reason *</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-xs text-gray-600 mb-2">
+              Confirmed purchases are corrected in place — stock is adjusted and this reason is logged.
+              Quantities cannot be reduced below what has already been sold or dispensed.
+            </p>
+            <Textarea
+              rows={2}
+              placeholder="e.g. wrong invoice rate, batch number typo, supplier invoice correction"
+              value={editReason}
+              onChange={(e) => setEditReason(e.target.value)}
+            />
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader className="pb-3"><CardTitle className="text-base">Header</CardTitle></CardHeader>
@@ -289,6 +398,7 @@ export default function PurchaseEntry() {
                 value={scanInput}
                 onChange={e => setScanInput(e.target.value)}
                 onKeyDown={handleScan}
+                {...{ [NAV_SKIP_ATTR]: '' }}
               />
             </div>
             <Button size="sm" variant="outline" onClick={addLine}><Plus className="h-3 w-3 mr-1" /> Add line</Button>
@@ -298,7 +408,7 @@ export default function PurchaseEntry() {
           {items.length === 0 ? (
             <p className="text-center py-4 text-sm text-gray-500">No items — scan a barcode above or click <span className="font-medium">Add line</span>.</p>
           ) : (
-            <div className="overflow-x-auto">
+            <FormNavContainer mode="table" className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead><tr className="border-b text-left text-gray-600">
                   <th className="py-2 pr-2">Medicine</th>
@@ -330,7 +440,7 @@ export default function PurchaseEntry() {
                                             mrp: m?.mrp || 0,
                                             hsn_id: m?.hsn_id || null });
                               }}>
-                              <SelectTrigger className="h-8 flex-1 min-w-0"><SelectValue placeholder="Pick" /></SelectTrigger>
+                              <SelectTrigger className="h-8 flex-1 min-w-0" {...navCellProps(i, 0)}><SelectValue placeholder="Pick" /></SelectTrigger>
                               <SelectContent>
                                 {medicines.map(m => <SelectItem key={m.id} value={String(m.id)}>{m.name}</SelectItem>)}
                               </SelectContent>
@@ -347,6 +457,7 @@ export default function PurchaseEntry() {
                             placeholder="Batch *"
                             value={ln.batch_number}
                             onChange={e => update(i, { batch_number: e.target.value })}
+                            {...navCellProps(i, 1)}
                           />
                         </td>
                         <td className="py-2 pr-2">
@@ -358,15 +469,16 @@ export default function PurchaseEntry() {
                                 placeholder="MM/YYYY"
                                 value={ln.expiry_mm_yyyy || ''}
                                 onChange={e => update(i, { expiry_mm_yyyy: e.target.value })}
+                                {...navCellProps(i, 2)}
                               />
                             );
                           })()}
                         </td>
-                        <td className="py-2 pr-2"><Input className="h-8" type="number" step="0.01" value={ln.mrp} onChange={e => update(i, { mrp: parseFloat(e.target.value) || 0 })} /></td>
-                        <td className="py-2 pr-2"><Input className="h-8" type="number" min="0" step="0.5" value={ln.quantity} onChange={e => update(i, { quantity: parseFloat(e.target.value) || 0 })} /></td>
-                        <td className="py-2 pr-2"><Input className="h-8" type="number" min="0" step="0.5" value={ln.free_quantity} onChange={e => update(i, { free_quantity: parseFloat(e.target.value) || 0 })} /></td>
-                        <td className="py-2 pr-2"><Input className="h-8" type="number" step="0.01" value={ln.purchase_rate} onChange={e => update(i, { purchase_rate: parseFloat(e.target.value) || 0 })} /></td>
-                        <td className="py-2 pr-2"><Input className="h-8" type="number" min="0" max="100" step="0.5" value={ln.discount_pct} onChange={e => update(i, { discount_pct: parseFloat(e.target.value) || 0 })} /></td>
+                        <td className="py-2 pr-2"><Input className="h-8" type="number" step="0.01" value={ln.mrp} onChange={e => update(i, { mrp: parseFloat(e.target.value) || 0 })} {...navCellProps(i, 3)} /></td>
+                        <td className="py-2 pr-2"><Input className="h-8" type="number" min="0" step="0.5" value={ln.quantity} onChange={e => update(i, { quantity: parseFloat(e.target.value) || 0 })} {...navCellProps(i, 4)} /></td>
+                        <td className="py-2 pr-2"><Input className="h-8" type="number" min="0" step="0.5" value={ln.free_quantity} onChange={e => update(i, { free_quantity: parseFloat(e.target.value) || 0 })} {...navCellProps(i, 5)} /></td>
+                        <td className="py-2 pr-2"><Input className="h-8" type="number" step="0.01" value={ln.purchase_rate} onChange={e => update(i, { purchase_rate: parseFloat(e.target.value) || 0 })} {...navCellProps(i, 6)} /></td>
+                        <td className="py-2 pr-2"><Input className="h-8" type="number" min="0" max="100" step="0.5" value={ln.discount_pct} onChange={e => update(i, { discount_pct: parseFloat(e.target.value) || 0 })} {...navCellProps(i, 7)} /></td>
                         <td className="py-2 pr-2">
                           <PharmacyMasterSelectWithCreate
                             path="hsn"
@@ -393,17 +505,26 @@ export default function PurchaseEntry() {
                   <tr className="font-bold"><td colSpan={9} className="py-2 text-right">Grand Total:</td><td className="text-right">₹{totals.grand.toFixed(2)}</td><td></td></tr>
                 </tfoot>
               </table>
-            </div>
+            </FormNavContainer>
           )}
         </CardContent>
       </Card>
 
       <div className="flex justify-end gap-2">
-        <Button variant="outline" onClick={saveDraft} disabled={submitting}><Save className="h-4 w-4 mr-2" /> Save Draft</Button>
-        <Button onClick={confirm} disabled={submitting || items.length === 0}>
-          <CheckCircle2 className="h-4 w-4 mr-2" /> Confirm & Commit
-        </Button>
+        {isConfirmed ? (
+          <Button onClick={saveConfirmedEdit} disabled={submitting || items.length === 0}>
+            <Save className="h-4 w-4 mr-2" /> Save Changes
+          </Button>
+        ) : (
+          <>
+            <Button variant="outline" onClick={saveDraft} disabled={submitting}><Save className="h-4 w-4 mr-2" /> Save Draft</Button>
+            <Button onClick={confirm} disabled={submitting || items.length === 0}>
+              <CheckCircle2 className="h-4 w-4 mr-2" /> Confirm & Commit
+            </Button>
+          </>
+        )}
       </div>
+      </FormNavContainer>
 
       <QuickMedicineDialog
         open={medicineDialogOpen}

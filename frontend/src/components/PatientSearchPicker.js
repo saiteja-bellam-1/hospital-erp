@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
+import { NAV_SKIP_ATTR } from '../utils/formNavigation';
 import axios from 'axios';
 import { Search, UserPlus, XCircle, Loader2 } from 'lucide-react';
 import { Label } from './ui/label';
@@ -122,6 +123,7 @@ export default function PatientSearchPicker({
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onFocus={() => query.trim() && setShowResults(true)}
+              {...{ [NAV_SKIP_ATTR]: '' }}
             />
             {searching && (
               <div className="absolute right-3 top-1/2 -translate-y-1/2">

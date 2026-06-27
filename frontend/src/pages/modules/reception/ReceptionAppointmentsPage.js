@@ -601,7 +601,21 @@ const ReceptionAppointmentsPage = () => {
           const url = window.URL.createObjectURL(blob);
           setBillPdfUrl(url);
           setShowBillPreviewDialog(true);
+        } else {
+          const err = await pdfResponse.json().catch(() => ({}));
+          toast({
+            variant: 'destructive',
+            title: 'Error',
+            description: err.detail || 'Failed to generate bill PDF',
+          });
         }
+      } else {
+        const err = await billResponse.json().catch(() => ({}));
+        toast({
+          variant: 'destructive',
+          title: 'Error',
+          description: err.detail || 'Failed to load bill',
+        });
       }
     } catch (error) {
       console.error('Error fetching bill:', error);
@@ -1810,6 +1824,11 @@ const ReceptionAppointmentsPage = () => {
                 <div>
                   <p className="text-sm text-gray-600">Patient</p>
                   <p className="font-semibold">{currentBill.patient_name}</p>
+                  {(currentBill.patient_age_display || currentBill.patient_gender) && (
+                    <p className="text-xs text-gray-500">
+                      {[currentBill.patient_age_display, currentBill.patient_gender].filter(Boolean).join(' · ')}
+                    </p>
+                  )}
                 </div>
                 <div>
                   <p className="text-sm text-gray-600">Doctor</p>

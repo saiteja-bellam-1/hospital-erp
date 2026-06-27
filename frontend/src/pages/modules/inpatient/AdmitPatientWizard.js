@@ -39,6 +39,12 @@ const EMPTY_DRAFT = {
   triage_level: '',
   estimated_stay_days: '',
   admission_reason: '',
+  // Person admitting / accompanying the patient (face sheet)
+  admitting_person_name: '',
+  admitting_person_relationship: '',
+  admitting_person_address: '',
+  admitting_person_phone: '',
+  admitting_person_id_proof: '',
   // Step 2 — doctors
   referring_doctor_id: '',
   referring_doctor_kind: 'internal',     // 'internal' | 'external'
@@ -243,6 +249,12 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
     if (draft.admission_type === 'emergency' && !draft.triage_level) {
       return 'Triage level is required for emergency admissions.';
     }
+    if (!draft.admitting_person_name?.trim()) {
+      return 'Enter the name of the person admitting / accompanying the patient.';
+    }
+    if (!draft.admitting_person_relationship?.trim()) {
+      return 'Enter the relationship of the admitting person to the patient.';
+    }
     return null;
   };
   const validateStep2 = () => {
@@ -298,6 +310,11 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
     require_acceptance: !!draft.require_acceptance,
     deposit_waived: !!draft.deposit_waived,
     deposit_waiver_reason: draft.deposit_waived ? draft.deposit_waiver_reason : null,
+    admitting_person_name: draft.admitting_person_name?.trim() || null,
+    admitting_person_relationship: draft.admitting_person_relationship?.trim() || null,
+    admitting_person_address: draft.admitting_person_address?.trim() || null,
+    admitting_person_phone: draft.admitting_person_phone?.trim() || null,
+    admitting_person_id_proof: draft.admitting_person_id_proof?.trim() || null,
   });
 
   const goNext = () => {
@@ -563,6 +580,64 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
                         onChange={e => update({ admission_reason: e.target.value })}
                         placeholder="e.g. Chest pain, requires cardiac evaluation" />
             </section>
+
+            <section className="space-y-3 border rounded-lg p-3 bg-gray-50">
+              <h3 className="font-semibold text-sm text-gray-700">
+                Person admitting / accompanying patient *
+              </h3>
+              <p className="text-xs text-gray-500">
+                Printed on the admission face sheet as the responsible attendant.
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label>Full name *</Label>
+                  <Input value={draft.admitting_person_name}
+                         onChange={e => update({ admitting_person_name: e.target.value })}
+                         placeholder="Name of person admitting patient" />
+                </div>
+                <div>
+                  <Label>Relationship to patient *</Label>
+                  <Select value={draft.admitting_person_relationship || ''}
+                          onValueChange={v => {
+                            const patch = { admitting_person_relationship: v };
+                            if (v === 'Self' && selectedPatient) {
+                              patch.admitting_person_name =
+                                `${selectedPatient.first_name} ${selectedPatient.last_name}`.trim();
+                              if (selectedPatient.primary_phone) {
+                                patch.admitting_person_phone = selectedPatient.primary_phone;
+                              }
+                            }
+                            update(patch);
+                          }}>
+                    <SelectTrigger><SelectValue placeholder="Select relationship" /></SelectTrigger>
+                    <SelectContent>
+                      {['Self', 'Spouse', 'Parent', 'Child', 'Sibling', 'Friend', 'Guardian', 'Other'].map(r => (
+                        <SelectItem key={r} value={r}>{r}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Phone</Label>
+                  <Input value={draft.admitting_person_phone}
+                         onChange={e => update({ admitting_person_phone: e.target.value })}
+                         placeholder="Mobile number" />
+                </div>
+                <div>
+                  <Label>ID proof (type / number)</Label>
+                  <Input value={draft.admitting_person_id_proof}
+                         onChange={e => update({ admitting_person_id_proof: e.target.value })}
+                         placeholder="e.g. Aadhaar xxxx, Voter ID" />
+                </div>
+                <div className="col-span-2">
+                  <Label>Address</Label>
+                  <Textarea rows={2}
+                            value={draft.admitting_person_address}
+                            onChange={e => update({ admitting_person_address: e.target.value })}
+                            placeholder="Full address of the admitting person" />
+                </div>
+              </div>
+            </section>
           </div>
         )}
 
@@ -795,6 +870,12 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
                       : ''}
                   </div>
                   <div><span className="text-gray-500">Type:</span> {draft.admission_type}</div>
+                  <div>
+                    <span className="text-gray-500">Admitting person:</span>{' '}
+                    {draft.admitting_person_name || '—'}
+                    {draft.admitting_person_relationship
+                      ? ` (${draft.admitting_person_relationship})` : ''}
+                  </div>
                   <div><span className="text-gray-500">Payer:</span> {selectedScheme?.name || '—'}</div>
                   <div>
                     <span className="text-gray-500">Deposit:</span>{' '}

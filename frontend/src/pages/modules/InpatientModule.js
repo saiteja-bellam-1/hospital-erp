@@ -19,12 +19,11 @@ import PendingAcceptanceList from './inpatient/PendingAcceptanceList';
 import AdmissionDetailHeader from './inpatient/AdmissionDetailHeader';
 import VisitDialog from './inpatient/VisitDialog';
 import DoctorRosterTab, { OnDutyNowPanel } from './inpatient/DoctorRosterTab';
-import DischargeWizard from './inpatient/DischargeWizard';
 import MedicineLookupInput from '../../components/inpatient/MedicineLookupInput';
 import PrescriptionScheduleFields from '../../components/prescription/PrescriptionScheduleFields';
-import { BLANK_INPATIENT_RX_ITEM } from '../../utils/prescriptionSchedule';
-import BillingDischargePage from './inpatient/BillingDischargePage';
-import BillingDischargeList from './inpatient/BillingDischargeList';
+import { BLANK_INPATIENT_RX_ITEM, serializeTakeHomeMed } from '../../utils/prescriptionSchedule';
+import DischargeCheckoutPage from './inpatient/DischargeCheckoutPage';
+import TakeHomeMedicinesSection from '../../components/prescription/TakeHomeMedicinesSection';
 import {
   Plus, Search, Edit2, Trash2, Bed, Activity, Clock, User, Users,
   FileText, Loader2, X, ChevronLeft, ChevronRight, DollarSign, Stethoscope,
@@ -453,8 +452,7 @@ const InpatientModule = () => {
     return today;
   });
   const [rosterRole, setRosterRole] = useState('nurse');  // 'nurse' | 'doctor'
-  const [dischargeSubTab, setDischargeSubTab] = useState('history');  // 'history' | 'billing-discharge'
-  const [billingDischargeFor, setBillingDischargeFor] = useState(null);  // admission id of in-flight unified flow
+  const [checkoutAdmissionId, setCheckoutAdmissionId] = useState(null);
   const [rosterGrid, setRosterGrid] = useState(null);
   const [rosterCoverage, setRosterCoverage] = useState([]);
   const [rosterMinPerShift, setRosterMinPerShift] = useState(2);
@@ -1553,21 +1551,41 @@ const InpatientModule = () => {
         });
       });
 
-      // Pharmacy — ALL dispensed prescriptions (prior + new)
+      // Pharmacy — dispensed Rx deferred to IP bill (exclude paid-at-counter)
       (rxList || []).forEach(rx => {
         if (rx.type !== 'pharmacy') return;
         if (rx.status === 'pending') return;
+        if (rx.pharmacy_sale_id) return;
         (rx.medicines || []).forEach(m => {
-          const total = parseFloat(m.total_price || 0);
+          const qty = parseFloat(m.quantity_dispensed || 0);
+          if (qty <= 0) return;
+          const total = parseFloat(m.unit_price || 0) * qty;
           if (total <= 0) return;
           items.push({
             source: 'pharmacy_rx', source_id: rx.id,
             item_type: 'pharmacy',
             item_name: `Rx: ${m.name || 'Medicine'}${m.dosage ? ' (' + m.dosage + ')' : ''}`,
-            quantity: parseInt(m.quantity || 1),
+            quantity: Math.max(1, Math.round(qty)),
             unit_price: parseFloat(m.unit_price || 0),
             total_price: total,
             is_prior: !!rx.inpatient_bill_id,
+          });
+        });
+      });
+
+      // POS sales deferred to IP bill
+      (b.pharmacy_pos_entries || []).forEach(sale => {
+        (sale.items || []).forEach(item => {
+          const total = parseFloat(item.total_price || 0);
+          if (total <= 0) return;
+          items.push({
+            source: 'pharmacy_pos', source_id: sale.id,
+            item_type: 'pharmacy',
+            item_name: `POS: ${item.name || 'Medicine'} (${sale.sale_number || ''})`,
+            quantity: Math.max(1, Math.round(parseFloat(item.quantity || 1))),
+            unit_price: parseFloat(item.unit_price || 0),
+            total_price: total,
+            is_prior: !!sale.billed,
           });
         });
       });
@@ -1692,40 +1710,29 @@ const InpatientModule = () => {
     } finally { setLoading(false); }
   };
 
-  // Discharge
-  const openDischargeDialog = async (admission) => {
-    // The new 3-step DischargeWizard owns its own form state; we just hand
-    // it the admission and let it run.
-    setDischargeAdmission(admission);
-    setShowDischargeDialog(true);
+  // Single-page discharge checkout — all entry points land here.
+  const openDischargeCheckout = (admission) => {
+    setActiveTab('discharge');
+    setCheckoutAdmissionId(admission.id);
   };
 
-  // Handler invoked by DischargeWizard after a successful discharge POST.
-  // - Refreshes admission lists.
-  // - If death, prompts mortality details dialog.
-  // - Navigates the slide-over to the Billing tab so finalising the bill
-  //   is the obvious next click.
-  const handleDischarged = ({ wasDeath, admissionId }) => {
+  const handleCheckoutDeath = ({ admissionId }) => {
     fetchAdmissions('admitted');
     fetchDashboard();
     if (activityAdmission?.id === admissionId) {
-      // Reload the admission so its status flips to 'discharged' in the slide-over
       axios.get(`/api/inpatient/admissions/${admissionId}`)
         .then(r => setActivityAdmission(r.data))
         .catch(() => setActivityAdmission(null));
-      setActivityTab('bill');
     }
-    if (wasDeath) {
-      setMortalityAdmission({ id: admissionId, discharge: {} });
-      setMortalityForm({
-        cause_of_death: '', time_of_death: new Date().toISOString().slice(0, 16),
-        death_certificate_number: '', mlc_required: false, mlc_number: '',
-        autopsy_done: false, autopsy_findings: '',
-        body_handed_over_to: '', body_handover_relationship: '',
-        body_handover_time: '', body_handover_id_proof: '',
-      });
-      setShowMortalityDialog(true);
-    }
+    setMortalityAdmission({ id: admissionId, discharge: {} });
+    setMortalityForm({
+      cause_of_death: '', time_of_death: new Date().toISOString().slice(0, 16),
+      death_certificate_number: '', mlc_required: false, mlc_number: '',
+      autopsy_done: false, autopsy_findings: '',
+      body_handed_over_to: '', body_handover_relationship: '',
+      body_handover_time: '', body_handover_id_proof: '',
+    });
+    setShowMortalityDialog(true);
   };
 
   const handleDischarge = async (e) => {
@@ -1744,15 +1751,7 @@ const InpatientModule = () => {
       // Clean the take-home meds: drop empty rows; coerce quantity to int.
       const meds = (payload.take_home_medications || [])
         .filter(m => (m.medicine_name || '').trim())
-        .map(m => ({
-          medicine_id: m.medicine_id ? parseInt(m.medicine_id) : null,
-          medicine_name: m.medicine_name.trim(),
-          dosage: m.dosage?.trim() || null,
-          frequency: m.frequency?.trim() || null,
-          duration: m.duration?.trim() || null,
-          quantity: m.quantity ? parseInt(m.quantity) : null,
-          instructions: m.instructions?.trim() || null,
-        }));
+        .map(serializeTakeHomeMed);
       payload.take_home_medications = meds.length ? meds : null;
       // Don't send the legacy free-text dump; the structured list replaces it.
       payload.medications_prescribed = payload.medications_prescribed || null;
@@ -3270,6 +3269,13 @@ const InpatientModule = () => {
     }
   };
 
+  const handlePrintAdmissionDetailPdf = async (admissionId) => {
+    const ok = await printPdfFromUrl(`/api/inpatient/admissions/${admissionId}/admission-detail/pdf`);
+    if (!ok) {
+      toast({ variant: 'destructive', title: 'Error', description: 'Failed to generate detailed admission summary PDF' });
+    }
+  };
+
   const handlePrintBillPdf = async (admissionId) => {
     setBillPdfLoading(true);
     try {
@@ -3618,7 +3624,7 @@ const InpatientModule = () => {
                             <td className="py-2">
                               <div className="flex gap-1" onClick={e => e.stopPropagation()}>
                                 {adm.status === 'admitted' && ip('discharge_patients') && (
-                                  <Button variant="ghost" size="sm" className="text-red-500" onClick={() => openDischargeDialog(adm)} title="Discharge">
+                                  <Button variant="ghost" size="sm" className="text-red-500" onClick={() => openDischargeCheckout(adm)} title="Discharge &amp; Exit">
                                     <ChevronRight className="h-4 w-4" />
                                   </Button>
                                 )}
@@ -3674,6 +3680,24 @@ const InpatientModule = () => {
                       )}
                     </div>
                     <div className="flex items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handlePrintAdmissionDetailPdf(activityAdmission.id)}
+                        title="Print detailed admission summary"
+                      >
+                        <Printer className="h-4 w-4 mr-1" /> Detailed Summary
+                      </Button>
+                      {activityAdmission.status === 'discharged' && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handlePrintDischargePdf(activityAdmission.id)}
+                          title="Print discharge summary letter"
+                        >
+                          <Printer className="h-4 w-4 mr-1" /> Discharge Summary
+                        </Button>
+                      )}
                       {activityAdmission.status === 'admitted' && (
                         <>
                           {ip('update_admission') && (
@@ -3682,7 +3706,7 @@ const InpatientModule = () => {
                             </Button>
                           )}
                           {ip('discharge_patients') && (
-                            <Button size="sm" variant="outline" className="text-red-600" onClick={() => openDischargeDialog(activityAdmission)}>Discharge</Button>
+                            <Button size="sm" variant="outline" className="text-red-600" onClick={() => openDischargeCheckout(activityAdmission)}>Discharge &amp; Exit</Button>
                           )}
                         </>
                       )}
@@ -5353,112 +5377,27 @@ const InpatientModule = () => {
             </div>
           )}
 
-          {/* ============ DISCHARGE HISTORY + GATE PASS ============ */}
+          {/* ============ DISCHARGE & EXIT (single-page checkout) ============ */}
           {activeTab === 'discharge' && (
-            <div className="p-6 overflow-y-auto h-full space-y-4">
-              <div className="flex items-center gap-1 border-b">
-                <button
-                  className={`px-3 py-2 text-sm font-medium border-b-2 transition ${
-                    dischargeSubTab === 'history'
-                      ? 'border-blue-500 text-blue-600'
-                      : 'border-transparent text-gray-600 hover:text-gray-800'
-                  }`}
-                  onClick={() => { setDischargeSubTab('history'); setBillingDischargeFor(null); }}
-                >History</button>
-                <button
-                  className={`px-3 py-2 text-sm font-medium border-b-2 transition ${
-                    dischargeSubTab === 'billing-discharge'
-                      ? 'border-blue-500 text-blue-600'
-                      : 'border-transparent text-gray-600 hover:text-gray-800'
-                  }`}
-                  onClick={() => setDischargeSubTab('billing-discharge')}
-                >Billing &amp; Discharge</button>
-              </div>
-
-              {dischargeSubTab === 'billing-discharge' && (
-                billingDischargeFor ? (
-                  <BillingDischargePage
-                    admissionId={billingDischargeFor}
-                    onBack={() => { setBillingDischargeFor(null); fetchAdmissions('admitted'); fetchAdmissions('discharged'); }}
-                    permissions={{
-                      receive_deposits:    ip('receive_deposits'),
-                      finalize_bill:       ip('finalize_bill'),
-                      discharge_patients:  ip('discharge_patients'),
-                      issue_gate_pass:     ip('issue_gate_pass'),
-                      issue_refunds:       ip('issue_refunds'),
-                    }}
-                  />
-                ) : (
-                  <BillingDischargeList
-                    onPick={setBillingDischargeFor}
-                  />
-                )
-              )}
-
-              {dischargeSubTab === 'history' && (<>
-          <div className="relative max-w-sm">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
-            <Input placeholder="Search discharged patients..." value={dischargeSearch} onChange={e => setDischargeSearch(e.target.value)} className="pl-10" />
-          </div>
-
-          {filteredDischarged.length === 0 ? (
-            <Card><CardContent className="py-12 text-center text-gray-500">No discharged patients found.</CardContent></Card>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse">
-                <thead>
-                  <tr className="border-b">
-                    <th className="text-left py-2 text-sm">Patient</th>
-                    <th className="text-left py-2 text-sm">Admission #</th>
-                    <th className="text-left py-2 text-sm">Admitted</th>
-                    <th className="text-left py-2 text-sm">Doctor</th>
-                    <th className="text-left py-2 text-sm">Status</th>
-                    <th className="text-left py-2 text-sm">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredDischarged.map(adm => (
-                    <tr key={adm.id} className="border-b hover:bg-gray-50">
-                      <td className="py-2 text-sm font-medium">{adm.patient_name || 'N/A'}</td>
-                      <td className="py-2 text-sm">{adm.admission_number}</td>
-                      <td className="py-2 text-sm">{adm.admission_date ? new Date(adm.admission_date).toLocaleDateString() : ''}</td>
-                      <td className="py-2 text-sm">{adm.doctor_name || 'N/A'}</td>
-                      <td className="py-2"><Badge className={admissionStatusColor[adm.status] || ''}>{adm.status}</Badge></td>
-                      <td className="py-2">
-                        <div className="flex gap-1">
-                          <Button variant="ghost" size="sm" onClick={() => handlePrintDischargePdf(adm.id)} title="Discharge Summary PDF">
-                            <FileText className="h-4 w-4" />
-                          </Button>
-                          <Button variant="ghost" size="sm" onClick={() => handlePrintBillPdf(adm.id)} title="Bill PDF">
-                            <DollarSign className="h-4 w-4" />
-                          </Button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {dischargeTotal > PAGE_SIZE && (
-                <div className="flex items-center justify-between pt-4 border-t mt-2">
-                  <span className="text-sm text-gray-500">
-                    Showing {dischargePage * PAGE_SIZE + 1}–{Math.min((dischargePage + 1) * PAGE_SIZE, dischargeTotal)} of {dischargeTotal}
-                  </span>
-                  <div className="flex gap-2">
-                    <Button variant="outline" size="sm" disabled={dischargePage === 0}
-                      onClick={() => setDischargePage(p => p - 1)}>
-                      <ChevronLeft className="h-4 w-4 mr-1" /> Prev
-                    </Button>
-                    <Button variant="outline" size="sm" disabled={(dischargePage + 1) * PAGE_SIZE >= dischargeTotal}
-                      onClick={() => setDischargePage(p => p + 1)}>
-                      Next <ChevronRight className="h-4 w-4 ml-1" />
-                    </Button>
-                  </div>
-                </div>
-              )}
+            <div className="p-6 overflow-y-auto h-full">
+              <DischargeCheckoutPage
+                admissionId={checkoutAdmissionId}
+                onSelectAdmission={setCheckoutAdmissionId}
+                onBack={() => {
+                  setCheckoutAdmissionId(null);
+                  fetchAdmissions('admitted');
+                  fetchAdmissions('discharged');
+                }}
+                permissions={{
+                  receive_deposits:   ip('receive_deposits'),
+                  finalize_bill:      ip('finalize_bill'),
+                  discharge_patients: ip('discharge_patients'),
+                  issue_gate_pass:    ip('issue_gate_pass'),
+                  issue_refunds:      ip('issue_refunds'),
+                }}
+                onDeathDischarge={handleCheckoutDeath}
+              />
             </div>
-          )}
-              </>)}
-          </div>
           )}
 
           {/* ============ OT SCHEDULE ============ */}
@@ -9358,15 +9297,7 @@ const InpatientModule = () => {
         </DialogContent>
       </Dialog>
 
-      {/* Discharge Wizard (3 steps: Clinical → Take-home Rx → Declarations) */}
-      <DischargeWizard
-        open={showDischargeDialog}
-        admission={dischargeAdmission}
-        onClose={() => { setShowDischargeDialog(false); setDischargeAdmission(null); }}
-        onDischarged={handleDischarged}
-      />
-
-      {/* Legacy Discharge Dialog (no longer reachable — kept for fallback). */}
+      {/* Legacy discharge dialog (unreachable — discharge uses DischargeCheckoutPage). */}
       <Dialog open={false} onOpenChange={() => {}}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader><DialogTitle>Discharge Patient - {dischargeAdmission?.patient_name}</DialogTitle></DialogHeader>
@@ -9410,54 +9341,12 @@ const InpatientModule = () => {
               <Textarea value={dischargeForm.discharge_summary} onChange={e => setDischargeForm(p => ({ ...p, discharge_summary: e.target.value }))} rows={2} />
             </div>
             <div className="border rounded p-3 bg-gray-50 space-y-2">
-              <div className="flex items-center justify-between">
-                <Label className="font-semibold">Take-Home Medications</Label>
-                <Button type="button" size="sm" variant="outline" onClick={() => setDischargeForm(p => ({
-                  ...p,
-                  take_home_medications: [...(p.take_home_medications || []), { medicine_id: '', medicine_name: '', dosage: '', frequency: '', duration: '', quantity: '', instructions: '' }],
-                }))}>
-                  <Plus className="h-3 w-3 mr-1" /> Add Medicine
-                </Button>
-              </div>
-              <p className="text-[11px] text-gray-500">List the prescription the patient takes home. This is separate from drugs given during the stay.</p>
-              {(dischargeForm.take_home_medications || []).length === 0 ? (
-                <p className="text-xs text-gray-500 italic">No take-home medications.</p>
-              ) : (
-                <div className="space-y-2">
-                  {(dischargeForm.take_home_medications || []).map((m, idx) => (
-                    <div key={idx} className="border rounded p-2 bg-white space-y-1">
-                      <div className="flex items-start gap-2">
-                        <Input
-                          placeholder="Medicine name (e.g., Paracetamol 500mg)"
-                          value={m.medicine_name}
-                          onChange={e => setDischargeForm(p => {
-                            const next = [...(p.take_home_medications || [])];
-                            next[idx] = { ...next[idx], medicine_name: e.target.value };
-                            return { ...p, take_home_medications: next };
-                          })}
-                          className="flex-1"
-                        />
-                        <Button type="button" size="sm" variant="ghost" className="h-9 w-9 p-0"
-                          onClick={() => setDischargeForm(p => ({ ...p, take_home_medications: (p.take_home_medications || []).filter((_, i) => i !== idx) }))}>
-                          <Trash2 className="h-4 w-4 text-red-500" />
-                        </Button>
-                      </div>
-                      <div className="grid grid-cols-4 gap-2">
-                        <Input placeholder="Dosage" value={m.dosage}
-                          onChange={e => setDischargeForm(p => { const next = [...(p.take_home_medications || [])]; next[idx] = { ...next[idx], dosage: e.target.value }; return { ...p, take_home_medications: next }; })} />
-                        <Input placeholder="Frequency (BD/TID)" value={m.frequency}
-                          onChange={e => setDischargeForm(p => { const next = [...(p.take_home_medications || [])]; next[idx] = { ...next[idx], frequency: e.target.value }; return { ...p, take_home_medications: next }; })} />
-                        <Input placeholder="Duration (5 days)" value={m.duration}
-                          onChange={e => setDischargeForm(p => { const next = [...(p.take_home_medications || [])]; next[idx] = { ...next[idx], duration: e.target.value }; return { ...p, take_home_medications: next }; })} />
-                        <Input type="number" min="1" placeholder="Qty" value={m.quantity}
-                          onChange={e => setDischargeForm(p => { const next = [...(p.take_home_medications || [])]; next[idx] = { ...next[idx], quantity: e.target.value }; return { ...p, take_home_medications: next }; })} />
-                      </div>
-                      <Input placeholder="Instructions (after meals, with water…)" value={m.instructions}
-                        onChange={e => setDischargeForm(p => { const next = [...(p.take_home_medications || [])]; next[idx] = { ...next[idx], instructions: e.target.value }; return { ...p, take_home_medications: next }; })} />
-                    </div>
-                  ))}
-                </div>
-              )}
+              <TakeHomeMedicinesSection
+                medications={dischargeForm.take_home_medications || []}
+                onMedicationsChange={(meds) => setDischargeForm(p => ({ ...p, take_home_medications: meds }))}
+                admissionId={dischargeAdmission?.id}
+                description="List the prescription the patient takes home. This is separate from drugs given during the stay."
+              />
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
@@ -9931,7 +9820,8 @@ const InpatientModule = () => {
             <div className="flex gap-2">
               <Input placeholder="Bed label (e.g. A, B, 1, 2)" value={newBedLabel}
                 onChange={e => setNewBedLabel(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') handleAddBed(); }} />
+                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleAddBed(); } }}
+                data-nav-skip />
               <Button size="sm" onClick={handleAddBed} disabled={!newBedLabel.trim()}>
                 <Plus className="h-4 w-4 mr-1" /> Add
               </Button>

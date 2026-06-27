@@ -10,9 +10,11 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { useToast } from '../../../../hooks/use-toast';
 import { Search, RefreshCw, AlertTriangle, Sliders, ScrollText } from 'lucide-react';
 import { errMsg } from '../../PharmacyModule';
+import { usePharmacyStore } from '../../../../contexts/PharmacyStoreContext';
 
 export default function InventoryTab() {
   const { toast } = useToast();
+  const { storeParams } = usePharmacyStore();
   const [view, setView] = useState('stock');     // stock | batches | low | expiring | ledger
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -31,12 +33,12 @@ export default function InventoryTab() {
       else if (view === 'batches') { url = '/api/pharmacy/inventory/batches'; }
       else if (view === 'low') { url = '/api/pharmacy/inventory/low-stock'; }
       else if (view === 'ledger') { url = '/api/pharmacy/inventory/ledger'; params.limit = 200; }
-      const r = await axios.get(url, { params });
+      const r = await axios.get(url, { params: { ...params, ...storeParams } });
       setData(r.data || []);
     } catch (e) {
       toast({ variant: 'destructive', title: 'Load failed', description: errMsg(e) });
     } finally { setLoading(false); }
-  }, [view, search, toast]);
+  }, [view, search, toast, storeParams]);
 
   useEffect(() => { load(); }, [load]);
 

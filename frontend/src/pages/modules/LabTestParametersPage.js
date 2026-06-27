@@ -475,7 +475,7 @@ const LabTestParametersPage = () => {
     return (
       <div className="text-center py-24">
         <p className="text-slate-500">Test not found.</p>
-        <Button variant="outline" className="mt-4" onClick={() => navigate('/dashboard/lab')}>
+        <Button variant="outline" className="mt-4" onClick={() => navigate('/dashboard/lab/tests')}>
           <ArrowLeft className="h-4 w-4 mr-2" /> Back to Lab
         </Button>
       </div>
@@ -498,7 +498,7 @@ const LabTestParametersPage = () => {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <Button variant="ghost" size="sm" onClick={() => navigate('/dashboard/lab')}
+          <Button variant="ghost" size="sm" onClick={() => navigate('/dashboard/lab/tests')}
             className="text-slate-500 hover:text-slate-700">
             <ArrowLeft className="h-4 w-4 mr-1" /> Back
           </Button>

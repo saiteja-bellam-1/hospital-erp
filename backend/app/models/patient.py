@@ -17,6 +17,7 @@ class Patient(Base):
     last_name = Column(String(50), nullable=False)
     date_of_birth = Column(Date)
     age = Column(Integer)
+    age_months = Column(Integer)
     gender = Column(String(10))
     blood_group = Column(String(5))
     marital_status = Column(String(20))

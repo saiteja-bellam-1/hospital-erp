@@ -181,3 +181,74 @@ def test_description_omitted_when_blank(client, db_session, seed_data):
     assert "Reference Information:" not in text, (
         "Reference Information section unexpectedly rendered for a test with blank description"
     )
+
+
+def test_combined_package_report_accepts_string_booking_id(client, db_session, seed_data):
+    """Package booking IDs are strings like PKG-ABC12345. The combined report
+    endpoint must accept them verbatim (Number() in the frontend produced NaN)."""
+    headers = _admin_headers(seed_data, db_session)
+    hospital_id = seed_data["hospital_id"]
+    booking_id = "PKG-TEST1234"
+
+    cat = LabTestCategory(
+        name=f"PkgCat-{datetime.now().strftime('%H%M%S%f')}",
+        hospital_id=hospital_id,
+    )
+    db_session.add(cat)
+    db_session.flush()
+
+    tests = []
+    for suffix, label in [("A", "CBC Panel A"), ("B", "CBC Panel B")]:
+        test = LabTest(
+            test_code=f"PKG-{suffix}-{datetime.now().strftime('%H%M%S%f')}",
+            name=label,
+            category_id=cat.id,
+            cost=100.0,
+            hospital_id=hospital_id,
+            is_active=True,
+        )
+        db_session.add(test)
+        db_session.flush()
+        param = LabTestParameter(
+            test_id=test.id,
+            parameter_name=f"Param{suffix}",
+            unit="mg/dL",
+            field_type="numeric",
+            reference_min_default=10,
+            reference_max_default=20,
+            display_order=0,
+        )
+        db_session.add(param)
+        db_session.flush()
+        tests.append((test, param))
+
+    for idx, (test, param) in enumerate(tests):
+        order = PatientLabOrder(
+            order_number=f"LAB-PKG-{idx}-{datetime.now().strftime('%H%M%S%f')}",
+            patient_id=seed_data["patient_id"],
+            test_id=test.id,
+            package_booking_id=booking_id,
+            status="processing",
+            amount=100.0,
+            payment_status="paid",
+        )
+        db_session.add(order)
+        db_session.commit()
+        payload = {
+            "results": [{"parameter_id": param.id, "value": "15", "remarks": "", "manual_abnormal": False}],
+            "interpretation": f"Normal for {test.name}.",
+        }
+        res = client.post(f"/api/lab/orders/{order.id}/results", json=payload, headers=headers)
+        assert res.status_code == 200, res.text
+
+    res = client.get(f"/api/lab/reports/package/{booking_id}/download", headers=headers)
+    assert res.status_code == 200, res.text
+    assert res.headers["content-type"] == "application/pdf"
+
+    text = _extract_pdf_text(res.content)
+    assert "CBC Panel A" in text, f"First test missing from combined PDF. Sample: {text[:800]}"
+    assert "CBC Panel B" in text, f"Second test missing from combined PDF. Sample: {text[:800]}"
+
+    # NaN path must 404 — documents the frontend bug we fixed.
+    res_bad = client.get("/api/lab/reports/package/NaN/download", headers=headers)
+    assert res_bad.status_code == 404

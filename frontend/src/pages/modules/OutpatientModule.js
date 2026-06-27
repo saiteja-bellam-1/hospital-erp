@@ -19,6 +19,7 @@ import {
   needsOverrideReason,
   validateAppointmentBooking,
 } from '../../utils/appointmentBooking';
+import { formatPatientAge } from '../../utils/patientAge';
 
 const OutpatientModule = () => {
   const { toast } = useToast();
@@ -206,18 +207,11 @@ const OutpatientModule = () => {
     setShowSearchResults(false);
   };
 
-  const getAgeDisplay = (dateOfBirth, age) => {
-    if (age !== null && age !== undefined) {
-      return `${age} years`;
-    }
-    if (dateOfBirth) {
-      const today = new Date();
-      const birthDate = new Date(dateOfBirth);
-      const calculatedAge = Math.floor((today - birthDate) / (365.25 * 24 * 60 * 60 * 1000));
-      return `${calculatedAge} years`;
-    }
-    return 'N/A';
-  };
+  const getAgeDisplay = (dateOfBirth, age, ageMonths) => formatPatientAge({
+    date_of_birth: dateOfBirth,
+    age,
+    age_months: ageMonths,
+  }) || 'N/A';
 
   const getVisitStatusBadge = (status) => {
     const statusColors = {
@@ -649,7 +643,7 @@ const OutpatientModule = () => {
                                 <p>📱 {patient.primary_phone}</p>
                                 <p>🆔 {patient.patient_id}</p>
                                 <div className="flex items-center gap-4">
-                                  <span>👤 {getAgeDisplay(patient.date_of_birth, patient.age)}</span>
+                                  <span>👤 {getAgeDisplay(patient.date_of_birth, patient.age, patient.age_months)}</span>
                                   <span>📅 {patient.total_appointments} visits</span>
                                   {patient.last_appointment_date && (
                                     <span>

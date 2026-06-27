@@ -1,6 +1,7 @@
 import * as React from "react"
 
 import { cn } from "../../lib/utils"
+import FormNavContainer from "../FormNavContainer"
 
 const Card = React.forwardRef(({ className, ...props }, ref) => (
   <div
@@ -44,9 +45,20 @@ const CardDescription = React.forwardRef(({ className, ...props }, ref) => (
 ))
 CardDescription.displayName = "CardDescription"
 
-const CardContent = React.forwardRef(({ className, ...props }, ref) => (
-  <div ref={ref} className={cn("p-6 pt-0", className)} {...props} />
-))
+const CardContent = React.forwardRef(({ className, formNav, ...props }, ref) => {
+  if (formNav) {
+    const mode = formNav === true ? 'linear' : formNav;
+    return (
+      <FormNavContainer
+        ref={ref}
+        mode={mode}
+        className={cn("p-6 pt-0", className)}
+        {...props}
+      />
+    );
+  }
+  return <div ref={ref} className={cn("p-6 pt-0", className)} {...props} />;
+});
 CardContent.displayName = "CardContent"
 
 const CardFooter = React.forwardRef(({ className, ...props }, ref) => (

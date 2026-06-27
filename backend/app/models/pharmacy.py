@@ -115,6 +115,39 @@ class PharmacySalt(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class PharmacyStore(Base):
+    """Pharmacy location — one master store plus optional satellite stores."""
+    __tablename__ = "pharmacy_stores"
+
+    id = Column(Integer, primary_key=True, index=True)
+    code = Column(String(30), nullable=False)
+    name = Column(String(150), nullable=False)
+    store_type = Column(String(20), nullable=False, default="master")  # master | satellite
+    parent_store_id = Column(Integer, ForeignKey("pharmacy_stores.id"), nullable=True)
+    location = Column(String(200))
+    description = Column(Text)
+    can_receive_supplier_purchase = Column(Boolean, default=False)
+    is_active = Column(Boolean, default=True)
+    is_default = Column(Boolean, default=False)
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    parent_store = relationship("PharmacyStore", remote_side=[id], foreign_keys=[parent_store_id])
+
+
+class PharmacyUserStore(Base):
+    """Many-to-many: which pharmacy stores a user may operate."""
+    __tablename__ = "pharmacy_user_stores"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    store_id = Column(Integer, ForeignKey("pharmacy_stores.id"), nullable=False, index=True)
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    store = relationship("PharmacyStore")
+
+
 class PharmacyRack(Base):
     """Physical rack / shelf location master."""
     __tablename__ = "pharmacy_racks"
@@ -286,6 +319,7 @@ class PharmacyInventory(Base):
     # not enforce FK constraints by default; reporting joins are explicit.
     purchase_id = Column(Integer, nullable=True)
 
+    store_id = Column(Integer, ForeignKey("pharmacy_stores.id"), nullable=True, index=True)
     is_active = Column(Boolean, default=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -294,6 +328,7 @@ class PharmacyInventory(Base):
     medicine = relationship("Medicine", back_populates="inventory")
     hsn = relationship("PharmacyHSN")
     supplier_ref = relationship("PharmacySupplier")
+    store = relationship("PharmacyStore")
 
 
 class PharmacyStockLedger(Base):
@@ -316,21 +351,21 @@ class PharmacyStockLedger(Base):
     reference_id = Column(Integer)        # FK-by-convention to the source row
     performed_by = Column(Integer, ForeignKey("users.id"))
     notes = Column(Text)
+    store_id = Column(Integer, ForeignKey("pharmacy_stores.id"), nullable=True, index=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     medicine = relationship("Medicine")
     batch = relationship("PharmacyInventory")
     user = relationship("User")
+    store = relationship("PharmacyStore")
 
 
 class PharmacyPurchase(Base):
     """Procurement / Goods-Receipt header.
 
-    Lifecycle: `draft` (editable) → `confirmed` (batches committed to
-    PharmacyInventory + ledger written). A confirmed purchase can be revoked
-    via POST /purchases/{id}/revoke; the un-sold portion is reversed and the
-    status flips to `revoked` (nothing sold) or `revoked_partial`.
+    Lifecycle: `draft` (editable) → `confirmed` (editable with reason + inventory
+    sync) → optionally `revoked` / `revoked_partial` via POST /purchases/{id}/revoke.
     """
     __tablename__ = "pharmacy_purchases"
 
@@ -359,12 +394,18 @@ class PharmacyPurchase(Base):
     revoked_by = Column(Integer, ForeignKey("users.id"))
     revoked_at = Column(DateTime)
     revoke_reason = Column(Text)
+    # Last confirmed-purchase edit (requires reason; inventory adjusted in place).
+    edited_by = Column(Integer, ForeignKey("users.id"))
+    edited_at = Column(DateTime)
+    edit_reason = Column(Text)
+    store_id = Column(Integer, ForeignKey("pharmacy_stores.id"), nullable=True, index=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     items = relationship("PharmacyPurchaseItem", back_populates="purchase", cascade="all, delete-orphan")
     supplier = relationship("PharmacySupplier")
+    store = relationship("PharmacyStore")
 
 
 class PharmacyPurchaseItem(Base):
@@ -431,11 +472,19 @@ class PharmacySale(Base):
     voided_at = Column(DateTime)
     void_reason = Column(Text)
 
+    # Inpatient billing: when billing_mode='inpatient_bill', stock is sold but
+    # payment is deferred to the admission bill at discharge/interim.
+    admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=True, index=True)
+    billing_mode = Column(String(30), default="cash_at_pharmacy")  # cash_at_pharmacy | inpatient_bill
+    inpatient_bill_id = Column(Integer, ForeignKey("bills.id"), nullable=True)
+
     created_by = Column(Integer, ForeignKey("users.id"))
+    store_id = Column(Integer, ForeignKey("pharmacy_stores.id"), nullable=True, index=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     items = relationship("PharmacySaleItem", back_populates="sale", cascade="all, delete-orphan")
+    store = relationship("PharmacyStore")
 
 
 class PharmacySaleItem(Base):
@@ -483,12 +532,61 @@ class PharmacyStockAdjustment(Base):
     qty_change = Column(Float, nullable=False)  # signed: + = add, − = remove
     reason = Column(String(200), nullable=False)
     performed_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    store_id = Column(Integer, ForeignKey("pharmacy_stores.id"), nullable=True, index=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     medicine = relationship("Medicine")
     batch = relationship("PharmacyInventory")
     user = relationship("User")
+    store = relationship("PharmacyStore")
+
+
+class PharmacyTransfer(Base):
+    """Inter-store stock transfer (master → satellite). Draft → confirmed lifecycle."""
+    __tablename__ = "pharmacy_transfers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    transfer_number = Column(String(30), unique=True, nullable=False, index=True)
+    entry_date = Column(Date, nullable=False)
+    from_store_id = Column(Integer, ForeignKey("pharmacy_stores.id"), nullable=False)
+    to_store_id = Column(Integer, ForeignKey("pharmacy_stores.id"), nullable=False)
+    status = Column(String(20), default="draft", index=True)  # draft | confirmed | revoked | revoked_partial
+    notes = Column(Text)
+    item_count = Column(Integer, default=0)
+    total_qty = Column(Float, default=0.0)
+    created_by = Column(Integer, ForeignKey("users.id"))
+    confirmed_by = Column(Integer, ForeignKey("users.id"))
+    confirmed_at = Column(DateTime)
+    revoked_by = Column(Integer, ForeignKey("users.id"))
+    revoked_at = Column(DateTime)
+    revoke_reason = Column(Text)
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    from_store = relationship("PharmacyStore", foreign_keys=[from_store_id])
+    to_store = relationship("PharmacyStore", foreign_keys=[to_store_id])
+    items = relationship("PharmacyTransferItem", back_populates="transfer", cascade="all, delete-orphan")
+
+
+class PharmacyTransferItem(Base):
+    __tablename__ = "pharmacy_transfer_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    transfer_id = Column(Integer, ForeignKey("pharmacy_transfers.id"), nullable=False)
+    medicine_id = Column(Integer, ForeignKey("medicines.id"), nullable=False)
+    source_batch_id = Column(Integer, ForeignKey("pharmacy_inventory.id"), nullable=False)
+    batch_number = Column(String(50), nullable=False)
+    expiry_date = Column(Date, nullable=False)
+    quantity = Column(Float, nullable=False)
+    target_inventory_id = Column(Integer, ForeignKey("pharmacy_inventory.id"), nullable=True)
+
+    transfer = relationship("PharmacyTransfer", back_populates="items")
+    medicine = relationship("Medicine")
+    source_batch = relationship("PharmacyInventory", foreign_keys=[source_batch_id])
+    target_batch = relationship("PharmacyInventory", foreign_keys=[target_inventory_id])
+
 
 class Prescription(Base):
     __tablename__ = "prescriptions"
@@ -507,6 +605,7 @@ class Prescription(Base):
     dispensed_date = Column(DateTime)
     inpatient_bill_id = Column(Integer, ForeignKey("bills.id"), nullable=True)  # which admission bill consumed this Rx
     pharmacy_sale_id = Column(Integer, ForeignKey("pharmacy_sales.id"), nullable=True)  # set when paid at pharmacy counter
+    dispense_store_id = Column(Integer, ForeignKey("pharmacy_stores.id"), nullable=True)
 
     # Cancellation metadata. status='cancelled' is set at the same time these
     # are stamped; see app/services/pharmacy_reversal.py.

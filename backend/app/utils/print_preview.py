@@ -213,6 +213,91 @@ def _sample_discharge_summary() -> dict:
     }
 
 
+def _sample_admission_detail() -> dict:
+    now = datetime.now().strftime("%d/%m/%Y %H:%M")
+    return {
+        "admission_meta": {
+            "patient_name": "Sample Patient",
+            "mrn": "MRN-PREVIEW",
+            "age": "45",
+            "gender": "F",
+            "village": "Sample Village",
+            "district": "Sample District",
+            "admission_number": "ADM-PREVIEW",
+            "doctor_name": "Dr. Sample Doctor",
+            "room_number": "101",
+            "bed_label": "A",
+            "admission_date": now,
+            "discharge_date": "",
+            "status": "admitted",
+            "stay_days": 2,
+        },
+        "visits": [
+            {
+                "visit_datetime": now,
+                "visitor_name": "Dr. Sample Doctor",
+                "visit_type": "doctor_visit",
+                "notes": "Patient stable, continuing treatment.",
+                "plan_for_today": "Continue IV antibiotics.",
+            },
+        ],
+        "vitals": [
+            {
+                "recorded_at": now,
+                "bp": "120/80",
+                "heart_rate": 78,
+                "respiratory_rate": 18,
+                "temperature_c": 37.0,
+                "spo2": 98,
+                "blood_glucose": None,
+                "pain_score": 2,
+                "gcs_score": 15,
+                "is_abnormal": False,
+                "abnormal_flags": "",
+            },
+        ],
+        "mar": [
+            {
+                "scheduled_time": now,
+                "medicine_name": "Sample Antibiotic 500mg",
+                "dosage": "1 tab",
+                "status": "given",
+                "administered_at": now,
+                "dose_given": "1 tab",
+                "route": "oral",
+                "administered_by_name": "Sample Nurse",
+                "reason_if_not_given": "",
+                "notes": "",
+            },
+        ],
+        "mar_included": True,
+        "inpatient_medications": [
+            {
+                "prescription_date": now,
+                "medicine_name": "Sample Antibiotic 500mg",
+                "dosage": "1 tab",
+                "frequency": "BD",
+                "route": "oral",
+                "duration": "5 days",
+                "is_prn": False,
+                "prescriber": "Dr. Sample Doctor",
+            },
+        ],
+        "ot_procedures": [],
+        "ancillary_procedures": [],
+        "investigations": [],
+        "nursing_notes": [
+            {
+                "created_at": now,
+                "shift": "morning",
+                "note_type": "progress",
+                "nurse_name": "Sample Nurse",
+                "content": "Patient comfortable, vitals stable.",
+            },
+        ],
+    }
+
+
 def _sample_consent() -> dict:
     now = datetime.now()
     return {
@@ -431,6 +516,13 @@ def generate_print_preview_pdf(
     if report_type == "discharge_summary":
         return pdf_service.generate_discharge_summary_pdf(
             _sample_discharge_summary(),
+            hi,
+            **kwargs,
+        )
+
+    if report_type == "admission_detail":
+        return pdf_service.generate_admission_detail_pdf(
+            _sample_admission_detail(),
             hi,
             **kwargs,
         )

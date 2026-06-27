@@ -313,3 +313,75 @@ def test_tax_on_free_flag(client, auth_headers, edge_setup, db_session, seed_dat
     # Reset
     hosp.pharmacy_tax_on_free = False
     db_session.commit()
+
+
+# --------------------------------------------------------------------------
+# Inpatient bill — POS sale billing_mode
+# --------------------------------------------------------------------------
+
+def test_pos_inpatient_bill_included_in_admission_charges(
+    client, auth_headers, edge_setup, db_session, seed_data,
+):
+    """POS sales with billing_mode=inpatient_bill appear on admission bill;
+    cash_at_pharmacy sales for the same patient do not."""
+    from app.models.patient import Patient
+    from app.models.inpatient import Admission, RoomManagement
+
+    pat = db_session.query(Patient).filter(Patient.id == seed_data["patient_id"]).first()
+    room = RoomManagement(
+        room_number=f"PH-{uuid.uuid4().hex[:4]}",
+        room_type="general",
+        floor="1",
+        department="Ward",
+        bed_count=2,
+        available_beds=2,
+        room_charge_per_day=500.0,
+        hospital_id=seed_data["hospital_id"],
+        is_active=True,
+    )
+    db_session.add(room)
+    db_session.flush()
+    adm = Admission(
+        admission_number=f"ADM-{uuid.uuid4().hex[:6]}",
+        patient_id=pat.id,
+        admitting_doctor_id=seed_data["doctor_user_id"],
+        room_id=room.id,
+        bed_number="1",
+        admission_type="elective",
+        status="admitted",
+    )
+    db_session.add(adm)
+    db_session.commit()
+
+    _confirm_purchase(client, auth_headers, edge_setup, qty=50, rate=10.0)
+    line = {"medicine_id": edge_setup["medicine_id"], "quantity": 2, "rate": 20.0}
+
+    deferred = client.post("/api/pharmacy/sales", headers=auth_headers, json={
+        "payment_type": "cash",
+        "billing_mode": "inpatient_bill",
+        "patient_ip_id": pat.patient_id,
+        "items": [line],
+    })
+    assert deferred.status_code == 201, deferred.text
+    assert deferred.json()["billing_mode"] == "inpatient_bill"
+    deferred_total = float(deferred.json()["grand_total"])
+
+    paid_now = client.post("/api/pharmacy/sales", headers=auth_headers, json={
+        "payment_type": "cash",
+        "billing_mode": "cash_at_pharmacy",
+        "patient_ip_id": pat.patient_id,
+        "items": [line],
+    })
+    assert paid_now.status_code == 201, paid_now.text
+
+    bill = client.get(
+        f"/api/inpatient/admissions/{adm.id}/bill",
+        params={"unbilled_only": True},
+        headers=auth_headers,
+    )
+    assert bill.status_code == 200, bill.text
+    data = bill.json()
+    assert float(data["pharmacy_total"]) == pytest.approx(deferred_total, rel=0.01)
+    assert len(data.get("pharmacy_pos_entries") or []) == 1
+    assert data["pharmacy_pos_entries"][0]["sale_number"] == deferred.json()["sale_number"]
+

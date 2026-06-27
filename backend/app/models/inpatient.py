@@ -91,6 +91,12 @@ class Admission(Base):
     claim_submitted_at = Column(DateTime(timezone=True), nullable=True)
     claim_notes = Column(Text, nullable=True)
     emergency_contact = Column(String(100))
+    # Person accompanying / admitting the patient (printed on face sheet).
+    admitting_person_name = Column(String(200), nullable=True)
+    admitting_person_relationship = Column(String(100), nullable=True)
+    admitting_person_address = Column(Text, nullable=True)
+    admitting_person_phone = Column(String(20), nullable=True)
+    admitting_person_id_proof = Column(String(200), nullable=True)
     attending_physician_id = Column(Integer, ForeignKey("users.id"))
     bed_number = Column(String(10))  # legacy free-text field
     bed_id = Column(Integer, ForeignKey("beds.id"), nullable=True)  # structured bed reference

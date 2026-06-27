@@ -41,6 +41,7 @@ from app.models.billing import Bill, BillItem, Payment
 from app.models.pharmacy import (
     Medicine,
     PharmacyInventory,
+    PharmacySale,
     PharmacyStockLedger,
     Prescription,
     PrescriptionItem,
@@ -266,6 +267,155 @@ def _emit_credit_note(
             source_ref_id=li.source_ref_id,
         ))
     return cn
+
+
+def _unlocked_bill_inplace_reverse_pos_sale(db: Session, sale: PharmacySale, bill: Bill) -> int:
+    """Remove POS sale line items from an unlocked parent admission bill."""
+    sale_item_ids = [it.id for it in (sale.items or [])]
+    if not sale_item_ids:
+        sale.inpatient_bill_id = None
+        return 0
+    bill_items = (
+        db.query(BillItem)
+        .filter(
+            BillItem.bill_id == bill.id,
+            BillItem.source_ref_type == "pharmacy_sale_item",
+            BillItem.source_ref_id.in_(sale_item_ids),
+        )
+        .all()
+    )
+    removed_total = 0.0
+    for bi in bill_items:
+        removed_total += float(bi.total_price or 0)
+        db.delete(bi)
+    if removed_total > 0:
+        bill.subtotal = max(0.0, float(bill.subtotal or 0) - removed_total)
+        bill.total_amount = max(0.0, float(bill.total_amount or 0) - removed_total)
+    sale.inpatient_bill_id = None
+    return len(bill_items)
+
+
+def _emit_credit_note_pos_sale(
+    db: Session,
+    sale: PharmacySale,
+    parent_bill: Bill,
+    user_id: int,
+    reason: str,
+) -> Bill:
+    sale_item_ids = [it.id for it in (sale.items or [])]
+    parent_lines = (
+        db.query(BillItem)
+        .filter(
+            BillItem.bill_id == parent_bill.id,
+            BillItem.source_ref_type == "pharmacy_sale_item",
+            BillItem.source_ref_id.in_(sale_item_ids),
+        )
+        .all()
+    )
+    if not parent_lines:
+        total = float(sale.grand_total or 0)
+        if total <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Cannot emit credit-note: parent bill has no source_ref "
+                    "linkage and sale has no grand_total to offset against."
+                ),
+            )
+        cn = Bill(
+            bill_number=_next_credit_note_number(db),
+            patient_id=parent_bill.patient_id,
+            bill_type="credit_note",
+            bill_subtype="final",
+            reference_id=parent_bill.reference_id,
+            subtotal=-total,
+            tax_amount=0.0,
+            discount_amount=0.0,
+            total_amount=-total,
+            status="pending",
+            created_by_id=user_id,
+            hospital_id=parent_bill.hospital_id,
+            parent_bill_id=parent_bill.id,
+            notes=f"Credit note for voided POS sale {sale.sale_number}: {reason}",
+        )
+        db.add(cn)
+        db.flush()
+        db.add(BillItem(
+            bill_id=cn.id,
+            item_type="pharmacy",
+            item_name=f"Reversal: POS {sale.sale_number}",
+            quantity=1,
+            unit_price=-total,
+            total_price=-total,
+            source_ref_type="pharmacy_sale",
+            source_ref_id=sale.id,
+        ))
+        return cn
+
+    subtotal = sum(float(li.total_price or 0) for li in parent_lines)
+    cn = Bill(
+        bill_number=_next_credit_note_number(db),
+        patient_id=parent_bill.patient_id,
+        bill_type="credit_note",
+        bill_subtype="final",
+        reference_id=parent_bill.reference_id,
+        subtotal=-subtotal,
+        tax_amount=0.0,
+        discount_amount=0.0,
+        total_amount=-subtotal,
+        status="pending",
+        created_by_id=user_id,
+        hospital_id=parent_bill.hospital_id,
+        parent_bill_id=parent_bill.id,
+        notes=f"Credit note for voided POS sale {sale.sale_number}: {reason}",
+    )
+    db.add(cn)
+    db.flush()
+    for li in parent_lines:
+        db.add(BillItem(
+            bill_id=cn.id,
+            item_type="pharmacy",
+            item_name=f"Reversal: {li.item_name}",
+            quantity=li.quantity,
+            unit_price=-float(li.unit_price or 0),
+            total_price=-float(li.total_price or 0),
+            source_ref_type="pharmacy_sale_item",
+            source_ref_id=li.source_ref_id,
+        ))
+    return cn
+
+
+def reverse_inpatient_pos_sale_bill(
+    db: Session,
+    sale: PharmacySale,
+    user_id: int,
+    reason: str,
+) -> dict:
+    """Reverse bill impact when voiding a POS sale charged to an admission bill."""
+    credit_note_id: Optional[int] = None
+    credit_note_number: Optional[str] = None
+    bill_items_removed = 0
+    parent_bill_id_before = sale.inpatient_bill_id
+
+    if parent_bill_id_before:
+        parent = db.query(Bill).filter(Bill.id == parent_bill_id_before).first()
+        if parent is None:
+            sale.inpatient_bill_id = None
+        elif _is_bill_locked(db, parent):
+            cn = _emit_credit_note_pos_sale(db, sale, parent, user_id=user_id, reason=reason)
+            db.flush()
+            credit_note_id = cn.id
+            credit_note_number = cn.bill_number
+            sale.inpatient_bill_id = None
+        else:
+            bill_items_removed = _unlocked_bill_inplace_reverse_pos_sale(db, sale, parent)
+
+    return {
+        "parent_bill_id": parent_bill_id_before,
+        "bill_items_removed": bill_items_removed,
+        "credit_note_id": credit_note_id,
+        "credit_note_number": credit_note_number,
+    }
 
 
 def cancel_prescription(

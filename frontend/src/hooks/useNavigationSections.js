@@ -1,12 +1,14 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
+import axios from 'axios';
 import {
   Home, Users, Calendar, CalendarClock, Package, Share2, Receipt, TrendingUp,
   FileText, TestTube, LayoutDashboard, BedDouble, Scissors, FileCheck,
   CalendarDays, CalendarRange, Sparkles, RotateCcw, Building2, Printer,
   BarChart3, ClipboardList, Shield, Database, ScrollText, Activity, Stethoscope,
   DownloadCloud, Pill, ShoppingCart, Boxes, Truck, BookOpen, LayoutGrid, Plus,
-  Warehouse, Tags, Layers, Ruler, Percent, Link2,
+  Warehouse, Tags, Layers, Ruler, Percent, Link2, ArrowLeftRight, Store, Droplets,
 } from 'lucide-react';
+import { PHARMACY_ROLE_NAMES } from './usePharmacyPermissions';
 
 const I = (Icon) => <Icon className="h-[18px] w-[18px]" />;
 const B = (Icon) => <Icon className="h-7 w-7" />;
@@ -43,16 +45,55 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
   const hasAnyRole = (...r) => r.some((x) => roles.includes(x));
   const isLabStaff = hasAnyRole('lab_admin', 'lab_technician');
   const isDoctor = hasRole('doctor');
-  // Lab staff always get lab nav; doctors always get OPD nav — other roles
-  // still respect the module toggle.
   const labEnabled = isLabStaff || !!enabledModules.lab;
   const outpatientEnabled = isDoctor || !!enabledModules.outpatient;
+
+  const [pharmacyPermState, setPharmacyPermState] = useState({
+    loaded: !enabledModules?.pharmacy,
+    isAdmin: false,
+    modules: {},
+  });
+
+  useEffect(() => {
+    if (!enabledModules?.pharmacy) {
+      setPharmacyPermState({ loaded: true, isAdmin: false, modules: {} });
+      return;
+    }
+    let cancelled = false;
+    axios.get('/api/admin/me/permissions')
+      .then((res) => {
+        if (cancelled) return;
+        setPharmacyPermState({
+          loaded: true,
+          isAdmin: !!res.data?.is_admin,
+          modules: res.data?.modules || {},
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setPharmacyPermState({ loaded: true, isAdmin: false, modules: {} });
+      });
+    return () => { cancelled = true; };
+  }, [enabledModules?.pharmacy]);
+
+  const hasPharmacyPerm = (key) => {
+    if (pharmacyPermState.isAdmin) return true;
+    const mods = pharmacyPermState.modules || {};
+    if (mods['*']?.includes('*')) return true;
+    const list = mods.pharmacy || [];
+    return list.includes('*') || list.includes(key);
+  };
+
+  const hasPharmacyAccess = enabledModules.pharmacy && (
+    hasAnyRole(...PHARMACY_ROLE_NAMES)
+    || (pharmacyPermState.modules.pharmacy && pharmacyPermState.modules.pharmacy.length > 0)
+  );
 
   const addedPaths = new Set();
   const sections = [];
 
   const make = (text, Icon, path) => ({ text, icon: I(Icon), bigIcon: B(Icon), path });
   const add = (items, item) => {
+    if (!item) return;
     if (!addedPaths.has(item.path)) { items.push(item); addedPaths.add(item.path); }
   };
 
@@ -120,33 +161,39 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
   // ── LAB (configuration — lab admin / hospital admin only) ──
   if (canAccessLabAdminDashboard(roles) && labEnabled) {
     const items = [];
-    add(items, make('Lab Admin Dashboard', TestTube, '/dashboard/lab'));
+    add(items, make('Dashboard', LayoutDashboard, '/dashboard/lab'));
+    add(items, make('Test Catalog', TestTube, '/dashboard/lab/tests'));
+    add(items, make('Categories', Tags, '/dashboard/lab/categories'));
+    add(items, make('Sample Types', Droplets, '/dashboard/lab/sample-types'));
+    add(items, make('Packages', Package, '/dashboard/lab/packages'));
     if (items.length > 0) sections.push({ label: 'Laboratory', items });
   }
 
   // ── PHARMACY ── (flat routes — one sidebar item per screen)
-  if (enabledModules.pharmacy && hasAnyRole('pharmacist', 'pharmacy_admin', 'hospital_admin', 'super_admin')) {
+  if (hasPharmacyAccess) {
     const ops = [];
-    add(ops, make('Dashboard', LayoutDashboard, '/dashboard/pharmacy'));
-    add(ops, make('Sales Counter', ShoppingCart, '/dashboard/pharmacy/sales-counter'));
-    add(ops, make('Pending Rx', Pill, '/dashboard/pharmacy/pending-rx'));
-    add(ops, make('Unmapped Medicines', Link2, '/dashboard/pharmacy/unmapped-medicines'));
-    add(ops, make('Sales History', Receipt, '/dashboard/pharmacy/sales'));
-    add(ops, make('New Purchase', Plus, '/dashboard/pharmacy/purchases/new'));
-    add(ops, make('Purchases', Truck, '/dashboard/pharmacy/purchases'));
-    add(ops, make('Stock', Boxes, '/dashboard/pharmacy/inventory'));
+    add(ops, hasPharmacyPerm('view_reports') && make('Dashboard', LayoutDashboard, '/dashboard/pharmacy'));
+    add(ops, hasPharmacyPerm('create_sale') && make('Sales Counter', ShoppingCart, '/dashboard/pharmacy/sales-counter'));
+    add(ops, hasPharmacyPerm('dispense_rx') && make('Pending Rx', Pill, '/dashboard/pharmacy/pending-rx'));
+    add(ops, hasPharmacyPerm('dispense_rx') && make('Unmapped Medicines', Link2, '/dashboard/pharmacy/unmapped-medicines'));
+    add(ops, hasPharmacyPerm('view_sales') && make('Sales History', Receipt, '/dashboard/pharmacy/sales'));
+    add(ops, hasPharmacyPerm('create_purchase') && make('New Purchase', Plus, '/dashboard/pharmacy/purchases/new'));
+    add(ops, hasPharmacyPerm('view_purchases') && make('Purchases', Truck, '/dashboard/pharmacy/purchases'));
+    add(ops, hasPharmacyPerm('view_transfers') && make('Stock Transfers', ArrowLeftRight, '/dashboard/pharmacy/transfers'));
+    add(ops, hasPharmacyPerm('view_inventory') && make('Stock', Boxes, '/dashboard/pharmacy/inventory'));
     if (ops.length > 0) sections.push({ label: 'Pharmacy', items: ops });
 
     const setup = [];
-    add(setup, make('Medicines', BookOpen, '/dashboard/pharmacy/medicines'));
-    add(setup, make('Suppliers', Warehouse, '/dashboard/pharmacy/suppliers'));
-    add(setup, make('Categories', Tags, '/dashboard/pharmacy/masters/categories'));
-    add(setup, make('Companies', Building2, '/dashboard/pharmacy/masters/companies'));
-    add(setup, make('Salts', Layers, '/dashboard/pharmacy/masters/salts'));
-    add(setup, make('Tax / HSN', Percent, '/dashboard/pharmacy/masters/hsn'));
-    add(setup, make('Racks', LayoutGrid, '/dashboard/pharmacy/masters/racks'));
-    add(setup, make('Units of Measure', Ruler, '/dashboard/pharmacy/masters/uoms'));
-    add(setup, make('Reports', BarChart3, '/dashboard/pharmacy/reports'));
+    add(setup, hasPharmacyPerm('manage_medicines') && make('Medicines', BookOpen, '/dashboard/pharmacy/medicines'));
+    add(setup, hasPharmacyPerm('manage_suppliers') && make('Suppliers', Warehouse, '/dashboard/pharmacy/suppliers'));
+    add(setup, hasPharmacyPerm('manage_categories') && make('Categories', Tags, '/dashboard/pharmacy/masters/categories'));
+    add(setup, hasPharmacyPerm('manage_companies') && make('Companies', Building2, '/dashboard/pharmacy/masters/companies'));
+    add(setup, hasPharmacyPerm('manage_salts') && make('Salts', Layers, '/dashboard/pharmacy/masters/salts'));
+    add(setup, hasPharmacyPerm('manage_hsn_tax') && make('Tax / HSN', Percent, '/dashboard/pharmacy/masters/hsn'));
+    add(setup, hasPharmacyPerm('manage_racks') && make('Racks', LayoutGrid, '/dashboard/pharmacy/masters/racks'));
+    add(setup, hasPharmacyPerm('manage_uoms') && make('Units of Measure', Ruler, '/dashboard/pharmacy/masters/uoms'));
+    add(setup, hasPharmacyPerm('manage_stores') && make('Stores', Store, '/dashboard/pharmacy/masters/stores'));
+    add(setup, hasPharmacyPerm('view_reports') && make('Reports', BarChart3, '/dashboard/pharmacy/reports'));
     if (setup.length > 0) sections.push({ label: 'Pharmacy Setup', items: setup });
   }
 

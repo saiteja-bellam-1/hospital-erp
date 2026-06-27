@@ -516,7 +516,8 @@ const BackupManagement = () => {
         <CardContent className="space-y-3">
           <div className="flex gap-2">
             <Input value={newPath} onChange={(e) => setNewPath(e.target.value)} placeholder="E:\Backups\KTHEALTHERP or network path"
-              onKeyDown={(e) => e.key === 'Enter' && addLocation()} className="h-9" />
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addLocation(); } }}
+              data-nav-skip className="h-9" />
             <Button variant="outline" onClick={() => browseFolder(setNewPath)} disabled={browsing} className="h-9">
               <FolderOpen className="w-4 h-4 mr-1" /> {browsing ? '...' : 'Browse'}
             </Button>

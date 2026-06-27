@@ -9,7 +9,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../ui/dialog';
 import { useToast } from '../../hooks/use-toast';
 import { errorDetail } from '../../utils/apiErrors';
-import { PHARMACY_MASTER_FIELDS, blankFromFields } from './pharmacyMasterFields';
+import FormNavContainer from '../FormNavContainer';
+import {
+  PHARMACY_MASTER_FIELD_SPECS,
+  blankFromMasterFields,
+  payloadFromMasterForm,
+} from './pharmacyMasterFieldSpecs';
+import QuickSupplierDialog from './QuickSupplierDialog';
 
 const NONE = '__none';
 
@@ -39,16 +45,18 @@ export default function PharmacyMasterSelectWithCreate({
   compact = false,
   activeOnly = true,
 }) {
-  const spec = PHARMACY_MASTER_FIELDS[path] || {};
+  const isSupplier = path === 'suppliers';
+  const spec = PHARMACY_MASTER_FIELD_SPECS[path] || {};
   const fields = createFields ?? spec.fields ?? [{ key: 'name', label: 'Name', required: true }];
-  const dialogTitle = createTitle ?? spec.createTitle ?? 'Add';
+  const dialogTitle = createTitle ?? spec.createTitle ?? (isSupplier ? 'Add Supplier' : 'Add');
 
   const { toast } = useToast();
   const [internalOptions, setInternalOptions] = useState([]);
   const [loading, setLoading] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [supplierDialogOpen, setSupplierDialogOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [form, setForm] = useState(() => blankFromFields(fields));
+  const [form, setForm] = useState(() => blankFromMasterFields(fields));
 
   const options = controlledOptions ?? internalOptions;
   const setOptions = (list) => {
@@ -75,39 +83,39 @@ export default function PharmacyMasterSelectWithCreate({
     return () => { cancelled = true; };
   }, [path, controlledOptions, activeOnly]);
 
+  const selectCreated = (created) => {
+    const next = [...options, created].sort((a, b) => {
+      const av = (format ? format(a) : a[labelKey]) || '';
+      const bv = (format ? format(b) : b[labelKey]) || '';
+      return String(av).localeCompare(String(bv));
+    });
+    setOptions(next);
+    onChange?.(created.id);
+  };
+
   const openCreate = () => {
-    setForm(blankFromFields(fields));
+    if (isSupplier) {
+      setSupplierDialogOpen(true);
+      return;
+    }
+    setForm(blankFromMasterFields(fields));
     setDialogOpen(true);
   };
 
   const handleCreate = async (e) => {
     e.preventDefault();
     for (const f of fields) {
-      if (f.required && !String(form[f.key] ?? '').trim()) {
+      if (!f.required) continue;
+      if (f.type === 'bool') continue;
+      if (!String(form[f.key] ?? '').trim()) {
         toast({ variant: 'destructive', title: `${f.label} is required` });
         return;
       }
     }
-    const payload = { is_active: true };
-    fields.forEach((f) => {
-      const raw = form[f.key];
-      if (f.type === 'number') {
-        payload[f.key] = raw === '' || raw == null ? (f.default ?? 0) : parseFloat(raw);
-      } else {
-        const s = String(raw ?? '').trim();
-        payload[f.key] = s || null;
-      }
-    });
     setSaving(true);
     try {
-      const res = await axios.post(`/api/pharmacy/${path}`, payload);
-      const next = [...options, res.data].sort((a, b) => {
-        const av = (format ? format(a) : a[labelKey]) || '';
-        const bv = (format ? format(b) : b[labelKey]) || '';
-        return String(av).localeCompare(String(bv));
-      });
-      setOptions(next);
-      onChange?.(res.data.id);
+      const res = await axios.post(`/api/pharmacy/${path}`, payloadFromMasterForm(form, fields));
+      selectCreated(res.data);
       toast({ title: 'Created', description: `${dialogTitle.replace(/^Add /, '')} added.` });
       setDialogOpen(false);
     } catch (err) {
@@ -167,46 +175,69 @@ export default function PharmacyMasterSelectWithCreate({
         {addButton}
       </div>
 
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle>{dialogTitle}</DialogTitle>
-          </DialogHeader>
-          <form onSubmit={handleCreate} className="space-y-3">
-            {fields.map((f) => (
-              <div key={f.key}>
-                <Label htmlFor={`pharm-master-${path}-${f.key}`}>
-                  {f.label}{f.required ? ' *' : ''}
-                </Label>
-                {f.type === 'textarea' ? (
-                  <Textarea
-                    id={`pharm-master-${path}-${f.key}`}
-                    rows={2}
-                    value={form[f.key] || ''}
-                    onChange={(e) => setForm((p) => ({ ...p, [f.key]: e.target.value }))}
-                  />
-                ) : (
-                  <Input
-                    id={`pharm-master-${path}-${f.key}`}
-                    type={f.type === 'number' ? 'number' : 'text'}
-                    step={f.type === 'number' ? '0.01' : undefined}
-                    value={form[f.key] ?? ''}
-                    onChange={(e) => setForm((p) => ({ ...p, [f.key]: e.target.value }))}
-                  />
-                )}
-              </div>
-            ))}
-            <DialogFooter className="gap-2 sm:gap-0">
-              <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>
-                Cancel
-              </Button>
-              <Button type="submit" disabled={saving}>
-                {saving ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Saving…</> : 'Add & select'}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
+      {isSupplier ? (
+        <QuickSupplierDialog
+          open={supplierDialogOpen}
+          onOpenChange={setSupplierDialogOpen}
+          onCreated={selectCreated}
+        />
+      ) : (
+        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+          <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto" formNav="grid">
+            <DialogHeader>
+              <DialogTitle>{dialogTitle}</DialogTitle>
+            </DialogHeader>
+            <form onSubmit={handleCreate}>
+              <FormNavContainer mode="grid" className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {fields.map((f) => (
+                  <div
+                    key={f.key}
+                    className={f.type === 'textarea' ? 'sm:col-span-2' : undefined}
+                  >
+                    <Label htmlFor={`pharm-master-${path}-${f.key}`}>
+                      {f.label}{f.required ? ' *' : ''}
+                    </Label>
+                    {f.type === 'textarea' ? (
+                      <Textarea
+                        id={`pharm-master-${path}-${f.key}`}
+                        rows={2}
+                        value={form[f.key] || ''}
+                        onChange={(e) => setForm((p) => ({ ...p, [f.key]: e.target.value }))}
+                      />
+                    ) : f.type === 'bool' ? (
+                      <label className="flex items-center gap-2 text-sm mt-1.5">
+                        <input
+                          id={`pharm-master-${path}-${f.key}`}
+                          type="checkbox"
+                          checked={!!form[f.key]}
+                          onChange={(e) => setForm((p) => ({ ...p, [f.key]: e.target.checked }))}
+                        />
+                        <span className="text-muted-foreground text-xs">Yes</span>
+                      </label>
+                    ) : (
+                      <Input
+                        id={`pharm-master-${path}-${f.key}`}
+                        type={f.type === 'number' ? 'number' : 'text'}
+                        step={f.type === 'number' ? '0.01' : undefined}
+                        value={form[f.key] ?? ''}
+                        onChange={(e) => setForm((p) => ({ ...p, [f.key]: e.target.value }))}
+                      />
+                    )}
+                  </div>
+                ))}
+              </FormNavContainer>
+              <DialogFooter className="gap-2 sm:gap-0 pt-3">
+                <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={saving}>
+                  {saving ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Saving…</> : 'Add & select'}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   );
 }

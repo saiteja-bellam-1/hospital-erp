@@ -221,7 +221,7 @@ const ReceptionLabOrdersPage = () => {
                         size="sm"
                         variant="outline"
                         className="h-7 text-xs border-indigo-300 text-indigo-700"
-                        onClick={() => openReportPreview(null, pkg.name, Number(bookingId))}
+                        onClick={() => openReportPreview(null, pkg.name, bookingId)}
                       >
                         <Printer className="h-3 w-3 mr-1" /> All Reports
                       </Button>

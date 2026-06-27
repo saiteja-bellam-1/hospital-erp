@@ -293,16 +293,7 @@ def _blank_prescription_pdf_response(
     )
 
 
-def _patient_age_years(patient: Patient) -> Optional[int]:
-    if patient.date_of_birth:
-        from datetime import date
-        today = date.today()
-        return today.year - patient.date_of_birth.year - (
-            (today.month, today.day) < (patient.date_of_birth.month, patient.date_of_birth.day)
-        )
-    if patient.age is not None:
-        return patient.age
-    return None
+from app.utils.patient_age import format_patient_age, patient_age_years_int
 
 
 def _hospital_info_for_pdf(db: Session, hospital_id: int) -> dict:
@@ -320,7 +311,8 @@ def _build_patient_prescription_fields(patient: Patient) -> dict:
     """Patient fields shared by filled and blank prescription PDFs."""
     return {
         "patient_name": f"{patient.first_name} {patient.last_name}",
-        "patient_age": _patient_age_years(patient),
+        "patient_age": patient_age_years_int(patient),
+        "patient_age_display": format_patient_age(patient),
         "patient_gender": (patient.gender or '').capitalize(),
         "patient_phone": patient.primary_phone or '',
         "patient_blood_group": patient.blood_group or '',
@@ -854,6 +846,7 @@ async def download_prescription_pdf(
 
     # Patient details
     patient_age = None
+    patient_age_display = ''
     patient_gender = ''
     patient_phone = ''
     patient_blood_group = ''
@@ -861,14 +854,8 @@ async def download_prescription_pdf(
         patient_phone = patient.primary_phone or ''
         patient_gender = (patient.gender or '').capitalize()
         patient_blood_group = patient.blood_group or ''
-        if patient.date_of_birth:
-            from datetime import date
-            today = date.today()
-            patient_age = today.year - patient.date_of_birth.year - (
-                (today.month, today.day) < (patient.date_of_birth.month, patient.date_of_birth.day)
-            )
-        elif patient.age is not None:
-            patient_age = patient.age
+        patient_age = patient_age_years_int(patient)
+        patient_age_display = format_patient_age(patient)
 
     # Get appointment reason if linked
     appointment_reason = ''
@@ -892,6 +879,7 @@ async def download_prescription_pdf(
         "prescription_date": prescription.prescription_date.isoformat(),
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "Unknown",
         "patient_age": patient_age,
+        "patient_age_display": patient_age_display,
         "patient_gender": patient_gender,
         "patient_phone": patient_phone,
         "patient_blood_group": patient_blood_group,

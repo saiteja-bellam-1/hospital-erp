@@ -76,7 +76,10 @@ const HomeGrid = ({ enabledModules, pwaInstallPrompt, onOpenSupport }) => {
     </button>
   );
 
-  const renderIcon = (item) => React.cloneElement(item.icon, { className: 'h-5 w-5' });
+  const renderIcon = (item) => {
+    if (!item?.icon) return null;
+    return React.cloneElement(item.icon, { className: 'h-5 w-5' });
+  };
 
   const SectionHeader = ({ label }) => (
     <h2 className="col-span-full text-[11px] font-semibold tracking-wider uppercase text-gray-500 px-1 pt-2 first:pt-0">

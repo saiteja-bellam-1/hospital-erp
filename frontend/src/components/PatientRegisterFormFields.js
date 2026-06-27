@@ -1,13 +1,22 @@
 import React from 'react';
+import FormNavContainer from './FormNavContainer';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
+import {
+  applyDobToForm,
+  computeAgeFromDob,
+  formatPatientAge,
+  hasValidAge,
+  parseAgeFields,
+} from '../utils/patientAge';
 
 export const EMPTY_PATIENT_FORM = {
   first_name: '',
   last_name: '',
   date_of_birth: '',
   age: '',
+  age_months: '',
   gender: '',
   blood_group: '',
   marital_status: '',
@@ -28,8 +37,12 @@ export const EMPTY_PATIENT_FORM = {
 export default function PatientRegisterFormFields({ form, onChange }) {
   const set = (key, val) => onChange({ ...form, [key]: val });
 
+  const clearDobOnManualAge = (updates) => {
+    onChange({ ...form, ...updates, date_of_birth: '' });
+  };
+
   return (
-    <div className="grid grid-cols-4 gap-x-3 gap-y-1.5">
+    <FormNavContainer mode="grid" className="grid grid-cols-4 gap-x-3 gap-y-1.5">
       <div>
         <Label>First Name *</Label>
         <Input value={form.first_name} onChange={(e) => set('first_name', e.target.value)} />
@@ -43,21 +56,7 @@ export default function PatientRegisterFormFields({ form, onChange }) {
         <Input
           type="date"
           value={form.date_of_birth}
-          onChange={(e) => {
-            const dob = e.target.value;
-            const updates = { date_of_birth: dob };
-            if (dob) {
-              const today = new Date();
-              const birth = new Date(dob);
-              let calcAge = today.getFullYear() - birth.getFullYear();
-              if (today.getMonth() < birth.getMonth()
-                || (today.getMonth() === birth.getMonth() && today.getDate() < birth.getDate())) {
-                calcAge -= 1;
-              }
-              updates.age = calcAge >= 0 ? String(calcAge) : '';
-            }
-            onChange({ ...form, ...updates });
-          }}
+          onChange={(e) => onChange(applyDobToForm(form, e.target.value))}
         />
       </div>
       <div>
@@ -66,9 +65,20 @@ export default function PatientRegisterFormFields({ form, onChange }) {
           type="number"
           min="0"
           max="150"
-          placeholder="Enter age"
+          placeholder="Years"
           value={form.age}
-          onChange={(e) => set('age', e.target.value)}
+          onChange={(e) => clearDobOnManualAge({ age: e.target.value })}
+        />
+      </div>
+      <div>
+        <Label>Age (months)</Label>
+        <Input
+          type="number"
+          min="0"
+          max="11"
+          placeholder="Months (for infants)"
+          value={form.age_months}
+          onChange={(e) => clearDobOnManualAge({ age_months: e.target.value })}
         />
       </div>
       <div>
@@ -164,15 +174,17 @@ export default function PatientRegisterFormFields({ form, onChange }) {
         <Label>District</Label>
         <Input value={form.district} onChange={(e) => set('district', e.target.value)} />
       </div>
-    </div>
+    </FormNavContainer>
   );
 }
 
 export function buildPatientPayload(form) {
+  const { age, age_months: ageMonths } = parseAgeFields(form);
   return Object.fromEntries(
     Object.entries({
       ...form,
-      age: form.age ? parseInt(form.age, 10) : null,
+      age,
+      age_months: ageMonths,
       date_of_birth: form.date_of_birth || null,
     }).map(([k, v]) => [k, v === '' ? null : v])
   );
@@ -182,8 +194,10 @@ export function validatePatientForm(form) {
   if (!form.first_name?.trim() || !form.last_name?.trim() || !form.primary_phone?.trim()) {
     return 'First name, last name, and phone are required.';
   }
-  if (!form.age && !form.date_of_birth) {
+  if (!hasValidAge(form)) {
     return 'Age or date of birth is required.';
   }
   return null;
 }
+
+export { computeAgeFromDob, formatPatientAge };

@@ -14,6 +14,7 @@ import { Plus, Pencil, Trash2, RefreshCw, Search, Pill } from 'lucide-react';
 
 import SalesCounter from './pharmacy/SalesCounter';
 import PurchaseEntry from './pharmacy/PurchaseEntry';
+import TransferEntry from './pharmacy/TransferEntry';
 import DashboardTabImpl from './pharmacy/tabs/DashboardTab';
 import MedicinesTabImpl from './pharmacy/tabs/MedicinesTab';
 import InventoryTabImpl from './pharmacy/tabs/InventoryTab';
@@ -23,6 +24,11 @@ import PendingRxTabImpl from './pharmacy/tabs/PendingRxTab';
 import UnmappedMedicinesTabImpl from './pharmacy/tabs/UnmappedMedicinesTab';
 import ReportsTabImpl from './pharmacy/tabs/ReportsTab';
 import SuppliersTabImpl from './pharmacy/tabs/SuppliersTab';
+import StoresTabImpl from './pharmacy/tabs/StoresTab';
+import TransfersTabImpl from './pharmacy/tabs/TransfersTab';
+import PharmacyStoreSelector from '../../components/pharmacy/PharmacyStoreSelector';
+import { PharmacyStoreProvider } from '../../contexts/PharmacyStoreContext';
+import { usePharmacyPermissions } from '../../hooks/usePharmacyPermissions';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Generic master CRUD table. Used for the simple catalog/inventory masters.
@@ -297,6 +303,7 @@ export const PHARMACY_PAGE_META = {
   'unmapped-medicines': { title: 'Unmapped Medicines', blurb: 'Free-text inpatient orders awaiting catalog mapping' },
   'sales': { title: 'Sales History', blurb: 'Completed counter sales and voids' },
   'purchases': { title: 'Purchases', blurb: 'Confirmed and draft goods received' },
+  'transfers': { title: 'Stock Transfers', blurb: 'Move stock from master to satellite pharmacies' },
   'inventory': { title: 'Stock', blurb: 'Live stock, batches, low-stock alerts, and ledger' },
   'medicines': { title: 'Medicines', blurb: 'Drug catalog — pricing, flags, and barcodes' },
   'suppliers': { title: 'Suppliers', blurb: 'Vendor directory and GST details' },
@@ -306,8 +313,17 @@ export const PHARMACY_PAGE_META = {
   'masters/hsn': { title: 'Tax / HSN', blurb: 'HSN codes and GST rates' },
   'masters/racks': { title: 'Racks', blurb: 'Shelf and rack location codes' },
   'masters/uoms': { title: 'Units of Measure', blurb: 'Sale and stock units' },
+  'masters/stores': { title: 'Stores', blurb: 'Master and satellite pharmacy locations' },
   'reports': { title: 'Reports', blurb: 'Sales, stock, tax, and register reports' },
 };
+
+function PharmacyPermGate({ permission, anyOf, children }) {
+  const { loaded, hasPerm, hasAnyPerm } = usePharmacyPermissions();
+  if (!loaded) return null;
+  const allowed = anyOf ? hasAnyPerm(...anyOf) : hasPerm(permission);
+  if (!allowed) return <Navigate to="/dashboard" replace />;
+  return children;
+}
 
 function pharmacyPathKey(pathname) {
   const prefix = '/dashboard/pharmacy';
@@ -323,11 +339,14 @@ function PharmacyPageShell() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900 flex items-center gap-2">
-          <Pill className="h-7 w-7" /> Pharmacy · {meta.title}
-        </h1>
-        {meta.blurb && <p className="text-gray-600">{meta.blurb}</p>}
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-3xl font-bold text-gray-900 flex items-center gap-2">
+            <Pill className="h-7 w-7" /> Pharmacy · {meta.title}
+          </h1>
+          {meta.blurb && <p className="text-gray-600">{meta.blurb}</p>}
+        </div>
+        <PharmacyStoreSelector />
       </div>
       <Outlet />
     </div>
@@ -339,35 +358,83 @@ function PharmacyPageShell() {
 // ────────────────────────────────────────────────────────────────────────────
 
 const PharmacyModule = () => (
-  <Routes>
-    <Route path="sales-counter" element={<SalesCounter />} />
-    <Route path="purchases/new" element={<PurchaseEntry />} />
+  <PharmacyStoreProvider>
+    <Routes>
+      <Route path="sales-counter" element={
+        <PharmacyPermGate permission="create_sale"><SalesCounter /></PharmacyPermGate>
+      } />
+      <Route path="purchases/new" element={
+        <PharmacyPermGate permission="create_purchase"><PurchaseEntry /></PharmacyPermGate>
+      } />
+      <Route path="purchases/:id/edit" element={
+        <PharmacyPermGate permission="edit_purchase"><PurchaseEntry /></PharmacyPermGate>
+      } />
+      <Route path="transfers/new" element={
+        <PharmacyPermGate permission="create_transfer"><TransferEntry /></PharmacyPermGate>
+      } />
 
-    <Route element={<PharmacyPageShell />}>
-      <Route index element={<DashboardTabImpl />} />
-      <Route path="pending-rx" element={<PendingRxTabImpl />} />
-      <Route path="unmapped-medicines" element={<UnmappedMedicinesTabImpl />} />
-      <Route path="sales" element={<SalesTabImpl />} />
-      <Route path="purchases" element={<PurchasesTabImpl />} />
-      <Route path="inventory" element={<InventoryTabImpl />} />
-      <Route path="medicines" element={<MedicinesTabImpl />} />
-      <Route path="suppliers" element={<SuppliersTabImpl />} />
-      <Route path="masters/categories" element={<CategoriesMaster />} />
-      <Route path="masters/companies" element={<CompaniesMaster />} />
-      <Route path="masters/salts" element={<SaltsMaster />} />
-      <Route path="masters/hsn" element={<HsnMaster />} />
-      <Route path="masters/racks" element={<RacksMaster />} />
-      <Route path="masters/uoms" element={<UomsMaster />} />
-      <Route path="reports" element={<ReportsTabImpl />} />
+      <Route element={<PharmacyPageShell />}>
+        <Route index element={
+          <PharmacyPermGate permission="view_reports"><DashboardTabImpl /></PharmacyPermGate>
+        } />
+        <Route path="pending-rx" element={
+          <PharmacyPermGate permission="dispense_rx"><PendingRxTabImpl /></PharmacyPermGate>
+        } />
+        <Route path="unmapped-medicines" element={
+          <PharmacyPermGate anyOf={['dispense_rx', 'manage_medicines']}><UnmappedMedicinesTabImpl /></PharmacyPermGate>
+        } />
+        <Route path="sales" element={
+          <PharmacyPermGate permission="view_sales"><SalesTabImpl /></PharmacyPermGate>
+        } />
+        <Route path="purchases" element={
+          <PharmacyPermGate permission="view_purchases"><PurchasesTabImpl /></PharmacyPermGate>
+        } />
+        <Route path="transfers" element={
+          <PharmacyPermGate permission="view_transfers"><TransfersTabImpl /></PharmacyPermGate>
+        } />
+        <Route path="inventory" element={
+          <PharmacyPermGate permission="view_inventory"><InventoryTabImpl /></PharmacyPermGate>
+        } />
+        <Route path="medicines" element={
+          <PharmacyPermGate permission="manage_medicines"><MedicinesTabImpl /></PharmacyPermGate>
+        } />
+        <Route path="suppliers" element={
+          <PharmacyPermGate permission="manage_suppliers"><SuppliersTabImpl /></PharmacyPermGate>
+        } />
+        <Route path="masters/categories" element={
+          <PharmacyPermGate permission="manage_categories"><CategoriesMaster /></PharmacyPermGate>
+        } />
+        <Route path="masters/companies" element={
+          <PharmacyPermGate permission="manage_companies"><CompaniesMaster /></PharmacyPermGate>
+        } />
+        <Route path="masters/salts" element={
+          <PharmacyPermGate permission="manage_salts"><SaltsMaster /></PharmacyPermGate>
+        } />
+        <Route path="masters/hsn" element={
+          <PharmacyPermGate permission="manage_hsn_tax"><HsnMaster /></PharmacyPermGate>
+        } />
+        <Route path="masters/racks" element={
+          <PharmacyPermGate permission="manage_racks"><RacksMaster /></PharmacyPermGate>
+        } />
+        <Route path="masters/uoms" element={
+          <PharmacyPermGate permission="manage_uoms"><UomsMaster /></PharmacyPermGate>
+        } />
+        <Route path="masters/stores" element={
+          <PharmacyPermGate permission="manage_stores"><StoresTabImpl /></PharmacyPermGate>
+        } />
+        <Route path="reports" element={
+          <PharmacyPermGate permission="view_reports"><ReportsTabImpl /></PharmacyPermGate>
+        } />
 
-      {/* Legacy section URLs → flat routes */}
-      <Route path="dashboard" element={<Navigate to="/dashboard/pharmacy" replace />} />
-      <Route path="procurement" element={<Navigate to="/dashboard/pharmacy/purchases" replace />} />
-      <Route path="catalog" element={<Navigate to="/dashboard/pharmacy/medicines" replace />} />
-    </Route>
+        {/* Legacy section URLs → flat routes */}
+        <Route path="dashboard" element={<Navigate to="/dashboard/pharmacy" replace />} />
+        <Route path="procurement" element={<Navigate to="/dashboard/pharmacy/purchases" replace />} />
+        <Route path="catalog" element={<Navigate to="/dashboard/pharmacy/medicines" replace />} />
+      </Route>
 
-    <Route path="*" element={<Navigate to="/dashboard/pharmacy" replace />} />
-  </Routes>
+      <Route path="*" element={<Navigate to="/dashboard/pharmacy" replace />} />
+    </Routes>
+  </PharmacyStoreProvider>
 );
 
 export default PharmacyModule;

@@ -9,7 +9,21 @@ from datetime import datetime
 from typing import Optional
 import os
 
+from app.utils.patient_age import age_display_from_data
+
 DEFAULT_LETTERHEAD_GAP_PT = 100.0
+
+
+def _age_gender_str(data: dict, *, gender: str = "", age_key: str = "patient_age") -> str:
+    """Build 'Age / Gender' display line for PDF headers."""
+    age_display = age_display_from_data(data, age_key=age_key)
+    gender = gender or data.get("patient_gender") or data.get("gender") or ""
+    if gender:
+        g = str(gender).upper() if len(str(gender)) <= 3 else str(gender).capitalize()
+        if age_display:
+            return f"{age_display} / {g}"
+        return g
+    return age_display
 
 
 def _get_uploads_base():
@@ -167,6 +181,10 @@ def _lab_results_show_notes_column(results_list):
     return any((r.get('notes') or '').strip() for r in (results_list or []))
 
 
+def _lab_results_show_method_column(results_list):
+    return any((r.get('method') or '').strip() for r in (results_list or []))
+
+
 def _format_lab_result_with_unit(value, unit):
     raw = str(value or '').strip()
     unit_text = (unit or '').strip()
@@ -177,15 +195,9 @@ def _format_lab_result_with_unit(value, unit):
     return raw
 
 
-def _format_lab_parameter_cell(parameter_name, method='', remarks=''):
-    """Parameter name with optional method on the next line in parentheses."""
+def _format_lab_parameter_cell(parameter_name, remarks=''):
+    """Parameter name with optional technician remarks on the next line."""
     param_text = _escape_pdf_inline(parameter_name or '')
-    method_text = (method or '').strip()
-    if method_text:
-        param_text = (
-            f"{param_text}<br/><font size='8'>"
-            f"({_escape_pdf_inline(method_text)})</font>"
-        )
     if remarks:
         param_text = (
             f"{param_text}<br/><i><font size='7' color='grey'>"
@@ -195,11 +207,40 @@ def _format_lab_parameter_cell(parameter_name, method='', remarks=''):
 
 
 def _build_lab_results_table(results_list, *, page_width, cell_label, cell_value, cell_abnormal, section_label_style, cell_ref_range=None):
-    """Build a lab results table. Adds a NOTES column only when any parameter has notes."""
+    """Build a lab results table. Adds METHOD/NOTES columns when any parameter has them."""
     ref_cell_style = cell_ref_range or cell_value
+    show_method = _lab_results_show_method_column(results_list)
     show_notes = _lab_results_show_notes_column(results_list)
 
-    if show_notes:
+    if show_method and show_notes:
+        col_widths = [
+            page_width * 0.24,
+            page_width * 0.18,
+            page_width * 0.28,
+            page_width * 0.15,
+            page_width * 0.15,
+        ]
+        header = [
+            Paragraph('<b>PARAMETER</b>', cell_label),
+            Paragraph('<b>RESULT</b>', cell_label),
+            Paragraph('<b>BIO. REF. RANGE</b>', cell_label),
+            Paragraph('<b>METHOD</b>', cell_label),
+            Paragraph('<b>NOTES</b>', cell_label),
+        ]
+    elif show_method:
+        col_widths = [
+            page_width * 0.28,
+            page_width * 0.22,
+            page_width * 0.35,
+            page_width * 0.15,
+        ]
+        header = [
+            Paragraph('<b>PARAMETER</b>', cell_label),
+            Paragraph('<b>RESULT</b>', cell_label),
+            Paragraph('<b>BIO. REF. RANGE</b>', cell_label),
+            Paragraph('<b>METHOD</b>', cell_label),
+        ]
+    elif show_notes:
         col_widths = [
             page_width * 0.30,
             page_width * 0.22,
@@ -264,7 +305,6 @@ def _build_lab_results_table(results_list, *, page_width, cell_label, cell_value
 
         param_text = _format_lab_parameter_cell(
             r.get('parameter_name', ''),
-            r.get('method', ''),
             r.get('remarks', ''),
         )
         result_text = _format_lab_result_with_unit(r.get('value', ''), r.get('unit', ''))
@@ -273,6 +313,9 @@ def _build_lab_results_table(results_list, *, page_width, cell_label, cell_value
             Paragraph(result_text, value_style),
             Paragraph(ref_range, ref_style),
         ]
+        if show_method:
+            method_text = (r.get('method') or '').strip()
+            row.append(Paragraph(_escape_pdf_inline(method_text) if method_text else '-', cell_value))
         if show_notes:
             notes_text = (r.get('notes') or '').strip()
             row.append(Paragraph(_escape_pdf_inline(notes_text) if notes_text else '-', cell_value))
@@ -464,12 +507,7 @@ class PDFService:
         # ============================================================
         p = bill_data.get('patient') or {}
         a = bill_data.get('admission') or {}
-        age_sex = ''
-        if p.get('age') not in (None, ''):
-            age_sex = f"{p.get('age')} Years"
-        if p.get('gender'):
-            g = str(p['gender']).upper()
-            age_sex = f"{age_sex} / {g}" if age_sex else g
+        age_sex = _age_gender_str(p, gender=p.get('gender'))
 
         ref_value = (a.get('referring_doctor')
                      or p.get('referred_by')
@@ -911,14 +949,7 @@ class PDFService:
         # PATIENT INFO + BILL INFO (bordered box, like lab report)
         # ============================================================
         patient_name = bill_data.get('patient_name', '')
-        _age_raw = bill_data.get('patient_age')
-        age_sex = f"{_age_raw} Years" if _age_raw is not None and _age_raw != '' else ''
-        if bill_data.get('patient_gender'):
-            gender = bill_data['patient_gender'].upper()
-            if age_sex:
-                age_sex = f"{age_sex} / {gender}"
-            else:
-                age_sex = gender
+        age_sex = _age_gender_str(bill_data, gender=bill_data.get('patient_gender', ''))
 
         phone = bill_data.get('patient_phone', '')
         patient_id = bill_data.get('mrn', '')
@@ -1330,9 +1361,7 @@ class PDFService:
         patient_phone = prescription_data.get('patient_phone', '')
         patient_id = prescription_data.get('mrn', '')
 
-        age_sex = f"{patient_age} Years" if patient_age is not None and patient_age != '' else ''
-        if patient_gender:
-            age_sex = f"{age_sex} / {patient_gender.capitalize()}" if age_sex else patient_gender.capitalize()
+        age_sex = _age_gender_str(prescription_data, gender=patient_gender)
 
         doctor_display = doctor_name
         if doctor_spec:
@@ -1857,10 +1886,7 @@ class PDFService:
 
         patient_name = report_data.get('patient_name', '')
         patient_gender = report_data.get('patient_gender', '')
-        _age_raw = report_data.get('patient_age')
-        age_sex = f"{_age_raw} Years" if _age_raw is not None and _age_raw != '' else ''
-        if patient_gender:
-            age_sex = f"{age_sex} / {patient_gender.capitalize()}" if age_sex else patient_gender.capitalize()
+        age_sex = _age_gender_str(report_data, gender=patient_gender)
 
         order_date_str = _fmt_dt(report_data.get('order_date'))
         collection_date_str = _fmt_dt(report_data.get('collection_date'))
@@ -2173,10 +2199,7 @@ class PDFService:
         # ============================================================
         patient_name = first_report.get('patient_name', '')
         patient_gender = first_report.get('patient_gender', '')
-        _age_raw = first_report.get('patient_age')
-        age_sex = f"{_age_raw} Years" if _age_raw is not None and _age_raw != '' else ''
-        if patient_gender:
-            age_sex = f"{age_sex} / {patient_gender.capitalize()}" if age_sex else patient_gender.capitalize()
+        age_sex = _age_gender_str(first_report, gender=patient_gender)
 
         referral_label = first_report.get('referral_label', 'Referred By')
         referral_name = first_report.get('referral_name', 'Self')
@@ -2416,11 +2439,7 @@ class PDFService:
         # ============================================================
         # PATIENT INFO BOX
         # ============================================================
-        _age_raw = discharge_data.get('age')
-        age_gender = f"{_age_raw} Years" if _age_raw is not None and _age_raw != '' else ''
-        if discharge_data.get('gender'):
-            gender = discharge_data['gender'].upper()
-            age_gender = f"{age_gender} / {gender}" if age_gender else gender
+        age_gender = _age_gender_str(discharge_data, gender=discharge_data.get('gender', ''), age_key='age')
 
         col_w = page_width / 2
         patient_info_data = [
@@ -2576,6 +2595,313 @@ class PDFService:
             footer_style
         ))
 
+        _finalize(doc, elements, hospital_info)
+        buffer.seek(0)
+        return buffer
+
+    def generate_admission_detail_pdf(self, payload, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
+        """Detailed Admission Summary — auto-aggregated clinical dossier for a stay."""
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(
+            buffer,
+            pagesize=A4,
+            rightMargin=30,
+            leftMargin=30,
+            topMargin=30,
+            bottomMargin=20,
+        )
+        elements = []
+        page_width = A4[0] - 60
+        meta = payload.get("admission_meta") or {}
+
+        title_style = ParagraphStyle('AdmDetTitle', parent=self.styles['Title'],
+            fontSize=16, alignment=1, fontName='Helvetica-Bold',
+            textColor=colors.black, spaceAfter=2)
+        subtitle_style = ParagraphStyle('AdmDetSubtitle', parent=self.styles['Normal'],
+            fontSize=9, alignment=1, fontName='Helvetica',
+            textColor=colors.black, spaceAfter=2)
+        doc_title_style = ParagraphStyle('AdmDetDocTitle', parent=self.styles['Normal'],
+            fontSize=13, alignment=1, fontName='Helvetica-Bold',
+            textColor=colors.black, spaceAfter=4)
+        section_heading = ParagraphStyle('AdmDetSection', parent=self.styles['Heading2'],
+            fontSize=11, fontName='Helvetica-Bold', textColor=colors.black,
+            spaceAfter=4, spaceBefore=8)
+        cell_value = ParagraphStyle('AdmDetCell', parent=self.styles['Normal'],
+            fontSize=8, fontName='Helvetica', textColor=colors.black, spaceAfter=1, leading=10)
+        cell_bold = ParagraphStyle('AdmDetCellBold', parent=cell_value, fontName='Helvetica-Bold')
+        footer_style = ParagraphStyle('AdmDetFooter', parent=self.styles['Normal'],
+            fontSize=7, fontName='Helvetica-Oblique', textColor=colors.grey, alignment=1)
+
+        def lv(label, value):
+            return Paragraph(f"<b>{label}:</b> {value}", cell_value)
+
+        def _str(v):
+            if v is None or v == "":
+                return "—"
+            return str(v)
+
+        def _add_table(headers, rows, col_widths=None):
+            if not rows:
+                return
+            data = [headers] + rows
+            if not col_widths:
+                n = len(headers)
+                col_widths = [page_width / n] * n
+            tbl = Table(data, colWidths=col_widths, repeatRows=1)
+            tbl.setStyle(TableStyle([
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, -1), 7),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('LEFTPADDING', (0, 0), (-1, -1), 3),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 3),
+                ('TOPPADDING', (0, 0), (-1, -1), 2),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+                ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+            ]))
+            elements.append(tbl)
+            elements.append(Spacer(1, 4))
+
+        if include_header:
+            logo_path = hospital_info.get('logo_url', '')
+            uploads_base = _get_uploads_base()
+            has_logo = False
+            full_logo_path = ''
+            if logo_path:
+                relative = logo_path.lstrip('/')
+                if relative.startswith('uploads/'):
+                    relative = relative[len('uploads/'):]
+                full_logo_path = os.path.join(uploads_base, relative)
+                has_logo = os.path.exists(full_logo_path)
+
+            hospital_name = hospital_info.get('name', 'HOSPITAL').upper()
+            header_text_elems = [Paragraph(hospital_name, title_style)]
+            if hospital_info.get('hospital_subname'):
+                header_text_elems.append(Paragraph(hospital_info['hospital_subname'], subtitle_style))
+            if hospital_info.get('address'):
+                header_text_elems.append(Paragraph(hospital_info['address'], subtitle_style))
+            contact_parts = []
+            if hospital_info.get('email'):
+                contact_parts.append(f"Email: {hospital_info['email']}")
+            if hospital_info.get('phone'):
+                contact_parts.append(f"Phone: {hospital_info['phone']}")
+            if contact_parts:
+                header_text_elems.append(Paragraph("  |  ".join(contact_parts), subtitle_style))
+
+            if has_logo:
+                try:
+                    logo_img = Image(full_logo_path, width=60, height=60)
+                    logo_img.hAlign = 'CENTER'
+                    header_table = Table([[logo_img, header_text_elems]], colWidths=[75, page_width - 75])
+                    header_table.setStyle(TableStyle([
+                        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+                    ]))
+                    elements.append(header_table)
+                except Exception:
+                    for el in header_text_elems:
+                        elements.append(el)
+            else:
+                for el in header_text_elems:
+                    elements.append(el)
+            elements.append(Spacer(1, 6))
+            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+        else:
+            elements.append(Spacer(1, letterhead_gap_pt))
+
+        elements.append(Spacer(1, 4))
+        elements.append(Paragraph("DETAILED ADMISSION SUMMARY", doc_title_style))
+        elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+        elements.append(Spacer(1, 6))
+
+        age_gender = _age_gender_str(meta, gender=meta.get('gender', ''), age_key='age')
+        col_w = page_width / 2
+        patient_info_data = [
+            [lv('Patient', meta.get('patient_name', '')),
+             lv('MRN', meta.get('mrn', ''))],
+            [lv('Age / Gender', age_gender),
+             lv('Doctor', meta.get('doctor_name', ''))],
+            [lv('Admission No', meta.get('admission_number', '')),
+             lv('Stay', f"{meta.get('stay_days', 0)} days")],
+            [lv('Admitted', meta.get('admission_date', '')),
+             lv('Discharged', meta.get('discharge_date', '') or '— (in progress)')],
+            [lv('Room / Bed', f"{meta.get('room_number', '')} / {meta.get('bed_label', '')}"),
+             lv('Status', meta.get('status', ''))],
+        ]
+        info_style = [
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING', (0, 0), (-1, -1), 3),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+            ('LEFTPADDING', (0, 0), (-1, -1), 8),
+            ('BOX', (0, 0), (-1, -1), 1, colors.black),
+        ]
+        _append_address_row(patient_info_data, info_style, meta, lv)
+        info_table = Table(patient_info_data, colWidths=[col_w, col_w])
+        info_table.setStyle(TableStyle(info_style))
+        elements.append(info_table)
+        elements.append(Spacer(1, 8))
+
+        visits = payload.get('visits') or []
+        if visits:
+            elements.append(Paragraph("Doctor Visits &amp; Rounds", section_heading))
+            for v in visits:
+                elements.append(Paragraph(
+                    f"<b>{v.get('visit_datetime', '')}</b> — {v.get('visitor_name', '')} "
+                    f"({v.get('visit_type', '').replace('_', ' ')})",
+                    cell_bold,
+                ))
+                if v.get('plan_for_today'):
+                    elements.append(Paragraph(f"Plan: {v['plan_for_today']}", cell_value))
+                if v.get('notes'):
+                    elements.append(Paragraph(v['notes'], cell_value))
+                elements.append(Spacer(1, 3))
+
+        vitals = payload.get('vitals') or []
+        if vitals:
+            elements.append(Paragraph("Vitals Record", section_heading))
+            v_headers = ['Date/Time', 'BP', 'HR', 'RR', 'Temp', 'SpO2', 'Glucose', 'Pain', 'GCS', 'Flags']
+            v_rows = []
+            for v in vitals:
+                v_rows.append([
+                    _str(v.get('recorded_at')),
+                    _str(v.get('bp')),
+                    _str(v.get('heart_rate')),
+                    _str(v.get('respiratory_rate')),
+                    _str(v.get('temperature_c')),
+                    _str(v.get('spo2')),
+                    _str(v.get('blood_glucose')),
+                    _str(v.get('pain_score')),
+                    _str(v.get('gcs_score')),
+                    _str(v.get('abnormal_flags') or ('Abnormal' if v.get('is_abnormal') else '')),
+                ])
+            _add_table(v_headers, v_rows, [62, 38, 28, 28, 32, 28, 38, 28, 28, 50])
+
+        meds = payload.get('inpatient_medications') or []
+        if meds:
+            elements.append(Paragraph("Medications Prescribed (Inpatient)", section_heading))
+            m_headers = ['Date', 'Medicine', 'Dosage', 'Frequency', 'Route', 'Duration', 'PRN', 'Prescriber']
+            m_rows = []
+            for m in meds:
+                m_rows.append([
+                    _str(m.get('prescription_date')),
+                    _str(m.get('medicine_name')),
+                    _str(m.get('dosage')),
+                    _str(m.get('frequency')),
+                    _str(m.get('route')),
+                    _str(m.get('duration')),
+                    'Yes' if m.get('is_prn') else 'No',
+                    _str(m.get('prescriber')),
+                ])
+            _add_table(m_headers, m_rows, [52, 85, 45, 55, 35, 45, 25, 70])
+
+        if payload.get('mar_included', True):
+            mar = payload.get('mar') or []
+            if mar:
+                elements.append(Paragraph("Medication Administration Record", section_heading))
+                mar_headers = ['Scheduled', 'Medicine', 'Dosage', 'Status', 'Given At', 'Dose', 'Route', 'By', 'Notes']
+                mar_rows = []
+                for m in mar:
+                    note_parts = [m.get('reason_if_not_given', ''), m.get('notes', '')]
+                    note_txt = '; '.join(p for p in note_parts if p)
+                    mar_rows.append([
+                        _str(m.get('scheduled_time')),
+                        _str(m.get('medicine_name')),
+                        _str(m.get('dosage')),
+                        _str(m.get('status')),
+                        _str(m.get('administered_at')),
+                        _str(m.get('dose_given')),
+                        _str(m.get('route')),
+                        _str(m.get('administered_by_name')),
+                        _str(note_txt),
+                    ])
+                _add_table(mar_headers, mar_rows, [48, 72, 40, 38, 48, 32, 32, 52, 60])
+        else:
+            elements.append(Paragraph("Medication Administration Record", section_heading))
+            elements.append(Paragraph(
+                "MAR not included — insufficient permission to view medication administration records.",
+                cell_value,
+            ))
+
+        ot_list = payload.get('ot_procedures') or []
+        anc_list = payload.get('ancillary_procedures') or []
+        if ot_list or anc_list:
+            elements.append(Paragraph("Procedures &amp; Surgery", section_heading))
+            if ot_list:
+                ot_headers = ['Date', 'Procedure', 'Surgeon', 'Room', 'Status', 'Notes']
+                ot_rows = []
+                for p in ot_list:
+                    notes = ' '.join(x for x in [p.get('pre_op_notes', ''), p.get('post_op_notes', '')] if x)
+                    ot_rows.append([
+                        _str(p.get('scheduled_date')),
+                        _str(p.get('procedure_name')),
+                        _str(p.get('surgeon_name')),
+                        _str(p.get('ot_room')),
+                        _str(p.get('status')),
+                        _str(notes),
+                    ])
+                _add_table(ot_headers, ot_rows, [48, 90, 65, 35, 45, 90])
+            if anc_list:
+                elements.append(Paragraph("Ancillary Services", cell_bold))
+                a_headers = ['Date', 'Service', 'Category', 'Qty', 'Performed By', 'Notes']
+                a_rows = []
+                for p in anc_list:
+                    a_rows.append([
+                        _str(p.get('charged_at')),
+                        _str(p.get('procedure_name')),
+                        _str(p.get('category')),
+                        _str(p.get('quantity')),
+                        _str(p.get('performed_by_name')),
+                        _str(p.get('notes')),
+                    ])
+                _add_table(a_headers, a_rows, [48, 90, 55, 28, 65, 90])
+
+        investigations = payload.get('investigations') or []
+        if investigations:
+            elements.append(Paragraph("Investigations", section_heading))
+            for inv in investigations:
+                elements.append(Paragraph(
+                    f"<b>{inv.get('test_name', '')}</b> — {inv.get('order_number', '')} "
+                    f"({inv.get('status', '')}) · Ordered {inv.get('order_date', '')}",
+                    cell_bold,
+                ))
+                results = inv.get('results') or []
+                if results:
+                    r_headers = ['Parameter', 'Value', 'Unit', 'Flag']
+                    r_rows = []
+                    for r in results:
+                        r_rows.append([
+                            _str(r.get('parameter_name')),
+                            _str(r.get('value')),
+                            _str(r.get('unit')),
+                            'Abnormal' if r.get('is_abnormal') else '',
+                        ])
+                    _add_table(r_headers, r_rows, [120, 80, 50, 50])
+                else:
+                    elements.append(Paragraph("No verified results on file.", cell_value))
+                elements.append(Spacer(1, 4))
+
+        notes = payload.get('nursing_notes') or []
+        if notes:
+            elements.append(Paragraph("Nursing Notes", section_heading))
+            for n in notes:
+                elements.append(Paragraph(
+                    f"<b>{n.get('created_at', '')}</b> — {n.get('nurse_name', '')} "
+                    f"({n.get('shift', '')} / {n.get('note_type', '')})",
+                    cell_bold,
+                ))
+                if n.get('content'):
+                    for line in str(n['content']).split('\n'):
+                        line = line.strip()
+                        if line:
+                            elements.append(Paragraph(line, cell_value))
+                elements.append(Spacer(1, 3))
+
+        elements.append(Spacer(1, 16))
+        elements.append(Paragraph(
+            f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M:%S')}",
+            footer_style,
+        ))
         _finalize(doc, elements, hospital_info)
         buffer.seek(0)
         return buffer
@@ -3298,7 +3624,7 @@ class PDFService:
 
         rows = [
             [Paragraph("Name of Deceased:", label), Paragraph(str(cert_data.get('patient_name', '')), value)],
-            [Paragraph("Age / Gender:", label), Paragraph(f"{cert_data.get('age', '')} Years / {cert_data.get('gender', '')}" if cert_data.get('age') else cert_data.get('gender', ''), value)],
+            [Paragraph("Age / Gender:", label), Paragraph(_age_gender_str(cert_data, gender=cert_data.get('gender', ''), age_key='age') or str(cert_data.get('gender', '')), value)],
             [Paragraph("MRN:", label), Paragraph(str(cert_data.get('mrn', '')), value)],
             [Paragraph("Admission No:", label), Paragraph(str(cert_data.get('admission_number', '')), value)],
             [Paragraph("Admitted On:", label), Paragraph(str(cert_data.get('admission_date', '')), value)],
@@ -4443,6 +4769,9 @@ class PDFService:
              lv("Phone", sale_data.get('patient_phone') or '—'),
              lv("Address", _addr)],
         ]
+        if sale_data.get('store_name'):
+            meta_rows.insert(1, [lv("Store", sale_data.get('store_name', '')),
+                                 Paragraph('', cell), Paragraph('', cell)])
         meta = Table(meta_rows, colWidths=[page_width / 3] * 3)
         meta.setStyle(TableStyle([
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
@@ -4576,14 +4905,18 @@ class PDFService:
             return Paragraph(f"<b>{label}:</b> {value}", cell)
 
         # Meta
-        meta = Table([
+        meta_rows = [
             [lv("Purchase #", purchase_data.get('purchase_number', '')),
              lv("Entry Date", str(purchase_data.get('entry_date') or '')),
              lv("Status", (purchase_data.get('status') or '—').upper())],
             [lv("Supplier", purchase_data.get('supplier_name') or '—'),
              lv("Invoice #", purchase_data.get('invoice_number') or '—'),
              lv("Payment", (purchase_data.get('payment_type') or '—').upper())],
-        ], colWidths=[page_width / 3] * 3)
+        ]
+        if purchase_data.get('store_name'):
+            meta_rows.append([lv("Store", purchase_data.get('store_name', '')),
+                              Paragraph('', cell), Paragraph('', cell)])
+        meta = Table(meta_rows, colWidths=[page_width / 3] * 3)
         meta.setStyle(TableStyle([
             ('BOX', (0, 0), (-1, -1), 0.5, colors.black),
             ('INNERGRID', (0, 0), (-1, -1), 0.25, colors.grey),
@@ -4663,6 +4996,71 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
+    def generate_pharmacy_transfer_pdf(self, transfer_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
+        """Stock transfer receipt for master → satellite moves."""
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4,
+            rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=20)
+        elements = []
+        page_width = A4[0] - 60
+
+        self._pharmacy_header(elements, hospital_info, include_header,
+                              "STOCK TRANSFER", page_width, letterhead_gap_pt)
+
+        cell = ParagraphStyle('C', parent=self.styles['Normal'], fontSize=8,
+            fontName='Helvetica', textColor=colors.black, leading=11)
+        def lv(label, value):
+            return Paragraph(f"<b>{label}:</b> {value}", cell)
+
+        meta_rows = [
+            [lv("Transfer #", transfer_data.get('transfer_number', '')),
+             lv("Date", str(transfer_data.get('entry_date') or '')),
+             lv("Status", (transfer_data.get('status') or '—').upper())],
+            [lv("From", transfer_data.get('from_store_name') or '—'),
+             lv("To", transfer_data.get('to_store_name') or '—'),
+             lv("Items", str(transfer_data.get('item_count') or 0))],
+        ]
+        meta = Table(meta_rows, colWidths=[page_width / 3] * 3)
+        meta.setStyle(TableStyle([
+            ('BOX', (0, 0), (-1, -1), 0.5, colors.black),
+            ('INNERGRID', (0, 0), (-1, -1), 0.25, colors.grey),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 6),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ]))
+        elements.append(meta)
+        elements.append(Spacer(1, 6))
+
+        header_p = ParagraphStyle('H', parent=cell, fontName='Helvetica-Bold')
+        rows = [[Paragraph("#", header_p), Paragraph("Medicine", header_p),
+                 Paragraph("Batch", header_p), Paragraph("Qty", header_p)]]
+        for i, it in enumerate(transfer_data.get('items') or [], start=1):
+            rows.append([
+                Paragraph(str(i), cell),
+                Paragraph(str(it.get('medicine_name') or ''), cell),
+                Paragraph(str(it.get('batch_number') or ''), cell),
+                Paragraph(str(it.get('quantity') or ''), cell),
+            ])
+        tbl = Table(rows, colWidths=[page_width * 0.06, page_width * 0.44, page_width * 0.25, page_width * 0.25])
+        tbl.setStyle(TableStyle([
+            ('BOX', (0, 0), (-1, -1), 0.5, colors.black),
+            ('INNERGRID', (0, 0), (-1, -1), 0.25, colors.grey),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ]))
+        elements.append(tbl)
+
+        if transfer_data.get('notes'):
+            elements.append(Spacer(1, 10))
+            elements.append(Paragraph(f"<b>Notes:</b> {transfer_data['notes']}",
+                ParagraphStyle('N', parent=cell, fontSize=8, leading=11)))
+
+        _finalize(doc, elements, hospital_info)
+        buffer.seek(0)
+        return buffer
+
     def generate_pharmacy_dispense_slip_pdf(self, dispense_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
         """Dispense slip — handed to the patient on Rx-linked dispensing.
 
@@ -4690,6 +5088,9 @@ class PDFService:
             [lv("Doctor", dispense_data.get('doctor_name') or '—'),
              lv("Dispensed by", dispense_data.get('dispensed_by') or '—')],
         ]
+        if dispense_data.get('store_name'):
+            meta_rows.append([lv("Store", dispense_data.get('store_name', '')),
+                              Paragraph('', cell)])
         _meta_style = [
             ('BOX', (0, 0), (-1, -1), 0.5, colors.black),
             ('INNERGRID', (0, 0), (-1, -1), 0.25, colors.grey),

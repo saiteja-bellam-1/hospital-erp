@@ -106,6 +106,13 @@ async def startup_event():
             raise RuntimeError(
                 f"Schema migration migrate_pharmacy failed — refusing to boot. Error: {e}"
             )
+        try:
+            from migrate_pharmacy_stores import migrate as _pharmacy_stores_migrate
+            run_migration(_engine, "migrate_pharmacy_stores", _pharmacy_stores_migrate)
+        except Exception as e:
+            raise RuntimeError(
+                f"Schema migration migrate_pharmacy_stores failed — refusing to boot. Error: {e}"
+            )
         # Ensure role permissions exist (for installations that pre-date the wizard)
         _ensure_role_permissions()
         # Ensure all modules exist (add missing ones for upgrades)
@@ -262,11 +269,11 @@ Referring Doctor: {{referring_doctor}}
 Diagnosis on Admission: {{admission_reason}}
 
 Responsible person (attendant):
-Name: ____________________________________________
-Relationship to patient: __________________________
-Address: __________________________________________
-Phone: ____________________________________________
-ID Proof type / number: ___________________________
+Name: {{admitting_person_name}}
+Relationship to patient: {{admitting_person_relationship}}
+Address: {{admitting_person_address}}
+Phone: {{admitting_person_phone}}
+ID Proof type / number: {{admitting_person_id_proof}}
 
 Declaration:
 I confirm that the identification details above are correct to the best of
@@ -345,6 +352,9 @@ def _ensure_admission_consent_templates():
                         language="english",
                         is_active=True,
                     ))
+                elif ctype == "face_sheet" and existing.content and "Name: ____________________________________________" in existing.content:
+                    # Upgrade legacy face-sheet attendant block to tokenized fields.
+                    existing.content = content
                 elif existing.content and "[PLACEHOLDER CONTENT" in existing.content:
                     # One-shot cleanup of the bracketed placeholder banner
                     # left over from previous seeds. Preserves any edits the

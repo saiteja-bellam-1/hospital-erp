@@ -11,6 +11,7 @@ Covers:
   P1.5 cost_price is the effective rate (paid spread over paid + free), so
        stock_value_cost no longer counts free units at gross rate.
   P1.6 revoke_purchase: full happy path, partial-sale path, master rollback.
+  P1.7 edit_confirmed_purchase: requires reason, updates inventory, blocks invalid qty.
 """
 
 import uuid
@@ -274,3 +275,70 @@ def test_revoke_nothing_left_to_reverse(client, auth_headers, pharmacy_setup):
                     json={"reason": "everything already sold"})
     assert r.status_code == 400
     assert "nothing to revoke" in r.json()["detail"].lower()
+
+
+# --------------------------------------------------------------------------
+# P1.7 — confirmed purchase edit
+# --------------------------------------------------------------------------
+
+def test_edit_confirmed_requires_reason(client, auth_headers, pharmacy_setup):
+    p = client.post("/api/pharmacy/purchases", headers=auth_headers,
+                    json=_purchase_payload(pharmacy_setup,
+                                           invoice_number=f"INV-{uuid.uuid4().hex[:6]}")).json()
+    client.post(f"/api/pharmacy/purchases/{p['id']}/confirm", headers=auth_headers)
+
+    body = _purchase_payload(pharmacy_setup, invoice_number=p["invoice_number"])
+    body["items"][0]["batch_number"] = p["items"][0]["batch_number"]
+    r = client.put(f"/api/pharmacy/purchases/{p['id']}", headers=auth_headers, json=body)
+    assert r.status_code == 400
+    assert "reason" in r.json()["detail"].lower()
+
+
+def test_edit_confirmed_updates_header_and_totals(client, auth_headers, pharmacy_setup, db_session):
+    from app.models.pharmacy import PharmacyPurchase
+
+    inv = f"INV-{uuid.uuid4().hex[:6]}"
+    p = client.post("/api/pharmacy/purchases", headers=auth_headers,
+                    json=_purchase_payload(pharmacy_setup, invoice_number=inv,
+                                           rate=20.0, mrp=30.0, qty=10)).json()
+    client.post(f"/api/pharmacy/purchases/{p['id']}/confirm", headers=auth_headers)
+
+    body = _purchase_payload(pharmacy_setup, invoice_number=inv, rate=25.0, mrp=35.0, qty=12)
+    body["items"][0]["batch_number"] = p["items"][0]["batch_number"]
+    body["reason"] = "invoice rate correction"
+    body["notes"] = "corrected per supplier bill"
+    r = client.put(f"/api/pharmacy/purchases/{p['id']}", headers=auth_headers, json=body)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["status"] == "confirmed"
+    assert data["notes"] == "corrected per supplier bill"
+    assert data["edit_reason"] == "invoice rate correction"
+    assert data["items"][0]["quantity"] == 12
+    assert data["grand_total"] > p["grand_total"]
+
+    db_session.expire_all()
+    row = db_session.query(PharmacyPurchase).filter(PharmacyPurchase.id == p["id"]).first()
+    assert row.edit_reason == "invoice rate correction"
+    assert row.edited_by is not None
+
+
+def test_edit_confirmed_blocks_qty_below_sold(client, auth_headers, pharmacy_setup):
+    p = client.post("/api/pharmacy/purchases", headers=auth_headers,
+                    json=_purchase_payload(pharmacy_setup,
+                                           invoice_number=f"INV-{uuid.uuid4().hex[:6]}",
+                                           qty=10)).json()
+    batch = p["items"][0]["batch_number"]
+    client.post(f"/api/pharmacy/purchases/{p['id']}/confirm", headers=auth_headers)
+
+    sale = client.post("/api/pharmacy/sales", headers=auth_headers, json={
+        "payment_type": "cash",
+        "items": [{"medicine_id": pharmacy_setup["medicine_id"], "quantity": 4, "rate": 25.0}],
+    })
+    assert sale.status_code == 201
+
+    body = _purchase_payload(pharmacy_setup, invoice_number=p["invoice_number"], qty=3)
+    body["items"][0]["batch_number"] = batch
+    body["reason"] = "try to shrink below sold"
+    r = client.put(f"/api/pharmacy/purchases/{p['id']}", headers=auth_headers, json=body)
+    assert r.status_code == 400
+    assert "sold" in r.json()["detail"].lower() or "dispensed" in r.json()["detail"].lower()

@@ -34,6 +34,7 @@ REPORT_CATALOG: list[dict[str, str]] = [
     {"key": "lab_bill", "label": "Lab Bill", "module": "laboratory"},
     {"key": "inpatient_bill", "label": "Inpatient Bill", "module": "inpatient"},
     {"key": "discharge_summary", "label": "Discharge Summary", "module": "inpatient"},
+    {"key": "admission_detail", "label": "Detailed Admission Summary", "module": "inpatient"},
     {"key": "deposit_receipt", "label": "Deposit Receipt", "module": "inpatient"},
     {"key": "gate_pass", "label": "Gate Pass", "module": "inpatient"},
     {"key": "consent", "label": "Consent Form", "module": "inpatient"},

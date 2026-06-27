@@ -39,7 +39,7 @@ def reports_setup(db_session, seed_data):
     db_session.add(sup); db_session.flush()
     db_session.commit()
     return {"category_id": cat.id, "medicine_id": med.id,
-            "supplier_id": sup.id, "hsn_id": hsn.id}
+            "supplier_id": sup.id, "hsn_id": hsn.id, "hsn_code": hsn.code}
 
 
 def _confirm_purchase(client, headers, setup, *, qty=20, rate=10.0, mrp=25.0,
@@ -86,8 +86,9 @@ def test_tax_summary_uses_snapshot(client, auth_headers, reports_setup, db_sessi
 
     # Snapshot was 6+6=12% at sale time; baseline taxable = 200, tax = 24.
     r1 = client.get("/api/pharmacy/reports/tax-summary", headers=auth_headers).json()
-    baseline = next((row for row in r1 if row["taxable_value"] >= 200), None)
+    baseline = next((row for row in r1 if row["hsn_code"] == reports_setup["hsn_code"]), None)
     assert baseline is not None, r1
+    assert abs(baseline["taxable_value"] - 200.0) < 0.01
     assert abs(baseline["total_tax"] - 24.0) < 0.01
 
     # Drastically change HSN master rates AFTER the sale.
@@ -97,9 +98,7 @@ def test_tax_summary_uses_snapshot(client, auth_headers, reports_setup, db_sessi
     db_session.commit()
 
     r2 = client.get("/api/pharmacy/reports/tax-summary", headers=auth_headers).json()
-    after = next((row for row in r2
-                  if abs(row["taxable_value"] - baseline["taxable_value"]) < 0.01
-                  and abs(row["sgst_pct"] - 6) < 0.01), None)
+    after = next((row for row in r2 if row["hsn_code"] == reports_setup["hsn_code"]), None)
     assert after is not None, "snapshot rates should still appear on the historical row"
     assert abs(after["total_tax"] - 24.0) < 0.01, "historical tax must not drift"
 

@@ -28,6 +28,7 @@ import {
 import VitalsForm from '../../../components/vitals/VitalsForm';
 import LabTestBookingDialog from '../../../components/LabTestBookingDialog';
 import { useToast } from '../../../hooks/use-toast';
+import { applyDobToForm, formatPatientAge, hasValidAge, parseAgeFields } from '../../../utils/patientAge';
 
 const ReceptionPatientsPage = () => {
   const { toast } = useToast();
@@ -49,7 +50,7 @@ const ReceptionPatientsPage = () => {
 
   // Edit patient form
   const [editPatientForm, setEditPatientForm] = useState({
-    first_name: '', last_name: '', date_of_birth: '', age: '', gender: '',
+    first_name: '', last_name: '', date_of_birth: '', age: '', age_months: '', gender: '',
     blood_group: '', marital_status: '', abha_id: '', email: '',
     emergency_contact_name: '', emergency_contact_phone: '', emergency_contact_relation: '',
     address_line1: '', address_line2: '', village: '', mandal: '', district: ''
@@ -74,6 +75,7 @@ const ReceptionPatientsPage = () => {
     last_name: '',
     date_of_birth: '',
     age: '',
+    age_months: '',
     gender: '',
     blood_group: '',
     marital_status: '',
@@ -209,7 +211,7 @@ const ReceptionPatientsPage = () => {
         body: JSON.stringify(Object.fromEntries(
           Object.entries({
             ...patientForm,
-            age: patientForm.age ? parseInt(patientForm.age) : null,
+            ...parseAgeFields(patientForm),
             date_of_birth: patientForm.date_of_birth || null,
           }).map(([k, v]) => [k, v === '' ? null : v])
         ))
@@ -225,6 +227,7 @@ const ReceptionPatientsPage = () => {
           last_name: '',
           date_of_birth: '',
           age: '',
+          age_months: '',
           gender: '',
           blood_group: '',
           marital_status: '',
@@ -335,6 +338,7 @@ const ReceptionPatientsPage = () => {
       last_name: patient.last_name || '',
       date_of_birth: patient.date_of_birth || '',
       age: patient.age != null ? String(patient.age) : '',
+      age_months: patient.age_months != null ? String(patient.age_months) : '',
       gender: patient.gender || '',
       blood_group: patient.blood_group || '',
       marital_status: patient.marital_status || '',
@@ -361,7 +365,7 @@ const ReceptionPatientsPage = () => {
       const updateData = {};
       Object.entries(editPatientForm).forEach(([key, value]) => {
         if (value !== '' && value !== null && value !== undefined) {
-          updateData[key] = key === 'age' ? parseInt(value) : value;
+          updateData[key] = ['age', 'age_months'].includes(key) ? parseInt(value, 10) : value;
         }
       });
 
@@ -392,18 +396,6 @@ const ReceptionPatientsPage = () => {
   const formatDate = (dateString) => {
     if (!dateString) return 'N/A';
     return new Date(dateString).toLocaleDateString();
-  };
-
-  const formatAge = (dateString) => {
-    if (!dateString) return 'N/A';
-    const birthDate = new Date(dateString);
-    const today = new Date();
-    const age = today.getFullYear() - birthDate.getFullYear();
-    const monthDiff = today.getMonth() - birthDate.getMonth();
-    if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
-      return age - 1;
-    }
-    return age;
   };
 
   const fetchAppointmentHistory = async (patientId) => {
@@ -597,9 +589,9 @@ const ReceptionPatientsPage = () => {
                             </span>
                           </div>
                           <p className="text-sm text-gray-600 mt-1">ID: {patient.patient_id?.slice(0, 8)}...</p>
-                          {(patient.date_of_birth || patient.age) && (
+                          {(patient.date_of_birth || patient.age != null || patient.age_months != null) && (
                             <p className="text-sm text-gray-600">
-                              Age: {patient.date_of_birth ? formatAge(patient.date_of_birth) : patient.age} years
+                              Age: {formatPatientAge(patient)}
                             </p>
                           )}
                         </div>
@@ -731,30 +723,31 @@ const ReceptionPatientsPage = () => {
                 id="date_of_birth"
                 type="date"
                 value={patientForm.date_of_birth}
-                onChange={(e) => {
-                  const dob = e.target.value;
-                  const updates = { date_of_birth: dob };
-                  if (dob) {
-                    const today = new Date();
-                    const birth = new Date(dob);
-                    let calcAge = today.getFullYear() - birth.getFullYear();
-                    if (today.getMonth() < birth.getMonth() || (today.getMonth() === birth.getMonth() && today.getDate() < birth.getDate())) calcAge--;
-                    updates.age = calcAge >= 0 ? String(calcAge) : '';
-                  }
-                  setPatientForm(prev => ({...prev, ...updates}));
-                }}
+                onChange={(e) => setPatientForm((prev) => applyDobToForm(prev, e.target.value))}
               />
             </div>
             <div>
-              <Label htmlFor="age">Age (years) <span className="text-red-500">*</span></Label>
+              <Label htmlFor="age">Age (years)</Label>
               <Input
                 id="age"
                 type="number"
                 min="0"
                 max="150"
-                placeholder="Enter age"
+                placeholder="Years"
                 value={patientForm.age}
                 onChange={(e) => setPatientForm({...patientForm, age: e.target.value, date_of_birth: ''})}
+              />
+            </div>
+            <div>
+              <Label htmlFor="age_months">Age (months)</Label>
+              <Input
+                id="age_months"
+                type="number"
+                min="0"
+                max="11"
+                placeholder="Months (for infants)"
+                value={patientForm.age_months}
+                onChange={(e) => setPatientForm({...patientForm, age_months: e.target.value, date_of_birth: ''})}
               />
             </div>
             <div>
@@ -890,7 +883,7 @@ const ReceptionPatientsPage = () => {
             </Button>
             <Button
               onClick={createPatient}
-              disabled={loading || !patientForm.first_name || !patientForm.last_name || !patientForm.primary_phone || !patientForm.age}
+              disabled={loading || !patientForm.first_name || !patientForm.last_name || !patientForm.primary_phone || !hasValidAge(patientForm)}
               className="flex-1"
             >
               {loading ? 'Registering...' : 'Register Patient'}
@@ -925,29 +918,29 @@ const ReceptionPatientsPage = () => {
               <Input
                 type="date"
                 value={editPatientForm.date_of_birth}
-                onChange={(e) => {
-                  const dob = e.target.value;
-                  const updates = { date_of_birth: dob };
-                  if (dob) {
-                    const today = new Date();
-                    const birth = new Date(dob);
-                    let calcAge = today.getFullYear() - birth.getFullYear();
-                    if (today.getMonth() < birth.getMonth() || (today.getMonth() === birth.getMonth() && today.getDate() < birth.getDate())) calcAge--;
-                    updates.age = calcAge >= 0 ? String(calcAge) : '';
-                  }
-                  setEditPatientForm(prev => ({...prev, ...updates}));
-                }}
+                onChange={(e) => setEditPatientForm((prev) => applyDobToForm(prev, e.target.value))}
               />
             </div>
             <div>
-              <Label>Age (years) <span className="text-red-500">*</span></Label>
+              <Label>Age (years)</Label>
               <Input
                 type="number"
                 min="0"
                 max="150"
-                placeholder="Enter age"
+                placeholder="Years"
                 value={editPatientForm.age}
                 onChange={(e) => setEditPatientForm({...editPatientForm, age: e.target.value, date_of_birth: ''})}
+              />
+            </div>
+            <div>
+              <Label>Age (months)</Label>
+              <Input
+                type="number"
+                min="0"
+                max="11"
+                placeholder="Months (for infants)"
+                value={editPatientForm.age_months}
+                onChange={(e) => setEditPatientForm({...editPatientForm, age_months: e.target.value, date_of_birth: ''})}
               />
             </div>
             <div>
