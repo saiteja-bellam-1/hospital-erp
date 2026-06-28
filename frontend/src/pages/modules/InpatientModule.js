@@ -13,9 +13,11 @@ import { ConfirmDialog } from '../../components/ui/confirm-dialog';
 import { useToast } from '../../hooks/use-toast';
 import { useAuth } from '../../contexts/AuthContext';
 import { printPdfFromUrl } from '../../utils/printPdf';
+import { errorDetail } from '../../utils/apiErrors';
 import AdmitPatientWizard from './inpatient/AdmitPatientWizard';
 import PatientSearchPicker from '../../components/PatientSearchPicker';
 import PendingAcceptanceList from './inpatient/PendingAcceptanceList';
+import AdmissionDraftsList from './inpatient/AdmissionDraftsList';
 import AdmissionDetailHeader from './inpatient/AdmissionDetailHeader';
 import VisitDialog from './inpatient/VisitDialog';
 import DoctorRosterTab, { OnDutyNowPanel } from './inpatient/DoctorRosterTab';
@@ -133,6 +135,8 @@ const InpatientModule = () => {
     return list.includes('*') || list.includes(key);
   }, [myPerms]);
   const ip = useCallback((key) => hasPerm('inpatient', key), [hasPerm]);
+  const canViewVitals = useMemo(() => ip('view_vitals'), [ip]);
+  const canRecordVitals = useMemo(() => ip('record_vitals'), [ip]);
   // Nurse-only users get a nurse-scoped Visit form (no Doctor Visit option,
   // visitor list limited to nurses, and the form defaults to nurse_visit).
   const isNurseOnly = isNurseRole && !isDoctorRole && !isAdminLike;
@@ -163,9 +167,11 @@ const InpatientModule = () => {
   const [triageQueue, setTriageQueue] = useState([]);
   const [triageLoading, setTriageLoading] = useState(false);
   const [admissionSearch, setAdmissionSearch] = useState('');
-  const [admissionSubTab, setAdmissionSubTab] = useState('active');  // 'active' | 'pending'
+  const [admissionSubTab, setAdmissionSubTab] = useState('active');  // 'active' | 'pending' | 'drafts'
   const [pendingCount, setPendingCount] = useState(0);
+  const [draftsTotal, setDraftsTotal] = useState(0);
   const [showAdmitWizard, setShowAdmitWizard] = useState(false);
+  const [resumeAdmissionId, setResumeAdmissionId] = useState(null);
   const [showAdmissionDialog, setShowAdmissionDialog] = useState(false);
   const [admissionForm, setAdmissionForm] = useState({
     patient_id: '', admitting_doctor_id: '', room_id: '', admission_type: 'elective',
@@ -193,6 +199,8 @@ const InpatientModule = () => {
 
   // Activity slide-over
   const [activityAdmission, setActivityAdmission] = useState(null);
+  const clinicalActionsLocked = activityAdmission?.acceptance_status === 'pending'
+    || activityAdmission?.acceptance_status === 'rejected';
   const [activityTab, setActivityTab] = useState('visits');
   const [visits, setVisits] = useState([]);
   const [billData, setBillData] = useState(null);
@@ -559,6 +567,17 @@ const InpatientModule = () => {
     } catch { /* silent */ }
   }, []);
 
+  const fetchDraftAdmissions = useCallback(async () => {
+    try {
+      const res = await axios.get('/api/inpatient/admissions', {
+        params: { status: 'draft', limit: 1 },
+      });
+      setDraftsTotal(res.data?.total || 0);
+    } catch {
+      setDraftsTotal(0);
+    }
+  }, []);
+
   const fetchTriageQueue = useCallback(async () => {
     setTriageLoading(true);
     try {
@@ -658,12 +677,17 @@ const InpatientModule = () => {
   }, []);
 
   const fetchVitals = useCallback(async (admissionId) => {
+    if (!hasPerm('inpatient', 'view_vitals')) {
+      setVitals([]);
+      setLatestVitals(null);
+      return;
+    }
     try {
       const res = await axios.get(`/api/inpatient/admissions/${admissionId}/vitals`, { params: { limit: 50 } });
       setVitals(res.data || []);
       setLatestVitals((res.data && res.data[0]) || null);
     } catch { setVitals([]); setLatestVitals(null); }
-  }, []);
+  }, [hasPerm]);
 
   const fetchAdmissionAllergies = useCallback(async (patientId) => {
     if (!patientId) { setAdmissionAllergies([]); return; }
@@ -1117,7 +1141,11 @@ const InpatientModule = () => {
   }, [fetchDashboard, fetchDoctors]);
 
   useEffect(() => {
-    if (activeTab === 'admissions') { fetchAdmissions('admitted', admissionsPage); fetchAvailableRooms(); }
+    if (activeTab === 'admissions') {
+      fetchAdmissions('admitted', admissionsPage);
+      fetchDraftAdmissions();
+      fetchAvailableRooms();
+    }
     if (activeTab === 'triage') { fetchTriageQueue(); }
     if (activeTab === 'rooms') { fetchRooms(); fetchRoomMeta(); fetchMaintenance(); }
     if (activeTab === 'discharge') fetchAdmissions('discharged', dischargePage);
@@ -1155,7 +1183,7 @@ const InpatientModule = () => {
     }
     if (activeTab === 'procedures') fetchProcedures(false);
     if (activeTab === 'ot') fetchProcedures(true);  // OT scheduling needs the active catalog
-  }, [activeTab, admissionsPage, dischargePage, fetchAdmissions, fetchRooms, fetchDashboard, fetchAvailableRooms, fetchOTSchedules, fetchPreauths, fetchAncillaryServices, fetchPackages, fetchTpaList, fetchRoomTypeRates, fetchCleaningBeds, fetchTurnoverStats, fetchPendingTransfers, fetchReservations, fetchReadmissions, fetchMortalityList, fetchRosterGrid, fetchRosterCoverage, fetchNursesList, fetchProcedures, fetchTriageQueue]);
+  }, [activeTab, admissionsPage, dischargePage, fetchAdmissions, fetchDraftAdmissions, fetchRooms, fetchDashboard, fetchAvailableRooms, fetchOTSchedules, fetchPreauths, fetchAncillaryServices, fetchPackages, fetchTpaList, fetchRoomTypeRates, fetchCleaningBeds, fetchTurnoverStats, fetchPendingTransfers, fetchReservations, fetchReadmissions, fetchMortalityList, fetchRosterGrid, fetchRosterCoverage, fetchNursesList, fetchProcedures, fetchTriageQueue]);
 
   // Re-fetch MAR when the date changes for an open admission
   useEffect(() => {
@@ -1163,6 +1191,12 @@ const InpatientModule = () => {
       fetchMAR(activityAdmission.id, marDate);
     }
   }, [marDate, activityAdmission, activityTab, fetchMAR]);
+
+  // Hide vitals tab for users without view_vitals once permissions load.
+  useEffect(() => {
+    if (!permsLoaded || activityTab !== 'vitals') return;
+    if (!canViewVitals) setActivityTab('mar');
+  }, [permsLoaded, activityTab, canViewVitals]);
 
   // ============================================================
   // Handlers
@@ -2181,13 +2215,27 @@ const InpatientModule = () => {
   // Vitals
   const handleRecordVitals = async (e) => {
     e.preventDefault();
+    if (!canRecordVitals) {
+      toast({ variant: 'destructive', title: 'Not permitted', description: "You don't have permission to record vitals." });
+      return;
+    }
+    if (clinicalActionsLocked) {
+      toast({
+        variant: 'destructive',
+        title: 'Clinical actions locked',
+        description: activityAdmission?.acceptance_status === 'rejected'
+          ? 'This admission was rejected — re-admit the patient first.'
+          : 'This admission is pending IP doctor acceptance.',
+      });
+      return;
+    }
     setLoading(true);
     try {
       const payload = {};
       Object.entries(vitalsForm).forEach(([k, v]) => {
         if (v === '' || v === null) return;
         if (['bp_systolic', 'bp_diastolic', 'heart_rate', 'respiratory_rate', 'spo2', 'pain_score', 'gcs_score'].includes(k)) {
-          payload[k] = parseInt(v);
+          payload[k] = parseInt(v, 10);
         } else if (['temperature_c', 'blood_glucose', 'weight_kg', 'height_cm'].includes(k)) {
           payload[k] = parseFloat(v);
         } else {
@@ -2200,18 +2248,21 @@ const InpatientModule = () => {
       setVitalsForm(VITALS_BLANK);
       fetchVitals(activityAdmission.id);
     } catch (err) {
-      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed to record vitals';
-      toast({ variant: 'destructive', title: 'Error', description: msg });
+      toast({ variant: 'destructive', title: 'Error', description: errorDetail(err, 'Failed to record vitals') });
     } finally { setLoading(false); }
   };
 
   const handleDeleteVitals = async (vitalId) => {
+    if (!canRecordVitals) {
+      toast({ variant: 'destructive', title: 'Not permitted', description: "You don't have permission to delete vitals." });
+      return;
+    }
     try {
       await axios.delete(`/api/inpatient/vitals/${vitalId}`);
       toast({ title: 'Vitals entry removed' });
       fetchVitals(activityAdmission.id);
-    } catch {
-      toast({ variant: 'destructive', title: 'Error', description: 'Failed to delete entry' });
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Error', description: errorDetail(err, 'Failed to delete entry') });
     }
   };
 
@@ -3514,7 +3565,7 @@ const InpatientModule = () => {
             <div className="flex h-full">
               {/* Left: Admissions list */}
               <div className={`${activityAdmission ? 'w-1/2 border-r' : 'w-full'} overflow-y-auto p-6 transition-all space-y-4`}>
-                {/* Sub-tabs: Active vs. Pending Acceptance */}
+                {/* Sub-tabs: Active vs. Pending Acceptance vs. Drafts */}
                 <div className="flex items-center gap-1 border-b">
                   <button
                     className={`px-3 py-2 text-sm font-medium border-b-2 transition ${
@@ -3525,6 +3576,21 @@ const InpatientModule = () => {
                     onClick={() => setAdmissionSubTab('active')}
                   >
                     Active
+                  </button>
+                  <button
+                    className={`px-3 py-2 text-sm font-medium border-b-2 transition flex items-center gap-2 ${
+                      admissionSubTab === 'drafts'
+                        ? 'border-slate-500 text-slate-700'
+                        : 'border-transparent text-gray-600 hover:text-gray-800'
+                    }`}
+                    onClick={() => setAdmissionSubTab('drafts')}
+                  >
+                    Drafts
+                    {draftsTotal > 0 && (
+                      <Badge className="bg-slate-500 text-white text-[10px] h-5 px-1.5">
+                        {draftsTotal}
+                      </Badge>
+                    )}
                   </button>
                   <button
                     className={`px-3 py-2 text-sm font-medium border-b-2 transition flex items-center gap-2 ${
@@ -3543,7 +3609,19 @@ const InpatientModule = () => {
                   </button>
                 </div>
 
-                {admissionSubTab === 'pending' ? (
+                {admissionSubTab === 'drafts' ? (
+                  <AdmissionDraftsList
+                    onResume={(adm) => {
+                      setResumeAdmissionId(adm.id);
+                      setShowAdmitWizard(true);
+                    }}
+                    onChanged={() => {
+                      fetchDraftAdmissions();
+                      fetchAvailableRooms();
+                      fetchDashboard();
+                    }}
+                  />
+                ) : admissionSubTab === 'pending' ? (
                   <PendingAcceptanceList
                     doctorsList={doctorsList}
                     canAccept={isAdminLike || ip('accept_admission') || isDoctorRole}
@@ -3799,7 +3877,7 @@ const InpatientModule = () => {
                     {(() => {
                       const TAB_GROUPS = {
                         clinical: { label: 'Clinical', tabs: [
-                          { v: 'vitals', l: 'Vitals' },
+                          ...(canViewVitals ? [{ v: 'vitals', l: 'Vitals' }] : []),
                           { v: 'mar', l: 'MAR' },
                           { v: 'io', l: 'I/O' },
                           { v: 'nursing', l: 'Nursing' },
@@ -4919,15 +4997,28 @@ const InpatientModule = () => {
 
                       {/* Vitals sub-tab */}
                       <TabsContent value="vitals" className="space-y-3 mt-3">
+                        {clinicalActionsLocked && (
+                          <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                            {activityAdmission?.acceptance_status === 'rejected'
+                              ? 'Vitals cannot be recorded — this admission was rejected. Re-admit the patient first.'
+                              : 'Vitals cannot be recorded until an IP doctor accepts this admission (see banner above).'}
+                          </div>
+                        )}
                         <div className="flex justify-between items-center">
                           <div className="text-sm text-gray-600">
                             {latestVitals ? (
                               <>Latest: BP {latestVitals.bp_systolic || '–'}/{latestVitals.bp_diastolic || '–'} · HR {latestVitals.heart_rate || '–'} · SpO₂ {latestVitals.spo2 || '–'}% · Temp {latestVitals.temperature_c || '–'}°C{latestVitals.is_abnormal && <span className="ml-2 inline-flex items-center text-red-600 font-medium"><AlertTriangle className="h-3.5 w-3.5 mr-0.5" />Abnormal</span>}</>
                             ) : 'No vitals recorded yet'}
                           </div>
-                          <Button size="sm" onClick={() => { setVitalsForm(VITALS_BLANK); setShowVitalsDialog(true); }}>
-                            <Plus className="h-4 w-4 mr-1" /> Record Vitals
-                          </Button>
+                          {canRecordVitals && (
+                            <Button
+                              size="sm"
+                              disabled={clinicalActionsLocked}
+                              onClick={() => { setVitalsForm(VITALS_BLANK); setShowVitalsDialog(true); }}
+                            >
+                              <Plus className="h-4 w-4 mr-1" /> Record Vitals
+                            </Button>
+                          )}
                         </div>
                         {vitals.length === 0 ? (
                           <div className="text-center text-sm text-gray-500 py-8">No vital signs recorded</div>
@@ -4970,10 +5061,12 @@ const InpatientModule = () => {
                                       {cell('pain_score', v.pain_score)}
                                       <td className="px-2 py-1.5">{v.recorded_by_name || '–'}</td>
                                       <td className="px-2 py-1.5">
-                                        <Button variant="ghost" size="sm" className="h-6 w-6 p-0"
-                                          onClick={() => setConfirmState({ open: true, title: 'Delete vitals?', description: 'This entry will be removed.', onConfirm: () => { setConfirmState({ open: false }); handleDeleteVitals(v.id); } })}>
-                                          <Trash2 className="h-3.5 w-3.5 text-red-500" />
-                                        </Button>
+                                        {canRecordVitals && (
+                                          <Button variant="ghost" size="sm" className="h-6 w-6 p-0"
+                                            onClick={() => setConfirmState({ open: true, title: 'Delete vitals?', description: 'This entry will be removed.', onConfirm: () => { setConfirmState({ open: false }); handleDeleteVitals(v.id); } })}>
+                                            <Trash2 className="h-3.5 w-3.5 text-red-500" />
+                                          </Button>
+                                        )}
                                       </td>
                                     </tr>
                                   );
@@ -6468,8 +6561,18 @@ const InpatientModule = () => {
       {/* New 3-step Admit Patient wizard */}
       <AdmitPatientWizard
         open={showAdmitWizard}
-        onClose={() => setShowAdmitWizard(false)}
-        onCreated={() => { fetchAdmissions('admitted'); fetchDashboard(); fetchAvailableRooms(); }}
+        onClose={() => {
+          setShowAdmitWizard(false);
+          setResumeAdmissionId(null);
+        }}
+        resumeAdmissionId={resumeAdmissionId}
+        onCreated={() => {
+          fetchAdmissions('admitted');
+          fetchDraftAdmissions();
+          fetchDashboard();
+          fetchAvailableRooms();
+        }}
+        onDraftSaved={fetchDraftAdmissions}
         doctorsList={doctorsList}
       />
 
@@ -7097,7 +7200,7 @@ const InpatientModule = () => {
               <Textarea value={vitalsForm.notes} onChange={e => setVitalsForm(p => ({ ...p, notes: e.target.value }))} rows={2} placeholder="Patient position, observations..." />
             </div>
             <p className="text-xs text-gray-500">Leave fields blank if not measured. Out-of-range values will be flagged automatically.</p>
-            <Button type="submit" className="w-full" disabled={loading}>
+            <Button type="submit" className="w-full" disabled={loading || clinicalActionsLocked || !canRecordVitals}>
               {loading ? 'Saving…' : 'Record Vitals'}
             </Button>
           </form>

@@ -285,6 +285,50 @@ class AdmissionCreate(BaseModel):
     # If true, this admission starts in `pending` state and requires an IP
     # doctor to explicitly accept before clinical actions are allowed.
     require_acceptance: Optional[bool] = False
+    # Wizard: persist as draft (no bed claim) for resume later.
+    save_as_draft: Optional[bool] = False
+
+class AdmissionDraftUpdate(BaseModel):
+    """Partial update for in-progress admission drafts."""
+    patient_id: Optional[int] = None
+    admitting_doctor_id: Optional[int] = None
+    room_id: Optional[int] = None
+    admission_type: Optional[str] = Field(default=None, pattern="^(emergency|elective|transfer)$")
+    admission_reason: Optional[str] = None
+    condition_on_admission: Optional[str] = Field(default=None, pattern="^(stable|critical|serious)$")
+    estimated_stay_days: Optional[int] = Field(default=None, ge=1)
+    admission_notes: Optional[str] = None
+    admitting_person_name: Optional[str] = Field(default=None, max_length=200)
+    admitting_person_relationship: Optional[str] = Field(default=None, max_length=100)
+    admitting_person_address: Optional[str] = None
+    admitting_person_phone: Optional[str] = Field(default=None, max_length=20)
+    admitting_person_id_proof: Optional[str] = Field(default=None, max_length=200)
+    attending_physician_id: Optional[int] = None
+    bed_id: Optional[int] = None
+    triage_level: Optional[int] = Field(default=None, ge=1, le=5)
+    deposit_waived: Optional[bool] = None
+    deposit_waiver_reason: Optional[str] = None
+    payer_scheme_id: Optional[int] = None
+    scheme_member_id: Optional[str] = Field(default=None, max_length=100)
+    scheme_approval_status: Optional[str] = Field(
+        default=None, pattern="^(none|pending|approved|rejected|disconnected)$")
+    scheme_approval_ref: Optional[str] = Field(default=None, max_length=100)
+    scheme_approval_amount: Optional[float] = Field(default=None, ge=0)
+    referring_doctor_id: Optional[int] = None
+    referring_external_name: Optional[str] = Field(default=None, max_length=200)
+    require_acceptance: Optional[bool] = None
+
+
+class AdmissionActivateRequest(BaseModel):
+    """Step 3 of admit wizard — claim bed and optionally record deposit."""
+    deposit_amount: Optional[float] = Field(default=None, ge=0)
+    deposit_method: Optional[str] = Field(default="cash", max_length=30)
+    deposit_reference: Optional[str] = None
+    deposit_waived: Optional[bool] = False
+
+
+class AdmissionCancelRequest(BaseModel):
+    reason: Optional[str] = Field(default=None, max_length=500)
 
 class AdmissionUpdate(BaseModel):
     room_id: Optional[int] = None
@@ -403,6 +447,9 @@ class AdmissionResponse(BaseModel):
     accepted_by_doctor_id: Optional[int] = None
     accepted_at: Optional[datetime] = None
     rejection_reason: Optional[str] = None
+    cancelled_at: Optional[datetime] = None
+    cancelled_by_id: Optional[int] = None
+    cancellation_reason: Optional[str] = None
     registration_complete: Optional[bool] = True  # from joined patient
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
@@ -1377,6 +1424,82 @@ def _decrement_room_available_atomic(db: Session, room_id: int) -> bool:
     return result.rowcount > 0
 
 
+def _assign_bed_to_admission(db: Session, admission: Admission, room: RoomManagement, bed_id: Optional[int]):
+    """Claim a structured bed (if bed_id) and sync room availability."""
+    bed_obj = None
+    if bed_id:
+        bed_obj = db.query(Bed).filter(
+            Bed.id == bed_id, Bed.room_id == room.id
+        ).with_for_update().first()
+        if not bed_obj:
+            raise HTTPException(status_code=404, detail="Bed not found in selected room")
+        if bed_obj.status != "available":
+            raise HTTPException(status_code=400, detail=f"Bed '{bed_obj.bed_label}' is not available")
+        if not _claim_bed_atomic(db, bed_obj.id, room.id):
+            raise HTTPException(status_code=409, detail="Bed was just taken; please pick another")
+        bed_obj.current_admission_id = admission.id
+        admission.bed_id = bed_obj.id
+        admission.bed_number = bed_obj.bed_label
+
+    room_beds = db.query(Bed).filter(Bed.room_id == room.id).count()
+    if room_beds > 0:
+        room.available_beds = db.query(Bed).filter(
+            Bed.room_id == room.id, Bed.status == "available"
+        ).count()
+        room.bed_count = room_beds
+    else:
+        if not _decrement_room_available_atomic(db, room.id):
+            raise HTTPException(status_code=409, detail="No beds available; another admission took the last bed")
+        db.refresh(room)
+    if room.available_beds == 0:
+        room.is_occupied = True
+
+
+def _release_admission_bed(db: Session, admission: Admission):
+    """Release bed held by a draft/cancelled admission back to available."""
+    if not admission.room_id:
+        return
+    room = db.query(RoomManagement).filter(RoomManagement.id == admission.room_id).first()
+    if admission.bed_id:
+        bed_obj = db.query(Bed).filter(Bed.id == admission.bed_id).with_for_update().first()
+        if bed_obj and bed_obj.current_admission_id == admission.id:
+            bed_obj.status = "available"
+            bed_obj.current_admission_id = None
+    if room:
+        room_beds = db.query(Bed).filter(Bed.room_id == room.id).count()
+        if room_beds > 0:
+            room.available_beds = db.query(Bed).filter(
+                Bed.room_id == room.id, Bed.status == "available"
+            ).count()
+            room.bed_count = room_beds
+        else:
+            room.available_beds += 1
+        room.is_occupied = room.available_beds == 0
+
+
+def _strip_admission_api_fields(payload: dict) -> dict:
+    """Remove request-only keys that are not Admission ORM columns."""
+    return {k: v for k, v in payload.items() if k not in ("save_as_draft", "require_acceptance")}
+
+
+def _build_admission_from_payload(db: Session, payload: dict, require_acceptance: bool) -> Admission:
+    clean = _strip_admission_api_fields(payload)
+    scheme_id = clean.get("payer_scheme_id")
+    if scheme_id:
+        scheme = db.query(PayerScheme).filter(PayerScheme.id == scheme_id).first()
+        if not scheme:
+            raise HTTPException(status_code=400, detail="Unknown payer_scheme_id")
+        clean["payer_type"] = scheme.scheme_type
+    acceptance_status = "pending" if require_acceptance else "accepted"
+    admission = Admission(**clean, acceptance_status=acceptance_status)
+    if acceptance_status == "accepted":
+        admission.accepted_by_doctor_id = (
+            clean.get("attending_physician_id") or clean.get("admitting_doctor_id")
+        )
+        admission.accepted_at = datetime.now()
+    return admission
+
+
 def _generate_admission_number(db: Session) -> str:
     today = datetime.now().strftime("%Y%m%d")
     prefix = f"ADM-{today}-"
@@ -1469,19 +1592,76 @@ async def create_admission(
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "admit_patients")),
     db: Session = Depends(get_db),
 ):
-    # Validate patient
     patient = db.query(Patient).filter(Patient.id == data.patient_id).first()
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
 
-    # Validate doctor
+    active = db.query(Admission).filter(
+        Admission.patient_id == data.patient_id,
+        Admission.status == "admitted",
+    ).first()
+    if active:
+        raise HTTPException(status_code=400, detail="Patient already has an active admission")
+
+    payload = data.model_dump()
+    save_as_draft = payload.pop("save_as_draft", False)
+
+    if save_as_draft:
+        existing_draft = db.query(Admission).filter(
+            Admission.patient_id == data.patient_id,
+            Admission.status == "draft",
+        ).first()
+        if existing_draft:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "draft_exists",
+                    "message": "A draft admission already exists for this patient. Resume or cancel it first.",
+                    "admission_id": existing_draft.id,
+                    "admission_number": existing_draft.admission_number,
+                },
+            )
+        doctor = db.query(User).filter(User.id == data.admitting_doctor_id).first()
+        if not doctor:
+            raise HTTPException(status_code=404, detail="Doctor not found")
+        room = db.query(RoomManagement).filter(
+            RoomManagement.id == data.room_id,
+            RoomManagement.is_active == True,
+        ).first()
+        if not room:
+            raise HTTPException(status_code=404, detail="Room not found")
+        require_acceptance = payload.pop("require_acceptance", False)
+        if payload.get("is_mlc") and not payload.get("mlc_informed_at"):
+            payload["mlc_informed_at"] = datetime.now()
+        admission_number = _generate_admission_number(db)
+        admission = _build_admission_from_payload(db, payload, require_acceptance)
+        admission.admission_number = admission_number
+        admission.status = "draft"
+        admission.initial_room_charge_per_day = float(room.room_charge_per_day) if room else 0.0
+        if payload.get("deposit_waived"):
+            admission.deposit_waived_by_id = current_user.id
+            admission.deposit_waived_at = datetime.now()
+        db.add(admission)
+        db.commit()
+        db.refresh(admission)
+        log_action(db, current_user, "save_admission_draft", "inpatient", "Admission", admission.id,
+                   f"Saved admission draft {admission_number} for {patient.first_name} {patient.last_name}")
+        admission = db.query(Admission).options(
+            joinedload(Admission.patient),
+            joinedload(Admission.admitting_doctor),
+            joinedload(Admission.room),
+            joinedload(Admission.discharge),
+            joinedload(Admission.bed),
+            joinedload(Admission.payer_scheme),
+            joinedload(Admission.referring_doctor),
+        ).filter(Admission.id == admission.id).first()
+        return _admission_to_response(admission)
+
+    # --- Full admit (legacy dialog + immediate admit) ---
     doctor = db.query(User).filter(User.id == data.admitting_doctor_id).first()
     if not doctor:
         raise HTTPException(status_code=404, detail="Doctor not found")
 
-    # Validate room & bed availability — lock the row to serialise concurrent
-    # admissions on Postgres/MySQL; on SQLite the atomic helpers below provide
-    # the actual race protection.
     room = db.query(RoomManagement).filter(
         RoomManagement.id == data.room_id,
         RoomManagement.is_active == True,
@@ -1491,32 +1671,8 @@ async def create_admission(
     if room.available_beds <= 0:
         raise HTTPException(status_code=400, detail="No beds available in this room")
 
-    # Check for active admission for the same patient
-    active = db.query(Admission).filter(
-        Admission.patient_id == data.patient_id,
-        Admission.status == "admitted",
-    ).first()
-    if active:
-        raise HTTPException(status_code=400, detail="Patient already has an active admission")
-
-    # Validate and assign structured bed if provided — lock the row.
-    bed_obj = None
-    if data.bed_id:
-        bed_obj = db.query(Bed).filter(
-            Bed.id == data.bed_id, Bed.room_id == data.room_id
-        ).with_for_update().first()
-        if not bed_obj:
-            raise HTTPException(status_code=404, detail="Bed not found in selected room")
-        if bed_obj.status != "available":
-            raise HTTPException(status_code=400, detail=f"Bed '{bed_obj.bed_label}' is not available")
-        # Atomic claim — fails iff another tx beat us between the read and write.
-        if not _claim_bed_atomic(db, bed_obj.id, data.room_id):
-            db.rollback()
-            raise HTTPException(status_code=409, detail="Bed was just taken; please pick another")
-
     admission_number = _generate_admission_number(db)
 
-    # Phase 4: Readmission detection — flag if patient has a discharge in the last 30 days
     is_readmission = False
     previous_admission_id = None
     days_since = None
@@ -1530,11 +1686,8 @@ async def create_admission(
             is_readmission = True
             previous_admission_id = last_discharge.admission_id
 
-    payload = data.model_dump()
-    # B7 — auto-stamp MLC informed time when MLC flagged but timestamp not given
     if payload.get("is_mlc") and not payload.get("mlc_informed_at"):
         payload["mlc_informed_at"] = datetime.now()
-    # B1 — denormalise payer_type from scheme so downstream filters can avoid the join.
     require_acceptance = payload.pop("require_acceptance", False)
     scheme_id = payload.get("payer_scheme_id")
     if scheme_id:
@@ -1542,53 +1695,28 @@ async def create_admission(
         if not scheme:
             raise HTTPException(status_code=400, detail="Unknown payer_scheme_id")
         payload["payer_type"] = scheme.scheme_type
-    # B3 — acceptance handshake. Default to 'accepted' for back-compat unless caller asks.
     acceptance_status = "pending" if require_acceptance else "accepted"
     admission = Admission(
-        **payload,
+        **_strip_admission_api_fields(payload),
         admission_number=admission_number,
         is_readmission=is_readmission,
         previous_admission_id=previous_admission_id,
         days_since_last_discharge=days_since,
         acceptance_status=acceptance_status,
-        # Snapshot of the room rate at admission time — protects against
-        # later rate changes silently re-rating the entire stay.
         initial_room_charge_per_day=float(room.room_charge_per_day) if room else 0.0,
     )
-    # If created in already-accepted state, stamp accepted_at + accepted_by now.
     if acceptance_status == "accepted":
         admission.accepted_by_doctor_id = (
             payload.get("attending_physician_id") or payload.get("admitting_doctor_id")
         )
         admission.accepted_at = datetime.now()
-    # B7.7 — stamp deposit-waiver audit on create
     if payload.get("deposit_waived"):
         admission.deposit_waived_by_id = current_user.id
         admission.deposit_waived_at = datetime.now()
 
     db.add(admission)
-    db.flush()  # get admission.id
-
-    # Bed status was claimed atomically above; now bind it to this admission.
-    if bed_obj:
-        bed_obj.current_admission_id = admission.id
-        admission.bed_number = bed_obj.bed_label  # sync legacy field
-
-    # Sync room bed counts from Bed table if beds exist, otherwise use legacy
-    # atomic decrement (race-safe). Either branch must keep available_beds >= 0.
-    room_beds = db.query(Bed).filter(Bed.room_id == room.id).count()
-    if room_beds > 0:
-        room.available_beds = db.query(Bed).filter(
-            Bed.room_id == room.id, Bed.status == "available"
-        ).count()
-        room.bed_count = room_beds
-    else:
-        if not _decrement_room_available_atomic(db, room.id):
-            db.rollback()
-            raise HTTPException(status_code=409, detail="No beds available; another admission took the last bed")
-        db.refresh(room)
-    if room.available_beds == 0:
-        room.is_occupied = True
+    db.flush()
+    _assign_bed_to_admission(db, admission, room, data.bed_id)
 
     db.commit()
     db.refresh(admission)
@@ -1597,7 +1725,6 @@ async def create_admission(
                f"Admitted patient {patient.first_name} {patient.last_name} ({admission_number})",
                details={"patient_id": data.patient_id, "room": room.room_number})
 
-    # Re-fetch with eager-loaded relationships for response
     admission = db.query(Admission).options(
         joinedload(Admission.patient),
         joinedload(Admission.admitting_doctor),
@@ -1608,6 +1735,185 @@ async def create_admission(
         joinedload(Admission.referring_doctor),
     ).filter(Admission.id == admission.id).first()
     return _admission_to_response(admission)
+
+
+def _load_admission_response(db: Session, admission_id: int):
+    admission = db.query(Admission).options(
+        joinedload(Admission.patient),
+        joinedload(Admission.admitting_doctor),
+        joinedload(Admission.room),
+        joinedload(Admission.discharge),
+        joinedload(Admission.bed),
+        joinedload(Admission.payer_scheme),
+        joinedload(Admission.referring_doctor),
+    ).filter(Admission.id == admission_id).first()
+    if not admission:
+        raise HTTPException(status_code=404, detail="Admission not found")
+    return _admission_to_response(admission)
+
+
+@router.put("/admissions/{admission_id}/draft", response_model=AdmissionResponse)
+async def update_admission_draft(
+    admission_id: int,
+    data: AdmissionDraftUpdate,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "admit_patients")),
+    db: Session = Depends(get_db),
+):
+    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    if not admission:
+        raise HTTPException(status_code=404, detail="Admission not found")
+    if admission.status != "draft":
+        raise HTTPException(status_code=400, detail="Only draft admissions can be updated this way")
+
+    update_data = data.model_dump(exclude_unset=True)
+    if "patient_id" in update_data and update_data["patient_id"] != admission.patient_id:
+        active = db.query(Admission).filter(
+            Admission.patient_id == update_data["patient_id"],
+            Admission.status == "admitted",
+        ).first()
+        if active:
+            raise HTTPException(status_code=400, detail="Patient already has an active admission")
+
+    require_acceptance = update_data.pop("require_acceptance", None)
+    if require_acceptance is not None:
+        admission.acceptance_status = "pending" if require_acceptance else "accepted"
+        if admission.acceptance_status == "accepted":
+            admission.accepted_by_doctor_id = (
+                update_data.get("attending_physician_id") or update_data.get("admitting_doctor_id")
+                or admission.attending_physician_id or admission.admitting_doctor_id
+            )
+            admission.accepted_at = datetime.now()
+        else:
+            admission.accepted_by_doctor_id = None
+            admission.accepted_at = None
+
+    scheme_id = update_data.get("payer_scheme_id")
+    if scheme_id:
+        scheme = db.query(PayerScheme).filter(PayerScheme.id == scheme_id).first()
+        if not scheme:
+            raise HTTPException(status_code=400, detail="Unknown payer_scheme_id")
+        admission.payer_type = scheme.scheme_type
+
+    for k, v in update_data.items():
+        setattr(admission, k, v)
+
+    if update_data.get("deposit_waived"):
+        admission.deposit_waived_by_id = current_user.id
+        admission.deposit_waived_at = datetime.now()
+
+    db.commit()
+    log_action(db, current_user, "update_admission_draft", "inpatient", "Admission", admission.id,
+               f"Updated admission draft {admission.admission_number}")
+    return _load_admission_response(db, admission.id)
+
+
+@router.post("/admissions/{admission_id}/activate", response_model=AdmissionResponse)
+async def activate_admission_draft(
+    admission_id: int,
+    data: AdmissionActivateRequest,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "admit_patients")),
+    db: Session = Depends(get_db),
+):
+    """Wizard step 3 — claim bed, record deposit, keep status as draft until declarations."""
+    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    if not admission:
+        raise HTTPException(status_code=404, detail="Admission not found")
+    if admission.status != "draft":
+        raise HTTPException(status_code=400, detail="Only draft admissions can be activated")
+
+    room = db.query(RoomManagement).filter(
+        RoomManagement.id == admission.room_id,
+        RoomManagement.is_active == True,
+    ).with_for_update().first()
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
+
+    already_held = admission.bed_id and db.query(Bed).filter(
+        Bed.id == admission.bed_id,
+        Bed.current_admission_id == admission.id,
+    ).first()
+    if not already_held:
+        if room.available_beds <= 0:
+            raise HTTPException(status_code=400, detail="No beds available in this room")
+        _assign_bed_to_admission(db, admission, room, admission.bed_id)
+
+    waived = data.deposit_waived if data.deposit_waived is not None else admission.deposit_waived
+    if not waived and data.deposit_amount and float(data.deposit_amount) > 0:
+        has_initial = db.query(AdmissionDeposit).filter(
+            AdmissionDeposit.admission_id == admission.id,
+            AdmissionDeposit.deposit_type == "initial",
+        ).first()
+        if not has_initial:
+            hospital = _get_hospital(db, current_user)
+            admission_id = admission.id
+            received_by_id = current_user.id
+
+            def _dep_kwargs():
+                return dict(
+                    admission_id=admission_id,
+                    deposit_number=_generate_deposit_number(db),
+                    amount=float(data.deposit_amount),
+                    deposit_type="initial",
+                    payment_method=data.deposit_method or "cash",
+                    reference_number=data.deposit_reference or _generate_txn_id(db),
+                    received_by_id=received_by_id,
+                    hospital_id=hospital.id,
+                )
+
+            _insert_deposit_safely(db, _dep_kwargs)
+
+    db.commit()
+    log_action(db, current_user, "activate_admission_draft", "inpatient", "Admission", admission.id,
+               f"Activated draft {admission.admission_number} — bed assigned, pending declarations")
+    return _load_admission_response(db, admission.id)
+
+
+@router.post("/admissions/{admission_id}/complete-admission", response_model=AdmissionResponse)
+async def complete_admission_draft(
+    admission_id: int,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "admit_patients")),
+    db: Session = Depends(get_db),
+):
+    """Wizard step 4 — after face/case sheets signed, promote draft to admitted."""
+    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    if not admission:
+        raise HTTPException(status_code=404, detail="Admission not found")
+    if admission.status != "draft":
+        raise HTTPException(status_code=400, detail="Only draft admissions can be completed")
+
+    admission.status = "admitted"
+    db.commit()
+    log_action(db, current_user, "complete_admission", "inpatient", "Admission", admission.id,
+               f"Completed admission {admission.admission_number}")
+    return _load_admission_response(db, admission.id)
+
+
+@router.post("/admissions/{admission_id}/cancel", response_model=AdmissionResponse)
+async def cancel_admission(
+    admission_id: int,
+    data: AdmissionCancelRequest,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "admit_patients")),
+    db: Session = Depends(get_db),
+):
+    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    if not admission:
+        raise HTTPException(status_code=404, detail="Admission not found")
+    if admission.status != "draft":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Only draft admissions can be cancelled (current status: {admission.status})",
+        )
+
+    _release_admission_bed(db, admission)
+    admission.status = "cancelled"
+    admission.cancelled_at = datetime.now()
+    admission.cancelled_by_id = current_user.id
+    admission.cancellation_reason = (data.reason or "").strip() or None
+    db.commit()
+    log_action(db, current_user, "cancel_admission", "inpatient", "Admission", admission.id,
+               f"Cancelled admission {admission.admission_number}",
+               details={"reason": admission.cancellation_reason})
+    return _load_admission_response(db, admission.id)
 
 
 # ---------------------------------------------------------------

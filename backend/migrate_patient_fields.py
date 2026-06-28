@@ -238,6 +238,10 @@ NEW_COLUMNS = [
     # line(s) without name-matching. Backfilled forward-only for new bills.
     ("bill_items", "source_ref_type", "VARCHAR(50)"),
     ("bill_items", "source_ref_id", "INTEGER"),
+    # Admission draft / cancel workflow
+    ("admissions", "cancelled_at", "DATETIME"),
+    ("admissions", "cancelled_by_id", "INTEGER REFERENCES users(id)"),
+    ("admissions", "cancellation_reason", "TEXT"),
 ]
 
 # B6 — body release table is created via create_all on startup; no column adds.

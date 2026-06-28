@@ -361,6 +361,7 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
             "ehr": ["view_records", "view_history", "manage_allergies"],
             "inpatient": [
                 "view_occupancy", "admit_patients", "update_admission", "discharge_patients",
+                "record_vitals", "view_vitals",
                 "manage_beds", "manage_wards", "set_room_rates",
                 "transfer_beds", "initiate_ward_transfer", "accept_ward_transfer",
                 "manage_housekeeping", "manage_reservations", "assign_nurses",
@@ -394,6 +395,7 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
             "ehr": ["view_records", "view_history"],
             "inpatient": [
                 "view_occupancy", "admit_patients", "update_admission",
+                "record_vitals", "view_vitals",
                 "receive_deposits", "manage_reservations",
                 # Bill collection — receptionist needs to view, adjust, finalize,
                 # and download the bill so they can settle it with the patient
@@ -409,6 +411,7 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
             "ehr": ["view_records", "view_history"],
             "inpatient": [
                 "view_occupancy", "admit_patients", "update_admission",
+                "record_vitals", "view_vitals",
                 "receive_deposits", "manage_reservations",
                 "view_bill", "generate_interim_bill", "finalize_bill",
                 "manage_ancillary_charges", "issue_refunds",

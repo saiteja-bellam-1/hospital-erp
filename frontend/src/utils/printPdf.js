@@ -93,23 +93,32 @@ export const printPdfFromUrl = async (urlOrPath, options = {}) => {
     // Off-screen but rendered — display:none breaks PDF printing on Windows.
     iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;';
     document.body.appendChild(iframe);
-    iframe.src = blobUrl;
 
-    const cleanup = () => {
+    let settled = false;
+    const done = (ok) => {
+      if (settled) return;
+      settled = true;
+      resolve(ok);
+    };
+
+    const scheduleCleanup = () => {
       setTimeout(() => {
         try { document.body.removeChild(iframe); } catch (_) { /* ignore */ }
         if (createdBlobHere) {
           try { URL.revokeObjectURL(blobUrl); } catch (_) { /* ignore */ }
         }
-        resolve(true);
       }, CLEANUP_DELAY_MS);
     };
 
-    iframe.onload = () => {
+    const triggerPrint = () => {
+      if (settled) return;
       setTimeout(() => {
+        if (settled) return;
         try {
           iframe.contentWindow?.focus();
           iframe.contentWindow?.print();
+          done(true);
+          scheduleCleanup();
         } catch (e) {
           console.error('printPdfFromUrl: print() failed', e);
           if (createdBlobHere) {
@@ -117,11 +126,19 @@ export const printPdfFromUrl = async (urlOrPath, options = {}) => {
           }
           try { document.body.removeChild(iframe); } catch (_) { /* ignore */ }
           if (options.onError) options.onError('Print dialog could not be opened');
-          resolve(false);
-          return;
+          done(false);
         }
-        cleanup();
       }, PRINT_RENDER_DELAY_MS);
     };
+
+    // Some browsers never fire onload for PDF blobs in a hidden iframe.
+    const loadTimeout = setTimeout(triggerPrint, 10_000);
+
+    iframe.onload = () => {
+      clearTimeout(loadTimeout);
+      triggerPrint();
+    };
+
+    iframe.src = blobUrl;
   });
 };

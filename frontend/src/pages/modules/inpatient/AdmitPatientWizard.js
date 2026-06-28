@@ -67,6 +67,7 @@ const EMPTY_DRAFT = {
   // Step 4 — declarations (after admission exists)
   admission_id: '',
   admission_number: '',
+  activated: false,
   face_sheet_signed: false,
   case_sheet_signed: false,
   face_sheet_doc_number: '',
@@ -132,7 +133,51 @@ const PayerCard = ({ scheme, selected, onSelect }) => {
 };
 
 
-const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
+const admissionToDraft = (adm) => ({
+  patient_id: String(adm.patient_id || ''),
+  patient_label: adm.patient_name || '',
+  room_id: adm.room_id ? String(adm.room_id) : '',
+  bed_id: adm.bed_id ? String(adm.bed_id) : '',
+  admission_type: adm.admission_type || 'elective',
+  triage_level: adm.triage_level ? String(adm.triage_level) : '',
+  estimated_stay_days: adm.estimated_stay_days ? String(adm.estimated_stay_days) : '',
+  admission_reason: adm.admission_reason || '',
+  admitting_person_name: adm.admitting_person_name || '',
+  admitting_person_relationship: adm.admitting_person_relationship || '',
+  admitting_person_address: adm.admitting_person_address || '',
+  admitting_person_phone: adm.admitting_person_phone || '',
+  admitting_person_id_proof: adm.admitting_person_id_proof || '',
+  referring_doctor_id: adm.referring_doctor_id ? String(adm.referring_doctor_id) : '',
+  referring_doctor_kind: adm.referring_external_name ? 'external' : 'internal',
+  referring_external_name: adm.referring_external_name || '',
+  admitting_doctor_id: adm.admitting_doctor_id ? String(adm.admitting_doctor_id) : '',
+  attending_physician_id: adm.attending_physician_id ? String(adm.attending_physician_id) : '',
+  require_acceptance: adm.acceptance_status === 'pending',
+  payer_scheme_id: adm.payer_scheme_id ? String(adm.payer_scheme_id) : '',
+  scheme_member_id: adm.scheme_member_id || '',
+  scheme_approval_status: adm.scheme_approval_status || 'none',
+  scheme_approval_ref: adm.scheme_approval_ref || '',
+  scheme_approval_amount: adm.scheme_approval_amount != null
+    ? String(adm.scheme_approval_amount) : '',
+  deposit_waived: !!adm.deposit_waived,
+  deposit_waiver_reason: adm.deposit_waiver_reason || '',
+  admission_id: String(adm.id),
+  admission_number: adm.admission_number || '',
+  activated: !!(adm.bed_id || adm.bed_number || adm.bed_label),
+  face_sheet_signed: false,
+  case_sheet_signed: false,
+  face_sheet_doc_number: '',
+  case_sheet_doc_number: '',
+});
+
+const AdmitPatientWizard = ({
+  open,
+  onClose,
+  onCreated,
+  onDraftSaved,
+  resumeAdmissionId = null,
+  doctorsList = [],
+}) => {
   const { toast } = useToast();
   const [step, setStep] = useState(1);
   const [draft, setDraft] = useState(EMPTY_DRAFT);
@@ -158,9 +203,55 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
     };
   };
 
-  // restore draft on open
+  // restore draft on open (server resume takes priority over browser draft)
   useEffect(() => {
     if (!open) return;
+
+    const loadServerDraft = async (admissionId) => {
+      try {
+        const res = await axios.get(`/api/inpatient/admissions/${admissionId}`);
+        const adm = res.data;
+        if (adm.status !== 'draft') {
+          toast({
+            variant: 'destructive',
+            title: 'Not a draft',
+            description: 'This admission is no longer in draft status.',
+          });
+          setDraft(EMPTY_DRAFT);
+          setSelectedPatient(null);
+          setStep(1);
+          return;
+        }
+        const merged = { ...EMPTY_DRAFT, ...admissionToDraft(adm) };
+        setDraft(merged);
+        setSelectedPatient({
+          id: adm.patient_id,
+          first_name: (adm.patient_name || 'Patient').split(' ')[0] || 'Patient',
+          last_name: (adm.patient_name || '').split(' ').slice(1).join(' '),
+          patient_id: adm.patient_id,
+          primary_phone: '',
+        });
+        if (merged.activated) setStep(4);
+        else if (merged.admitting_doctor_id) setStep(3);
+        else if (merged.room_id) setStep(2);
+        else setStep(1);
+      } catch {
+        toast({
+          variant: 'destructive',
+          title: 'Could not load draft',
+          description: 'The admission draft may have been cancelled or completed.',
+        });
+        setDraft(EMPTY_DRAFT);
+        setSelectedPatient(null);
+        setStep(1);
+      }
+    };
+
+    if (resumeAdmissionId) {
+      loadServerDraft(resumeAdmissionId);
+      return;
+    }
+
     try {
       const raw = localStorage.getItem(DRAFT_KEY);
       if (raw) {
@@ -168,8 +259,11 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
         const merged = { ...EMPTY_DRAFT, ...saved };
         setDraft(merged);
         setSelectedPatient(patientFromDraftLabel(saved));
-        // Resume at declarations if admission was already created
-        setStep(merged.admission_id ? 4 : 1);
+        if (merged.activated || merged.admission_id) {
+          setStep(merged.activated ? 4 : 3);
+        } else {
+          setStep(1);
+        }
       } else {
         setDraft(EMPTY_DRAFT);
         setSelectedPatient(null);
@@ -180,7 +274,7 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
       setSelectedPatient(null);
       setStep(1);
     }
-  }, [open]);
+  }, [open, resumeAdmissionId, toast]);
 
   // persist draft as user edits
   useEffect(() => {
@@ -343,14 +437,68 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
     onClose?.();
   };
 
-  const handleSaveDraft = () => {
-    try { localStorage.setItem(DRAFT_KEY, JSON.stringify(draft)); } catch {}
-    toast({ title: 'Draft saved', description: 'You can resume this admission later.' });
-    onClose?.();
+  const handleSaveDraft = async () => {
+    const err1 = validateStep1();
+    if (err1) {
+      toast({ variant: 'destructive', title: 'Check fields', description: err1 });
+      return;
+    }
+    if (!draft.admitting_doctor_id) {
+      try { localStorage.setItem(DRAFT_KEY, JSON.stringify(draft)); } catch {}
+      toast({
+        title: 'Draft saved locally',
+        description: 'Complete Doctors & Payer to save to the server drafts list.',
+      });
+      onClose?.();
+      return;
+    }
+    const err2 = validateStep2();
+    if (err2) {
+      toast({ variant: 'destructive', title: 'Check fields', description: err2 });
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const payload = buildAdmissionPayload();
+      let adm;
+      if (draft.admission_id) {
+        const res = await axios.put(
+          `/api/inpatient/admissions/${draft.admission_id}/draft`,
+          payload,
+        );
+        adm = res.data;
+      } else {
+        const res = await axios.post('/api/inpatient/admissions', {
+          ...payload,
+          save_as_draft: true,
+        });
+        adm = res.data;
+        update({
+          admission_id: String(adm.id),
+          admission_number: adm.admission_number || '',
+        });
+      }
+      try { localStorage.removeItem(DRAFT_KEY); } catch {}
+      toast({
+        title: 'Draft saved',
+        description: `${adm.admission_number} — resume from the Drafts tab.`,
+      });
+      onDraftSaved?.();
+      onClose?.();
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      const msg = typeof detail === 'string'
+        ? detail
+        : (detail?.message || 'Failed to save draft');
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally {
+      setSaving(false);
+    }
   };
 
   const createAdmission = async () => {
-    if (draft.admission_id) {
+    if (draft.admission_id && draft.activated) {
       setStep(4);
       return;
     }
@@ -358,49 +506,66 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
     if (err) { toast({ variant: 'destructive', title: 'Check fields', description: err }); return; }
     setSaving(true);
     try {
-      const payload = buildAdmissionPayload();
-      const admRes = await axios.post('/api/inpatient/admissions', payload);
-      const newAdm = admRes.data;
-      update({
-        admission_id: String(newAdm.id),
-        admission_number: newAdm.admission_number || '',
+      let admissionId = draft.admission_id ? parseInt(draft.admission_id, 10) : null;
+      let admissionNumber = draft.admission_number;
+
+      if (!admissionId) {
+        const payload = { ...buildAdmissionPayload(), save_as_draft: true };
+        const admRes = await axios.post('/api/inpatient/admissions', payload);
+        admissionId = admRes.data.id;
+        admissionNumber = admRes.data.admission_number || '';
+        update({
+          admission_id: String(admissionId),
+          admission_number: admissionNumber,
+        });
+      }
+
+      await axios.post(`/api/inpatient/admissions/${admissionId}/activate`, {
+        deposit_amount: draft.deposit_waived ? 0 : parseFloat(draft.deposit_amount || 0),
+        deposit_method: draft.deposit_method,
+        deposit_reference: draft.deposit_reference || null,
+        deposit_waived: !!draft.deposit_waived,
       });
 
       if (!draft.deposit_waived && draft.deposit_amount && parseFloat(draft.deposit_amount) > 0) {
         try {
-          const dep = await axios.post(`/api/inpatient/admissions/${newAdm.id}/deposits`, {
-            amount: parseFloat(draft.deposit_amount),
-            deposit_type: 'initial',
-            payment_method: draft.deposit_method,
-            reference_number: draft.deposit_reference || null,
-          });
-          try {
+          const depsRes = await axios.get(`/api/inpatient/admissions/${admissionId}/deposits`);
+          const deps = depsRes.data || [];
+          const latest = deps.length ? deps[deps.length - 1] : null;
+          if (latest?.id) {
             const pdfRes = await axios.get(
-              `/api/inpatient/deposits/${dep.data.id}/receipt/pdf`,
+              `/api/inpatient/deposits/${latest.id}/receipt/pdf`,
               { responseType: 'blob' },
             );
             const url = URL.createObjectURL(new Blob([pdfRes.data], { type: 'application/pdf' }));
             printPdfFromUrl(url);
             setTimeout(() => URL.revokeObjectURL(url), 60_000);
-          } catch (_) { /* receipt is best-effort */ }
-        } catch {
-          toast({
-            variant: 'destructive',
-            title: 'Deposit not recorded',
-            description: 'Admission created but deposit failed. Add it from the admission detail.',
-          });
-        }
+          }
+        } catch (_) { /* receipt is best-effort */ }
       }
 
+      update({ activated: true });
       toast({
-        title: 'Admission created',
-        description: `${newAdm.admission_number} — print face sheet and case sheet on the next step.`,
+        title: 'Bed assigned',
+        description: `${admissionNumber} — print face sheet and case sheet on the next step.`,
       });
       setStep(4);
     } catch (err) {
-      const msg = typeof err.response?.data?.detail === 'string'
-        ? err.response.data.detail
-        : 'Failed to create admission';
+      const detail = err.response?.data?.detail;
+      let msg = 'Failed to assign bed and deposit';
+      if (typeof detail === 'string') {
+        msg = detail;
+      } else if (detail?.code === 'draft_exists') {
+        msg = detail.message || 'A draft already exists for this patient. Resume or cancel it from the Drafts tab.';
+        if (detail.admission_id) {
+          update({
+            admission_id: String(detail.admission_id),
+            admission_number: detail.admission_number || draft.admission_number,
+          });
+        }
+      } else if (detail?.message) {
+        msg = detail.message;
+      }
       toast({ variant: 'destructive', title: 'Error', description: msg });
     } finally {
       setSaving(false);
@@ -414,11 +579,18 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
       toast({ variant: 'destructive', title: 'No admission', description: 'Create the admission first.' });
       return;
     }
+    if (!faceTpl || !caseTpl) {
+      toast({
+        variant: 'destructive',
+        title: 'Templates missing',
+        description: 'Face sheet / case sheet templates are not configured. Restart the backend or add them in Hospital Administration.',
+      });
+      return;
+    }
     setSaving(true);
     try {
       const admissionId = parseInt(draft.admission_id, 10);
-      const recordConsent = async (template, reservedDocNumber) => {
-        if (!template) return null;
+      const recordConsent = async (template, reservedDocNumber, label) => {
         try {
           const res = await axios.post(`/api/inpatient/admissions/${admissionId}/consents`, {
             consent_type: template.consent_type,
@@ -430,22 +602,18 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
             doc_number: reservedDocNumber || undefined,
           });
           return res.data || null;
-        } catch { return null; }
+        } catch (postErr) {
+          const detail = postErr.response?.data?.detail;
+          const msg = typeof detail === 'string'
+            ? detail
+            : (detail?.message || `Could not record ${label}`);
+          throw new Error(msg);
+        }
       };
-      const faceConsent = await recordConsent(faceTpl, draft.face_sheet_doc_number);
-      const caseConsent = await recordConsent(caseTpl, draft.case_sheet_doc_number);
-      if (faceConsent?.doc_number) update({ face_sheet_doc_number: faceConsent.doc_number });
-      if (caseConsent?.doc_number) update({ case_sheet_doc_number: caseConsent.doc_number });
+      const faceConsent = await recordConsent(faceTpl, draft.face_sheet_doc_number, 'face sheet');
+      const caseConsent = await recordConsent(caseTpl, draft.case_sheet_doc_number, 'case sheet');
 
-      // Auto-print signed forms with the real admission number
-      const printConsentPdf = async (consent) => {
-        if (!consent?.id) return;
-        try {
-          await printPdfFromUrl(`/api/inpatient/consents/${consent.id}/pdf`);
-        } catch (_) { /* best-effort */ }
-      };
-      await printConsentPdf(faceConsent);
-      await printConsentPdf(caseConsent);
+      await axios.post(`/api/inpatient/admissions/${admissionId}/complete-admission`);
 
       try { localStorage.removeItem(DRAFT_KEY); } catch {}
       toast({
@@ -456,10 +624,18 @@ const AdmitPatientWizard = ({ open, onClose, onCreated, doctorsList = [] }) => {
       });
       onCreated?.({ id: admissionId, admission_number: draft.admission_number });
       onClose?.();
+
+      // Print after closing — don't block the wizard on the print iframe lifecycle.
+      const printConsentPdf = (consent) => {
+        if (!consent?.id) return;
+        printPdfFromUrl(`/api/inpatient/consents/${consent.id}/pdf`).catch(() => {});
+      };
+      printConsentPdf(faceConsent);
+      printConsentPdf(caseConsent);
     } catch (err) {
-      const msg = typeof err.response?.data?.detail === 'string'
-        ? err.response.data.detail
-        : 'Failed to record declarations';
+      const msg = err.message
+        || (typeof err.response?.data?.detail === 'string' ? err.response.data.detail : null)
+        || 'Failed to record declarations';
       toast({ variant: 'destructive', title: 'Error', description: msg });
     } finally {
       setSaving(false);
@@ -1070,7 +1246,13 @@ const DeclarationCard = ({
         </div>
       ) : (
         <div className="mt-2 text-xs text-gray-400 italic">
-          {patientId ? 'Allocating doc number…' : 'Doc number appears once patient is selected.'}
+          {!template
+            ? 'Template not configured — doc number unavailable.'
+            : !patientId
+              ? 'Doc number appears once patient is selected.'
+              : !admissionId
+                ? 'Doc number is assigned after the admission is created.'
+                : 'Doc number pending — you can still mark signed and complete.'}
         </div>
       )}
       <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>

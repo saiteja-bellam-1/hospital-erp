@@ -4,6 +4,9 @@ export function detailMessage(detail, fallback = 'Request failed') {
   if (Array.isArray(detail)) {
     return detail.map((e) => e.msg || e.message || JSON.stringify(e)).join(', ');
   }
+  if (detail && typeof detail === 'object' && typeof detail.message === 'string') {
+    return detail.message;
+  }
   return fallback;
 }
 

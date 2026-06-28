@@ -80,7 +80,7 @@ class Admission(Base):
     admission_reason = Column(Text)
     condition_on_admission = Column(String(20))  # stable, critical, serious
     estimated_stay_days = Column(Integer)
-    status = Column(String(20), default="admitted")  # admitted, discharged, transferred
+    status = Column(String(20), default="admitted")  # draft, admitted, discharged, transferred, cancelled
     admission_notes = Column(Text)
     insurance_details = Column(Text)
     insurance_provider = Column(String(200), nullable=True)
@@ -148,6 +148,9 @@ class Admission(Base):
     rejection_reason = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    cancelled_at = Column(DateTime(timezone=True), nullable=True)
+    cancelled_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    cancellation_reason = Column(Text, nullable=True)
 
     patient = relationship("Patient", back_populates="admissions")
     admitting_doctor = relationship("User", foreign_keys=[admitting_doctor_id])
