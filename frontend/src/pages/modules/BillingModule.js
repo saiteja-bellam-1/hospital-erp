@@ -15,6 +15,7 @@ import {
   Building2, Stethoscope, FlaskConical, BedDouble, Printer, FileText
 } from 'lucide-react';
 import { printPdfFromUrl } from '../../utils/printPdf';
+import PdfPreviewDialog from '../../components/PdfPreviewDialog';
 import PatientSearchPicker from '../../components/PatientSearchPicker';
 
 const BillingModule = () => {
@@ -91,6 +92,9 @@ const BillingModule = () => {
   });
   const [paymentLoading, setPaymentLoading] = useState(false);
 
+  // PDF preview for consultation / lab bills (and any row without a detail dialog)
+  const [pdfPreview, setPdfPreview] = useState(null);
+
   const fetchBills = useCallback(async () => {
     setLoading(true);
     try {
@@ -155,6 +159,44 @@ const BillingModule = () => {
     return colors[status] || 'bg-gray-100 text-gray-700';
   };
 
+  /** API path for the printable PDF of a billing row, or null when unavailable. */
+  const getBillPdfPath = (bill) => {
+    if (!bill) return null;
+    switch (bill.type) {
+      case 'consultation':
+        return bill.bill_id ? `/api/appointments/${bill.bill_id}/bill/download` : null;
+      case 'lab':
+        if (bill.lab_bill_group_id) return `/api/lab/bills/${bill.lab_bill_group_id}/pdf`;
+        return bill.bill_id ? `/api/lab/orders/${bill.bill_id}/bill` : null;
+      case 'admission':
+        return bill.admission_id ? `/api/inpatient/admissions/${bill.admission_id}/bill/pdf` : null;
+      case 'day_care':
+      case 'consolidated':
+        return bill.bill_id ? `/api/hospital/billing/bills/${bill.bill_id}/pdf` : null;
+      default:
+        return bill.bill_id ? `/api/hospital/billing/bills/${bill.bill_id}/pdf` : null;
+    }
+  };
+
+  const handlePrintBill = (bill) => {
+    const path = getBillPdfPath(bill);
+    if (!path) return;
+    printPdfFromUrl(path, {
+      onError: (msg) => alert(msg || 'Could not load the bill PDF'),
+    });
+  };
+
+  const handleViewBill = (bill) => {
+    if (bill.type === 'admission' || bill.type === 'consolidated' || bill.type === 'day_care') {
+      openBillDetail(bill);
+      return;
+    }
+    const path = getBillPdfPath(bill);
+    if (path) {
+      setPdfPreview({ title: `Bill — ${bill.reference || bill.patient_name}`, path });
+    }
+  };
+
   const handleCancelBill = async () => {
     if (!cancelBill || !cancelReason.trim()) return;
     setCancelling(true);
@@ -194,8 +236,8 @@ const BillingModule = () => {
   };
 
   const openBillDetail = async (bill) => {
-    // Admission and consolidated bills use the bills table with detail endpoint
-    if (bill.type === 'admission' || bill.type === 'consolidated') {
+    // Bills backed by the bills table use the detail endpoint
+    if (bill.type === 'admission' || bill.type === 'consolidated' || bill.type === 'day_care') {
       setDetailBill(bill);
       setDetailLoading(true);
       setSplits([]);
@@ -540,29 +582,6 @@ const BillingModule = () => {
     a.download = `billing_${dateFrom}_to_${dateTo}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-  };
-
-  const handlePrintAdmissionBill = async (admissionId) => {
-    try {
-      const token = localStorage.getItem('token');
-      const res = await fetch(`/api/inpatient/admissions/${admissionId}/bill/pdf`, {
-        headers: { 'Authorization': `Bearer ${token}` },
-      });
-      if (res.ok) {
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const iframe = document.createElement('iframe');
-        iframe.style.display = 'none';
-        document.body.appendChild(iframe);
-        iframe.src = url;
-        iframe.onload = () => {
-          iframe.contentWindow.print();
-          setTimeout(() => { document.body.removeChild(iframe); URL.revokeObjectURL(url); }, 1000);
-        };
-      }
-    } catch (err) {
-      console.error('Print failed:', err);
-    }
   };
 
   const resetFilters = () => {
@@ -936,10 +955,9 @@ const BillingModule = () => {
                             </td>
                             <td className="py-2.5">
                               <div className="flex gap-1">
-                                {/* View detail for admission bills */}
-                                {bill.type === 'admission' && (
+                                {(bill.type === 'admission' || bill.type === 'consolidated' || bill.type === 'day_care' || getBillPdfPath(bill)) && (
                                   <Button size="sm" variant="ghost" className="h-6 text-[10px] px-2"
-                                    onClick={() => openBillDetail(bill)}>
+                                    onClick={() => handleViewBill(bill)}>
                                     <Eye className="w-3 h-3 mr-0.5" /> View
                                   </Button>
                                 )}
@@ -950,10 +968,10 @@ const BillingModule = () => {
                                     <CreditCard className="w-3 h-3 mr-0.5" /> Pay
                                   </Button>
                                 )}
-                                {/* Print for admission bills */}
-                                {bill.type === 'admission' && bill.admission_id && (
+                                {getBillPdfPath(bill) && (
                                   <Button size="sm" variant="ghost" className="h-6 text-[10px] px-2"
-                                    onClick={() => handlePrintAdmissionBill(bill.admission_id)}>
+                                    onClick={() => handlePrintBill(bill)}
+                                    title="Print bill">
                                     <Printer className="w-3 h-3" />
                                   </Button>
                                 )}
@@ -1185,8 +1203,8 @@ const BillingModule = () => {
                     Issue Credit Note
                   </Button>
                 )}
-                {detailBill?.admission_id && (
-                  <Button variant="outline" onClick={() => handlePrintAdmissionBill(detailBill.admission_id)}>
+                {getBillPdfPath(detailBill) && (
+                  <Button variant="outline" onClick={() => handlePrintBill(detailBill)}>
                     <Printer className="h-4 w-4 mr-1" /> Print Bill
                   </Button>
                 )}
@@ -1209,6 +1227,19 @@ const BillingModule = () => {
                 <div className="flex justify-between text-lg font-bold border-t pt-2"><span>Amount:</span><span>{formatCurrency(detailBill.amount)}</span></div>
                 <div className="flex justify-between"><span className="text-gray-500">Status:</span><Badge className={getStatusBadge(detailBill.payment_status)}>{detailBill.payment_status}</Badge></div>
               </div>
+              {getBillPdfPath(detailBill) && (
+                <div className="flex justify-end gap-2">
+                  <Button variant="outline" onClick={() => setPdfPreview({
+                    title: `Bill — ${detailBill.reference || detailBill.patient_name}`,
+                    path: getBillPdfPath(detailBill),
+                  })}>
+                    <Eye className="h-4 w-4 mr-1" /> View PDF
+                  </Button>
+                  <Button onClick={() => handlePrintBill(detailBill)}>
+                    <Printer className="h-4 w-4 mr-1" /> Print Bill
+                  </Button>
+                </div>
+              )}
             </div>
           ) : (
             <p className="text-center py-4 text-gray-500">No detail available</p>
@@ -1653,6 +1684,13 @@ const BillingModule = () => {
           </div>
         </DialogContent>
       </Dialog>
+
+      <PdfPreviewDialog
+        open={!!pdfPreview}
+        onClose={() => setPdfPreview(null)}
+        title={pdfPreview?.title || 'Bill Preview'}
+        path={pdfPreview?.path || null}
+      />
     </div>
   );
 };
