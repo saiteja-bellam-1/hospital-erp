@@ -21,30 +21,15 @@ from datetime import datetime, date, timedelta
 
 import pytest
 
+from inpatient_test_helpers import discharge_active_admissions, ready_discharge_summary
+
 API = "/api/inpatient"
 
 
 def _discharge_active(client, headers, patient_id):
     """Discharge any currently-admitted admission for the seed patient so the
     next class can admit cleanly. Mirrors the cleanup in TestInpatientPhase2."""
-    r = client.get(f"{API}/admissions/patient/{patient_id}", headers=headers)
-    if r.status_code != 200:
-        return
-    for adm in r.json():
-        if adm.get("status") == "admitted":
-            client.post(
-                f"{API}/admissions/{adm['id']}/discharge",
-                json={
-                    "discharge_type": "normal",
-                    "condition_on_discharge": "stable",
-                    "discharge_summary": "Auto-discharged for gap-test setup",
-                    "force_outstanding_balance": True,
-                    "force_unacknowledged_alerts": True,
-                    "force_missing_consents": True,
-                    "override_reason": "test cleanup",
-                },
-                headers=headers,
-            )
+    discharge_active_admissions(client, headers, patient_id)
 
 
 # ======================================================================
@@ -137,6 +122,7 @@ class TestAdmissionAcceptance:
         assert "already accepted" in r.json()["detail"].lower()
 
     def test_discharge_accepted_admission_to_free_patient(self, client, auth_headers):
+        ready_discharge_summary(client, _acc["admission_id"], auth_headers)
         r = client.post(
             f"{API}/admissions/{_acc['admission_id']}/discharge",
             json={"discharge_type": "normal", "condition_on_discharge": "stable",
@@ -282,6 +268,7 @@ class TestBillReconciliation:
 
     def test_clean_discharge_after_settle(self, client, auth_headers):
         """A settled admission discharges with no force flags / override."""
+        ready_discharge_summary(client, _rec["admission_id"], auth_headers)
         r = client.post(
             f"{API}/admissions/{_rec['admission_id']}/discharge",
             json={"discharge_type": "normal", "condition_on_discharge": "stable",
@@ -348,6 +335,7 @@ class TestCreditRefundGate:
         _cr["credit"] = body["amount_to_refund"]
 
     def test_discharge_blocked_credit_refund_required(self, client, auth_headers):
+        ready_discharge_summary(client, _cr["admission_id"], auth_headers)
         r = client.post(
             f"{API}/admissions/{_cr['admission_id']}/discharge",
             json={"discharge_type": "normal", "condition_on_discharge": "stable",
@@ -367,6 +355,7 @@ class TestCreditRefundGate:
         )
         assert refund.status_code == 201, refund.text
 
+        ready_discharge_summary(client, _cr["admission_id"], auth_headers)
         r = client.post(
             f"{API}/admissions/{_cr['admission_id']}/discharge",
             json={"discharge_type": "normal", "condition_on_discharge": "stable",
@@ -419,6 +408,7 @@ class TestGatePass:
         assert "discharge" in r.json()["detail"].lower()
 
     def test_discharge_owe_admission(self, client, auth_headers):
+        ready_discharge_summary(client, _gp["owe_admission_id"], auth_headers)
         r = client.post(
             f"{API}/admissions/{_gp['owe_admission_id']}/discharge",
             json={"discharge_type": "normal", "condition_on_discharge": "stable",
@@ -500,6 +490,7 @@ class TestGatePass:
                   "deposit_type": "initial"},
             headers=auth_headers,
         )
+        ready_discharge_summary(client, adm_id, auth_headers)
         disc = client.post(
             f"{API}/admissions/{adm_id}/discharge",
             json={"discharge_type": "normal", "condition_on_discharge": "stable",

@@ -154,6 +154,7 @@ class Admission(Base):
 
     patient = relationship("Patient", back_populates="admissions")
     admitting_doctor = relationship("User", foreign_keys=[admitting_doctor_id])
+    attending_physician = relationship("User", foreign_keys=[attending_physician_id])
     referring_doctor = relationship("User", foreign_keys=[referring_doctor_id])
     accepted_by_doctor = relationship("User", foreign_keys=[accepted_by_doctor_id])
     payer_scheme = relationship("PayerScheme", foreign_keys=[payer_scheme_id])
@@ -171,6 +172,59 @@ class Admission(Base):
     ancillary_charges = relationship("AdmissionAncillaryCharge", back_populates="admission", cascade="all, delete-orphan")
     package_assignment = relationship("AdmissionPackage", back_populates="admission", uselist=False, cascade="all, delete-orphan")
     preauth_requests = relationship("InsurancePreAuth", back_populates="admission")
+    discharge_summary_doc = relationship(
+        "AdmissionDischargeSummary",
+        back_populates="admission",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+
+class AdmissionDischargeSummary(Base):
+    """Doctor-authored discharge summary — persisted before the discharge event.
+
+    Reception prints from `ready` status; record is `locked` once the patient is
+    discharged. Matches the structured hospital discharge-summary template."""
+    __tablename__ = "admission_discharge_summaries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=False, unique=True)
+    status = Column(String(20), default="draft", nullable=False)  # draft, ready, locked
+
+    provisional_diagnosis = Column(Text, nullable=True)
+    primary_diagnosis = Column(Text, nullable=True)
+    past_history = Column(Text, nullable=True)
+    present_medical_history = Column(Text, nullable=True)
+    findings_at_admission = Column(Text, nullable=True)
+    investigations_summary = Column(Text, nullable=True)
+    course_in_hospital = Column(Text, nullable=True)
+    procedure_notes = Column(Text, nullable=True)
+    discharge_advice = Column(Text, nullable=True)
+    follow_up = Column(Text, nullable=True)
+
+    discharge_type = Column(String(20), default="normal")
+    condition_on_discharge = Column(String(20), default="stable")
+    take_home_medications = Column(JSON, nullable=True)
+    follow_up_date = Column(DateTime(timezone=True), nullable=True)
+    diet_instructions = Column(Text, nullable=True)
+    activity_restrictions = Column(Text, nullable=True)
+
+    primary_doctor_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    secondary_doctor_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    written_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    finalized_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    written_at = Column(DateTime(timezone=True), nullable=True)
+    finalized_at = Column(DateTime(timezone=True), nullable=True)
+    locked_at = Column(DateTime(timezone=True), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    admission = relationship("Admission", back_populates="discharge_summary_doc")
+    primary_doctor = relationship("User", foreign_keys=[primary_doctor_id])
+    secondary_doctor = relationship("User", foreign_keys=[secondary_doctor_id])
+    written_by = relationship("User", foreign_keys=[written_by_id])
+    finalized_by = relationship("User", foreign_keys=[finalized_by_id])
 
 class DischargeRecord(Base):
     __tablename__ = "discharge_records"

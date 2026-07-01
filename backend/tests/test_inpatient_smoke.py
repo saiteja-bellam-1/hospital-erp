@@ -12,6 +12,8 @@ so that each step builds on the previous one (true E2E).
 import pytest
 from datetime import datetime, timedelta
 
+from inpatient_test_helpers import ready_discharge_summary
+
 # Shared state across the ordered tests
 _state: dict = {}
 
@@ -290,6 +292,9 @@ class TestInpatientE2E:
     # ------------------------------------------------------------------
     # 8. Discharge
     # ------------------------------------------------------------------
+    def test_prepare_discharge_summary(self, client, auth_headers):
+        ready_discharge_summary(client, _state["admission_id"], auth_headers)
+
     def test_discharge_blocked_when_balance_negative(self, client, auth_headers):
         """A normal discharge with an unpaid bill must be blocked unless forced."""
         resp = client.post(

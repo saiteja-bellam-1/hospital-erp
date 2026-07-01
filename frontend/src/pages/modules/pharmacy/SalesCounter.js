@@ -445,7 +445,7 @@ export default function SalesCounter() {
                         </Select>
                       </td>
                       <td className="py-2 pr-2">
-                        <Input className="h-8" type="number" min="0" max="100" step="0.5"
+                        <Input className="h-8" type="number" min="0" max="100" step="0.01"
                           value={ln.discount_pct} onChange={e => updateLine(i, { discount_pct: parseFloat(e.target.value) || 0 })}
                           {...navCellProps(i, 3)} />
                       </td>

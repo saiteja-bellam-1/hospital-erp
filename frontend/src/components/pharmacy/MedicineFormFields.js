@@ -4,7 +4,12 @@ import { Input } from '../ui/input';
 import { Label } from '../ui/label';
 import { Textarea } from '../ui/textarea';
 import PharmacyMasterSelectWithCreate from './PharmacyMasterSelectWithCreate';
-import { costPcsFromMrp } from '../../utils/pharmacyUnits';
+import { costPcsFromMrp, roundMoney } from '../../utils/pharmacyUnits';
+
+const PRICE_KEYS = [
+  'unit_price', 'mrp', 'purchase_rate', 'rate_a', 'rate_b', 'cost_pcs',
+  'default_discount_pct', 'item_discount_pct',
+];
 
 export const EMPTY_MEDICINE_FORM = {
   medicine_code: '', name: '', generic_name: '', manufacturer: '',
@@ -30,6 +35,11 @@ export function prepareMedicinePayload(form) {
   const payload = { ...form, cost_pcs: costPcsFromMrp(form) };
   ['category_id', 'company_id', 'rack_id', 'salt_id', 'uom_id', 'hsn_id'].forEach((k) => {
     if (payload[k] === '' || payload[k] === undefined) payload[k] = null;
+  });
+  PRICE_KEYS.forEach((k) => {
+    if (payload[k] !== undefined && payload[k] !== null && payload[k] !== '') {
+      payload[k] = roundMoney(payload[k]);
+    }
   });
   if (!payload.unit_price && payload.rate_a) {
     payload.unit_price = payload.rate_a;
@@ -57,8 +67,16 @@ const Num = ({ value, onChange }) => (
   <Input
     type="number"
     step="0.01"
+    min="0"
     value={value ?? 0}
-    onChange={(e) => onChange(e.target.value === '' ? 0 : parseFloat(e.target.value))}
+    onChange={(e) => {
+      const raw = e.target.value;
+      if (raw === '') {
+        onChange(0);
+        return;
+      }
+      onChange(roundMoney(raw));
+    }}
   />
 );
 

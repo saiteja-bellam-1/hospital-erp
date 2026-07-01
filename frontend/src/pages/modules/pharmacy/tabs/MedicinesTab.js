@@ -14,7 +14,7 @@ import MedicineFormFields, {
   EMPTY_MEDICINE_FORM,
   prepareMedicinePayload,
 } from '../../../../components/pharmacy/MedicineFormFields';
-import { costPcsFromMrp } from '../../../../utils/pharmacyUnits';
+import { costPcsFromMrp, formatMoney } from '../../../../utils/pharmacyUnits';
 
 export default function MedicinesTab() {
   const { toast } = useToast();
@@ -148,7 +148,7 @@ export default function MedicinesTab() {
                       {m.generic_name && <div className="text-xs text-gray-500">{m.generic_name}</div>}
                     </td>
                     <td className="py-2 pr-4 text-xs">{m.dosage_form} {m.strength}</td>
-                    <td className="py-2 pr-4 text-xs">₹{m.mrp || 0} / ₹{m.rate_a || m.unit_price || 0}</td>
+                    <td className="py-2 pr-4 text-xs">₹{formatMoney(m.mrp)} / ₹{formatMoney(m.rate_a || m.unit_price)}</td>
                     <td className="py-2 pr-4">
                       <div className="flex flex-wrap gap-1">
                         {m.is_narcotic && <Badge variant="outline" className="text-[10px] text-red-700">NARC</Badge>}

@@ -210,8 +210,11 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
     add(items, make('Ward Overview', LayoutDashboard, '/dashboard/inpatient'));
     add(items, make('Active Admissions', BedDouble, '/dashboard/inpatient/admissions'));
     add(items, make('ER Triage Queue', Activity, '/dashboard/inpatient/triage'));
-    if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'doctor', 'billing_admin')) {
-      add(items, make('Discharge History', FileText, '/dashboard/inpatient/discharge'));
+    if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'billing_admin', 'receptionist', 'frontdesk')) {
+      add(items, make('Discharge & Exit', FileCheck, '/dashboard/inpatient/discharge'));
+    }
+    if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'doctor', 'billing_admin', 'receptionist', 'frontdesk')) {
+      add(items, make('Discharge History', FileText, '/dashboard/inpatient/discharge-history'));
     }
     if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'doctor')) {
       add(items, make('OT Schedule', Scissors, '/dashboard/inpatient/ot'));
@@ -222,7 +225,7 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
     if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'receptionist', 'frontdesk')) {
       add(items, make('Reservations', CalendarDays, '/dashboard/inpatient/reservations'));
     }
-    if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'doctor', 'nurse')) {
+    if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'doctor', 'nurse', 'receptionist', 'frontdesk')) {
       add(items, make('Duty Roster', CalendarRange, '/dashboard/inpatient/duty-roster'));
     }
     if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'nurse')) {
@@ -231,13 +234,13 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
     if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'doctor')) {
       add(items, make('Quality Reports', RotateCcw, '/dashboard/inpatient/quality'));
     }
-    if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin')) {
+    if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'receptionist', 'frontdesk')) {
       add(items, make('Management Reports', FileText, '/dashboard/inpatient/reports'));
     }
-    if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin')) {
+    if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'receptionist', 'frontdesk')) {
       add(items, make('Room Management', Building2, '/dashboard/inpatient/rooms'));
     }
-    if (hasAnyRole('hospital_admin', 'super_admin', 'billing_admin')) {
+    if (hasAnyRole('hospital_admin', 'super_admin', 'billing_admin', 'receptionist', 'frontdesk')) {
       add(items, make('Billing Setup', Package, '/dashboard/inpatient/billing-setup'));
     }
     if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'doctor')) {

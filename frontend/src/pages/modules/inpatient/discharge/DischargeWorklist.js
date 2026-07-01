@@ -5,20 +5,25 @@ import { Button } from '../../../../components/ui/button';
 import { Badge } from '../../../../components/ui/badge';
 import { Input } from '../../../../components/ui/input';
 import {
-  Loader2, ChevronRight, Search, Wallet, FileBadge, Stethoscope, CheckCircle2, Printer, FileText,
+  Loader2, ChevronRight, Search, Wallet, FileBadge, FileText, CheckCircle2,
 } from 'lucide-react';
 import { rupee } from './constants';
 import { printPdfFromUrl } from '../../../../utils/printPdf';
+import DischargePrintBar from './DischargePrintBar';
 
 const FILTERS = [
   { id: 'pending', label: 'All pending' },
+  { id: 'summary', label: 'Awaiting summary' },
+  { id: 'ready', label: 'Ready for discharge' },
   { id: 'bill', label: 'Need bill' },
-  { id: 'discharge', label: 'Need discharge' },
+  { id: 'checkout', label: 'Awaiting discharge' },
   { id: 'gatepass', label: 'Need gate pass' },
   { id: 'completed', label: 'Completed' },
 ];
 
-const DischargeWorklist = ({ onPick }) => {
+const summaryIsReady = (status) => status === 'ready' || status === 'locked';
+
+const DischargeWorklist = ({ onPick, refreshKey = 0 }) => {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [q, setQ] = useState('');
@@ -35,12 +40,13 @@ const DischargeWorklist = ({ onPick }) => {
       const discharged = disRes.data?.items || disRes.data || [];
 
       const enrich = async (a) => {
-        const [balRes, billRes, gpRes, billsRes] = await Promise.all([
+        const [balRes, billRes, gpRes, billsRes, summaryRes] = await Promise.all([
           axios.get(`/api/inpatient/admissions/${a.id}/balance`).catch(() => ({ data: null })),
           axios.get(`/api/inpatient/admissions/${a.id}/bill`, { params: { unbilled_only: false } })
             .catch(() => ({ data: null })),
           axios.get(`/api/inpatient/admissions/${a.id}/gate-pass`).catch(() => ({ data: null })),
           axios.get(`/api/inpatient/admissions/${a.id}/bills`).catch(() => ({ data: [] })),
+          axios.get(`/api/inpatient/admissions/${a.id}/discharge-summary`).catch(() => ({ data: null })),
         ]);
         const computed = Number(billRes.data?.grand_total ?? billRes.data?.subtotal ?? 0);
         const billed = Number(balRes.data?.total_billed ?? 0);
@@ -49,6 +55,7 @@ const DischargeWorklist = ({ onPick }) => {
         const owes = +(stayCharges - deposited).toFixed(2);
         const bills = billsRes.data?.items || billsRes.data || [];
         const finalBill = bills.find(b => b.bill_subtype === 'final' && b.status !== 'cancelled');
+        const summaryStatus = summaryRes.data?.status || null;
         return {
           ...a,
           stayCharges,
@@ -56,6 +63,7 @@ const DischargeWorklist = ({ onPick }) => {
           owes,
           gatePass: gpRes.data || null,
           finalBill: finalBill || null,
+          summaryStatus,
         };
       };
 
@@ -71,6 +79,9 @@ const DischargeWorklist = ({ onPick }) => {
         const aPending = !a.gatePass || a._bucket === 'active';
         const bPending = !b.gatePass || b._bucket === 'active';
         if (aPending !== bPending) return aPending ? -1 : 1;
+        const aReady = a._bucket === 'active' && summaryIsReady(a.summaryStatus);
+        const bReady = b._bucket === 'active' && summaryIsReady(b.summaryStatus);
+        if (aReady !== bReady) return aReady ? -1 : 1;
         const aT = new Date(a.admission_date || 0).getTime();
         const bT = new Date(b.admission_date || 0).getTime();
         return bT - aT;
@@ -83,15 +94,59 @@ const DischargeWorklist = ({ onPick }) => {
     }
   }, []);
 
-  useEffect(() => { fetchRows(); }, [fetchRows]);
+  useEffect(() => { fetchRows(); }, [fetchRows, refreshKey]);
 
   const classify = (a) => {
     if (a.gatePass && a._bucket === 'discharged' && Math.abs(a.owes) <= 0.01) return 'completed';
-    if (a._bucket === 'active' && !a.finalBill) return 'bill';
-    if (a._bucket === 'active' && a.finalBill) return 'discharge';
+    if (a._bucket === 'active') {
+      const summaryReady = summaryIsReady(a.summaryStatus);
+      if (!summaryReady) return 'summary';
+      if (a.finalBill) return 'checkout';
+      return 'ready';
+    }
     if (a._bucket === 'discharged' && !a.gatePass) return 'gatepass';
     if (a._bucket === 'discharged' && Math.abs(a.owes) > 0.01) return 'bill';
     return 'completed';
+  };
+
+  const activeBillBucket = (a) => (
+    a._bucket === 'active' && !a.finalBill ? 'bill' : null
+  );
+
+  const statusBadge = (a) => {
+    const bucket = classify(a);
+    if (bucket === 'completed') {
+      return <Badge className="bg-green-100 text-green-800 text-xs">Completed</Badge>;
+    }
+    if (a._bucket === 'discharged') {
+      return <Badge className="bg-gray-200 text-gray-800 text-xs">Discharged</Badge>;
+    }
+    if (summaryIsReady(a.summaryStatus)) {
+      return <Badge className="bg-green-100 text-green-800 text-xs">Ready for discharge</Badge>;
+    }
+    if (bucket === 'summary') {
+      return <Badge className="bg-amber-100 text-amber-800 text-xs">Awaiting summary</Badge>;
+    }
+    return <Badge className="bg-emerald-100 text-emerald-800 text-xs">Admitted</Badge>;
+  };
+
+  const needsLabel = (a, bucket) => {
+    if (bucket === 'bill' || activeBillBucket(a) === 'bill') {
+      return <span className="text-xs"><Wallet className="h-3 w-3 inline mr-1" /> Bill / payment</span>;
+    }
+    if (bucket === 'summary') {
+      return <span className="text-xs text-amber-700"><FileText className="h-3 w-3 inline mr-1" /> Doctor summary pending</span>;
+    }
+    if (bucket === 'checkout') {
+      return <span className="text-xs text-blue-700"><CheckCircle2 className="h-3 w-3 inline mr-1" /> Bill settled — discharge patient</span>;
+    }
+    if (bucket === 'ready') {
+      return <span className="text-xs text-green-700"><CheckCircle2 className="h-3 w-3 inline mr-1" /> Summary ready — open checkout</span>;
+    }
+    if (bucket === 'gatepass') {
+      return <span className="text-xs text-purple-700"><FileBadge className="h-3 w-3 inline mr-1" /> Gate pass</span>;
+    }
+    return <span className="text-xs text-green-700"><CheckCircle2 className="h-3 w-3 inline mr-1" /> Done</span>;
   };
 
   const filtered = rows.filter(a => {
@@ -103,17 +158,30 @@ const DischargeWorklist = ({ onPick }) => {
     }
     const bucket = classify(a);
     if (filter === 'pending') return bucket !== 'completed';
+    if (filter === 'bill') {
+      return activeBillBucket(a) === 'bill' || (bucket === 'bill' && a._bucket === 'discharged');
+    }
     return bucket === filter;
   });
 
-  const printDischargePdf = (e, id) => {
-    e.stopPropagation();
-    printPdfFromUrl(`/api/inpatient/admissions/${id}/discharge/pdf`);
+  const printDischargeSummaryPdf = (e, id) => {
+    e?.stopPropagation?.();
+    printPdfFromUrl(`/api/inpatient/admissions/${id}/discharge-summary/pdf`);
   };
 
   const printAdmissionDetailPdf = (e, id) => {
-    e.stopPropagation();
+    e?.stopPropagation?.();
     printPdfFromUrl(`/api/inpatient/admissions/${id}/admission-detail/pdf`);
+  };
+
+  const printFinalBillPdf = (e, id) => {
+    e?.stopPropagation?.();
+    printPdfFromUrl(`/api/inpatient/admissions/${id}/bill/pdf`);
+  };
+
+  const printGatePassPdf = (e, id) => {
+    e?.stopPropagation?.();
+    printPdfFromUrl(`/api/inpatient/admissions/${id}/gate-pass/pdf`);
   };
 
   if (loading) {
@@ -173,7 +241,8 @@ const DischargeWorklist = ({ onPick }) => {
                 <th className="text-left py-2 px-3 font-medium">Status</th>
                 <th className="text-right py-2 px-3 font-medium">Balance</th>
                 <th className="text-left py-2 px-3 font-medium">Needs</th>
-                <th className="text-right py-2 px-3 font-medium w-44"></th>
+                <th className="text-right py-2 px-3 font-medium min-w-[420px]">Print</th>
+                <th className="text-right py-2 px-3 font-medium w-24"></th>
               </tr>
             </thead>
             <tbody>
@@ -181,13 +250,6 @@ const DischargeWorklist = ({ onPick }) => {
                 const owes = a.owes > 0.01;
                 const credit = a.owes < -0.01;
                 const bucket = classify(a);
-                const needs = bucket === 'bill'
-                  ? <span className="text-xs"><Wallet className="h-3 w-3 inline mr-1" /> Bill / payment</span>
-                  : bucket === 'discharge'
-                    ? <span className="text-xs"><Stethoscope className="h-3 w-3 inline mr-1" /> Clinical discharge</span>
-                    : bucket === 'gatepass'
-                      ? <span className="text-xs text-purple-700"><FileBadge className="h-3 w-3 inline mr-1" /> Gate pass</span>
-                      : <span className="text-xs text-green-700"><CheckCircle2 className="h-3 w-3 inline mr-1" /> Done</span>;
                 return (
                   <tr key={a.id} className="border-b hover:bg-gray-50 cursor-pointer"
                       onClick={() => onPick(a.id)}>
@@ -195,33 +257,29 @@ const DischargeWorklist = ({ onPick }) => {
                       <div className="font-medium">{a.patient_name}</div>
                       <div className="text-xs text-gray-500">{a.admission_number}</div>
                     </td>
-                    <td className="py-2 px-3">
-                      {a._bucket === 'active'
-                        ? <Badge className="bg-emerald-100 text-emerald-800 text-xs">Admitted</Badge>
-                        : <Badge className="bg-gray-200 text-gray-800 text-xs">Discharged</Badge>}
-                    </td>
+                    <td className="py-2 px-3">{statusBadge(a)}</td>
                     <td className="py-2 px-3 text-right">
                       {owes ? <span className="text-red-600 font-medium">{rupee(a.owes)}</span>
                         : credit ? <span className="text-blue-600">credit {rupee(Math.abs(a.owes))}</span>
                           : <span className="text-green-600">{rupee(0)}</span>}
                     </td>
-                    <td className="py-2 px-3">{needs}</td>
+                    <td className="py-2 px-3">{needsLabel(a, bucket)}</td>
+                    <td className="py-2 px-3 text-right" onClick={e => e.stopPropagation()}>
+                      <DischargePrintBar
+                        onClickStopPropagation
+                        canPrintFinalBill={!!a.finalBill}
+                        canPrintDischargeSummary={summaryIsReady(a.summaryStatus)}
+                        canPrintGatePass={!!a.gatePass}
+                        onPrintFinalBill={() => printFinalBillPdf(null, a.id)}
+                        onPrintDischargeSummary={() => printDischargeSummaryPdf(null, a.id)}
+                        onPrintGatePass={() => printGatePassPdf(null, a.id)}
+                        onPrintDetailedSummary={() => printAdmissionDetailPdf(null, a.id)}
+                      />
+                    </td>
                     <td className="py-2 px-3 text-right">
-                      <div className="flex justify-end gap-1">
-                        <Button size="sm" variant="ghost" title="Detailed admission summary"
-                                onClick={e => printAdmissionDetailPdf(e, a.id)}>
-                          <FileText className="h-3.5 w-3.5" />
-                        </Button>
-                        {bucket === 'completed' && (
-                          <Button size="sm" variant="ghost" title="Discharge summary PDF"
-                                  onClick={e => printDischargePdf(e, a.id)}>
-                            <Printer className="h-3.5 w-3.5" />
-                          </Button>
-                        )}
-                        <Button size="sm" onClick={(e) => { e.stopPropagation(); onPick(a.id); }}>
-                          Open <ChevronRight className="h-3.5 w-3.5 ml-1" />
-                        </Button>
-                      </div>
+                      <Button size="sm" onClick={(e) => { e.stopPropagation(); onPick(a.id); }}>
+                        Open <ChevronRight className="h-3.5 w-3.5 ml-1" />
+                      </Button>
                     </td>
                   </tr>
                 );

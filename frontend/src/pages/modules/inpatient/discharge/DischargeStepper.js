@@ -4,9 +4,9 @@ import { CHECKOUT_STEPS } from './constants';
 const DischargeStepper = ({ step, maxReachable, onStepClick, isDischarged, hasGatePass }) => (
   <div className="flex flex-wrap items-center gap-2 text-xs border-b pb-3">
     {CHECKOUT_STEPS.map((s, i) => {
-      const done = s.id < step || (hasGatePass && s.id <= 5);
+      const done = s.id < step || (hasGatePass && s.id <= 3);
       const active = s.id === step;
-      const skipped = isDischarged && s.id >= 2 && s.id <= 4 && step === 5;
+      const skipped = isDischarged && s.id === 2 && step === 3;
       const clickable = onStepClick && s.id <= maxReachable && !skipped;
       return (
         <React.Fragment key={s.key}>

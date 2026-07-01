@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '../../../components/ui/card';
 import { Button } from '../../../components/ui/button';
 import { Input } from '../../../components/ui/input';
@@ -13,23 +13,17 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '../../../components/ui/select';
 import {
-  ArrowLeft, Loader2, Wallet, Banknote, Printer, FileBadge, CheckCircle2,
-  AlertTriangle, IndianRupee, Plus, Trash2, ChevronLeft, ChevronRight,
-  FileSignature, FileDown,
+  ArrowLeft, Loader2, Wallet, Banknote, FileBadge, CheckCircle2,
+  AlertTriangle, IndianRupee, Plus, ChevronLeft, ChevronRight,
 } from 'lucide-react';
 import DischargeWorklist from './discharge/DischargeWorklist';
 import DischargeStepper from './discharge/DischargeStepper';
+import DischargeSummaryReview from './discharge/DischargeSummaryReview';
+import DischargeSummaryEditor from './DischargeSummaryEditor';
+import DischargePrintBar from './discharge/DischargePrintBar';
 import useDischargeCheckout from './discharge/useDischargeCheckout';
 import { PAYMENT_METHODS, rupee } from './discharge/constants';
-import {
-  BillingRecap,
-  ClinicalFields,
-  TakeHomeFields,
-  NormalDeclaration,
-  DamaDeclarations,
-  SignerBlock,
-  SafetyGateOverride,
-} from './discharge/ClinicalFormSections';
+import { SafetyGateOverride } from './discharge/ClinicalFormSections';
 
 const Stat = ({ label, value, tone }) => (
   <div>
@@ -42,15 +36,17 @@ const Stat = ({ label, value, tone }) => (
   </div>
 );
 
-const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge }) => {
+const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge, doctorsList = [] }) => {
+  const [summaryEditorOpen, setSummaryEditorOpen] = useState(false);
   const checkout = useDischargeCheckout(admissionId, permissions);
   const {
     loading, submitting, admission, bill, derived, deposits, finalBill, gatePass,
     step, maxReachable, clinicalForm, settleForm, setSettleForm, gatePassForm, setGatePassForm,
     blockers, depositForm, setDepositForm,
-    canAddDeposit, canFinalize, canDischarge, canIssuePass,
+    canAddDeposit, canFinalize, canDischarge, canIssuePass, canWriteSummary, canViewSummary,
+    summaryDoc, refreshSummary,
     updateClinical,
-    goToStep, handleNext, handleBack, printBill, printGatePass, printAdmissionDetail, submitDeposit,
+    goToStep, handleNext, handleBack, printBill, printGatePass, printDischargeSummary, printAdmissionDetail, submitDeposit,
   } = checkout;
 
   if (loading) {
@@ -81,24 +77,40 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge }) =>
     );
   }
 
-  const isDama = clinicalForm.discharge_type === 'against_advice';
-  const isDeath = clinicalForm.discharge_type === 'death';
+  const isDeath = (clinicalForm.discharge_type || summaryDoc?.discharge_type) === 'death';
   const isComplete = !!gatePass;
   const readOnlyBill = !!finalBill && step > 1;
+  const summaryReady = summaryDoc?.status === 'ready' || summaryDoc?.status === 'locked';
+
+  const printBar = (
+    <DischargePrintBar
+      canPrintFinalBill={!!finalBill}
+      canPrintDischargeSummary={summaryReady}
+      canPrintGatePass={!!gatePass}
+      onPrintFinalBill={printBill}
+      onPrintDischargeSummary={printDischargeSummary}
+      onPrintGatePass={printGatePass}
+      onPrintDetailedSummary={printAdmissionDetail}
+    />
+  );
 
   const onPrimaryAction = async () => {
+    if (isComplete) {
+      onBack?.();
+      return;
+    }
     const result = await handleNext();
     if (result?.wasDeath) onDeathDischarge?.(result);
   };
 
   const primaryLabel = () => {
-    if (isComplete) return 'Done';
-    if (step === 1) return finalBill ? 'Continue to Clinical' : 'Generate Bill & Continue';
-    if (step === 4) {
+    if (isComplete) return 'Back to worklist';
+    if (step === 1) return finalBill ? 'Continue to Summary' : 'Generate Bill & Continue';
+    if (step === 2) {
       if (derived.isDischarged) return 'Continue to Gate Pass';
-      return blockers.length > 0 ? 'Override & Discharge' : 'Discharge Patient';
+      return blockers.length > 0 ? 'Override & Discharge' : 'Discharge & Continue';
     }
-    if (step === 5) return gatePass ? 'Reprint Documents' : 'Issue Gate Pass & Print';
+    if (step === 3) return gatePass ? 'Reprint Documents' : 'Issue Gate Pass & Print';
     return 'Next';
   };
 
@@ -136,10 +148,10 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge }) =>
                 : <Badge className="bg-green-100 text-green-800">Settled</Badge>}
             {finalBill && <Badge className="bg-blue-100 text-blue-800 text-xs">{finalBill.bill_number}</Badge>}
             {gatePass && <Badge className="bg-purple-100 text-purple-800">{gatePass.pass_number}</Badge>}
-            <Button size="sm" variant="outline" onClick={printAdmissionDetail} title="Print detailed admission summary">
-              <FileDown className="h-3.5 w-3.5 mr-1" /> Detailed Summary
-            </Button>
           </div>
+        </div>
+        <div className="mt-2 pt-2 border-t">
+          {printBar}
         </div>
         <div className="mt-3">
           <DischargeStepper
@@ -168,9 +180,6 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge }) =>
                     <Plus className="h-3.5 w-3.5 mr-1" /> Deposit
                   </Button>
                 )}
-                <Button size="sm" variant="outline" onClick={printBill}>
-                  <FileDown className="h-3.5 w-3.5 mr-1" /> Bill PDF
-                </Button>
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -279,59 +288,21 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge }) =>
         </div>
       )}
 
-      {step === 2 && !derived.isDischarged && (
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">Clinical Discharge</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <ClinicalFields form={clinicalForm} update={updateClinical} />
-          </CardContent>
-        </Card>
-      )}
-
-      {step === 3 && !derived.isDischarged && (
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">Take-home Rx &amp; Follow-up</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <TakeHomeFields form={clinicalForm} update={updateClinical}
-                            admissionId={admissionId} />
-          </CardContent>
-        </Card>
-      )}
-
-      {step === 4 && !derived.isDischarged && (
+      {step === 2 && (
         <div className="space-y-4">
-          <BillingRecap bill={bill} balance={checkout.balance} loading={false} />
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-base flex items-center gap-2">
-                <FileSignature className="h-4 w-4" /> Confirm &amp; Discharge
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {isDeath ? (
-                <div className="bg-blue-50 border border-blue-200 rounded p-3 text-sm">
-                  <b>Death discharge:</b> after submitting, you will fill mortality details,
-                  then return here for the gate pass.
-                </div>
-              ) : isDama ? (
-                <DamaDeclarations form={clinicalForm} update={updateClinical} />
-              ) : (
-                <NormalDeclaration form={clinicalForm} update={updateClinical} />
-              )}
-              {!isDeath && <SignerBlock form={clinicalForm} update={updateClinical} />}
-              {blockers.length > 0 && (
-                <SafetyGateOverride blockers={blockers} form={clinicalForm} update={updateClinical} />
-              )}
-            </CardContent>
-          </Card>
+          <DischargeSummaryReview
+            summary={summaryDoc}
+            canWrite={canWriteSummary && !derived.isDischarged}
+            onEdit={() => setSummaryEditorOpen(true)}
+            admissionId={admissionId}
+          />
+          {blockers.length > 0 && !derived.isDischarged && (
+            <SafetyGateOverride blockers={blockers} form={clinicalForm} update={updateClinical} />
+          )}
         </div>
       )}
 
-      {step === 5 && (
+      {step === 3 && (
         <div className="space-y-4">
           {isComplete ? (
             <Card>
@@ -341,20 +312,14 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge }) =>
                 <p className="text-sm text-gray-500">
                   Gate pass {gatePass.pass_number} issued. Patient may exit.
                 </p>
-                <div className="flex justify-center gap-2 pt-2 flex-wrap">
-                  <Button variant="outline" onClick={printAdmissionDetail}>
-                    <FileDown className="h-4 w-4 mr-1" /> Detailed Summary
-                  </Button>
-                  <Button variant="outline" onClick={printBill}>
-                    <Printer className="h-4 w-4 mr-1" /> Reprint Bill
-                  </Button>
-                  <Button variant="outline" onClick={printGatePass}>
-                    <Printer className="h-4 w-4 mr-1" /> Reprint Gate Pass
-                  </Button>
-                  {onBack && (
-                    <Button onClick={onBack}>Back to worklist</Button>
-                  )}
+                <div className="flex justify-center pt-2">
+                  {printBar}
                 </div>
+                {onBack && (
+                  <div className="pt-2">
+                    <Button onClick={onBack}>Back to worklist</Button>
+                  </div>
+                )}
               </CardContent>
             </Card>
           ) : (
@@ -411,37 +376,37 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge }) =>
       )}
 
       {/* Skipped steps summary when resuming at gate pass */}
-      {step === 5 && derived.isDischarged && !isComplete && (
+      {step === 3 && derived.isDischarged && !isComplete && (
         <Card>
           <CardContent className="py-3 text-xs text-gray-500">
-            Clinical steps completed on {admission.discharge_date
+            Discharged on {admission.discharge_date
               ? new Date(admission.discharge_date).toLocaleString() : 'discharge'}.
           </CardContent>
         </Card>
       )}
 
       {/* Sticky footer */}
-      {!isComplete && (
-        <div className="fixed bottom-0 left-0 right-0 md:left-auto md:right-auto md:relative md:mt-4
-                        bg-white border-t md:border rounded-t-lg md:rounded-lg p-3 flex items-center justify-between gap-2 z-20">
-          <div className="flex items-center gap-2">
-            {showBack && (
-              <Button variant="outline" onClick={handleBack} disabled={submitting}>
-                <ChevronLeft className="h-4 w-4 mr-1" /> Back
-              </Button>
-            )}
-            <Button variant="outline" size="sm" onClick={printAdmissionDetail} disabled={submitting}>
-              <FileDown className="h-4 w-4 mr-1" /> Detailed Summary
+      <div className="fixed bottom-0 left-0 right-0 md:left-auto md:right-auto md:relative md:mt-4
+                      bg-white border-t md:border rounded-t-lg md:rounded-lg p-3 flex items-center justify-between gap-2 z-20">
+        <div className="flex items-center gap-2">
+          {!isComplete && showBack && (
+            <Button variant="outline" onClick={handleBack} disabled={submitting}>
+              <ChevronLeft className="h-4 w-4 mr-1" /> Back
             </Button>
-          </div>
-          <Button onClick={onPrimaryAction} disabled={submitting}
-                  variant={step === 4 && blockers.length > 0 ? 'destructive' : 'default'}>
-            {submitting && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-            {primaryLabel()}
-            {step < 5 && step !== 4 && <ChevronRight className="h-4 w-4 ml-1" />}
-          </Button>
+          )}
+          {isComplete && onBack && (
+            <Button variant="outline" onClick={onBack}>
+              <ArrowLeft className="h-4 w-4 mr-1" /> Worklist
+            </Button>
+          )}
         </div>
-      )}
+        <Button onClick={onPrimaryAction} disabled={submitting && !isComplete}
+                variant={!isComplete && step === 2 && blockers.length > 0 ? 'destructive' : 'default'}>
+          {submitting && !isComplete && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+          {primaryLabel()}
+          {!isComplete && step < 3 && step !== 2 && <ChevronRight className="h-4 w-4 ml-1" />}
+        </Button>
+      </div>
 
       {/* Deposit dialog — only auxiliary modal kept */}
       <Dialog open={!!depositForm} onOpenChange={v => !v && setDepositForm(null)}>
@@ -487,17 +452,28 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge }) =>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <DischargeSummaryEditor
+        open={summaryEditorOpen}
+        onClose={() => setSummaryEditorOpen(false)}
+        admissionId={admissionId}
+        admissionLabel={admission.patient_name}
+        doctorsList={doctorsList}
+        onSaved={() => refreshSummary()}
+      />
     </FormNavContainer>
   );
 };
 
-/** Single-page discharge checkout: worklist + inline 5-step flow. */
+/** Single-page discharge checkout: worklist + inline 3-step flow. */
 const DischargeCheckoutPage = ({
   admissionId,
   onSelectAdmission,
   onBack,
   permissions = {},
   onDeathDischarge,
+  doctorsList = [],
+  worklistRefreshKey = 0,
 }) => {
   if (!admissionId) {
     return (
@@ -505,10 +481,10 @@ const DischargeCheckoutPage = ({
         <div>
           <h2 className="text-lg font-semibold">Discharge &amp; Exit</h2>
           <p className="text-sm text-gray-500">
-            One flow — bill, clinical discharge, and gate pass on a single page.
+            One flow — bill, discharge summary, and gate pass.
           </p>
         </div>
-        <DischargeWorklist onPick={onSelectAdmission} />
+        <DischargeWorklist onPick={onSelectAdmission} refreshKey={worklistRefreshKey} />
       </div>
     );
   }
@@ -518,6 +494,7 @@ const DischargeCheckoutPage = ({
       onBack={onBack}
       permissions={permissions}
       onDeathDischarge={onDeathDischarge}
+      doctorsList={doctorsList}
     />
   );
 };

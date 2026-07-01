@@ -2,30 +2,15 @@
 
 import pytest
 
+from inpatient_test_helpers import discharge_active_admissions
+
 API = "/api/inpatient"
 
 _draft: dict = {}
 
 
 def _discharge_active(client, headers, patient_id):
-    r = client.get(f"{API}/admissions/patient/{patient_id}", headers=headers)
-    if r.status_code != 200:
-        return
-    for adm in r.json():
-        if adm.get("status") == "admitted":
-            client.post(
-                f"{API}/admissions/{adm['id']}/discharge",
-                json={
-                    "discharge_type": "normal",
-                    "condition_on_discharge": "stable",
-                    "discharge_summary": "test cleanup",
-                    "force_outstanding_balance": True,
-                    "force_unacknowledged_alerts": True,
-                    "force_missing_consents": True,
-                    "override_reason": "test cleanup",
-                },
-                headers=headers,
-            )
+    discharge_active_admissions(client, headers, patient_id)
 
 
 class TestAdmissionDraftWorkflow:

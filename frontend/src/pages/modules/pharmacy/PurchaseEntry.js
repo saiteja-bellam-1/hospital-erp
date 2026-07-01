@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import axios from 'axios';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '../../../components/ui/card';
@@ -8,13 +8,15 @@ import { Label } from '../../../components/ui/label';
 import { Textarea } from '../../../components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../../components/ui/select';
 import { useToast } from '../../../hooks/use-toast';
-import { ArrowLeft, Plus, Trash2, Save, CheckCircle2, ScanLine } from 'lucide-react';
+import { ArrowLeft, Plus, Trash2, Save, CheckCircle2, ScanLine, Pill } from 'lucide-react';
 import { errMsg } from '../PharmacyModule';
 import PharmacyMasterSelectWithCreate from '../../../components/pharmacy/PharmacyMasterSelectWithCreate';
+import PharmacyMedicinePicker from '../../../components/pharmacy/PharmacyMedicinePicker';
 import QuickMedicineDialog from '../../../components/pharmacy/QuickMedicineDialog';
 import { usePharmacyStore } from '../../../contexts/PharmacyStoreContext';
 import FormNavContainer from '../../../components/FormNavContainer';
 import { NAV_SKIP_ATTR, navCellProps } from '../../../utils/formNavigation';
+import { roundMoney } from '../../../utils/pharmacyUnits';
 
 const TODAY = new Date().toISOString().split('T')[0];
 
@@ -38,7 +40,7 @@ export default function PurchaseEntry() {
   });
   const [items, setItems] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
-  const [medicines, setMedicines] = useState([]);
+  const [medicineCache, setMedicineCache] = useState({});
   const [hsnList, setHsnList] = useState([]);
   const [draftId, setDraftId] = useState(null);
   const [purchaseStatus, setPurchaseStatus] = useState(null);
@@ -54,10 +56,24 @@ export default function PurchaseEntry() {
 
   const isConfirmed = purchaseStatus === 'confirmed';
 
+  const cacheMedicine = useCallback((med) => {
+    if (!med?.id) return;
+    setMedicineCache((prev) => ({ ...prev, [med.id]: med }));
+  }, []);
+
+  const loadMedicinesByIds = useCallback(async (ids) => {
+    const unique = [...new Set(ids.filter(Boolean))];
+    await Promise.all(unique.map(async (id) => {
+      try {
+        const r = await axios.get(`/api/pharmacy/medicines/${id}`);
+        cacheMedicine(r.data);
+      } catch { /* ignore */ }
+    }));
+  }, [cacheMedicine]);
+
   useEffect(() => {
     Promise.all([
       axios.get('/api/pharmacy/suppliers').then(r => setSuppliers(r.data || [])),
-      axios.get('/api/pharmacy/medicines', { params: { active_only: true, include_hidden: false, limit: 500 } }).then(r => setMedicines(r.data || [])),
       axios.get('/api/pharmacy/hsn').then(r => setHsnList(r.data || [])),
     ]).catch(() => {});
   }, []);
@@ -66,7 +82,7 @@ export default function PurchaseEntry() {
     if (!routeId) return;
     setLoadingPurchase(true);
     axios.get(`/api/pharmacy/purchases/${routeId}`)
-      .then((r) => {
+      .then(async (r) => {
         const p = r.data;
         if (!['draft', 'confirmed'].includes(p.status)) {
           toast({
@@ -89,7 +105,7 @@ export default function PurchaseEntry() {
           purchase_type: p.purchase_type || 'local',
           notes: p.notes || '',
         });
-        setItems((p.items || []).map((it) => ({
+        const loaded = (p.items || []).map((it) => ({
           medicine_id: it.medicine_id,
           batch_number: it.batch_number || '',
           expiry_mm_yyyy: expiryToDisplay(it.expiry_date),
@@ -98,15 +114,16 @@ export default function PurchaseEntry() {
           free_quantity: it.free_quantity || 0,
           purchase_rate: it.purchase_rate || 0,
           discount_pct: it.discount_pct || 0,
-          hsn_id: it.hsn_id || null,
-        })));
+        }));
+        setItems(loaded);
+        await loadMedicinesByIds(loaded.map((it) => it.medicine_id));
       })
       .catch((e) => {
         toast({ variant: 'destructive', title: 'Load failed', description: errMsg(e) });
         navigate('/dashboard/pharmacy/purchases');
       })
       .finally(() => setLoadingPurchase(false));
-  }, [routeId, navigate, toast]);
+  }, [routeId, navigate, toast, loadMedicinesByIds]);
 
   const lineFromMed = (m) => ({
     medicine_id: m.id,
@@ -117,12 +134,11 @@ export default function PurchaseEntry() {
     free_quantity: 0,
     purchase_rate: m.purchase_rate || 0,
     discount_pct: 0,
-    hsn_id: m.hsn_id || null,
   });
 
   const addLine = () => setItems(s => [...s, {
     medicine_id: null, batch_number: '', expiry_mm_yyyy: '', mrp: 0,
-    quantity: 1, free_quantity: 0, purchase_rate: 0, discount_pct: 0, hsn_id: null,
+    quantity: 1, free_quantity: 0, purchase_rate: 0, discount_pct: 0,
   }]);
 
   const expiryToISO = (raw) => {
@@ -153,12 +169,11 @@ export default function PurchaseEntry() {
         matches = res.data || [];
       }
       if (matches.length === 0) {
-        setMedicinePrefill({ name: code, medicine_code: code });
-        setMedicineDialogLineIndex(null);
-        setMedicineDialogOpen(true);
+        openMedicineCreate(null, { name: code, medicine_code: code, barcode: code });
       } else if (matches.length > 1) {
         toast({ variant: 'destructive', title: 'Ambiguous scan', description: `${matches.length} matches — type a more specific code` });
       } else {
+        cacheMedicine(matches[0]);
         setItems(s => [...s, lineFromMed(matches[0])]);
         toast({ title: `Added ${matches[0].name}` });
       }
@@ -168,19 +183,34 @@ export default function PurchaseEntry() {
     setScanInput('');
     scanRef.current?.focus();
   };
+
   const update = (i, patch) => setItems(s => s.map((x, idx) => idx === i ? { ...x, ...patch } : x));
   const remove = (i) => setItems(s => s.filter((_, idx) => idx !== i));
 
+  const selectMedicine = (lineIndex, med) => {
+    cacheMedicine(med);
+    update(lineIndex, {
+      medicine_id: med.id,
+      purchase_rate: med.purchase_rate || 0,
+      mrp: med.mrp || 0,
+    });
+  };
+
+  const hsnForMedicine = (medicineId) => {
+    const med = medicineCache[medicineId];
+    if (!med?.hsn_id) return null;
+    return hsnList.find((h) => h.id === med.hsn_id) || null;
+  };
+
   const calcLine = (ln, hsn) => {
-    const base = (ln.quantity || 0) * (ln.purchase_rate || 0);
-    const afterDisc = base * (1 - (ln.discount_pct || 0) / 100);
+    const base = roundMoney((ln.quantity || 0) * (ln.purchase_rate || 0));
+    const afterDisc = roundMoney(base * (1 - (ln.discount_pct || 0) / 100));
     const taxPct = hsn ? ((hsn.sgst_pct || 0) + (hsn.cgst_pct || 0) + (hsn.igst_pct || 0)) : 0;
-    const tax = afterDisc * taxPct / 100;
-    return { base, afterDisc, tax, total: afterDisc + tax };
+    const tax = roundMoney(afterDisc * taxPct / 100);
+    return { base, afterDisc, tax, total: roundMoney(afterDisc + tax) };
   };
   const totals = items.reduce((acc, ln) => {
-    const hsn = hsnList.find(h => h.id === ln.hsn_id);
-    const c = calcLine(ln, hsn);
+    const c = calcLine(ln, hsnForMedicine(ln.medicine_id));
     return { sub: acc.sub + c.base, disc: acc.disc + (c.base - c.afterDisc), tax: acc.tax + c.tax, grand: acc.grand + c.total };
   }, { sub: 0, disc: 0, tax: 0, grand: 0 });
 
@@ -190,7 +220,7 @@ export default function PurchaseEntry() {
     if (items.length === 0) errors.push('Add at least one item.');
     items.forEach((it, idx) => {
       const n = idx + 1;
-      if (!it.medicine_id) errors.push(`Line ${n}: pick a medicine.`);
+      if (!it.medicine_id) errors.push(`Line ${n}: pick or create a medicine.`);
       if (!it.batch_number || !String(it.batch_number).trim()) errors.push(`Line ${n}: batch number is required.`);
       const exp = expiryToISO(it.expiry_mm_yyyy);
       if (exp === undefined) errors.push(`Line ${n}: expiry must be MM/YYYY (e.g. 12/2027).`);
@@ -218,12 +248,11 @@ export default function PurchaseEntry() {
           medicine_id: it.medicine_id,
           batch_number: String(it.batch_number || '').trim(),
           expiry_date: expiryToISO(it.expiry_mm_yyyy) || null,
-          mrp: parseFloat(it.mrp) || 0,
+          mrp: roundMoney(it.mrp),
           quantity: parseFloat(it.quantity) || 0,
           free_quantity: parseFloat(it.free_quantity) || 0,
-          purchase_rate: parseFloat(it.purchase_rate) || 0,
-          discount_pct: parseFloat(it.discount_pct) || 0,
-          hsn_id: it.hsn_id || null,
+          purchase_rate: roundMoney(it.purchase_rate),
+          discount_pct: roundMoney(it.discount_pct),
         })),
       },
     };
@@ -288,6 +317,8 @@ export default function PurchaseEntry() {
     } finally { setSubmitting(false); }
   };
 
+  const setH = (k, v) => setHeader(s => ({ ...s, [k]: v }));
+
   const openMedicineCreate = (lineIndex = null, prefill = {}) => {
     setMedicineDialogLineIndex(lineIndex);
     setMedicinePrefill(prefill);
@@ -295,24 +326,15 @@ export default function PurchaseEntry() {
   };
 
   const handleMedicineCreated = (med) => {
-    setMedicines((prev) => {
-      if (prev.some((m) => m.id === med.id)) return prev;
-      return [...prev, med].sort((a, b) => a.name.localeCompare(b.name));
-    });
+    cacheMedicine(med);
     if (medicineDialogLineIndex != null) {
-      update(medicineDialogLineIndex, {
-        medicine_id: med.id,
-        purchase_rate: med.purchase_rate || 0,
-        mrp: med.mrp || 0,
-        hsn_id: med.hsn_id || null,
-      });
+      selectMedicine(medicineDialogLineIndex, med);
     } else {
       setItems((s) => [...s, lineFromMed(med)]);
     }
     setMedicineDialogLineIndex(null);
+    toast({ title: 'Medicine added to catalog', description: med.name });
   };
-
-  const setH = (k, v) => setHeader(s => ({ ...s, [k]: v }));
 
   const pageTitle = isConfirmed
     ? `Edit Purchase ${purchaseNumber}`
@@ -326,9 +348,15 @@ export default function PurchaseEntry() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 flex-wrap">
         <Button size="sm" variant="outline" onClick={() => navigate('/dashboard/pharmacy/purchases')}><ArrowLeft className="h-3 w-3 mr-1" /> Back</Button>
-        <h1 className="text-2xl font-bold">{pageTitle}</h1>
+        <h1 className="text-2xl font-bold flex-1">{pageTitle}</h1>
+        <Button size="sm" variant="outline" onClick={() => navigate('/dashboard/pharmacy/medicines')}>
+          <Pill className="h-3 w-3 mr-1" /> Medicines catalog
+        </Button>
+        <Button size="sm" variant="outline" onClick={() => openMedicineCreate()}>
+          <Plus className="h-3 w-3 mr-1" /> New medicine
+        </Button>
       </div>
 
       <FormNavContainer mode="grid" className="space-y-4">
@@ -394,7 +422,7 @@ export default function PurchaseEntry() {
               <Input
                 ref={scanRef}
                 className="h-8"
-                placeholder="Scan barcode or type code / name + Enter"
+                placeholder="Scan barcode or type code + Enter"
                 value={scanInput}
                 onChange={e => setScanInput(e.target.value)}
                 onKeyDown={handleScan}
@@ -405,8 +433,18 @@ export default function PurchaseEntry() {
           </CardTitle>
         </CardHeader>
         <CardContent>
+          <p className="text-xs text-gray-600 mb-3">
+            Search the catalog to pick an existing medicine, or use <span className="font-medium">+ New medicine</span> when
+            the product is not listed yet. You can also open the full{' '}
+            <button type="button" className="text-blue-700 underline font-medium" onClick={() => navigate('/dashboard/pharmacy/medicines')}>
+              Medicines
+            </button>{' '}
+            catalog to manage items.
+          </p>
           {items.length === 0 ? (
-            <p className="text-center py-4 text-sm text-gray-500">No items — scan a barcode above or click <span className="font-medium">Add line</span>.</p>
+            <p className="text-center py-4 text-sm text-gray-500">
+              No items — scan a catalog barcode, search on a line, or click <span className="font-medium">Add line</span>.
+            </p>
           ) : (
             <FormNavContainer mode="table" className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -419,37 +457,27 @@ export default function PurchaseEntry() {
                   <th className="py-2 pr-2 w-20">Free</th>
                   <th className="py-2 pr-2 w-24">P-Rate</th>
                   <th className="py-2 pr-2 w-20">Disc %</th>
-                  <th className="py-2 pr-2 w-32">HSN</th>
                   <th className="py-2 pr-2 text-right w-24">Line Total</th>
                   <th className="py-2 w-8"></th>
                 </tr></thead>
                 <tbody>
                   {items.map((ln, i) => {
-                    const hsn = hsnList.find(h => h.id === ln.hsn_id);
-                    const c = calcLine(ln, hsn);
+                    const c = calcLine(ln, hsnForMedicine(ln.medicine_id));
                     const lineInvalid = !ln.medicine_id || !String(ln.batch_number || '').trim() || !(parseFloat(ln.quantity) > 0);
                     return (
                       <tr key={i} className={`border-b ${lineInvalid ? 'bg-red-50/50' : ''}`}>
-                        <td className="py-2 pr-2 min-w-[200px]">
-                          <div className="flex gap-1 items-center">
-                            <Select value={ln.medicine_id ? String(ln.medicine_id) : ''}
-                              onValueChange={v => {
-                                const m = medicines.find(x => x.id === Number(v));
-                                update(i, { medicine_id: Number(v),
-                                            purchase_rate: m?.purchase_rate || 0,
-                                            mrp: m?.mrp || 0,
-                                            hsn_id: m?.hsn_id || null });
-                              }}>
-                              <SelectTrigger className="h-8 flex-1 min-w-0" {...navCellProps(i, 0)}><SelectValue placeholder="Pick" /></SelectTrigger>
-                              <SelectContent>
-                                {medicines.map(m => <SelectItem key={m.id} value={String(m.id)}>{m.name}</SelectItem>)}
-                              </SelectContent>
-                            </Select>
-                            <Button type="button" size="icon" variant="outline" className="h-8 w-8 shrink-0"
-                              title="Add medicine" onClick={() => openMedicineCreate(i)}>
-                              <Plus className="h-3 w-3" />
-                            </Button>
-                          </div>
+                        <td className="py-2 pr-2 min-w-[220px]">
+                          <PharmacyMedicinePicker
+                            value={ln.medicine_id}
+                            medicine={medicineCache[ln.medicine_id]}
+                            onSelect={(m) => selectMedicine(i, m)}
+                            onCreateNew={(q) => openMedicineCreate(i, {
+                              name: q || '',
+                              medicine_code: q || '',
+                              barcode: q || undefined,
+                            })}
+                            navProps={navCellProps(i, 0)}
+                          />
                         </td>
                         <td className="py-2 pr-2">
                           <Input
@@ -474,24 +502,11 @@ export default function PurchaseEntry() {
                             );
                           })()}
                         </td>
-                        <td className="py-2 pr-2"><Input className="h-8" type="number" step="0.01" value={ln.mrp} onChange={e => update(i, { mrp: parseFloat(e.target.value) || 0 })} {...navCellProps(i, 3)} /></td>
+                        <td className="py-2 pr-2"><Input className="h-8" type="number" step="0.01" min="0" value={ln.mrp} onChange={e => update(i, { mrp: roundMoney(e.target.value) })} {...navCellProps(i, 3)} /></td>
                         <td className="py-2 pr-2"><Input className="h-8" type="number" min="0" step="0.5" value={ln.quantity} onChange={e => update(i, { quantity: parseFloat(e.target.value) || 0 })} {...navCellProps(i, 4)} /></td>
                         <td className="py-2 pr-2"><Input className="h-8" type="number" min="0" step="0.5" value={ln.free_quantity} onChange={e => update(i, { free_quantity: parseFloat(e.target.value) || 0 })} {...navCellProps(i, 5)} /></td>
-                        <td className="py-2 pr-2"><Input className="h-8" type="number" step="0.01" value={ln.purchase_rate} onChange={e => update(i, { purchase_rate: parseFloat(e.target.value) || 0 })} {...navCellProps(i, 6)} /></td>
-                        <td className="py-2 pr-2"><Input className="h-8" type="number" min="0" max="100" step="0.5" value={ln.discount_pct} onChange={e => update(i, { discount_pct: parseFloat(e.target.value) || 0 })} {...navCellProps(i, 7)} /></td>
-                        <td className="py-2 pr-2">
-                          <PharmacyMasterSelectWithCreate
-                            path="hsn"
-                            value={ln.hsn_id}
-                            onChange={(v) => update(i, { hsn_id: v })}
-                            options={hsnList}
-                            onOptionsChange={setHsnList}
-                            placeholder="—"
-                            allowEmpty
-                            labelKey="code"
-                            compact
-                          />
-                        </td>
+                        <td className="py-2 pr-2"><Input className="h-8" type="number" step="0.01" min="0" value={ln.purchase_rate} onChange={e => update(i, { purchase_rate: roundMoney(e.target.value) })} {...navCellProps(i, 6)} /></td>
+                        <td className="py-2 pr-2"><Input className="h-8" type="number" min="0" max="100" step="0.01" value={ln.discount_pct} onChange={e => update(i, { discount_pct: roundMoney(e.target.value) })} {...navCellProps(i, 7)} /></td>
                         <td className="py-2 pr-2 text-right">₹{c.total.toFixed(2)}</td>
                         <td className="py-2"><Button size="sm" variant="ghost" onClick={() => remove(i)}><Trash2 className="h-3 w-3 text-red-500" /></Button></td>
                       </tr>
@@ -499,10 +514,10 @@ export default function PurchaseEntry() {
                   })}
                 </tbody>
                 <tfoot>
-                  <tr><td colSpan={9} className="py-2 text-right font-medium">Subtotal:</td><td className="text-right">₹{totals.sub.toFixed(2)}</td><td></td></tr>
-                  <tr><td colSpan={9} className="py-1 text-right text-sm text-gray-600">Discount:</td><td className="text-right text-sm text-gray-600">−₹{totals.disc.toFixed(2)}</td><td></td></tr>
-                  <tr><td colSpan={9} className="py-1 text-right text-sm text-gray-600">Tax:</td><td className="text-right text-sm text-gray-600">+₹{totals.tax.toFixed(2)}</td><td></td></tr>
-                  <tr className="font-bold"><td colSpan={9} className="py-2 text-right">Grand Total:</td><td className="text-right">₹{totals.grand.toFixed(2)}</td><td></td></tr>
+                  <tr><td colSpan={8} className="py-2 text-right font-medium">Subtotal:</td><td className="text-right">₹{totals.sub.toFixed(2)}</td><td></td></tr>
+                  <tr><td colSpan={8} className="py-1 text-right text-sm text-gray-600">Discount:</td><td className="text-right text-sm text-gray-600">−₹{totals.disc.toFixed(2)}</td><td></td></tr>
+                  <tr><td colSpan={8} className="py-1 text-right text-sm text-gray-600">Tax:</td><td className="text-right text-sm text-gray-600">+₹{totals.tax.toFixed(2)}</td><td></td></tr>
+                  <tr className="font-bold"><td colSpan={8} className="py-2 text-right">Grand Total:</td><td className="text-right">₹{totals.grand.toFixed(2)}</td><td></td></tr>
                 </tfoot>
               </table>
             </FormNavContainer>

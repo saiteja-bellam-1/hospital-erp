@@ -2442,17 +2442,23 @@ class PDFService:
         age_gender = _age_gender_str(discharge_data, gender=discharge_data.get('gender', ''), age_key='age')
 
         col_w = page_width / 2
+        bed_room = discharge_data.get('bed_label', '')
+        if bed_room and discharge_data.get('room_number'):
+            bed_room = f"{bed_room} / {discharge_data.get('room_number', '')}"
+        elif discharge_data.get('room_number'):
+            bed_room = discharge_data.get('room_number', '')
+
         patient_info_data = [
-            [lv('Patient', discharge_data.get('patient_name', '')),
-             lv('MRN', discharge_data.get('mrn', ''))],
-            [lv('Age / Gender', age_gender),
-             lv('Doctor', discharge_data.get('doctor_name', ''))],
-            [lv('Admission No', discharge_data.get('admission_number', '')),
-             lv('Total Stay', f"{discharge_data.get('total_stay_days', 0)} days")],
-            [lv('Admitted', discharge_data.get('admission_date', '')),
-             lv('Discharged', discharge_data.get('discharge_date', ''))],
-            [lv('Discharge Type', discharge_data.get('discharge_type', '')),
-             lv('Condition on Admission', discharge_data.get('condition_on_admission', ''))],
+            [lv('Patient Name', discharge_data.get('patient_name', '')),
+             lv('UHID', discharge_data.get('mrn', ''))],
+            [lv('Age / Sex', age_gender),
+             lv('Phone No.', discharge_data.get('patient_phone', ''))],
+            [lv('Admission No.', discharge_data.get('admission_number', '')),
+             lv('Admission Date', discharge_data.get('admission_date', ''))],
+            [lv('Bed / Room No.', bed_room),
+             lv('Ward Type', discharge_data.get('ward_type', ''))],
+            [lv('Discharge Date', discharge_data.get('discharge_date', '') or '—'),
+             lv('Type', discharge_data.get('admission_type', discharge_data.get('discharge_type', '')))],
         ]
 
         info_style = [
@@ -2469,23 +2475,62 @@ class PDFService:
         elements.append(info_table)
         elements.append(Spacer(1, 8))
 
-        # ============================================================
-        # CLINICAL SECTIONS
-        # ============================================================
-        sections = [
-            ("Diagnosis", discharge_data.get("diagnosis", "")),
-            ("Treatment Given", discharge_data.get("treatment", "")),
-            ("Discharge Summary", discharge_data.get("discharge_summary", "")),
-        ]
+        # Doctors block
+        doc_rows = []
+        if discharge_data.get('doctor_name'):
+            dept = discharge_data.get('doctor_department', '')
+            doc_rows.append(lv('Primary Doctor', f"{discharge_data.get('doctor_name', '')}" + (f" ({dept})" if dept else "")))
+        if discharge_data.get('secondary_doctor_name'):
+            sdept = discharge_data.get('secondary_doctor_department', '')
+            doc_rows.append(lv('Secondary Doctor', f"{discharge_data.get('secondary_doctor_name', '')}" + (f" ({sdept})" if sdept else "")))
+        if doc_rows:
+            if len(doc_rows) == 1:
+                elements.append(doc_rows[0])
+            else:
+                doc_table = Table([[doc_rows[0], doc_rows[1]]], colWidths=[col_w, col_w])
+                doc_table.setStyle(TableStyle([
+                    ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                    ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                ]))
+                elements.append(doc_table)
+            elements.append(Spacer(1, 6))
 
-        for title, content in sections:
-            if content:
-                elements.append(Paragraph(title, section_heading))
-                # Support multiline content
-                for line in content.split('\n'):
-                    line = line.strip()
-                    if line:
-                        elements.append(Paragraph(line, cell_value))
+        # ============================================================
+        # CLINICAL SECTIONS (structured template)
+        # ============================================================
+        def _append_section(title, content):
+            if not content or not str(content).strip():
+                return
+            elements.append(Paragraph(title, section_heading))
+            for line in str(content).split('\n'):
+                line = line.strip()
+                if line:
+                    elements.append(Paragraph(line, cell_value))
+
+        structured_sections = [
+            ("Provisional Diagnosis", discharge_data.get("provisional_diagnosis", "")),
+            ("Primary Diagnosis", discharge_data.get("primary_diagnosis") or discharge_data.get("diagnosis", "")),
+            ("Past History", discharge_data.get("past_history", "")),
+            ("Present Medical History", discharge_data.get("present_medical_history", "")),
+            ("Key Findings At The Time Of Admission", discharge_data.get("findings_at_admission", "")),
+            ("Summary Of Key Investigation", discharge_data.get("investigations_summary", "")),
+            ("Course In Hospital", discharge_data.get("course_in_hospital") or discharge_data.get("treatment", "")),
+            ("Procedure Notes", discharge_data.get("procedure_notes", "")),
+            ("Discharge Advice", discharge_data.get("discharge_advice", "")),
+            ("Follow Up", discharge_data.get("follow_up", "")),
+        ]
+        has_structured = any(s[1] for s in structured_sections)
+        if has_structured:
+            for title, content in structured_sections:
+                _append_section(title, content)
+        else:
+            sections = [
+                ("Diagnosis", discharge_data.get("diagnosis", "")),
+                ("Treatment Given", discharge_data.get("treatment", "")),
+                ("Discharge Summary", discharge_data.get("discharge_summary", "")),
+            ]
+            for title, content in sections:
+                _append_section(title, content)
 
         # ============================================================
         # TAKE-HOME MEDICATIONS — structured list (preferred) or legacy text.
@@ -2565,7 +2610,7 @@ class PDFService:
             elements.append(Paragraph(f"<b>Condition on Discharge:</b> {condition_discharge}", cell_value))
             elements.append(Spacer(1, 12))
 
-        doctor_name = discharge_data.get("doctor_name", "")
+        doctor_name = discharge_data.get("consultant_name") or discharge_data.get("doctor_name", "")
         if doctor_name:
             sig_data = [
                 [Paragraph('', cell_value),
@@ -2575,7 +2620,7 @@ class PDFService:
                  Paragraph(f"<b>{doctor_name}</b>", ParagraphStyle('SigName', parent=self.styles['Normal'],
                     fontSize=9, fontName='Helvetica-Bold', alignment=2))],
                 [Paragraph('', cell_value),
-                 Paragraph("Attending Physician", ParagraphStyle('SigTitle', parent=self.styles['Normal'],
+                 Paragraph("Treating Consultant / Authorised Team Doctor", ParagraphStyle('SigTitle', parent=self.styles['Normal'],
                     fontSize=8, fontName='Helvetica', textColor=colors.grey, alignment=2))],
             ]
             sig_table = Table(sig_data, colWidths=[page_width / 2, page_width / 2])

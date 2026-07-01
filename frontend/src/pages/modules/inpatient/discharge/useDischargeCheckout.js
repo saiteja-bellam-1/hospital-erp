@@ -11,7 +11,6 @@ import {
   draftStorageKey,
   rupee,
 } from './constants';
-import { serializeTakeHomeMed } from '../../../../utils/prescriptionSchedule';
 
 export function useDischargeCheckout(admissionId, permissions = {}) {
   const { toast } = useToast();
@@ -30,11 +29,14 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
   const [gatePassForm, setGatePassForm] = useState(EMPTY_GATE_PASS_FORM);
   const [blockers, setBlockers] = useState([]);
   const [depositForm, setDepositForm] = useState(null);
+  const [summaryDoc, setSummaryDoc] = useState(null);
 
   const canAddDeposit = permissions.receive_deposits !== false;
   const canFinalize = permissions.finalize_bill !== false;
   const canDischarge = permissions.discharge_patients !== false;
   const canIssuePass = permissions.issue_gate_pass !== false;
+  const canWriteSummary = permissions.write_discharge_summary !== false;
+  const canViewSummary = permissions.view_discharge_summary !== false;
 
   const derived = useMemo(
     () => computeDerived(bill, balance, admission),
@@ -67,13 +69,14 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
     if (!admissionId) return null;
     setLoading(true);
     try {
-      const [admRes, billRes, balRes, depRes, billsRes, gpRes] = await Promise.all([
+      const [admRes, billRes, balRes, depRes, billsRes, gpRes, summaryRes] = await Promise.all([
         axios.get(`/api/inpatient/admissions/${admissionId}`),
         axios.get(`/api/inpatient/admissions/${admissionId}/bill`, { params: { unbilled_only: false } }),
         axios.get(`/api/inpatient/admissions/${admissionId}/balance`),
         axios.get(`/api/inpatient/admissions/${admissionId}/deposits`),
         axios.get(`/api/inpatient/admissions/${admissionId}/bills`).catch(() => ({ data: [] })),
         axios.get(`/api/inpatient/admissions/${admissionId}/gate-pass`).catch(() => ({ data: null })),
+        axios.get(`/api/inpatient/admissions/${admissionId}/discharge-summary`).catch(() => ({ data: null })),
       ]);
       const adm = admRes.data;
       const billData = billRes.data;
@@ -82,6 +85,7 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
       const bills = billsRes.data?.items || billsRes.data || [];
       const finalised = bills.find(b => b.bill_subtype === 'final' && b.status !== 'cancelled');
       const gp = gpRes.data || null;
+      const summary = summaryRes.data || null;
 
       setAdmission(adm);
       setBill(billData);
@@ -89,6 +93,7 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
       setDeposits(deps);
       setFinalBill(finalised || null);
       setGatePass(gp);
+      setSummaryDoc(summary);
 
       const d = computeDerived(billData, balData, adm);
       const start = resolveStartStep({
@@ -99,10 +104,18 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
       });
 
       const draft = loadDraft(admissionId);
-      if (draft?.clinicalForm) setClinicalForm({ ...EMPTY_CLINICAL_FORM, ...draft.clinicalForm });
+      const summaryClinical = summary ? {
+        discharge_type: summary.discharge_type || 'normal',
+        condition_on_discharge: summary.condition_on_discharge || 'stable',
+      } : {};
+      if (draft?.clinicalForm) {
+        setClinicalForm({ ...EMPTY_CLINICAL_FORM, ...summaryClinical, ...draft.clinicalForm });
+      } else {
+        setClinicalForm({ ...EMPTY_CLINICAL_FORM, ...summaryClinical });
+      }
       if (draft?.gatePassForm) setGatePassForm({ ...EMPTY_GATE_PASS_FORM, ...draft.gatePassForm });
       if (draft?.step && !gp) {
-        setStep(Math.max(start, Math.min(draft.step, 5)));
+        setStep(Math.max(start, Math.min(draft.step, 3)));
         setMaxReachable(Math.max(start, draft.maxReachable || start));
       } else {
         setStep(start);
@@ -144,8 +157,8 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
   const updateClinical = (patch) => setClinicalForm(p => ({ ...p, ...patch }));
 
   const goToStep = (n) => {
-    if (derived?.isDischarged && n >= 2 && n <= 4) return;
-    if (n >= 1 && n <= 5 && n <= maxReachable) setStep(n);
+    if (derived?.isDischarged && n === 2) return;
+    if (n >= 1 && n <= 3 && n <= maxReachable) setStep(n);
   };
 
   const advanceStep = (n) => {
@@ -159,30 +172,21 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
       return null;
     }
     if (s === 2) {
-      if (!clinicalForm.discharge_type) return 'Discharge type is required.';
-      return null;
-    }
-    if (s === 3) return null;
-    if (s === 4) {
-      const isDama = clinicalForm.discharge_type === 'against_advice';
-      const isDeath = clinicalForm.discharge_type === 'death';
-      if (isDeath) return null;
-      if (isDama) {
-        if (!clinicalForm.dama_advice_ack) return 'Confirm medical advice was given.';
-        if (!clinicalForm.dama_absolves_ack) return 'Confirm patient absolves the hospital.';
-      } else if (!clinicalForm.consent_to_discharge) {
-        return 'Tick the discharge declaration to continue.';
-      }
-      if (!clinicalForm.signed_by_name.trim()) return 'Enter the name of the person signing.';
-      if (clinicalForm.signed_by_relationship === 'guardian' && !clinicalForm.guardian_relationship.trim()) {
-        return 'Enter the guardian relationship.';
+      const dischargeType = clinicalForm.discharge_type || summaryDoc?.discharge_type || 'normal';
+      const isDama = dischargeType === 'against_advice';
+      const isDeath = dischargeType === 'death';
+      if (!isDeath && !isDama) {
+        const st = summaryDoc?.status;
+        if (!st || !['ready', 'locked'].includes(st)) {
+          return 'Doctor must finalize the discharge summary before discharge.';
+        }
       }
       if (blockers.length > 0 && !clinicalForm.override_reason.trim()) {
         return 'Override reason is required to proceed past safety gates.';
       }
       return null;
     }
-    if (s === 5) {
+    if (s === 3) {
       if (!gatePassForm.attendant_name.trim()) return 'Attendant name is required.';
       if (gatePassForm.overrideErr && !gatePassForm.overrideReason.trim()) {
         return 'Override reason is required.';
@@ -223,7 +227,7 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
         },
       };
       await axios.post(`/api/inpatient/admissions/${admissionId}/bill/finalize-and-settle`, body);
-      toast({ title: 'Final bill generated', description: 'Proceed to clinical discharge.' });
+      toast({ title: 'Final bill generated', description: 'Proceed to discharge summary.' });
       await fetchAll();
       advanceStep(2);
       return true;
@@ -244,22 +248,10 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
   };
 
   const buildDischargePayload = () => {
-    const meds = (clinicalForm.take_home_medications || [])
-      .filter(m => (m.medicine_name || '').trim())
-      .map(serializeTakeHomeMed);
     const payload = {
-      discharge_type: clinicalForm.discharge_type,
-      condition_on_discharge: clinicalForm.condition_on_discharge,
-      diagnosis_on_discharge: clinicalForm.diagnosis_on_discharge || null,
-      treatment_given: clinicalForm.treatment_given || null,
-      discharge_summary: clinicalForm.discharge_summary || null,
-      follow_up_instructions: clinicalForm.follow_up_instructions || null,
-      follow_up_date: clinicalForm.follow_up_date
-        ? new Date(clinicalForm.follow_up_date).toISOString() : null,
-      diet_instructions: clinicalForm.diet_instructions || null,
-      activity_restrictions: clinicalForm.activity_restrictions || null,
-      medications_prescribed: null,
-      take_home_medications: meds.length ? meds : null,
+      discharge_type: clinicalForm.discharge_type || summaryDoc?.discharge_type || 'normal',
+      condition_on_discharge: clinicalForm.condition_on_discharge
+        || summaryDoc?.condition_on_discharge || 'stable',
     };
     if (blockers.length > 0) {
       const codes = blockers.map(b => b.code);
@@ -274,7 +266,7 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
 
   const submitDischarge = async () => {
     if (derived?.isDischarged) {
-      advanceStep(5);
+      advanceStep(3);
       return { wasDeath: clinicalForm.discharge_type === 'death', skipped: true };
     }
     setSubmitting(true);
@@ -282,41 +274,8 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
       const payload = buildDischargePayload();
       await axios.post(`/api/inpatient/admissions/${admissionId}/discharge`, payload);
 
-      const isDama = clinicalForm.discharge_type === 'against_advice';
-      const isDeath = clinicalForm.discharge_type === 'death';
-
-      if (isDama) {
-        const damaPayload = {
-          attending_doctor_id: admission.admitting_doctor_id || admission.attending_physician_id,
-          medical_advice_given: clinicalForm.treatment_given?.trim()
-            || 'Medical advice was explained verbally to the patient prior to leaving.',
-          risks_explained:
-            'Risks of leaving against medical advice were explained verbally to the patient.',
-          language_used: 'english',
-          patient_acknowledges_advice: !!clinicalForm.dama_advice_ack,
-          patient_absolves_hospital: !!clinicalForm.dama_absolves_ack,
-          signed_by: clinicalForm.signed_by_relationship === 'guardian' ? 'guardian' : 'patient',
-          guardian_name: clinicalForm.signed_by_relationship === 'guardian'
-            ? clinicalForm.signed_by_name.trim() : null,
-          guardian_relationship: clinicalForm.signed_by_relationship === 'guardian'
-            ? clinicalForm.guardian_relationship.trim() : null,
-          primary_signature: clinicalForm.signed_by_name.trim(),
-          primary_signature_type: 'typed',
-          witness_name: 'Hospital staff (recording user)',
-          witness_designation: null,
-          witness_signature: 'Counter-signed by recording user',
-          witness_signature_type: 'typed',
-          notes: clinicalForm.decl_notes || null,
-        };
-        try {
-          await axios.post(`/api/inpatient/admissions/${admissionId}/dama`, damaPayload);
-        } catch {
-          toast({
-            variant: 'destructive', title: 'DAMA form failed',
-            description: 'Discharge recorded, but DAMA form did not save.',
-          });
-        }
-      }
+      const isDeath = clinicalForm.discharge_type === 'death'
+        || summaryDoc?.discharge_type === 'death';
 
       toast({
         title: 'Patient discharged',
@@ -325,10 +284,19 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
           : 'Complete gate pass next.',
       });
       await fetchAll();
-      advanceStep(5);
-      return { wasDeath: isDeath, wasDama: isDama, admissionId };
+      advanceStep(3);
+      return { wasDeath: isDeath, admissionId };
     } catch (err) {
       const detail = err.response?.data?.detail;
+      if (err.response?.status === 409 && detail?.code === 'discharge_summary_not_ready') {
+        toast({
+          variant: 'destructive',
+          title: 'Summary not ready',
+          description: detail.message || 'Doctor must finalize the discharge summary first.',
+        });
+        setStep(2);
+        return null;
+      }
       if (err.response?.status === 409 && detail?.code === 'credit_refund_required') {
         toast({
           variant: 'destructive', title: 'Refund required',
@@ -418,6 +386,19 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
 
   const printGatePass = printGatePassPdf;
 
+  const printDischargeSummary = async () => {
+    const ok = await printPdfFromUrl(
+      `/api/inpatient/admissions/${admissionId}/discharge-summary/pdf`,
+    );
+    if (!ok) {
+      toast({
+        variant: 'destructive',
+        title: 'Print failed',
+        description: 'Discharge summary must be finalized by the doctor before printing',
+      });
+    }
+  };
+
   const printAdmissionDetail = async () => {
     const ok = await printPdfFromUrl(
       `/api/inpatient/admissions/${admissionId}/admission-detail/pdf`,
@@ -475,18 +456,18 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
       const ok = await submitFinalizeBill();
       return ok || finalBill ? null : null;
     }
-    if (step === 4) {
+    if (step === 2) {
       if (!canDischarge && !derived?.isDischarged) {
         toast({ variant: 'destructive', title: 'No permission to discharge patients' });
         return null;
       }
       if (derived?.isDischarged) {
-        advanceStep(5);
+        advanceStep(3);
         return null;
       }
       return submitDischarge();
     }
-    if (step === 5) {
+    if (step === 3) {
       if (!canIssuePass) {
         toast({ variant: 'destructive', title: 'No permission to issue gate pass' });
         return null;
@@ -526,6 +507,25 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
     canFinalize,
     canDischarge,
     canIssuePass,
+    canWriteSummary,
+    canViewSummary,
+    summaryDoc,
+    setSummaryDoc,
+    refreshSummary: async () => {
+      try {
+        const res = await axios.get(`/api/inpatient/admissions/${admissionId}/discharge-summary`);
+        setSummaryDoc(res.data);
+        if (res.data?.discharge_type) {
+          setClinicalForm(p => ({
+            ...p,
+            discharge_type: res.data.discharge_type,
+            condition_on_discharge: res.data.condition_on_discharge || p.condition_on_discharge,
+          }));
+        }
+      } catch {
+        setSummaryDoc(null);
+      }
+    },
     updateClinical,
     goToStep,
     handleNext,
@@ -533,6 +533,7 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
     fetchAll,
     printBill,
     printGatePass,
+    printDischargeSummary,
     printAdmissionDetail,
     submitDeposit,
     validateStep,

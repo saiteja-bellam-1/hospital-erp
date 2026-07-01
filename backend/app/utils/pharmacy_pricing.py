@@ -2,6 +2,8 @@
 
 MRP and Rate A/B are stored per strip. Per-tab price = strip price / tablets_per_strip.
 POS lines may specify qty in tabs and/or strips on the same row.
+
+All money fields (rates, prices, line totals) are rounded to 2 decimal places.
 """
 
 from __future__ import annotations
@@ -10,6 +12,26 @@ from typing import TYPE_CHECKING, Tuple
 
 if TYPE_CHECKING:
     from app.models.pharmacy import Medicine
+
+
+def round_money(val: float | None) -> float:
+    """Round a currency amount to 2 decimal places."""
+    if val is None:
+        return 0.0
+    return round(float(val), 2)
+
+
+MEDICINE_PRICE_ATTRS = (
+    "unit_price", "mrp", "purchase_rate", "rate_a", "rate_b",
+    "cost_pcs", "default_discount_pct", "item_discount_pct",
+)
+
+
+def apply_medicine_price_rounding(medicine: "Medicine") -> None:
+    """Normalize stored medicine price fields to 2dp."""
+    for attr in MEDICINE_PRICE_ATTRS:
+        if hasattr(medicine, attr):
+            setattr(medicine, attr, round_money(getattr(medicine, attr)))
 
 
 def units_per_strip(medicine: "Medicine") -> int:
@@ -28,7 +50,7 @@ def strip_sale_rate(medicine: "Medicine", *, tier: str = "A") -> float:
         raw = float(medicine.mrp or 0)
     if raw <= 0:
         raw = float(medicine.unit_price or 0)
-    return raw
+    return round_money(raw)
 
 
 def tab_sale_rate(medicine: "Medicine", *, tier: str = "A", strip_rate: float | None = None) -> float:
@@ -36,7 +58,7 @@ def tab_sale_rate(medicine: "Medicine", *, tier: str = "A", strip_rate: float | 
     sr = strip_rate if strip_rate is not None and strip_rate > 0 else strip_sale_rate(medicine, tier=tier)
     if sr <= 0:
         return 0.0
-    return sr / units_per_strip(medicine)
+    return round_money(sr / units_per_strip(medicine))
 
 
 def combined_base_qty(qty_tabs: float, qty_strips: float, medicine: "Medicine") -> float:
@@ -57,7 +79,7 @@ def resolve_pos_sale_line(
     strips = float(qty_strips or 0)
     base_qty = combined_base_qty(tabs, strips, medicine)
     strip_r = (
-        float(override_strip_rate)
+        round_money(float(override_strip_rate))
         if override_strip_rate is not None and override_strip_rate > 0
         else strip_sale_rate(medicine, tier=tier)
     )
@@ -74,7 +96,7 @@ def line_subtotal_before_tax(
     discount_pct: float = 0.0,
 ) -> float:
     base = float(qty_tabs or 0) * tab_rate + float(qty_strips or 0) * strip_rate
-    return base * (1 - float(discount_pct or 0) / 100.0)
+    return round_money(base * (1 - float(discount_pct or 0) / 100.0))
 
 
 def format_sale_qty_display(
@@ -106,12 +128,12 @@ def cost_pcs_from_mrp(mrp: float, strip_conversion_factor: int) -> float:
     val = float(mrp or 0)
     if val <= 0:
         return 0.0
-    return round(val / factor, 2)
+    return round_money(val / factor)
 
 
 def apply_cost_pcs_from_mrp(medicine: "Medicine") -> None:
     medicine.cost_pcs = cost_pcs_from_mrp(
-        float(medicine.mrp or 0),
+        round_money(float(medicine.mrp or 0)),
         int(medicine.strip_conversion_factor or 1),
     )
 

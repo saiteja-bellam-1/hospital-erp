@@ -69,6 +69,7 @@ _INPATIENT_ALL = [
     "upload_documents", "view_documents", "delete_documents",
     # B1/B2/B3/B6 — payer schemes, payer conversion, accept admission, gate pass
     "manage_payer_schemes", "convert_payer", "accept_admission", "issue_gate_pass",
+    "write_discharge_summary", "view_discharge_summary",
 ]
 
 
@@ -274,6 +275,8 @@ def _seed_module_permissions(db, ModulePermission):
         {"module_name": "inpatient", "permission_name": "convert_payer", "permission_description": "Change an admission's payer mode mid-stay (e.g., insurance disconnected → cash)", "category": "user"},
         {"module_name": "inpatient", "permission_name": "accept_admission", "permission_description": "Accept or reject an admission as the IP floor doctor", "category": "user"},
         {"module_name": "inpatient", "permission_name": "issue_gate_pass", "permission_description": "Issue a gate pass after discharge for security at exit", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "write_discharge_summary", "permission_description": "Author and finalize the clinical discharge summary", "category": "user"},
+        {"module_name": "inpatient", "permission_name": "view_discharge_summary", "permission_description": "View and print the discharge summary document", "category": "user"},
         # EHR
         {"module_name": "ehr", "permission_name": "view_records", "permission_description": "View patient electronic health records", "category": "user"},
         {"module_name": "ehr", "permission_name": "edit_records", "permission_description": "Edit patient records", "category": "user"},
@@ -338,6 +341,7 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
                 "view_roster",
                 "upload_documents", "view_documents",
                 "accept_admission",
+                "write_discharge_summary", "view_discharge_summary",
             ],
         },
         "nurse": {
@@ -373,6 +377,7 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
                 "manage_roster", "view_roster",
                 "upload_documents", "view_documents", "delete_documents",
                 "accept_admission", "convert_payer", "manage_payer_schemes",
+                "write_discharge_summary", "view_discharge_summary",
             ],
         },
         "billing_admin": {
@@ -387,6 +392,7 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
                 "manage_ancillary_catalog", "manage_surgery_packages", "manage_tpa",
                 "view_documents",
                 "manage_payer_schemes", "convert_payer", "issue_gate_pass",
+                "view_discharge_summary",
             ],
         },
         "receptionist": {
@@ -394,7 +400,7 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
             "billing": ["process_payments", "generate_invoices", "view_financial_reports"],
             "ehr": ["view_records", "view_history"],
             "inpatient": [
-                "view_occupancy", "admit_patients", "update_admission",
+                "view_occupancy", "admit_patients", "update_admission", "discharge_patients",
                 "record_vitals", "view_vitals",
                 "receive_deposits", "manage_reservations",
                 # Bill collection — receptionist needs to view, adjust, finalize,
@@ -404,19 +410,31 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
                 "manage_ancillary_charges", "manage_bill_splits", "issue_refunds",
                 "upload_documents", "view_documents",
                 "issue_gate_pass",
+                "view_discharge_summary",
+                "view_roster",
+                "view_mortality",
+                "manage_beds", "manage_wards", "set_room_rates",
+                "manage_ancillary_catalog", "manage_surgery_packages", "manage_tpa",
+                "manage_consent_templates",
             ],
         },
         "frontdesk": {
             "outpatient": ["schedule_appointments", "register_patients", "manage_queues", "view_appointments", "cancel_appointments"],
             "ehr": ["view_records", "view_history"],
             "inpatient": [
-                "view_occupancy", "admit_patients", "update_admission",
+                "view_occupancy", "admit_patients", "update_admission", "discharge_patients",
                 "record_vitals", "view_vitals",
                 "receive_deposits", "manage_reservations",
                 "view_bill", "generate_interim_bill", "finalize_bill",
                 "manage_ancillary_charges", "issue_refunds",
                 "view_documents",
                 "issue_gate_pass",
+                "view_discharge_summary",
+                "view_roster",
+                "view_mortality",
+                "manage_beds", "manage_wards", "set_room_rates",
+                "manage_ancillary_catalog", "manage_surgery_packages", "manage_tpa",
+                "manage_consent_templates",
             ],
         },
         "lab_admin": {

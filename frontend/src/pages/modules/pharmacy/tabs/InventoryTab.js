@@ -11,6 +11,7 @@ import { useToast } from '../../../../hooks/use-toast';
 import { Search, RefreshCw, AlertTriangle, Sliders, ScrollText } from 'lucide-react';
 import { errMsg } from '../../PharmacyModule';
 import { usePharmacyStore } from '../../../../contexts/PharmacyStoreContext';
+import { formatMoney } from '../../../../utils/pharmacyUnits';
 
 export default function InventoryTab() {
   const { toast } = useToast();
@@ -168,8 +169,8 @@ function TableForView({ view, data, onAdjust }) {
               <td className="py-2 pr-4">{b.medicine_name}</td>
               <td className="py-2 pr-4 font-mono text-xs">{b.batch_number}</td>
               <td className="py-2 pr-4">{b.quantity_in_stock}</td>
-              <td className="py-2 pr-4">₹{b.mrp}</td>
-              <td className="py-2 pr-4">₹{b.purchase_rate}</td>
+              <td className="py-2 pr-4">₹{formatMoney(b.mrp)}</td>
+              <td className="py-2 pr-4">₹{formatMoney(b.purchase_rate)}</td>
               <td className="py-2 pr-4 text-xs">{b.supplier_name || '—'}</td>
               <td className="py-2 text-right">
                 <Button size="sm" variant="outline" onClick={() => onAdjust(b)}>Adjust</Button>

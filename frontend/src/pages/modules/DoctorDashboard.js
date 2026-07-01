@@ -21,6 +21,7 @@ import MedicineLookupInput from '../../components/inpatient/MedicineLookupInput'
 import PrescriptionScheduleFields from '../../components/prescription/PrescriptionScheduleFields';
 import { BLANK_INPATIENT_RX_ITEM } from '../../utils/prescriptionSchedule';
 import { useToast } from '../../hooks/use-toast';
+import DischargeSummaryEditor from './inpatient/DischargeSummaryEditor';
 
 const DoctorDashboard = () => {
   const navigate = useNavigate();
@@ -63,6 +64,8 @@ const DoctorDashboard = () => {
   const [inpatientLabForm, setInpatientLabForm] = useState({ test_ids: [], priority: 'normal', notes: '' });
   const [inpatientLabAvailableTests, setInpatientLabAvailableTests] = useState([]);
   const [inpatientLabSearch, setInpatientLabSearch] = useState('');
+  const [showDischargeSummaryEditor, setShowDischargeSummaryEditor] = useState(false);
+  const [inpatientDoctorsList, setInpatientDoctorsList] = useState([]);
 
   // Preview state
   const [previewPrescription, setPreviewPrescription] = useState(null);
@@ -181,6 +184,9 @@ const DoctorDashboard = () => {
           const mod = (res.data || []).find(m => m.module_name === 'inpatient');
           if (mod?.is_enabled) {
             setInpatientEnabled(true);
+            axios.get('/api/inpatient/doctors')
+              .then(r => setInpatientDoctorsList(r.data || []))
+              .catch(() => {});
             axios.get('/api/inpatient/admissions', { params: { status: 'admitted' } })
               .then(r => {
                 const list = r.data?.items || (Array.isArray(r.data) ? r.data : []);
@@ -1682,6 +1688,9 @@ const DoctorDashboard = () => {
                 <Button size="sm" variant="outline" onClick={openInpatientLabDialog}>
                   <TestTube className="h-3.5 w-3.5 mr-1" /> Order Lab Test
                 </Button>
+                <Button size="sm" variant="outline" onClick={() => setShowDischargeSummaryEditor(true)}>
+                  <FileText className="h-3.5 w-3.5 mr-1" /> Discharge Summary
+                </Button>
                 <Button size="sm" variant="ghost" onClick={refreshManageAdmission} className="ml-auto">
                   <RefreshCw className="h-3.5 w-3.5 mr-1" /> Refresh
                 </Button>
@@ -2728,6 +2737,14 @@ const DoctorDashboard = () => {
           </div>
         </DialogContent>
       </Dialog>
+
+      <DischargeSummaryEditor
+        open={showDischargeSummaryEditor && !!wardRoundAdmission}
+        onClose={() => setShowDischargeSummaryEditor(false)}
+        admissionId={wardRoundAdmission?.id}
+        admissionLabel={wardRoundAdmission?.patient_name}
+        doctorsList={inpatientDoctorsList}
+      />
     </div>
   );
 };

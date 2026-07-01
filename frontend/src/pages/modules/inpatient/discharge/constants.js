@@ -8,10 +8,8 @@ export const PAYMENT_METHODS = [
 
 export const CHECKOUT_STEPS = [
   { id: 1, key: 'bill', label: 'Bill & Settle' },
-  { id: 2, key: 'clinical', label: 'Clinical' },
-  { id: 3, key: 'takehome', label: 'Take-home Rx' },
-  { id: 4, key: 'confirm', label: 'Confirm' },
-  { id: 5, key: 'gatepass', label: 'Gate Pass' },
+  { id: 2, key: 'summary', label: 'Discharge Summary' },
+  { id: 3, key: 'gatepass', label: 'Gate Pass' },
 ];
 
 export const EMPTY_CLINICAL_FORM = {
@@ -81,8 +79,8 @@ export function computeDerived(bill, balance, admission) {
 /** Pick the first incomplete step based on server state. */
 export function resolveStartStep({ admission, finalBill, gatePass, derived }) {
   if (!admission || !derived) return 1;
-  if (gatePass) return 5;
-  if (derived.isDischarged) return 5;
+  if (gatePass) return 3;
+  if (derived.isDischarged) return 3;
   if (finalBill) return 2;
   return 1;
 }

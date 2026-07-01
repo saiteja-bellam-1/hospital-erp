@@ -25,6 +25,8 @@ import MedicineLookupInput from '../../components/inpatient/MedicineLookupInput'
 import PrescriptionScheduleFields from '../../components/prescription/PrescriptionScheduleFields';
 import { BLANK_INPATIENT_RX_ITEM, serializeTakeHomeMed } from '../../utils/prescriptionSchedule';
 import DischargeCheckoutPage from './inpatient/DischargeCheckoutPage';
+import DischargeHistory from './inpatient/discharge/DischargeHistory';
+import DischargeSummaryEditor from './inpatient/DischargeSummaryEditor';
 import TakeHomeMedicinesSection from '../../components/prescription/TakeHomeMedicinesSection';
 import {
   Plus, Search, Edit2, Trash2, Bed, Activity, Clock, User, Users,
@@ -72,6 +74,7 @@ const TAB_TO_PATH = {
   admissions: 'admissions',
   triage: 'triage',
   discharge: 'discharge',
+  'discharge-history': 'discharge-history',
   ot: 'ot',
   preauth: 'preauth',
   reservations: 'reservations',
@@ -140,6 +143,19 @@ const InpatientModule = () => {
   // Nurse-only users get a nurse-scoped Visit form (no Doctor Visit option,
   // visitor list limited to nurses, and the form defaults to nurse_visit).
   const isNurseOnly = isNurseRole && !isDoctorRole && !isAdminLike;
+  // Multi-role users: if ANY role is checkout-desk staff, show Leave / Discharge.
+  // Do not hide just because they also hold doctor, lab tech, etc.
+  const CHECKOUT_DESK_ROLES = ['receptionist', 'frontdesk', 'billing_admin', 'inpatient_admin'];
+  const hasCheckoutDeskRole = useMemo(
+    () => isAdminLike || userRoles.some(r => CHECKOUT_DESK_ROLES.includes(r)),
+    [userRoles, isAdminLike],
+  );
+  const canShowCheckoutActions = useMemo(() => {
+    if (hasCheckoutDeskRole) return true;
+    return ip('issue_gate_pass') || ip('finalize_bill');
+  }, [hasCheckoutDeskRole, ip]);
+  const canShowLeave = canShowCheckoutActions && (ip('update_admission') || hasCheckoutDeskRole);
+  const canShowDischarge = canShowCheckoutActions && (ip('discharge_patients') || hasCheckoutDeskRole);
   const defaultVisitType = isNurseOnly ? 'nurse_visit' : 'doctor_visit';
   // activeTab is derived from the URL — when the user clicks a nav item the
   // browser navigates and this re-derives. Setting activeTab now means navigating.
@@ -202,6 +218,7 @@ const InpatientModule = () => {
   const clinicalActionsLocked = activityAdmission?.acceptance_status === 'pending'
     || activityAdmission?.acceptance_status === 'rejected';
   const [activityTab, setActivityTab] = useState('visits');
+  const [showActivitySummaryEditor, setShowActivitySummaryEditor] = useState(false);
   const [visits, setVisits] = useState([]);
   const [billData, setBillData] = useState(null);
   const [showVisitDialog, setShowVisitDialog] = useState(false);
@@ -461,6 +478,7 @@ const InpatientModule = () => {
   });
   const [rosterRole, setRosterRole] = useState('nurse');  // 'nurse' | 'doctor'
   const [checkoutAdmissionId, setCheckoutAdmissionId] = useState(null);
+  const [dischargeWorklistKey, setDischargeWorklistKey] = useState(0);
   const [rosterGrid, setRosterGrid] = useState(null);
   const [rosterCoverage, setRosterCoverage] = useState([]);
   const [rosterMinPerShift, setRosterMinPerShift] = useState(2);
@@ -3314,9 +3332,13 @@ const InpatientModule = () => {
 
   // PDF
   const handlePrintDischargePdf = async (admissionId) => {
-    const ok = await printPdfFromUrl(`/api/inpatient/admissions/${admissionId}/discharge/pdf`);
+    const ok = await printPdfFromUrl(`/api/inpatient/admissions/${admissionId}/discharge-summary/pdf`);
     if (!ok) {
-      toast({ variant: 'destructive', title: 'Error', description: 'Failed to generate or print discharge PDF' });
+      toast({
+        variant: 'destructive',
+        title: 'Error',
+        description: 'Discharge summary must be finalized by the doctor before printing',
+      });
     }
   };
 
@@ -3701,7 +3723,7 @@ const InpatientModule = () => {
                             <td className="py-2 text-sm">{daysSince(adm.admission_date)}</td>
                             <td className="py-2">
                               <div className="flex gap-1" onClick={e => e.stopPropagation()}>
-                                {adm.status === 'admitted' && ip('discharge_patients') && (
+                                {adm.status === 'admitted' && canShowDischarge && (
                                   <Button variant="ghost" size="sm" className="text-red-500" onClick={() => openDischargeCheckout(adm)} title="Discharge &amp; Exit">
                                     <ChevronRight className="h-4 w-4" />
                                   </Button>
@@ -3757,7 +3779,7 @@ const InpatientModule = () => {
                         </div>
                       )}
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center justify-end gap-2 shrink-0">
                       <Button
                         size="sm"
                         variant="outline"
@@ -3778,12 +3800,21 @@ const InpatientModule = () => {
                       )}
                       {activityAdmission.status === 'admitted' && (
                         <>
-                          {ip('update_admission') && (
+                          {ip('write_discharge_summary') && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => setShowActivitySummaryEditor(true)}
+                            >
+                              <FileText className="h-4 w-4 mr-1" /> Discharge Summary
+                            </Button>
+                          )}
+                          {canShowLeave && (
                             <Button size="sm" variant="outline" onClick={() => openLoaDialog(activityAdmission)}>
                               <CalendarRange className="h-4 w-4 mr-1" /> Leave
                             </Button>
                           )}
-                          {ip('discharge_patients') && (
+                          {canShowDischarge && (
                             <Button size="sm" variant="outline" className="text-red-600" onClick={() => openDischargeCheckout(activityAdmission)}>Discharge &amp; Exit</Button>
                           )}
                         </>
@@ -5478,18 +5509,29 @@ const InpatientModule = () => {
                 onSelectAdmission={setCheckoutAdmissionId}
                 onBack={() => {
                   setCheckoutAdmissionId(null);
+                  setDischargeWorklistKey(k => k + 1);
                   fetchAdmissions('admitted');
                   fetchAdmissions('discharged');
                 }}
+                worklistRefreshKey={dischargeWorklistKey}
                 permissions={{
                   receive_deposits:   ip('receive_deposits'),
                   finalize_bill:      ip('finalize_bill'),
                   discharge_patients: ip('discharge_patients'),
                   issue_gate_pass:    ip('issue_gate_pass'),
                   issue_refunds:      ip('issue_refunds'),
+                  write_discharge_summary: ip('write_discharge_summary'),
+                  view_discharge_summary:  ip('view_discharge_summary'),
                 }}
+                doctorsList={doctorsList}
                 onDeathDischarge={handleCheckoutDeath}
               />
+            </div>
+          )}
+
+          {activeTab === 'discharge-history' && (
+            <div className="p-6 overflow-y-auto h-full">
+              <DischargeHistory />
             </div>
           )}
 
@@ -10003,6 +10045,14 @@ const InpatientModule = () => {
           </div>
         </DialogContent>
       </Dialog>
+
+      <DischargeSummaryEditor
+        open={showActivitySummaryEditor && !!activityAdmission}
+        onClose={() => setShowActivitySummaryEditor(false)}
+        admissionId={activityAdmission?.id}
+        admissionLabel={activityAdmission?.patient_name}
+        doctorsList={doctorsList}
+      />
 
       {/* Confirm Dialog */}
       <ConfirmDialog open={confirmState.open} title={confirmState.title} message={confirmState.message}

@@ -14,7 +14,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -59,6 +59,8 @@ from app.utils.pharmacy_pricing import (
     tab_sale_rate,
     strip_sale_rate,
     apply_cost_pcs_from_mrp,
+    apply_medicine_price_rounding,
+    round_money,
 )
 from app.services.audit_service import log_action
 from app.services.pharmacy_store_service import (
@@ -498,6 +500,16 @@ class MedicineIn(BaseModel):
     max_qty: int = 0
     reorder_qty: int = 0
 
+    @field_validator(
+        "unit_price", "mrp", "purchase_rate", "rate_a", "rate_b", "cost_pcs",
+        "default_discount_pct", "item_discount_pct", mode="before",
+    )
+    @classmethod
+    def _round_money_fields(cls, v):
+        if v is None or v == "":
+            return 0.0
+        return round_money(v)
+
 
 class MedicineOut(MedicineIn):
     id: int
@@ -637,6 +649,11 @@ class MapUnmappedMedicineIn(BaseModel):
     dosage_form: Optional[str] = None
     merge_into_medicine_id: Optional[int] = None
 
+    @field_validator("rate_a", mode="before")
+    @classmethod
+    def _round_rate_a(cls, v):
+        return round_money(v)
+
 
 @router.get("/medicines/unmapped", response_model=List[UnmappedMedicineOut])
 def list_unmapped_medicines(
@@ -751,6 +768,7 @@ def create_medicine(
         hospital_id=current_user.hospital_id,
         **data.model_dump(),
     )
+    apply_medicine_price_rounding(row)
     apply_cost_pcs_from_mrp(row)
     db.add(row); db.commit(); db.refresh(row)
     _audit(db, current_user, "create_medicine", "medicine", row.id,
@@ -770,6 +788,7 @@ def update_medicine(
     _ensure_active_or_404(row, "Medicine")
     for k, v in data.model_dump().items():
         setattr(row, k, v)
+    apply_medicine_price_rounding(row)
     apply_cost_pcs_from_mrp(row)
     db.commit(); db.refresh(row)
     _audit(db, current_user, "update_medicine", "medicine", row.id,
@@ -824,12 +843,32 @@ def list_hsn(
     return q.order_by(PharmacyHSN.code).all()
 
 
+def _check_duplicate_hsn_code(
+    db: Session, *, hospital_id: int, code: str, exclude_hid: Optional[int] = None,
+) -> None:
+    """Reject duplicate HSN codes within a hospital (case-insensitive trim)."""
+    normalized = (code or "").strip()
+    if not normalized:
+        return
+    q = db.query(PharmacyHSN).filter(
+        PharmacyHSN.hospital_id == hospital_id,
+        sa_func.lower(PharmacyHSN.code) == normalized.lower(),
+    )
+    if exclude_hid is not None:
+        q = q.filter(PharmacyHSN.id != exclude_hid)
+    if q.first():
+        raise HTTPException(status_code=400, detail="HSN code already exists")
+
+
 @router.post("/hsn", response_model=HSNOut, status_code=201)
 def create_hsn(
     data: HSNIn,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "manage_hsn_tax")),
 ):
+    _check_duplicate_hsn_code(
+        db, hospital_id=current_user.hospital_id, code=data.code,
+    )
     row = PharmacyHSN(hospital_id=current_user.hospital_id, **data.model_dump())
     db.add(row); db.commit(); db.refresh(row)
     _audit(db, current_user, "create_hsn", "pharmacy_hsn", row.id,
@@ -847,6 +886,9 @@ def update_hsn(
         PharmacyHSN.id == hid, PharmacyHSN.hospital_id == current_user.hospital_id,
     ).first()
     _ensure_active_or_404(row, "HSN")
+    _check_duplicate_hsn_code(
+        db, hospital_id=current_user.hospital_id, code=data.code, exclude_hid=row.id,
+    )
     for k, v in data.model_dump().items():
         setattr(row, k, v)
     db.commit(); db.refresh(row)
@@ -886,6 +928,16 @@ class MedicinePricingIn(BaseModel):
     default_discount_pct: Optional[float] = None
     hsn_id: Optional[int] = None
 
+    @field_validator(
+        "mrp", "purchase_rate", "rate_a", "rate_b", "cost_pcs", "default_discount_pct",
+        mode="before",
+    )
+    @classmethod
+    def _round_optional_money(cls, v):
+        if v is None or v == "":
+            return None
+        return round_money(v)
+
 
 @router.put("/medicines/{mid}/pricing", response_model=MedicineOut)
 def update_medicine_pricing(
@@ -907,9 +959,10 @@ def update_medicine_pricing(
         return row
     # Keep legacy unit_price tracking rate_a when rate_a changes
     if "rate_a" in diff and (data.rate_a is not None):
-        row.unit_price = data.rate_a
+        row.unit_price = round_money(data.rate_a)
     if "mrp" in diff or "strip_conversion_factor" in diff:
         apply_cost_pcs_from_mrp(row)
+    apply_medicine_price_rounding(row)
     db.commit(); db.refresh(row)
     _audit(db, current_user, "update_medicine_pricing", "medicine", row.id,
            f"Pricing changed for medicine #{row.id}", details=diff)
@@ -1308,11 +1361,19 @@ class PurchaseItemIn(BaseModel):
     free_quantity: float = 0.0
     purchase_rate: float = Field(..., ge=0)
     discount_pct: float = 0.0
+    # Ignored if sent — tax is always taken from the medicine's HSN at save time.
     hsn_id: Optional[int] = None
     # Last-day-of-month for the batch's expiry. Optional only for backward
     # compatibility with the prior "no expiry" UI; frontends should always send
     # this for perishable medicines.
     expiry_date: Optional[date] = None
+
+    @field_validator("mrp", "purchase_rate", "discount_pct", mode="before")
+    @classmethod
+    def _round_purchase_money(cls, v):
+        if v is None or v == "":
+            return 0.0
+        return round_money(v)
 
 
 class PurchaseItemOut(PurchaseItemIn):
@@ -1409,7 +1470,21 @@ def _effective_cost(qty: float, free: float, rate: float) -> float:
     total = (qty or 0) + (free or 0)
     if total <= 0:
         return rate or 0.0
-    return ((qty or 0) * (rate or 0)) / total
+    return round_money(((qty or 0) * (rate or 0)) / total)
+
+
+def _hsn_row_for_purchase_item(db: Session, item) -> Optional[PharmacyHSN]:
+    """Resolve HSN for a purchase line — medicine master is source of truth."""
+    hsn_id = item.hsn_id
+    if not hsn_id and getattr(item, "medicine_id", None):
+        med = db.query(Medicine).filter(Medicine.id == item.medicine_id).first()
+        if med and med.hsn_id:
+            hsn_id = med.hsn_id
+            if hasattr(item, "hsn_id"):
+                item.hsn_id = hsn_id
+    if not hsn_id:
+        return None
+    return db.query(PharmacyHSN).filter(PharmacyHSN.id == hsn_id).first()
 
 
 def _compute_item_line(item: dict, hsn_row: Optional[PharmacyHSN]) -> dict:
@@ -1440,7 +1515,7 @@ def _recompute_purchase_totals(purchase: PharmacyPurchase, db: Session) -> None:
     tax = 0.0
     grand = 0.0
     for it in purchase.items:
-        hsn_row = db.query(PharmacyHSN).filter(PharmacyHSN.id == it.hsn_id).first() if it.hsn_id else None
+        hsn_row = _hsn_row_for_purchase_item(db, it)
         comp = _compute_item_line({
             "quantity": it.quantity, "purchase_rate": it.purchase_rate, "discount_pct": it.discount_pct,
         }, hsn_row)
@@ -1711,7 +1786,7 @@ def create_purchase(
             expiry_date=item.expiry_date or _EXPIRY_SENTINEL,
             mrp=item.mrp, quantity=item.quantity, free_quantity=item.free_quantity,
             purchase_rate=item.purchase_rate, discount_pct=item.discount_pct,
-            hsn_id=item.hsn_id,
+            hsn_id=med.hsn_id,
         )
         db.add(row)
     db.flush()
@@ -1790,13 +1865,18 @@ def edit_purchase(
         db.delete(old)
     db.flush()
     for item in data.items:
+        med = db.query(Medicine).filter(
+            Medicine.id == item.medicine_id, Medicine.hospital_id == current_user.hospital_id,
+        ).first()
+        if not med:
+            raise HTTPException(status_code=400, detail=f"Invalid medicine_id {item.medicine_id}")
         db.add(PharmacyPurchaseItem(
             purchase_id=purchase.id, medicine_id=item.medicine_id,
             batch_number=item.batch_number,
             expiry_date=item.expiry_date or _EXPIRY_SENTINEL,
             mrp=item.mrp, quantity=item.quantity, free_quantity=item.free_quantity,
             purchase_rate=item.purchase_rate, discount_pct=item.discount_pct,
-            hsn_id=item.hsn_id,
+            hsn_id=med.hsn_id,
         ))
     db.flush(); db.refresh(purchase)
     _recompute_purchase_totals(purchase, db)
@@ -2097,6 +2177,13 @@ class SaleItemIn(BaseModel):
     rate_tier: str = Field("A", pattern="^[AB]$")
     discount_pct: float = 0.0
     barcode_scanned: bool = False
+
+    @field_validator("rate", "discount_pct", mode="before")
+    @classmethod
+    def _round_sale_money(cls, v):
+        if v is None or v == "":
+            return None if v is None else 0.0
+        return round_money(v)
 
 
 class SaleItemOut(BaseModel):

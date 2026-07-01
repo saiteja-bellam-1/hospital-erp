@@ -36,6 +36,7 @@ from app.models.hospital import Hospital
 from app.models.billing import Bill, BillItem
 from app.models.inpatient import (
     RoomManagement, Admission, DischargeRecord, DAMARecord,
+    AdmissionDischargeSummary,
     PatientVisit, InpatientRateConfig, OTSchedule, Bed, AdmissionDocument, NursingNote,
     VitalSigns, MedicationAdministration,
     AdmissionDeposit, AncillaryServiceCatalog, AdmissionAncillaryCharge, Procedure,
@@ -530,6 +531,64 @@ class TakeHomeMedItem(BaseModel):
     duration: Optional[str] = Field(default=None, max_length=100)
     quantity: Optional[int] = Field(default=None, ge=1)
     instructions: Optional[str] = None
+
+
+class DischargeSummaryUpsert(BaseModel):
+    provisional_diagnosis: Optional[str] = None
+    primary_diagnosis: Optional[str] = None
+    past_history: Optional[str] = None
+    present_medical_history: Optional[str] = None
+    findings_at_admission: Optional[str] = None
+    investigations_summary: Optional[str] = None
+    course_in_hospital: Optional[str] = None
+    procedure_notes: Optional[str] = None
+    discharge_advice: Optional[str] = None
+    follow_up: Optional[str] = None
+    discharge_type: Optional[str] = Field(default=None, pattern="^(normal|against_advice|transfer|death)$")
+    condition_on_discharge: Optional[str] = Field(
+        default=None, pattern="^(stable|improved|unchanged|critical)$")
+    take_home_medications: Optional[List[TakeHomeMedItem]] = None
+    follow_up_date: Optional[datetime] = None
+    diet_instructions: Optional[str] = None
+    activity_restrictions: Optional[str] = None
+    primary_doctor_id: Optional[int] = None
+    secondary_doctor_id: Optional[int] = None
+
+
+class DischargeSummaryResponse(BaseModel):
+    id: int
+    admission_id: int
+    status: str
+    provisional_diagnosis: Optional[str] = None
+    primary_diagnosis: Optional[str] = None
+    past_history: Optional[str] = None
+    present_medical_history: Optional[str] = None
+    findings_at_admission: Optional[str] = None
+    investigations_summary: Optional[str] = None
+    course_in_hospital: Optional[str] = None
+    procedure_notes: Optional[str] = None
+    discharge_advice: Optional[str] = None
+    follow_up: Optional[str] = None
+    discharge_type: Optional[str] = None
+    condition_on_discharge: Optional[str] = None
+    take_home_medications: Optional[List[dict]] = None
+    follow_up_date: Optional[datetime] = None
+    diet_instructions: Optional[str] = None
+    activity_restrictions: Optional[str] = None
+    primary_doctor_id: Optional[int] = None
+    secondary_doctor_id: Optional[int] = None
+    primary_doctor_name: Optional[str] = None
+    secondary_doctor_name: Optional[str] = None
+    written_by_name: Optional[str] = None
+    finalized_by_name: Optional[str] = None
+    written_at: Optional[datetime] = None
+    finalized_at: Optional[datetime] = None
+    locked_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
 
 
 class DischargeCreate(BaseModel):
@@ -3140,6 +3199,264 @@ async def delete_visit(
 
 
 # ============================================================
+# Discharge summary (doctor-authored, reception prints)
+# ============================================================
+
+def _doctor_display_name(user: Optional[User]) -> Optional[str]:
+    if not user:
+        return None
+    return f"Dr. {user.first_name} {user.last_name}".strip()
+
+
+def _summary_to_response(db: Session, summary: AdmissionDischargeSummary) -> dict:
+    primary = db.query(User).filter(User.id == summary.primary_doctor_id).first() if summary.primary_doctor_id else None
+    secondary = db.query(User).filter(User.id == summary.secondary_doctor_id).first() if summary.secondary_doctor_id else None
+    written = db.query(User).filter(User.id == summary.written_by_id).first() if summary.written_by_id else None
+    finalized = db.query(User).filter(User.id == summary.finalized_by_id).first() if summary.finalized_by_id else None
+    return {
+        **{c.name: getattr(summary, c.name) for c in summary.__table__.columns},
+        "primary_doctor_name": _doctor_display_name(primary),
+        "secondary_doctor_name": _doctor_display_name(secondary),
+        "written_by_name": _doctor_display_name(written) or (f"{written.first_name} {written.last_name}" if written else None),
+        "finalized_by_name": _doctor_display_name(finalized) or (f"{finalized.first_name} {finalized.last_name}" if finalized else None),
+    }
+
+
+def _get_or_create_summary(db: Session, admission_id: int) -> AdmissionDischargeSummary:
+    summary = db.query(AdmissionDischargeSummary).filter(
+        AdmissionDischargeSummary.admission_id == admission_id,
+    ).first()
+    if summary:
+        return summary
+    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    if not admission:
+        raise HTTPException(status_code=404, detail="Admission not found")
+    summary = AdmissionDischargeSummary(
+        admission_id=admission_id,
+        primary_doctor_id=admission.attending_physician_id or admission.admitting_doctor_id,
+        discharge_type="normal",
+        condition_on_discharge="stable",
+    )
+    db.add(summary)
+    db.flush()
+    return summary
+
+
+def _build_summary_pdf_payload(db: Session, admission: Admission, summary: AdmissionDischargeSummary, discharge: Optional[DischargeRecord] = None) -> dict:
+    patient = admission.patient
+    room = admission.room
+    primary = summary.primary_doctor or admission.attending_physician or admission.admitting_doctor
+    secondary = summary.secondary_doctor
+    discharge_date = discharge.discharge_date if discharge else None
+    ward_bits = [room.room_type.replace('_', ' ').title() if room and room.room_type else '']
+    if room and room.ward:
+        ward_bits.append(room.ward)
+    if room and room.department:
+        ward_bits.append(room.department)
+    ward_type = ' / '.join([b for b in ward_bits if b]) or (room.room_type if room else '')
+
+    return {
+        "admission_number": admission.admission_number,
+        "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "N/A",
+        "mrn": (patient.mrn or patient.patient_id or "") if patient else "",
+        "patient_phone": (patient.primary_phone or "") if patient else "",
+        "age": _patient_age(patient) or "",
+        "age_display": _patient_age_display(patient),
+        "gender": patient.gender if patient else "",
+        "village": (patient.village or "") if patient else "",
+        "district": (patient.district or "") if patient else "",
+        "room_number": room.room_number if room else "",
+        "bed_label": admission.bed.bed_label if admission.bed else (admission.bed_number or ""),
+        "ward_type": ward_type,
+        "admission_type": (admission.admission_type or "").upper(),
+        "doctor_name": _doctor_display_name(primary) or "N/A",
+        "doctor_department": getattr(primary, "specialization", None) or "",
+        "secondary_doctor_name": _doctor_display_name(secondary) or "",
+        "secondary_doctor_department": getattr(secondary, "specialization", None) if secondary else "",
+        "admission_date": admission.admission_date.strftime("%d-%b-%Y %H:%M") if admission.admission_date else "",
+        "discharge_date": discharge_date.strftime("%d-%b-%Y %H:%M") if discharge_date else "",
+        "discharge_type": summary.discharge_type or (discharge.discharge_type if discharge else "normal"),
+        "condition_on_admission": admission.condition_on_admission or "",
+        "condition_on_discharge": summary.condition_on_discharge or (discharge.condition_on_discharge if discharge else ""),
+        "provisional_diagnosis": summary.provisional_diagnosis or "",
+        "primary_diagnosis": summary.primary_diagnosis or "",
+        "past_history": summary.past_history or "",
+        "present_medical_history": summary.present_medical_history or "",
+        "findings_at_admission": summary.findings_at_admission or "",
+        "investigations_summary": summary.investigations_summary or "",
+        "course_in_hospital": summary.course_in_hospital or "",
+        "procedure_notes": summary.procedure_notes or "",
+        "discharge_advice": summary.discharge_advice or "",
+        "follow_up": summary.follow_up or "",
+        "diagnosis": summary.primary_diagnosis or "",
+        "treatment": summary.course_in_hospital or "",
+        "discharge_summary": summary.course_in_hospital or "",
+        "take_home_medications": summary.take_home_medications or [],
+        "follow_up_date": summary.follow_up_date.strftime("%d/%m/%Y") if summary.follow_up_date else "",
+        "diet_instructions": summary.diet_instructions or "",
+        "activity_restrictions": summary.activity_restrictions or "",
+        "consultant_name": _doctor_display_name(primary) or _doctor_display_name(summary.written_by) or "",
+    }
+
+
+def _apply_summary_to_discharge_create(summary: AdmissionDischargeSummary, data: DischargeCreate) -> DischargeCreate:
+    """Fill discharge payload from the finalized summary when clinical fields are omitted."""
+    payload = data.model_dump()
+    if not payload.get("discharge_type"):
+        payload["discharge_type"] = summary.discharge_type or "normal"
+    if not payload.get("condition_on_discharge"):
+        payload["condition_on_discharge"] = summary.condition_on_discharge or "stable"
+    if not payload.get("diagnosis_on_discharge"):
+        payload["diagnosis_on_discharge"] = summary.primary_diagnosis
+    if not payload.get("treatment_given"):
+        parts = [p for p in (summary.course_in_hospital, summary.procedure_notes) if p]
+        payload["treatment_given"] = "\n\n".join(parts) if parts else None
+    if not payload.get("discharge_summary"):
+        parts = [p for p in (summary.discharge_advice, summary.course_in_hospital) if p]
+        payload["discharge_summary"] = "\n\n".join(parts) if parts else None
+    if not payload.get("follow_up_instructions"):
+        payload["follow_up_instructions"] = summary.follow_up
+    if not payload.get("follow_up_date"):
+        payload["follow_up_date"] = summary.follow_up_date
+    if not payload.get("diet_instructions"):
+        payload["diet_instructions"] = summary.diet_instructions
+    if not payload.get("activity_restrictions"):
+        payload["activity_restrictions"] = summary.activity_restrictions
+    if not payload.get("take_home_medications") and summary.take_home_medications:
+        payload["take_home_medications"] = summary.take_home_medications
+    return DischargeCreate(**payload)
+
+
+@router.get("/admissions/{admission_id}/discharge-summary", response_model=DischargeSummaryResponse)
+async def get_discharge_summary(
+    admission_id: int,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_discharge_summary")),
+    db: Session = Depends(get_db),
+):
+    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    if not admission:
+        raise HTTPException(status_code=404, detail="Admission not found")
+    summary = db.query(AdmissionDischargeSummary).filter(
+        AdmissionDischargeSummary.admission_id == admission_id,
+    ).first()
+    if not summary:
+        raise HTTPException(status_code=404, detail="Discharge summary not started")
+    return _summary_to_response(db, summary)
+
+
+@router.put("/admissions/{admission_id}/discharge-summary", response_model=DischargeSummaryResponse)
+async def upsert_discharge_summary(
+    admission_id: int,
+    data: DischargeSummaryUpsert,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "write_discharge_summary")),
+    db: Session = Depends(get_db),
+):
+    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    if not admission:
+        raise HTTPException(status_code=404, detail="Admission not found")
+    if admission.status != "admitted":
+        raise HTTPException(status_code=400, detail="Summary can only be edited for active admissions")
+    summary = _get_or_create_summary(db, admission_id)
+    if summary.status == "locked":
+        raise HTTPException(status_code=400, detail="Discharge summary is locked after discharge")
+
+    update_data = data.model_dump(exclude_unset=True)
+    meds = update_data.pop("take_home_medications", None)
+    if meds is not None:
+        summary.take_home_medications = [
+            m.model_dump() if hasattr(m, "model_dump") else m for m in meds
+        ]
+    for k, v in update_data.items():
+        setattr(summary, k, v)
+    if not summary.written_by_id:
+        summary.written_by_id = current_user.id
+        summary.written_at = datetime.now()
+    summary.status = "draft"
+    db.commit()
+    db.refresh(summary)
+    log_action(db, current_user, "update_discharge_summary", "inpatient", "AdmissionDischargeSummary", summary.id,
+               f"Updated discharge summary for admission {admission.admission_number}")
+    return _summary_to_response(db, summary)
+
+
+@router.post("/admissions/{admission_id}/discharge-summary/finalize", response_model=DischargeSummaryResponse)
+async def finalize_discharge_summary(
+    admission_id: int,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "write_discharge_summary")),
+    db: Session = Depends(get_db),
+):
+    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    if not admission:
+        raise HTTPException(status_code=404, detail="Admission not found")
+    if admission.status != "admitted":
+        raise HTTPException(status_code=400, detail="Summary can only be finalized for active admissions")
+    summary = _get_or_create_summary(db, admission_id)
+    if summary.status == "locked":
+        raise HTTPException(status_code=400, detail="Discharge summary is already locked")
+    if not (summary.primary_diagnosis or "").strip():
+        raise HTTPException(status_code=400, detail="Primary diagnosis is required before finalizing")
+    summary.status = "ready"
+    summary.finalized_by_id = current_user.id
+    summary.finalized_at = datetime.now()
+    if not summary.written_by_id:
+        summary.written_by_id = current_user.id
+        summary.written_at = datetime.now()
+    db.commit()
+    db.refresh(summary)
+    log_action(db, current_user, "finalize_discharge_summary", "inpatient", "AdmissionDischargeSummary", summary.id,
+               f"Finalized discharge summary for admission {admission.admission_number}")
+    return _summary_to_response(db, summary)
+
+
+@router.get("/admissions/{admission_id}/discharge-summary/pdf")
+async def get_discharge_summary_pdf(
+    admission_id: int,
+    include_header: bool = Query(True),
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_discharge_summary")),
+    db: Session = Depends(get_db),
+):
+    admission = db.query(Admission).options(
+        joinedload(Admission.patient),
+        joinedload(Admission.room),
+        joinedload(Admission.bed),
+        joinedload(Admission.admitting_doctor),
+        joinedload(Admission.attending_physician),
+        joinedload(Admission.discharge),
+    ).filter(Admission.id == admission_id).first()
+    if not admission:
+        raise HTTPException(status_code=404, detail="Admission not found")
+    summary = db.query(AdmissionDischargeSummary).options(
+        joinedload(AdmissionDischargeSummary.primary_doctor),
+        joinedload(AdmissionDischargeSummary.secondary_doctor),
+        joinedload(AdmissionDischargeSummary.written_by),
+    ).filter(AdmissionDischargeSummary.admission_id == admission_id).first()
+    if not summary:
+        raise HTTPException(status_code=404, detail="Discharge summary not found")
+    if summary.status not in ("ready", "locked"):
+        raise HTTPException(
+            status_code=400,
+            detail="Discharge summary must be finalized by the doctor before printing",
+        )
+    hospital = _get_hospital(db, current_user)
+    hospital_info = {
+        "name": hospital.name,
+        "address": hospital.address or "",
+        "phone": hospital.phone or "",
+        "email": hospital.email or "",
+        "logo_url": hospital.logo_url if hasattr(hospital, "logo_url") else "",
+        "hospital_subname": hospital.hospital_subname if hasattr(hospital, "hospital_subname") else "",
+    }
+    discharge_data = _build_summary_pdf_payload(db, admission, summary, admission.discharge)
+    pdf_kwargs = pdf_gen_kwargs(db, current_user.hospital_id, 'discharge_summary')
+    pdf_kwargs['include_header'] = include_header
+    pdf_buffer = pdf_service.generate_discharge_summary_pdf(
+        discharge_data, hospital_info, **pdf_kwargs,
+    )
+    filename = f"DischargeSummary_{admission.admission_number}.pdf"
+    return _inline_pdf_response(pdf_buffer, filename)
+
+
+# ============================================================
 # Discharge
 # ============================================================
 
@@ -3155,6 +3472,21 @@ async def discharge_patient(
         raise HTTPException(status_code=404, detail="Admission not found")
     if admission.status != "admitted":
         raise HTTPException(status_code=400, detail="Patient is not currently admitted")
+
+    summary_doc = db.query(AdmissionDischargeSummary).filter(
+        AdmissionDischargeSummary.admission_id == admission_id,
+    ).first()
+    is_protected_exit_early = data.discharge_type in ("death", "against_advice")
+    if not is_protected_exit_early and (not summary_doc or summary_doc.status not in ("ready", "locked")):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "discharge_summary_not_ready",
+                "message": "The doctor must finalize the discharge summary before clinical discharge.",
+            },
+        )
+    if summary_doc and summary_doc.status == "ready":
+        data = _apply_summary_to_discharge_create(summary_doc, data)
 
     # An active LOA means the patient is off the ward. Discharge would be
     # incoherent — close the LOA first or mark it no-show, then discharge.
@@ -3323,6 +3655,10 @@ async def discharge_patient(
         total_charges=total_charges,
     )
     db.add(discharge)
+
+    if summary_doc and summary_doc.status == "ready":
+        summary_doc.status = "locked"
+        summary_doc.locked_at = datetime.now()
 
     # Update admission status
     admission.status = "discharged"
