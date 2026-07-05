@@ -5,7 +5,7 @@ import uuid
 import pytest
 
 
-def test_duplicate_hsn_code_rejected(client, auth_headers):
+def test_duplicate_hsn_same_tax_rejected(client, auth_headers):
     code = f"30{uuid.uuid4().hex[:6]}"
     body = {"code": code, "description": "Test HSN", "sgst_pct": 6, "cgst_pct": 6}
     r1 = client.post("/api/pharmacy/hsn", headers=auth_headers, json=body)
@@ -13,7 +13,24 @@ def test_duplicate_hsn_code_rejected(client, auth_headers):
 
     r2 = client.post("/api/pharmacy/hsn", headers=auth_headers, json=body)
     assert r2.status_code == 400
-    assert "already exists" in r2.json()["detail"].lower()
+    assert "same" in r2.json()["detail"].lower()
+
+
+def test_same_hsn_code_different_tax_allowed(client, auth_headers):
+    code = f"30{uuid.uuid4().hex[:6]}"
+    r1 = client.post(
+        "/api/pharmacy/hsn", headers=auth_headers,
+        json={"code": code, "sgst_pct": 6, "cgst_pct": 6},
+    )
+    assert r1.status_code == 201, r1.text
+
+    r2 = client.post(
+        "/api/pharmacy/hsn", headers=auth_headers,
+        json={"code": code, "sgst_pct": 9, "cgst_pct": 9},
+    )
+    assert r2.status_code == 201, r2.text
+    assert r2.json()["code"] == code
+    assert r2.json()["id"] != r1.json()["id"]
 
 
 def test_duplicate_hsn_code_case_insensitive(client, auth_headers):
@@ -27,6 +44,26 @@ def test_duplicate_hsn_code_case_insensitive(client, auth_headers):
     assert r2.status_code == 400
 
 
+def test_igst_auto_fills_from_sgst_cgst(client, auth_headers):
+    code = f"30{uuid.uuid4().hex[:6]}"
+    r = client.post(
+        "/api/pharmacy/hsn", headers=auth_headers,
+        json={"code": code, "sgst_pct": 6, "cgst_pct": 9, "igst_pct": 15},
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["igst_pct"] == 15.0
+
+
+def test_igst_user_override_preserved(client, auth_headers):
+    code = f"30{uuid.uuid4().hex[:6]}"
+    r = client.post(
+        "/api/pharmacy/hsn", headers=auth_headers,
+        json={"code": code, "sgst_pct": 6, "cgst_pct": 9, "igst_pct": 99},
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["igst_pct"] == 99.0
+
+
 def test_purchase_tax_from_medicine_hsn(client, auth_headers, db_session, seed_data):
     from app.models.pharmacy import MedicineCategory, Medicine, PharmacySupplier, PharmacyHSN
 
@@ -35,11 +72,11 @@ def test_purchase_tax_from_medicine_hsn(client, auth_headers, db_session, seed_d
     db_session.add(cat)
     db_session.flush()
 
-    hsn = PharmacyHSN(code=f"H{uuid.uuid4().hex[:4]}", sgst_pct=9, cgst_pct=9, hospital_id=hid)
+    hsn = PharmacyHSN(code=f"H{uuid.uuid4().hex[:4]}", sgst_pct=9, cgst_pct=9, igst_pct=18, hospital_id=hid)
     db_session.add(hsn)
     db_session.flush()
 
-    other_hsn = PharmacyHSN(code=f"H{uuid.uuid4().hex[:4]}", sgst_pct=1, cgst_pct=1, hospital_id=hid)
+    other_hsn = PharmacyHSN(code=f"H{uuid.uuid4().hex[:4]}", sgst_pct=1, cgst_pct=1, igst_pct=2, hospital_id=hid)
     db_session.add(other_hsn)
     db_session.flush()
 
@@ -74,5 +111,122 @@ def test_purchase_tax_from_medicine_hsn(client, auth_headers, db_session, seed_d
     assert r.status_code == 201, r.text
     item = r.json()["items"][0]
     assert item["hsn_id"] == hsn.id
-    # 10 × 20 = 200 base; 18% tax (9+9) = 36
+    # 10 × 20 = 200 base; 18% tax (9+9) = 36 — IGST is not added on top
     assert abs(item["tax_amount"] - 36.0) < 0.01
+
+
+def test_purchase_tax_inclusive_mode(client, auth_headers, db_session, seed_data):
+    """Inclusive rate: grand total equals qty × rate (tax extracted, not added)."""
+    from datetime import date
+    from app.models.pharmacy import MedicineCategory, Medicine, PharmacySupplier, PharmacyHSN
+
+    hid = seed_data["hospital_id"]
+    cat = MedicineCategory(name=f"Cat-{uuid.uuid4().hex[:6]}", hospital_id=hid)
+    db_session.add(cat)
+    db_session.flush()
+    hsn = PharmacyHSN(code=f"H{uuid.uuid4().hex[:4]}", sgst_pct=6, cgst_pct=6, igst_pct=12, hospital_id=hid)
+    db_session.add(hsn)
+    db_session.flush()
+    med = Medicine(
+        medicine_code=f"M{uuid.uuid4().hex[:6]}", name=f"Med-{uuid.uuid4().hex[:4]}",
+        unit_price=10.0, category_id=cat.id, hsn_id=hsn.id, hospital_id=hid,
+    )
+    db_session.add(med)
+    db_session.flush()
+    sup = PharmacySupplier(name=f"Sup-{uuid.uuid4().hex[:4]}", hospital_id=hid)
+    db_session.add(sup)
+    db_session.commit()
+
+    today = str(date.today())
+    r = client.post(
+        "/api/pharmacy/purchases",
+        headers=auth_headers,
+        json={
+            "entry_date": today,
+            "supplier_id": sup.id,
+            "invoice_number": f"INV-INCL-{uuid.uuid4().hex[:6]}",
+            "payment_type": "cash",
+            "tax_mode": "inclusive",
+            "items": [{
+                "medicine_id": med.id,
+                "batch_number": "B-INCL-1",
+                "mrp": 25.0,
+                "quantity": 10,
+                "free_quantity": 0,
+                "purchase_rate": 112.0,
+                "discount_pct": 0,
+            }],
+        },
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert abs(body["grand_total"] - 1120.0) < 0.02
+    assert abs(body["total_tax"] - 120.0) < 0.05
+
+
+def test_sale_tax_inclusive_mode(client, auth_headers, db_session, seed_data):
+    """POS sale with tax-inclusive rates."""
+    from datetime import date
+    from app.models.pharmacy import MedicineCategory, Medicine, PharmacySupplier, PharmacyHSN
+
+    hid = seed_data["hospital_id"]
+    cat = MedicineCategory(name=f"Cat-{uuid.uuid4().hex[:6]}", hospital_id=hid)
+    db_session.add(cat)
+    db_session.flush()
+    hsn = PharmacyHSN(code=f"H{uuid.uuid4().hex[:4]}", sgst_pct=6, cgst_pct=6, igst_pct=12, hospital_id=hid)
+    db_session.add(hsn)
+    db_session.flush()
+    med = Medicine(
+        medicine_code=f"M{uuid.uuid4().hex[:6]}", name=f"Med-{uuid.uuid4().hex[:4]}",
+        unit_price=10.0, mrp=25.0, rate_a=25.0, category_id=cat.id, hsn_id=hsn.id, hospital_id=hid,
+    )
+    db_session.add(med)
+    db_session.flush()
+    sup = PharmacySupplier(name=f"Sup-{uuid.uuid4().hex[:4]}", hospital_id=hid)
+    db_session.add(sup)
+    db_session.commit()
+
+    today = str(date.today())
+    pr = client.post(
+        "/api/pharmacy/purchases",
+        headers=auth_headers,
+        json={
+            "entry_date": today,
+            "supplier_id": sup.id,
+            "invoice_number": f"INV-SALE-{uuid.uuid4().hex[:6]}",
+            "payment_type": "cash",
+            "items": [{
+                "medicine_id": med.id,
+                "batch_number": "B-SALE-INCL",
+                "mrp": 25.0,
+                "quantity": 50,
+                "purchase_rate": 10.0,
+                "discount_pct": 0,
+            }],
+        },
+    )
+    assert pr.status_code == 201, pr.text
+    pid = pr.json()["id"]
+    assert client.post(f"/api/pharmacy/purchases/{pid}/confirm", headers=auth_headers).status_code == 200
+
+    sr = client.post(
+        "/api/pharmacy/sales",
+        headers=auth_headers,
+        json={
+            "payment_type": "cash",
+            "tax_mode": "inclusive",
+            "items": [{
+                "medicine_id": med.id,
+                "qty_tabs": 10,
+                "qty_strips": 0,
+                "rate_tier": "A",
+                "discount_pct": 0,
+            }],
+        },
+    )
+    assert sr.status_code == 201, sr.text
+    sale = sr.json()
+    assert sale["tax_mode"] == "inclusive"
+    assert sale["grand_total"] > 0
+    assert sale["tax_total"] >= 0
+    assert sale["grand_total"] >= sale["tax_total"]

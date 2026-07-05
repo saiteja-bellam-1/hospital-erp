@@ -161,6 +161,7 @@ function TableForView({ view, data, onAdjust }) {
           <th className="py-2 pr-4">Medicine</th><th className="py-2 pr-4">Batch</th>
           <th className="py-2 pr-4">Qty</th>
           <th className="py-2 pr-4">MRP</th><th className="py-2 pr-4">P-Rate</th>
+          <th className="py-2 pr-4">Rate A</th><th className="py-2 pr-4">Qty/Strip</th>
           <th className="py-2 pr-4">Supplier</th><th className="py-2 text-right">Actions</th>
         </tr></thead>
         <tbody>
@@ -171,6 +172,8 @@ function TableForView({ view, data, onAdjust }) {
               <td className="py-2 pr-4">{b.quantity_in_stock}</td>
               <td className="py-2 pr-4">₹{formatMoney(b.mrp)}</td>
               <td className="py-2 pr-4">₹{formatMoney(b.purchase_rate)}</td>
+              <td className="py-2 pr-4">₹{formatMoney(b.rate_a)}</td>
+              <td className="py-2 pr-4">{b.strip_conversion_factor || 1}</td>
               <td className="py-2 pr-4 text-xs">{b.supplier_name || '—'}</td>
               <td className="py-2 text-right">
                 <Button size="sm" variant="outline" onClick={() => onAdjust(b)}>Adjust</Button>

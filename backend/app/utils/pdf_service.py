@@ -141,12 +141,69 @@ def _append_address_row(info_data, style_list, data, lv):
     no-op when no address info is present. Use after building the rest of
     the info_data list and the base style list, before constructing the Table.
     """
-    addr = _patient_address_line(data)
+    addr = (data.get('address_line') or '').strip() or _patient_address_line(data)
     if not addr:
         return
     row_idx = len(info_data)
     info_data.append([lv('Address', addr), ''])
     style_list.append(('SPAN', (0, row_idx), (1, row_idx)))
+
+
+def _discharge_type_label(dtype: str) -> str:
+    labels = {
+        'normal': 'Normal Discharge',
+        'against_advice': 'Against Medical Advice',
+        'transfer': 'Transfer',
+        'death': 'Death',
+    }
+    return labels.get((dtype or '').lower(), (dtype or '').replace('_', ' ').title())
+
+
+def _med_route_display(m: dict) -> str:
+    return str(m.get('route') or 'Per Oral')
+
+
+def _med_timings_display(m: dict) -> str:
+    sched = str(m.get('frequency_schedule') or '').strip()
+    if sched and '-' in sched:
+        parts = sched.split('-')
+        if len(parts) == 3:
+            labels = []
+            if parts[0] == '1':
+                labels.append('Morning')
+            if parts[1] == '1':
+                labels.append('Afternoon')
+            if parts[2] == '1':
+                labels.append('Night')
+            if labels:
+                food = m.get('food_timing') or ''
+                food_map = {
+                    'before_food': 'before food',
+                    'after_food': 'after food',
+                    'with_food': 'with food',
+                    'on_empty_stomach': 'empty stomach',
+                    'anytime': 'anytime',
+                }
+                food_label = food_map.get(food, '')
+                base = ', '.join(labels)
+                return f"{base} ({food_label})" if food_label else base
+    freq = str(m.get('frequency') or '').strip()
+    return freq or '—'
+
+
+def _discharge_running_header(canvas_obj, doc, patient_label: str):
+    """Patient name + admission number on every page (top-right)."""
+    if not patient_label:
+        return
+    try:
+        canvas_obj.saveState()
+        canvas_obj.setFont('Helvetica-Bold', 8)
+        page_w = doc.pagesize[0] if hasattr(doc, 'pagesize') else A4[0]
+        page_h = doc.pagesize[1] if hasattr(doc, 'pagesize') else A4[1]
+        canvas_obj.drawRightString(page_w - 30, page_h - 18, patient_label)
+        canvas_obj.restoreState()
+    except Exception:
+        pass
 
 
 def _resolve_seller(hospital_info):
@@ -2329,7 +2386,7 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_discharge_summary_pdf(self, discharge_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
+    def generate_discharge_summary_pdf(self, discharge_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, watermark=None):
         """Generate PDF for discharge summary"""
         buffer = BytesIO()
 
@@ -2433,6 +2490,11 @@ class PDFService:
 
         elements.append(Spacer(1, 4))
         elements.append(Paragraph("DISCHARGE SUMMARY", doc_title_style))
+        dept_name = (discharge_data.get('department_name') or '').strip()
+        if dept_name:
+            dept_style = ParagraphStyle('DischDept', parent=subtitle_style,
+                fontSize=10, fontName='Helvetica-Bold', alignment=1, spaceAfter=2)
+            elements.append(Paragraph(f"DEPARTMENT OF {dept_name.upper()}", dept_style))
         elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
         elements.append(Spacer(1, 6))
 
@@ -2448,6 +2510,9 @@ class PDFService:
         elif discharge_data.get('room_number'):
             bed_room = discharge_data.get('room_number', '')
 
+        payer_label = discharge_data.get('payer_label') or 'Cash / Self Pay'
+        discharge_type_label = _discharge_type_label(discharge_data.get('discharge_type', ''))
+
         patient_info_data = [
             [lv('Patient Name', discharge_data.get('patient_name', '')),
              lv('UHID', discharge_data.get('mrn', ''))],
@@ -2458,7 +2523,9 @@ class PDFService:
             [lv('Bed / Room No.', bed_room),
              lv('Ward Type', discharge_data.get('ward_type', ''))],
             [lv('Discharge Date', discharge_data.get('discharge_date', '') or '—'),
-             lv('Type', discharge_data.get('admission_type', discharge_data.get('discharge_type', '')))],
+             lv('Date of Surgery', discharge_data.get('surgery_date', '') or '—')],
+            [lv('Payer / Scheme', payer_label),
+             lv('Discharge Type', discharge_type_label)],
         ]
 
         info_style = [
@@ -2475,24 +2542,27 @@ class PDFService:
         elements.append(info_table)
         elements.append(Spacer(1, 8))
 
-        # Doctors block
-        doc_rows = []
-        if discharge_data.get('doctor_name'):
-            dept = discharge_data.get('doctor_department', '')
-            doc_rows.append(lv('Primary Doctor', f"{discharge_data.get('doctor_name', '')}" + (f" ({dept})" if dept else "")))
-        if discharge_data.get('secondary_doctor_name'):
-            sdept = discharge_data.get('secondary_doctor_department', '')
-            doc_rows.append(lv('Secondary Doctor', f"{discharge_data.get('secondary_doctor_name', '')}" + (f" ({sdept})" if sdept else "")))
-        if doc_rows:
-            if len(doc_rows) == 1:
-                elements.append(doc_rows[0])
-            else:
-                doc_table = Table([[doc_rows[0], doc_rows[1]]], colWidths=[col_w, col_w])
-                doc_table.setStyle(TableStyle([
-                    ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-                    ('LEFTPADDING', (0, 0), (-1, -1), 0),
-                ]))
-                elements.append(doc_table)
+        # Doctors block — chief consultant(s) with qualifications
+        consultants = discharge_data.get('consultants') or []
+        if not consultants and discharge_data.get('doctor_name'):
+            consultants = [{
+                'display_line': discharge_data.get('doctor_name', ''),
+                'name': discharge_data.get('doctor_name', ''),
+            }]
+        if consultants:
+            elements.append(Paragraph("Chief Consultant(s)", section_heading))
+            for c in consultants:
+                line = c.get('display_line') or c.get('name', '')
+                if line:
+                    elements.append(Paragraph(line, cell_value))
+            if discharge_data.get('secondary_doctor_name') and not any(
+                discharge_data.get('secondary_doctor_name') in (c.get('name') or '') for c in consultants
+            ):
+                sdept = discharge_data.get('secondary_doctor_department', '')
+                sec = discharge_data.get('secondary_doctor_name', '')
+                if sdept:
+                    sec = f"{sec} ({sdept})"
+                elements.append(Paragraph(sec, cell_value))
             elements.append(Spacer(1, 6))
 
         # ============================================================
@@ -2508,16 +2578,19 @@ class PDFService:
                     elements.append(Paragraph(line, cell_value))
 
         structured_sections = [
+            ("Chief Complaints & History of Present Illness",
+             discharge_data.get("chief_complaints_hpi") or discharge_data.get("present_medical_history", "")),
+            ("Allergies", discharge_data.get("allergies_summary", "")),
+            ("Past History", discharge_data.get("past_history", "")),
+            ("Family History", discharge_data.get("family_history", "")),
+            ("Physical Examination", discharge_data.get("physical_examination", "")),
             ("Provisional Diagnosis", discharge_data.get("provisional_diagnosis", "")),
             ("Primary Diagnosis", discharge_data.get("primary_diagnosis") or discharge_data.get("diagnosis", "")),
-            ("Past History", discharge_data.get("past_history", "")),
-            ("Present Medical History", discharge_data.get("present_medical_history", "")),
             ("Key Findings At The Time Of Admission", discharge_data.get("findings_at_admission", "")),
             ("Summary Of Key Investigation", discharge_data.get("investigations_summary", "")),
-            ("Course In Hospital", discharge_data.get("course_in_hospital") or discharge_data.get("treatment", "")),
-            ("Procedure Notes", discharge_data.get("procedure_notes", "")),
-            ("Discharge Advice", discharge_data.get("discharge_advice", "")),
-            ("Follow Up", discharge_data.get("follow_up", "")),
+            ("Summary Of Hospital Course", discharge_data.get("course_in_hospital") or discharge_data.get("treatment", "")),
+            ("Surgery / Procedure Notes", discharge_data.get("procedure_notes", "")),
+            ("Recommendations At Discharge", discharge_data.get("discharge_advice", "")),
         ]
         has_structured = any(s[1] for s in structured_sections)
         if has_structured:
@@ -2538,19 +2611,18 @@ class PDFService:
         take_home = discharge_data.get("take_home_medications") or []
         if take_home:
             elements.append(Paragraph("Take-Home Medications", section_heading))
-            header = ['#', 'Medicine', 'Dosage', 'Frequency', 'Duration', 'Qty', 'Instructions']
+            header = ['S.No', 'Description', 'Dose', 'Route', 'Timings', 'Duration']
             rows = [header]
             for i, m in enumerate(take_home, start=1):
                 rows.append([
                     str(i),
                     str(m.get('medicine_name') or ''),
-                    str(m.get('dosage') or ''),
-                    str(m.get('frequency') or ''),
-                    str(m.get('duration') or ''),
-                    str(m.get('quantity') or ''),
-                    str(m.get('instructions') or ''),
+                    str(m.get('dosage') or '—'),
+                    _med_route_display(m),
+                    _med_timings_display(m),
+                    str(m.get('duration') or '—'),
                 ])
-            med_table = Table(rows, colWidths=[20, 130, 70, 70, 60, 30, 130])
+            med_table = Table(rows, colWidths=[28, 130, 62, 52, 118, 65])
             med_table.setStyle(TableStyle([
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
                 ('FONTSIZE', (0, 0), (-1, -1), 8),
@@ -2578,31 +2650,29 @@ class PDFService:
                     elements.append(Paragraph(medications, cell_value))
 
         # ============================================================
-        # FOLLOW-UP INSTRUCTIONS
+        # REVIEW / FOLLOW-UP (single block — no duplicate with clinical sections)
         # ============================================================
         follow_up = discharge_data.get("follow_up", "")
         follow_up_date = discharge_data.get("follow_up_date", "")
-        if follow_up or follow_up_date:
-            elements.append(Paragraph("Follow-up Instructions", section_heading))
+        emergency = discharge_data.get("emergency_instructions", "")
+        diet = discharge_data.get("diet_instructions", "")
+        activity = discharge_data.get("activity_restrictions", "")
+        if follow_up or follow_up_date or emergency or diet or activity:
+            elements.append(Paragraph("Review / Follow-up", section_heading))
             if follow_up:
                 elements.append(Paragraph(follow_up, cell_value))
             if follow_up_date:
                 elements.append(Paragraph(f"<b>Follow-up Date:</b> {follow_up_date}", cell_value))
-
-        # ============================================================
-        # DIET & ACTIVITY
-        # ============================================================
-        diet = discharge_data.get("diet_instructions", "")
-        activity = discharge_data.get("activity_restrictions", "")
-        if diet or activity:
-            elements.append(Paragraph("Diet &amp; Activity", section_heading))
+            if emergency:
+                elements.append(Paragraph(
+                    f"<b>Emergency — seek care if:</b> {emergency}", cell_value))
             if diet:
                 elements.append(Paragraph(f"<b>Diet:</b> {diet}", cell_value))
             if activity:
                 elements.append(Paragraph(f"<b>Activity Restrictions:</b> {activity}", cell_value))
 
         # ============================================================
-        # CONDITION ON DISCHARGE & PREPARED BY
+        # CONDITION ON DISCHARGE & SIGNATURES
         # ============================================================
         elements.append(Spacer(1, 16))
         condition_discharge = discharge_data.get("condition_on_discharge", "")
@@ -2611,25 +2681,56 @@ class PDFService:
             elements.append(Spacer(1, 12))
 
         doctor_name = discharge_data.get("consultant_name") or discharge_data.get("doctor_name", "")
-        if doctor_name:
-            sig_data = [
-                [Paragraph('', cell_value),
-                 Paragraph('_' * 30, ParagraphStyle('SigLine', parent=self.styles['Normal'],
-                    fontSize=9, alignment=2))],
-                [Paragraph('', cell_value),
-                 Paragraph(f"<b>{doctor_name}</b>", ParagraphStyle('SigName', parent=self.styles['Normal'],
-                    fontSize=9, fontName='Helvetica-Bold', alignment=2))],
-                [Paragraph('', cell_value),
-                 Paragraph("Treating Consultant / Authorised Team Doctor", ParagraphStyle('SigTitle', parent=self.styles['Normal'],
-                    fontSize=8, fontName='Helvetica', textColor=colors.grey, alignment=2))],
-            ]
-            sig_table = Table(sig_data, colWidths=[page_width / 2, page_width / 2])
-            sig_table.setStyle(TableStyle([
-                ('VALIGN', (0, 0), (-1, -1), 'BOTTOM'),
-                ('TOPPADDING', (0, 0), (-1, -1), 1),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
-            ]))
-            elements.append(sig_table)
+        sig_label_style = ParagraphStyle('SigLabel', parent=self.styles['Normal'],
+            fontSize=8, fontName='Helvetica', textColor=colors.grey, alignment=1)
+        sig_line_style = ParagraphStyle('SigLine', parent=self.styles['Normal'],
+            fontSize=9, alignment=1)
+        sig_name_style = ParagraphStyle('SigName', parent=self.styles['Normal'],
+            fontSize=9, fontName='Helvetica-Bold', alignment=1)
+
+        sig_data = [
+            [Paragraph('_' * 28, sig_line_style), Paragraph('_' * 28, sig_line_style)],
+            [Paragraph("Resident", sig_label_style), Paragraph("Consultant", sig_label_style)],
+            [Paragraph('', cell_value),
+             Paragraph(f"<b>{doctor_name}</b>" if doctor_name else '', sig_name_style)],
+        ]
+        sig_table = Table(sig_data, colWidths=[page_width / 2, page_width / 2])
+        sig_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'BOTTOM'),
+            ('TOPPADDING', (0, 0), (-1, -1), 2),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+        ]))
+        elements.append(sig_table)
+        elements.append(Spacer(1, 14))
+
+        ack_style = ParagraphStyle('AckText', parent=cell_value, fontSize=8, leading=10)
+        elements.append(Paragraph(
+            "I acknowledge that I have been explained in my understandable language about the "
+            "post-discharge care instructions, the medications, the diet to be taken at home "
+            "and when to obtain urgent care (if needed).",
+            ack_style,
+        ))
+        ack_rows = [
+            [lv('Name', '_' * 40), lv('Signature', '_' * 40)],
+            [lv('If by attendant, relationship', '_' * 40), ''],
+        ]
+        ack_table = Table(ack_rows, colWidths=[col_w, col_w])
+        ack_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 0),
+        ]))
+        elements.append(ack_table)
+        elements.append(Spacer(1, 10))
+        elements.append(Paragraph("Discharge Summary Explained by", section_heading))
+        explained_rows = [
+            [lv('Clinical Pharmacist', '_' * 35), lv('DMO / Incharge Sister', '_' * 35)],
+        ]
+        explained_table = Table(explained_rows, colWidths=[col_w, col_w])
+        explained_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 0),
+        ]))
+        elements.append(explained_table)
 
         # ============================================================
         # FOOTER
@@ -2640,7 +2741,11 @@ class PDFService:
             footer_style
         ))
 
-        _finalize(doc, elements, hospital_info)
+        patient_hdr = f"{discharge_data.get('patient_name', '')} / {discharge_data.get('admission_number', '')}".strip(' /')
+        def _page_cb(canvas_obj, doc):
+            _discharge_running_header(canvas_obj, doc, patient_hdr)
+
+        _finalize(doc, elements, hospital_info, header_cb=_page_cb, watermark=watermark)
         buffer.seek(0)
         return buffer
 

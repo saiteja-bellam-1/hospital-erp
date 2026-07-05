@@ -8,8 +8,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 export const EMPTY_SUPPLIER_FORM = {
   name: '',
   station: '', account_group: 'Sundry Creditors', balancing_method: 'bill_by_bill',
-  opening_balance: 0, opening_balance_dr_cr: 'Dr',
-  hold_payment: false, hold_payment_pct: 0, ledger_date: '', freeze_upto: '',
+  opening_balance: '', opening_balance_dr_cr: 'Dr',
+  hold_payment: false, hold_payment_pct: '', ledger_date: '', freeze_upto: '',
   contact_person: '', designation: '',
   phone_office: '', phone_residence: '', mobile: '', phone: '',
   fax: '', email: '', website: '',
@@ -37,6 +37,10 @@ export function prepareSupplierPayload(form) {
   DATE_KEYS.forEach((k) => {
     if (payload[k] === '' || payload[k] === undefined) payload[k] = null;
   });
+  ['opening_balance', 'hold_payment_pct'].forEach((k) => {
+    if (payload[k] === '' || payload[k] == null) payload[k] = 0;
+    else payload[k] = parseFloat(payload[k]) || 0;
+  });
   return payload;
 }
 
@@ -60,8 +64,8 @@ const Num = ({ value, onChange }) => (
   <Input
     type="number"
     step="0.01"
-    value={value ?? 0}
-    onChange={(e) => onChange(e.target.value === '' ? 0 : parseFloat(e.target.value))}
+    value={value ?? ''}
+    onChange={(e) => onChange(e.target.value === '' ? '' : parseFloat(e.target.value))}
   />
 );
 

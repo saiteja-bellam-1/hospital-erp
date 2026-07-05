@@ -1,4 +1,6 @@
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import { patchHsnForm } from '../../utils/pharmacyHsnTax';
+import { payloadFromMasterForm } from '../../components/pharmacy/pharmacyMasterFieldSpecs';
 import { Routes, Route, Navigate, Outlet, useLocation } from 'react-router-dom';
 import axios from 'axios';
 
@@ -43,7 +45,10 @@ export function MasterTable({ title, path, fields, displayColumns }) {
   const [editing, setEditing] = useState(null);
 
   const blank = useMemo(
-    () => Object.fromEntries(fields.map(f => [f.key, f.default ?? ''])),
+    () => Object.fromEntries(fields.map(f => [
+      f.key,
+      f.type === 'number' ? (f.default === 0 ? '' : (f.default ?? '')) : (f.default ?? ''),
+    ])),
     [fields]
   );
   const [form, setForm] = useState(blank);
@@ -60,20 +65,36 @@ export function MasterTable({ title, path, fields, displayColumns }) {
 
   useEffect(() => { load(); }, [load]);
 
+  const patchForm = (key, value) => {
+    setForm((s) => (path === 'hsn' ? patchHsnForm(s, key, value) : { ...s, [key]: value }));
+  };
+
   const openCreate = () => {
-    setEditing(null); setForm(blank); setOpen(true);
+    setEditing(null);
+    const initial = path === 'hsn' ? patchHsnForm(blank, 'sgst_pct', blank.sgst_pct ?? '') : blank;
+    setForm(initial);
+    setOpen(true);
   };
   const openEdit = (row) => {
-    setEditing(row); setForm({ ...blank, ...row }); setOpen(true);
+    setEditing(row);
+    const merged = { ...blank, ...row };
+    fields.forEach((f) => {
+      if (f.type === 'number' && (merged[f.key] === 0 || merged[f.key] === '0')) {
+        merged[f.key] = '';
+      }
+    });
+    setForm(path === 'hsn' ? patchHsnForm(merged, 'sgst_pct', merged.sgst_pct ?? '') : merged);
+    setOpen(true);
   };
 
   const save = async () => {
+    const payload = payloadFromMasterForm(form, fields);
     try {
       if (editing) {
-        await axios.put(`/api/pharmacy/${path}/${editing.id}`, form);
+        await axios.put(`/api/pharmacy/${path}/${editing.id}`, payload);
         toast({ title: 'Updated' });
       } else {
-        await axios.post(`/api/pharmacy/${path}`, form);
+        await axios.post(`/api/pharmacy/${path}`, payload);
         toast({ title: 'Created' });
       }
       setOpen(false); load();
@@ -168,10 +189,11 @@ export function MasterTable({ title, path, fields, displayColumns }) {
                   </label>
                 ) : f.type === 'number' ? (
                   <Input type="number" step="0.01" value={form[f.key] ?? ''}
-                    onChange={e => setForm(s => ({ ...s, [f.key]: e.target.value === '' ? '' : parseFloat(e.target.value) }))} />
+                    onChange={e => patchForm(f.key, e.target.value === '' ? '' : parseFloat(e.target.value))} />
                 ) : (
-                  <Input value={form[f.key] || ''} onChange={e => setForm(s => ({ ...s, [f.key]: e.target.value }))} />
+                  <Input value={form[f.key] || ''} onChange={e => patchForm(f.key, e.target.value)} />
                 )}
+                {f.hint && <p className="text-[11px] text-muted-foreground mt-0.5">{f.hint}</p>}
               </div>
             ))}
           </div>
@@ -279,13 +301,20 @@ const HsnMaster = () => (
     fields={[
       { key: 'code', label: 'HSN Code', required: true },
       { key: 'description', label: 'Description', type: 'textarea' },
-      { key: 'sgst_pct', label: 'SGST %', type: 'number', default: 0 },
-      { key: 'cgst_pct', label: 'CGST %', type: 'number', default: 0 },
-      { key: 'igst_pct', label: 'IGST %', type: 'number', default: 0 },
+      { key: 'sgst_pct', label: 'SGST %', type: 'number', default: '' },
+      { key: 'cgst_pct', label: 'CGST %', type: 'number', default: '' },
+      {
+        key: 'igst_pct',
+        label: 'IGST %',
+        type: 'number',
+        default: '',
+        hint: 'Auto-filled as SGST + CGST; you can edit to override.',
+      },
       { key: 'is_active', label: 'Active', type: 'bool', default: true },
     ]}
     displayColumns={[
       { key: 'code', label: 'Code' },
+      { key: 'description', label: 'Description' },
       { key: 'sgst_pct', label: 'SGST %' },
       { key: 'cgst_pct', label: 'CGST %' },
       { key: 'igst_pct', label: 'IGST %' },

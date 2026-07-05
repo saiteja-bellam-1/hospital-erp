@@ -1,4 +1,5 @@
 import React from 'react';
+import { formatHsnOption } from '../../utils/pharmacyHsnTax';
 import FormNavContainer from '../FormNavContainer';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
@@ -14,15 +15,15 @@ const PRICE_KEYS = [
 export const EMPTY_MEDICINE_FORM = {
   medicine_code: '', name: '', generic_name: '', manufacturer: '',
   category_id: null, dosage_form: '', strength: '',
-  unit_price: 0, mrp: 0, purchase_rate: 0, rate_a: 0, rate_b: 0, cost_pcs: 0,
-  default_discount_pct: 0, item_discount_pct: 0,
+  unit_price: '', mrp: '', purchase_rate: '', rate_a: '', rate_b: '', cost_pcs: '',
+  default_discount_pct: '', item_discount_pct: '',
   hsn_id: null, company_id: null, rack_id: null, salt_id: null, uom_id: null,
   barcode: '', packaging: '', strip_conversion_factor: 1,
   decimal_supported: false, is_active: true, is_hidden: false, requires_prescription: true,
   is_narcotic: false, is_high_alert: false, is_schedule_h: false,
   is_schedule_h1: false, is_tramadol: false, is_controlled: false,
   description: '', side_effects: '', contraindications: '', storage_conditions: '',
-  min_qty: 0, max_qty: 0, reorder_qty: 0,
+  min_qty: '', max_qty: '', reorder_qty: '',
 };
 
 export function patchMedicineForm(prev, patch) {
@@ -36,9 +37,11 @@ export function prepareMedicinePayload(form) {
   ['category_id', 'company_id', 'rack_id', 'salt_id', 'uom_id', 'hsn_id'].forEach((k) => {
     if (payload[k] === '' || payload[k] === undefined) payload[k] = null;
   });
-  PRICE_KEYS.forEach((k) => {
-    if (payload[k] !== undefined && payload[k] !== null && payload[k] !== '') {
-      payload[k] = roundMoney(payload[k]);
+  [...PRICE_KEYS, 'min_qty', 'max_qty', 'reorder_qty'].forEach((k) => {
+    if (payload[k] === '' || payload[k] == null) {
+      payload[k] = 0;
+    } else {
+      payload[k] = k.includes('qty') ? Math.round(Number(payload[k])) : roundMoney(payload[k]);
     }
   });
   if (!payload.unit_price && payload.rate_a) {
@@ -68,11 +71,11 @@ const Num = ({ value, onChange }) => (
     type="number"
     step="0.01"
     min="0"
-    value={value ?? 0}
+    value={value ?? ''}
     onChange={(e) => {
       const raw = e.target.value;
       if (raw === '') {
-        onChange(0);
+        onChange('');
         return;
       }
       onChange(roundMoney(raw));
@@ -181,16 +184,16 @@ export default function MedicineFormFields({
             <PharmacyMasterSelectWithCreate path="hsn" value={form.hsn_id}
               onChange={(v) => set('hsn_id', v)} options={hsnList} onOptionsChange={setHsnList}
               placeholder="(none)" allowEmpty labelKey="code"
-              format={(h) => `${h.code} (SGST ${h.sgst_pct}% + CGST ${h.cgst_pct}%)`} />
+              format={formatHsnOption} />
           </F>
         </Grid>
       </Section>
 
       <Section title="Inventory Thresholds">
         <Grid>
-          <F label="Min Qty (low-stock alert)"><Num value={form.min_qty} onChange={(v) => set('min_qty', Math.round(v))} /></F>
-          <F label="Max Qty"><Num value={form.max_qty} onChange={(v) => set('max_qty', Math.round(v))} /></F>
-          <F label="Reorder Qty"><Num value={form.reorder_qty} onChange={(v) => set('reorder_qty', Math.round(v))} /></F>
+          <F label="Min Qty (low-stock alert)"><Num value={form.min_qty} onChange={(v) => set('min_qty', v === '' ? '' : Math.round(Number(v)))} /></F>
+          <F label="Max Qty"><Num value={form.max_qty} onChange={(v) => set('max_qty', v === '' ? '' : Math.round(Number(v)))} /></F>
+          <F label="Reorder Qty"><Num value={form.reorder_qty} onChange={(v) => set('reorder_qty', v === '' ? '' : Math.round(Number(v)))} /></F>
         </Grid>
       </Section>
 

@@ -236,6 +236,85 @@ def test_sale_fifo_deducts_and_void_restores(client, auth_headers, pharmacy_seed
     assert r.status_code == 400
 
 
+def test_multi_batch_rates_on_purchase_and_sale(client, auth_headers, pharmacy_seed):
+    """Each batch keeps its own MRP / P-Rate / Rate A / qty-per-strip."""
+    H = auth_headers
+    today = str(date.today())
+    med_id = pharmacy_seed["medicine_id"]
+
+    r = client.post(
+        "/api/pharmacy/purchases",
+        json={
+            "entry_date": today, "supplier_id": pharmacy_seed["supplier_id"],
+            "invoice_number": "INV-BATCH-RATES", "bill_date": today,
+            "payment_type": "cash",
+            "items": [
+                {
+                    "medicine_id": med_id, "batch_number": "B-RATE-A",
+                    "mrp": 30.0, "quantity": 20, "free_quantity": 0,
+                    "purchase_rate": 18.0, "rate_a": 28.0,
+                    "strip_conversion_factor": 10, "discount_pct": 0,
+                },
+                {
+                    "medicine_id": med_id, "batch_number": "B-RATE-B",
+                    "mrp": 40.0, "quantity": 20, "free_quantity": 0,
+                    "purchase_rate": 22.0, "rate_a": 36.0,
+                    "strip_conversion_factor": 15, "discount_pct": 0,
+                },
+            ],
+        },
+        headers=H,
+    )
+    assert r.status_code == 201, r.text
+    pid = r.json()["id"]
+    assert client.post(f"/api/pharmacy/purchases/{pid}/confirm", headers=H).status_code == 200
+
+    r = client.get(
+        "/api/pharmacy/inventory/batches",
+        params={"medicine_id": med_id},
+        headers=H,
+    )
+    by_batch = {b["batch_number"]: b for b in r.json()}
+    assert by_batch["B-RATE-A"]["rate_a"] == 28.0
+    assert by_batch["B-RATE-A"]["purchase_rate"] == 18.0
+    assert by_batch["B-RATE-A"]["mrp"] == 30.0
+    assert by_batch["B-RATE-A"]["strip_conversion_factor"] == 10
+    assert by_batch["B-RATE-B"]["rate_a"] == 36.0
+    assert by_batch["B-RATE-B"]["strip_conversion_factor"] == 15
+
+    # Sell 1 strip from B-RATE-A → 10 tabs × (28/10) = ₹28
+    r = client.post(
+        "/api/pharmacy/sales",
+        json={
+            "payment_type": "cash",
+            "items": [{
+                "medicine_id": med_id,
+                "qty_tabs": 0, "qty_strips": 1, "rate_tier": "A",
+                "batch_id": by_batch["B-RATE-A"]["id"],
+            }],
+        },
+        headers=H,
+    )
+    assert r.status_code == 201, r.text
+    assert abs(r.json()["subtotal"] - 28.0) < 0.01
+
+    # Sell 1 strip from B-RATE-B → 15 tabs × (36/15) = ₹36
+    r = client.post(
+        "/api/pharmacy/sales",
+        json={
+            "payment_type": "cash",
+            "items": [{
+                "medicine_id": med_id,
+                "qty_tabs": 0, "qty_strips": 1, "rate_tier": "A",
+                "batch_id": by_batch["B-RATE-B"]["id"],
+            }],
+        },
+        headers=H,
+    )
+    assert r.status_code == 201, r.text
+    assert abs(r.json()["subtotal"] - 36.0) < 0.01
+
+
 def test_stock_adjustment_writes_ledger(client, auth_headers, pharmacy_seed):
     H = auth_headers
     r = client.get(

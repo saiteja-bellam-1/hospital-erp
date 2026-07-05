@@ -86,6 +86,20 @@ class TestDischargeSummaryWorkflow:
         assert fin.status_code == 200, fin.text
         assert fin.json()["status"] == "ready"
 
+    def test_pdf_preview_works_for_draft(self, client, auth_headers):
+        adm_id = _state['admission_id']
+        client.put(
+            f"{API}/admissions/{adm_id}/discharge-summary",
+            json={"primary_diagnosis": "Acute appendicitis"},
+            headers=auth_headers,
+        )
+        preview = client.get(
+            f"{API}/admissions/{adm_id}/discharge-summary/pdf/preview",
+            headers=auth_headers,
+        )
+        assert preview.status_code == 200, preview.text
+        assert "pdf" in preview.headers["content-type"].lower()
+
     def test_pdf_blocked_until_ready(self, client, auth_headers):
         adm_id = _state["admission_id"]
         draft_put = client.put(

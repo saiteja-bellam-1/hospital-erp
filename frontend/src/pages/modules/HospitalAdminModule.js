@@ -74,7 +74,7 @@ const HospitalAdminModule = () => {
   });
 
   // Registration Fee State
-  const [registrationFee, setRegistrationFee] = useState(0);
+  const [registrationFee, setRegistrationFee] = useState('');
 
   // Module Settings State
   const [selectedModule, setSelectedModule] = useState('lab');
@@ -222,7 +222,7 @@ const HospitalAdminModule = () => {
   const fetchRegistrationFee = async () => {
     try {
       const response = await axios.get('/api/hospital/registration-fee');
-      setRegistrationFee(response.data.registration_fee || 0);
+      setRegistrationFee(response.data.registration_fee != null ? String(response.data.registration_fee) : '');
     } catch (error) {
       console.error('Failed to fetch registration fee:', error);
     }

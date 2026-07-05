@@ -9,6 +9,11 @@ import { NAV_SKIP_ATTR } from '../../utils/formNavigation';
  * Search-and-pick a medicine from the pharmacy catalog.
  * Optional `onCreateNew` opens inline catalog create (e.g. QuickMedicineDialog).
  */
+function manufacturerLabel(m) {
+  if (!m) return '';
+  return m.company_name || m.manufacturer || '';
+}
+
 export default function PharmacyMedicinePicker({
   value,
   medicine,
@@ -17,7 +22,15 @@ export default function PharmacyMedicinePicker({
   placeholder = 'Search name / code…',
   className = '',
   navProps = {},
+  /** Optional map of company_id → name for manufacturer display */
+  companyById = null,
 }) {
+  const mfrOf = (m) => {
+    if (!m) return '';
+    if (m.company_name) return m.company_name;
+    if (m.company_id != null && companyById?.[m.company_id]?.name) return companyById[m.company_id].name;
+    return manufacturerLabel(m);
+  };
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
   const [open, setOpen] = useState(false);
@@ -105,6 +118,7 @@ export default function PharmacyMedicinePicker({
           <div className="text-[10px] text-gray-500 truncate">
             {medicine.medicine_code}
             {medicine.strength ? ` · ${medicine.strength}` : ''}
+            {mfrOf(medicine) ? ` · ${mfrOf(medicine)}` : ''}
           </div>
         </button>
         {createButton}
@@ -142,9 +156,12 @@ export default function PharmacyMedicinePicker({
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => pick(m)}
             >
-              <span className="font-medium">{m.name}</span>
-              <span className="text-gray-500"> · {m.medicine_code}</span>
-              {m.strength && <span className="text-gray-500"> · {m.strength}</span>}
+              <div className="font-medium">{m.name}</div>
+              <div className="text-gray-500">
+                {m.medicine_code}
+                {m.strength ? ` · ${m.strength}` : ''}
+                {mfrOf(m) ? ` · ${mfrOf(m)}` : ''}
+              </div>
             </button>
           ))}
         </div>

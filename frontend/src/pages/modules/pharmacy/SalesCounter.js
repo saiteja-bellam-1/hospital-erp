@@ -8,7 +8,7 @@ import { Label } from '../../../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../../components/ui/select';
 import { Badge } from '../../../components/ui/badge';
 import { useToast } from '../../../hooks/use-toast';
-import { Search, Trash2, ShoppingCart, ArrowLeft, Receipt, Printer, Plus, ArrowLeftRight, AlertTriangle } from 'lucide-react';
+import { Search, Trash2, ShoppingCart, ArrowLeft, Receipt, Printer, Plus, ArrowLeftRight, AlertTriangle, ChevronDown, ChevronUp, User } from 'lucide-react';
 import { errMsg } from '../PharmacyModule';
 import PdfPreviewDialog from '../../../components/PdfPreviewDialog';
 import PatientSearchPicker from '../../../components/PatientSearchPicker';
@@ -16,9 +16,15 @@ import QuickMedicineDialog from '../../../components/pharmacy/QuickMedicineDialo
 import {
   calcLineSubtotal,
   combinedBaseQty,
+  formatBatchLabel,
   formatRatesHint,
+  linePricingSource,
+  stripSaleRate,
   supportsStripSale,
+  tabSaleRate,
+  roundMoney,
 } from '../../../utils/pharmacyUnits';
+import { computeLineTax, hsnTotalTaxPct } from '../../../utils/pharmacyHsnTax';
 import PharmacyStoreSelector from '../../../components/pharmacy/PharmacyStoreSelector';
 import { usePharmacyStore } from '../../../contexts/PharmacyStoreContext';
 import { usePharmacyPermissions } from '../../../hooks/usePharmacyPermissions';
@@ -57,6 +63,8 @@ export default function SalesCounter() {
     doctor_number: '', doctor_name: '', payment_type: 'cash',
   });
   const [billingMode, setBillingMode] = useState('cash_at_pharmacy');
+  const [taxMode, setTaxMode] = useState('exclusive');
+  const [hsnList, setHsnList] = useState([]);
   const [items, setItems] = useState([]);
   const [lookupQ, setLookupQ] = useState('');
   const [lookupResults, setLookupResults] = useState([]);
@@ -68,15 +76,40 @@ export default function SalesCounter() {
   const [medicineDialogOpen, setMedicineDialogOpen] = useState(false);
   const [medicinePrefill, setMedicinePrefill] = useState({});
   const [cartRestored, setCartRestored] = useState(false);
+  const [patientPanelOpen, setPatientPanelOpen] = useState(false);
+
+  useEffect(() => {
+    axios.get('/api/pharmacy/hsn').then((r) => setHsnList(r.data || [])).catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (cartRestored || !activeStoreId) return;
     const saved = loadCart();
-    if (saved && saved.storeId === activeStoreId && Array.isArray(saved.items)) {
-      setItems(saved.items);
-      if (saved.customer) setCustomer(saved.customer);
-    }
-    setCartRestored(true);
+    let cancelled = false;
+    (async () => {
+      if (saved && saved.storeId === activeStoreId && Array.isArray(saved.items)) {
+        const refreshed = await Promise.all((saved.items || []).map(async (ln) => {
+          const batches = await loadBatchesForMedicine(ln.medicine?.id);
+          const batch = ln.batch_id
+            ? (batches.find((b) => b.id === ln.batch_id) || null)
+            : (ln.batch || batches[0] || null);
+          return {
+            ...ln,
+            batches,
+            batch,
+            batch_id: batch?.id || null,
+          };
+        }));
+        if (!cancelled) {
+          setItems(refreshed);
+          if (saved.customer) setCustomer(saved.customer);
+        }
+      }
+      if (!cancelled) setCartRestored(true);
+    })();
+    return () => { cancelled = true; };
+  // loadBatchesForMedicine closes over activeStoreId; restore runs once per store.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeStoreId, cartRestored]);
 
   useEffect(() => {
@@ -119,6 +152,10 @@ export default function SalesCounter() {
     setLookupResults([]);
   };
 
+  useEffect(() => {
+    if (selectedPatient) setPatientPanelOpen(true);
+  }, [selectedPatient]);
+
   const handlePatientChange = (patient) => {
     setSelectedPatient(patient);
     if (!patient) {
@@ -140,14 +177,30 @@ export default function SalesCounter() {
     setBillingMode('inpatient_bill');
   };
 
-  const addLine = (med) => {
+  const loadBatchesForMedicine = async (medicineId) => {
+    if (!medicineId || !activeStoreId) return [];
+    try {
+      const r = await axios.get('/api/pharmacy/inventory/batches', {
+        params: { medicine_id: medicineId, store_id: activeStoreId, active_only: true },
+      });
+      return (r.data || []).filter((b) => (b.quantity_in_stock || 0) > 0);
+    } catch {
+      return [];
+    }
+  };
+
+  const addLine = async (med) => {
+    const batches = await loadBatchesForMedicine(med.id);
+    const defaultBatch = batches[0] || null;
     setItems(s => [...s, {
       medicine: med,
       qty_tabs: 1,
-      qty_strips: 0,
+      qty_strips: '',
       rate_tier: 'A',
-      discount_pct: med.default_discount_pct || 0,
-      batch_id: null,
+      discount_pct: med.default_discount_pct || '',
+      batch_id: defaultBatch?.id || null,
+      batch: defaultBatch,
+      batches,
       barcode_scanned: false,
     }]);
     setLookupQ(''); setLookupResults([]);
@@ -156,13 +209,57 @@ export default function SalesCounter() {
   const updateLine = (i, patch) => setItems(s => s.map((x, idx) => idx === i ? { ...x, ...patch } : x));
   const removeLine = (i) => setItems(s => s.filter((_, idx) => idx !== i));
 
+  const selectBatch = (i, batchId) => {
+    const ln = items[i];
+    if (!ln) return;
+    if (!batchId || batchId === 'auto') {
+      updateLine(i, { batch_id: null, batch: null });
+      return;
+    }
+    const id = parseInt(batchId, 10);
+    const batch = (ln.batches || []).find((b) => b.id === id) || null;
+    updateLine(i, { batch_id: id, batch });
+  };
+
+  const hsnForMedicine = (medicine) => {
+    if (!medicine?.hsn_id) return null;
+    return hsnList.find((h) => h.id === medicine.hsn_id) || null;
+  };
+
+  const saleLineGrossBeforeDisc = (ln) => {
+    const tabs = parseFloat(ln.qty_tabs) || 0;
+    const strips = parseFloat(ln.qty_strips) || 0;
+    const src = linePricingSource(ln);
+    const tabR = tabSaleRate(src, ln.rate_tier);
+    const stripR = stripSaleRate(src, ln.rate_tier);
+    return roundMoney(tabs * tabR + strips * stripR);
+  };
+
+  const calcSaleLine = (ln) => {
+    const base = saleLineGrossBeforeDisc(ln);
+    const afterDisc = calcLineSubtotal(ln);
+    const hsn = hsnForMedicine(ln.medicine);
+    const { taxable, tax, total } = computeLineTax(afterDisc, hsnTotalTaxPct(hsn), taxMode);
+    return { base, afterDisc, taxable, tax, total };
+  };
+
+  const totals = items.reduce((acc, ln) => {
+    const c = calcSaleLine(ln);
+    return {
+      sub: acc.sub + c.base,
+      disc: acc.disc + (c.base - c.afterDisc),
+      tax: acc.tax + c.tax,
+      grand: acc.grand + c.total,
+    };
+  }, { sub: 0, disc: 0, tax: 0, grand: 0 });
+
   const setTier = (i, tier) => updateLine(i, { rate_tier: tier });
 
-  const calcLine = (ln) => calcLineSubtotal(ln);
-  const total = items.reduce((acc, ln) => acc + calcLine(ln), 0);
-
-  const lineNeedQty = (ln) => combinedBaseQty(ln.qty_tabs, ln.qty_strips, ln.medicine);
-  const lineStoreStock = (ln) => ln.medicine?.store_stock_qty ?? 0;
+  const lineNeedQty = (ln) => combinedBaseQty(ln.qty_tabs, ln.qty_strips, linePricingSource(ln));
+  const lineStoreStock = (ln) => {
+    if (ln.batch_id && ln.batch) return ln.batch.quantity_in_stock ?? 0;
+    return ln.medicine?.store_stock_qty ?? 0;
+  };
 
   const stockIssues = useMemo(() => items.map((ln) => {
     const need = lineNeedQty(ln);
@@ -212,6 +309,7 @@ export default function SalesCounter() {
         ...customer,
         store_id: activeStoreId,
         billing_mode: billingMode,
+        tax_mode: taxMode,
         items: items.map(ln => ({
           medicine_id: ln.medicine.id,
           qty_tabs: parseFloat(ln.qty_tabs) || 0,
@@ -245,12 +343,20 @@ export default function SalesCounter() {
 
   const setC = (k, v) => setCustomer(s => ({ ...s, [k]: v }));
 
+  const patientSummary = selectedPatient
+    ? (customer.patient_name || 'Patient linked')
+    : customer.patient_name
+      ? customer.patient_name
+      : 'Walk-in (optional)';
+
+  const compactInput = 'h-8 text-sm';
+
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div className="flex items-center gap-3">
+    <div className="space-y-3">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
           <Button size="sm" variant="outline" onClick={() => navigate('/dashboard/pharmacy')}><ArrowLeft className="h-3 w-3 mr-1" /> Back</Button>
-          <h1 className="text-2xl font-bold flex items-center gap-2"><ShoppingCart className="h-6 w-6" /> Sales Counter</h1>
+          <h1 className="text-lg font-bold flex items-center gap-2"><ShoppingCart className="h-5 w-5" /> Sales Counter</h1>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
           <PharmacyStoreSelector compact posMode={storeLocked || !!activeStore} />
@@ -292,62 +398,17 @@ export default function SalesCounter() {
         </div>
       )}
 
-      <FormNavContainer mode="grid" className="space-y-4">
-      <Card>
-        <CardHeader className="pb-3"><CardTitle className="text-base">Patient & Doctor</CardTitle></CardHeader>
-        <CardContent className="space-y-3">
-          <PatientSearchPicker
-            value={selectedPatient}
-            onChange={handlePatientChange}
-            label="Patient"
-            compact
-          />
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <div><Label className="text-xs">Phone</Label><Input value={customer.patient_phone} onChange={e => setC('patient_phone', e.target.value)} /></div>
-            <div><Label className="text-xs">IP-ID</Label><Input value={customer.patient_ip_id} onChange={e => setC('patient_ip_id', e.target.value)} /></div>
-            <div><Label className="text-xs">Patient Name</Label><Input value={customer.patient_name} onChange={e => setC('patient_name', e.target.value)} /></div>
-            <div className="col-span-2"><Label className="text-xs">Address</Label><Input value={customer.patient_address} onChange={e => setC('patient_address', e.target.value)} /></div>
-            <div><Label className="text-xs">Doctor #</Label><Input value={customer.doctor_number} onChange={e => setC('doctor_number', e.target.value)} /></div>
-            <div><Label className="text-xs">Doctor Name</Label><Input value={customer.doctor_name} onChange={e => setC('doctor_name', e.target.value)} /></div>
-            <div>
-              <Label className="text-xs">Payment</Label>
-              <Select value={customer.payment_type} onValueChange={v => setC('payment_type', v)}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="cash">Cash</SelectItem>
-                  <SelectItem value="credit">Credit</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            {selectedPatient?.patient_id && (
-              <div>
-                <Label className="text-xs">Billing</Label>
-                <Select value={billingMode} onValueChange={setBillingMode}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="inpatient_bill">Add to inpatient bill</SelectItem>
-                    <SelectItem value="cash_at_pharmacy">Collect payment now</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
-          </div>
-          {billingMode === 'inpatient_bill' && selectedPatient?.patient_id && (
-            <p className="text-xs text-blue-700">
-              Stock will be deducted now; payment is collected on the admission bill at discharge or interim billing.
-            </p>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader className="pb-3"><CardTitle className="text-base">Add Items</CardTitle></CardHeader>
-        <CardContent>
+      <FormNavContainer mode="grid" className="grid grid-cols-1 xl:grid-cols-[minmax(0,300px)_1fr] gap-4 items-start">
+      <Card className="xl:order-2 min-w-0">
+        <CardHeader className="py-2 px-4">
+          <CardTitle className="text-base">Add Items</CardTitle>
+        </CardHeader>
+        <CardContent className="pt-0">
           <div className="flex gap-2 items-end mb-3">
             <div className="flex-1 relative">
               <Label className="text-xs">Search / Scan barcode</Label>
-              <Search className="absolute left-2 top-9 h-4 w-4 text-gray-400" />
-              <Input className="pl-8" placeholder="Type name / code / scan barcode…"
+              <Search className="absolute left-2 top-8 h-4 w-4 text-gray-400" />
+              <Input className={`pl-8 ${compactInput}`} placeholder="Type name / code / scan barcode…"
                 value={lookupQ}
                 disabled={!activeStoreId}
                 onChange={e => onLookupChange(e.target.value)}
@@ -394,9 +455,10 @@ export default function SalesCounter() {
             <p className="text-center py-4 text-sm text-gray-500">No items yet — search above or scan a barcode.</p>
           ) : (
             <FormNavContainer mode="table" className="overflow-x-auto">
-              <table className="w-full text-sm min-w-[720px]">
+              <table className="w-full text-sm min-w-[900px]">
                 <thead><tr className="border-b text-left text-gray-600">
                   <th className="py-2 pr-2">Medicine</th>
+                  <th className="py-2 pr-2 min-w-[220px]">Batch</th>
                   <th className="py-2 pr-2 w-20">Qty Tab</th>
                   <th className="py-2 pr-2 w-20">Qty Strip</th>
                   <th className="py-2 pr-2 w-16">Tier</th>
@@ -409,35 +471,62 @@ export default function SalesCounter() {
                     const need = lineNeedQty(ln);
                     const avail = lineStoreStock(ln);
                     const over = need > avail;
+                    const pricing = linePricingSource(ln);
+                    const batches = ln.batches || [];
                     return (
                     <tr key={i} className={`border-b ${over ? 'bg-red-50/50' : ''}`}>
                       <td className="py-2 pr-2">
                         <div className="font-medium">{ln.medicine.name}</div>
                         <div className="text-xs text-gray-500">{ln.medicine.medicine_code}</div>
-                        <div className="text-[10px] text-gray-500">{formatRatesHint(ln.medicine, ln.rate_tier)}</div>
+                        <div className="text-[10px] text-gray-500">{formatRatesHint(ln.medicine, ln.rate_tier, ln.batch)}</div>
+                        {pricing.strip_conversion_factor > 1 && (
+                          <div className="text-[10px] text-gray-400">{pricing.strip_conversion_factor} tabs/strip</div>
+                        )}
                         <div className={`text-[10px] ${over ? 'text-red-600 font-medium' : 'text-gray-500'}`}>
-                          Store stock: {avail}{over ? ` (need ${need})` : ''}
+                          {ln.batch_id ? 'Batch' : 'Store'} stock: {avail}{over ? ` (need ${need})` : ''}
                         </div>
+                      </td>
+                      <td className="py-2 pr-2">
+                        {batches.length > 0 ? (
+                          <Select
+                            value={ln.batch_id ? String(ln.batch_id) : 'auto'}
+                            onValueChange={(v) => selectBatch(i, v)}
+                          >
+                            <SelectTrigger className="h-8 text-xs" {...navCellProps(i, 0)}>
+                              <SelectValue placeholder="Select batch" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="auto">Auto (nearest expiry)</SelectItem>
+                              {batches.map((b) => (
+                                <SelectItem key={b.id} value={String(b.id)}>
+                                  {formatBatchLabel(b)}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        ) : (
+                          <span className="text-xs text-gray-400">No stock batches</span>
+                        )}
                       </td>
                       <td className="py-2 pr-2">
                         <Input className="h-8" type="number" min="0" step={ln.medicine.decimal_supported ? '0.5' : '1'}
                           value={ln.qty_tabs ?? 0}
                           onChange={e => updateLine(i, { qty_tabs: parseFloat(e.target.value) || 0 })}
-                          {...navCellProps(i, 0)} />
+                          {...navCellProps(i, 1)} />
                       </td>
                       <td className="py-2 pr-2">
-                        {supportsStripSale(ln.medicine) ? (
+                        {supportsStripSale(pricing) ? (
                           <Input className="h-8" type="number" min="0" step="1"
-                            value={ln.qty_strips ?? 0}
-                            onChange={e => updateLine(i, { qty_strips: parseFloat(e.target.value) || 0 })}
-                            {...navCellProps(i, 1)} />
+                            value={ln.qty_strips ?? ''}
+                            onChange={e => updateLine(i, { qty_strips: e.target.value })}
+                            {...navCellProps(i, 2)} />
                         ) : (
                           <span className="text-xs text-gray-400">—</span>
                         )}
                       </td>
                       <td className="py-2 pr-2">
                         <Select value={ln.rate_tier} onValueChange={v => setTier(i, v)}>
-                          <SelectTrigger className="h-8" {...navCellProps(i, 2)}><SelectValue /></SelectTrigger>
+                          <SelectTrigger className="h-8" {...navCellProps(i, 3)}><SelectValue /></SelectTrigger>
                           <SelectContent>
                             <SelectItem value="A">A</SelectItem>
                             <SelectItem value="B">B</SelectItem>
@@ -446,18 +535,37 @@ export default function SalesCounter() {
                       </td>
                       <td className="py-2 pr-2">
                         <Input className="h-8" type="number" min="0" max="100" step="0.01"
-                          value={ln.discount_pct} onChange={e => updateLine(i, { discount_pct: parseFloat(e.target.value) || 0 })}
-                          {...navCellProps(i, 3)} />
+                          value={ln.discount_pct ?? ''} onChange={e => updateLine(i, { discount_pct: e.target.value })}
+                          {...navCellProps(i, 4)} />
                       </td>
-                      <td className="py-2 pr-2 text-right">₹{calcLine(ln).toFixed(2)}</td>
+                      <td className="py-2 pr-2 text-right">₹{calcSaleLine(ln).total.toFixed(2)}</td>
                       <td className="py-2">
                         <Button size="sm" variant="ghost" onClick={() => removeLine(i)}><Trash2 className="h-3 w-3 text-red-500" /></Button>
                       </td>
                     </tr>
                   );})}
                   <tr className="font-medium">
-                    <td colSpan={5} className="py-3 text-right pr-2">Subtotal (excl. tax):</td>
-                    <td className="py-3 pr-2 text-right">₹{total.toFixed(2)}</td>
+                    <td colSpan={6} className="py-2 text-right pr-2 text-sm text-gray-600">Subtotal:</td>
+                    <td className="py-2 pr-2 text-right text-sm">₹{totals.sub.toFixed(2)}</td>
+                    <td></td>
+                  </tr>
+                  <tr>
+                    <td colSpan={6} className="py-1 text-right pr-2 text-sm text-gray-600">Discount:</td>
+                    <td className="py-1 pr-2 text-right text-sm text-gray-600">−₹{totals.disc.toFixed(2)}</td>
+                    <td></td>
+                  </tr>
+                  <tr>
+                    <td colSpan={6} className="py-1 text-right pr-2 text-sm text-gray-600">
+                      Tax ({taxMode === 'inclusive' ? 'included' : 'added'}):
+                    </td>
+                    <td className="py-1 pr-2 text-right text-sm text-gray-600">
+                      {taxMode === 'inclusive' ? '' : '+'}₹{totals.tax.toFixed(2)}
+                    </td>
+                    <td></td>
+                  </tr>
+                  <tr className="font-bold">
+                    <td colSpan={6} className="py-3 text-right pr-2">Grand Total:</td>
+                    <td className="py-3 pr-2 text-right">₹{totals.grand.toFixed(2)}</td>
                     <td></td>
                   </tr>
                 </tbody>
@@ -471,7 +579,79 @@ export default function SalesCounter() {
         </CardContent>
       </Card>
 
-      <div className="flex justify-end gap-2">
+      <Card className="xl:order-1 xl:sticky xl:top-4">
+        <CardHeader className="py-2 px-4">
+          <button
+            type="button"
+            className="flex w-full items-center justify-between gap-2 text-left xl:pointer-events-none"
+            onClick={() => setPatientPanelOpen((o) => !o)}
+          >
+            <CardTitle className="text-base flex items-center gap-2">
+              <User className="h-4 w-4 text-gray-500" />
+              Patient & Doctor
+            </CardTitle>
+            <span className="xl:hidden flex items-center gap-2 min-w-0">
+              <span className="text-xs text-gray-500 truncate max-w-[140px]">{patientSummary}</span>
+              {patientPanelOpen ? <ChevronUp className="h-4 w-4 shrink-0" /> : <ChevronDown className="h-4 w-4 shrink-0" />}
+            </span>
+          </button>
+        </CardHeader>
+        <CardContent className={`pt-0 space-y-2 ${patientPanelOpen ? 'block' : 'hidden'} xl:block`}>
+          <PatientSearchPicker
+            value={selectedPatient}
+            onChange={handlePatientChange}
+            label="Patient"
+            compact
+          />
+          <div className="grid grid-cols-2 gap-2">
+            <div><Label className="text-xs">Phone</Label><Input className={compactInput} value={customer.patient_phone} onChange={e => setC('patient_phone', e.target.value)} /></div>
+            <div><Label className="text-xs">IP-ID</Label><Input className={compactInput} value={customer.patient_ip_id} onChange={e => setC('patient_ip_id', e.target.value)} /></div>
+            <div className="col-span-2"><Label className="text-xs">Patient Name</Label><Input className={compactInput} value={customer.patient_name} onChange={e => setC('patient_name', e.target.value)} /></div>
+            <div className="col-span-2"><Label className="text-xs">Address</Label><Input className={compactInput} value={customer.patient_address} onChange={e => setC('patient_address', e.target.value)} /></div>
+            <div><Label className="text-xs">Doctor #</Label><Input className={compactInput} value={customer.doctor_number} onChange={e => setC('doctor_number', e.target.value)} /></div>
+            <div><Label className="text-xs">Doctor Name</Label><Input className={compactInput} value={customer.doctor_name} onChange={e => setC('doctor_name', e.target.value)} /></div>
+            <div>
+              <Label className="text-xs">Payment</Label>
+              <Select value={customer.payment_type} onValueChange={v => setC('payment_type', v)}>
+                <SelectTrigger className={compactInput}><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="cash">Cash</SelectItem>
+                  <SelectItem value="credit">Credit</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-xs">Tax on rates</Label>
+              <Select value={taxMode} onValueChange={setTaxMode}>
+                <SelectTrigger className={compactInput}><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="exclusive">Tax Exclude</SelectItem>
+                  <SelectItem value="inclusive">Tax Include</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {selectedPatient?.patient_id && (
+              <div className="col-span-2">
+                <Label className="text-xs">Billing</Label>
+                <Select value={billingMode} onValueChange={setBillingMode}>
+                  <SelectTrigger className={compactInput}><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="inpatient_bill">Add to inpatient bill</SelectItem>
+                    <SelectItem value="cash_at_pharmacy">Collect payment now</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+          </div>
+          {billingMode === 'inpatient_bill' && selectedPatient?.patient_id && (
+            <p className="text-xs text-blue-700">
+              Stock deducted now; payment on discharge bill.
+            </p>
+          )}
+        </CardContent>
+      </Card>
+
+      <div className="flex justify-end gap-2 xl:col-span-2 xl:order-3">
         <Button variant="outline" onClick={() => {
           setItems([]); setLastSale(null); setSelectedPatient(null); clearCartStorage();
           setCustomer({ patient_phone: '', patient_ip_id: '', patient_name: '', patient_address: '', doctor_number: '', doctor_name: '', payment_type: 'cash' });

@@ -7,14 +7,27 @@ import { Input } from '../../../../components/ui/input';
 import { Loader2, Search } from 'lucide-react';
 import { printPdfFromUrl } from '../../../../utils/printPdf';
 import DischargePrintBar from './DischargePrintBar';
+import DischargedAdmissionDetailDialog from './DischargedAdmissionDetailDialog';
 
-const DischargeHistory = () => {
+const DischargeHistory = ({
+  doctorsList = [],
+  canWriteSummary = false,
+  filterMyPatients = false,
+  currentUserId = null,
+}) => {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [q, setQ] = useState('');
   const [page, setPage] = useState(0);
   const [total, setTotal] = useState(0);
+  const [detailId, setDetailId] = useState(null);
   const PAGE_SIZE = 50;
+
+  const isMyPatient = useCallback((a) => {
+    if (!filterMyPatients || !currentUserId) return true;
+    return a.admitting_doctor_id === currentUserId
+      || a.attending_physician_id === currentUserId;
+  }, [filterMyPatients, currentUserId]);
 
   const fetchRows = useCallback(async () => {
     setLoading(true);
@@ -22,8 +35,9 @@ const DischargeHistory = () => {
       const res = await axios.get('/api/inpatient/admissions', {
         params: { status: 'discharged', skip: page * PAGE_SIZE, limit: PAGE_SIZE },
       });
-      setRows(res.data?.items || res.data || []);
-      setTotal(res.data?.total ?? (res.data?.items || res.data || []).length);
+      const items = res.data?.items || res.data || [];
+      setRows(items);
+      setTotal(res.data?.total ?? items.length);
     } catch {
       setRows([]);
       setTotal(0);
@@ -35,6 +49,7 @@ const DischargeHistory = () => {
   useEffect(() => { fetchRows(); }, [fetchRows]);
 
   const filtered = rows.filter(a => {
+    if (!isMyPatient(a)) return false;
     if (!q.trim()) return true;
     const needle = q.trim().toLowerCase();
     return (a.patient_name || '').toLowerCase().includes(needle)
@@ -61,7 +76,11 @@ const DischargeHistory = () => {
     <div className="space-y-3">
       <div>
         <h2 className="text-lg font-semibold">Discharge History</h2>
-        <p className="text-sm text-gray-500">Past discharges — search, reprint summary, or admission detail.</p>
+        <p className="text-sm text-gray-500">
+          {filterMyPatients
+            ? 'Your discharged inpatients — open a row for clinical details and reprints.'
+            : 'Past discharges — search, view details, or reprint documents.'}
+        </p>
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -89,11 +108,13 @@ const DischargeHistory = () => {
                 <th className="text-left py-2 px-3 font-medium">Discharged</th>
                 <th className="text-left py-2 px-3 font-medium">Type</th>
                 <th className="text-right py-2 px-3 font-medium min-w-[420px]">Print</th>
+                <th className="text-right py-2 px-3 font-medium w-28"></th>
               </tr>
             </thead>
             <tbody>
               {filtered.map(a => (
-                <tr key={a.id} className="border-b hover:bg-gray-50">
+                <tr key={a.id} className="border-b hover:bg-gray-50 cursor-pointer"
+                    onClick={() => setDetailId(a.id)}>
                   <td className="py-2 px-3">
                     <div className="font-medium">{a.patient_name}</div>
                     <div className="text-xs text-gray-500">{a.admission_number}</div>
@@ -105,8 +126,9 @@ const DischargeHistory = () => {
                       {(a.discharge_type || 'normal').replace(/_/g, ' ')}
                     </Badge>
                   </td>
-                  <td className="py-2 px-3 text-right">
+                  <td className="py-2 px-3 text-right" onClick={e => e.stopPropagation()}>
                     <DischargePrintBar
+                      onClickStopPropagation
                       canPrintFinalBill
                       canPrintDischargeSummary
                       canPrintGatePass
@@ -115,6 +137,11 @@ const DischargeHistory = () => {
                       onPrintGatePass={() => printPdfFromUrl(`/api/inpatient/admissions/${a.id}/gate-pass/pdf`)}
                       onPrintDetailedSummary={() => printPdfFromUrl(`/api/inpatient/admissions/${a.id}/admission-detail/pdf`)}
                     />
+                  </td>
+                  <td className="py-2 px-3 text-right" onClick={e => e.stopPropagation()}>
+                    <Button size="sm" variant="outline" onClick={() => setDetailId(a.id)}>
+                      View details
+                    </Button>
                   </td>
                 </tr>
               ))}
@@ -134,6 +161,14 @@ const DischargeHistory = () => {
           </div>
         </div>
       )}
+
+      <DischargedAdmissionDetailDialog
+        open={!!detailId}
+        onClose={() => setDetailId(null)}
+        admissionId={detailId}
+        doctorsList={doctorsList}
+        canWriteSummary={canWriteSummary}
+      />
     </div>
   );
 };

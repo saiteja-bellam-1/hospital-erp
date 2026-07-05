@@ -48,9 +48,15 @@ export const PHARMACY_MASTER_FIELD_SPECS = {
     fields: [
       { key: 'code', label: 'HSN Code', required: true },
       { key: 'description', label: 'Description', type: 'textarea' },
-      { key: 'sgst_pct', label: 'SGST %', type: 'number', default: 0 },
-      { key: 'cgst_pct', label: 'CGST %', type: 'number', default: 0 },
-      { key: 'igst_pct', label: 'IGST %', type: 'number', default: 0 },
+      { key: 'sgst_pct', label: 'SGST %', type: 'number', default: '' },
+      { key: 'cgst_pct', label: 'CGST %', type: 'number', default: '' },
+      {
+        key: 'igst_pct',
+        label: 'IGST %',
+        type: 'number',
+        default: '',
+        hint: 'Auto-filled as SGST + CGST; you can edit to override.',
+      },
       { key: 'is_active', label: 'Active', type: 'bool', default: true },
     ],
   },
@@ -67,7 +73,7 @@ export function payloadFromMasterForm(form, fields) {
   fields.forEach((f) => {
     const raw = form[f.key];
     if (f.type === 'number') {
-      payload[f.key] = raw === '' || raw == null ? (f.default ?? 0) : parseFloat(raw);
+      payload[f.key] = raw === '' || raw == null ? 0 : parseFloat(raw);
     } else if (f.type === 'bool') {
       payload[f.key] = !!raw;
     } else {

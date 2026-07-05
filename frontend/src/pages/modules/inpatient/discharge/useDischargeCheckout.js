@@ -33,10 +33,10 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
 
   const canAddDeposit = permissions.receive_deposits !== false;
   const canFinalize = permissions.finalize_bill !== false;
-  const canDischarge = permissions.discharge_patients !== false;
-  const canIssuePass = permissions.issue_gate_pass !== false;
-  const canWriteSummary = permissions.write_discharge_summary !== false;
-  const canViewSummary = permissions.view_discharge_summary !== false;
+  const canDischarge = Boolean(permissions.discharge_patients);
+  const canIssuePass = Boolean(permissions.issue_gate_pass);
+  const canWriteSummary = Boolean(permissions.write_discharge_summary);
+  const canViewSummary = Boolean(permissions.view_discharge_summary);
 
   const derived = useMemo(
     () => computeDerived(bill, balance, admission),

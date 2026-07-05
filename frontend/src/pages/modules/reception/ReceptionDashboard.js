@@ -215,7 +215,7 @@ const ReceptionDashboard = () => {
   const [pendingLabOrders, setPendingLabOrders] = useState([]);
   const [labPaymentLoading, setLabPaymentLoading] = useState(false);
   const [labPaymentMethod, setLabPaymentMethod] = useState('cash');
-  const [labDiscount, setLabDiscount] = useState(0);
+  const [labDiscount, setLabDiscount] = useState('');
   const [labBillPdfUrl, setLabBillPdfUrl] = useState(null);
   const [labBillOrderIds, setLabBillOrderIds] = useState([]);
   const [showLabBillPreview, setShowLabBillPreview] = useState(false);
@@ -255,7 +255,7 @@ const ReceptionDashboard = () => {
       const res = await fetch(`/api/lab/orders/patient/${patientId}/bill`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ payment_method: labPaymentMethod, discount_amount: labDiscount})
+        body: JSON.stringify({ payment_method: labPaymentMethod, discount_amount: parseFloat(labDiscount) || 0})
       });
       if (res.ok) {
         const orderIdsHeader = res.headers.get('X-Order-Ids');
@@ -881,8 +881,8 @@ const ReceptionDashboard = () => {
                             type="number"
                             min="0"
                             step="0.01"
-                            value={labDiscount || ''}
-                            onChange={(e) => setLabDiscount(parseFloat(e.target.value) || 0)}
+                            value={labDiscount ?? ''}
+                            onChange={(e) => setLabDiscount(e.target.value)}
                             placeholder="0"
                             className="w-24 h-7 text-right text-sm"
                           />
@@ -891,7 +891,7 @@ const ReceptionDashboard = () => {
                       <hr />
                       <div className="flex items-center justify-between font-semibold">
                         <span>Total</span>
-                        <span>₹{(pendingLabOrders.reduce((sum, o) => sum + (o.amount || 0), 0) - labDiscount).toFixed(2)}</span>
+                        <span>₹{(pendingLabOrders.reduce((sum, o) => sum + (o.amount || 0), 0) - (parseFloat(labDiscount) || 0)).toFixed(2)}</span>
                       </div>
                     </div>
                     <div className="flex items-center gap-3">
@@ -913,7 +913,7 @@ const ReceptionDashboard = () => {
                       </div>
                     </div>
                     <Button className="w-full" onClick={collectAllLabPayments} disabled={labPaymentLoading}>
-                      {labPaymentLoading ? 'Generating Bill...' : `Pay & Download Bill (₹${(pendingLabOrders.reduce((sum, o) => sum + (o.amount || 0), 0) - labDiscount).toFixed(2)})`}
+                      {labPaymentLoading ? 'Generating Bill...' : `Pay & Download Bill (₹${(pendingLabOrders.reduce((sum, o) => sum + (o.amount || 0), 0) - (parseFloat(labDiscount) || 0)).toFixed(2)})`}
                     </Button>
                   </>
                 )}

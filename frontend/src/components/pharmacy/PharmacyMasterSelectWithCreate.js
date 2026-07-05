@@ -15,6 +15,7 @@ import {
   blankFromMasterFields,
   payloadFromMasterForm,
 } from './pharmacyMasterFieldSpecs';
+import { patchHsnForm } from '../../utils/pharmacyHsnTax';
 import QuickSupplierDialog from './QuickSupplierDialog';
 
 const NONE = '__none';
@@ -93,12 +94,21 @@ export default function PharmacyMasterSelectWithCreate({
     onChange?.(created.id);
   };
 
+  const patchForm = (key, raw) => {
+    const field = fields.find((f) => f.key === key);
+    const value = field?.type === 'number'
+      ? (raw === '' || raw == null ? '' : parseFloat(raw))
+      : raw;
+    setForm((p) => (path === 'hsn' ? patchHsnForm(p, key, value) : { ...p, [key]: value }));
+  };
+
   const openCreate = () => {
     if (isSupplier) {
       setSupplierDialogOpen(true);
       return;
     }
-    setForm(blankFromMasterFields(fields));
+    const blank = blankFromMasterFields(fields);
+    setForm(path === 'hsn' ? patchHsnForm(blank, 'sgst_pct', blank.sgst_pct ?? '') : blank);
     setDialogOpen(true);
   };
 
@@ -114,7 +124,10 @@ export default function PharmacyMasterSelectWithCreate({
     }
     setSaving(true);
     try {
-      const res = await axios.post(`/api/pharmacy/${path}`, payloadFromMasterForm(form, fields));
+      const res = await axios.post(
+        `/api/pharmacy/${path}`,
+        payloadFromMasterForm(form, fields),
+      );
       selectCreated(res.data);
       toast({ title: 'Created', description: `${dialogTitle.replace(/^Add /, '')} added.` });
       setDialogOpen(false);
@@ -220,8 +233,11 @@ export default function PharmacyMasterSelectWithCreate({
                         type={f.type === 'number' ? 'number' : 'text'}
                         step={f.type === 'number' ? '0.01' : undefined}
                         value={form[f.key] ?? ''}
-                        onChange={(e) => setForm((p) => ({ ...p, [f.key]: e.target.value }))}
+                        onChange={(e) => patchForm(f.key, e.target.value)}
                       />
+                    )}
+                    {f.hint && (
+                      <p className="text-[11px] text-muted-foreground mt-0.5">{f.hint}</p>
                     )}
                   </div>
                 ))}

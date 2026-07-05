@@ -50,6 +50,10 @@ export default function MedicinesTab() {
   const openCreate = () => { setEditing(null); setForm(EMPTY_MEDICINE_FORM); setOpen(true); };
   const openEdit = (row) => {
     const merged = { ...EMPTY_MEDICINE_FORM, ...row };
+    ['unit_price', 'mrp', 'purchase_rate', 'rate_a', 'rate_b', 'cost_pcs',
+      'default_discount_pct', 'item_discount_pct', 'min_qty', 'max_qty', 'reorder_qty'].forEach((k) => {
+      if (merged[k] === 0) merged[k] = '';
+    });
     merged.cost_pcs = costPcsFromMrp(merged);
     setEditing(row);
     setForm(merged);

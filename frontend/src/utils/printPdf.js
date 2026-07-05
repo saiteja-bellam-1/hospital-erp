@@ -142,3 +142,19 @@ export const printPdfFromUrl = async (urlOrPath, options = {}) => {
     iframe.src = blobUrl;
   });
 };
+
+/**
+ * Fetch a PDF from the API and return a blob: URL for iframe preview.
+ * Caller must revoke the URL when done.
+ * @returns {Promise<string>}
+ */
+export async function fetchPdfBlobUrl(urlOrPath, options = {}) {
+  const params = { ...(options.params || {}) };
+  const res = await axios.get(urlOrPath, { responseType: 'blob', params });
+  const contentType = res.headers['content-type'] || '';
+  if (!(await isPdfBlob(res.data, contentType))) {
+    const msg = await parseApiErrorFromBlob(res.data);
+    throw new Error(msg);
+  }
+  return URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+}

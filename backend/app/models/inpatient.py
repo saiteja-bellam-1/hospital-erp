@@ -190,10 +190,15 @@ class AdmissionDischargeSummary(Base):
     admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=False, unique=True)
     status = Column(String(20), default="draft", nullable=False)  # draft, ready, locked
 
+    chief_complaint = Column(Text, nullable=True)
     provisional_diagnosis = Column(Text, nullable=True)
     primary_diagnosis = Column(Text, nullable=True)
     past_history = Column(Text, nullable=True)
+    family_history = Column(Text, nullable=True)
     present_medical_history = Column(Text, nullable=True)
+    physical_examination_notes = Column(Text, nullable=True)
+    include_admission_vitals = Column(Boolean, default=True, nullable=False)
+    emergency_instructions = Column(Text, nullable=True)
     findings_at_admission = Column(Text, nullable=True)
     investigations_summary = Column(Text, nullable=True)
     course_in_hospital = Column(Text, nullable=True)

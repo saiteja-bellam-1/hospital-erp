@@ -24,8 +24,8 @@ const BillDetailDialog = ({ open, onClose, admission, onFinalized }) => {
   const [billData, setBillData] = useState(null);          // full breakdown
   const [existingBills, setExistingBills] = useState([]);  // any finalised bills
   const [discountType, setDiscountType] = useState('flat');
-  const [discountValue, setDiscountValue] = useState(0);
-  const [taxPct, setTaxPct] = useState(0);
+  const [discountValue, setDiscountValue] = useState('');
+  const [taxPct, setTaxPct] = useState('');
   const [submitting, setSubmitting] = useState(false);
   // Post-finalize settle dialog
   const [settle, setSettle] = useState(null);  // { mode: 'collect'|'refund', amount, method, reference, notes, busy }
@@ -352,7 +352,7 @@ const BillDetailDialog = ({ open, onClose, admission, onFinalized }) => {
                     </Select>
                     <Input type="number" min="0" step="0.01"
                            value={discountValue || ''}
-                           onChange={e => setDiscountValue(parseFloat(e.target.value) || 0)}
+                           onChange={e => setDiscountValue(e.target.value)}
                            disabled={hasFinalBill}
                            placeholder="0"
                            className="h-9" />
@@ -367,7 +367,7 @@ const BillDetailDialog = ({ open, onClose, admission, onFinalized }) => {
                   <Label className="text-xs">Tax (%)</Label>
                   <Input type="number" min="0" max="100" step="0.01"
                          value={taxPct || ''}
-                         onChange={e => setTaxPct(parseFloat(e.target.value) || 0)}
+                         onChange={e => setTaxPct(e.target.value)}
                          disabled={hasFinalBill}
                          placeholder="0"
                          className="h-9" />

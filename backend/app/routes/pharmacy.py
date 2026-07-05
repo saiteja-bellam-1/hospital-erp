@@ -61,6 +61,7 @@ from app.utils.pharmacy_pricing import (
     apply_cost_pcs_from_mrp,
     apply_medicine_price_rounding,
     round_money,
+    compute_line_tax,
 )
 from app.services.audit_service import log_action
 from app.services.pharmacy_store_service import (
@@ -513,6 +514,7 @@ class MedicineIn(BaseModel):
 
 class MedicineOut(MedicineIn):
     id: int
+    company_name: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -521,6 +523,19 @@ class MedicineOut(MedicineIn):
 class MedicineLookupOut(MedicineOut):
     store_stock_qty: float = 0.0
     master_stock_qty: float = 0.0
+
+
+def _medicine_out(med: Medicine) -> MedicineOut:
+    """Serialize medicine and resolve manufacturer/company display name."""
+    out = MedicineOut.model_validate(med)
+    company_name = None
+    try:
+        if getattr(med, "company", None) is not None:
+            company_name = med.company.name
+    except Exception:
+        company_name = None
+    out.company_name = company_name or med.manufacturer
+    return out
 
 
 @router.get("/medicines", response_model=List[MedicineOut])
@@ -609,7 +624,8 @@ def lookup_medicine(
 
     out = []
     for med in meds:
-        row = MedicineLookupOut.model_validate(med)
+        base = _medicine_out(med)
+        row = MedicineLookupOut(**base.model_dump())
         if lookup_store_id is not None:
             row.store_stock_qty = sum_store_stock(
                 db, medicine_id=med.id, hospital_id=current_user.hospital_id,
@@ -746,7 +762,7 @@ def get_medicine(
         Medicine.id == mid, Medicine.hospital_id == current_user.hospital_id,
     ).first()
     _ensure_active_or_404(row, "Medicine")
-    return row
+    return _medicine_out(row)
 
 
 @router.post("/medicines", response_model=MedicineOut, status_code=201)
@@ -822,8 +838,31 @@ class HSNIn(BaseModel):
     description: Optional[str] = None
     sgst_pct: float = 0.0
     cgst_pct: float = 0.0
-    igst_pct: float = 0.0
+    igst_pct: float = 0.0  # defaults to sgst_pct + cgst_pct; client may override
     is_active: bool = True
+
+
+def _normalize_hsn_tax(sgst_pct: float, cgst_pct: float) -> tuple:
+    """IGST is always the combined rate (CGST + SGST) for inter-state use."""
+    sgst = float(sgst_pct or 0)
+    cgst = float(cgst_pct or 0)
+    return sgst, cgst, round(sgst + cgst, 4)
+
+
+def _hsn_total_tax_pct(hsn_row: Optional[PharmacyHSN]) -> float:
+    """Total GST rate on a line — CGST + SGST (IGST mirrors that sum, never added twice)."""
+    if not hsn_row:
+        return 0.0
+    return (hsn_row.sgst_pct or 0) + (hsn_row.cgst_pct or 0)
+
+
+def _prepare_hsn_payload(data: HSNIn) -> dict:
+    d = data.model_dump()
+    sgst, cgst, default_igst = _normalize_hsn_tax(d["sgst_pct"], d["cgst_pct"])
+    d["sgst_pct"] = sgst
+    d["cgst_pct"] = cgst
+    d["igst_pct"] = round(float(d["igst_pct"]) if d["igst_pct"] is not None else default_igst, 4)
+    return d
 
 
 class HSNOut(HSNIn):
@@ -843,21 +882,28 @@ def list_hsn(
     return q.order_by(PharmacyHSN.code).all()
 
 
-def _check_duplicate_hsn_code(
-    db: Session, *, hospital_id: int, code: str, exclude_hid: Optional[int] = None,
+def _check_duplicate_hsn_entry(
+    db: Session, *, hospital_id: int, code: str,
+    sgst_pct: float, cgst_pct: float, exclude_hid: Optional[int] = None,
 ) -> None:
-    """Reject duplicate HSN codes within a hospital (case-insensitive trim)."""
+    """Reject duplicate HSN code + tax-rate combos (same code, different tax is allowed)."""
     normalized = (code or "").strip()
     if not normalized:
         return
+    sgst, cgst, _ = _normalize_hsn_tax(sgst_pct, cgst_pct)
     q = db.query(PharmacyHSN).filter(
         PharmacyHSN.hospital_id == hospital_id,
         sa_func.lower(PharmacyHSN.code) == normalized.lower(),
+        PharmacyHSN.sgst_pct == sgst,
+        PharmacyHSN.cgst_pct == cgst,
     )
     if exclude_hid is not None:
         q = q.filter(PharmacyHSN.id != exclude_hid)
     if q.first():
-        raise HTTPException(status_code=400, detail="HSN code already exists")
+        raise HTTPException(
+            status_code=400,
+            detail="HSN code with the same SGST/CGST rates already exists",
+        )
 
 
 @router.post("/hsn", response_model=HSNOut, status_code=201)
@@ -866,10 +912,12 @@ def create_hsn(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "manage_hsn_tax")),
 ):
-    _check_duplicate_hsn_code(
-        db, hospital_id=current_user.hospital_id, code=data.code,
+    payload = _prepare_hsn_payload(data)
+    _check_duplicate_hsn_entry(
+        db, hospital_id=current_user.hospital_id, code=payload["code"],
+        sgst_pct=payload["sgst_pct"], cgst_pct=payload["cgst_pct"],
     )
-    row = PharmacyHSN(hospital_id=current_user.hospital_id, **data.model_dump())
+    row = PharmacyHSN(hospital_id=current_user.hospital_id, **payload)
     db.add(row); db.commit(); db.refresh(row)
     _audit(db, current_user, "create_hsn", "pharmacy_hsn", row.id,
            f"Created HSN code {row.code} (SGST {row.sgst_pct}% + CGST {row.cgst_pct}%)")
@@ -886,10 +934,12 @@ def update_hsn(
         PharmacyHSN.id == hid, PharmacyHSN.hospital_id == current_user.hospital_id,
     ).first()
     _ensure_active_or_404(row, "HSN")
-    _check_duplicate_hsn_code(
-        db, hospital_id=current_user.hospital_id, code=data.code, exclude_hid=row.id,
+    payload = _prepare_hsn_payload(data)
+    _check_duplicate_hsn_entry(
+        db, hospital_id=current_user.hospital_id, code=payload["code"],
+        sgst_pct=payload["sgst_pct"], cgst_pct=payload["cgst_pct"], exclude_hid=row.id,
     )
-    for k, v in data.model_dump().items():
+    for k, v in payload.items():
         setattr(row, k, v)
     db.commit(); db.refresh(row)
     _audit(db, current_user, "update_hsn", "pharmacy_hsn", row.id, f"Updated HSN #{row.id}")
@@ -991,9 +1041,12 @@ class BatchOut(BaseModel):
     medicine_id: int
     medicine_name: str
     batch_number: str
+    expiry_date: Optional[date] = None
     quantity_in_stock: float
     mrp: float
     purchase_rate: float
+    rate_a: float = 0.0
+    strip_conversion_factor: int = 1
     selling_price: float
     free_quantity: int
     supplier_id: Optional[int] = None
@@ -1077,13 +1130,23 @@ def list_batches(
         q = q.filter(PharmacyInventory.medicine_id == medicine_id)
     if supplier_id:
         q = q.filter(PharmacyInventory.supplier_id == supplier_id)
-    rows = q.order_by(PharmacyInventory.id.asc()).limit(limit).all()
+    rows = q.order_by(
+        PharmacyInventory.expiry_date.asc(),
+        PharmacyInventory.id.asc(),
+    ).limit(limit).all()
     return [
         BatchOut(
             id=inv.id, medicine_id=inv.medicine_id, medicine_name=med.name,
             batch_number=inv.batch_number,
+            expiry_date=(
+                inv.expiry_date if inv.expiry_date and inv.expiry_date != _EXPIRY_SENTINEL
+                else None
+            ),
             quantity_in_stock=inv.quantity_in_stock, mrp=inv.mrp or 0.0,
-            purchase_rate=inv.purchase_rate or 0.0, selling_price=inv.selling_price or 0.0,
+            purchase_rate=inv.purchase_rate or 0.0,
+            rate_a=inv.rate_a or 0.0,
+            strip_conversion_factor=max(1, int(inv.strip_conversion_factor or 0) or int(med.strip_conversion_factor or 1) or 1),
+            selling_price=inv.selling_price or 0.0,
             free_quantity=inv.free_quantity or 0,
             supplier_id=inv.supplier_id, supplier_name=sup.name if sup else None,
             purchase_id=inv.purchase_id, hsn_id=inv.hsn_id, is_active=inv.is_active,
@@ -1360,6 +1423,8 @@ class PurchaseItemIn(BaseModel):
     quantity: float = Field(..., gt=0)
     free_quantity: float = 0.0
     purchase_rate: float = Field(..., ge=0)
+    rate_a: float = 0.0
+    strip_conversion_factor: int = Field(1, ge=1)
     discount_pct: float = 0.0
     # Ignored if sent — tax is always taken from the medicine's HSN at save time.
     hsn_id: Optional[int] = None
@@ -1368,12 +1433,21 @@ class PurchaseItemIn(BaseModel):
     # this for perishable medicines.
     expiry_date: Optional[date] = None
 
-    @field_validator("mrp", "purchase_rate", "discount_pct", mode="before")
+    @field_validator("mrp", "purchase_rate", "rate_a", "discount_pct", mode="before")
     @classmethod
     def _round_purchase_money(cls, v):
         if v is None or v == "":
             return 0.0
         return round_money(v)
+
+    @field_validator("strip_conversion_factor", mode="before")
+    @classmethod
+    def _coerce_strip_factor(cls, v):
+        try:
+            n = int(v or 1)
+        except (TypeError, ValueError):
+            n = 1
+        return max(1, n)
 
 
 class PurchaseItemOut(PurchaseItemIn):
@@ -1394,6 +1468,7 @@ class PurchaseIn(BaseModel):
     bill_date: Optional[date] = None
     payment_type: str = Field("cash", pattern="^(cash|credit)$")
     purchase_type: Optional[str] = None
+    tax_mode: str = Field("exclusive", pattern="^(exclusive|inclusive)$")
     notes: Optional[str] = None
     items: List[PurchaseItemIn] = Field(default_factory=list)
 
@@ -1413,6 +1488,7 @@ class PurchaseOut(BaseModel):
     bill_date: Optional[date] = None
     payment_type: str
     purchase_type: Optional[str] = None
+    tax_mode: str = "exclusive"
     status: str
     subtotal: float
     total_discount: float
@@ -1487,24 +1563,26 @@ def _hsn_row_for_purchase_item(db: Session, item) -> Optional[PharmacyHSN]:
     return db.query(PharmacyHSN).filter(PharmacyHSN.id == hsn_id).first()
 
 
-def _compute_item_line(item: dict, hsn_row: Optional[PharmacyHSN]) -> dict:
-    """Returns (line_total, tax_amount) for a purchase item.
+def _compute_item_line(
+    item: dict, hsn_row: Optional[PharmacyHSN], *, tax_mode: str = "exclusive",
+) -> dict:
+    """Returns line_total, tax_amount, discount_amount for a purchase item.
 
-    Formula: base = qty × p_rate; discount applied first; tax applied on
-    discounted base. Free quantity is non-billable but tracked for inventory.
+    Formula: base = qty × p_rate; discount applied first; tax per tax_mode.
+    Free quantity is non-billable but tracked for inventory.
     """
     qty = float(item.get("quantity") or 0)
     rate = float(item.get("purchase_rate") or 0)
     disc = float(item.get("discount_pct") or 0)
     base = qty * rate
     base_after_disc = base * (1 - disc / 100.0)
-    tax_pct = 0.0
-    if hsn_row:
-        tax_pct = (hsn_row.sgst_pct or 0) + (hsn_row.cgst_pct or 0) + (hsn_row.igst_pct or 0)
-    tax_amt = base_after_disc * (tax_pct / 100.0)
+    tax_pct = _hsn_total_tax_pct(hsn_row)
+    _taxable, tax_amt, line_total = compute_line_tax(
+        base_after_disc, tax_pct, tax_mode=tax_mode,
+    )
     return {
-        "line_total": round(base_after_disc + tax_amt, 2),
-        "tax_amount": round(tax_amt, 2),
+        "line_total": line_total,
+        "tax_amount": tax_amt,
         "discount_amount": round(base - base_after_disc, 2),
     }
 
@@ -1514,18 +1592,19 @@ def _recompute_purchase_totals(purchase: PharmacyPurchase, db: Session) -> None:
     disc = 0.0
     tax = 0.0
     grand = 0.0
+    tax_mode = getattr(purchase, "tax_mode", None) or "exclusive"
     for it in purchase.items:
         hsn_row = _hsn_row_for_purchase_item(db, it)
         comp = _compute_item_line({
             "quantity": it.quantity, "purchase_rate": it.purchase_rate, "discount_pct": it.discount_pct,
-        }, hsn_row)
+        }, hsn_row, tax_mode=tax_mode)
         it.tax_amount = comp["tax_amount"]
         it.line_total = comp["line_total"]
         # P2.1: snapshot per-component HSN rates so historical reports don't
         # drift when the HSN master is edited later.
         it.sgst_pct = (hsn_row.sgst_pct or 0) if hsn_row else 0.0
         it.cgst_pct = (hsn_row.cgst_pct or 0) if hsn_row else 0.0
-        it.igst_pct = (hsn_row.igst_pct or 0) if hsn_row else 0.0
+        it.igst_pct = (hsn_row.igst_pct if hsn_row else 0.0) or (it.sgst_pct + it.cgst_pct)
         subtotal += (it.quantity or 0) * (it.purchase_rate or 0)
         disc += comp["discount_amount"]
         tax += comp["tax_amount"]
@@ -1630,10 +1709,20 @@ def _apply_purchase_item_to_inventory(
     ).first()
     added_qty = (item.quantity or 0) + (item.free_quantity or 0)
     eff_cost = _effective_cost(item.quantity, item.free_quantity, item.purchase_rate)
+    item_rate_a = float(getattr(item, "rate_a", 0) or 0)
+    item_scf = max(1, int(getattr(item, "strip_conversion_factor", 0) or 1))
+    sell_price = item_rate_a or item.mrp or item.purchase_rate
     if existing:
         existing.quantity_in_stock = (existing.quantity_in_stock or 0) + added_qty
         existing.mrp = item.mrp or existing.mrp
         existing.purchase_rate = item.purchase_rate or existing.purchase_rate
+        if item_rate_a:
+            existing.rate_a = item_rate_a
+            existing.selling_price = item_rate_a
+        elif item.mrp:
+            existing.selling_price = item.mrp
+        if item_scf:
+            existing.strip_conversion_factor = item_scf
         if item.purchase_rate:
             existing.cost_price = eff_cost
         existing.supplier_id = purchase.supplier_id
@@ -1646,8 +1735,9 @@ def _apply_purchase_item_to_inventory(
         inv = PharmacyInventory(
             medicine_id=item.medicine_id, batch_number=item.batch_number,
             expiry_date=item_expiry, quantity_in_stock=added_qty,
-            cost_price=eff_cost, selling_price=item.mrp or item.purchase_rate,
+            cost_price=eff_cost, selling_price=sell_price,
             mrp=item.mrp, purchase_rate=item.purchase_rate,
+            rate_a=item_rate_a, strip_conversion_factor=item_scf,
             free_quantity=item.free_quantity or 0, discount_pct=item.discount_pct,
             hsn_id=item.hsn_id, supplier_id=purchase.supplier_id,
             purchase_id=purchase.id, purchase_date=purchase.entry_date,
@@ -1673,6 +1763,11 @@ def _apply_purchase_item_to_inventory(
                 med.purchase_rate = item.purchase_rate
             if item.mrp:
                 med.mrp = item.mrp
+            if item_rate_a:
+                med.rate_a = item_rate_a
+                med.unit_price = item_rate_a
+            if item_scf > 1 or not med.strip_conversion_factor:
+                med.strip_conversion_factor = item_scf
             med.last_purchase_date = purchase.entry_date
 
     return inv
@@ -1687,7 +1782,10 @@ def _shape_purchase(p: PharmacyPurchase, db: Session) -> PurchaseOut:
             batch_number=it.batch_number,
             expiry_date=it.expiry_date if it.expiry_date != _EXPIRY_SENTINEL else None,
             mrp=it.mrp or 0.0, quantity=it.quantity, free_quantity=it.free_quantity or 0.0,
-            purchase_rate=it.purchase_rate, discount_pct=it.discount_pct or 0.0,
+            purchase_rate=it.purchase_rate,
+            rate_a=getattr(it, "rate_a", 0) or 0.0,
+            strip_conversion_factor=max(1, int(getattr(it, "strip_conversion_factor", 0) or 1)),
+            discount_pct=it.discount_pct or 0.0,
             hsn_id=it.hsn_id, tax_amount=it.tax_amount or 0.0,
             line_total=it.line_total or 0.0, inventory_id=it.inventory_id,
         ))
@@ -1695,7 +1793,9 @@ def _shape_purchase(p: PharmacyPurchase, db: Session) -> PurchaseOut:
         id=p.id, purchase_number=p.purchase_number, entry_date=p.entry_date,
         supplier_id=p.supplier_id, supplier_name=(p.supplier.name if p.supplier else None),
         invoice_number=p.invoice_number, bill_date=p.bill_date,
-        payment_type=p.payment_type, purchase_type=p.purchase_type, status=p.status,
+        payment_type=p.payment_type, purchase_type=p.purchase_type,
+        tax_mode=getattr(p, "tax_mode", None) or "exclusive",
+        status=p.status,
         subtotal=p.subtotal or 0.0, total_discount=p.total_discount or 0.0,
         total_tax=p.total_tax or 0.0, grand_total=p.grand_total or 0.0,
         notes=p.notes, items=items_out,
@@ -1762,6 +1862,7 @@ def create_purchase(
         entry_date=data.entry_date, supplier_id=data.supplier_id,
         invoice_number=data.invoice_number, bill_date=data.bill_date,
         payment_type=data.payment_type, purchase_type=data.purchase_type,
+        tax_mode=data.tax_mode or "exclusive",
         status="draft", notes=data.notes,
         created_by=current_user.id, store_id=purchase_store_id,
         hospital_id=current_user.hospital_id,
@@ -1785,7 +1886,10 @@ def create_purchase(
             batch_number=item.batch_number,
             expiry_date=item.expiry_date or _EXPIRY_SENTINEL,
             mrp=item.mrp, quantity=item.quantity, free_quantity=item.free_quantity,
-            purchase_rate=item.purchase_rate, discount_pct=item.discount_pct,
+            purchase_rate=item.purchase_rate,
+            rate_a=item.rate_a or med.rate_a or 0.0,
+            strip_conversion_factor=item.strip_conversion_factor or med.strip_conversion_factor or 1,
+            discount_pct=item.discount_pct,
             hsn_id=med.hsn_id,
         )
         db.add(row)
@@ -1855,6 +1959,7 @@ def edit_purchase(
     purchase.bill_date = data.bill_date
     purchase.payment_type = data.payment_type
     purchase.purchase_type = data.purchase_type
+    purchase.tax_mode = data.tax_mode or "exclusive"
     purchase.notes = data.notes
     if data.store_id is not None and not is_confirmed:
         purchase.store_id = resolve_store_id(
@@ -1875,7 +1980,10 @@ def edit_purchase(
             batch_number=item.batch_number,
             expiry_date=item.expiry_date or _EXPIRY_SENTINEL,
             mrp=item.mrp, quantity=item.quantity, free_quantity=item.free_quantity,
-            purchase_rate=item.purchase_rate, discount_pct=item.discount_pct,
+            purchase_rate=item.purchase_rate,
+            rate_a=item.rate_a or med.rate_a or 0.0,
+            strip_conversion_factor=item.strip_conversion_factor or med.strip_conversion_factor or 1,
+            discount_pct=item.discount_pct,
             hsn_id=med.hsn_id,
         ))
     db.flush(); db.refresh(purchase)
@@ -2212,6 +2320,7 @@ class SaleItemOut(BaseModel):
 class SaleIn(BaseModel):
     payment_type: str = Field("cash", pattern="^(cash|credit)$")
     store_id: Optional[int] = None
+    tax_mode: str = Field("exclusive", pattern="^(exclusive|inclusive)$")
     billing_mode: str = Field(
         "cash_at_pharmacy",
         pattern="^(inpatient_bill|cash_at_pharmacy)$",
@@ -2241,6 +2350,7 @@ class SaleOut(BaseModel):
     discount_total: float
     tax_total: float
     grand_total: float
+    tax_mode: str = "exclusive"
     status: str
     billing_mode: str = "cash_at_pharmacy"
     admission_id: Optional[int] = None
@@ -2381,6 +2491,7 @@ def _shape_sale(s: PharmacySale, db: Session) -> SaleOut:
         doctor_name=s.doctor_name,
         subtotal=s.subtotal or 0.0, discount_total=s.discount_total or 0.0,
         tax_total=s.tax_total or 0.0, grand_total=s.grand_total or 0.0,
+        tax_mode=getattr(s, "tax_mode", None) or "exclusive",
         status=s.status, items=items_out, created_at=s.created_at,
         billing_mode=getattr(s, "billing_mode", None) or "cash_at_pharmacy",
         admission_id=getattr(s, "admission_id", None),
@@ -2467,6 +2578,7 @@ def create_sale(
         hospital_id=current_user.hospital_id,
         admission_id=ip_admission_id,
         billing_mode=billing_mode,
+        tax_mode=data.tax_mode or "exclusive",
     )
     db.add(sale)
     # P3.3: two concurrent sales can compute the same MAX-seq and produce the
@@ -2496,12 +2608,35 @@ def create_sale(
         if qty_tabs <= 0 and qty_strips <= 0:
             raise HTTPException(status_code=400, detail=f"Enter tab or strip qty for {med.name}")
 
+        # Resolve batch first when explicit — qty/rate use that batch's
+        # Rate A / MRP / tabs-per-strip (medicine master as fallback).
+        explicit_batch = None
+        if line.batch_id:
+            explicit_batch = db.query(PharmacyInventory).filter(
+                PharmacyInventory.id == line.batch_id,
+                PharmacyInventory.hospital_id == current_user.hospital_id,
+                PharmacyInventory.is_active == True,  # noqa: E712
+            ).with_for_update().first()
+            if not explicit_batch:
+                raise HTTPException(status_code=400, detail=f"Invalid batch_id {line.batch_id}")
+            if explicit_batch.store_id != sale_store_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Batch {explicit_batch.batch_number} belongs to a different store",
+                )
+            if explicit_batch.medicine_id != med.id:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Batch {explicit_batch.batch_number} is not for {med.name}",
+                )
+
         base_qty_needed, rate_per_tab, strip_rate, qty_tabs, qty_strips = resolve_pos_sale_line(
             med,
             qty_tabs=qty_tabs,
             qty_strips=qty_strips,
             tier=line.rate_tier,
             override_strip_rate=line.rate,
+            batch=explicit_batch,
         )
         if rate_per_tab <= 0:
             raise HTTPException(status_code=400,
@@ -2524,30 +2659,17 @@ def create_sale(
         hsn_row = db.query(PharmacyHSN).filter(PharmacyHSN.id == med.hsn_id).first() if med.hsn_id else None
         sgst_snap = (hsn_row.sgst_pct or 0) if hsn_row else 0.0
         cgst_snap = (hsn_row.cgst_pct or 0) if hsn_row else 0.0
-        igst_snap = (hsn_row.igst_pct or 0) if hsn_row else 0.0
-        tax_pct = sgst_snap + cgst_snap + igst_snap
+        igst_snap = (hsn_row.igst_pct or (sgst_snap + cgst_snap)) if hsn_row else 0.0
+        tax_pct = _hsn_total_tax_pct(hsn_row)
 
         # Resolve batch(es): explicit batch_id or FIFO across as many as needed
         picks = []
         qty_needed = base_qty_needed
-        if line.batch_id:
-            # P3.2: lock the batch row during this sale.
-            batch = db.query(PharmacyInventory).filter(
-                PharmacyInventory.id == line.batch_id,
-                PharmacyInventory.hospital_id == current_user.hospital_id,
-                PharmacyInventory.is_active == True,  # noqa: E712
-            ).with_for_update().first()
-            if not batch:
-                raise HTTPException(status_code=400, detail=f"Invalid batch_id {line.batch_id}")
-            if batch.store_id != sale_store_id:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Batch {batch.batch_number} belongs to a different store",
-                )
-            if (batch.quantity_in_stock or 0) < qty_needed:
+        if explicit_batch is not None:
+            if (explicit_batch.quantity_in_stock or 0) < qty_needed:
                 raise HTTPException(status_code=400,
-                                    detail=f"Batch {batch.batch_number} has only {batch.quantity_in_stock}, need {qty_needed}")
-            picks.append((batch, qty_needed))
+                                    detail=f"Batch {explicit_batch.batch_number} has only {explicit_batch.quantity_in_stock}, need {qty_needed}")
+            picks.append((explicit_batch, qty_needed))
         else:
             picks = _pick_fifo_batches(
                 db, medicine_id=med.id, qty_needed=qty_needed,
@@ -2573,20 +2695,35 @@ def create_sale(
 
         first_batch_row = True
         for (batch, take_qty), free_for_batch in zip(picks, free_alloc):
-            base = take_qty * rate_per_tab
+            # Per-batch Rate A / MRP when FEFO spans multiple receipts.
+            if explicit_batch is not None:
+                batch_tab_rate = rate_per_tab
+            else:
+                _, batch_tab_rate, _, _, _ = resolve_pos_sale_line(
+                    med,
+                    qty_tabs=take_qty,
+                    qty_strips=0,
+                    tier=line.rate_tier,
+                    override_strip_rate=line.rate,
+                    batch=batch,
+                )
+                if batch_tab_rate <= 0:
+                    batch_tab_rate = rate_per_tab
+            base = take_qty * batch_tab_rate
             base_after_disc = base * (1 - disc / 100.0)
             # P3.9: include free portion in taxable base when the hospital opts in.
             if tax_on_free and free_for_batch:
-                base_after_disc += free_for_batch * rate_per_tab * (1 - disc / 100.0)
-            tax_amt = base_after_disc * (tax_pct / 100.0)
-            line_total = round(base_after_disc + tax_amt, 2)
+                base_after_disc += free_for_batch * batch_tab_rate * (1 - disc / 100.0)
+            _taxable, tax_amt, line_total = compute_line_tax(
+                base_after_disc, tax_pct, tax_mode=data.tax_mode or "exclusive",
+            )
 
             item_row = PharmacySaleItem(
                 sale_id=sale.id, medicine_id=med.id, batch_id=batch.id,
                 quantity=take_qty, free_quantity=free_for_batch,
                 sale_qty_tabs=qty_tabs if first_batch_row else None,
                 sale_qty_strips=qty_strips if first_batch_row else None,
-                rate=rate_per_tab, rate_tier=line.rate_tier,
+                rate=batch_tab_rate, rate_tier=line.rate_tier,
                 discount_pct=disc, tax_pct=tax_pct,
                 sgst_pct=sgst_snap, cgst_pct=cgst_snap, igst_pct=igst_snap,
                 line_total=line_total, barcode_scanned=line.barcode_scanned,
@@ -3035,10 +3172,7 @@ def dispense_prescription(
                 db.query(PharmacyHSN).filter(PharmacyHSN.id == med.hsn_id).first()
                 if med and med.hsn_id else None
             )
-            tax_pct = (
-                (hsn_row.sgst_pct or 0) + (hsn_row.cgst_pct or 0) + (hsn_row.igst_pct or 0)
-                if hsn_row else 0.0
-            )
+            tax_pct = _hsn_total_tax_pct(hsn_row)
             line_total = line.line_total
             tax_amt = line_total * tax_pct / 100.0
             subtotal += line_total

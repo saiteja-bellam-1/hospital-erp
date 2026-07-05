@@ -21,7 +21,7 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
   const [selectedTests, setSelectedTests] = useState([]);
 
   const [paymentMethod, setPaymentMethod] = useState('cash');
-  const [discount, setDiscount] = useState(0);
+  const [discount, setDiscount] = useState('');
   const [doctors, setDoctors] = useState([]);
   const [doctorId, setDoctorId] = useState('');
   const [referredBy, setReferredBy] = useState('');
@@ -72,7 +72,7 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
   };
 
   const subtotal = selectedTests.reduce((sum, t) => sum + (t.cost || 0), 0);
-  const total = Math.max(subtotal - discount, 0);
+  const total = Math.max(subtotal - (parseFloat(discount) || 0), 0);
 
   const handleSubmit = async (force = false) => {
     if (!selectedPatient || selectedTests.length === 0) return;
@@ -108,7 +108,7 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
           payment_method: paymentMethod,
           doctor_id: doctorId ? parseInt(doctorId, 10) : null,
           referred_by: referredBy || null,
-          discount_amount: discount,
+          discount_amount: parseFloat(discount) || 0,
           force: force,
         }),
       });
@@ -303,8 +303,8 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
               </div>
               <div className="flex justify-between text-sm items-center">
                 <span>Discount</span>
-                <Input type="number" min={0} max={subtotal} value={discount}
-                  onChange={e => setDiscount(Math.min(parseFloat(e.target.value) || 0, subtotal))}
+                <Input type="number" min={0} max={subtotal} value={discount ?? ''}
+                  onChange={e => setDiscount(e.target.value)}
                   className="w-24 h-7 text-right text-sm" />
               </div>
               <div className="flex justify-between font-bold text-base border-t pt-1.5">

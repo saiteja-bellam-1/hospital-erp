@@ -3,15 +3,19 @@
 MRP and Rate A/B are stored per strip. Per-tab price = strip price / tablets_per_strip.
 POS lines may specify qty in tabs and/or strips on the same row.
 
+Batch-level MRP / Rate A / P-Rate / qty-per-strip override the medicine master
+when present on an inventory row (or a purchase line being confirmed).
+
 All money fields (rates, prices, line totals) are rounded to 2 decimal places.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Tuple
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, Optional, Tuple
 
 if TYPE_CHECKING:
-    from app.models.pharmacy import Medicine
+    from app.models.pharmacy import Medicine, PharmacyInventory
 
 
 def round_money(val: float | None) -> float:
@@ -34,36 +38,69 @@ def apply_medicine_price_rounding(medicine: "Medicine") -> None:
             setattr(medicine, attr, round_money(getattr(medicine, attr)))
 
 
-def units_per_strip(medicine: "Medicine") -> int:
+def _attr(obj: Any, name: str, default: Any = None) -> Any:
+    if obj is None:
+        return default
+    return getattr(obj, name, default)
+
+
+def pricing_source(
+    medicine: "Medicine",
+    batch: Optional["PharmacyInventory"] = None,
+) -> SimpleNamespace:
+    """Effective pricing for a sale line — batch fields win when set.
+
+    Falls back to the medicine master for any zero/missing batch value so
+    older inventory rows (pre-batch-rate) keep selling at catalog rates.
+    """
+    batch_rate_a = float(_attr(batch, "rate_a", 0) or 0)
+    med_rate_a = float(_attr(medicine, "rate_a", 0) or 0)
+    batch_mrp = float(_attr(batch, "mrp", 0) or 0)
+    med_mrp = float(_attr(medicine, "mrp", 0) or 0)
+    batch_pr = float(_attr(batch, "purchase_rate", 0) or 0)
+    med_pr = float(_attr(medicine, "purchase_rate", 0) or 0)
+    batch_scf = int(_attr(batch, "strip_conversion_factor", 0) or 0)
+    med_scf = int(_attr(medicine, "strip_conversion_factor", 0) or 0)
+    return SimpleNamespace(
+        rate_a=batch_rate_a if batch_rate_a > 0 else med_rate_a,
+        rate_b=float(_attr(medicine, "rate_b", 0) or 0),
+        mrp=batch_mrp if batch_mrp > 0 else med_mrp,
+        purchase_rate=batch_pr if batch_pr > 0 else med_pr,
+        unit_price=float(_attr(medicine, "unit_price", 0) or 0),
+        strip_conversion_factor=batch_scf if batch_scf > 0 else max(1, med_scf or 1),
+    )
+
+
+def units_per_strip(source: Any) -> int:
     """Tablets (or smallest sellable pieces) in one strip/sheet."""
-    return max(1, int(getattr(medicine, "strip_conversion_factor", None) or 1))
+    return max(1, int(getattr(source, "strip_conversion_factor", None) or 1))
 
 
-def supports_strip_sale(medicine: "Medicine") -> bool:
-    return units_per_strip(medicine) > 1
+def supports_strip_sale(source: Any) -> bool:
+    return units_per_strip(source) > 1
 
 
-def strip_sale_rate(medicine: "Medicine", *, tier: str = "A") -> float:
+def strip_sale_rate(source: Any, *, tier: str = "A") -> float:
     """Sale rate per strip — Rate A/B first, then MRP, then legacy unit_price."""
-    raw = float(medicine.rate_b if tier == "B" else medicine.rate_a or 0)
+    raw = float(source.rate_b if tier == "B" else (source.rate_a or 0))
     if raw <= 0:
-        raw = float(medicine.mrp or 0)
+        raw = float(source.mrp or 0)
     if raw <= 0:
-        raw = float(medicine.unit_price or 0)
+        raw = float(getattr(source, "unit_price", 0) or 0)
     return round_money(raw)
 
 
-def tab_sale_rate(medicine: "Medicine", *, tier: str = "A", strip_rate: float | None = None) -> float:
+def tab_sale_rate(source: Any, *, tier: str = "A", strip_rate: float | None = None) -> float:
     """Per-tab price derived from strip/MRP rate."""
-    sr = strip_rate if strip_rate is not None and strip_rate > 0 else strip_sale_rate(medicine, tier=tier)
+    sr = strip_rate if strip_rate is not None and strip_rate > 0 else strip_sale_rate(source, tier=tier)
     if sr <= 0:
         return 0.0
-    return round_money(sr / units_per_strip(medicine))
+    return round_money(sr / units_per_strip(source))
 
 
-def combined_base_qty(qty_tabs: float, qty_strips: float, medicine: "Medicine") -> float:
+def combined_base_qty(qty_tabs: float, qty_strips: float, source: Any) -> float:
     """Total tablets to deduct from stock."""
-    return float(qty_tabs or 0) + float(qty_strips or 0) * units_per_strip(medicine)
+    return float(qty_tabs or 0) + float(qty_strips or 0) * units_per_strip(source)
 
 
 def resolve_pos_sale_line(
@@ -73,17 +110,23 @@ def resolve_pos_sale_line(
     qty_strips: float = 0.0,
     tier: str = "A",
     override_strip_rate: float | None = None,
+    batch: Optional["PharmacyInventory"] = None,
 ) -> Tuple[float, float, float, float, float]:
-    """Return (base_qty, tab_rate, strip_rate, qty_tabs, qty_strips)."""
+    """Return (base_qty, tab_rate, strip_rate, qty_tabs, qty_strips).
+
+    When `batch` is provided, Rate A / MRP / qty-per-strip come from that batch
+    (with medicine-master fallbacks for unset fields).
+    """
+    source = pricing_source(medicine, batch)
     tabs = float(qty_tabs or 0)
     strips = float(qty_strips or 0)
-    base_qty = combined_base_qty(tabs, strips, medicine)
+    base_qty = combined_base_qty(tabs, strips, source)
     strip_r = (
         round_money(float(override_strip_rate))
         if override_strip_rate is not None and override_strip_rate > 0
-        else strip_sale_rate(medicine, tier=tier)
+        else strip_sale_rate(source, tier=tier)
     )
-    tab_r = tab_sale_rate(medicine, tier=tier, strip_rate=strip_r)
+    tab_r = tab_sale_rate(source, tier=tier, strip_rate=strip_r)
     return base_qty, tab_r, strip_r, tabs, strips
 
 
@@ -97,6 +140,29 @@ def line_subtotal_before_tax(
 ) -> float:
     base = float(qty_tabs or 0) * tab_rate + float(qty_strips or 0) * strip_rate
     return round_money(base * (1 - float(discount_pct or 0) / 100.0))
+
+
+def compute_line_tax(
+    gross_after_discount: float,
+    tax_pct: float,
+    *,
+    tax_mode: str = "exclusive",
+) -> Tuple[float, float, float]:
+    """Return (taxable_value, tax_amount, line_total).
+
+    exclusive — rate is pre-tax; tax is added on top.
+    inclusive — rate already includes tax; taxable is back-calculated.
+    """
+    gross = max(0.0, float(gross_after_discount or 0))
+    pct = max(0.0, float(tax_pct or 0))
+    if pct <= 0:
+        return round_money(gross), 0.0, round_money(gross)
+    if (tax_mode or "exclusive").lower() == "inclusive":
+        taxable = gross / (1 + pct / 100.0)
+        tax_amt = gross - taxable
+        return round_money(taxable), round_money(tax_amt), round_money(gross)
+    tax_amt = gross * (pct / 100.0)
+    return round_money(gross), round_money(tax_amt), round_money(gross + tax_amt)
 
 
 def format_sale_qty_display(

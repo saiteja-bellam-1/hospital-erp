@@ -25,6 +25,7 @@ import MedicineLookupInput from '../../components/inpatient/MedicineLookupInput'
 import PrescriptionScheduleFields from '../../components/prescription/PrescriptionScheduleFields';
 import { BLANK_INPATIENT_RX_ITEM, serializeTakeHomeMed } from '../../utils/prescriptionSchedule';
 import DischargeCheckoutPage from './inpatient/DischargeCheckoutPage';
+import { canAccessDischargeCheckout } from './inpatient/discharge/dischargeSummaryUtils';
 import DischargeHistory from './inpatient/discharge/DischargeHistory';
 import DischargeSummaryEditor from './inpatient/DischargeSummaryEditor';
 import TakeHomeMedicinesSection from '../../components/prescription/TakeHomeMedicinesSection';
@@ -155,7 +156,13 @@ const InpatientModule = () => {
     return ip('issue_gate_pass') || ip('finalize_bill');
   }, [hasCheckoutDeskRole, ip]);
   const canShowLeave = canShowCheckoutActions && (ip('update_admission') || hasCheckoutDeskRole);
-  const canShowDischarge = canShowCheckoutActions && (ip('discharge_patients') || hasCheckoutDeskRole);
+  const canAccessCheckout = useMemo(() => canAccessDischargeCheckout({
+    isAdminLike,
+    hasCheckoutDeskRole,
+    hasPerm: ip,
+  }), [isAdminLike, hasCheckoutDeskRole, ip]);
+  const canShowDischarge = canAccessCheckout && (ip('discharge_patients') || hasCheckoutDeskRole);
+  const canWriteDischargeSummary = ip('write_discharge_summary');
   const defaultVisitType = isNurseOnly ? 'nurse_visit' : 'doctor_visit';
   // activeTab is derived from the URL — when the user clicks a nav item the
   // browser navigates and this re-derives. Setting activeTab now means navigating.
@@ -262,15 +269,15 @@ const InpatientModule = () => {
   const [admissionBeds, setAdmissionBeds] = useState([]);  // beds for selected room in admission form
   const [admissionDocs, setAdmissionDocs] = useState([]);
   const [docUploading, setDocUploading] = useState(false);
-  const [billDiscount, setBillDiscount] = useState({ type: 'flat', value: 0 });
-  const [billTaxPct, setBillTaxPct] = useState(0);
+  const [billDiscount, setBillDiscount] = useState({ type: 'flat', value: '' });
+  const [billTaxPct, setBillTaxPct] = useState('');
   // Review & Edit Final Bill — operator-editable line items + discount/tax.
   // `source` ties each line back to the auto-computed source so the backend
   // can stamp source records' bill_id and prevent double-billing.
   const [showReviewBillDialog, setShowReviewBillDialog] = useState(false);
   const [reviewBillItems, setReviewBillItems] = useState([]);
-  const [reviewBillDiscount, setReviewBillDiscount] = useState({ type: 'flat', value: 0 });
-  const [reviewBillTaxPct, setReviewBillTaxPct] = useState(0);
+  const [reviewBillDiscount, setReviewBillDiscount] = useState({ type: 'flat', value: '' });
+  const [reviewBillTaxPct, setReviewBillTaxPct] = useState('');
   // Inline settle form inside the Review Final Bill dialog. The bill must
   // balance to ₹0 before Generate Final Bill is allowed; if the draft total
   // doesn't match deposits, the operator fills this and we hit
@@ -381,10 +388,10 @@ const InpatientModule = () => {
   const [editingPackage, setEditingPackage] = useState(null);
   const [packageLabTests, setPackageLabTests] = useState([]);
   const [packageLabSearch, setPackageLabSearch] = useState('');
-  const [packageForm, setPackageForm] = useState({ package_name: '', package_code: '', base_price: '', included_room_type: '', included_stay_days: 0, included_services: [], lab_coverage_mode: 'all', included_lab_test_ids: [], excess_per_day_charge: 0, description: '' });
+  const [packageForm, setPackageForm] = useState({ package_name: '', package_code: '', base_price: '', included_room_type: '', included_stay_days: '', included_services: [], lab_coverage_mode: 'all', included_lab_test_ids: [], excess_per_day_charge: '', description: '' });
   const [showTpaDialog, setShowTpaDialog] = useState(false);
   const [editingTpa, setEditingTpa] = useState(null);
-  const [tpaForm, setTpaForm] = useState({ tpa_name: '', tpa_code: '', address: '', phone: '', email: '', default_discount_percent: 0, contract_details: '' });
+  const [tpaForm, setTpaForm] = useState({ tpa_name: '', tpa_code: '', address: '', phone: '', email: '', default_discount_percent: '', contract_details: '' });
 
   // Room-type rates and doctor room-type rates
   const [roomTypeRates, setRoomTypeRates] = useState([]);
@@ -410,7 +417,7 @@ const InpatientModule = () => {
   // Phase 2: OT charges
   const [showOTChargesDialog, setShowOTChargesDialog] = useState(false);
   const [editingOT, setEditingOT] = useState(null);
-  const [otChargesForm, setOtChargesForm] = useState({ surgeon_fee: 0, anaesthetist_fee: 0, ot_room_charge: 0, equipment_charge: 0, consumables_charge: 0, procedure_charge: 0, other_charges: 0 });
+  const [otChargesForm, setOtChargesForm] = useState({ surgeon_fee: '', anaesthetist_fee: '', ot_room_charge: '', equipment_charge: '', consumables_charge: '', procedure_charge: '', other_charges: '' });
 
   // Phase 3: Bed transfer history + inter-ward transfer
   const [transferHistory, setTransferHistory] = useState([]);
@@ -1312,8 +1319,8 @@ const InpatientModule = () => {
   const openActivity = (admission) => {
     setActivityAdmission(admission);
     setActivityTab('visits');
-    setBillDiscount({ type: 'flat', value: 0 });
-    setBillTaxPct(0);
+    setBillDiscount({ type: 'flat', value: '' });
+    setBillTaxPct('');
     fetchVisits(admission.id);
     fetchBill(admission.id);
     fetchMedications(admission.id);
@@ -1657,8 +1664,8 @@ const InpatientModule = () => {
       });
 
       setReviewBillItems(items);
-      setReviewBillDiscount({ type: billDiscount.type || 'flat', value: billDiscount.value || 0 });
-      setReviewBillTaxPct(billTaxPct || 0);
+      setReviewBillDiscount({ type: billDiscount.type || 'flat', value: billDiscount.value || '' });
+      setReviewBillTaxPct(billTaxPct || '');
       setShowReviewBillDialog(true);
     } catch (err) {
       const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed to load bill items';
@@ -2455,8 +2462,8 @@ const InpatientModule = () => {
     try {
       const payload = {
         discount_type: billDiscount.type,
-        discount_value: billDiscount.value || 0,
-        tax_percentage: billTaxPct || 0,
+        discount_value: parseFloat(billDiscount.value) || 0,
+        tax_percentage: parseFloat(billTaxPct) || 0,
       };
       const res = await axios.post(`/api/inpatient/admissions/${activityAdmission.id}/bill/interim`, payload);
       fetchBill(activityAdmission.id);
@@ -2553,7 +2560,7 @@ const InpatientModule = () => {
       toast({ title: 'Package saved' });
       setShowPackageDialog(false);
       setEditingPackage(null);
-      setPackageForm({ package_name: '', package_code: '', base_price: '', included_room_type: '', included_stay_days: 0, included_services: [], lab_coverage_mode: 'all', included_lab_test_ids: [], excess_per_day_charge: 0, description: '' });
+      setPackageForm({ package_name: '', package_code: '', base_price: '', included_room_type: '', included_stay_days: '', included_services: [], lab_coverage_mode: 'all', included_lab_test_ids: [], excess_per_day_charge: '', description: '' });
       fetchPackages();
     } catch (err) {
       const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed';
@@ -2585,7 +2592,7 @@ const InpatientModule = () => {
       toast({ title: 'TPA saved' });
       setShowTpaDialog(false);
       setEditingTpa(null);
-      setTpaForm({ tpa_name: '', tpa_code: '', address: '', phone: '', email: '', default_discount_percent: 0, contract_details: '' });
+      setTpaForm({ tpa_name: '', tpa_code: '', address: '', phone: '', email: '', default_discount_percent: '', contract_details: '' });
       fetchTpaList();
     } catch (err) {
       const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed';
@@ -2698,13 +2705,13 @@ const InpatientModule = () => {
   const openOTChargesDialog = (ot) => {
     setEditingOT(ot);
     setOtChargesForm({
-      surgeon_fee: ot.surgeon_fee || 0,
-      anaesthetist_fee: ot.anaesthetist_fee || 0,
-      ot_room_charge: ot.ot_room_charge || 0,
-      equipment_charge: ot.equipment_charge || 0,
-      consumables_charge: ot.consumables_charge || 0,
-      procedure_charge: ot.procedure_charge || 0,
-      other_charges: ot.other_charges || 0,
+      surgeon_fee: ot.surgeon_fee || '',
+      anaesthetist_fee: ot.anaesthetist_fee || '',
+      ot_room_charge: ot.ot_room_charge || '',
+      equipment_charge: ot.equipment_charge || '',
+      consumables_charge: ot.consumables_charge || '',
+      procedure_charge: ot.procedure_charge || '',
+      other_charges: ot.other_charges || '',
     });
     setShowOTChargesDialog(true);
   };
@@ -3788,25 +3795,26 @@ const InpatientModule = () => {
                       >
                         <Printer className="h-4 w-4 mr-1" /> Detailed Summary
                       </Button>
-                      {activityAdmission.status === 'discharged' && (
+                      {ip('view_discharge_summary') && (
                         <Button
                           size="sm"
                           variant="outline"
                           onClick={() => handlePrintDischargePdf(activityAdmission.id)}
                           title="Print discharge summary letter"
                         >
-                          <Printer className="h-4 w-4 mr-1" /> Discharge Summary
+                          <Printer className="h-4 w-4 mr-1" /> Print Discharge Summary
                         </Button>
                       )}
                       {activityAdmission.status === 'admitted' && (
                         <>
-                          {ip('write_discharge_summary') && (
+                          {canWriteDischargeSummary && (
                             <Button
                               size="sm"
                               variant="outline"
                               onClick={() => setShowActivitySummaryEditor(true)}
+                              title="Write discharge summary for reception"
                             >
-                              <FileText className="h-4 w-4 mr-1" /> Discharge Summary
+                              <FileText className="h-4 w-4 mr-1" /> Discharge
                             </Button>
                           )}
                           {canShowLeave && (
@@ -4543,7 +4551,7 @@ const InpatientModule = () => {
                                   </SelectContent>
                                 </Select>
                                 <Input type="number" min="0" step="0.01" className="w-24 h-8 text-xs"
-                                  value={billDiscount.value || ''} onChange={e => setBillDiscount(p => ({ ...p, value: parseFloat(e.target.value) || 0 }))} placeholder="0" />
+                                  value={billDiscount.value ?? ''} onChange={e => setBillDiscount(p => ({ ...p, value: e.target.value }))} placeholder="0" />
                                 {billDiscount.value > 0 && (
                                   <span className="text-xs text-green-600">
                                     -₹{(billDiscount.type === 'percentage' ? (billData.grand_total * billDiscount.value / 100) : Math.min(billDiscount.value, billData.grand_total)).toFixed(2)}
@@ -4553,7 +4561,7 @@ const InpatientModule = () => {
                               <div className="flex items-center gap-2">
                                 <Label className="text-xs w-16">Tax %</Label>
                                 <Input type="number" min="0" max="100" step="0.01" className="w-24 h-8 text-xs"
-                                  value={billTaxPct || ''} onChange={e => setBillTaxPct(parseFloat(e.target.value) || 0)} placeholder="0" />
+                                  value={billTaxPct ?? ''} onChange={e => setBillTaxPct(e.target.value)} placeholder="0" />
                                 {billTaxPct > 0 && (() => {
                                   const disc = billDiscount.type === 'percentage' ? (billData.grand_total * billDiscount.value / 100) : Math.min(billDiscount.value || 0, billData.grand_total);
                                   const afterDisc = billData.grand_total - disc;
@@ -5504,6 +5512,7 @@ const InpatientModule = () => {
           {/* ============ DISCHARGE & EXIT (single-page checkout) ============ */}
           {activeTab === 'discharge' && (
             <div className="p-6 overflow-y-auto h-full">
+              {canAccessCheckout ? (
               <DischargeCheckoutPage
                 admissionId={checkoutAdmissionId}
                 onSelectAdmission={setCheckoutAdmissionId}
@@ -5526,12 +5535,34 @@ const InpatientModule = () => {
                 doctorsList={doctorsList}
                 onDeathDischarge={handleCheckoutDeath}
               />
+              ) : (
+                <div className="max-w-lg mx-auto py-16 text-center space-y-3">
+                  <FileText className="h-10 w-10 text-gray-400 mx-auto" />
+                  <h2 className="text-lg font-semibold">Reception discharge checkout</h2>
+                  <p className="text-sm text-gray-600">
+                    Bill settlement, patient discharge, and gate pass are handled here by reception.
+                    Doctors write the clinical discharge summary from the Doctor Dashboard
+                    or the <b>Discharge</b> button on an admission.
+                  </p>
+                  {canWriteDischargeSummary && (
+                    <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-3">
+                      Use <b>Discharge</b> on an admitted patient to write the summary.
+                      Reception will complete checkout after you mark it ready for print.
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
           {activeTab === 'discharge-history' && (
             <div className="p-6 overflow-y-auto h-full">
-              <DischargeHistory />
+              <DischargeHistory
+                doctorsList={doctorsList}
+                canWriteSummary={ip('write_discharge_summary')}
+                filterMyPatients={isDoctorRole && !isAdminLike}
+                currentUserId={user?.id}
+              />
             </div>
           )}
 
@@ -6425,7 +6456,7 @@ const InpatientModule = () => {
                 <TabsContent value="packages" className="space-y-3 mt-3">
                   <div className="flex justify-between items-center">
                     <p className="text-sm text-gray-500">Fixed-price surgery/treatment packages (e.g. cataract, LSCS, appendectomy).</p>
-                    <Button size="sm" onClick={() => { setEditingPackage(null); setPackageForm({ package_name: '', package_code: '', base_price: '', included_room_type: '', included_stay_days: 0, included_services: [], lab_coverage_mode: 'all', included_lab_test_ids: [], excess_per_day_charge: 0, description: '' }); fetchPackageLabTests(); setPackageLabSearch(''); setShowPackageDialog(true); }}>
+                    <Button size="sm" onClick={() => { setEditingPackage(null); setPackageForm({ package_name: '', package_code: '', base_price: '', included_room_type: '', included_stay_days: '', included_services: [], lab_coverage_mode: 'all', included_lab_test_ids: [], excess_per_day_charge: '', description: '' }); fetchPackageLabTests(); setPackageLabSearch(''); setShowPackageDialog(true); }}>
                       <Plus className="h-4 w-4 mr-1" /> New Package
                     </Button>
                   </div>
@@ -6448,7 +6479,7 @@ const InpatientModule = () => {
                                 {pkg.description && <p className="text-xs text-gray-500 mt-1">{pkg.description}</p>}
                               </div>
                               <div className="flex gap-1">
-                                <Button size="sm" variant="ghost" onClick={() => { setEditingPackage(pkg); setPackageForm({ package_name: pkg.package_name, package_code: pkg.package_code || '', base_price: String(pkg.base_price), included_room_type: pkg.included_room_type || '', included_stay_days: pkg.included_stay_days, included_services: pkg.included_services || [], lab_coverage_mode: pkg.lab_coverage_mode || 'all', included_lab_test_ids: pkg.included_lab_test_ids || [], excess_per_day_charge: pkg.excess_per_day_charge, description: pkg.description || '' }); fetchPackageLabTests(); setPackageLabSearch(''); setShowPackageDialog(true); }}><Edit2 className="h-3.5 w-3.5" /></Button>
+                                <Button size="sm" variant="ghost" onClick={() => { setEditingPackage(pkg); setPackageForm({ package_name: pkg.package_name, package_code: pkg.package_code || '', base_price: String(pkg.base_price), included_room_type: pkg.included_room_type || '', included_stay_days: pkg.included_stay_days || '', included_services: pkg.included_services || [], lab_coverage_mode: pkg.lab_coverage_mode || 'all', included_lab_test_ids: pkg.included_lab_test_ids || [], excess_per_day_charge: pkg.excess_per_day_charge || '', description: pkg.description || '' }); fetchPackageLabTests(); setPackageLabSearch(''); setShowPackageDialog(true); }}><Edit2 className="h-3.5 w-3.5" /></Button>
                                 <Button size="sm" variant="ghost" onClick={() => setConfirmState({ open: true, title: 'Deactivate package?', description: `"${pkg.package_name}" will be hidden from new admissions.`, onConfirm: () => { setConfirmState({ open: false }); handleDeletePackage(pkg.id); } })}><Trash2 className="h-3.5 w-3.5 text-red-500" /></Button>
                               </div>
                             </div>
@@ -6497,7 +6528,7 @@ const InpatientModule = () => {
                 <TabsContent value="tpa" className="space-y-3 mt-3">
                   <div className="flex justify-between items-center">
                     <p className="text-sm text-gray-500">Third Party Administrators used when splitting bills or routing pre-auth requests.</p>
-                    <Button size="sm" onClick={() => { setEditingTpa(null); setTpaForm({ tpa_name: '', tpa_code: '', address: '', phone: '', email: '', default_discount_percent: 0, contract_details: '' }); setShowTpaDialog(true); }}>
+                    <Button size="sm" onClick={() => { setEditingTpa(null); setTpaForm({ tpa_name: '', tpa_code: '', address: '', phone: '', email: '', default_discount_percent: '', contract_details: '' }); setShowTpaDialog(true); }}>
                       <Plus className="h-4 w-4 mr-1" /> New TPA
                     </Button>
                   </div>
@@ -6515,7 +6546,7 @@ const InpatientModule = () => {
                                 {t.address && <p className="text-xs text-gray-500 mt-0.5">{t.address}</p>}
                               </div>
                               <div className="flex gap-1">
-                                <Button size="sm" variant="ghost" onClick={() => { setEditingTpa(t); setTpaForm({ tpa_name: t.tpa_name, tpa_code: t.tpa_code || '', address: t.address || '', phone: t.phone || '', email: t.email || '', default_discount_percent: t.default_discount_percent, contract_details: t.contract_details || '' }); setShowTpaDialog(true); }}><Edit2 className="h-3.5 w-3.5" /></Button>
+                                <Button size="sm" variant="ghost" onClick={() => { setEditingTpa(t); setTpaForm({ tpa_name: t.tpa_name, tpa_code: t.tpa_code || '', address: t.address || '', phone: t.phone || '', email: t.email || '', default_discount_percent: t.default_discount_percent || '', contract_details: t.contract_details || '' }); setShowTpaDialog(true); }}><Edit2 className="h-3.5 w-3.5" /></Button>
                                 <Button size="sm" variant="ghost" onClick={() => setConfirmState({ open: true, title: 'Deactivate TPA?', description: `"${t.tpa_name}" will be hidden from new splits.`, onConfirm: () => { setConfirmState({ open: false }); handleDeleteTpa(t.id); } })}><Trash2 className="h-3.5 w-3.5 text-red-500" /></Button>
                               </div>
                             </div>
@@ -7683,7 +7714,7 @@ const InpatientModule = () => {
                 ))}
               </div>
               <div className="flex justify-between">
-                <Button type="button" variant="outline" size="sm" onClick={() => setSplitRows(rows => [...rows, { payer_type: 'insurance', payer_name: '', tpa_id: '', amount: 0 }])}>
+                <Button type="button" variant="outline" size="sm" onClick={() => setSplitRows(rows => [...rows, { payer_type: 'insurance', payer_name: '', tpa_id: '', amount: '' }])}>
                   <Plus className="h-3.5 w-3.5 mr-1" /> Add Split
                 </Button>
                 <div className="text-sm">
@@ -9333,9 +9364,10 @@ const InpatientModule = () => {
                                 value={it.unit_price}
                                 onChange={e => setReviewBillItems(arr => {
                                   const n = [...arr];
-                                  const up = parseFloat(e.target.value) || 0;
+                                  const raw = e.target.value;
+                                  const up = parseFloat(raw) || 0;
                                   const q = parseInt(n[idx].quantity) || 1;
-                                  n[idx] = { ...n[idx], unit_price: up, total_price: +(q * up).toFixed(2) };
+                                  n[idx] = { ...n[idx], unit_price: raw, total_price: +(q * up).toFixed(2) };
                                   return n;
                                 })} />
                             </td>
@@ -9344,7 +9376,7 @@ const InpatientModule = () => {
                                 value={it.total_price}
                                 onChange={e => setReviewBillItems(arr => {
                                   const n = [...arr];
-                                  n[idx] = { ...n[idx], total_price: parseFloat(e.target.value) || 0 };
+                                  n[idx] = { ...n[idx], total_price: e.target.value };
                                   return n;
                                 })} />
                             </td>
@@ -9373,7 +9405,7 @@ const InpatientModule = () => {
               </table>
             </div>
             <Button type="button" size="sm" variant="outline" onClick={() => setReviewBillItems(arr => [...arr, {
-              source: 'custom', source_id: null, item_type: 'custom', item_name: '', quantity: 1, unit_price: 0, total_price: 0, is_prior: false,
+              source: 'custom', source_id: null, item_type: 'custom', item_name: '', quantity: 1, unit_price: '', total_price: '', is_prior: false,
             }])}>
               <Plus className="h-3.5 w-3.5 mr-1" /> Add Custom Line
             </Button>
@@ -9394,13 +9426,13 @@ const InpatientModule = () => {
                 <div>
                   <Label className="text-xs">Discount Value</Label>
                   <Input type="number" min="0" step="0.01" className="h-8 text-xs"
-                    value={reviewBillDiscount.value}
+                    value={reviewBillDiscount.value ?? ''}
                     onChange={e => setReviewBillDiscount(p => ({ ...p, value: e.target.value }))} />
                 </div>
                 <div>
                   <Label className="text-xs">Tax %</Label>
                   <Input type="number" min="0" max="100" step="0.01" className="h-8 text-xs"
-                    value={reviewBillTaxPct}
+                    value={reviewBillTaxPct ?? ''}
                     onChange={e => setReviewBillTaxPct(e.target.value)} />
                 </div>
               </div>

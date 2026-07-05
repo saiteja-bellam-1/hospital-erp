@@ -44,8 +44,8 @@ export const EMPTY_SETTLE_FORM = (derived) => {
     ref: '',
     notes: '',
     discountType: 'flat',
-    discountValue: '0',
-    taxPct: '0',
+    discountValue: '',
+    taxPct: '',
   };
 };
 
@@ -59,6 +59,13 @@ export const EMPTY_GATE_PASS_FORM = {
 };
 
 export const rupee = (n) => `₹${Number(n || 0).toFixed(2)}`;
+
+export const DISCHARGE_SUMMARY_STATUS = {
+  missing: { label: 'Not started', listLabel: 'No summary', className: 'bg-gray-100 text-gray-700' },
+  draft: { label: 'Draft', listLabel: 'Summary draft', className: 'bg-amber-100 text-amber-800' },
+  ready: { label: 'Ready to print', listLabel: 'Summary ready', className: 'bg-green-100 text-green-800' },
+  locked: { label: 'Locked', listLabel: 'Summary locked', className: 'bg-slate-100 text-slate-700' },
+};
 
 export const fmtInr = (n) => `₹${(Number(n) || 0).toLocaleString('en-IN', {
   minimumFractionDigits: 2,

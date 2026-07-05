@@ -21,7 +21,15 @@ import MedicineLookupInput from '../../components/inpatient/MedicineLookupInput'
 import PrescriptionScheduleFields from '../../components/prescription/PrescriptionScheduleFields';
 import { BLANK_INPATIENT_RX_ITEM } from '../../utils/prescriptionSchedule';
 import { useToast } from '../../hooks/use-toast';
+import { printPdfFromUrl } from '../../utils/printPdf';
 import DischargeSummaryEditor from './inpatient/DischargeSummaryEditor';
+import DischargeSummaryPreviewCard from './inpatient/discharge/DischargeSummaryPreviewCard';
+import { DISCHARGE_SUMMARY_STATUS } from './inpatient/discharge/constants';
+import { enrichAdmissionsWithSummaryStatus } from './inpatient/discharge/dischargeSummaryUtils';
+
+const isMyInpatientAdmission = (adm, userId) => (
+  adm.admitting_doctor_id === userId || adm.attending_physician_id === userId
+);
 
 const DoctorDashboard = () => {
   const navigate = useNavigate();
@@ -43,6 +51,8 @@ const DoctorDashboard = () => {
   // Inpatient state
   const [inpatientEnabled, setInpatientEnabled] = useState(false);
   const [doctorAdmissions, setDoctorAdmissions] = useState([]);
+  const [doctorDischargedAdmissions, setDoctorDischargedAdmissions] = useState([]);
+  const [inpatientListTab, setInpatientListTab] = useState('active');
   const [showDoctorVisitDialog, setShowDoctorVisitDialog] = useState(false);
   const [doctorVisitAdmission, setDoctorVisitAdmission] = useState(null);
   const [doctorVisitNotes, setDoctorVisitNotes] = useState('');
@@ -53,6 +63,7 @@ const DoctorDashboard = () => {
   const [wardRoundPrescriptions, setWardRoundPrescriptions] = useState([]);
   const [wardRoundLabOrders, setWardRoundLabOrders] = useState([]);
   const [wardRoundAllergies, setWardRoundAllergies] = useState([]);
+  const [wardRoundSummary, setWardRoundSummary] = useState(null);
   const [wardRoundTab, setWardRoundTab] = useState('overview');
   const [showManageAdmissionDialog, setShowManageAdmissionDialog] = useState(false);
   // Inpatient-specific Add Prescription dialog
@@ -168,6 +179,18 @@ const DoctorDashboard = () => {
     return () => clearInterval(interval);
   }, [user]);
 
+  const loadDoctorDischargedAdmissions = async (userData) => {
+    try {
+      const r = await axios.get('/api/inpatient/admissions', { params: { status: 'discharged', limit: 100 } });
+      const list = r.data?.items || (Array.isArray(r.data) ? r.data : []);
+      const mine = list.filter(a => isMyInpatientAdmission(a, userData.id));
+      const enriched = await enrichAdmissionsWithSummaryStatus(mine);
+      setDoctorDischargedAdmissions(enriched);
+    } catch {
+      setDoctorDischargedAdmissions([]);
+    }
+  };
+
   const fetchUserProfile = async () => {
     try {
       const userStr = localStorage.getItem('user');
@@ -190,11 +213,9 @@ const DoctorDashboard = () => {
             axios.get('/api/inpatient/admissions', { params: { status: 'admitted' } })
               .then(r => {
                 const list = r.data?.items || (Array.isArray(r.data) ? r.data : []);
-                const myAdmissions = list.filter(a =>
-                  a.admitting_doctor_id === userData.id || a.attending_physician_id === userData.id
-                );
-                setDoctorAdmissions(myAdmissions);
+                setDoctorAdmissions(list.filter(a => isMyInpatientAdmission(a, userData.id)));
               }).catch(() => {});
+            loadDoctorDischargedAdmissions(userData);
           }
         }).catch(() => {});
       }
@@ -212,15 +233,17 @@ const DoctorDashboard = () => {
     setShowManageAdmissionDialog(true);
     // Reset and refetch every section
     setWardRoundVisits([]); setWardRoundNursingNotes([]); setWardRoundVitals([]);
-    setWardRoundPrescriptions([]); setWardRoundLabOrders([]); setWardRoundAllergies([]);
+    setWardRoundPrescriptions([]); setWardRoundLabOrders([]);     setWardRoundAllergies([]);
+    setWardRoundSummary(null);
     const opts = (p) => axios.get(p).then(r => r.data).catch(() => null);
-    const [v, nn, vit, rx, lo, al] = await Promise.all([
+    const [v, nn, vit, rx, lo, al, sum] = await Promise.all([
       opts(`/api/inpatient/admissions/${adm.id}/visits`),
       opts(`/api/inpatient/admissions/${adm.id}/nursing-notes`),
       opts(`/api/inpatient/admissions/${adm.id}/vitals?limit=20`),
       opts(`/api/inpatient/admissions/${adm.id}/prescriptions`),
       opts(`/api/inpatient/admissions/${adm.id}/lab-orders`),
       adm.patient_id ? opts(`/api/patients/${adm.patient_id}/allergies?active_only=true`) : Promise.resolve(null),
+      opts(`/api/inpatient/admissions/${adm.id}/discharge-summary`),
     ]);
     if (Array.isArray(v)) setWardRoundVisits(v);
     if (Array.isArray(nn)) setWardRoundNursingNotes(nn);
@@ -228,6 +251,35 @@ const DoctorDashboard = () => {
     if (Array.isArray(rx)) setWardRoundPrescriptions(rx);
     if (Array.isArray(lo)) setWardRoundLabOrders(lo);
     if (Array.isArray(al)) setWardRoundAllergies(al);
+    setWardRoundSummary(sum || null);
+  };
+
+  /** Open discharge summary editor only (reception completes checkout separately). */
+  const openDischargeSummary = (adm, e) => {
+    e?.stopPropagation?.();
+    setWardRoundAdmission(adm);
+    setShowDischargeSummaryEditor(true);
+  };
+
+  const wardRoundSummaryStatus = wardRoundSummary?.status || null;
+  const summaryReadyForPrint = wardRoundSummaryStatus === 'ready' || wardRoundSummaryStatus === 'locked';
+  const wardRoundIsDischarged = wardRoundAdmission?.status === 'discharged';
+
+  const printWardRoundDischargeSummary = async () => {
+    if (!wardRoundAdmission) return;
+    const ok = await printPdfFromUrl(`/api/inpatient/admissions/${wardRoundAdmission.id}/discharge-summary/pdf`);
+    if (!ok) {
+      toast({
+        variant: 'destructive',
+        title: 'Print failed',
+        description: 'Mark the discharge summary ready for print first.',
+      });
+    }
+  };
+
+  const printWardRoundAdmissionDetail = async () => {
+    if (!wardRoundAdmission) return;
+    await printPdfFromUrl(`/api/inpatient/admissions/${wardRoundAdmission.id}/admission-detail/pdf`);
   };
 
   const refreshManageAdmission = async () => {
@@ -1588,38 +1640,97 @@ const DoctorDashboard = () => {
           <TabsContent value="inpatients" className="space-y-4">
             <Card>
               <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Bed className="h-5 w-5" /> My Inpatient Patients — Ward Rounds
-                </CardTitle>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <CardTitle className="flex items-center gap-2">
+                    <Bed className="h-5 w-5" /> My Inpatient Patients
+                  </CardTitle>
+                  <Button size="sm" variant="outline" onClick={() => navigate('/dashboard/inpatient/discharge-history')}>
+                    <History className="h-3.5 w-3.5 mr-1" /> Full discharge history
+                  </Button>
+                </div>
+                <div className="flex gap-2 mt-3">
+                  <Button
+                    size="sm"
+                    variant={inpatientListTab === 'active' ? 'default' : 'outline'}
+                    onClick={() => setInpatientListTab('active')}
+                  >
+                    Currently admitted ({doctorAdmissions.length})
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={inpatientListTab === 'discharged' ? 'default' : 'outline'}
+                    onClick={() => setInpatientListTab('discharged')}
+                  >
+                    Discharged ({doctorDischargedAdmissions.length})
+                  </Button>
+                </div>
               </CardHeader>
               <CardContent>
-                {doctorAdmissions.length === 0 ? (
-                  <p className="text-gray-500 text-center py-4">No inpatient patients assigned to you.</p>
+                {inpatientListTab === 'active' ? (
+                  doctorAdmissions.length === 0 ? (
+                    <p className="text-gray-500 text-center py-4">No inpatient patients assigned to you.</p>
+                  ) : (
+                    <div className="space-y-3">
+                      {doctorAdmissions.map(adm => {
+                        const stayDays = adm.admission_date ? Math.max(1, Math.floor((Date.now() - new Date(adm.admission_date).getTime()) / 86400000)) : 0;
+                        return (
+                          <div key={adm.id} className="border rounded-lg p-3 flex items-center justify-between hover:bg-gray-50 cursor-pointer" onClick={() => openManageAdmission(adm)}>
+                            <div className="flex items-center gap-4 flex-wrap">
+                              <div>
+                                <div className="font-medium text-sm">{adm.patient_name || 'N/A'}</div>
+                                <div className="text-xs text-gray-500">{adm.admission_number}</div>
+                              </div>
+                              <Badge variant="outline" className="text-xs">{adm.room_number}{adm.bed_label ? ` / ${adm.bed_label}` : adm.bed_number ? ` / ${adm.bed_number}` : ''}</Badge>
+                              <Badge variant="outline" className="text-xs">{adm.admission_type}</Badge>
+                              <span className="text-xs text-gray-500">Day {stayDays}</span>
+                              <span className="text-xs text-gray-500">{adm.condition_on_admission || ''}</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Button size="sm" variant="outline" onClick={(e) => openDischargeSummary(adm, e)} title="Write discharge summary for reception">
+                                <FileText className="h-3.5 w-3.5 mr-1" /> Discharge
+                              </Button>
+                              <Button size="sm" onClick={(e) => { e.stopPropagation(); openManageAdmission(adm); }}>
+                                <Stethoscope className="h-3.5 w-3.5 mr-1" /> Manage
+                              </Button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )
                 ) : (
-                  <div className="space-y-3">
-                    {doctorAdmissions.map(adm => {
-                      const stayDays = adm.admission_date ? Math.max(1, Math.floor((Date.now() - new Date(adm.admission_date).getTime()) / 86400000)) : 0;
-                      return (
+                  doctorDischargedAdmissions.length === 0 ? (
+                    <p className="text-gray-500 text-center py-4">No discharged inpatients on your record yet.</p>
+                  ) : (
+                    <div className="space-y-3">
+                      {doctorDischargedAdmissions.map(adm => (
                         <div key={adm.id} className="border rounded-lg p-3 flex items-center justify-between hover:bg-gray-50 cursor-pointer" onClick={() => openManageAdmission(adm)}>
                           <div className="flex items-center gap-4 flex-wrap">
                             <div>
                               <div className="font-medium text-sm">{adm.patient_name || 'N/A'}</div>
                               <div className="text-xs text-gray-500">{adm.admission_number}</div>
                             </div>
-                            <Badge variant="outline" className="text-xs">{adm.room_number}{adm.bed_label ? ` / ${adm.bed_label}` : adm.bed_number ? ` / ${adm.bed_number}` : ''}</Badge>
-                            <Badge variant="outline" className="text-xs">{adm.admission_type}</Badge>
-                            <span className="text-xs text-gray-500">Day {stayDays}</span>
-                            <span className="text-xs text-gray-500">{adm.condition_on_admission || ''}</span>
+                            <Badge className="bg-green-100 text-green-800 text-xs">Discharged</Badge>
+                            <span className="text-xs text-gray-500">
+                              {adm.discharge_date ? new Date(adm.discharge_date).toLocaleDateString() : '—'}
+                            </span>
+                            <Badge variant="outline" className="text-xs capitalize">
+                              {(adm.discharge_type || 'normal').replace(/_/g, ' ')}
+                            </Badge>
+                            {adm.summaryStatus && DISCHARGE_SUMMARY_STATUS[adm.summaryStatus] && (
+                              <Badge className={`text-xs ${DISCHARGE_SUMMARY_STATUS[adm.summaryStatus].className}`}>
+                                {DISCHARGE_SUMMARY_STATUS[adm.summaryStatus].listLabel
+                                  || DISCHARGE_SUMMARY_STATUS[adm.summaryStatus].label}
+                              </Badge>
+                            )}
                           </div>
-                          <div className="flex items-center gap-2">
-                            <Button size="sm" onClick={(e) => { e.stopPropagation(); openManageAdmission(adm); }}>
-                              <Stethoscope className="h-3.5 w-3.5 mr-1" /> Manage
-                            </Button>
-                          </div>
+                          <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); openManageAdmission(adm); }}>
+                            View details
+                          </Button>
                         </div>
-                      );
-                    })}
-                  </div>
+                      ))}
+                    </div>
+                  )
                 )}
               </CardContent>
             </Card>
@@ -1649,10 +1760,19 @@ const DoctorDashboard = () => {
               <div className="flex flex-wrap gap-2 text-xs">
                 <Badge variant="outline">Room {wardRoundAdmission.room_number}{wardRoundAdmission.bed_label ? ` / ${wardRoundAdmission.bed_label}` : wardRoundAdmission.bed_number ? ` / ${wardRoundAdmission.bed_number}` : ''}</Badge>
                 <Badge variant="outline">{wardRoundAdmission.admission_type}</Badge>
-                <Badge variant="outline">Day {wardRoundAdmission.admission_date ? Math.max(1, Math.floor((Date.now() - new Date(wardRoundAdmission.admission_date).getTime()) / 86400000)) : 0}</Badge>
+                {wardRoundIsDischarged ? (
+                  <Badge className="bg-green-100 text-green-800">Discharged</Badge>
+                ) : (
+                  <Badge variant="outline">Day {wardRoundAdmission.admission_date ? Math.max(1, Math.floor((Date.now() - new Date(wardRoundAdmission.admission_date).getTime()) / 86400000)) : 0}</Badge>
+                )}
                 {wardRoundAdmission.condition_on_admission && <Badge variant="outline">{wardRoundAdmission.condition_on_admission}</Badge>}
                 {wardRoundAdmission.is_mlc && <Badge className="bg-red-100 text-red-800">MLC</Badge>}
                 {wardRoundAdmission.is_readmission && <Badge className="bg-orange-100 text-orange-800">Readmission</Badge>}
+                {wardRoundIsDischarged && wardRoundAdmission.discharge_date && (
+                  <Badge variant="outline">
+                    Out {new Date(wardRoundAdmission.discharge_date).toLocaleDateString()}
+                  </Badge>
+                )}
               </div>
 
               {/* Allergies banner */}
@@ -1676,25 +1796,51 @@ const DoctorDashboard = () => {
 
               {/* Quick actions */}
               <div className="flex flex-wrap gap-2 border-y py-2">
-                <Button size="sm" onClick={() => { setDoctorVisitAdmission(wardRoundAdmission); setDoctorVisitNotes(''); setShowDoctorVisitDialog(true); }}>
-                  <Plus className="h-3.5 w-3.5 mr-1" /> Record Visit
+                {!wardRoundIsDischarged && (
+                  <>
+                    <Button size="sm" onClick={() => { setDoctorVisitAdmission(wardRoundAdmission); setDoctorVisitNotes(''); setShowDoctorVisitDialog(true); }}>
+                      <Plus className="h-3.5 w-3.5 mr-1" /> Record Visit
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => {
+                      setInpatientRxForm({ notes: '', items: [{ ...RX_BLANK_ITEM }] });
+                      setShowInpatientRxDialog(true);
+                    }}>
+                      <Pill className="h-3.5 w-3.5 mr-1" /> Add Prescription
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={openInpatientLabDialog}>
+                      <TestTube className="h-3.5 w-3.5 mr-1" /> Order Lab Test
+                    </Button>
+                  </>
+                )}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setShowDischargeSummaryEditor(true)}
+                  title={wardRoundIsDischarged ? 'View discharge summary' : 'Write discharge summary for reception'}
+                >
+                  <FileText className="h-3.5 w-3.5 mr-1" />
+                  {wardRoundIsDischarged ? 'View discharge summary' : 'Discharge'}
                 </Button>
-                <Button size="sm" variant="outline" onClick={() => {
-                  setInpatientRxForm({ notes: '', items: [{ ...RX_BLANK_ITEM }] });
-                  setShowInpatientRxDialog(true);
-                }}>
-                  <Pill className="h-3.5 w-3.5 mr-1" /> Add Prescription
-                </Button>
-                <Button size="sm" variant="outline" onClick={openInpatientLabDialog}>
-                  <TestTube className="h-3.5 w-3.5 mr-1" /> Order Lab Test
-                </Button>
-                <Button size="sm" variant="outline" onClick={() => setShowDischargeSummaryEditor(true)}>
-                  <FileText className="h-3.5 w-3.5 mr-1" /> Discharge Summary
+                {summaryReadyForPrint && (
+                  <Button size="sm" variant="outline" onClick={printWardRoundDischargeSummary}>
+                    <Printer className="h-3.5 w-3.5 mr-1" /> Print discharge summary
+                  </Button>
+                )}
+                <Button size="sm" variant="outline" onClick={printWardRoundAdmissionDetail}>
+                  <Printer className="h-3.5 w-3.5 mr-1" /> Detailed summary
                 </Button>
                 <Button size="sm" variant="ghost" onClick={refreshManageAdmission} className="ml-auto">
                   <RefreshCw className="h-3.5 w-3.5 mr-1" /> Refresh
                 </Button>
               </div>
+
+              <DischargeSummaryPreviewCard
+                summary={wardRoundSummary}
+                canWrite={!wardRoundIsDischarged}
+                readOnly={wardRoundIsDischarged || wardRoundSummaryStatus === 'locked'}
+                onEdit={() => setShowDischargeSummaryEditor(true)}
+                onPrint={printWardRoundDischargeSummary}
+              />
 
               {/* Tabs */}
               <Tabs value={wardRoundTab} onValueChange={setWardRoundTab}>
@@ -2744,6 +2890,11 @@ const DoctorDashboard = () => {
         admissionId={wardRoundAdmission?.id}
         admissionLabel={wardRoundAdmission?.patient_name}
         doctorsList={inpatientDoctorsList}
+        readOnly={wardRoundIsDischarged || wardRoundSummaryStatus === 'locked'}
+        onSaved={() => {
+          refreshManageAdmission();
+          if (user) loadDoctorDischargedAdmissions(user);
+        }}
       />
     </div>
   );

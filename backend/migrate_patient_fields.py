@@ -225,6 +225,8 @@ NEW_COLUMNS = [
     ("pharmacy_purchase_items", "sgst_pct", "FLOAT DEFAULT 0.0"),
     ("pharmacy_purchase_items", "cgst_pct", "FLOAT DEFAULT 0.0"),
     ("pharmacy_purchase_items", "igst_pct", "FLOAT DEFAULT 0.0"),
+    ("pharmacy_purchases", "tax_mode", "VARCHAR(20) DEFAULT 'exclusive'"),
+    ("pharmacy_sales", "tax_mode", "VARCHAR(20) DEFAULT 'exclusive'"),
     # Phase 3 pharmacy settings — per-hospital void window + tax-on-free toggle.
     ("hospitals", "pharmacy_void_window_days", "INTEGER DEFAULT 0"),
     ("hospitals", "pharmacy_tax_on_free", "BOOLEAN DEFAULT 0"),
@@ -242,6 +244,12 @@ NEW_COLUMNS = [
     ("admissions", "cancelled_at", "DATETIME"),
     ("admissions", "cancelled_by_id", "INTEGER REFERENCES users(id)"),
     ("admissions", "cancellation_reason", "TEXT"),
+    # Discharge summary — extended clinical sections (Yashoda-style template)
+    ("admission_discharge_summaries", "chief_complaint", "TEXT"),
+    ("admission_discharge_summaries", "family_history", "TEXT"),
+    ("admission_discharge_summaries", "physical_examination_notes", "TEXT"),
+    ("admission_discharge_summaries", "include_admission_vitals", "BOOLEAN DEFAULT 1"),
+    ("admission_discharge_summaries", "emergency_instructions", "TEXT"),
 ]
 
 # B6 — body release table is created via create_all on startup; no column adds.

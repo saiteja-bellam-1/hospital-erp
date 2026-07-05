@@ -181,8 +181,9 @@ class PharmacyUoM(Base):
 class PharmacyHSN(Base):
     """HSN (Harmonized System of Nomenclature) tax code master.
 
-    Each row defines an SGST/CGST/IGST rate. Medicines link to one HSN code
-    (via Medicine.hsn_id, Section C) and purchases / sales pull tax % from it.
+    Each row defines an SGST/CGST rate pair; IGST is stored as their sum
+    (combined inter-state rate). The same HSN code may appear on multiple rows
+    with different tax rates. Medicines link via Medicine.hsn_id.
     """
     __tablename__ = "pharmacy_hsn_codes"
 
@@ -310,6 +311,8 @@ class PharmacyInventory(Base):
     # Section D additive columns
     mrp = Column(Float, default=0.0)             # per-batch MRP, may differ from medicine.mrp
     purchase_rate = Column(Float, default=0.0)   # P-Rate for this batch
+    rate_a = Column(Float, default=0.0)          # per-batch sale Rate A (per strip)
+    strip_conversion_factor = Column(Integer, default=1)  # tabs per strip for this batch
     free_quantity = Column(Integer, default=0)
     discount_pct = Column(Float, default=0.0)    # discount applied at purchase time
     hsn_id = Column(Integer, ForeignKey("pharmacy_hsn_codes.id"), nullable=True)
@@ -383,6 +386,7 @@ class PharmacyPurchase(Base):
     total_discount = Column(Float, default=0.0)
     total_tax = Column(Float, default=0.0)
     grand_total = Column(Float, default=0.0)
+    tax_mode = Column(String(20), default="exclusive")  # exclusive | inclusive
     notes = Column(Text)
 
     created_by = Column(Integer, ForeignKey("users.id"))
@@ -421,6 +425,8 @@ class PharmacyPurchaseItem(Base):
     quantity = Column(Float, nullable=False)
     free_quantity = Column(Float, default=0.0)
     purchase_rate = Column(Float, nullable=False)
+    rate_a = Column(Float, default=0.0)          # sale Rate A for this batch (per strip)
+    strip_conversion_factor = Column(Integer, default=1)  # tabs per strip for this batch
     discount_pct = Column(Float, default=0.0)
     hsn_id = Column(Integer, ForeignKey("pharmacy_hsn_codes.id"), nullable=True)
     tax_amount = Column(Float, default=0.0)
@@ -466,6 +472,7 @@ class PharmacySale(Base):
     discount_total = Column(Float, default=0.0)
     tax_total = Column(Float, default=0.0)
     grand_total = Column(Float, default=0.0)
+    tax_mode = Column(String(20), default="exclusive")  # exclusive | inclusive
 
     status = Column(String(20), default="completed", index=True)   # completed | voided
     voided_by = Column(Integer, ForeignKey("users.id"))
