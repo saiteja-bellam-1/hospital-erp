@@ -25,7 +25,7 @@ import { printPdfFromUrl } from '../../utils/printPdf';
 import DischargeSummaryEditor from './inpatient/DischargeSummaryEditor';
 import DischargeSummaryPreviewCard from './inpatient/discharge/DischargeSummaryPreviewCard';
 import { DISCHARGE_SUMMARY_STATUS } from './inpatient/discharge/constants';
-import { enrichAdmissionsWithSummaryStatus } from './inpatient/discharge/dischargeSummaryUtils';
+import { enrichAdmissionsWithSummaryStatus, prepareDischargeSummaryEdit, summaryIsReadyForPrint } from './inpatient/discharge/dischargeSummaryUtils';
 
 const isMyInpatientAdmission = (adm, userId) => (
   adm.admitting_doctor_id === userId || adm.attending_physician_id === userId
@@ -255,10 +255,37 @@ const DoctorDashboard = () => {
   };
 
   /** Open discharge summary editor only (reception completes checkout separately). */
-  const openDischargeSummary = (adm, e) => {
+  const openDischargeSummary = async (adm, e) => {
     e?.stopPropagation?.();
     setWardRoundAdmission(adm);
-    setShowDischargeSummaryEditor(true);
+    try {
+      const updated = await prepareDischargeSummaryEdit(adm.id);
+      if (updated) setWardRoundSummary(updated);
+      setShowDischargeSummaryEditor(true);
+    } catch (err) {
+      toast({
+        variant: 'destructive',
+        title: 'Could not open summary',
+        description: typeof err.response?.data?.detail === 'string'
+          ? err.response.data.detail : 'Network error',
+      });
+    }
+  };
+
+  const openDischargeSummaryEditor = async () => {
+    if (!wardRoundAdmission) return;
+    try {
+      const updated = await prepareDischargeSummaryEdit(wardRoundAdmission.id);
+      if (updated) setWardRoundSummary(updated);
+      setShowDischargeSummaryEditor(true);
+    } catch (err) {
+      toast({
+        variant: 'destructive',
+        title: 'Could not open summary',
+        description: typeof err.response?.data?.detail === 'string'
+          ? err.response.data.detail : 'Network error',
+      });
+    }
   };
 
   const wardRoundSummaryStatus = wardRoundSummary?.status || null;
@@ -1815,11 +1842,13 @@ const DoctorDashboard = () => {
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() => setShowDischargeSummaryEditor(true)}
+                  onClick={openDischargeSummaryEditor}
                   title={wardRoundIsDischarged ? 'View discharge summary' : 'Write discharge summary for reception'}
                 >
                   <FileText className="h-3.5 w-3.5 mr-1" />
-                  {wardRoundIsDischarged ? 'View discharge summary' : 'Discharge'}
+                  {wardRoundIsDischarged ? 'View discharge summary'
+                    : wardRoundSummaryStatus === 'ready' ? 'Edit submitted summary'
+                      : 'Discharge'}
                 </Button>
                 {summaryReadyForPrint && (
                   <Button size="sm" variant="outline" onClick={printWardRoundDischargeSummary}>
@@ -1838,8 +1867,8 @@ const DoctorDashboard = () => {
                 summary={wardRoundSummary}
                 canWrite={!wardRoundIsDischarged}
                 readOnly={wardRoundIsDischarged || wardRoundSummaryStatus === 'locked'}
-                onEdit={() => setShowDischargeSummaryEditor(true)}
-                onPrint={printWardRoundDischargeSummary}
+                onEdit={openDischargeSummaryEditor}
+                onPrint={summaryReadyForPrint ? printWardRoundDischargeSummary : undefined}
               />
 
               {/* Tabs */}

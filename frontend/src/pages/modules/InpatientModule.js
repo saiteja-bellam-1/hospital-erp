@@ -25,9 +25,11 @@ import MedicineLookupInput from '../../components/inpatient/MedicineLookupInput'
 import PrescriptionScheduleFields from '../../components/prescription/PrescriptionScheduleFields';
 import { BLANK_INPATIENT_RX_ITEM, serializeTakeHomeMed } from '../../utils/prescriptionSchedule';
 import DischargeCheckoutPage from './inpatient/DischargeCheckoutPage';
-import { canAccessDischargeCheckout } from './inpatient/discharge/dischargeSummaryUtils';
+import DoctorDischargeSummaryPage from './inpatient/discharge/DoctorDischargeSummaryPage';
+import { canAccessDischargeCheckout, prepareDischargeSummaryEdit, summaryIsReadyForPrint } from './inpatient/discharge/dischargeSummaryUtils';
 import DischargeHistory from './inpatient/discharge/DischargeHistory';
 import DischargeSummaryEditor from './inpatient/DischargeSummaryEditor';
+import DischargeSummaryPreviewCard from './inpatient/discharge/DischargeSummaryPreviewCard';
 import TakeHomeMedicinesSection from '../../components/prescription/TakeHomeMedicinesSection';
 import {
   Plus, Search, Edit2, Trash2, Bed, Activity, Clock, User, Users,
@@ -163,6 +165,7 @@ const InpatientModule = () => {
   }), [isAdminLike, hasCheckoutDeskRole, ip]);
   const canShowDischarge = canAccessCheckout && (ip('discharge_patients') || hasCheckoutDeskRole);
   const canWriteDischargeSummary = ip('write_discharge_summary');
+  const isClinicalDischargeOnly = canWriteDischargeSummary && !canAccessCheckout;
   const defaultVisitType = isNurseOnly ? 'nurse_visit' : 'doctor_visit';
   // activeTab is derived from the URL — when the user clicks a nav item the
   // browser navigates and this re-derives. Setting activeTab now means navigating.
@@ -226,6 +229,7 @@ const InpatientModule = () => {
     || activityAdmission?.acceptance_status === 'rejected';
   const [activityTab, setActivityTab] = useState('visits');
   const [showActivitySummaryEditor, setShowActivitySummaryEditor] = useState(false);
+  const [activitySummary, setActivitySummary] = useState(null);
   const [visits, setVisits] = useState([]);
   const [billData, setBillData] = useState(null);
   const [showVisitDialog, setShowVisitDialog] = useState(false);
@@ -1769,8 +1773,59 @@ const InpatientModule = () => {
     } finally { setLoading(false); }
   };
 
-  // Single-page discharge checkout — all entry points land here.
-  const openDischargeCheckout = (admission) => {
+  // Reception checkout — bill, discharge event, gate pass.
+  const refreshActivitySummary = useCallback(async (admissionId) => {
+    if (!admissionId) {
+      setActivitySummary(null);
+      return;
+    }
+    try {
+      const res = await axios.get(`/api/inpatient/admissions/${admissionId}/discharge-summary`);
+      setActivitySummary(res.data);
+    } catch (err) {
+      setActivitySummary(err.response?.status === 404 ? null : null);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshActivitySummary(activityAdmission?.id);
+  }, [activityAdmission?.id, refreshActivitySummary]);
+
+  const activitySummaryStatus = activitySummary?.status ?? (activityAdmission ? 'missing' : null);
+
+  const openActivitySummaryEditor = async () => {
+    if (!activityAdmission) return;
+    try {
+      const updated = await prepareDischargeSummaryEdit(activityAdmission.id);
+      if (updated) setActivitySummary(updated);
+      setShowActivitySummaryEditor(true);
+    } catch (err) {
+      toast({
+        variant: 'destructive',
+        title: 'Could not open summary',
+        description: typeof err.response?.data?.detail === 'string'
+          ? err.response.data.detail : 'Network error',
+      });
+    }
+  };
+
+  const openDischargeCheckout = async (admission) => {
+    if (isClinicalDischargeOnly) {
+      setActivityAdmission(admission);
+      try {
+        const updated = await prepareDischargeSummaryEdit(admission.id);
+        setActivitySummary(updated ?? null);
+        setShowActivitySummaryEditor(true);
+      } catch (err) {
+        toast({
+          variant: 'destructive',
+          title: 'Could not open summary',
+          description: typeof err.response?.data?.detail === 'string'
+            ? err.response.data.detail : 'Network error',
+        });
+      }
+      return;
+    }
     setActiveTab('discharge');
     setCheckoutAdmissionId(admission.id);
   };
@@ -3730,6 +3785,11 @@ const InpatientModule = () => {
                             <td className="py-2 text-sm">{daysSince(adm.admission_date)}</td>
                             <td className="py-2">
                               <div className="flex gap-1" onClick={e => e.stopPropagation()}>
+                                {adm.status === 'admitted' && isClinicalDischargeOnly && (
+                                  <Button variant="ghost" size="sm" className="text-blue-600" onClick={() => openDischargeCheckout(adm)} title="Write discharge summary">
+                                    <FileText className="h-4 w-4" />
+                                  </Button>
+                                )}
                                 {adm.status === 'admitted' && canShowDischarge && (
                                   <Button variant="ghost" size="sm" className="text-red-500" onClick={() => openDischargeCheckout(adm)} title="Discharge &amp; Exit">
                                     <ChevronRight className="h-4 w-4" />
@@ -3767,67 +3827,79 @@ const InpatientModule = () => {
               {/* Right: Patient detail (inline) */}
               {activityAdmission && (
                 <div className="w-1/2 overflow-y-auto flex flex-col">
-                  <div className="sticky top-0 bg-white border-b p-4 flex items-center justify-between z-10">
-                    <div>
-                      <h2 className="font-semibold">{activityAdmission.patient_name}</h2>
-                      <p className="text-xs text-gray-500">{activityAdmission.admission_number} &bull; {roomTypeLabel[activityAdmission.room_type] || activityAdmission.room_type} - {activityAdmission.room_number} &bull; Dr. {activityAdmission.doctor_name || 'N/A'}</p>
-                      {balance && (
-                        <div className="flex items-center gap-2 mt-1">
-                          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${
-                            balance.balance > 0 ? 'bg-green-100 text-green-800' :
-                            balance.balance < 0 ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-700'
-                          }`}>
-                            <Wallet className="h-3 w-3" />
-                            {balance.balance > 0 ? `Credit ₹${balance.balance.toFixed(2)}` :
-                             balance.balance < 0 ? `Owes ₹${Math.abs(balance.balance).toFixed(2)}` :
-                             `Settled`}
-                          </span>
-                          <span className="text-xs text-gray-400">Deposits ₹{balance.net_deposits.toFixed(2)} · Billed ₹{balance.total_billed.toFixed(2)}</span>
-                        </div>
-                      )}
+                  <div className="sticky top-0 bg-white border-b z-10">
+                    <div className="px-4 py-3 flex items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <h2 className="font-semibold truncate">{activityAdmission.patient_name}</h2>
+                        <p className="text-xs text-gray-500">
+                          {activityAdmission.admission_number} &bull; {roomTypeLabel[activityAdmission.room_type] || activityAdmission.room_type} - {activityAdmission.room_number} &bull; Dr. {activityAdmission.doctor_name || 'N/A'}
+                        </p>
+                        {balance && (
+                          <div className="flex items-center gap-2 mt-1 flex-wrap">
+                            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${
+                              balance.balance > 0 ? 'bg-green-100 text-green-800' :
+                              balance.balance < 0 ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-700'
+                            }`}>
+                              <Wallet className="h-3 w-3" />
+                              {balance.balance > 0 ? `Credit ₹${balance.balance.toFixed(2)}` :
+                               balance.balance < 0 ? `Owes ₹${Math.abs(balance.balance).toFixed(2)}` :
+                               `Settled`}
+                            </span>
+                            <span className="text-xs text-gray-400">
+                              Deposits ₹{balance.net_deposits.toFixed(2)} · Billed ₹{balance.total_billed.toFixed(2)}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                      <Button variant="ghost" size="icon" className="shrink-0" onClick={() => setActivityAdmission(null)}>
+                        <X className="h-4 w-4" />
+                      </Button>
                     </div>
-                    <div className="flex flex-wrap items-center justify-end gap-2 shrink-0">
+
+                    {(canWriteDischargeSummary || ip('view_discharge_summary')) && (
+                      <div className="px-4 pb-3">
+                        <DischargeSummaryPreviewCard
+                          summary={activitySummary}
+                          compact
+                          canWrite={canWriteDischargeSummary && activityAdmission.status === 'admitted'}
+                          readOnly={
+                            activityAdmission.status === 'discharged'
+                            || activitySummaryStatus === 'locked'
+                          }
+                          onEdit={openActivitySummaryEditor}
+                          onPrint={
+                            summaryIsReadyForPrint(activitySummaryStatus)
+                              ? () => handlePrintDischargePdf(activityAdmission.id)
+                              : undefined
+                          }
+                        />
+                      </div>
+                    )}
+
+                    <div className="px-4 py-2 border-t bg-slate-50/80 flex flex-wrap items-center gap-2">
                       <Button
                         size="sm"
                         variant="outline"
                         onClick={() => handlePrintAdmissionDetailPdf(activityAdmission.id)}
                         title="Print detailed admission summary"
                       >
-                        <Printer className="h-4 w-4 mr-1" /> Detailed Summary
+                        <Printer className="h-3.5 w-3.5 mr-1" /> Detailed Summary
                       </Button>
-                      {ip('view_discharge_summary') && (
+                      {activityAdmission.status === 'admitted' && canShowLeave && (
+                        <Button size="sm" variant="outline" onClick={() => openLoaDialog(activityAdmission)}>
+                          <CalendarRange className="h-3.5 w-3.5 mr-1" /> Leave
+                        </Button>
+                      )}
+                      {activityAdmission.status === 'admitted' && canShowDischarge && (
                         <Button
                           size="sm"
                           variant="outline"
-                          onClick={() => handlePrintDischargePdf(activityAdmission.id)}
-                          title="Print discharge summary letter"
+                          className="text-red-600 border-red-200 hover:bg-red-50 ml-auto"
+                          onClick={() => openDischargeCheckout(activityAdmission)}
                         >
-                          <Printer className="h-4 w-4 mr-1" /> Print Discharge Summary
+                          <FileCheck className="h-3.5 w-3.5 mr-1" /> Discharge &amp; Exit
                         </Button>
                       )}
-                      {activityAdmission.status === 'admitted' && (
-                        <>
-                          {canWriteDischargeSummary && (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => setShowActivitySummaryEditor(true)}
-                              title="Write discharge summary for reception"
-                            >
-                              <FileText className="h-4 w-4 mr-1" /> Discharge
-                            </Button>
-                          )}
-                          {canShowLeave && (
-                            <Button size="sm" variant="outline" onClick={() => openLoaDialog(activityAdmission)}>
-                              <CalendarRange className="h-4 w-4 mr-1" /> Leave
-                            </Button>
-                          )}
-                          {canShowDischarge && (
-                            <Button size="sm" variant="outline" className="text-red-600" onClick={() => openDischargeCheckout(activityAdmission)}>Discharge &amp; Exit</Button>
-                          )}
-                        </>
-                      )}
-                      <Button variant="ghost" size="sm" onClick={() => setActivityAdmission(null)}><X className="h-4 w-4" /></Button>
                     </div>
                   </div>
 
@@ -5535,6 +5607,12 @@ const InpatientModule = () => {
                 doctorsList={doctorsList}
                 onDeathDischarge={handleCheckoutDeath}
               />
+              ) : isClinicalDischargeOnly ? (
+                <DoctorDischargeSummaryPage
+                  doctorsList={doctorsList}
+                  doctorUserId={user?.id}
+                  filterToMyPatients={isDoctorRole && !isAdminLike}
+                />
               ) : (
                 <div className="max-w-lg mx-auto py-16 text-center space-y-3">
                   <FileText className="h-10 w-10 text-gray-400 mx-auto" />
@@ -10084,6 +10162,10 @@ const InpatientModule = () => {
         admissionId={activityAdmission?.id}
         admissionLabel={activityAdmission?.patient_name}
         doctorsList={doctorsList}
+        onSaved={(data) => {
+          if (data) setActivitySummary(data);
+          else refreshActivitySummary(activityAdmission?.id);
+        }}
       />
 
       {/* Confirm Dialog */}

@@ -21,3 +21,28 @@ export function canAccessDischargeCheckout({ isAdminLike, hasCheckoutDeskRole, h
   if (isAdminLike || hasCheckoutDeskRole) return true;
   return !!(hasPerm('finalize_bill') || hasPerm('issue_gate_pass'));
 }
+
+export function summaryIsReadyForPrint(status) {
+  return status === 'ready' || status === 'locked';
+}
+
+/**
+ * Reopen a submitted summary to draft when needed, then return latest summary doc.
+ */
+export async function prepareDischargeSummaryEdit(admissionId) {
+  let summary = null;
+  try {
+    const res = await axios.get(`/api/inpatient/admissions/${admissionId}/discharge-summary`);
+    summary = res.data;
+  } catch (err) {
+    if (err.response?.status === 404) return null;
+    throw err;
+  }
+  if (summary?.status === 'ready') {
+    const reopened = await axios.post(
+      `/api/inpatient/admissions/${admissionId}/discharge-summary/reopen`,
+    );
+    return reopened.data;
+  }
+  return summary;
+}

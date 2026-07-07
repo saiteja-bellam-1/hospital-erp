@@ -4,6 +4,18 @@
  * qty-per-strip override the medicine master (zero/missing batch fields fall back).
  */
 
+/** Hide native number-input spin buttons (Chrome, Firefox, Safari). */
+export const pharmacyNoSpinInputClass =
+  '[appearance:textfield] [-moz-appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none';
+
+/** Show empty instead of 0 for cleaner pharmacy numeric fields. */
+export function displayPharmacyNumericInput(val) {
+  if (val === '' || val == null) return '';
+  const n = parseFloat(val);
+  if (Number.isNaN(n) || n === 0) return '';
+  return String(val);
+}
+
 /** Round currency to 2 decimal places. */
 export function roundMoney(value) {
   const n = parseFloat(value);
@@ -24,9 +36,11 @@ export function pricingSource(medicine, batch = null) {
   const batchMrp = parseFloat(b.mrp) || 0;
   const batchPr = parseFloat(b.purchase_rate) || 0;
   const batchScf = parseInt(b.strip_conversion_factor, 10) || 0;
+  const batchRateB = parseFloat(b.rate_b) || 0;
+  const medRateB = parseFloat(med.rate_b) || 0;
   return {
     rate_a: batchRateA > 0 ? batchRateA : (parseFloat(med.rate_a) || 0),
-    rate_b: parseFloat(med.rate_b) || 0,
+    rate_b: batchRateB > 0 ? batchRateB : medRateB,
     mrp: batchMrp > 0 ? batchMrp : (parseFloat(med.mrp) || 0),
     purchase_rate: batchPr > 0 ? batchPr : (parseFloat(med.purchase_rate) || 0),
     unit_price: parseFloat(med.unit_price) || 0,
@@ -72,6 +86,26 @@ export function combinedBaseQty(qtyTabs, qtyStrips, source) {
   return (parseFloat(qtyTabs) || 0) + (parseFloat(qtyStrips) || 0) * unitsPerStrip(source);
 }
 
+/** When tab qty is an exact multiple of strip size, roll into strips and clear remainder tabs. */
+export function normalizeTabQtyToStrips(qtyTabs, qtyStrips, source) {
+  const scf = unitsPerStrip(source);
+  const tabs = parseFloat(qtyTabs) || 0;
+  const strips = parseFloat(qtyStrips) || 0;
+  if (scf <= 1) {
+    return { qty_tabs: tabs, qty_strips: strips };
+  }
+  if (tabs <= 0) {
+    return { qty_tabs: tabs, qty_strips: strips };
+  }
+  const remainder = tabs % scf;
+  const isExactMultiple = Math.abs(remainder) < 1e-9;
+  if (!isExactMultiple) {
+    return { qty_tabs: tabs, qty_strips: strips };
+  }
+  const addedStrips = tabs / scf;
+  return { qty_tabs: 0, qty_strips: strips + addedStrips };
+}
+
 export function calcLineSubtotal(line) {
   const tabs = parseFloat(line.qty_tabs) || 0;
   const strips = parseFloat(line.qty_strips) || 0;
@@ -108,19 +142,30 @@ export function formatRatesHint(source, tier = 'A', batch = null) {
   return `₹${tabR.toFixed(2)} each`;
 }
 
+export function formatBatchExpiry(batch) {
+  if (!batch?.expiry_date) return '';
+  const d = new Date(`${batch.expiry_date}T12:00:00`);
+  if (Number.isNaN(d.getTime())) return '';
+  return `exp ${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+}
+
+/** Two-line batch summary for compact table cells — title + meta detail row. */
+export function formatBatchSummary(batch) {
+  if (!batch) return { title: '', meta: '' };
+  const title = batch.batch_number || '—';
+  const metaParts = [];
+  const expiry = formatBatchExpiry(batch);
+  if (expiry) metaParts.push(expiry);
+  metaParts.push(`qty ${batch.quantity_in_stock ?? 0}`);
+  const rateA = parseFloat(batch.rate_a) || parseFloat(batch.mrp) || 0;
+  if (rateA > 0) metaParts.push(`A ₹${formatMoney(rateA)}`);
+  const scf = parseInt(batch.strip_conversion_factor, 10) || 0;
+  if (scf > 1) metaParts.push(`${scf}/strip`);
+  return { title, meta: metaParts.join(' · ') };
+}
+
 export function formatBatchLabel(batch) {
   if (!batch) return '';
-  const parts = [batch.batch_number || '—'];
-  if (batch.expiry_date) {
-    const d = new Date(`${batch.expiry_date}T12:00:00`);
-    if (!Number.isNaN(d.getTime())) {
-      parts.push(`exp ${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`);
-    }
-  }
-  parts.push(`qty ${batch.quantity_in_stock ?? 0}`);
-  const rateA = parseFloat(batch.rate_a) || parseFloat(batch.mrp) || 0;
-  if (rateA > 0) parts.push(`A ₹${formatMoney(rateA)}`);
-  const scf = parseInt(batch.strip_conversion_factor, 10) || 0;
-  if (scf > 1) parts.push(`${scf}/strip`);
-  return parts.join(' · ');
+  const { title, meta } = formatBatchSummary(batch);
+  return meta ? `${title} · ${meta}` : title;
 }

@@ -11,7 +11,7 @@ import { useToast } from '../../../../hooks/use-toast';
 import { Search, RefreshCw, AlertTriangle, Sliders, ScrollText } from 'lucide-react';
 import { errMsg } from '../../PharmacyModule';
 import { usePharmacyStore } from '../../../../contexts/PharmacyStoreContext';
-import { formatMoney } from '../../../../utils/pharmacyUnits';
+import { displayPharmacyNumericInput, formatMoney, pharmacyNoSpinInputClass } from '../../../../utils/pharmacyUnits';
 
 export default function InventoryTab() {
   const { toast } = useToast();
@@ -105,7 +105,9 @@ export default function InventoryTab() {
             </div>
             <div>
               <Label>Qty change (signed: +5 to add, −3 to remove)</Label>
-              <Input type="number" step="any" value={adjustQty} onChange={e => setAdjustQty(e.target.value)} />
+              <Input className={pharmacyNoSpinInputClass} type="number" step="any"
+                value={displayPharmacyNumericInput(adjustQty)}
+                onChange={e => setAdjustQty(e.target.value)} />
             </div>
             <div>
               <Label>Reason</Label>

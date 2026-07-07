@@ -16,8 +16,9 @@ import TakeHomeMedicinesSection from '../../../components/prescription/TakeHomeM
 import { serializeTakeHomeMed } from '../../../utils/prescriptionSchedule';
 import { printPdfFromUrl } from '../../../utils/printPdf';
 import DischargeSummaryPdfPreviewDialog from './discharge/DischargeSummaryPdfPreviewDialog';
+import { summaryIsReadyForPrint } from './discharge/dischargeSummaryUtils';
 import {
-  Loader2, FileText, CheckCircle2, ChevronLeft, ChevronRight, Printer, Eye,
+  Loader2, FileText, CheckCircle2, ChevronLeft, ChevronRight, Printer, Eye, Pencil,
 } from 'lucide-react';
 
 const SUMMARY_STEPS = [
@@ -125,6 +126,7 @@ const DischargeSummaryEditor = ({
   const [step, setStep] = useState(1);
   const [showPdfPreview, setShowPdfPreview] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
+  const [editingSubmitted, setEditingSubmitted] = useState(false);
 
   const update = (patch) => setForm(p => ({ ...p, ...patch }));
 
@@ -171,7 +173,10 @@ const DischargeSummaryEditor = ({
 
   useEffect(() => {
     if (open) setStep(1);
-    if (!open) setShowPdfPreview(false);
+    if (!open) {
+      setShowPdfPreview(false);
+      setEditingSubmitted(false);
+    }
   }, [open, admissionId]);
 
   const buildPayload = () => ({
@@ -327,8 +332,31 @@ const DischargeSummaryEditor = ({
     if (step > 1) setStep(step - 1);
   };
 
-  const locked = status === 'locked' || readOnly;
-  const canPrint = status === 'ready' || status === 'locked';
+  const isSubmittedReady = status === 'ready' && !readOnly;
+  const locked = status === 'locked' || readOnly || (isSubmittedReady && !editingSubmitted);
+  const canPrint = summaryIsReadyForPrint(status);
+
+  const handleReopenForEdit = async () => {
+    setSaving(true);
+    try {
+      const res = await axios.post(
+        `/api/inpatient/admissions/${admissionId}/discharge-summary/reopen`,
+      );
+      setStatus(res.data.status);
+      setEditingSubmitted(true);
+      toast({
+        title: 'Reopened for editing',
+        description: 'Summary is back in draft until you mark it ready for print again.',
+      });
+      onSaved?.(res.data);
+    } catch (err) {
+      const msg = typeof err.response?.data?.detail === 'string'
+        ? err.response.data.detail : 'Could not reopen summary';
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const handlePrint = async () => {
     const ok = await printPdfFromUrl(`/api/inpatient/admissions/${admissionId}/discharge-summary/pdf`);
@@ -595,6 +623,11 @@ const DischargeSummaryEditor = ({
               locked={locked}
             />
             <div className="flex-1 overflow-y-auto min-h-0 py-1 pr-1">
+              {isSubmittedReady && !editingSubmitted && (
+                <div className="mb-3 text-xs text-green-800 bg-green-50 border border-green-200 rounded p-2">
+                  This summary is marked <b>ready for print</b>. Click <b>Edit submitted summary</b> to make changes.
+                </div>
+              )}
               {renderStep()}
             </div>
           </>
@@ -613,13 +646,20 @@ const DischargeSummaryEditor = ({
                 <Printer className="h-4 w-4 mr-1" /> Print discharge summary
               </Button>
             )}
-            {!locked && !loading && isLastStep && (
+            {!locked && !loading && isLastStep && !canPrint && (
               <Button variant="outline" onClick={handlePreviewDraft} disabled={saving || finalizing}>
                 <Eye className="h-4 w-4 mr-1" /> Preview PDF
               </Button>
             )}
           </div>
           <div className="flex gap-2 flex-wrap">
+            {isSubmittedReady && !editingSubmitted && !loading && (
+              <>
+                <Button variant="outline" onClick={handleReopenForEdit} disabled={saving}>
+                  <Pencil className="h-4 w-4 mr-1" /> Edit submitted summary
+                </Button>
+              </>
+            )}
             {!locked && !loading && (
               <>
                 <Button variant="secondary" onClick={handleSave} disabled={saving}>

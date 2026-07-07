@@ -4,6 +4,7 @@ import { Button } from '../../../../components/ui/button';
 import { CheckCircle2, Circle, FileText, Pencil, Printer, AlertTriangle } from 'lucide-react';
 
 import { DISCHARGE_SUMMARY_STATUS } from './constants';
+import { summaryIsReadyForPrint } from './dischargeSummaryUtils';
 
 const STATUS = DISCHARGE_SUMMARY_STATUS;
 
@@ -34,8 +35,7 @@ export default function DischargeSummaryPreviewCard({
 }) {
   const st = summary?.status || 'missing';
   const badge = STATUS[st] || STATUS.missing;
-  const canPrint = st === 'ready' || st === 'locked';
-  const locked = st === 'locked' || readOnly;
+  const canPrint = summaryIsReadyForPrint(st);
 
   const checklist = CHECKLIST.map((item) => {
     const val = summary?.[item.key];
@@ -50,27 +50,44 @@ export default function DischargeSummaryPreviewCard({
   return (
     <div className="border rounded-lg bg-white overflow-hidden">
       <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 border-b bg-slate-50">
-        <div className="flex items-center gap-2 text-sm font-medium text-gray-800">
-          <FileText className="h-4 w-4 text-blue-600" />
-          Discharge Summary
-          <Badge className={badge.className}>{badge.label}</Badge>
+        <div className="flex items-center gap-2 text-sm font-medium text-gray-800 min-w-0">
+          <FileText className="h-4 w-4 text-blue-600 shrink-0" />
+          <span className="truncate">Discharge Summary</span>
+          <Badge className={`${badge.className} shrink-0`}>{badge.label}</Badge>
         </div>
-        {!compact && st === 'draft' && (
-          <span className="text-xs text-amber-700">
-            {doneCount}/{checklist.length} sections filled
-            {!canFinalize && ' · primary diagnosis required'}
-          </span>
-        )}
+        <div className="flex flex-wrap items-center gap-2">
+          {!compact && st === 'draft' && (
+            <span className="text-xs text-amber-700">
+              {doneCount}/{checklist.length} sections filled
+              {!canFinalize && ' · primary diagnosis required'}
+            </span>
+          )}
+          {compact && canWrite && st !== 'locked' && !readOnly && onEdit && (
+            <Button size="sm" variant="outline" className="h-8" onClick={onEdit}>
+              <Pencil className="h-3.5 w-3.5 mr-1" />
+              {st === 'missing' ? 'Write' : st === 'ready' ? 'Edit' : 'Continue'}
+            </Button>
+          )}
+          {compact && canPrint && onPrint && (
+            <Button size="sm" variant="outline" className="h-8" onClick={onPrint}>
+              <Printer className="h-3.5 w-3.5 mr-1" /> Print
+            </Button>
+          )}
+        </div>
       </div>
 
-      <div className="p-3 space-y-3 text-sm">
+      <div className={`${compact ? 'px-3 py-2' : 'p-3'} space-y-2 text-sm`}>
         {st === 'missing' && (
           <div className="flex items-start gap-2 text-amber-800 bg-amber-50 border border-amber-100 rounded p-2 text-xs">
             <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
             <span>
               {canWrite
-                ? 'Write the discharge summary before reception can print it or complete checkout.'
-                : 'Waiting for the treating doctor to write and mark the discharge summary ready for print.'}
+                ? (compact
+                  ? 'Write the discharge summary for reception checkout.'
+                  : 'Write the discharge summary before reception can print it or complete checkout.')
+                : (compact
+                  ? 'Waiting for doctor to submit the discharge summary.'
+                  : 'Waiting for the treating doctor to write and mark the discharge summary ready for print.')}
             </span>
           </div>
         )}
@@ -81,6 +98,16 @@ export default function DischargeSummaryPreviewCard({
             <span>
               Doctor has started the summary but not marked it <b>ready for print</b> yet.
               Reception can proceed once the doctor finalizes it.
+            </span>
+          </div>
+        )}
+
+        {st === 'ready' && canWrite && !readOnly && !compact && (
+          <div className="flex items-start gap-2 text-green-800 bg-green-50 border border-green-100 rounded p-2 text-xs">
+            <CheckCircle2 className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+            <span>
+              Summary submitted for print. Use <b>Edit submitted summary</b> if you need to make changes
+              (reception cannot discharge until you mark it ready again).
             </span>
           </div>
         )}
@@ -119,7 +146,14 @@ export default function DischargeSummaryPreviewCard({
           </ul>
         )}
 
-        {summary && (summary.chief_complaint || summary.primary_diagnosis || summary.course_in_hospital) && (
+        {summary && compact && summary.primary_diagnosis && (
+          <p className="text-xs text-gray-600 truncate">
+            <span className="font-medium text-gray-500">Diagnosis: </span>
+            {clip(summary.primary_diagnosis, 100)}
+          </p>
+        )}
+
+        {summary && !compact && (summary.chief_complaint || summary.primary_diagnosis || summary.course_in_hospital) && (
           <div className="space-y-1.5 text-xs border-t pt-2">
             {summary.chief_complaint && (
               <div><span className="font-medium text-gray-600">Chief complaint: </span>{clip(summary.chief_complaint)}</div>
@@ -142,11 +176,14 @@ export default function DischargeSummaryPreviewCard({
           </div>
         )}
 
+        {!compact && (
         <div className="flex flex-wrap gap-2 pt-1">
-          {canWrite && !locked && onEdit && (
+          {canWrite && st !== 'locked' && !readOnly && onEdit && (
             <Button size="sm" variant="outline" onClick={onEdit}>
               <Pencil className="h-3.5 w-3.5 mr-1" />
-              {st === 'missing' ? 'Write summary' : 'Edit summary'}
+              {st === 'missing' ? 'Write summary'
+                : st === 'ready' ? 'Edit submitted summary'
+                  : 'Edit summary'}
             </Button>
           )}
           {canPrint && onPrint && (
@@ -155,6 +192,7 @@ export default function DischargeSummaryPreviewCard({
             </Button>
           )}
         </div>
+        )}
       </div>
     </div>
   );

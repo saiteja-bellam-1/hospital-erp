@@ -86,6 +86,21 @@ class TestDischargeSummaryWorkflow:
         assert fin.status_code == 200, fin.text
         assert fin.json()["status"] == "ready"
 
+    def test_reopen_submitted_summary(self, client, auth_headers):
+        adm_id = _state['admission_id']
+        reopen = client.post(
+            f"{API}/admissions/{adm_id}/discharge-summary/reopen",
+            headers=auth_headers,
+        )
+        assert reopen.status_code == 200, reopen.text
+        assert reopen.json()["status"] == "draft"
+
+        bad = client.post(
+            f"{API}/admissions/{adm_id}/discharge-summary/reopen",
+            headers=auth_headers,
+        )
+        assert bad.status_code == 400, bad.text
+
     def test_pdf_preview_works_for_draft(self, client, auth_headers):
         adm_id = _state['admission_id']
         client.put(

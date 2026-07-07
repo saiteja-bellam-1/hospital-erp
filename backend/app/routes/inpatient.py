@@ -3630,6 +3630,33 @@ async def finalize_discharge_summary(
     return _summary_to_response(db, summary, admission)
 
 
+@router.post("/admissions/{admission_id}/discharge-summary/reopen", response_model=DischargeSummaryResponse)
+async def reopen_discharge_summary(
+    admission_id: int,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "write_discharge_summary")),
+    db: Session = Depends(get_db),
+):
+    """Return a submitted (ready) summary to draft so the doctor can edit before discharge."""
+    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    if not admission:
+        raise HTTPException(status_code=404, detail="Admission not found")
+    if admission.status != "admitted":
+        raise HTTPException(status_code=400, detail="Summary can only be reopened for active admissions")
+    summary = _get_or_create_summary(db, admission_id)
+    if summary.status == "locked":
+        raise HTTPException(status_code=400, detail="Discharge summary is locked after discharge")
+    if summary.status != "ready":
+        raise HTTPException(status_code=400, detail="Only a submitted summary can be reopened for editing")
+    summary.status = "draft"
+    summary.finalized_by_id = None
+    summary.finalized_at = None
+    db.commit()
+    db.refresh(summary)
+    log_action(db, current_user, "reopen_discharge_summary", "inpatient", "AdmissionDischargeSummary", summary.id,
+               f"Reopened discharge summary for admission {admission.admission_number}")
+    return _summary_to_response(db, summary, admission)
+
+
 @router.get("/admissions/{admission_id}/discharge-summary/ot-import")
 async def get_discharge_summary_ot_import(
     admission_id: int,
@@ -3650,7 +3677,7 @@ async def get_discharge_summary_ot_import(
 @router.get("/admissions/{admission_id}/discharge-summary/pdf/preview")
 async def preview_discharge_summary_pdf(
     admission_id: int,
-    include_header: bool = Query(True),
+    include_header: Optional[bool] = Query(None),
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "write_discharge_summary")),
     db: Session = Depends(get_db),
 ):
@@ -3683,8 +3710,9 @@ async def preview_discharge_summary_pdf(
         "hospital_subname": hospital.hospital_subname if hasattr(hospital, "hospital_subname") else "",
     }
     discharge_data = _build_summary_pdf_payload(db, admission, summary, admission.discharge)
-    pdf_kwargs = pdf_gen_kwargs(db, current_user.hospital_id, 'discharge_summary')
-    pdf_kwargs['include_header'] = include_header
+    pdf_kwargs = pdf_gen_kwargs(
+        db, current_user.hospital_id, 'discharge_summary', query_include_header=include_header,
+    )
     if summary.status == "draft":
         pdf_kwargs['watermark'] = "DRAFT"
     pdf_buffer = pdf_service.generate_discharge_summary_pdf(
@@ -3697,7 +3725,7 @@ async def preview_discharge_summary_pdf(
 @router.get("/admissions/{admission_id}/discharge-summary/pdf")
 async def get_discharge_summary_pdf(
     admission_id: int,
-    include_header: bool = Query(True),
+    include_header: Optional[bool] = Query(None),
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_discharge_summary")),
     db: Session = Depends(get_db),
 ):
@@ -3734,8 +3762,9 @@ async def get_discharge_summary_pdf(
         "hospital_subname": hospital.hospital_subname if hasattr(hospital, "hospital_subname") else "",
     }
     discharge_data = _build_summary_pdf_payload(db, admission, summary, admission.discharge)
-    pdf_kwargs = pdf_gen_kwargs(db, current_user.hospital_id, 'discharge_summary')
-    pdf_kwargs['include_header'] = include_header
+    pdf_kwargs = pdf_gen_kwargs(
+        db, current_user.hospital_id, 'discharge_summary', query_include_header=include_header,
+    )
     pdf_buffer = pdf_service.generate_discharge_summary_pdf(
         discharge_data, hospital_info, **pdf_kwargs,
     )
@@ -4022,7 +4051,7 @@ async def get_discharge(
 @router.get("/admissions/{admission_id}/discharge/pdf")
 async def get_discharge_pdf(
     admission_id: int,
-    include_header: bool = Query(True),
+    include_header: Optional[bool] = Query(None),
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
 ):
@@ -4102,8 +4131,9 @@ async def get_discharge_pdf(
             "total_charges": float(charges_now.get("subtotal") or discharge.total_charges or 0),
         }
 
-    pdf_kwargs = pdf_gen_kwargs(db, current_user.hospital_id, 'discharge_summary')
-    pdf_kwargs['include_header'] = include_header
+    pdf_kwargs = pdf_gen_kwargs(
+        db, current_user.hospital_id, 'discharge_summary', query_include_header=include_header,
+    )
     pdf_buffer = pdf_service.generate_discharge_summary_pdf(discharge_data, hospital_info, **pdf_kwargs)
 
     return _inline_pdf_response(pdf_buffer, f"discharge_{admission.admission_number}.pdf")

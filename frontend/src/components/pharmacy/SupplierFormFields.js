@@ -5,6 +5,8 @@ import { Label } from '../ui/label';
 import { Textarea } from '../ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 
+import { displayPharmacyNumericInput, pharmacyNoSpinInputClass } from '../../utils/pharmacyUnits';
+
 export const EMPTY_SUPPLIER_FORM = {
   name: '',
   station: '', account_group: 'Sundry Creditors', balancing_method: 'bill_by_bill',
@@ -62,9 +64,10 @@ const F = ({ label, children, colSpan = 1 }) => (
 
 const Num = ({ value, onChange }) => (
   <Input
+    className={pharmacyNoSpinInputClass}
     type="number"
     step="0.01"
-    value={value ?? ''}
+    value={displayPharmacyNumericInput(value)}
     onChange={(e) => onChange(e.target.value === '' ? '' : parseFloat(e.target.value))}
   />
 );

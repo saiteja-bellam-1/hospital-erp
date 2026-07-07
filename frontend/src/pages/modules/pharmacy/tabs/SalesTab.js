@@ -9,15 +9,17 @@ import { Label } from '../../../../components/ui/label';
 import { Textarea } from '../../../../components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../../../../components/ui/dialog';
 import { useToast } from '../../../../hooks/use-toast';
-import { Plus, RefreshCw, Ban, Printer } from 'lucide-react';
+import { Plus, RefreshCw, Ban, Printer, Pencil } from 'lucide-react';
 import { errMsg } from '../../PharmacyModule';
 import PdfPreviewDialog from '../../../../components/PdfPreviewDialog';
 import { usePharmacyStore } from '../../../../contexts/PharmacyStoreContext';
+import { usePharmacyPermissions } from '../../../../hooks/usePharmacyPermissions';
 
 export default function SalesTab() {
   const { toast } = useToast();
   const navigate = useNavigate();
   const { storeParams } = usePharmacyStore();
+  const { hasPerm } = usePharmacyPermissions();
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
@@ -95,11 +97,17 @@ export default function SalesTab() {
                         {s.status}
                       </Badge>
                     </td>
-                    <td className="py-2 text-right">
+                    <td className="py-2 text-right space-x-1">
                       <Button size="sm" variant="ghost" title="Preview & print invoice"
                         onClick={() => setPreviewSaleId(s.id)}>
                         <Printer className="h-3 w-3" />
                       </Button>
+                      {s.status === 'completed' && hasPerm('edit_sale') && (
+                        <Button size="sm" variant="ghost" title="Edit sale"
+                          onClick={() => navigate(`/dashboard/pharmacy/sales-counter/${s.id}/edit`)}>
+                          <Pencil className="h-3 w-3 text-blue-600" />
+                        </Button>
+                      )}
                       {s.status === 'completed' && (
                         <Button size="sm" variant="ghost" onClick={() => { setVoidTarget(s); setVoidReason(''); setVoidOpen(true); }}>
                           <Ban className="h-3 w-3 text-red-500" />

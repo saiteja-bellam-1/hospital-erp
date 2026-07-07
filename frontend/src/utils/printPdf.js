@@ -39,7 +39,8 @@ async function parseApiErrorFromBlob(blob) {
  * Accepts either:
  *   - a blob: URL (already-fetched PDF), or
  *   - an API path (e.g. "/api/inpatient/.../pdf"). Fetches with auth; letterhead
- *     is resolved server-side from Print Settings.
+ *     is resolved server-side from Print Settings (global + per-report overrides).
+ *     Do not pass include_header unless intentionally overriding the hospital default.
  *
  * Hidden iframes with display:none often produce blank prints on Windows
  * Chrome/Edge; we keep the iframe in the layout at 0×0 instead. Blob URLs are

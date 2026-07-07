@@ -1046,6 +1046,7 @@ class BatchOut(BaseModel):
     mrp: float
     purchase_rate: float
     rate_a: float = 0.0
+    rate_b: float = 0.0
     strip_conversion_factor: int = 1
     selling_price: float
     free_quantity: int
@@ -1113,6 +1114,7 @@ def list_batches(
     supplier_id: Optional[int] = None,
     store_id: Optional[int] = None,
     active_only: bool = True,
+    include_batch_id: Optional[int] = None,
     limit: int = 500,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_inventory")),
@@ -1134,6 +1136,18 @@ def list_batches(
         PharmacyInventory.expiry_date.asc(),
         PharmacyInventory.id.asc(),
     ).limit(limit).all()
+    if include_batch_id and not any(inv.id == include_batch_id for inv, _, _ in rows):
+        extra = db.query(PharmacyInventory, Medicine, PharmacySupplier).join(
+            Medicine, Medicine.id == PharmacyInventory.medicine_id,
+        ).outerjoin(
+            PharmacySupplier, PharmacySupplier.id == PharmacyInventory.supplier_id,
+        ).filter(
+            PharmacyInventory.id == include_batch_id,
+            PharmacyInventory.hospital_id == current_user.hospital_id,
+            PharmacyInventory.store_id == sid,
+        ).first()
+        if extra:
+            rows = [extra] + list(rows)
     return [
         BatchOut(
             id=inv.id, medicine_id=inv.medicine_id, medicine_name=med.name,
@@ -1145,6 +1159,7 @@ def list_batches(
             quantity_in_stock=inv.quantity_in_stock, mrp=inv.mrp or 0.0,
             purchase_rate=inv.purchase_rate or 0.0,
             rate_a=inv.rate_a or 0.0,
+            rate_b=getattr(inv, "rate_b", 0) or 0.0,
             strip_conversion_factor=max(1, int(inv.strip_conversion_factor or 0) or int(med.strip_conversion_factor or 1) or 1),
             selling_price=inv.selling_price or 0.0,
             free_quantity=inv.free_quantity or 0,
@@ -1424,16 +1439,14 @@ class PurchaseItemIn(BaseModel):
     free_quantity: float = 0.0
     purchase_rate: float = Field(..., ge=0)
     rate_a: float = 0.0
+    rate_b: float = 0.0
     strip_conversion_factor: int = Field(1, ge=1)
     discount_pct: float = 0.0
     # Ignored if sent — tax is always taken from the medicine's HSN at save time.
     hsn_id: Optional[int] = None
-    # Last-day-of-month for the batch's expiry. Optional only for backward
-    # compatibility with the prior "no expiry" UI; frontends should always send
-    # this for perishable medicines.
     expiry_date: Optional[date] = None
 
-    @field_validator("mrp", "purchase_rate", "rate_a", "discount_pct", mode="before")
+    @field_validator("mrp", "purchase_rate", "rate_a", "rate_b", "discount_pct", mode="before")
     @classmethod
     def _round_purchase_money(cls, v):
         if v is None or v == "":
@@ -1619,6 +1632,17 @@ def _batch_key(medicine_id: int, batch_number: str, expiry_date: date) -> tuple:
     return (medicine_id, batch_number, expiry_date or _EXPIRY_SENTINEL)
 
 
+def _validate_purchase_items(items: List[PurchaseItemIn]) -> None:
+    """Batch #, expiry, and qty are mandatory on every purchase line."""
+    for idx, item in enumerate(items, 1):
+        if not (item.batch_number or "").strip():
+            raise HTTPException(status_code=400, detail=f"Line {idx}: batch number is required")
+        if not item.expiry_date or item.expiry_date == _EXPIRY_SENTINEL:
+            raise HTTPException(status_code=400, detail=f"Line {idx}: expiry date is required (MM/YYYY)")
+        if not (item.quantity or 0) > 0:
+            raise HTTPException(status_code=400, detail=f"Line {idx}: quantity must be > 0")
+
+
 def _sold_qty_for_batch(db: Session, batch_id: Optional[int]) -> float:
     if not batch_id:
         return 0.0
@@ -1710,6 +1734,7 @@ def _apply_purchase_item_to_inventory(
     added_qty = (item.quantity or 0) + (item.free_quantity or 0)
     eff_cost = _effective_cost(item.quantity, item.free_quantity, item.purchase_rate)
     item_rate_a = float(getattr(item, "rate_a", 0) or 0)
+    item_rate_b = float(getattr(item, "rate_b", 0) or 0)
     item_scf = max(1, int(getattr(item, "strip_conversion_factor", 0) or 1))
     sell_price = item_rate_a or item.mrp or item.purchase_rate
     if existing:
@@ -1721,6 +1746,8 @@ def _apply_purchase_item_to_inventory(
             existing.selling_price = item_rate_a
         elif item.mrp:
             existing.selling_price = item.mrp
+        if item_rate_b:
+            existing.rate_b = item_rate_b
         if item_scf:
             existing.strip_conversion_factor = item_scf
         if item.purchase_rate:
@@ -1737,7 +1764,7 @@ def _apply_purchase_item_to_inventory(
             expiry_date=item_expiry, quantity_in_stock=added_qty,
             cost_price=eff_cost, selling_price=sell_price,
             mrp=item.mrp, purchase_rate=item.purchase_rate,
-            rate_a=item_rate_a, strip_conversion_factor=item_scf,
+            rate_a=item_rate_a, rate_b=item_rate_b, strip_conversion_factor=item_scf,
             free_quantity=item.free_quantity or 0, discount_pct=item.discount_pct,
             hsn_id=item.hsn_id, supplier_id=purchase.supplier_id,
             purchase_id=purchase.id, purchase_date=purchase.entry_date,
@@ -1766,6 +1793,8 @@ def _apply_purchase_item_to_inventory(
             if item_rate_a:
                 med.rate_a = item_rate_a
                 med.unit_price = item_rate_a
+            if item_rate_b:
+                med.rate_b = item_rate_b
             if item_scf > 1 or not med.strip_conversion_factor:
                 med.strip_conversion_factor = item_scf
             med.last_purchase_date = purchase.entry_date
@@ -1784,6 +1813,7 @@ def _shape_purchase(p: PharmacyPurchase, db: Session) -> PurchaseOut:
             mrp=it.mrp or 0.0, quantity=it.quantity, free_quantity=it.free_quantity or 0.0,
             purchase_rate=it.purchase_rate,
             rate_a=getattr(it, "rate_a", 0) or 0.0,
+            rate_b=getattr(it, "rate_b", 0) or 0.0,
             strip_conversion_factor=max(1, int(getattr(it, "strip_conversion_factor", 0) or 1)),
             discount_pct=it.discount_pct or 0.0,
             hsn_id=it.hsn_id, tax_amount=it.tax_amount or 0.0,
@@ -1848,6 +1878,8 @@ def create_purchase(
     if not sup:
         raise HTTPException(status_code=400, detail="Invalid supplier")
 
+    _validate_purchase_items(data.items)
+
     _check_duplicate_invoice(
         db, hospital_id=current_user.hospital_id,
         supplier_id=data.supplier_id, invoice_number=data.invoice_number,
@@ -1888,6 +1920,7 @@ def create_purchase(
             mrp=item.mrp, quantity=item.quantity, free_quantity=item.free_quantity,
             purchase_rate=item.purchase_rate,
             rate_a=item.rate_a or med.rate_a or 0.0,
+            rate_b=item.rate_b or med.rate_b or 0.0,
             strip_conversion_factor=item.strip_conversion_factor or med.strip_conversion_factor or 1,
             discount_pct=item.discount_pct,
             hsn_id=med.hsn_id,
@@ -1932,6 +1965,8 @@ def edit_purchase(
     ).first()
     if not sup:
         raise HTTPException(status_code=400, detail="Invalid supplier")
+
+    _validate_purchase_items(data.items)
 
     _check_duplicate_invoice(
         db, hospital_id=current_user.hospital_id,
@@ -1982,6 +2017,7 @@ def edit_purchase(
             mrp=item.mrp, quantity=item.quantity, free_quantity=item.free_quantity,
             purchase_rate=item.purchase_rate,
             rate_a=item.rate_a or med.rate_a or 0.0,
+            rate_b=item.rate_b or med.rate_b or 0.0,
             strip_conversion_factor=item.strip_conversion_factor or med.strip_conversion_factor or 1,
             discount_pct=item.discount_pct,
             hsn_id=med.hsn_id,
@@ -2332,7 +2368,19 @@ class SaleIn(BaseModel):
     patient_address: Optional[str] = None
     doctor_number: Optional[str] = None
     doctor_name: Optional[str] = None
+    bill_discount_amount: float = 0.0
     items: List[SaleItemIn] = Field(..., min_length=1)
+
+    @field_validator("bill_discount_amount", mode="before")
+    @classmethod
+    def _round_bill_discount(cls, v):
+        if v is None or v == "":
+            return 0.0
+        return round_money(v)
+
+
+class SaleEditIn(SaleIn):
+    reason: str = Field(..., min_length=2, max_length=500)
 
 
 class SaleOut(BaseModel):
@@ -2499,103 +2547,99 @@ def _shape_sale(s: PharmacySale, db: Session) -> SaleOut:
     )
 
 
-@router.post("/sales", response_model=SaleOut, status_code=201)
-def create_sale(
-    data: SaleIn,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "create_sale")),
-):
-    """Create a POS sale.
-
-    For each line: pick batch (FIFO if `batch_id` not specified), deduct
-    `pharmacy_inventory.quantity_in_stock`, write a `pharmacy_stock_ledger`
-    row of `txn_type='sale'`. Computes tax from each medicine's HSN code.
-
-    A single requested line may span multiple batches when FIFO is used —
-    each batch becomes its own `PharmacySaleItem` row so the inventory link
-    is precise.
-    """
-    # P3.4: validate IP link when provided. patient_ip_id stores the Patient
-    # UUID string (the historical column name is misleading); we cross-check
-    # the patient is in this hospital and currently admitted.
-    # P3.9: per-hospital flag for taxing free items. Read once up front so we
-    # don't re-fetch the Hospital row per line.
-    _hosp = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
-    tax_on_free = bool(getattr(_hosp, "pharmacy_tax_on_free", False))
-
-    billing_mode = data.billing_mode or "cash_at_pharmacy"
-    ip_admission_id = None
-    if data.patient_ip_id:
-        from app.models.patient import Patient as _IPPatient
-        from app.models.inpatient import Admission as _IPAdmission
-        pat = db.query(_IPPatient).filter(
-            _IPPatient.patient_id == data.patient_ip_id,
-            _IPPatient.hospital_id == current_user.hospital_id,
-        ).first()
-        if not pat:
+def _resolve_sale_admission(
+    db: Session,
+    current_user: User,
+    patient_ip_id: Optional[str],
+    billing_mode: str,
+) -> Optional[int]:
+    """Validate patient/admission for POS sale; return admission_id or None."""
+    if not patient_ip_id:
+        if billing_mode == "inpatient_bill":
             raise HTTPException(
                 status_code=400,
-                detail=f"patient_ip_id {data.patient_ip_id} not found in this hospital",
+                detail="Select an admitted patient to charge medicines to the inpatient bill.",
             )
-        active = db.query(_IPAdmission).filter(
-            _IPAdmission.patient_id == pat.id,
-            _IPAdmission.status == "admitted",
-        ).first()
-        if billing_mode == "inpatient_bill":
-            if not active:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"Patient {data.patient_ip_id} has no active admission. "
-                        "Use cash-at-pharmacy or leave patient blank for walk-in sales."
-                    ),
-                )
-            ip_admission_id = active.id
-        elif not active:
+        return None
+    from app.models.patient import Patient as _IPPatient
+    from app.models.inpatient import Admission as _IPAdmission
+    pat = db.query(_IPPatient).filter(
+        _IPPatient.patient_id == patient_ip_id,
+        _IPPatient.hospital_id == current_user.hospital_id,
+    ).first()
+    if not pat:
+        raise HTTPException(
+            status_code=400,
+            detail=f"patient_ip_id {patient_ip_id} not found in this hospital",
+        )
+    active = db.query(_IPAdmission).filter(
+        _IPAdmission.patient_id == pat.id,
+        _IPAdmission.status == "admitted",
+    ).first()
+    if billing_mode == "inpatient_bill":
+        if not active:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"Patient {data.patient_ip_id} has no active admission. "
-                    "Leave patient_ip_id blank for OP / walk-in sales."
+                    f"Patient {patient_ip_id} has no active admission. "
+                    "Use cash-at-pharmacy or leave patient blank for walk-in sales."
                 ),
             )
-    elif billing_mode == "inpatient_bill":
+        return active.id
+    if not active:
         raise HTTPException(
             status_code=400,
-            detail="Select an admitted patient to charge medicines to the inpatient bill.",
+            detail=(
+                f"Patient {patient_ip_id} has no active admission. "
+                "Leave patient_ip_id blank for OP / walk-in sales."
+            ),
         )
+    return None
 
-    sale_store_id = resolve_store_id(db, current_user, data.store_id)
 
-    sale = PharmacySale(
-        sale_number=_next_sale_number(db, current_user.hospital_id),
-        payment_type=data.payment_type,
-        patient_phone=data.patient_phone, patient_ip_id=data.patient_ip_id,
-        patient_name=data.patient_name, patient_address=data.patient_address,
-        doctor_number=data.doctor_number, doctor_name=data.doctor_name,
-        status="completed", created_by=current_user.id,
-        store_id=sale_store_id,
-        hospital_id=current_user.hospital_id,
-        admission_id=ip_admission_id,
-        billing_mode=billing_mode,
-        tax_mode=data.tax_mode or "exclusive",
-    )
-    db.add(sale)
-    # P3.3: two concurrent sales can compute the same MAX-seq and produce the
-    # same sale_number. Retry-on-IntegrityError remints from the now-updated
-    # MAX before any items have been attached to this sale.
-    _flush_with_number_retry(
-        db, sale,
-        regen=lambda: _next_sale_number(db, current_user.hospital_id),
-        set_attr="sale_number",
-    )
+def _restore_sale_items_stock(
+    db: Session,
+    sale: PharmacySale,
+    current_user: User,
+    reason: str,
+    *,
+    reference_type: str = "sale_edit",
+) -> None:
+    for it in list(sale.items):
+        batch = db.query(PharmacyInventory).filter(
+            PharmacyInventory.id == it.batch_id,
+        ).with_for_update().first()
+        if not batch:
+            continue
+        restore = (it.quantity or 0) + (it.free_quantity or 0)
+        batch.quantity_in_stock = (batch.quantity_in_stock or 0) + restore
+        db.add(PharmacyStockLedger(
+            medicine_id=it.medicine_id, batch_id=batch.id, txn_type="return_in",
+            qty_delta=restore, reference_type=reference_type, reference_id=sale.id,
+            performed_by=current_user.id, store_id=sale.store_id,
+            hospital_id=current_user.hospital_id,
+            notes=f"Edit sale {sale.sale_number}: {reason}",
+        ))
 
+
+def _process_sale_lines(
+    db: Session,
+    sale: PharmacySale,
+    lines: List[SaleItemIn],
+    current_user: User,
+    sale_store_id: int,
+    tax_mode: str,
+    tax_on_free: bool,
+    bill_discount_amount: float,
+    *,
+    ledger_note: str,
+) -> tuple[float, float, float, float]:
     subtotal = 0.0
     disc_total = 0.0
     tax_total = 0.0
     grand = 0.0
 
-    for line in data.items:
+    for line in lines:
         med = db.query(Medicine).filter(
             Medicine.id == line.medicine_id,
             Medicine.hospital_id == current_user.hospital_id,
@@ -2608,8 +2652,6 @@ def create_sale(
         if qty_tabs <= 0 and qty_strips <= 0:
             raise HTTPException(status_code=400, detail=f"Enter tab or strip qty for {med.name}")
 
-        # Resolve batch first when explicit — qty/rate use that batch's
-        # Rate A / MRP / tabs-per-strip (medicine master as fallback).
         explicit_batch = None
         if line.batch_id:
             explicit_batch = db.query(PharmacyInventory).filter(
@@ -2642,8 +2684,6 @@ def create_sale(
             raise HTTPException(status_code=400,
                                 detail=f"No MRP / rate set on medicine {med.name}")
 
-        # P3.7: surface stacking instead of silently clamping at 100. The user
-        # can either lower their line discount or unset the medicine-level one.
         line_disc = float(line.discount_pct or 0)
         med_disc = float(med.item_discount_pct or 0)
         disc = line_disc + med_disc
@@ -2662,7 +2702,6 @@ def create_sale(
         igst_snap = (hsn_row.igst_pct or (sgst_snap + cgst_snap)) if hsn_row else 0.0
         tax_pct = _hsn_total_tax_pct(hsn_row)
 
-        # Resolve batch(es): explicit batch_id or FIFO across as many as needed
         picks = []
         qty_needed = base_qty_needed
         if explicit_batch is not None:
@@ -2676,9 +2715,6 @@ def create_sale(
                 hospital_id=current_user.hospital_id, store_id=sale_store_id,
             )
 
-        # P3.8: distribute free_quantity across picked batches so that the per-
-        # batch portions sum to free_total exactly. Rounding each portion to 2dp
-        # independently used to drift by ±0.01 across batches.
         free_total = float(line.free_quantity or 0)
         free_alloc = []
         if picks and free_total > 0:
@@ -2695,7 +2731,6 @@ def create_sale(
 
         first_batch_row = True
         for (batch, take_qty), free_for_batch in zip(picks, free_alloc):
-            # Per-batch Rate A / MRP when FEFO spans multiple receipts.
             if explicit_batch is not None:
                 batch_tab_rate = rate_per_tab
             else:
@@ -2711,11 +2746,10 @@ def create_sale(
                     batch_tab_rate = rate_per_tab
             base = take_qty * batch_tab_rate
             base_after_disc = base * (1 - disc / 100.0)
-            # P3.9: include free portion in taxable base when the hospital opts in.
             if tax_on_free and free_for_batch:
                 base_after_disc += free_for_batch * batch_tab_rate * (1 - disc / 100.0)
             _taxable, tax_amt, line_total = compute_line_tax(
-                base_after_disc, tax_pct, tax_mode=data.tax_mode or "exclusive",
+                base_after_disc, tax_pct, tax_mode=tax_mode or "exclusive",
             )
 
             item_row = PharmacySaleItem(
@@ -2731,7 +2765,6 @@ def create_sale(
             db.add(item_row)
             first_batch_row = False
 
-            # Deduct inventory + ledger
             batch.quantity_in_stock = (batch.quantity_in_stock or 0) - take_qty - free_for_batch
             db.add(PharmacyStockLedger(
                 medicine_id=med.id, batch_id=batch.id, txn_type="sale",
@@ -2739,13 +2772,80 @@ def create_sale(
                 reference_type="sale", reference_id=sale.id,
                 performed_by=current_user.id, store_id=sale_store_id,
                 hospital_id=current_user.hospital_id,
-                notes=f"Sale {sale.sale_number}",
+                notes=ledger_note,
             ))
 
             subtotal += base
             disc_total += base - base_after_disc
             tax_total += tax_amt
             grand += line_total
+
+    bill_disc = round_money(min(float(bill_discount_amount or 0), grand))
+    if bill_disc > 0:
+        grand = round_money(grand - bill_disc)
+        disc_total = round_money(disc_total + bill_disc)
+
+    return subtotal, disc_total, tax_total, grand
+
+
+@router.post("/sales", response_model=SaleOut, status_code=201)
+def create_sale(
+    data: SaleIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "create_sale")),
+):
+    """Create a POS sale.
+
+    For each line: pick batch (FIFO if `batch_id` not specified), deduct
+    `pharmacy_inventory.quantity_in_stock`, write a `pharmacy_stock_ledger`
+    row of `txn_type='sale'`. Computes tax from each medicine's HSN code.
+
+    A single requested line may span multiple batches when FIFO is used —
+    each batch becomes its own `PharmacySaleItem` row so the inventory link
+    is precise.
+    """
+    # P3.4: validate IP link when provided. patient_ip_id stores the Patient
+    # UUID string (the historical column name is misleading); we cross-check
+    # the patient is in this hospital and currently admitted.
+    # P3.9: per-hospital flag for taxing free items. Read once up front so we
+    # don't re-fetch the Hospital row per line.
+    _hosp = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
+    tax_on_free = bool(getattr(_hosp, "pharmacy_tax_on_free", False))
+
+    billing_mode = data.billing_mode or "cash_at_pharmacy"
+    ip_admission_id = _resolve_sale_admission(db, current_user, data.patient_ip_id, billing_mode)
+
+    sale_store_id = resolve_store_id(db, current_user, data.store_id)
+
+    sale = PharmacySale(
+        sale_number=_next_sale_number(db, current_user.hospital_id),
+        payment_type=data.payment_type,
+        patient_phone=data.patient_phone, patient_ip_id=data.patient_ip_id,
+        patient_name=data.patient_name, patient_address=data.patient_address,
+        doctor_number=data.doctor_number, doctor_name=data.doctor_name,
+        status="completed", created_by=current_user.id,
+        store_id=sale_store_id,
+        hospital_id=current_user.hospital_id,
+        admission_id=ip_admission_id,
+        billing_mode=billing_mode,
+        tax_mode=data.tax_mode or "exclusive",
+    )
+    db.add(sale)
+    # P3.3: two concurrent sales can compute the same MAX-seq and produce the
+    # same sale_number. Retry-on-IntegrityError remints from the now-updated
+    # MAX before any items have been attached to this sale.
+    _flush_with_number_retry(
+        db, sale,
+        regen=lambda: _next_sale_number(db, current_user.hospital_id),
+        set_attr="sale_number",
+    )
+
+    subtotal, disc_total, tax_total, grand = _process_sale_lines(
+        db, sale, data.items, current_user, sale_store_id,
+        data.tax_mode or "exclusive", tax_on_free,
+        float(data.bill_discount_amount or 0),
+        ledger_note=f"Sale {sale.sale_number}",
+    )
 
     sale.subtotal = round(subtotal, 2)
     sale.discount_total = round(disc_total, 2)
@@ -2754,6 +2854,80 @@ def create_sale(
     db.commit(); db.refresh(sale)
     _audit(db, current_user, "create_sale", "pharmacy_sale", sale.id,
            f"Created sale {sale.sale_number} (₹{sale.grand_total})")
+    return _shape_sale(sale, db)
+
+
+@router.put("/sales/{sid}", response_model=SaleOut)
+def edit_sale(
+    sid: int, data: SaleEditIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "edit_sale")),
+):
+    """Edit a completed sale: restore stock, replace lines, re-deduct inventory."""
+    sale = db.query(PharmacySale).filter(
+        PharmacySale.id == sid,
+        PharmacySale.hospital_id == current_user.hospital_id,
+    ).first()
+    if not sale:
+        raise HTTPException(status_code=404, detail="Sale not found")
+    if sale.status != "completed":
+        raise HTTPException(status_code=400, detail=f"Cannot edit a {sale.status} sale")
+
+    reason = (data.reason or "").strip()
+    if len(reason) < 2:
+        raise HTTPException(status_code=400, detail="Reason is required to edit a sale")
+    if not data.items:
+        raise HTTPException(status_code=400, detail="Cannot leave sale empty")
+
+    sale_store_id = sale.store_id or resolve_store_id(db, current_user, data.store_id)
+    if data.store_id is not None and data.store_id != sale_store_id:
+        raise HTTPException(status_code=400, detail="Cannot change store on an existing sale")
+
+    _hosp = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
+    tax_on_free = bool(getattr(_hosp, "pharmacy_tax_on_free", False))
+    billing_mode = data.billing_mode or "cash_at_pharmacy"
+    ip_admission_id = _resolve_sale_admission(db, current_user, data.patient_ip_id, billing_mode)
+
+    bill_reversal = {}
+    if (getattr(sale, "billing_mode", None) or "cash_at_pharmacy") == "inpatient_bill":
+        from app.services.pharmacy_reversal import reverse_inpatient_pos_sale_bill
+        bill_reversal = reverse_inpatient_pos_sale_bill(
+            db, sale, user_id=current_user.id, reason=reason,
+        )
+
+    _restore_sale_items_stock(db, sale, current_user, reason)
+    for old in list(sale.items):
+        db.delete(old)
+    db.flush()
+
+    sale.payment_type = data.payment_type
+    sale.patient_phone = data.patient_phone
+    sale.patient_ip_id = data.patient_ip_id
+    sale.patient_name = data.patient_name
+    sale.patient_address = data.patient_address
+    sale.doctor_number = data.doctor_number
+    sale.doctor_name = data.doctor_name
+    sale.tax_mode = data.tax_mode or "exclusive"
+    sale.billing_mode = billing_mode
+    sale.admission_id = ip_admission_id
+
+    subtotal, disc_total, tax_total, grand = _process_sale_lines(
+        db, sale, data.items, current_user, sale_store_id,
+        data.tax_mode or "exclusive", tax_on_free,
+        float(data.bill_discount_amount or 0),
+        ledger_note=f"Edited sale {sale.sale_number}: {reason}",
+    )
+
+    sale.subtotal = round(subtotal, 2)
+    sale.discount_total = round(disc_total, 2)
+    sale.tax_total = round(tax_total, 2)
+    sale.grand_total = round(grand, 2)
+    db.commit(); db.refresh(sale)
+    _audit(
+        db, current_user, "edit_sale", "pharmacy_sale", sale.id,
+        f"Edited sale {sale.sale_number}: {reason}",
+        details=bill_reversal if bill_reversal else None,
+    )
     return _shape_sale(sale, db)
 
 

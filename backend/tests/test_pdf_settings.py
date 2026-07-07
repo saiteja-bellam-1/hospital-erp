@@ -147,6 +147,24 @@ def test_resolve_print_options_uses_gap(db_session):
     assert opts.letterhead_gap_pt > 0
 
 
+def test_pdf_gen_kwargs_discharge_summary_respects_overrides(db_session):
+    set_hospital_pdf_include_header(db_session, include_header=True, created_by=1)
+    set_report_header_overrides(
+        db_session, overrides={"discharge_summary": "off"}, created_by=1,
+    )
+    db_session.commit()
+    kw = pdf_gen_kwargs(db_session, 1, "discharge_summary")
+    assert kw["include_header"] is False
+
+    set_hospital_pdf_include_header(db_session, include_header=False, created_by=1)
+    set_report_header_overrides(db_session, overrides={}, created_by=1)
+    db_session.commit()
+    assert pdf_gen_kwargs(db_session, 1, "discharge_summary")["include_header"] is False
+    assert pdf_gen_kwargs(
+        db_session, 1, "discharge_summary", query_include_header=True,
+    )["include_header"] is True
+
+
 def test_pdf_gen_kwargs_shape(db_session):
     set_hospital_pdf_include_header(db_session, include_header=True, created_by=1)
     db_session.commit()

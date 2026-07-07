@@ -5,7 +5,7 @@ import { Input } from '../ui/input';
 import { Label } from '../ui/label';
 import { Textarea } from '../ui/textarea';
 import PharmacyMasterSelectWithCreate from './PharmacyMasterSelectWithCreate';
-import { costPcsFromMrp, roundMoney } from '../../utils/pharmacyUnits';
+import { costPcsFromMrp, displayPharmacyNumericInput, pharmacyNoSpinInputClass, roundMoney } from '../../utils/pharmacyUnits';
 
 const PRICE_KEYS = [
   'unit_price', 'mrp', 'purchase_rate', 'rate_a', 'rate_b', 'cost_pcs',
@@ -68,10 +68,11 @@ const F = ({ label, children }) => (
 
 const Num = ({ value, onChange }) => (
   <Input
+    className={pharmacyNoSpinInputClass}
     type="number"
     step="0.01"
     min="0"
-    value={value ?? ''}
+    value={displayPharmacyNumericInput(value)}
     onChange={(e) => {
       const raw = e.target.value;
       if (raw === '') {
@@ -151,6 +152,7 @@ export default function MedicineFormFields({
           <F label="Packaging (display only)"><Input value={form.packaging || ''} onChange={(e) => set('packaging', e.target.value)} placeholder="e.g. box of 10 strips" /></F>
           <F label="Tablets per strip (sheet)">
             <Input
+              className={pharmacyNoSpinInputClass}
               type="number"
               min="1"
               value={form.strip_conversion_factor ?? 1}

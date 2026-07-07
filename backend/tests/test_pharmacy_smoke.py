@@ -96,6 +96,7 @@ def test_purchase_confirm_creates_inventory_and_ledger(
             "items": [{
                 "medicine_id": pharmacy_seed["medicine_id"],
                 "batch_number": "B-SMK-1",
+                "expiry_date": "2027-12-31",
                 "mrp": 25.0, "quantity": 100, "free_quantity": 10,
                 "purchase_rate": 15.0, "discount_pct": 5.0,
                 "hsn_id": pharmacy_seed["hsn_id"],
@@ -251,14 +252,16 @@ def test_multi_batch_rates_on_purchase_and_sale(client, auth_headers, pharmacy_s
             "items": [
                 {
                     "medicine_id": med_id, "batch_number": "B-RATE-A",
+                    "expiry_date": "2028-06-30",
                     "mrp": 30.0, "quantity": 20, "free_quantity": 0,
-                    "purchase_rate": 18.0, "rate_a": 28.0,
+                    "purchase_rate": 18.0, "rate_a": 28.0, "rate_b": 30.0,
                     "strip_conversion_factor": 10, "discount_pct": 0,
                 },
                 {
                     "medicine_id": med_id, "batch_number": "B-RATE-B",
+                    "expiry_date": "2028-12-31",
                     "mrp": 40.0, "quantity": 20, "free_quantity": 0,
-                    "purchase_rate": 22.0, "rate_a": 36.0,
+                    "purchase_rate": 22.0, "rate_a": 36.0, "rate_b": 38.0,
                     "strip_conversion_factor": 15, "discount_pct": 0,
                 },
             ],

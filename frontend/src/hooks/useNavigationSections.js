@@ -212,6 +212,8 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
     add(items, make('ER Triage Queue', Activity, '/dashboard/inpatient/triage'));
     if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'billing_admin', 'receptionist', 'frontdesk')) {
       add(items, make('Discharge & Exit', FileCheck, '/dashboard/inpatient/discharge'));
+    } else if (hasAnyRole('doctor')) {
+      add(items, make('Discharge Summary', FileText, '/dashboard/inpatient/discharge'));
     }
     if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'doctor', 'billing_admin', 'receptionist', 'frontdesk')) {
       add(items, make('Discharge History', FileText, '/dashboard/inpatient/discharge-history'));

@@ -12,6 +12,7 @@ import { ArrowLeft, Plus, Trash2, Save, CheckCircle2 } from 'lucide-react';
 import { errMsg } from '../PharmacyModule';
 import PharmacyStoreSelector from '../../../components/pharmacy/PharmacyStoreSelector';
 import { usePharmacyStore } from '../../../contexts/PharmacyStoreContext';
+import { displayPharmacyNumericInput, pharmacyNoSpinInputClass } from '../../../utils/pharmacyUnits';
 import FormNavContainer from '../../../components/FormNavContainer';
 import { navCellProps } from '../../../utils/formNavigation';
 
@@ -211,7 +212,8 @@ export default function TransferEntry() {
               </div>
               <div className="md:col-span-3">
                 <Label>Qty</Label>
-                <Input type="number" min="0" step="1" value={line.quantity}
+                <Input className={pharmacyNoSpinInputClass} type="number" min="0" step="1"
+                  value={displayPharmacyNumericInput(line.quantity)}
                   onChange={(e) => {
                     const next = [...items];
                     next[idx] = { ...next[idx], quantity: e.target.value };

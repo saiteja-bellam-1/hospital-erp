@@ -88,7 +88,7 @@ _PHARMACY_ALL = [
     # Procurement
     "create_purchase", "edit_purchase", "confirm_purchase", "revoke_purchase", "view_purchases",
     # Sales — POS
-    "create_sale", "void_sale", "void_sale_legacy", "view_sales", "apply_discount", "select_rate_tier",
+    "create_sale", "edit_sale", "void_sale", "void_sale_legacy", "view_sales", "apply_discount", "select_rate_tier",
     # Sales — Rx
     "dispense_rx", "view_dispense_queue", "cancel_rx",
     # Reports
@@ -118,7 +118,7 @@ _PHARMACY_POS_OPERATOR = [
 # Satellite store in-charge — POS plus local inventory/reports.
 _SATELLITE_PHARMACY_ADMIN = [
     "view_catalog",
-    "create_sale", "view_sales", "apply_discount", "select_rate_tier", "void_sale",
+    "create_sale", "view_sales", "apply_discount", "select_rate_tier", "edit_sale", "void_sale",
     "dispense_rx", "view_dispense_queue",
     "view_inventory", "view_low_stock", "view_expiring", "view_reports",
     "view_narcotic_register", "confirm_transfer",
@@ -183,6 +183,7 @@ def _seed_module_permissions(db, ModulePermission):
         {"module_name": "pharmacy", "permission_name": "view_purchases", "permission_description": "View purchases list and detail", "category": "user"},
         # Sales — POS
         {"module_name": "pharmacy", "permission_name": "create_sale", "permission_description": "Create POS counter sales", "category": "user"},
+        {"module_name": "pharmacy", "permission_name": "edit_sale", "permission_description": "Edit a completed POS sale (with reason)", "category": "user"},
         {"module_name": "pharmacy", "permission_name": "void_sale", "permission_description": "Void / reverse a completed sale", "category": "admin"},
         {"module_name": "pharmacy", "permission_name": "void_sale_legacy", "permission_description": "Void sales older than the configured void window", "category": "admin"},
         {"module_name": "pharmacy", "permission_name": "view_sales", "permission_description": "View sales list and detail", "category": "user"},

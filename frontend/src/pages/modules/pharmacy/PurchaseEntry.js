@@ -17,7 +17,7 @@ import QuickMedicineDialog from '../../../components/pharmacy/QuickMedicineDialo
 import { usePharmacyStore } from '../../../contexts/PharmacyStoreContext';
 import FormNavContainer from '../../../components/FormNavContainer';
 import { NAV_SKIP_ATTR } from '../../../utils/formNavigation';
-import { roundMoney } from '../../../utils/pharmacyUnits';
+import { displayPharmacyNumericInput, formatBatchLabel, pharmacyNoSpinInputClass, roundMoney } from '../../../utils/pharmacyUnits';
 import { errMsg } from '../PharmacyModule';
 
 const emptyLine = () => ({
@@ -29,6 +29,7 @@ const emptyLine = () => ({
   free_quantity: '',
   purchase_rate: '',
   rate_a: '',
+  rate_b: '',
   strip_conversion_factor: 1,
   discount_pct: '',
 });
@@ -71,6 +72,7 @@ export default function PurchaseEntry() {
   /** @type {[{ mode: 'add'|'edit'|'batch', index?: number }, object] | [null, null]} */
   const [lineDialog, setLineDialog] = useState(null);
   const [lineForm, setLineForm] = useState(null);
+  const [lineBatches, setLineBatches] = useState([]);
   const scanRef = useRef(null);
 
   const isConfirmed = purchaseStatus === 'confirmed';
@@ -148,6 +150,7 @@ export default function PurchaseEntry() {
           free_quantity: it.free_quantity || '',
           purchase_rate: it.purchase_rate || '',
           rate_a: it.rate_a || '',
+          rate_b: it.rate_b || '',
           strip_conversion_factor: it.strip_conversion_factor || 1,
           discount_pct: it.discount_pct || '',
         }));
@@ -167,6 +170,7 @@ export default function PurchaseEntry() {
     mrp: m.mrp || '',
     purchase_rate: m.purchase_rate || '',
     rate_a: m.rate_a || m.unit_price || '',
+    rate_b: m.rate_b || '',
     strip_conversion_factor: m.strip_conversion_factor || 1,
   });
 
@@ -195,6 +199,7 @@ export default function PurchaseEntry() {
     mrp: form.mrp === '' ? '' : roundMoney(form.mrp),
     purchase_rate: form.purchase_rate === '' ? '' : roundMoney(form.purchase_rate),
     rate_a: form.rate_a === '' ? '' : roundMoney(form.rate_a),
+    rate_b: form.rate_b === '' ? '' : roundMoney(form.rate_b),
     discount_pct: form.discount_pct === '' ? '' : roundMoney(form.discount_pct),
     strip_conversion_factor: Math.max(1, parseInt(form.strip_conversion_factor, 10) || 1),
   });
@@ -204,7 +209,11 @@ export default function PurchaseEntry() {
     if (!form.medicine_id) errors.push('Pick a medicine.');
     if (!String(form.batch_number || '').trim()) errors.push('Batch number is required.');
     const exp = expiryToISO(form.expiry_mm_yyyy);
-    if (exp === undefined) errors.push('Expiry must be MM/YYYY (e.g. 12/2027).');
+    if (!form.expiry_mm_yyyy || !String(form.expiry_mm_yyyy).trim()) {
+      errors.push('Expiry is required (MM/YYYY).');
+    } else if (exp === undefined || exp === null) {
+      errors.push('Expiry must be MM/YYYY (e.g. 12/2027).');
+    }
     if (!(parseFloat(form.quantity) > 0)) errors.push('Quantity must be > 0.');
     const pr = parseFloat(form.purchase_rate);
     if (pr === undefined || pr < 0 || Number.isNaN(pr)) errors.push('Purchase rate must be ≥ 0.');
@@ -237,6 +246,7 @@ export default function PurchaseEntry() {
       free_quantity: '',
       purchase_rate: src.purchase_rate ?? med?.purchase_rate ?? '',
       rate_a: src.rate_a ?? med?.rate_a ?? '',
+      rate_b: src.rate_b ?? med?.rate_b ?? '',
       strip_conversion_factor: src.strip_conversion_factor || med?.strip_conversion_factor || 1,
       discount_pct: '',
     });
@@ -245,18 +255,71 @@ export default function PurchaseEntry() {
   const closeLineDialog = () => {
     setLineDialog(null);
     setLineForm(null);
+    setLineBatches([]);
   };
 
   const setLineField = (k, v) => setLineForm((s) => (s ? { ...s, [k]: v } : s));
+
+  const loadBatchesForMedicine = useCallback(async (medicineId) => {
+    if (!medicineId || !masterStore?.id) return [];
+    try {
+      const r = await axios.get('/api/pharmacy/inventory/batches', {
+        params: { medicine_id: medicineId, store_id: masterStore.id, active_only: true },
+      });
+      return r.data || [];
+    } catch {
+      return [];
+    }
+  }, [masterStore?.id]);
+
+  useEffect(() => {
+    if (!lineDialog || !lineForm?.medicine_id) {
+      setLineBatches([]);
+      return undefined;
+    }
+    let cancelled = false;
+    loadBatchesForMedicine(lineForm.medicine_id).then((rows) => {
+      if (!cancelled) setLineBatches(rows);
+    });
+    return () => { cancelled = true; };
+  }, [lineDialog, lineForm?.medicine_id, loadBatchesForMedicine]);
+
+  const purchaseBatchSelectValue = () => {
+    if (!lineForm?.batch_number) return '__new__';
+    const match = lineBatches.find((b) => b.batch_number === String(lineForm.batch_number).trim());
+    return match ? String(match.id) : '__new__';
+  };
+
+  const onPurchaseBatchSelect = (v) => {
+    if (v === '__new__') {
+      setLineField('batch_number', '');
+      return;
+    }
+    const batch = lineBatches.find((b) => String(b.id) === v);
+    if (!batch) return;
+    setLineForm((s) => ({
+      ...(s || emptyLine()),
+      batch_number: batch.batch_number || '',
+      expiry_mm_yyyy: expiryToDisplay(batch.expiry_date),
+      mrp: batch.mrp ?? '',
+      purchase_rate: batch.purchase_rate ?? '',
+      rate_a: batch.rate_a ?? '',
+      rate_b: batch.rate_b ?? '',
+      strip_conversion_factor: batch.strip_conversion_factor || 1,
+    }));
+  };
 
   const applyMedicineToForm = (med) => {
     cacheMedicine(med);
     setLineForm((s) => ({
       ...(s || emptyLine()),
       medicine_id: med.id,
+      batch_number: '',
+      expiry_mm_yyyy: '',
       purchase_rate: med.purchase_rate || 0,
       mrp: med.mrp || 0,
       rate_a: med.rate_a || med.unit_price || 0,
+      rate_b: med.rate_b || 0,
       strip_conversion_factor: med.strip_conversion_factor || 1,
     }));
   };
@@ -344,8 +407,12 @@ export default function PurchaseEntry() {
       const n = idx + 1;
       if (!it.medicine_id) errors.push(`Line ${n}: pick or create a medicine.`);
       if (!it.batch_number || !String(it.batch_number).trim()) errors.push(`Line ${n}: batch number is required.`);
-      const exp = expiryToISO(it.expiry_mm_yyyy);
-      if (exp === undefined) errors.push(`Line ${n}: expiry must be MM/YYYY (e.g. 12/2027).`);
+      if (!it.expiry_mm_yyyy || !String(it.expiry_mm_yyyy).trim()) {
+        errors.push(`Line ${n}: expiry is required (MM/YYYY).`);
+      } else {
+        const exp = expiryToISO(it.expiry_mm_yyyy);
+        if (exp === undefined || exp === null) errors.push(`Line ${n}: expiry must be MM/YYYY (e.g. 12/2027).`);
+      }
       const q = parseFloat(it.quantity);
       if (!q || q <= 0) errors.push(`Line ${n}: quantity must be > 0.`);
       const pr = parseFloat(it.purchase_rate);
@@ -376,6 +443,7 @@ export default function PurchaseEntry() {
           free_quantity: parseFloat(it.free_quantity) || 0,
           purchase_rate: roundMoney(it.purchase_rate),
           rate_a: roundMoney(it.rate_a),
+          rate_b: roundMoney(it.rate_b),
           strip_conversion_factor: Math.max(1, parseInt(it.strip_conversion_factor, 10) || 1),
           discount_pct: roundMoney(it.discount_pct),
         })),
@@ -473,6 +541,7 @@ export default function PurchaseEntry() {
   ].join(' · ');
 
   const compactInput = 'h-8 text-sm';
+  const numInput = `${compactInput} ${pharmacyNoSpinInputClass}`;
 
   if (loadingPurchase) {
     return <p className="text-center py-12 text-sm text-gray-500">Loading purchase…</p>;
@@ -654,7 +723,11 @@ export default function PurchaseEntry() {
                   {items.map((ln, i) => {
                     const med = medicineCache[ln.medicine_id];
                     const c = calcLine(ln, hsnForMedicine(ln.medicine_id));
-                    const lineInvalid = !ln.medicine_id || !String(ln.batch_number || '').trim() || !(parseFloat(ln.quantity) > 0);
+                    const lineInvalid = !ln.medicine_id
+                      || !String(ln.batch_number || '').trim()
+                      || !ln.expiry_mm_yyyy
+                      || expiryToISO(ln.expiry_mm_yyyy) == null
+                      || !(parseFloat(ln.quantity) > 0);
                     const mfr = manufacturerOf(med);
                     const pRate = ln.purchase_rate === '' || ln.purchase_rate == null
                       ? '—'
@@ -683,7 +756,7 @@ export default function PurchaseEntry() {
                           {ln.batch_number || <span className="text-red-500">—</span>}
                         </td>
                         <td className="px-2 py-2 align-middle tabular-nums text-gray-700">
-                          {ln.expiry_mm_yyyy || '—'}
+                          {ln.expiry_mm_yyyy || <span className="text-red-500">—</span>}
                         </td>
                         <td className="px-2 py-2 align-middle tabular-nums">
                           {ln.quantity}
@@ -754,7 +827,7 @@ export default function PurchaseEntry() {
       />
 
       <Dialog open={!!lineDialog && !!lineForm} onOpenChange={(open) => { if (!open) closeLineDialog(); }}>
-        <DialogContent className="max-w-lg" formNav="grid">
+        <DialogContent className="max-w-3xl w-[95vw] sm:w-full" formNav="grid">
           <DialogHeader>
             <DialogTitle>
               {lineDialog?.mode === 'edit'
@@ -785,6 +858,7 @@ export default function PurchaseEntry() {
                       value={lineForm.medicine_id}
                       medicine={selectedMed}
                       companyById={companyById}
+                      wideMenu
                       onSelect={applyMedicineToForm}
                       onCreateNew={(q) => openMedicineCreate({
                         name: q || '',
@@ -819,25 +893,50 @@ export default function PurchaseEntry() {
                       <span>₹{Number(selectedMed.mrp || 0).toFixed(2)}</span>
                       <span className="text-blue-700/80">Catalog P-Rate</span>
                       <span>₹{Number(selectedMed.purchase_rate || 0).toFixed(2)}</span>
+                      <span className="text-blue-700/80">Catalog Rate A</span>
+                      <span>₹{Number(selectedMed.rate_a || selectedMed.unit_price || 0).toFixed(2)}</span>
+                      <span className="text-blue-700/80">Catalog Rate B</span>
+                      <span>₹{Number(selectedMed.rate_b || 0).toFixed(2)}</span>
                     </div>
                   </div>
                 )}
 
                 <div className="grid grid-cols-2 gap-3">
-                  <div>
+                  {lineForm.medicine_id && lineBatches.length > 0 && (
+                    <div className="col-span-2">
+                      <Label className="text-xs">Stock batch (optional)</Label>
+                      <Select value={purchaseBatchSelectValue()} onValueChange={onPurchaseBatchSelect}>
+                        <SelectTrigger className={compactInput}>
+                          <SelectValue placeholder="New batch — type below" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="__new__">New batch — type below</SelectItem>
+                          {lineBatches.map((b) => (
+                            <SelectItem key={b.id} value={String(b.id)}>
+                              {formatBatchLabel(b)}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-[11px] text-gray-400 mt-1">
+                        Pick an existing batch to prefill, or type a new batch number below.
+                      </p>
+                    </div>
+                  )}
+                  <div className="col-span-2 sm:col-span-1">
                     <Label className="text-xs">Batch # *</Label>
                     <Input
                       className={`${compactInput} ${!String(lineForm.batch_number || '').trim() ? 'border-red-300' : ''}`}
-                      placeholder="Batch"
+                      placeholder="Batch number"
                       value={lineForm.batch_number}
                       onChange={(e) => setLineField('batch_number', e.target.value)}
                       autoFocus={!!lineForm.medicine_id}
                     />
                   </div>
                   <div>
-                    <Label className="text-xs">Expiry</Label>
+                    <Label className="text-xs">Expiry *</Label>
                     <Input
-                      className={`${compactInput} ${expiryToISO(lineForm.expiry_mm_yyyy) === undefined ? 'border-red-300' : ''}`}
+                      className={`${compactInput} ${(!lineForm.expiry_mm_yyyy || expiryToISO(lineForm.expiry_mm_yyyy) == null) ? 'border-red-300' : ''}`}
                       placeholder="MM/YYYY"
                       value={lineForm.expiry_mm_yyyy || ''}
                       onChange={(e) => setLineField('expiry_mm_yyyy', e.target.value)}
@@ -846,62 +945,73 @@ export default function PurchaseEntry() {
                   <div>
                     <Label className="text-xs">Qty *</Label>
                     <Input
-                      className={compactInput}
+                      className={numInput}
                       type="number"
                       min="0"
                       step="0.5"
-                      value={lineForm.quantity}
+                      value={displayPharmacyNumericInput(lineForm.quantity)}
                       onChange={(e) => setLineField('quantity', parseFloat(e.target.value) || 0)}
                     />
                   </div>
                   <div>
                     <Label className="text-xs">Free</Label>
                     <Input
-                      className={compactInput}
+                      className={numInput}
                       type="number"
                       min="0"
                       step="0.5"
-                      value={lineForm.free_quantity ?? ''}
+                      value={displayPharmacyNumericInput(lineForm.free_quantity)}
                       onChange={(e) => setLineField('free_quantity', e.target.value)}
                     />
                   </div>
                   <div>
                     <Label className="text-xs">MRP</Label>
                     <Input
-                      className={compactInput}
+                      className={numInput}
                       type="number"
                       step="0.01"
                       min="0"
-                      value={lineForm.mrp ?? ''}
+                      value={displayPharmacyNumericInput(lineForm.mrp)}
                       onChange={(e) => setLineField('mrp', e.target.value === '' ? '' : roundMoney(e.target.value))}
                     />
                   </div>
                   <div>
                     <Label className="text-xs">P-Rate</Label>
                     <Input
-                      className={compactInput}
+                      className={numInput}
                       type="number"
                       step="0.01"
                       min="0"
-                      value={lineForm.purchase_rate ?? ''}
+                      value={displayPharmacyNumericInput(lineForm.purchase_rate)}
                       onChange={(e) => setLineField('purchase_rate', e.target.value === '' ? '' : roundMoney(e.target.value))}
                     />
                   </div>
                   <div>
                     <Label className="text-xs">Rate A</Label>
                     <Input
-                      className={compactInput}
+                      className={numInput}
                       type="number"
                       step="0.01"
                       min="0"
-                      value={lineForm.rate_a ?? ''}
+                      value={displayPharmacyNumericInput(lineForm.rate_a)}
                       onChange={(e) => setLineField('rate_a', e.target.value === '' ? '' : roundMoney(e.target.value))}
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-xs">Rate B</Label>
+                    <Input
+                      className={numInput}
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={displayPharmacyNumericInput(lineForm.rate_b)}
+                      onChange={(e) => setLineField('rate_b', e.target.value === '' ? '' : roundMoney(e.target.value))}
                     />
                   </div>
                   <div>
                     <Label className="text-xs">Qty/Strip</Label>
                     <Input
-                      className={compactInput}
+                      className={numInput}
                       type="number"
                       min="1"
                       step="1"
@@ -912,12 +1022,12 @@ export default function PurchaseEntry() {
                   <div>
                     <Label className="text-xs">Disc %</Label>
                     <Input
-                      className={compactInput}
+                      className={numInput}
                       type="number"
                       min="0"
                       max="100"
                       step="0.01"
-                      value={lineForm.discount_pct ?? ''}
+                      value={displayPharmacyNumericInput(lineForm.discount_pct)}
                       onChange={(e) => setLineField('discount_pct', e.target.value === '' ? '' : roundMoney(e.target.value))}
                     />
                   </div>

@@ -54,6 +54,7 @@ NEW_COLUMNS = [
     ("pharmacy_inventory", "mrp", "FLOAT DEFAULT 0.0"),
     ("pharmacy_inventory", "purchase_rate", "FLOAT DEFAULT 0.0"),
     ("pharmacy_inventory", "rate_a", "FLOAT DEFAULT 0.0"),
+    ("pharmacy_inventory", "rate_b", "FLOAT DEFAULT 0.0"),
     ("pharmacy_inventory", "strip_conversion_factor", "INTEGER DEFAULT 1"),
     ("pharmacy_inventory", "free_quantity", "INTEGER DEFAULT 0"),
     ("pharmacy_inventory", "discount_pct", "FLOAT DEFAULT 0.0"),
@@ -61,6 +62,7 @@ NEW_COLUMNS = [
     ("pharmacy_inventory", "supplier_id", "INTEGER REFERENCES pharmacy_suppliers(id)"),
     ("pharmacy_inventory", "purchase_id", "INTEGER"),
     ("pharmacy_purchase_items", "rate_a", "FLOAT DEFAULT 0.0"),
+    ("pharmacy_purchase_items", "rate_b", "FLOAT DEFAULT 0.0"),
     ("pharmacy_purchase_items", "strip_conversion_factor", "INTEGER DEFAULT 1"),
 
     # --- Section E: Procurement ---

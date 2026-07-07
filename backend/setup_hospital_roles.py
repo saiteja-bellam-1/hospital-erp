@@ -295,7 +295,7 @@ def setup_role_permissions():
         "super_admin": {
             "admin": ["manage_users", "manage_roles", "manage_modules", "view_system_reports", "manage_settings"],
             "lab": ["manage_tests", "set_rates", "view_reports", "create_reports", "manage_equipment", "manage_templates"],
-            "pharmacy": ["view_catalog", "manage_medicines", "manage_companies", "manage_suppliers", "manage_salts", "manage_racks", "manage_uoms", "manage_categories", "manage_hsn_tax", "set_rates", "set_discounts", "manage_scheduled_drugs", "view_narcotic_register", "view_inventory", "adjust_stock", "view_stock_ledger", "view_low_stock", "view_expiring", "create_purchase", "edit_purchase", "confirm_purchase", "view_purchases", "create_sale", "void_sale", "view_sales", "apply_discount", "select_rate_tier", "dispense_rx", "view_dispense_queue", "cancel_rx", "view_reports"],
+            "pharmacy": ["view_catalog", "manage_medicines", "manage_companies", "manage_suppliers", "manage_salts", "manage_racks", "manage_uoms", "manage_categories", "manage_hsn_tax", "set_rates", "set_discounts", "manage_scheduled_drugs", "view_narcotic_register", "view_inventory", "adjust_stock", "view_stock_ledger", "view_low_stock", "view_expiring", "create_purchase", "edit_purchase", "confirm_purchase", "view_purchases", "create_sale", "edit_sale", "void_sale", "view_sales", "apply_discount", "select_rate_tier", "dispense_rx", "view_dispense_queue", "cancel_rx", "view_reports"],
             "billing": ["manage_rates", "process_payments", "generate_invoices", "view_financial_reports", "manage_insurance", "handle_refunds"],
             "outpatient": ["schedule_appointments", "manage_schedules", "register_patients", "manage_queues", "view_appointments", "cancel_appointments"],
             # Inpatient: everything (also bypassed at decorator level, but seeded for completeness)
@@ -331,7 +331,7 @@ def setup_role_permissions():
         "hospital_admin": {
             "admin": ["manage_users", "manage_roles", "view_system_reports", "manage_settings"],
             "lab": ["view_reports", "create_reports"],
-            "pharmacy": ["view_catalog", "manage_medicines", "manage_companies", "manage_suppliers", "manage_salts", "manage_racks", "manage_uoms", "manage_categories", "manage_hsn_tax", "set_rates", "set_discounts", "manage_scheduled_drugs", "view_narcotic_register", "view_inventory", "adjust_stock", "view_stock_ledger", "view_low_stock", "view_expiring", "create_purchase", "edit_purchase", "confirm_purchase", "view_purchases", "create_sale", "void_sale", "view_sales", "apply_discount", "select_rate_tier", "dispense_rx", "view_dispense_queue", "cancel_rx", "view_reports"],
+            "pharmacy": ["view_catalog", "manage_medicines", "manage_companies", "manage_suppliers", "manage_salts", "manage_racks", "manage_uoms", "manage_categories", "manage_hsn_tax", "set_rates", "set_discounts", "manage_scheduled_drugs", "view_narcotic_register", "view_inventory", "adjust_stock", "view_stock_ledger", "view_low_stock", "view_expiring", "create_purchase", "edit_purchase", "confirm_purchase", "view_purchases", "create_sale", "edit_sale", "void_sale", "view_sales", "apply_discount", "select_rate_tier", "dispense_rx", "view_dispense_queue", "cancel_rx", "view_reports"],
             "billing": ["view_financial_reports", "manage_insurance", "process_payments", "generate_invoices"],
             "outpatient": ["schedule_appointments", "manage_schedules", "register_patients", "manage_queues", "view_appointments", "cancel_appointments"],
             "inpatient": [
@@ -364,7 +364,7 @@ def setup_role_permissions():
             "lab": ["manage_tests", "set_rates", "view_reports", "create_reports", "manage_equipment", "manage_templates"]
         },
         "pharmacy_admin": {
-            "pharmacy": ["view_catalog", "manage_medicines", "manage_companies", "manage_suppliers", "manage_salts", "manage_racks", "manage_uoms", "manage_categories", "manage_hsn_tax", "set_rates", "set_discounts", "manage_scheduled_drugs", "view_narcotic_register", "view_inventory", "adjust_stock", "view_stock_ledger", "view_low_stock", "view_expiring", "create_purchase", "edit_purchase", "confirm_purchase", "view_purchases", "create_sale", "void_sale", "view_sales", "apply_discount", "select_rate_tier", "dispense_rx", "view_dispense_queue", "cancel_rx", "view_reports"],
+            "pharmacy": ["view_catalog", "manage_medicines", "manage_companies", "manage_suppliers", "manage_salts", "manage_racks", "manage_uoms", "manage_categories", "manage_hsn_tax", "set_rates", "set_discounts", "manage_scheduled_drugs", "view_narcotic_register", "view_inventory", "adjust_stock", "view_stock_ledger", "view_low_stock", "view_expiring", "create_purchase", "edit_purchase", "confirm_purchase", "view_purchases", "create_sale", "edit_sale", "void_sale", "view_sales", "apply_discount", "select_rate_tier", "dispense_rx", "view_dispense_queue", "cancel_rx", "view_reports"],
         },
         "billing_admin": {
             "billing": ["manage_rates", "process_payments", "generate_invoices", "view_financial_reports", "manage_insurance", "handle_refunds"]

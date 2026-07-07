@@ -99,6 +99,7 @@ def test_purchase_tax_from_medicine_hsn(client, auth_headers, db_session, seed_d
         "items": [{
             "medicine_id": med.id,
             "batch_number": f"B-{uuid.uuid4().hex[:5]}",
+            "expiry_date": "2027-12-31",
             "mrp": 30.0,
             "quantity": 10,
             "free_quantity": 0,
@@ -150,6 +151,7 @@ def test_purchase_tax_inclusive_mode(client, auth_headers, db_session, seed_data
             "items": [{
                 "medicine_id": med.id,
                 "batch_number": "B-INCL-1",
+                "expiry_date": "2027-12-31",
                 "mrp": 25.0,
                 "quantity": 10,
                 "free_quantity": 0,
@@ -198,6 +200,7 @@ def test_sale_tax_inclusive_mode(client, auth_headers, db_session, seed_data):
             "items": [{
                 "medicine_id": med.id,
                 "batch_number": "B-SALE-INCL",
+                "expiry_date": "2027-12-31",
                 "mrp": 25.0,
                 "quantity": 50,
                 "purchase_rate": 10.0,

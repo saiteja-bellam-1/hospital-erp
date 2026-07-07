@@ -477,9 +477,13 @@ const Dashboard = () => {
         </div>
 
         {/* Page content */}
-        <main className={`flex-1 overflow-y-auto ${(location.pathname.startsWith('/dashboard/inpatient') || location.pathname === '/dashboard/home') ? '' : 'p-4 lg:p-6'}`}>
-          {hasAnyRole('hospital_admin', 'receptionist') && licenseStatus?.days_remaining != null && (
-            <div className="flex items-center justify-end gap-1.5 text-xs mb-4">
+        <main className={`flex-1 min-h-0 ${
+          location.pathname.includes('/pharmacy/sales-counter')
+            ? 'overflow-hidden flex flex-col'
+            : 'overflow-y-auto'
+        } ${(location.pathname.startsWith('/dashboard/inpatient') || location.pathname === '/dashboard/home' || location.pathname.includes('/pharmacy/sales-counter')) ? '' : 'p-4 lg:p-6'}`}>
+          {hasAnyRole('hospital_admin', 'receptionist') && licenseStatus?.days_remaining != null && !location.pathname.includes('/pharmacy/sales-counter') && (
+            <div className={`flex items-center justify-end gap-1.5 text-xs mb-4 ${location.pathname.includes('/pharmacy/sales-counter') ? 'shrink-0' : ''}`}>
               <Shield className="h-3.5 w-3.5 text-gray-400" />
               <span className="text-gray-400">License:</span>
               <span className={`font-semibold ${
@@ -501,6 +505,7 @@ const Dashboard = () => {
               )}
             </div>
           )}
+          <div className={location.pathname.includes('/pharmacy/sales-counter') ? 'flex-1 min-h-0 flex flex-col overflow-hidden' : undefined}>
           <Routes>
             <Route
               path="/"
@@ -562,6 +567,7 @@ const Dashboard = () => {
               <SupportContactPage sellerInfo={licenseStatus?.seller_info} />
             } />
           </Routes>
+          </div>
         </main>
 
         {/* Footer — pinned to bottom of content area */}

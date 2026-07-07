@@ -312,6 +312,7 @@ class PharmacyInventory(Base):
     mrp = Column(Float, default=0.0)             # per-batch MRP, may differ from medicine.mrp
     purchase_rate = Column(Float, default=0.0)   # P-Rate for this batch
     rate_a = Column(Float, default=0.0)          # per-batch sale Rate A (per strip)
+    rate_b = Column(Float, default=0.0)          # per-batch sale Rate B (per strip)
     strip_conversion_factor = Column(Integer, default=1)  # tabs per strip for this batch
     free_quantity = Column(Integer, default=0)
     discount_pct = Column(Float, default=0.0)    # discount applied at purchase time
@@ -426,6 +427,7 @@ class PharmacyPurchaseItem(Base):
     free_quantity = Column(Float, default=0.0)
     purchase_rate = Column(Float, nullable=False)
     rate_a = Column(Float, default=0.0)          # sale Rate A for this batch (per strip)
+    rate_b = Column(Float, default=0.0)          # sale Rate B for this batch (per strip)
     strip_conversion_factor = Column(Integer, default=1)  # tabs per strip for this batch
     discount_pct = Column(Float, default=0.0)
     hsn_id = Column(Integer, ForeignKey("pharmacy_hsn_codes.id"), nullable=True)

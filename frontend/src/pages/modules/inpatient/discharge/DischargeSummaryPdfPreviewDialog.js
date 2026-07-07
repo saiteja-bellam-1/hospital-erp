@@ -1,16 +1,16 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from '../../../../components/ui/dialog';
 import { Button } from '../../../../components/ui/button';
-import { Label } from '../../../../components/ui/label';
 import { useToast } from '../../../../hooks/use-toast';
 import { fetchPdfBlobUrl } from '../../../../utils/printPdf';
-import { usePdfPrintSettings } from '../../../../hooks/usePdfPrintSettings';
 import { CheckCircle2, Eye, Loader2, RefreshCw } from 'lucide-react';
 
 /**
  * Inline PDF preview before the doctor marks a discharge summary ready for print.
+ * Letterhead follows hospital Print Settings (resolved server-side), same as bills/reports.
  */
 export default function DischargeSummaryPdfPreviewDialog({
   open,
@@ -22,32 +22,38 @@ export default function DischargeSummaryPdfPreviewDialog({
   confirming = false,
 }) {
   const { toast } = useToast();
-  const { resolveIncludeHeader, isLoading: settingsLoading } = usePdfPrintSettings();
-  const [includeHeader, setIncludeHeader] = useState(true);
   const [pdfUrl, setPdfUrl] = useState(null);
   const [loading, setLoading] = useState(false);
+  const pdfUrlRef = useRef(null);
 
   const previewPath = admissionId
     ? `/api/inpatient/admissions/${admissionId}/discharge-summary/pdf/preview`
     : null;
 
-  const revokeUrl = useCallback(() => {
-    if (pdfUrl) {
-      URL.revokeObjectURL(pdfUrl);
-      setPdfUrl(null);
+  const revokeBlobUrl = useCallback(() => {
+    if (pdfUrlRef.current) {
+      URL.revokeObjectURL(pdfUrlRef.current);
+      pdfUrlRef.current = null;
     }
-  }, [pdfUrl]);
+    setPdfUrl(null);
+  }, []);
 
-  const loadPreview = useCallback(async (headerFlag) => {
+  const assignBlobUrl = useCallback((url) => {
+    if (pdfUrlRef.current) {
+      URL.revokeObjectURL(pdfUrlRef.current);
+    }
+    pdfUrlRef.current = url;
+    setPdfUrl(url);
+  }, []);
+
+  const loadPreview = useCallback(async () => {
     if (!previewPath) return;
     setLoading(true);
     try {
-      revokeUrl();
-      const url = await fetchPdfBlobUrl(previewPath, {
-        params: { include_header: headerFlag },
-      });
-      setPdfUrl(url);
+      const url = await fetchPdfBlobUrl(previewPath);
+      assignBlobUrl(url);
     } catch (err) {
+      revokeBlobUrl();
       toast({
         variant: 'destructive',
         title: 'Preview failed',
@@ -56,33 +62,28 @@ export default function DischargeSummaryPdfPreviewDialog({
     } finally {
       setLoading(false);
     }
-  }, [previewPath, revokeUrl, toast]);
+  }, [previewPath, assignBlobUrl, revokeBlobUrl, toast]);
 
   useEffect(() => {
     if (!open) {
-      revokeUrl();
+      revokeBlobUrl();
       return undefined;
     }
-    if (settingsLoading || !previewPath) return undefined;
-
-    const defaultHeader = resolveIncludeHeader('discharge_summary');
-    setIncludeHeader(defaultHeader);
+    if (!previewPath) return undefined;
 
     let cancelled = false;
     (async () => {
       setLoading(true);
       try {
-        revokeUrl();
-        const url = await fetchPdfBlobUrl(previewPath, {
-          params: { include_header: defaultHeader },
-        });
+        const url = await fetchPdfBlobUrl(previewPath);
         if (cancelled) {
           URL.revokeObjectURL(url);
         } else {
-          setPdfUrl(url);
+          assignBlobUrl(url);
         }
       } catch (err) {
         if (!cancelled) {
+          revokeBlobUrl();
           toast({
             variant: 'destructive',
             title: 'Preview failed',
@@ -96,17 +97,12 @@ export default function DischargeSummaryPdfPreviewDialog({
 
     return () => {
       cancelled = true;
-      revokeUrl();
+      revokeBlobUrl();
     };
-  }, [open, admissionId, previewPath, settingsLoading, resolveIncludeHeader, revokeUrl, toast]);
-
-  const handleHeaderToggle = (checked) => {
-    setIncludeHeader(checked);
-    loadPreview(checked);
-  };
+  }, [open, admissionId, previewPath, assignBlobUrl, revokeBlobUrl, toast]);
 
   const handleClose = () => {
-    revokeUrl();
+    revokeBlobUrl();
     onClose?.();
   };
 
@@ -125,25 +121,19 @@ export default function DischargeSummaryPdfPreviewDialog({
 
         <div className="flex-1 min-h-0 flex flex-col gap-3">
           <div className="flex flex-wrap items-center gap-4 text-sm">
-            <div className="flex items-center gap-2">
-              <input
-                id="ds-preview-header"
-                type="checkbox"
-                className="rounded"
-                checked={includeHeader}
-                disabled={loading || confirming}
-                onChange={(e) => handleHeaderToggle(e.target.checked)}
-              />
-              <Label htmlFor="ds-preview-header" className="font-normal cursor-pointer">
-                Include hospital header
-              </Label>
-            </div>
+            <p className="text-xs text-muted-foreground">
+              Letterhead and top gap follow{' '}
+              <Link to="/dashboard/print-settings" className="underline hover:text-foreground">
+                Print Settings
+              </Link>
+              {' '}(Discharge Summary).
+            </p>
             <Button
               type="button"
               size="sm"
               variant="outline"
               disabled={loading || confirming}
-              onClick={() => loadPreview(includeHeader)}
+              onClick={loadPreview}
             >
               {loading ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
                 : <RefreshCw className="h-3.5 w-3.5 mr-1" />}
@@ -160,8 +150,14 @@ export default function DischargeSummaryPdfPreviewDialog({
                 <Loader2 className="h-5 w-5 mr-2 animate-spin" /> Loading preview…
               </div>
             )}
+            {!loading && !pdfUrl && (
+              <div className="h-full flex items-center justify-center text-gray-500 text-sm px-4 text-center">
+                Preview could not be loaded. Use Refresh or go back and save the draft again.
+              </div>
+            )}
             {pdfUrl && (
               <iframe
+                key={pdfUrl}
                 src={pdfUrl}
                 title="Discharge summary preview"
                 className="w-full h-full min-h-[50vh] bg-white"

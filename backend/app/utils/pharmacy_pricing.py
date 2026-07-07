@@ -59,11 +59,13 @@ def pricing_source(
     med_mrp = float(_attr(medicine, "mrp", 0) or 0)
     batch_pr = float(_attr(batch, "purchase_rate", 0) or 0)
     med_pr = float(_attr(medicine, "purchase_rate", 0) or 0)
+    batch_rate_b = float(_attr(batch, "rate_b", 0) or 0)
+    med_rate_b = float(_attr(medicine, "rate_b", 0) or 0)
     batch_scf = int(_attr(batch, "strip_conversion_factor", 0) or 0)
     med_scf = int(_attr(medicine, "strip_conversion_factor", 0) or 0)
     return SimpleNamespace(
         rate_a=batch_rate_a if batch_rate_a > 0 else med_rate_a,
-        rate_b=float(_attr(medicine, "rate_b", 0) or 0),
+        rate_b=batch_rate_b if batch_rate_b > 0 else med_rate_b,
         mrp=batch_mrp if batch_mrp > 0 else med_mrp,
         purchase_rate=batch_pr if batch_pr > 0 else med_pr,
         unit_price=float(_attr(medicine, "unit_price", 0) or 0),

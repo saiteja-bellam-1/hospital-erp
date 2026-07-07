@@ -12,7 +12,7 @@ import { Label } from '../../../../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../../../components/ui/select';
 import { errMsg } from '../../PharmacyModule';
 import { printPdfFromUrl } from '../../../../utils/printPdf';
-import { supportsStripSale } from '../../../../utils/pharmacyUnits';
+import { displayPharmacyNumericInput, pharmacyNoSpinInputClass, supportsStripSale } from '../../../../utils/pharmacyUnits';
 import { usePharmacyStore } from '../../../../contexts/PharmacyStoreContext';
 
 export default function PendingRxTab() {
@@ -227,14 +227,14 @@ export default function PendingRxTab() {
                     <td className="py-2 pr-4">{it.quantity_dispensed}</td>
                     <td className="py-2 pr-4 font-medium">{it.quantity_remaining}</td>
                     <td className="py-2 pr-4">
-                      <Input className="h-7 w-20" type="number" min="0"
-                        value={qtyTabs[it.item_id] ?? 0}
+                      <Input className={`h-7 w-20 ${pharmacyNoSpinInputClass}`} type="number" min="0"
+                        value={displayPharmacyNumericInput(qtyTabs[it.item_id] ?? 0)}
                         onChange={e => setQtyTabs(s => ({ ...s, [it.item_id]: e.target.value }))} />
                     </td>
                     <td className="py-2 pr-4">
                       {supportsStripSale({ strip_conversion_factor: it.strip_conversion_factor }) ? (
-                        <Input className="h-7 w-20" type="number" min="0"
-                          value={qtyStrips[it.item_id] ?? 0}
+                        <Input className={`h-7 w-20 ${pharmacyNoSpinInputClass}`} type="number" min="0"
+                          value={displayPharmacyNumericInput(qtyStrips[it.item_id] ?? 0)}
                           onChange={e => setQtyStrips(s => ({ ...s, [it.item_id]: e.target.value }))} />
                       ) : (
                         <span className="text-xs text-gray-400">—</span>

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { patchHsnForm } from '../../utils/pharmacyHsnTax';
+import { displayPharmacyNumericInput, pharmacyNoSpinInputClass } from '../../utils/pharmacyUnits';
 import { payloadFromMasterForm } from '../../components/pharmacy/pharmacyMasterFieldSpecs';
 import { Routes, Route, Navigate, Outlet, useLocation } from 'react-router-dom';
 import axios from 'axios';
@@ -188,7 +189,8 @@ export function MasterTable({ title, path, fields, displayColumns }) {
                     Enabled
                   </label>
                 ) : f.type === 'number' ? (
-                  <Input type="number" step="0.01" value={form[f.key] ?? ''}
+                  <Input className={pharmacyNoSpinInputClass} type="number" step="0.01"
+                    value={displayPharmacyNumericInput(form[f.key])}
                     onChange={e => patchForm(f.key, e.target.value === '' ? '' : parseFloat(e.target.value))} />
                 ) : (
                   <Input value={form[f.key] || ''} onChange={e => patchForm(f.key, e.target.value)} />
@@ -391,6 +393,9 @@ const PharmacyModule = () => (
     <Routes>
       <Route path="sales-counter" element={
         <PharmacyPermGate permission="create_sale"><SalesCounter /></PharmacyPermGate>
+      } />
+      <Route path="sales-counter/:saleId/edit" element={
+        <PharmacyPermGate permission="edit_sale"><SalesCounter /></PharmacyPermGate>
       } />
       <Route path="purchases/new" element={
         <PharmacyPermGate permission="create_purchase"><PurchaseEntry /></PharmacyPermGate>

@@ -22,6 +22,8 @@ export default function PharmacyMedicinePicker({
   placeholder = 'Search name / code…',
   className = '',
   navProps = {},
+  /** Wider search dropdown (e.g. purchase line dialog) */
+  wideMenu = false,
   /** Optional map of company_id → name for manufacturer display */
   companyById = null,
 }) {
@@ -104,6 +106,10 @@ export default function PharmacyMedicinePicker({
     </Button>
   ) : null;
 
+  const menuClass = wideMenu
+    ? 'absolute z-30 left-0 mt-1 min-w-[32rem] w-max max-w-[min(42rem,95vw)] border bg-white rounded shadow-lg max-h-64 overflow-y-auto'
+    : 'absolute z-30 left-0 right-0 mt-1 border bg-white rounded shadow-lg max-h-48 overflow-y-auto';
+
   if (value && medicine && !editing) {
     return (
       <div className={`flex gap-1 items-center min-w-0 ${className}`}>
@@ -147,12 +153,12 @@ export default function PharmacyMedicinePicker({
         )}
       </div>
       {open && results.length > 0 && (
-        <div className="absolute z-30 left-0 right-0 mt-1 border bg-white rounded shadow-lg max-h-48 overflow-y-auto">
+        <div className={menuClass}>
           {results.map((m) => (
             <button
               key={m.id}
               type="button"
-              className="w-full text-left px-2 py-1.5 hover:bg-blue-50 text-xs border-b last:border-0"
+              className={`w-full text-left px-3 py-2 hover:bg-blue-50 border-b last:border-0 ${wideMenu ? 'text-sm' : 'text-xs'}`}
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => pick(m)}
             >
@@ -161,13 +167,20 @@ export default function PharmacyMedicinePicker({
                 {m.medicine_code}
                 {m.strength ? ` · ${m.strength}` : ''}
                 {mfrOf(m) ? ` · ${mfrOf(m)}` : ''}
+                {wideMenu && (m.mrp || m.rate_a) ? (
+                  <span className="text-gray-400">
+                    {' · '}MRP ₹{Number(m.mrp || 0).toFixed(2)}
+                    {m.rate_a ? ` · A ₹${Number(m.rate_a).toFixed(2)}` : ''}
+                    {m.rate_b ? ` · B ₹${Number(m.rate_b).toFixed(2)}` : ''}
+                  </span>
+                ) : null}
               </div>
             </button>
           ))}
         </div>
       )}
       {open && query.trim().length >= 2 && !searching && results.length === 0 && (
-        <div className="absolute z-30 left-0 right-0 mt-1 border bg-white rounded shadow-lg p-2 text-xs">
+        <div className={`${menuClass} p-2 text-xs`}>
           <p className="text-gray-500 mb-1.5">No catalog match for &ldquo;{query.trim()}&rdquo;</p>
           {onCreateNew ? (
             <Button type="button" size="sm" variant="outline" className="w-full h-7 text-xs" onMouseDown={(e) => e.preventDefault()} onClick={triggerCreate}>

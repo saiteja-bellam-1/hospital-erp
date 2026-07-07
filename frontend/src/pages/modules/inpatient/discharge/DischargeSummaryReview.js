@@ -2,6 +2,7 @@ import React from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '../../../../components/ui/card';
 import { printPdfFromUrl } from '../../../../utils/printPdf';
 import DischargeSummaryPreviewCard from './DischargeSummaryPreviewCard';
+import { summaryIsReadyForPrint } from './dischargeSummaryUtils';
 
 const DischargeSummaryReview = ({
   summary,
@@ -24,7 +25,7 @@ const DischargeSummaryReview = ({
           canWrite={canWrite}
           readOnly={summary?.status === 'locked'}
           onEdit={onEdit}
-          onPrint={handlePrint}
+          onPrint={summaryIsReadyForPrint(summary?.status) ? handlePrint : undefined}
         />
       </CardContent>
     </Card>

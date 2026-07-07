@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { useToast } from '../../../../hooks/use-toast';
 import { RefreshCw, Link2 } from 'lucide-react';
 import PharmacyMasterSelectWithCreate from '../../../../components/pharmacy/PharmacyMasterSelectWithCreate';
+import { displayPharmacyNumericInput, pharmacyNoSpinInputClass } from '../../../../utils/pharmacyUnits';
 import { errMsg } from '../../PharmacyModule';
 
 export default function UnmappedMedicinesTab() {
@@ -166,7 +167,8 @@ export default function UnmappedMedicinesTab() {
               <>
                 <div>
                   <Label className="text-xs">Rate-A (₹) *</Label>
-                  <Input type="number" min="0.01" step="0.01" value={form.rate_a}
+                  <Input className={pharmacyNoSpinInputClass} type="number" min="0.01" step="0.01"
+                    value={displayPharmacyNumericInput(form.rate_a)}
                     onChange={e => setForm(f => ({ ...f, rate_a: e.target.value }))} />
                 </div>
                 <div>

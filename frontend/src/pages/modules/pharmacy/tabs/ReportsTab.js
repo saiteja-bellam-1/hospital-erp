@@ -10,6 +10,8 @@ import { printPdfFromUrl } from '../../../../utils/printPdf';
 import PharmacyStoreSelector from '../../../../components/pharmacy/PharmacyStoreSelector';
 import { usePharmacyStore } from '../../../../contexts/PharmacyStoreContext';
 
+import { pharmacyNoSpinInputClass } from '../../../../utils/pharmacyUnits';
+
 // Each report definition can opt into:
 //   dateRange:    show From / To inputs
 //   singleDate:   show a single Date input (POSTed as `date` param)
@@ -135,7 +137,7 @@ export default function ReportsTab() {
             <div><Label className="text-xs">Date</Label><Input type="date" value={singleDate} onChange={e => setSingleDate(e.target.value)} className="w-36" /></div>
           )}
           {def.daysParam && (
-            <div><Label className="text-xs">Days</Label><Input type="number" value={days} onChange={e => setDays(parseInt(e.target.value) || 30)} className="w-24" /></div>
+            <div><Label className="text-xs">Days</Label><Input type="number" value={days} onChange={e => setDays(parseInt(e.target.value) || 30)} className={`w-24 ${pharmacyNoSpinInputClass}`} /></div>
           )}
           {def.groupOptions && (
             <div>
