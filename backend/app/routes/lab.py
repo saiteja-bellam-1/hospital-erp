@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func as sqlfunc
 from pydantic import BaseModel, Field
 from typing import List, Optional
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import uuid
 import io
 
@@ -34,6 +34,65 @@ from app.utils.lab_reference import (
 )
 
 router = APIRouter()
+
+# Double-click / parallel submit window for reception book + package book.
+_RAPID_BOOK_WINDOW_SECONDS = 3.0
+
+
+def _new_lab_bill_group(prefix: str = "LB") -> tuple:
+    """Allocate a unique lab bill group id and display number.
+
+    The list endpoint groups by ``lab_bill_group_id`` but shows
+    ``lab_bill_number`` as the Reference. Timestamp+patient alone collides
+    when two bookings land in the same second, so the number always embeds
+    a short UUID fragment derived from the group id.
+    """
+    group_id = str(uuid.uuid4())
+    stamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    short = group_id.replace("-", "")[:8].upper()
+    return group_id, f"{prefix}-{stamp}-{short}"
+
+
+def _reject_rapid_repeat_booking(db: Session, patient_id: int, test_ids: list) -> None:
+    """Block identical bookings submitted within a few seconds (double-submit).
+
+    Runs even when ``force=True`` so "Proceed Anyway" double-clicks cannot
+    create a second paid bill for the same tests.
+    """
+    if not test_ids:
+        return
+    # created_at uses the DB server clock (UTC on SQLite); keep the cutoff in
+    # the same frame so IST-vs-UTC skew cannot miss a just-inserted row.
+    cutoff = datetime.utcnow() - timedelta(seconds=_RAPID_BOOK_WINDOW_SECONDS)
+    recent = (
+        db.query(PatientLabOrder)
+        .filter(
+            PatientLabOrder.patient_id == patient_id,
+            PatientLabOrder.test_id.in_(list(test_ids)),
+            PatientLabOrder.status != "cancelled",
+            PatientLabOrder.created_at >= cutoff,
+        )
+        .all()
+    )
+    if not recent:
+        return
+    recent_ids = {o.test_id for o in recent}
+    if set(test_ids).issubset(recent_ids):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "Identical lab booking already submitted moments ago",
+                "duplicates": [
+                    {
+                        "test_id": o.test_id,
+                        "order_number": o.order_number,
+                        "lab_bill_number": o.lab_bill_number,
+                    }
+                    for o in recent
+                ],
+            },
+        )
+
 
 # ============================================================
 # Pydantic Models
@@ -420,6 +479,8 @@ def _build_order_response(order: PatientLabOrder, db: Session) -> dict:
         "package_name": order.package.name if order.package_id and order.package else None,
         "package_booking_id": order.package_booking_id,
         "sample_id": order.sample_id,
+        "lab_bill_group_id": getattr(order, "lab_bill_group_id", None),
+        "lab_bill_number": getattr(order, "lab_bill_number", None),
         "sample_type_name": (
             test.sample_type_ref.name if test and test.sample_type_id and test.sample_type_ref
             else (test.sample_type if test else None)
@@ -1263,11 +1324,14 @@ async def reception_book_lab_tests(
         if duplicates:
             raise HTTPException(status_code=409, detail={"message": "Duplicate orders found", "duplicates": duplicates})
 
+    # Always block true double-submits (same tests within a few seconds),
+    # even when the operator chose "Proceed Anyway" for same-day duplicates.
+    _reject_rapid_repeat_booking(db, data.patient_id, data.test_ids)
+
     now = datetime.now()
     orders = []
     total = 0.0
-    bill_group_id = str(uuid.uuid4())
-    bill_number = f"LB-{now.strftime('%Y%m%d%H%M%S')}-{data.patient_id}"
+    bill_group_id, bill_number = _new_lab_bill_group("LB")
 
     for test_id in data.test_ids:
         test = db.query(LabTest).filter(
@@ -1287,6 +1351,7 @@ async def reception_book_lab_tests(
             priority="normal",
             notes=data.notes,
             status="ordered",
+            order_date=now,
             amount=test.cost or 0.0,
             payment_status="paid",
             payment_method=data.payment_method,
@@ -1616,9 +1681,13 @@ async def regenerate_lab_bill(
             total = pkg.actual_price
             discount = pkg.actual_price - pkg.package_price
 
-    now = orders[0].order_date or datetime.now()
+    now = orders[0].payment_date or orders[0].order_date or datetime.now()
+    stored_number = next(
+        (o.lab_bill_number for o in orders if o.lab_bill_number),
+        None,
+    )
     bill_data = {
-        "bill_number": f"LB-{now.strftime('%Y%m%d%H%M%S')}-{patient.id}" if patient else "LB-UNKNOWN",
+        "bill_number": stored_number or (orders[0].order_number if orders else "LB-UNKNOWN"),
         "bill_date": now.isoformat(),
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "Unknown",
         "patient_age": patient_age_years_int(patient),
@@ -1786,8 +1855,7 @@ async def update_order_payment(
     # dashboard can render it as one row and the regenerate endpoint can
     # reproduce a bill PDF for it.
     if not order.lab_bill_group_id:
-        order.lab_bill_group_id = str(uuid.uuid4())
-        order.lab_bill_number = f"LB-{now.strftime('%Y%m%d%H%M%S')}-{order.patient_id}"
+        order.lab_bill_group_id, order.lab_bill_number = _new_lab_bill_group("LB")
 
     db.commit()
 
@@ -1836,8 +1904,7 @@ async def generate_lab_bill(
     # so the Billing dashboard collapses them into one row and the bill PDF
     # can be regenerated later from the group id.
     now = datetime.now()
-    bill_group_id = str(uuid.uuid4())
-    bill_number = f"LB-{now.strftime('%Y%m%d%H%M%S')}-{patient_id}"
+    bill_group_id, bill_number = _new_lab_bill_group("LB")
     for order in orders:
         order.payment_status = "paid"
         order.payment_method = data.payment_method
@@ -2644,11 +2711,12 @@ async def book_package(
         if duplicates:
             raise HTTPException(status_code=409, detail={"message": "Duplicate orders found", "duplicates": duplicates})
 
+    _reject_rapid_repeat_booking(db, data.patient_id, [t.id for t in tests])
+
     # Proportional discount distribution
     booking_id = f"PKG-{str(uuid.uuid4())[:8].upper()}"
     now = datetime.now()
-    bill_group_id = str(uuid.uuid4())
-    bill_number = f"PKG-{now.strftime('%Y%m%d%H%M%S')}-{data.patient_id}"
+    bill_group_id, bill_number = _new_lab_bill_group("PKG")
     orders = []
     distributed_total = 0.0
 
@@ -2671,6 +2739,7 @@ async def book_package(
             priority=data.priority,
             notes=data.notes,
             status="ordered",
+            order_date=now,
             amount=amount,
             payment_status="paid",
             payment_method=data.payment_method,

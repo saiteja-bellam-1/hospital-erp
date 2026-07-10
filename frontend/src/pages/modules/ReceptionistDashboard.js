@@ -33,6 +33,7 @@ import {
   isAppointmentSubmitDisabled,
   validateAppointmentBooking,
 } from '../../utils/appointmentBooking';
+import { localDateString } from '../../utils/localDate';
 
 const ReceptionistDashboard = () => {
   const { toast } = useToast();
@@ -179,7 +180,7 @@ const ReceptionistDashboard = () => {
   const fetchTodayAppointments = async () => {
     try {
       const token = localStorage.getItem('token');
-      const today = new Date().toISOString().split('T')[0];
+      const today = localDateString();
       console.log('Fetching appointments for:', today); // Debug log
       const response = await fetch(`/api/appointments/?date_from=${today}&date_to=${today}`, {
         headers: {
@@ -942,7 +943,7 @@ const ReceptionistDashboard = () => {
                   type="date"
                   value={appointmentForm.appointment_date}
                   onChange={(e) => setAppointmentForm({...appointmentForm, appointment_date: e.target.value})}
-                  min={new Date().toISOString().split('T')[0]}
+                  min={localDateString()}
                 />
               </div>
             </div>

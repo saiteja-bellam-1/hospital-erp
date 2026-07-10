@@ -45,7 +45,7 @@ def enable_maintenance_mode(reason: str = "Restore in progress") -> None:
     with _state_lock:
         _active = True
         _reason = reason
-        _started_at = datetime.datetime.utcnow().isoformat() + "Z"
+        _started_at = datetime.datetime.now().isoformat()
 
 
 def disable_maintenance_mode() -> None:

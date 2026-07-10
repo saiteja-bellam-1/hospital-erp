@@ -950,10 +950,14 @@ async def get_all_bills(
     bills = []
 
     # --- Appointment bills ---
+    # Sources rolled into a consolidated bill stay on the appointment row with
+    # payment_status='consolidated'; hide them so the CB-* row is the only
+    # ledger entry for those charges.
     apt_query = db.query(Appointment).join(Patient).filter(
         Patient.hospital_id == hospital_id,
         sql_func.date(Appointment.created_at) >= d_from,
         sql_func.date(Appointment.created_at) <= d_to,
+        Appointment.payment_status != "consolidated",
     )
     if payment_status:
         apt_query = apt_query.filter(Appointment.payment_status == payment_status)
@@ -996,11 +1000,16 @@ async def get_all_bills(
             "cancelled_at": apt.bill_cancelled_at.isoformat() if getattr(apt, 'bill_cancelled_at', None) else "",
         })
 
-    # --- Lab order bills ---
+    # --- Lab order bills (OPD only) ---
+    # Inpatient lab orders are charged on the admission bill; consolidated
+    # sources are represented by the CB-* row. Exclude both so the Lab tab
+    # does not double-list the same charge.
     lab_query = db.query(PatientLabOrder).join(Patient).filter(
         Patient.hospital_id == hospital_id,
         sql_func.date(PatientLabOrder.order_date) >= d_from,
         sql_func.date(PatientLabOrder.order_date) <= d_to,
+        PatientLabOrder.admission_id.is_(None),
+        PatientLabOrder.payment_status != "consolidated",
     )
     if payment_status:
         lab_query = lab_query.filter(PatientLabOrder.payment_status == payment_status)

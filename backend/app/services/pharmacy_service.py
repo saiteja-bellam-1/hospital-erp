@@ -243,7 +243,7 @@ class PharmacyService:
             prescription.status = "partial"
         
         prescription.dispensed_by_id = dispensed_by_id
-        prescription.dispensed_date = datetime.utcnow()
+        prescription.dispensed_date = datetime.now()
         
         self.db.commit()
         self.db.refresh(prescription)

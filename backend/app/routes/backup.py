@@ -1097,7 +1097,7 @@ async def run_test_restore(current_user: User = Depends(get_current_user)):
         try:
             row = db.query(SystemSettings).filter(SystemSettings.setting_key == "backup_test_results").first()
             payload = _json.dumps({
-                "last_run": _dt.datetime.utcnow().isoformat() + "Z",
+                "last_run": _dt.datetime.now().isoformat(),
                 "all_ok": all_ok,
                 "results": results,
             })

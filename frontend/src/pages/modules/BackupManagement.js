@@ -11,6 +11,7 @@ import {
   FolderSync, FolderOpen, Plus, X, Play, CheckCircle2, AlertCircle, Loader2, RefreshCw,
   Database, HardDrive, MapPin, ShieldCheck, Image, FileText, Settings, Clock, Timer, RotateCcw, AlertTriangle, Cloud, Upload
 } from 'lucide-react';
+import { localDateString } from '../../utils/localDate';
 
 const BackupManagement = () => {
   const [loading, setLoading] = useState(true);
@@ -394,17 +395,17 @@ const BackupManagement = () => {
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
               <CardTitle className="flex items-center gap-2 text-base">
-                <Cloud className={`w-4 h-4 ${gdriveStatus.last_sent === new Date().toISOString().split('T')[0] ? 'text-green-500' : 'text-gray-400'}`} />
+                <Cloud className={`w-4 h-4 ${gdriveStatus.last_sent === localDateString() ? 'text-green-500' : 'text-gray-400'}`} />
                 Google Drive Backup
               </CardTitle>
               <Badge className={`text-[10px] ${
-                gdriveStatus.last_sent === new Date().toISOString().split('T')[0]
+                gdriveStatus.last_sent === localDateString()
                   ? 'bg-green-100 text-green-700'
                   : gdriveStatus.last_error
                     ? 'bg-red-100 text-red-700'
                     : 'bg-gray-100 text-gray-600'
               }`}>
-                {gdriveStatus.last_sent === new Date().toISOString().split('T')[0]
+                {gdriveStatus.last_sent === localDateString()
                   ? 'Sent today'
                   : gdriveStatus.last_error ? 'Error' : 'Waiting'}
               </Badge>

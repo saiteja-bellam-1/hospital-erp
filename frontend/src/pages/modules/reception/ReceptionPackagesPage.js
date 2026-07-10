@@ -88,6 +88,7 @@ const ReceptionPackagesPage = () => {
 
   const bookPackage = async (force = false) => {
     if (!selectedPatient || !selectedPackage) return;
+    if (bookingLoading) return;
 
     // Check for duplicate orders today
     if (!force) {
@@ -371,8 +372,8 @@ const ReceptionPackagesPage = () => {
                   </ul>
                   <div className="flex gap-2 pt-1">
                     <Button size="sm" variant="outline" onClick={() => setPkgDuplicateWarning(null)}>Go Back</Button>
-                    <Button size="sm" className="bg-amber-600 hover:bg-amber-700 text-white" onClick={() => bookPackage(true)}>
-                      Proceed Anyway
+                    <Button size="sm" className="bg-amber-600 hover:bg-amber-700 text-white" onClick={() => bookPackage(true)} disabled={bookingLoading}>
+                      {bookingLoading ? 'Booking...' : 'Proceed Anyway'}
                     </Button>
                   </div>
                 </div>

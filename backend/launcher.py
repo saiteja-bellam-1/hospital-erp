@@ -91,7 +91,7 @@ def check_version_bump(exe_dir):
                 "from": previous,
                 "to": APP_VERSION,
                 "outcome": outcome,
-                "at": datetime.datetime.utcnow().isoformat() + "Z",
+                "at": datetime.datetime.now().isoformat(),
             })
             history = history[-50:]  # cap
             with open(history_file, "w") as f:
@@ -147,7 +147,7 @@ def _write_shortcut_status(exe_dir, status, **extras):
     import datetime as _dt
     payload = {
         "status": status,  # "created" | "skipped_existing" | "failed" | "skipped_no_desktop"
-        "checked_at": _dt.datetime.utcnow().isoformat() + "Z",
+        "checked_at": _dt.datetime.now().isoformat(),
         **extras,
     }
     try:

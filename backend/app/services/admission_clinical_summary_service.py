@@ -1,7 +1,7 @@
 """Aggregate admission-scoped clinical data for the Detailed Admission Summary PDF."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Optional
 
 from sqlalchemy.orm import Session, joinedload
@@ -24,12 +24,17 @@ from app.models.user import User
 from app.utils.patient_age import format_patient_age, patient_age_years_int
 
 
+def _as_naive_local(dt: datetime) -> datetime:
+    """Normalize to naive system-local wall clock for display/math."""
+    if dt.tzinfo is not None:
+        return dt.astimezone().replace(tzinfo=None)
+    return dt
+
+
 def _fmt_dt(dt: Optional[datetime]) -> str:
     if not dt:
         return ""
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone().strftime("%d/%m/%Y %H:%M")
+    return _as_naive_local(dt).strftime("%d/%m/%Y %H:%M")
 
 
 def _mar_row(m: MedicationAdministration, db: Session) -> dict:
@@ -134,12 +139,8 @@ def build_admission_clinical_summary(
     discharge_date = discharge.discharge_date if discharge else None
     stay_days = None
     if admission.admission_date:
-        end = discharge_date or datetime.now(timezone.utc)
-        adm_dt = admission.admission_date
-        if adm_dt.tzinfo is None:
-            adm_dt = adm_dt.replace(tzinfo=timezone.utc)
-        if end.tzinfo is None:
-            end = end.replace(tzinfo=timezone.utc)
+        end = _as_naive_local(discharge_date or datetime.now())
+        adm_dt = _as_naive_local(admission.admission_date)
         stay_days = max(0, (end - adm_dt).days)
 
     admission_meta = {
@@ -225,7 +226,10 @@ def build_admission_clinical_summary(
             .filter(MedicationAdministration.admission_id == admission_id)
             .all()
         )
-        mar_sorted = sorted(mar_rows, key=lambda m: _mar_row(m, db).get("_sort") or datetime.min.replace(tzinfo=timezone.utc))
+        mar_sorted = sorted(
+            mar_rows,
+            key=lambda m: _as_naive_local(_mar_row(m, db).get("_sort") or datetime.min),
+        )
         for m in mar_sorted:
             row = _mar_row(m, db)
             row.pop("_sort", None)

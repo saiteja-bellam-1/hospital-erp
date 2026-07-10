@@ -897,6 +897,59 @@ async def bulk_import_nurses(
     return {"ok": True, "created": result["created"], "usernames": result["usernames"], "errors": []}
 
 
+@router.post("/users/bulk-import-staff")
+async def bulk_import_staff(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_admin_access),
+    db: Session = Depends(get_db),
+):
+    """Bulk-create normal staff users from a CSV upload.
+
+    Required columns: username, email, first_name, last_name, role, password.
+    Optional: phone, additional_roles (semicolon-separated).
+
+    Allowed roles match the installer CSV allow-list (hospital_admin, lab_*,
+    pharmacy_*, billing_admin, inpatient_admin, canteen_*, frontdesk,
+    receptionist). Doctor and nurse must use their dedicated importers.
+    """
+    from app.services.user_csv_import import (
+        apply_users,
+        parse_and_validate_staff,
+    )
+
+    csv_text = await _read_csv_upload(file)
+    existing_usernames = [u for (u,) in db.query(User.username).all()]
+    existing_emails = [e for (e,) in db.query(User.email).all()]
+
+    rows, errors = parse_and_validate_staff(
+        csv_text,
+        existing_usernames=existing_usernames,
+        existing_emails=existing_emails,
+    )
+    if errors:
+        return {
+            "ok": False,
+            "created": 0,
+            "errors": [e.as_dict() for e in errors],
+        }
+
+    hospital_id = _resolve_hospital_id(db)
+    try:
+        result = apply_users(db, rows, hospital_id)
+    except ValueError as e:
+        return {"ok": False, "created": 0, "errors": [{"line": None, "field": None, "message": str(e)}]}
+
+    try:
+        from app.services.audit_service import log_action
+        log_action(db, current_user, "bulk_import_staff", "admin", "User", None,
+                   f"Bulk-imported {result['created']} staff user(s) from CSV",
+                   details={"usernames": result["usernames"]})
+    except Exception:
+        pass
+
+    return {"ok": True, "created": result["created"], "usernames": result["usernames"], "errors": []}
+
+
 @router.get("/users/bulk-import-sample/{role}")
 async def bulk_import_sample(
     role: str,
@@ -924,6 +977,14 @@ async def bulk_import_sample(
             "priya,priya.n@hospital.in,Priya,Rao,Welcome@123,9876543221\n"
         )
         filename = "nurses_sample.csv"
+    elif role == "staff":
+        body = (
+            "username,email,first_name,last_name,role,password,phone,additional_roles\n"
+            "ravi,ravi@hospital.in,Ravi,Kumar,billing_admin,Welcome@123,9876543210,\n"
+            "asha,asha@hospital.in,Asha,Menon,receptionist,Welcome@123,9876543211,frontdesk\n"
+            "neha,neha@hospital.in,Neha,Iyer,lab_technician,Welcome@123,9876543212,\n"
+        )
+        filename = "staff_sample.csv"
     else:
         raise HTTPException(status_code=404, detail=f"No sample for role {role!r}")
     return Response(

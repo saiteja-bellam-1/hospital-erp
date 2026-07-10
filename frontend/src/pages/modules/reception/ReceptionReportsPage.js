@@ -15,9 +15,10 @@ import {
   XCircle,
   AlertCircle
 } from 'lucide-react';
+import { localDateString } from '../../../utils/localDate';
 
 const ReceptionReportsPage = () => {
-  const [reportDate, setReportDate] = useState(new Date().toISOString().split('T')[0]);
+  const [reportDate, setReportDate] = useState(localDateString());
   const [reportData, setReportData] = useState(null);
   const [loading, setLoading] = useState(false);
 
@@ -91,7 +92,7 @@ const ReceptionReportsPage = () => {
               />
             </div>
             <Button variant="outline" onClick={() => {
-              const today = new Date().toISOString().split('T')[0];
+              const today = localDateString();
               setReportDate(today);
               fetchReport(today);
             }}>Today</Button>

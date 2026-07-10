@@ -10,6 +10,7 @@ import {
   Search, Download, Shield, Activity, Users, Clock, ChevronLeft, ChevronRight, Settings, Loader2,
   ChevronDown, ChevronUp, X
 } from 'lucide-react';
+import { localDateString, localDateStringOffset } from '../../utils/localDate';
 
 const categoryColors = {
   auth: 'bg-blue-100 text-blue-700',
@@ -32,8 +33,8 @@ const AuditLogsPage = () => {
   const [totalPages, setTotalPages] = useState(1);
 
   // Filters
-  const today = new Date().toISOString().split('T')[0];
-  const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0];
+  const today = localDateString();
+  const weekAgo = localDateStringOffset(-7);
   const [dateFrom, setDateFrom] = useState(weekAgo);
   const [dateTo, setDateTo] = useState(today);
   const [category, setCategory] = useState('all');

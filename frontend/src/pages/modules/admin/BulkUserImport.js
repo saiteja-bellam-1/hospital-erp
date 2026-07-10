@@ -17,6 +17,7 @@ import {
   Users,
   Stethoscope,
   HeartPulse,
+  User,
 } from 'lucide-react';
 import axios from 'axios';
 
@@ -38,6 +39,18 @@ const ROLE_META = {
       'Required: username, email, first_name, last_name, password. Optional: phone.',
     endpoint: '/api/admin/users/bulk-import-nurses',
     sampleFile: 'nurses_sample.csv',
+  },
+  staff: {
+    label: 'Staff',
+    icon: User,
+    description:
+      'Required: username, email, first_name, last_name, role, password. ' +
+      'Optional: phone, additional_roles (semicolon-separated). ' +
+      'Allowed roles: hospital_admin, lab_admin, lab_technician, pharmacy_admin, pharmacist, ' +
+      'billing_admin, inpatient_admin, canteen_admin, canteen_sales, frontdesk, receptionist. ' +
+      'Doctors and nurses use their own tabs.',
+    endpoint: '/api/admin/users/bulk-import-staff',
+    sampleFile: 'staff_sample.csv',
   },
 };
 
@@ -143,7 +156,7 @@ const BulkUserImportDialog = ({ open, onOpenChange, onImported }) => {
 
         <div className="space-y-4">
           {/* Role picker */}
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             {Object.entries(ROLE_META).map(([key, m]) => {
               const RoleIcon = m.icon;
               return (

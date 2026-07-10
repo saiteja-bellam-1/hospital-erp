@@ -127,7 +127,7 @@ def check_for_update() -> dict:
         "mandatory": False,
         "release_notes": "",
         "released_at": None,
-        "checked_at": datetime.datetime.utcnow().isoformat() + "Z",
+        "checked_at": datetime.datetime.now().isoformat(),
         "error": None,
     }
     try:

@@ -431,6 +431,7 @@ const ReceptionAppointmentsPage = () => {
 
   const collectAllLabPayments = async () => {
     if (pendingLabOrders.length === 0) return;
+    if (labPaymentLoading) return;
     const patientId = pendingLabOrders[0].patient_id;
     setLabPaymentLoading(true);
     try {
@@ -768,7 +769,7 @@ const ReceptionAppointmentsPage = () => {
         let slots = data.available_slots || [];
 
         // Filter out past time slots if the selected date is today
-        const today = new Date().toISOString().split('T')[0];
+        const today = localDateString();
         if (newDate === today) {
           const now = new Date();
           const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
@@ -911,7 +912,7 @@ const ReceptionAppointmentsPage = () => {
     setSearchTerm('');
     setFilterDoctor('all');
     setFilterStatus('all');
-    setFilterDate(new Date().toISOString().split('T')[0]);
+    setFilterDate(localDateString());
   };
 
   // Check doctor availability and fetch available slots
@@ -944,7 +945,7 @@ const ReceptionAppointmentsPage = () => {
         }
 
         // Filter out past time slots if the selected date is today
-        const today = new Date().toISOString().split('T')[0];
+        const today = localDateString();
         if (date === today) {
           const now = new Date();
           const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
@@ -1299,7 +1300,7 @@ const ReceptionAppointmentsPage = () => {
                       fetchAvailableSlots(appointmentForm.doctor_id, e.target.value);
                     }
                   }}
-                  min={new Date().toISOString().split('T')[0]}
+                  min={localDateString()}
                   required
                 />
               </div>
@@ -1489,7 +1490,7 @@ const ReceptionAppointmentsPage = () => {
                   setRescheduleForm({ ...rescheduleForm, new_date: e.target.value, new_time: '' });
                   fetchRescheduleSlots(rescheduleDoctor, e.target.value);
                 }}
-                min={new Date().toISOString().split('T')[0]}
+                min={localDateString()}
               />
             </div>
             <div>

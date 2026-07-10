@@ -122,9 +122,9 @@ class LabService:
             order.notes = notes
         
         if status == "collected":
-            order.collection_date = datetime.utcnow()
+            order.collection_date = datetime.now()
         elif status == "completed":
-            order.completion_date = datetime.utcnow()
+            order.completion_date = datetime.now()
         
         self.db.commit()
         self.db.refresh(order)
@@ -167,7 +167,7 @@ class LabService:
         
         report.is_verified = True
         report.verified_by_id = verified_by_id
-        report.verification_date = datetime.utcnow()
+        report.verification_date = datetime.now()
         
         self.db.commit()
         self.db.refresh(report)

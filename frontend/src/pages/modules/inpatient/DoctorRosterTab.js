@@ -14,8 +14,9 @@ import {
 } from '../../../components/ui/dialog';
 import { useToast } from '../../../hooks/use-toast';
 import { Plus, Trash2, Loader2, ChevronLeft, ChevronRight } from 'lucide-react';
+import { localDateString } from '../../../utils/localDate';
 
-const toIso = (d) => d.toISOString().slice(0, 10);
+const toIso = (d) => localDateString(d);
 const SHIFT_LABELS = { morning: 'M', afternoon: 'A', night: 'N' };
 const STATUS_CLASSES = {
   working: 'bg-green-100 text-green-800',
@@ -392,7 +393,7 @@ export const OnDutyNowPanel = () => {
           // For night 00-06, the roster_date is "yesterday"
           let date = new Date(now);
           if (hour < 6) date.setDate(date.getDate() - 1);
-          const iso = date.toISOString().slice(0, 10);
+          const iso = localDateString(date);
           return axios.get('/api/inpatient/roster/on-duty', {
             params: { target_date: iso, shift },
           }).catch(() => ({ data: [] }));

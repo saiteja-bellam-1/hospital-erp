@@ -16,6 +16,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import axios from 'axios';
 import { format } from 'date-fns';
 import JsBarcode from 'jsbarcode';
+import { localDateString, localDateStringOffset } from '../../utils/localDate';
 
 const LabTechDashboard = () => {
   const { user } = useAuth();
@@ -34,8 +35,8 @@ const LabTechDashboard = () => {
   const [statusFilter, setStatusFilter] = useState('all_pending');
   const [searchQuery, setSearchQuery] = useState('');
   const [completedSearchQuery, setCompletedSearchQuery] = useState('');
-  const today = new Date().toISOString().split('T')[0];
-  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  const today = localDateString();
+  const thirtyDaysAgo = localDateStringOffset(-30);
   const [completedDateFrom, setCompletedDateFrom] = useState(thirtyDaysAgo);
   const [completedDateTo, setCompletedDateTo] = useState(today);
   const [completedLoading, setCompletedLoading] = useState(false);

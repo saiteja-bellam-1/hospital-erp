@@ -76,6 +76,7 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
 
   const handleSubmit = async (force = false) => {
     if (!selectedPatient || selectedTests.length === 0) return;
+    if (submitting) return;
 
     if (!force) {
       try {
@@ -327,7 +328,9 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
               </ul>
               <div className="flex gap-2 pt-1">
                 <Button size="sm" variant="outline" onClick={() => setDuplicateWarning(null)}>Go Back</Button>
-                <Button size="sm" className="bg-amber-600 hover:bg-amber-700 text-white" onClick={() => handleSubmit(true)}>Proceed Anyway</Button>
+                <Button size="sm" className="bg-amber-600 hover:bg-amber-700 text-white" onClick={() => handleSubmit(true)} disabled={submitting}>
+                  {submitting ? <><Loader2 className="h-3 w-3 mr-1 animate-spin" /> Booking...</> : 'Proceed Anyway'}
+                </Button>
               </div>
             </div>
           )}

@@ -15,8 +15,9 @@ import { usePharmacyStore } from '../../../contexts/PharmacyStoreContext';
 import { displayPharmacyNumericInput, pharmacyNoSpinInputClass } from '../../../utils/pharmacyUnits';
 import FormNavContainer from '../../../components/FormNavContainer';
 import { navCellProps } from '../../../utils/formNavigation';
+import { localDateString } from '../../../utils/localDate';
 
-const TODAY = new Date().toISOString().split('T')[0];
+const TODAY = localDateString();
 
 export default function TransferEntry() {
   const { toast } = useToast();

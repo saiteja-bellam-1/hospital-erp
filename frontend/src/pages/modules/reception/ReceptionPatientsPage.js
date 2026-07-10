@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 import VitalsForm from '../../../components/vitals/VitalsForm';
 import LabTestBookingDialog from '../../../components/LabTestBookingDialog';
+import ReferralSelectWithCreate from '../../../components/ReferralSelectWithCreate';
 import { useToast } from '../../../hooks/use-toast';
 import { applyDobToForm, formatPatientAge, hasValidAge, parseAgeFields } from '../../../utils/patientAge';
 
@@ -810,20 +811,12 @@ const ReceptionPatientsPage = () => {
                 required
               />
             </div>
-            <div>
-              <Label htmlFor="referred_by">Referred By</Label>
-              <select
-                id="referred_by"
-                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
-                value={patientForm.referred_by || ''}
-                onChange={(e) => setPatientForm({...patientForm, referred_by: e.target.value})}
-              >
-                <option value="">Self / None</option>
-                {referralList.map(r => (
-                  <option key={r.id} value={r.name}>{r.name}{r.village ? ` — ${r.village}` : ''}</option>
-                ))}
-              </select>
-            </div>
+            <ReferralSelectWithCreate
+              value={patientForm.referred_by || ''}
+              onValueChange={(name) => setPatientForm({ ...patientForm, referred_by: name })}
+              referrals={referralList}
+              onReferralsChange={setReferralList}
+            />
 
             {/* Emergency Contact Section */}
             <div className="col-span-full border-t pt-2 mt-1">
@@ -997,19 +990,12 @@ const ReceptionPatientsPage = () => {
               <Label>Email</Label>
               <Input type="email" value={editPatientForm.email} onChange={(e) => setEditPatientForm({...editPatientForm, email: e.target.value})} placeholder="patient@email.com" />
             </div>
-            <div>
-              <Label>Referred By</Label>
-              <select
-                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
-                value={editPatientForm.referred_by || ''}
-                onChange={(e) => setEditPatientForm({...editPatientForm, referred_by: e.target.value})}
-              >
-                <option value="">Self / None</option>
-                {referralList.map(r => (
-                  <option key={r.id} value={r.name}>{r.name}{r.village ? ` — ${r.village}` : ''}</option>
-                ))}
-              </select>
-            </div>
+            <ReferralSelectWithCreate
+              value={editPatientForm.referred_by || ''}
+              onValueChange={(name) => setEditPatientForm({ ...editPatientForm, referred_by: name })}
+              referrals={referralList}
+              onReferralsChange={setReferralList}
+            />
 
             {/* Emergency Contact Section */}
             <div className="col-span-full border-t pt-2 mt-1">

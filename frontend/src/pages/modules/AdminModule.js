@@ -574,7 +574,7 @@ const AdminModule = () => {
                 onClick={() => setShowBulkImport(true)}
                 className="flex items-center"
                 disabled={userLimit && !userLimit.unlimited && userLimit.remaining === 0}
-                title="Import multiple doctors or nurses from a CSV file"
+                title="Import multiple doctors, nurses, or staff users from a CSV file"
               >
                 <Upload className="h-4 w-4 mr-2" />
                 Bulk Import

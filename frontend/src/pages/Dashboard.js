@@ -29,6 +29,7 @@ import SupportContactPage from './modules/SupportContactPage';
 import PatientsModule from './modules/PatientsModule';
 import LabModule from './modules/LabModule';
 import PharmacyModule from './modules/PharmacyModule';
+import CanteenModule from './modules/CanteenModule';
 import BillingModule from './modules/BillingModule';
 import EHRModule from './modules/EHRModule';
 import OutpatientModule from './modules/OutpatientModule';
@@ -550,6 +551,7 @@ const Dashboard = () => {
               }
             />
             <Route path="/pharmacy/*" element={<PharmacyModule />} />
+            <Route path="/canteen/*" element={<CanteenModule />} />
             <Route path="/billing/*" element={<BillingModule />} />
             <Route path="/ehr/*" element={<EHRModule />} />
             <Route path="/consultation" element={<ConsultationPage />} />

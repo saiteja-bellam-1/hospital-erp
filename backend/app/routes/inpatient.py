@@ -4,13 +4,12 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func as sqlfunc, and_, cast, Date, update as sa_update
 from pydantic import BaseModel, Field
 from typing import List, Optional, Any
-from datetime import datetime, date, timezone
+from datetime import datetime, date
 
 
-def _now_utc() -> datetime:
-    """Timezone-aware UTC 'now'. Use everywhere instead of the deprecated
-    _now_utc() (which returned a naive datetime)."""
-    return datetime.now(timezone.utc)
+def _now() -> datetime:
+    """Naive system-local 'now'. Use for all inpatient business timestamps."""
+    return datetime.now()
 
 
 def _inline_pdf_response(pdf_buffer, filename: str) -> Response:
@@ -46,6 +45,7 @@ from app.models.inpatient import (
     RoomTypeRateConfig, DoctorRoomTypeRate, RoomType,
     MealPlan, FoodOrder,
 )
+from app.models.canteen import CanteenOrder, CanteenOrderItem
 from app.models.pharmacy import Prescription, PrescriptionItem, Medicine, PharmacySale, PharmacySaleItem
 from app.models.prescriptions_simple import SimplePrescription
 from app.models.lab import PatientLabOrder, LabTest, LabReport
@@ -2420,7 +2420,7 @@ def _build_census_payload(db: Session) -> dict:
         by_type[rtype]["free"] += r_free
 
     return {
-        "as_of": _now_utc().isoformat(),
+        "as_of": _now().isoformat(),
         "totals": {
             "total_beds": total_beds,
             "occupied": occupied_beds,
@@ -2565,7 +2565,7 @@ async def mark_loa_returned(
         raise HTTPException(status_code=404, detail="LOA not found")
     if rec.status != "active":
         raise HTTPException(status_code=409, detail=f"LOA is in '{rec.status}' state")
-    rec.actual_return_datetime = data.actual_return_datetime or _now_utc()
+    rec.actual_return_datetime = data.actual_return_datetime or _now()
     rec.status = "returned"
     if data.notes:
         rec.notes = (rec.notes + "\n" if rec.notes else "") + data.notes
@@ -2683,7 +2683,7 @@ async def create_shift_handover(
     hospital = _get_hospital(db, current_user)
     rec = ShiftHandover(
         admission_id=admission_id,
-        handover_date=data.handover_date or _now_utc(),
+        handover_date=data.handover_date or _now(),
         from_shift=data.from_shift,
         from_nurse_id=current_user.id,
         to_nurse_id=data.to_nurse_id,
@@ -2719,7 +2719,7 @@ async def acknowledge_handover(
         raise HTTPException(status_code=409, detail="Handover already acknowledged")
     if not rec.to_nurse_id:
         rec.to_nurse_id = current_user.id
-    rec.acknowledged_at = _now_utc()
+    rec.acknowledged_at = _now()
     db.commit()
     db.refresh(rec)
     log_action(db, current_user, "acknowledge_handover", "inpatient", "ShiftHandover", rec.id,
@@ -2862,7 +2862,7 @@ async def list_code_blue(
 ):
     """Recent code-blue / RRT events. Default window: last 30 days."""
     from datetime import timedelta as _td
-    cutoff = _now_utc() - _td(days=days)
+    cutoff = _now() - _td(days=days)
     rows = db.query(CodeBlueEvent).filter(
         CodeBlueEvent.event_datetime >= cutoff
     ).order_by(CodeBlueEvent.event_datetime.desc()).all()
@@ -2878,7 +2878,7 @@ async def code_blue_monthly_stats(
     """Aggregated code-blue stats for NABH safety reporting: counts by type
     and outcome, mean response time. Window: last `days` days."""
     from datetime import timedelta as _td
-    cutoff = _now_utc() - _td(days=days)
+    cutoff = _now() - _td(days=days)
     rows = db.query(CodeBlueEvent).filter(CodeBlueEvent.event_datetime >= cutoff).all()
     by_type = {}
     by_outcome = {}
@@ -2949,7 +2949,7 @@ async def update_claim_status(
 
     # Record submission timestamp
     if new_status == "submitted" and current_status != "submitted":
-        admission.claim_submitted_at = _now_utc()
+        admission.claim_submitted_at = _now()
 
     db.commit()
 
@@ -4734,7 +4734,8 @@ def _compute_admission_charges(db: Session, admission: Admission, unbilled_only:
             "included_in_package": False,
         })
 
-    # Food orders — non-cancelled. When unbilled_only, exclude already-billed.
+    # Food orders — legacy MealPlan slots + new canteen à-la-carte.
+    # Non-cancelled. When unbilled_only, exclude already-billed.
     food_q = db.query(FoodOrder).filter(
         FoodOrder.admission_id == admission.id,
         FoodOrder.status != "cancelled",
@@ -4742,12 +4743,16 @@ def _compute_admission_charges(db: Session, admission: Admission, unbilled_only:
     if unbilled_only:
         food_q = food_q.filter(FoodOrder.billed == False)
     food_orders = food_q.order_by(FoodOrder.meal_date.asc(), FoodOrder.meal_type.asc()).all()
-    food_total = sum(float(f.price or 0) for f in food_orders)
+    legacy_food_total = sum(float(f.price or 0) for f in food_orders)
     food_entries = [
         {
             "id": f.id,
+            "source": "legacy",
             "meal_date": f.meal_date.isoformat() if f.meal_date else None,
             "meal_type": f.meal_type,
+            "item_name": f"Meal: {f.meal_type.title()}",
+            "quantity": 1,
+            "unit_price": float(f.price or 0),
             "status": f.status,
             "price": float(f.price or 0),
             "diet_preference": f.diet_preference or "",
@@ -4755,6 +4760,40 @@ def _compute_admission_charges(db: Session, admission: Admission, unbilled_only:
         }
         for f in food_orders
     ]
+
+    canteen_q = (
+        db.query(CanteenOrder)
+        .options(joinedload(CanteenOrder.items))
+        .filter(
+            CanteenOrder.admission_id == admission.id,
+            CanteenOrder.status != "cancelled",
+        )
+    )
+    if unbilled_only:
+        canteen_q = canteen_q.filter(CanteenOrder.billed == False)
+    canteen_orders = canteen_q.order_by(CanteenOrder.ordered_at.asc()).all()
+    canteen_total = 0.0
+    for co in canteen_orders:
+        for li in (co.items or []):
+            line_amt = float(li.line_total or 0)
+            canteen_total += line_amt
+            food_entries.append({
+                "id": li.id,
+                "order_id": co.id,
+                "source": "canteen",
+                "meal_date": co.serve_date.isoformat() if co.serve_date else (
+                    co.ordered_at.date().isoformat() if co.ordered_at else None
+                ),
+                "meal_type": "canteen",
+                "item_name": li.item_name,
+                "quantity": int(li.quantity or 1),
+                "unit_price": float(li.unit_price or 0),
+                "status": co.status,
+                "price": line_amt,
+                "diet_preference": "",
+                "billed": bool(co.billed),
+            })
+    food_total = round(legacy_food_total + canteen_total, 2)
 
     # ---- Package overlay --------------------------------------------------
     # When an admission has an active package, the agreed_price covers all
@@ -5006,6 +5045,7 @@ def _compute_admission_charges(db: Session, admission: Admission, unbilled_only:
         "_pharmacy_pos_sales": pharmacy_pos_sales,
         "_lab_orders": lab_orders,
         "_food_orders": food_orders,
+        "_canteen_orders": canteen_orders,
         "_room_unbilled_total": room_total if unbilled_only else 0.0,
         "_room_charge_per_day": room_charge_per_day,
         "_room": room,
@@ -5243,6 +5283,10 @@ async def cancel_admission_bill(
         food_released = food_q.count()
         food_q.update({FoodOrder.billed: False, FoodOrder.bill_id: None}, synchronize_session=False)
 
+        canteen_q = db.query(CanteenOrder).filter(CanteenOrder.bill_id == bill.id)
+        canteen_released = canteen_q.count()
+        canteen_q.update({CanteenOrder.billed: False, CanteenOrder.bill_id: None}, synchronize_session=False)
+
         bill.status = "cancelled"
         cancel_note = f"[CANCELLED by user {current_user.id} on {datetime.now().isoformat()}]: {data.reason}"
         bill.notes = (bill.notes + "\n" if bill.notes else "") + cancel_note
@@ -5265,6 +5309,7 @@ async def cancel_admission_bill(
                        "pharmacy_pos_sales": pos_released,
                        "lab_orders": lab_released,
                        "food_orders": food_released,
+                       "canteen_orders": canteen_released,
                    },
                })
 
@@ -5404,6 +5449,9 @@ def _create_admission_bill_record_inner(
         for f in breakdown.get("_food_orders", []):
             f.billed = True
             f.bill_id = bill.id
+        for co in breakdown.get("_canteen_orders", []):
+            co.billed = True
+            co.bill_id = bill.id
         db.commit()
         db.refresh(bill)
         return bill
@@ -5605,6 +5653,24 @@ def _create_admission_bill_record_inner(
         ))
         f.billed = True
         f.bill_id = bill.id
+
+    for co in breakdown.get("_canteen_orders", []):
+        serve = co.serve_date.isoformat() if co.serve_date else (
+            co.ordered_at.date().isoformat() if co.ordered_at else ""
+        )
+        for li in (co.items or []):
+            db.add(BillItem(
+                bill_id=bill.id,
+                item_type="food",
+                item_name=f"Canteen: {li.item_name}" + (f" — {serve}" if serve else ""),
+                quantity=int(li.quantity or 1),
+                unit_price=float(li.unit_price or 0),
+                total_price=float(li.line_total or 0),
+                source_ref_type="canteen_order_item",
+                source_ref_id=li.id,
+            ))
+        co.billed = True
+        co.bill_id = bill.id
 
     db.commit()
     db.refresh(bill)
@@ -6155,22 +6221,35 @@ async def get_bill_pdf(
         }
         (bucket_lab_included if covered else bucket_lab_excluded).append(row)
 
-    # Catering — group meals by type for a compact view (excluded section).
+    # Catering — legacy meal slots + canteen à-la-carte lines (excluded section).
     food_entries = breakdown.get("food_entries") or []
     if food_entries:
-        food_by_type: dict = {}
-        for f in food_entries:
-            mt = f.get("meal_type", "meal")
-            food_by_type.setdefault(mt, {"count": 0, "total": 0.0})
-            food_by_type[mt]["count"] += 1
-            food_by_type[mt]["total"] += float(f.get("price") or 0)
-        for mt, info in food_by_type.items():
-            rate = info["total"] / info["count"] if info["count"] else 0
+        legacy = [f for f in food_entries if f.get("source") != "canteen"]
+        canteen_lines = [f for f in food_entries if f.get("source") == "canteen"]
+        if legacy:
+            food_by_type: dict = {}
+            for f in legacy:
+                mt = f.get("meal_type", "meal")
+                food_by_type.setdefault(mt, {"count": 0, "total": 0.0})
+                food_by_type[mt]["count"] += 1
+                food_by_type[mt]["total"] += float(f.get("price") or 0)
+            for mt, info in food_by_type.items():
+                rate = info["total"] / info["count"] if info["count"] else 0
+                bucket_excluded.append({
+                    "description": f"Catering — {mt.title()}",
+                    "qty": f"× {info['count']}",
+                    "rate": rate,
+                    "amount": info["total"],
+                })
+        for f in canteen_lines:
+            qty = int(f.get("quantity") or 1)
             bucket_excluded.append({
-                "description": f"Catering — {mt.title()}",
-                "qty": f"× {info['count']}",
-                "rate": rate,
-                "amount": info["total"],
+                "description": f"Canteen — {f.get('item_name', 'Item')}" + (
+                    f" ({f.get('meal_date')})" if f.get("meal_date") else ""
+                ),
+                "qty": str(qty),
+                "rate": float(f.get("unit_price") or 0),
+                "amount": float(f.get("price") or 0),
             })
 
     # ---- Package fee line (always at the very top when present).
@@ -7058,7 +7137,7 @@ async def record_vitals(
         admission_id=admission_id,
         patient_id=admission.patient_id,
         recorded_by_id=current_user.id,
-        recorded_at=payload.pop("recorded_at", None) or _now_utc(),
+        recorded_at=payload.pop("recorded_at", None) or _now(),
         is_abnormal=is_abnormal,
         abnormal_flags=flags or None,
         hospital_id=hospital.id,
@@ -7456,7 +7535,7 @@ def _run_mar_safety_checks(db: Session, m: "MedicationAdministration", data: MAR
     # 3. Duplicate-dose window
     if m.medicine_id:
         from datetime import timedelta as _td
-        when = data.administered_at or _now_utc()
+        when = data.administered_at or _now()
         window_start = when - _td(minutes=data.duplicate_dose_window_minutes)
         recent = db.query(MedicationAdministration).filter(
             MedicationAdministration.id != m.id,
@@ -7504,7 +7583,7 @@ async def administer_dose(
 
     m.status = data.status
     m.administered_by_id = current_user.id
-    m.administered_at = data.administered_at or _now_utc()
+    m.administered_at = data.administered_at or _now()
     if data.dose_given:
         m.dose_given = data.dose_given
     if data.route:
@@ -7561,7 +7640,7 @@ async def record_prn_dose(
         prescription_item_id=pi.id if pi else None,
         medicine_id=(pi.medicine_id if pi else data.medicine_id),
         scheduled_time=None,
-        administered_at=data.administered_at or _now_utc(),
+        administered_at=data.administered_at or _now(),
         administered_by_id=current_user.id,
         status="given",
         dose_given=data.dose_given,
@@ -8327,7 +8406,7 @@ async def accept_admission(
         raise HTTPException(status_code=400, detail="Admission was rejected — re-admit the patient instead")
     admission.acceptance_status = "accepted"
     admission.accepted_by_doctor_id = data.accepting_doctor_id or current_user.id
-    admission.accepted_at = datetime.utcnow()
+    admission.accepted_at = _now()
     db.commit()
     db.refresh(admission)
     log_action(db, current_user, "accept_admission", "inpatient",
@@ -8672,7 +8751,7 @@ async def record_split_payment(
     if parent and getattr(parent, "hospital_id", None) and parent.hospital_id != _get_hospital(db, current_user).id:
         raise HTTPException(status_code=403, detail="Bill belongs to a different hospital")
     s.payment_status = "received"
-    s.payment_date = _now_utc()
+    s.payment_date = _now()
     if payment_reference:
         s.payment_reference = payment_reference
     if notes:
@@ -8894,7 +8973,7 @@ async def record_preauth_decision(
 
     p.status = data.status
     p.approved_amount = data.approved_amount or 0.0
-    p.approval_date = _now_utc() if data.status == "approved" else p.approval_date
+    p.approval_date = _now() if data.status == "approved" else p.approval_date
     p.validity_days = data.validity_days
     p.approval_reference = data.approval_reference
     if data.notes:
@@ -8972,7 +9051,7 @@ async def record_expansion_decision(
 
     exp.status = data.status
     exp.approved_amount = data.approved_amount or 0.0
-    exp.decided_at = _now_utc()
+    exp.decided_at = _now()
 
     # Roll up to parent pre-auth
     parent = db.query(InsurancePreAuth).filter(InsurancePreAuth.id == exp.preauth_id).first()
@@ -9560,7 +9639,7 @@ async def create_ancillary_charge(
         total_amount=total,
         notes=data.notes,
         performed_by_id=data.performed_by_id or current_user.id,
-        charged_at=data.charged_at or _now_utc(),
+        charged_at=data.charged_at or _now(),
         hospital_id=hospital.id,
         created_by_id=current_user.id,
     )
@@ -9891,7 +9970,7 @@ async def accept_ward_transfer(
         if target_bed:
             target_bed.current_admission_id = admission.id
     t.status = "accepted"
-    t.accepted_at = _now_utc()
+    t.accepted_at = _now()
     # If caller didn't pre-specify, record the accepting user based on their role
     if not t.accepting_doctor_id and not t.accepting_nurse_id:
         if "doctor" in (current_user.role_names or []):
@@ -10712,7 +10791,7 @@ async def withdraw_consent(
         raise HTTPException(status_code=404, detail="Consent not found")
     if c.withdrawn_at:
         raise HTTPException(status_code=409, detail="Consent already withdrawn")
-    c.withdrawn_at = _now_utc()
+    c.withdrawn_at = _now()
     c.withdrawal_reason = data.withdrawal_reason
     db.commit()
     db.refresh(c)
@@ -11999,7 +12078,7 @@ async def record_io(
         admission_id=admission_id,
         patient_id=admission.patient_id,
         recorded_by_id=current_user.id,
-        recorded_at=data.recorded_at or _now_utc(),
+        recorded_at=data.recorded_at or _now(),
         shift=data.shift,
         io_type=data.io_type,
         category=data.category,
@@ -12039,10 +12118,9 @@ async def io_balance_summary(
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_io")),
     db: Session = Depends(get_db),
 ):
-    """Return per-shift totals and running 24h balance for the given date (defaults to today in UTC)."""
+    """Return per-shift totals and running 24h balance for the given date (defaults to today, system local)."""
     from datetime import timedelta
-    # Default: use UTC today, since I/O entries are stored with utcnow()
-    day = target_date or _now_utc().date()
+    day = target_date or _now().date()
     day_start = datetime.combine(day, datetime.min.time())
     rows = db.query(FluidBalance).filter(
         FluidBalance.admission_id == admission_id,
@@ -12255,7 +12333,7 @@ async def acknowledge_critical_alert(
     if a.status in ("addressed",):
         raise HTTPException(status_code=409, detail="Alert already addressed")
     a.acknowledged_by_id = current_user.id
-    a.acknowledged_at = _now_utc()
+    a.acknowledged_at = _now()
     if data.addressed_notes:
         a.addressed_notes = data.addressed_notes
     a.status = "addressed" if data.mark_addressed else "acknowledged"
@@ -13356,7 +13434,7 @@ async def create_food_orders(
                 existing.cancelled_at = None
                 existing.cancelled_by_id = None
                 existing.cancelled_reason = None
-                existing.ordered_at = datetime.now(timezone.utc)
+                existing.ordered_at = _now()
                 existing.ordered_by_id = current_user.id
                 created.append(existing)
             else:
@@ -13423,7 +13501,7 @@ async def update_food_order(
         if order.status == "delivered":
             raise HTTPException(status_code=400, detail="Already marked delivered")
         order.status = "delivered"
-        order.delivered_at = datetime.now(timezone.utc)
+        order.delivered_at = _now()
         order.delivered_by_id = current_user.id
     if data.diet_preference is not None:
         order.diet_preference = data.diet_preference
@@ -13458,7 +13536,7 @@ async def cancel_food_order(
             },
         )
     order.status = "cancelled"
-    order.cancelled_at = datetime.now(timezone.utc)
+    order.cancelled_at = _now()
     order.cancelled_by_id = current_user.id
     order.cancelled_reason = data.reason
     db.commit()

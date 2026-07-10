@@ -7,8 +7,10 @@ import {
   BarChart3, ClipboardList, Shield, Database, ScrollText, Activity, Stethoscope,
   DownloadCloud, Pill, ShoppingCart, Boxes, Truck, BookOpen, LayoutGrid, Plus,
   Warehouse, Tags, Layers, Ruler, Percent, Link2, ArrowLeftRight, Store, Droplets,
+  UtensilsCrossed,
 } from 'lucide-react';
 import { PHARMACY_ROLE_NAMES } from './usePharmacyPermissions';
+import { CANTEEN_ROLE_NAMES } from './useCanteenPermissions';
 
 const I = (Icon) => <Icon className="h-[18px] w-[18px]" />;
 const B = (Icon) => <Icon className="h-7 w-7" />;
@@ -251,6 +253,31 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
     if (items.length > 0) sections.push({ label: 'Inpatient', items });
   }
 
+  // ── CANTEEN (available whenever inpatient is enabled) ──
+  if (enabledModules.inpatient && (
+    hasAnyRole(...CANTEEN_ROLE_NAMES, 'nurse', 'doctor', 'receptionist', 'inpatient_admin')
+  )) {
+    const items = [];
+    // IP ward food queue — primary for canteen_sales kitchen staff
+    if (hasAnyRole('canteen_admin', 'canteen_sales', 'hospital_admin', 'super_admin')) {
+      add(items, make('IP Food Orders', UtensilsCrossed, '/dashboard/canteen/orders'));
+    }
+    // POS: canteen admin + sales
+    if (hasAnyRole('canteen_admin', 'canteen_sales', 'hospital_admin', 'super_admin')) {
+      add(items, make('Sales Counter', UtensilsCrossed, '/dashboard/canteen/pos'));
+      add(items, make('Sales History', UtensilsCrossed, '/dashboard/canteen/sales'));
+    }
+    // Catalog: canteen admin
+    if (hasAnyRole('canteen_admin', 'hospital_admin', 'super_admin')) {
+      add(items, make('Canteen Catalog', UtensilsCrossed, '/dashboard/canteen/catalog'));
+    }
+    // IP food ordering: clinical / reception — not canteen staff
+    if (hasAnyRole('nurse', 'doctor', 'receptionist', 'inpatient_admin', 'hospital_admin', 'super_admin')) {
+      add(items, make('Order Food', UtensilsCrossed, '/dashboard/canteen/order'));
+    }
+    if (items.length > 0) sections.push({ label: 'Canteen', items });
+  }
+
   // ── ADMIN ──
   // Billing dashboard and Day Care live under the Outpatient group above for
   // admins, so they're omitted here to avoid duplicates.
@@ -308,6 +335,9 @@ export function getRoleDashboards({ hasRole, hasAnyRole, enabledModules, isLabSt
   }
   if (hasRole('nurse')) {
     out.push({ key: 'nurse', label: 'Nurse Dashboard', path: '/dashboard/nurse-home' });
+  }
+  if (enabledModules.inpatient && hasAnyRole('canteen_admin', 'canteen_sales')) {
+    out.push({ key: 'canteen', label: 'Canteen', path: '/dashboard/canteen' });
   }
   return out;
 }

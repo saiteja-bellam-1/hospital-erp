@@ -30,6 +30,7 @@ import {
   Plus,
 } from 'lucide-react';
 import axios from 'axios';
+import { localDateString } from '../../utils/localDate';
 
 const NurseDashboard = () => {
   const { toast } = useToast();
@@ -65,7 +66,7 @@ const NurseDashboard = () => {
     pain_scale: '',
     bmi: '',
     notes: '',
-    recorded_date: new Date().toISOString().split('T')[0]
+    recorded_date: localDateString()
   });
 
   // Load initial data
@@ -151,7 +152,7 @@ const NurseDashboard = () => {
   const fetchTodayAppointments = async () => {
     try {
       const token = localStorage.getItem('token');
-      const today = new Date().toISOString().split('T')[0];
+      const today = localDateString();
       const response = await fetch(`/api/appointments/?date_from=${today}&date_to=${today}`, {
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -253,7 +254,7 @@ const NurseDashboard = () => {
       pain_scale: '',
       bmi: '',
       notes: '',
-      recorded_date: new Date().toISOString().split('T')[0]
+      recorded_date: localDateString()
     });
   };
 

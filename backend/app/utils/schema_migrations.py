@@ -66,17 +66,17 @@ def run_migration(engine, name: str, fn: Callable[[], None]) -> None:
     The caller decides whether to abort startup on the raised exception.
     """
     ensure_table(engine)
-    started_at = datetime.datetime.utcnow()
+    started_at = datetime.datetime.now()
     try:
         fn()
     except Exception as e:
-        completed_at = datetime.datetime.utcnow()
+        completed_at = datetime.datetime.now()
         try:
             _record(engine, name, "failed", str(e)[:1000], started_at, completed_at)
         except Exception:
             pass  # Recording the failure mustn't mask the original error
         raise
-    completed_at = datetime.datetime.utcnow()
+    completed_at = datetime.datetime.now()
     _record(engine, name, "success", None, started_at, completed_at)
 
 

@@ -15,6 +15,7 @@ import {
   Activity
 } from 'lucide-react';
 import { useToast } from '../../hooks/use-toast';
+import { localDateString } from '../../utils/localDate';
 
 const VitalsForm = ({ 
   isOpen, 
@@ -37,7 +38,7 @@ const VitalsForm = ({
     pain_scale: '',
     bmi: '',
     notes: '',
-    recorded_date: new Date().toISOString().split('T')[0]
+    recorded_date: localDateString()
   });
 
   // Calculate BMI when weight and height change
@@ -65,7 +66,7 @@ const VitalsForm = ({
       pain_scale: '',
       bmi: '',
       notes: '',
-      recorded_date: new Date().toISOString().split('T')[0]
+      recorded_date: localDateString()
     });
   };
 

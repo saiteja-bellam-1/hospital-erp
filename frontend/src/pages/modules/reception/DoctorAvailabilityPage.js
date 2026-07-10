@@ -17,11 +17,12 @@ import {
   ChevronLeft,
   ChevronRight
 } from 'lucide-react';
+import { localDateString } from '../../../utils/localDate';
 
 const DoctorAvailabilityPage = () => {
   const [doctors, setDoctors] = useState([]);
   const [selectedDoctor, setSelectedDoctor] = useState('');
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+  const [selectedDate, setSelectedDate] = useState(localDateString());
   const [availabilityData, setAvailabilityData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [viewMode, setViewMode] = useState('day'); // 'day' or 'week'
@@ -86,7 +87,7 @@ const DoctorAvailabilityPage = () => {
     for (let i = 0; i < 7; i++) {
       const d = new Date(startDate);
       d.setDate(d.getDate() + i);
-      const dateStr = d.toISOString().split('T')[0];
+      const dateStr = localDateString(d);
       try {
         const response = await fetch(
           `/api/appointments/doctors/${doctorId}/available-slots?appointment_date=${dateStr}`,
@@ -247,7 +248,7 @@ const DoctorAvailabilityPage = () => {
         /* Week View */
         <div className="grid grid-cols-7 gap-2">
           {weekData.map((day) => (
-            <Card key={day.date} className={`${!day.available ? 'opacity-60 bg-gray-50' : ''} ${day.date === new Date().toISOString().split('T')[0] ? 'ring-2 ring-blue-400' : ''}`}>
+            <Card key={day.date} className={`${!day.available ? 'opacity-60 bg-gray-50' : ''} ${day.date === localDateString() ? 'ring-2 ring-blue-400' : ''}`}>
               <CardHeader className="p-3 pb-1">
                 <div className="text-center">
                   <p className="text-xs text-gray-500">{day.dayName}</p>

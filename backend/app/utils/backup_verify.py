@@ -47,7 +47,7 @@ def verify_backup_artifact(
     checker, restore UI) can read it without re-opening the DB.
     """
     sidecar_path = db_path + SIDECAR_SUFFIX
-    written_at = datetime.datetime.utcnow().isoformat() + "Z"
+    written_at = datetime.datetime.now().isoformat()
 
     result: dict = {
         "ok": False,

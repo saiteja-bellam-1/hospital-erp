@@ -10,9 +10,9 @@ Room rent is NOT auto-posted as a row: the bill calculation already accrues
 room-rent rows would double-bill unless we change the bill calc, which is a
 larger refactor (covered separately as the room-rate-snapshot follow-up).
 
-The thread runs every hour and only fires once per calendar date in IST. It
-does not depend on a wall-clock cron; if the server is down at midnight, the
-next hourly tick after wake-up posts the missed day.
+The thread runs every hour and only fires once per calendar date (system local
+time via date.today()). It does not depend on a wall-clock cron; if the server
+is down at midnight, the next hourly tick after wake-up posts the missed day.
 """
 import datetime
 import threading

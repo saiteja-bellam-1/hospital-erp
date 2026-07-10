@@ -1,5 +1,6 @@
 import React from 'react';
 import FormNavContainer from './FormNavContainer';
+import ReferralSelectWithCreate from './ReferralSelectWithCreate';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
@@ -23,6 +24,7 @@ export const EMPTY_PATIENT_FORM = {
   abha_id: '',
   email: '',
   primary_phone: '',
+  referred_by: '',
   emergency_contact_name: '',
   emergency_contact_phone: '',
   emergency_contact_relation: '',
@@ -127,6 +129,10 @@ export default function PatientRegisterFormFields({ form, onChange }) {
         <Label>Email</Label>
         <Input type="email" value={form.email} onChange={(e) => set('email', e.target.value)} />
       </div>
+      <ReferralSelectWithCreate
+        value={form.referred_by || ''}
+        onValueChange={(name) => set('referred_by', name)}
+      />
 
       <div className="col-span-full border-t pt-2 mt-1">
         <Label className="text-sm font-semibold text-gray-700">Emergency Contact</Label>

@@ -10,6 +10,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '../../../components/ui/select';
 import { Stethoscope, ShieldAlert, Heart, Loader2, AlertTriangle } from 'lucide-react';
+import { localDateString } from '../../../utils/localDate';
 
 const TYPE_CARDS = [
   { value: 'doctor_visit',      label: 'Doctor (consultant)', sub: 'Visiting consultant fee',
@@ -68,7 +69,7 @@ const VisitDialog = ({
       const date = new Date(now);
       if (hour < 6) date.setDate(date.getDate() - 1);
       axios.get('/api/inpatient/roster/on-duty', {
-        params: { target_date: date.toISOString().slice(0, 10), shift },
+        params: { target_date: localDateString(date), shift },
       })
         .then(r => setOnDutyNurses(r.data || []))
         .catch(() => setOnDutyNurses([]));

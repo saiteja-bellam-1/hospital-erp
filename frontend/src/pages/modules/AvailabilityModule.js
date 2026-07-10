@@ -9,6 +9,7 @@ import { Badge } from '../../components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../components/ui/dialog';
 import { Calendar, Clock, Activity, Plus, Save, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { useToast } from '../../hooks/use-toast';
+import { localDateString, localDateStringOffset } from '../../utils/localDate';
 
 const AvailabilityModule = () => {
   const { toast } = useToast();
@@ -109,8 +110,8 @@ const AvailabilityModule = () => {
   const fetchSpecialSchedules = async () => {
     try {
       const token = localStorage.getItem('token');
-      const today = new Date().toISOString().split('T')[0];
-      const futureDate = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+      const today = localDateString();
+      const futureDate = localDateStringOffset(90);
       
       const response = await fetch(`/api/doctor-availability/special-schedule?start_date=${today}&end_date=${futureDate}`, {
         headers: { Authorization: `Bearer ${token}` }

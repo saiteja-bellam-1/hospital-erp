@@ -11,6 +11,7 @@ import PharmacyStoreSelector from '../../../../components/pharmacy/PharmacyStore
 import { usePharmacyStore } from '../../../../contexts/PharmacyStoreContext';
 
 import { pharmacyNoSpinInputClass } from '../../../../utils/pharmacyUnits';
+import { localDateString } from '../../../../utils/localDate';
 
 // Each report definition can opt into:
 //   dateRange:    show From / To inputs
@@ -45,7 +46,7 @@ const REPORTS = [
     pdfPath: '/api/pharmacy/reports/movement/pdf' },
 ];
 
-const TODAY = () => new Date().toISOString().split('T')[0];
+const TODAY = () => localDateString();
 
 export default function ReportsTab() {
   const { storeParams, multiStoreEnabled } = usePharmacyStore();

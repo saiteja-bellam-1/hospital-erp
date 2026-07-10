@@ -129,7 +129,7 @@ def cleanup_old_backups(gdrive_config: dict, hospital_id: str, retention_days: i
         return
 
     from datetime import timedelta
-    cutoff = datetime.utcnow() - timedelta(days=retention_days)
+    cutoff = datetime.now() - timedelta(days=retention_days)
 
     for f in resp.json().get("files", []):
         try:

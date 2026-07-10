@@ -35,6 +35,7 @@ import {
   ArrowRight,
   Package
 } from 'lucide-react';
+import { localDateString } from '../../../utils/localDate';
 
 const ReceptionDashboard = () => {
   const { toast } = useToast();
@@ -93,7 +94,7 @@ const ReceptionDashboard = () => {
     setLoading(true);
     try {
       const token = localStorage.getItem('token');
-      const today = new Date().toISOString().split('T')[0];
+      const today = localDateString();
       
       // Fetch today's appointments
       const appointmentsResponse = await fetch(`/api/appointments/?date_from=${today}&date_to=${today}`, {
@@ -248,6 +249,7 @@ const ReceptionDashboard = () => {
 
   const collectAllLabPayments = async () => {
     if (pendingLabOrders.length === 0) return;
+    if (labPaymentLoading) return;
     const patientId = pendingLabOrders[0].patient_id;
     setLabPaymentLoading(true);
     try {

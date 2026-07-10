@@ -1,6 +1,6 @@
 """CSV user import — parser, validator, applier.
 
-Used in two places:
+Used in three places:
 
   1. Installer wizard pre-install validation (via ``installer/dbcheck/dbcheck.py``
      ``validate-users-csv`` command). dbcheck is built with ``sqlalchemy``
@@ -10,6 +10,9 @@ Used in two places:
 
   2. First-launch bootstrap (``app.services.bootstrap_from_seed._apply_fresh``)
      which calls parse_and_validate again as defence-in-depth, then apply_users.
+
+  3. In-app admin bulk import (``POST /api/admin/users/bulk-import-staff``)
+     for normal staff roles after install — same CSV shape as the installer.
 
 Policy:
 
@@ -55,6 +58,8 @@ INSTALLER_ALLOWED_ROLES = frozenset({
     "pharmacist",
     "billing_admin",
     "inpatient_admin",
+    "canteen_admin",
+    "canteen_sales",
     "frontdesk",
     "receptionist",
 })
@@ -393,6 +398,26 @@ def parse_and_validate_nurses(
     )
 
 
+def parse_and_validate_staff(
+    csv_text: str,
+    *,
+    existing_usernames: Optional[Iterable[str]] = None,
+    existing_emails: Optional[Iterable[str]] = None,
+) -> tuple[list, list]:
+    """In-app importer for normal staff (non-doctor / non-nurse) roles.
+
+    Same CSV shape as the installer users CSV: each row must include a
+    ``role`` column from :data:`INSTALLER_ALLOWED_ROLES`. Optional
+    ``additional_roles`` (``;``-separated) are allowed.
+    """
+    return parse_and_validate(
+        csv_text,
+        allowed_roles=INSTALLER_ALLOWED_ROLES,
+        existing_usernames=existing_usernames,
+        existing_emails=existing_emails,
+    )
+
+
 def apply_users(
     db,
     rows: list,
@@ -418,9 +443,18 @@ def apply_users(
 
     allowed_roles_l = {r.lower() for r in allowed_roles}
 
-    # Build name -> UserRole lookup once.
+    # Build name -> UserRole lookup once. Only require roles that appear in
+    # this CSV batch (primary + additional) so a missing unused role (e.g.
+    # canteen on an older DB) does not block importing receptionists.
     role_objs = {r.name.lower(): r for r in db.query(UserRole).all()}
-    for needed in allowed_roles_l:
+    needed_roles = set()
+    for row in rows:
+        needed_roles.add(row.role.lower())
+        for extra in row.additional_roles:
+            needed_roles.add(extra.lower())
+    for needed in needed_roles:
+        if needed not in allowed_roles_l:
+            raise ValueError(f"Role {needed!r} is not in the allowed set for this import")
         if needed not in role_objs:
             raise ValueError(
                 f"Required role {needed!r} is not seeded in user_roles — "

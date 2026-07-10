@@ -28,10 +28,11 @@ import {
   shouldShowAppointmentBill,
   validateAppointmentBooking,
 } from '../utils/appointmentBooking';
+import { localDateString } from '../utils/localDate';
 
 const EMPTY_APPOINTMENT = {
   doctor_id: '',
-  appointment_date: new Date().toISOString().split('T')[0],
+  appointment_date: localDateString(),
   appointment_time: '',
   duration_minutes: 10,
   appointment_type: 'consultation',
@@ -126,7 +127,7 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
       if (res.data?.default_consultation_duration) {
         setAppointmentForm((prev) => ({ ...prev, duration_minutes: res.data.default_consultation_duration }));
       }
-      const today = new Date().toISOString().split('T')[0];
+      const today = localDateString();
       if (date === today) {
         const now = new Date();
         const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
@@ -418,7 +419,7 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
                   <Input
                     type="date"
                     value={appointmentForm.appointment_date}
-                    min={new Date().toISOString().split('T')[0]}
+                    min={localDateString()}
                     onChange={(e) => {
                       setAppointmentForm({ ...appointmentForm, appointment_date: e.target.value });
                       if (appointmentForm.doctor_id) {

@@ -151,7 +151,7 @@ def consume_seed_if_present(exe_dir: str) -> Optional[dict]:
         status = {
             "applied": True,
             "mode": mode,
-            "at": datetime.datetime.utcnow().isoformat() + "Z",
+            "at": datetime.datetime.now().isoformat(),
         }
         users_result = seed.get("_users_import_result")
         if users_result is not None:
@@ -166,7 +166,7 @@ def consume_seed_if_present(exe_dir: str) -> Optional[dict]:
             "applied": False,
             "error": str(e),
             "traceback": tb,
-            "at": datetime.datetime.utcnow().isoformat() + "Z",
+            "at": datetime.datetime.now().isoformat(),
         }
         _write_status(status_path, status)
         return status

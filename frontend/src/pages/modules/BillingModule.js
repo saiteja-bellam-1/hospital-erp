@@ -17,6 +17,7 @@ import {
 import { printPdfFromUrl } from '../../utils/printPdf';
 import PdfPreviewDialog from '../../components/PdfPreviewDialog';
 import PatientSearchPicker from '../../components/PatientSearchPicker';
+import { localDateString, localDateStringOffset } from '../../utils/localDate';
 
 const BillingModule = () => {
   const [bills, setBills] = useState([]);
@@ -25,8 +26,8 @@ const BillingModule = () => {
   const [activeTab, setActiveTab] = useState('all');
 
   // Filters
-  const today = new Date().toISOString().split('T')[0];
-  const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0];
+  const today = localDateString();
+  const weekAgo = localDateStringOffset(-7);
   const [dateFrom, setDateFrom] = useState(weekAgo);
   const [dateTo, setDateTo] = useState(today);
   const [patientSearch, setPatientSearch] = useState('');

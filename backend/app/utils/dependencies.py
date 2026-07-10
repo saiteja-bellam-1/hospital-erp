@@ -308,6 +308,66 @@ def require_feature_permission_any(module: str, *permission_names: str):
     return feature_checker
 
 
+def require_canteen_permission(permission_name: str):
+    """Canteen permission check gated by the inpatient module.
+
+    Canteen is always available when inpatient is enabled/licensed — there is
+    no separate license feature or SystemModule row for canteen. Permission
+    keys still live under module_name=\"canteen\".
+
+    Do NOT call user_has_feature_permission() here: that helper also requires
+    the module name to appear in license.features, which would always deny
+    canteen (it is not a licensed feature).
+    """
+    def checker(
+        current_user: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ):
+        user_roles = set(current_user.role_names)
+        if UserRoles.SUPER_ADMIN in user_roles or UserRoles.HOSPITAL_ADMIN in user_roles:
+            return current_user
+
+        from app.models.system import SystemModule
+        sys_module = db.query(SystemModule).filter(
+            SystemModule.module_name == Modules.INPATIENT
+        ).first()
+        if sys_module and not sys_module.is_enabled:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Inpatient module is not enabled (required for canteen)",
+            )
+
+        from app.services.license_service import get_current_license
+        license_record = get_current_license(db)
+        if license_record and license_record.features:
+            if Modules.INPATIENT not in license_record.features:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Inpatient is not included in your license (required for canteen)",
+                )
+
+        from app.models.permissions import RoleModulePermission
+
+        role_ids = [r.id for r in (current_user.roles or [])]
+        if current_user.role_id and current_user.role_id not in role_ids:
+            role_ids.append(current_user.role_id)
+
+        for rid in role_ids:
+            rp = db.query(RoleModulePermission).filter(
+                RoleModulePermission.role_id == rid,
+                RoleModulePermission.module_name == Modules.CANTEEN,
+            ).first()
+            if rp and rp.permissions and permission_name in rp.permissions:
+                return current_user
+
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Permission '{permission_name}' required on canteen",
+        )
+
+    return checker
+
+
 def require_role(required_roles: list):
     def role_checker(current_user: User = Depends(get_current_user)):
         if not _user_has_any_role(current_user, required_roles):

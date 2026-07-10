@@ -33,9 +33,13 @@ from app.models.inpatient import (
     FluidBalance, CriticalLabAlert,
 )
 from app.models.patient import PatientAllergy
+from app.models.canteen import (  # noqa: F401
+    CanteenCategory, CanteenItem, CanteenOrder, CanteenOrderItem,
+    CanteenSale, CanteenSaleItem,
+)
 
 # Import route modules
-from app.routes import auth, patients, admin, system, module_admin, hospital_admin, appointments, prescriptions, medicines, consultations, prescriptions_simple, doctor_availability, lab, ehr, license, backup, referrals, audit, inpatient, outpatient_procedures, pharmacy
+from app.routes import auth, patients, admin, system, module_admin, hospital_admin, appointments, prescriptions, medicines, consultations, prescriptions_simple, doctor_availability, lab, ehr, license, backup, referrals, audit, inpatient, outpatient_procedures, pharmacy, canteen
 from app.middleware.license_middleware import LicenseMiddleware
 from app.middleware.audit_middleware import AuditMiddleware
 from app.middleware.maintenance import MaintenanceMiddleware
@@ -461,6 +465,7 @@ app.include_router(referrals.router, prefix="/api/referrals", tags=["Referrals"]
 app.include_router(audit.router, prefix="/api/audit", tags=["Audit Logs"])
 # app.include_router(outpatient.router, prefix="/api/outpatient", tags=["Outpatient"])
 app.include_router(inpatient.router, prefix="/api/inpatient", tags=["Inpatient"])
+app.include_router(canteen.router, prefix="/api/canteen", tags=["Canteen"])
 app.include_router(outpatient_procedures.router, prefix="/api/outpatient", tags=["Outpatient Procedures"])
 
 # Serve uploaded files

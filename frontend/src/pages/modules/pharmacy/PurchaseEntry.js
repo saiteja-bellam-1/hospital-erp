@@ -19,6 +19,7 @@ import FormNavContainer from '../../../components/FormNavContainer';
 import { NAV_SKIP_ATTR } from '../../../utils/formNavigation';
 import { displayPharmacyNumericInput, formatBatchLabel, pharmacyNoSpinInputClass, roundMoney } from '../../../utils/pharmacyUnits';
 import { errMsg } from '../PharmacyModule';
+import { localDateString } from '../../../utils/localDate';
 
 const emptyLine = () => ({
   medicine_id: null,
@@ -34,7 +35,7 @@ const emptyLine = () => ({
   discount_pct: '',
 });
 
-const TODAY = new Date().toISOString().split('T')[0];
+const TODAY = localDateString();
 
 const expiryToDisplay = (iso) => {
   if (!iso) return '';

@@ -39,6 +39,8 @@ SYSTEM_ROLES = [
     ("pharmacy_transfer_clerk", "Pharmacy transfer clerk — master store stock movements to satellites"),
     ("billing_admin", "Billing Administrator — manages rates, insurance, financial operations"),
     ("inpatient_admin", "Inpatient Administrator — manages beds, wards, room rates, ward operations"),
+    ("canteen_admin", "Canteen Administrator — manages food catalog, prices, and kitchen orders"),
+    ("canteen_sales", "Canteen Sales — IP food order queue, kitchen status, and walk-in POS"),
     ("frontdesk", "Front Desk Staff — appointments, patient registration, scheduling"),
     ("receptionist", "Receptionist with patient registration access"),
 ]
@@ -72,6 +74,26 @@ _INPATIENT_ALL = [
     "write_discharge_summary", "view_discharge_summary",
 ]
 
+
+# Canteen permissions — available whenever inpatient is enabled/licensed.
+_CANTEEN_ALL = [
+    "view_catalog", "manage_catalog",
+    "view_orders", "place_order", "manage_order_status",
+    "create_sale", "view_sales", "void_sale",
+]
+# Canteen admin: catalog + kitchen + POS (clinical staff place IP ward orders).
+_CANTEEN_ADMIN_DEFAULT = [
+    "view_catalog", "manage_catalog",
+    "view_orders", "manage_order_status",
+    "create_sale", "view_sales", "void_sale",
+]
+_CANTEEN_SALES_DEFAULT = [
+    "view_catalog", "view_orders", "manage_order_status",
+    "create_sale", "view_sales", "void_sale",
+]
+_CANTEEN_CLINICAL_ORDER = [
+    "view_catalog", "view_orders", "place_order",
+]
 
 # Full pharmacy permission set — kept in sync with the pharmacy permission catalog
 # above. Used to seed full access for super_admin / hospital_admin / pharmacy_admin.
@@ -278,6 +300,15 @@ def _seed_module_permissions(db, ModulePermission):
         {"module_name": "inpatient", "permission_name": "issue_gate_pass", "permission_description": "Issue a gate pass after discharge for security at exit", "category": "user"},
         {"module_name": "inpatient", "permission_name": "write_discharge_summary", "permission_description": "Author and finalize the clinical discharge summary", "category": "user"},
         {"module_name": "inpatient", "permission_name": "view_discharge_summary", "permission_description": "View and print the discharge summary document", "category": "user"},
+        # Canteen (gated by inpatient module enablement / license)
+        {"module_name": "canteen", "permission_name": "view_catalog", "permission_description": "View the canteen food catalog", "category": "user"},
+        {"module_name": "canteen", "permission_name": "manage_catalog", "permission_description": "Create and edit canteen categories, items, and prices", "category": "admin"},
+        {"module_name": "canteen", "permission_name": "view_orders", "permission_description": "View canteen orders for admitted patients", "category": "user"},
+        {"module_name": "canteen", "permission_name": "place_order", "permission_description": "Place and cancel canteen orders for admitted patients", "category": "user"},
+        {"module_name": "canteen", "permission_name": "manage_order_status", "permission_description": "Update kitchen order status (preparing / ready / delivered)", "category": "user"},
+        {"module_name": "canteen", "permission_name": "create_sale", "permission_description": "Create walk-in / cash canteen POS sales", "category": "user"},
+        {"module_name": "canteen", "permission_name": "view_sales", "permission_description": "View canteen POS sales history", "category": "user"},
+        {"module_name": "canteen", "permission_name": "void_sale", "permission_description": "Void a completed canteen POS sale", "category": "admin"},
         # EHR
         {"module_name": "ehr", "permission_name": "view_records", "permission_description": "View patient electronic health records", "category": "user"},
         {"module_name": "ehr", "permission_name": "edit_records", "permission_description": "Edit patient records", "category": "user"},
@@ -310,6 +341,7 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
             "billing": ["manage_rates", "process_payments", "generate_invoices", "view_financial_reports", "manage_insurance", "handle_refunds"],
             "outpatient": ["schedule_appointments", "manage_schedules", "register_patients", "manage_queues", "view_appointments", "cancel_appointments"],
             "inpatient": list(_INPATIENT_ALL),
+            "canteen": list(_CANTEEN_ALL),
             "ehr": ["view_records", "edit_records", "create_prescriptions", "manage_templates", "view_history", "generate_reports"],
         },
         "hospital_admin": {
@@ -319,6 +351,7 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
             "billing": ["view_financial_reports", "manage_insurance", "process_payments", "generate_invoices"],
             "outpatient": ["schedule_appointments", "manage_schedules", "register_patients", "manage_queues", "view_appointments", "cancel_appointments"],
             "inpatient": list(_INPATIENT_ALL),
+            "canteen": list(_CANTEEN_ALL),
             "ehr": ["view_records", "edit_records", "view_history", "generate_reports"],
         },
         "doctor": {
@@ -344,6 +377,7 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
                 "accept_admission",
                 "write_discharge_summary", "view_discharge_summary",
             ],
+            "canteen": list(_CANTEEN_CLINICAL_ORDER),
         },
         "nurse": {
             "ehr": ["view_records", "edit_records", "view_history", "manage_allergies"],
@@ -361,6 +395,7 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
                 "view_roster",
                 "view_documents",
             ],
+            "canteen": list(_CANTEEN_CLINICAL_ORDER),
         },
         "inpatient_admin": {
             "ehr": ["view_records", "view_history", "manage_allergies"],
@@ -380,6 +415,7 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
                 "accept_admission", "convert_payer", "manage_payer_schemes",
                 "write_discharge_summary", "view_discharge_summary",
             ],
+            "canteen": list(_CANTEEN_CLINICAL_ORDER),
         },
         "billing_admin": {
             "billing": ["manage_rates", "process_payments", "generate_invoices", "view_financial_reports", "manage_insurance", "handle_refunds"],
@@ -418,6 +454,7 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
                 "manage_ancillary_catalog", "manage_surgery_packages", "manage_tpa",
                 "manage_consent_templates",
             ],
+            "canteen": list(_CANTEEN_CLINICAL_ORDER),
         },
         "frontdesk": {
             "outpatient": ["schedule_appointments", "register_patients", "manage_queues", "view_appointments", "cancel_appointments"],
@@ -458,6 +495,12 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
         },
         "pharmacy_transfer_clerk": {
             "pharmacy": list(_PHARMACY_TRANSFER_CLERK),
+        },
+        "canteen_admin": {
+            "canteen": list(_CANTEEN_ADMIN_DEFAULT),
+        },
+        "canteen_sales": {
+            "canteen": list(_CANTEEN_SALES_DEFAULT),
         },
     }
 

@@ -16,6 +16,7 @@ import {
   ArrowLeft,
 } from 'lucide-react';
 import PdfPreviewDialog from '../../../components/PdfPreviewDialog';
+import { localDateString, localDateStringOffset } from '../../../utils/localDate';
 
 const getLabStatusColor = (status) => {
   const colors = {
@@ -46,8 +47,8 @@ const ReceptionLabOrdersPage = () => {
   const dashboardPath = roles.some((role) => ['lab_admin', 'lab_technician'].includes(role))
     ? '/dashboard/lab-home'
     : '/dashboard/reception-home';
-  const today = new Date().toISOString().split('T')[0];
-  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  const today = localDateString();
+  const thirtyDaysAgo = localDateStringOffset(-30);
 
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);

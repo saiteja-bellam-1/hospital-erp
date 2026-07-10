@@ -28,6 +28,7 @@ import DischargeCheckoutPage from './inpatient/DischargeCheckoutPage';
 import DoctorDischargeSummaryPage from './inpatient/discharge/DoctorDischargeSummaryPage';
 import { canAccessDischargeCheckout, prepareDischargeSummaryEdit, summaryIsReadyForPrint } from './inpatient/discharge/dischargeSummaryUtils';
 import DischargeHistory from './inpatient/discharge/DischargeHistory';
+import CanteenOrderPanel from './canteen/CanteenOrderPanel';
 import DischargeSummaryEditor from './inpatient/DischargeSummaryEditor';
 import DischargeSummaryPreviewCard from './inpatient/discharge/DischargeSummaryPreviewCard';
 import TakeHomeMedicinesSection from '../../components/prescription/TakeHomeMedicinesSection';
@@ -40,6 +41,7 @@ import {
   CalendarRange, Printer, Wrench, Eye
 } from 'lucide-react';
 import axios from 'axios';
+import { localDateString, localDateTimeString, localDateTimeToApi } from '../../utils/localDate';
 
 // ============================================================
 // Status badge helpers
@@ -141,6 +143,7 @@ const InpatientModule = () => {
     return list.includes('*') || list.includes(key);
   }, [myPerms]);
   const ip = useCallback((key) => hasPerm('inpatient', key), [hasPerm]);
+  const canteen = useCallback((key) => hasPerm('canteen', key), [hasPerm]);
   const canViewVitals = useMemo(() => ip('view_vitals'), [ip]);
   const canRecordVitals = useMemo(() => ip('record_vitals'), [ip]);
   // Nurse-only users get a nurse-scoped Visit form (no Doctor Visit option,
@@ -253,7 +256,6 @@ const InpatientModule = () => {
     room_number: '', room_type: 'general', floor: '', department: '', ward: '',
     nursing_charge_per_visit: '', bed_count: 1, room_charge_per_day: '',
     amenities: [], is_isolation: false, gender_policy: 'mixed',
-    meal_prices: { breakfast: '', lunch: '', dinner: '', snacks: '' },
   });
   const [roomDialogSection, setRoomDialogSection] = useState('basics'); // basics | pricing | features
   const [roomTypes, setRoomTypes] = useState([]);
@@ -312,7 +314,7 @@ const InpatientModule = () => {
   const [productivityRange, setProductivityRange] = useState(() => {
     const today = new Date();
     const start = new Date(Date.now() - 30 * 86400 * 1000);
-    return { from: start.toISOString().slice(0, 10), to: today.toISOString().slice(0, 10), doctor_id: '' };
+    return { from: localDateString(start), to: localDateString(today), doctor_id: '' };
   });
   const [productivityData, setProductivityData] = useState(null);
   const [showNursingNoteDialog, setShowNursingNoteDialog] = useState(false);
@@ -338,7 +340,7 @@ const InpatientModule = () => {
 
   // MAR
   const [mar, setMar] = useState([]);
-  const [marDate, setMarDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [marDate, setMarDate] = useState(() => localDateString());
   const [showAdministerDialog, setShowAdministerDialog] = useState(false);
   const [administeringDose, setAdministeringDose] = useState(null);
   const [administerForm, setAdministerForm] = useState({ status: 'given', dose_given: '', route: '', site: '', reason_if_not_given: '', notes: '' });
@@ -358,14 +360,6 @@ const InpatientModule = () => {
   const [ancillaryServices, setAncillaryServices] = useState([]);
   const [showAncillaryDialog, setShowAncillaryDialog] = useState(false);
   const [ancillaryForm, setAncillaryForm] = useState({ service_id: '', quantity: 1, unit_price: '', notes: '' });
-
-  // Food ordering — per-admission meal schedule
-  const [foodOrders, setFoodOrders] = useState([]);
-  const [foodMealPlans, setFoodMealPlans] = useState({}); // {meal_type: price} for the admission's room type
-  const [foodDiet, setFoodDiet] = useState('veg');
-  const [foodNotes, setFoodNotes] = useState('');
-  const [foodDaysAhead, setFoodDaysAhead] = useState(3); // how many days to show in grid
-  const [foodBusy, setFoodBusy] = useState(false);
 
   // Phase 2: Bills history + interim
   const [admissionBills, setAdmissionBills] = useState([]);
@@ -447,7 +441,7 @@ const InpatientModule = () => {
   const [nurseAssignments, setNurseAssignments] = useState([]);
   const [nursesList, setNursesList] = useState([]);
   const [showNurseAssignDialog, setShowNurseAssignDialog] = useState(false);
-  const [nurseAssignForm, setNurseAssignForm] = useState({ nurse_id: '', shift: 'morning', assignment_date: new Date().toISOString().slice(0, 10), is_primary: false, notes: '' });
+  const [nurseAssignForm, setNurseAssignForm] = useState({ nurse_id: '', shift: 'morning', assignment_date: localDateString(), is_primary: false, notes: '' });
   const [onDutyNurses, setOnDutyNurses] = useState([]);
   const [restrictToOnDuty, setRestrictToOnDuty] = useState(true);
 
@@ -469,7 +463,7 @@ const InpatientModule = () => {
   // ICU: Intake/Output
   const [ioEntries, setIoEntries] = useState([]);
   const [ioBalance, setIoBalance] = useState(null);
-  const [ioDate, setIoDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [ioDate, setIoDate] = useState(() => localDateString());
   const [showIoDialog, setShowIoDialog] = useState(false);
   const [ioForm, setIoForm] = useState({ io_type: 'intake', category: 'oral', amount_ml: '', shift: 'morning', notes: '' });
 
@@ -754,85 +748,6 @@ const InpatientModule = () => {
       setAncillaryCharges(res.data || []);
     } catch { setAncillaryCharges([]); }
   }, []);
-
-  const fetchFoodOrders = useCallback(async (admissionId) => {
-    try {
-      const res = await axios.get(`/api/inpatient/admissions/${admissionId}/food-orders`);
-      setFoodOrders(res.data || []);
-    } catch { setFoodOrders([]); }
-  }, []);
-
-  const fetchFoodMealPlans = useCallback(async (roomType) => {
-    if (!roomType) return;
-    try {
-      const res = await axios.get('/api/inpatient/meal-plans', { params: { room_type: roomType } });
-      const map = {};
-      (res.data || []).forEach(p => {
-        if (p.room_type === roomType && p.is_active) {
-          map[p.meal_type] = parseFloat(p.price) || 0;
-        }
-      });
-      setFoodMealPlans(map);
-    } catch { setFoodMealPlans({}); }
-  }, []);
-
-  // Toggle a single meal cell — order if missing, cancel if active, re-order if cancelled.
-  const handleToggleFoodCell = async (mealDate, mealType, existing) => {
-    if (!activityAdmission) return;
-    if (foodBusy) return;
-    setFoodBusy(true);
-    try {
-      if (existing && existing.status !== 'cancelled') {
-        // Cancel (blocked if billed — caught by 409)
-        await axios.post(`/api/inpatient/food-orders/${existing.id}/cancel`, { reason: 'Operator removed from schedule' });
-      } else {
-        await axios.post(`/api/inpatient/admissions/${activityAdmission.id}/food-orders`, {
-          items: [{ meal_date: mealDate, meal_type: mealType, diet_preference: foodDiet, notes: foodNotes || undefined }],
-        });
-      }
-      await fetchFoodOrders(activityAdmission.id);
-    } catch (err) {
-      const detail = err.response?.data?.detail;
-      const msg = typeof detail === 'string' ? detail : (detail?.message || 'Operation failed');
-      toast({ variant: 'destructive', title: 'Error', description: msg });
-    } finally {
-      setFoodBusy(false);
-    }
-  };
-
-  // Bulk: order every meal type for the given date (skipping already-ordered).
-  const handleOrderWholeDay = async (mealDate) => {
-    if (!activityAdmission) return;
-    const items = ['breakfast', 'lunch', 'dinner', 'snacks']
-      .filter(mt => (foodMealPlans[mt] || 0) > 0)
-      .map(mt => ({ meal_date: mealDate, meal_type: mt, diet_preference: foodDiet, notes: foodNotes || undefined }));
-    if (items.length === 0) {
-      toast({ variant: 'destructive', title: 'No meal plan', description: 'No meal prices set for this room type' });
-      return;
-    }
-    setFoodBusy(true);
-    try {
-      await axios.post(`/api/inpatient/admissions/${activityAdmission.id}/food-orders`, { items });
-      await fetchFoodOrders(activityAdmission.id);
-      toast({ title: 'Done', description: `Ordered meals for ${mealDate}` });
-    } catch (err) {
-      const detail = err.response?.data?.detail;
-      toast({ variant: 'destructive', title: 'Error', description: typeof detail === 'string' ? detail : (detail?.message || 'Failed to order') });
-    } finally {
-      setFoodBusy(false);
-    }
-  };
-
-  const handleMarkFoodDelivered = async (orderId) => {
-    if (foodBusy) return;
-    setFoodBusy(true);
-    try {
-      await axios.patch(`/api/inpatient/food-orders/${orderId}`, { status: 'delivered' });
-      await fetchFoodOrders(activityAdmission.id);
-    } catch (err) {
-      toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed to mark delivered' });
-    } finally { setFoodBusy(false); }
-  };
 
   const fetchAncillaryServices = useCallback(async () => {
     try {
@@ -1338,9 +1253,6 @@ const InpatientModule = () => {
     fetchBalance(admission.id);
     fetchAncillaryCharges(admission.id);
     fetchAncillaryServices();
-    fetchFoodOrders(admission.id);
-    if (admission.room_type) fetchFoodMealPlans(admission.room_type);
-    setFoodDiet('veg'); setFoodNotes('');
     fetchAdmissionBills(admission.id);
     fetchAdmissionPackage(admission.id);
     fetchPackages();
@@ -1667,6 +1579,25 @@ const InpatientModule = () => {
         });
       });
 
+      // Canteen / food — from bill breakdown (legacy meal slots + canteen lines)
+      (b.food_entries || []).forEach(f => {
+        const price = parseFloat(f.price || 0);
+        if (price <= 0) return;
+        const name = f.source === 'canteen'
+          ? `Canteen: ${f.item_name || 'Item'}${f.meal_date ? ' — ' + f.meal_date : ''}`
+          : `Meal: ${(f.meal_type || 'meal').replace(/\b\w/g, c => c.toUpperCase())}${f.meal_date ? ' on ' + f.meal_date : ''}`;
+        items.push({
+          source: f.source === 'canteen' ? 'canteen' : 'food',
+          source_id: f.order_id || f.id,
+          item_type: 'food',
+          item_name: name,
+          quantity: Math.max(1, parseInt(f.quantity || 1)),
+          unit_price: parseFloat(f.unit_price != null ? f.unit_price : price),
+          total_price: price,
+          is_prior: !!f.billed,
+        });
+      });
+
       setReviewBillItems(items);
       setReviewBillDiscount({ type: billDiscount.type || 'flat', value: billDiscount.value || '' });
       setReviewBillTaxPct(billTaxPct || '');
@@ -1840,7 +1771,7 @@ const InpatientModule = () => {
     }
     setMortalityAdmission({ id: admissionId, discharge: {} });
     setMortalityForm({
-      cause_of_death: '', time_of_death: new Date().toISOString().slice(0, 16),
+      cause_of_death: '', time_of_death: localDateTimeString(),
       death_certificate_number: '', mlc_required: false, mlc_number: '',
       autopsy_done: false, autopsy_findings: '',
       body_handed_over_to: '', body_handover_relationship: '',
@@ -1895,7 +1826,7 @@ const InpatientModule = () => {
         setMortalityAdmission({ id: admId, discharge: {} });
         setMortalityForm({
           cause_of_death: dischargeForm.diagnosis_on_discharge || '',
-          time_of_death: new Date().toISOString().slice(0, 16),
+          time_of_death: localDateTimeString(),
           death_certificate_number: '', mlc_required: false, mlc_number: '',
           autopsy_done: false, autopsy_findings: '',
           body_handed_over_to: '', body_handover_relationship: '',
@@ -1974,54 +1905,21 @@ const InpatientModule = () => {
     } finally { setLoading(false); }
   };
 
-  // Fetch existing meal-plan prices for a room_type and merge into the form.
-  // Called when the room dialog opens or the room_type field changes.
-  const _loadMealPricesForType = async (room_type) => {
-    if (!room_type) return;
-    try {
-      const res = await axios.get('/api/inpatient/meal-plans', { params: { room_type } });
-      const byMeal = { breakfast: '', lunch: '', dinner: '', snacks: '' };
-      (res.data || []).forEach(p => {
-        if (p.room_type === room_type && byMeal.hasOwnProperty(p.meal_type)) {
-          byMeal[p.meal_type] = p.price > 0 ? String(p.price) : '';
-        }
-      });
-      setRoomForm(prev => ({ ...prev, meal_prices: byMeal }));
-    } catch { /* meal plans optional */ }
-  };
-
   // Room CRUD
   const handleSaveRoom = async (e) => {
     e.preventDefault();
     setLoading(true);
     try {
-      const { meal_prices, ...roomFields } = roomForm;
-      const payload = { ...roomFields, bed_count: parseInt(roomForm.bed_count), room_charge_per_day: parseFloat(roomForm.room_charge_per_day), nursing_charge_per_visit: parseFloat(roomForm.nursing_charge_per_visit) || 0 };
+      const payload = {
+        ...roomForm,
+        bed_count: parseInt(roomForm.bed_count),
+        room_charge_per_day: parseFloat(roomForm.room_charge_per_day),
+        nursing_charge_per_visit: parseFloat(roomForm.nursing_charge_per_visit) || 0,
+      };
       if (editingRoom) {
         await axios.put(`/api/inpatient/rooms/${editingRoom.id}`, payload);
       } else {
         await axios.post('/api/inpatient/rooms', payload);
-      }
-      // Persist meal plan prices for the room type (any non-blank entry).
-      // Blank means "no plan / inactive" — still upsert at price 0 + inactive so
-      // the operator can clear a previously-set price.
-      const planEntries = ['breakfast', 'lunch', 'dinner', 'snacks'].map(mt => {
-        const raw = (meal_prices?.[mt] ?? '').toString().trim();
-        const price = parseFloat(raw);
-        const has = raw !== '' && !isNaN(price);
-        return {
-          room_type: roomForm.room_type,
-          meal_type: mt,
-          price: has ? price : 0,
-          description: '',
-          is_active: has && price >= 0,
-        };
-      });
-      try {
-        await axios.put('/api/inpatient/meal-plans', { plans: planEntries });
-      } catch (mealErr) {
-        // Non-fatal — room saved successfully; just warn.
-        toast({ variant: 'destructive', title: 'Meal plan not saved', description: mealErr.response?.data?.detail || 'Room saved but meal prices could not be saved' });
       }
       toast({ title: 'Success', description: editingRoom ? 'Room updated' : 'Room created' });
       setShowRoomDialog(false);
@@ -2039,7 +1937,6 @@ const InpatientModule = () => {
       room_number: '', room_type: 'general', floor: '', department: '', ward: '',
       bed_count: 1, room_charge_per_day: '', nursing_charge_per_visit: '',
       amenities: [], is_isolation: false, gender_policy: 'mixed',
-      meal_prices: { breakfast: '', lunch: '', dinner: '', snacks: '' },
     });
     setRoomDialogSection('basics');
   };
@@ -2056,19 +1953,15 @@ const InpatientModule = () => {
       room_charge_per_day: room.room_charge_per_day, nursing_charge_per_visit: room.nursing_charge_per_visit || '',
       amenities: Array.isArray(amenities) ? amenities : [], is_isolation: room.is_isolation || false,
       gender_policy: room.gender_policy || 'mixed',
-      meal_prices: { breakfast: '', lunch: '', dinner: '', snacks: '' },
     });
     setRoomDialogSection('basics');
     setShowRoomDialog(true);
-    await _loadMealPricesForType(room.room_type);
   };
 
-  // When opening Add Room (vs edit), reload meal prices when type changes
   const openAddRoomDialog = async () => {
     resetRoomForm();
     setEditingRoom(null);
     setShowRoomDialog(true);
-    await _loadMealPricesForType('general');
   };
 
   const handleDeleteRoom = async (roomId) => {
@@ -2241,8 +2134,10 @@ const InpatientModule = () => {
   }, []);
 
   const openLoaDialog = (admission) => {
-    const nowLocal = new Date().toISOString().slice(0, 16);
-    const tomorrowLocal = new Date(Date.now() + 24 * 3600 * 1000).toISOString().slice(0, 16);
+    const nowLocal = localDateTimeString();
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const tomorrowLocal = localDateTimeString(tomorrow);
     setLoaDialog({
       open: true, admissionId: admission.id,
       start_datetime: nowLocal,
@@ -2263,8 +2158,8 @@ const InpatientModule = () => {
     setLoading(true);
     try {
       await axios.post(`/api/inpatient/admissions/${loaDialog.admissionId}/loa`, {
-        start_datetime: new Date(loaDialog.start_datetime).toISOString(),
-        expected_return_datetime: new Date(loaDialog.expected_return_datetime).toISOString(),
+        start_datetime: localDateTimeToApi(loaDialog.start_datetime),
+        expected_return_datetime: localDateTimeToApi(loaDialog.expected_return_datetime),
         reason: loaDialog.reason.trim(),
         approved_by_doctor_id: parseInt(loaDialog.approved_by_doctor_id, 10),
         notes: loaDialog.notes || null,
@@ -2870,7 +2765,7 @@ const InpatientModule = () => {
     try {
       const payload = {
         patient_id: reservationSelectedPatient?.id,
-        reserved_for_date: new Date(reservationForm.reserved_for_date).toISOString(),
+        reserved_for_date: localDateTimeToApi(reservationForm.reserved_for_date),
         reservation_reason: reservationForm.reservation_reason,
         notes: reservationForm.notes || null,
       };
@@ -2938,7 +2833,7 @@ const InpatientModule = () => {
       });
       toast({ title: 'Nurse assigned' });
       setShowNurseAssignDialog(false);
-      setNurseAssignForm({ nurse_id: '', shift: 'morning', assignment_date: new Date().toISOString().slice(0, 10), is_primary: false, notes: '' });
+      setNurseAssignForm({ nurse_id: '', shift: 'morning', assignment_date: localDateString(), is_primary: false, notes: '' });
       fetchNurseAssignments(activityAdmission.id);
     } catch (err) {
       const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed';
@@ -3033,7 +2928,7 @@ const InpatientModule = () => {
     const d = admission.discharge || {};
     setMortalityForm({
       cause_of_death: d.cause_of_death || '',
-      time_of_death: d.time_of_death ? new Date(d.time_of_death).toISOString().slice(0, 16) : '',
+      time_of_death: d.time_of_death ? localDateTimeString(d.time_of_death) : '',
       death_certificate_number: d.death_certificate_number || '',
       mlc_required: !!d.mlc_required,
       mlc_number: d.mlc_number || '',
@@ -3041,7 +2936,7 @@ const InpatientModule = () => {
       autopsy_findings: d.autopsy_findings || '',
       body_handed_over_to: d.body_handed_over_to || '',
       body_handover_relationship: d.body_handover_relationship || '',
-      body_handover_time: d.body_handover_time ? new Date(d.body_handover_time).toISOString().slice(0, 16) : '',
+      body_handover_time: d.body_handover_time ? localDateTimeString(d.body_handover_time) : '',
       body_handover_id_proof: d.body_handover_id_proof || '',
     });
     setShowMortalityDialog(true);
@@ -3052,9 +2947,9 @@ const InpatientModule = () => {
     setLoading(true);
     try {
       const payload = { ...mortalityForm };
-      if (payload.time_of_death) payload.time_of_death = new Date(payload.time_of_death).toISOString();
+      if (payload.time_of_death) payload.time_of_death = localDateTimeToApi(payload.time_of_death);
       else delete payload.time_of_death;
-      if (payload.body_handover_time) payload.body_handover_time = new Date(payload.body_handover_time).toISOString();
+      if (payload.body_handover_time) payload.body_handover_time = localDateTimeToApi(payload.body_handover_time);
       else delete payload.body_handover_time;
       await axios.put(`/api/inpatient/admissions/${mortalityAdmission.id}/discharge/mortality`, payload);
       toast({ title: 'Mortality details saved' });
@@ -3076,7 +2971,7 @@ const InpatientModule = () => {
       const r = await axios.get(`/api/inpatient/admissions/${admissionId}/body-release`);
       const d = r.data || {};
       setBodyReleaseRec(d);
-      const fmt = (v) => v ? new Date(v).toISOString().slice(0, 16) : '';
+      const fmt = (v) => v ? localDateTimeString(v) : '';
       setBodyReleaseTrack({
         mortuary_slot: d.mortuary_slot || '',
         body_in_mortuary_at: fmt(d.body_in_mortuary_at),
@@ -3112,7 +3007,15 @@ const InpatientModule = () => {
 
   const saveBodyReleaseTracking = async () => {
     try {
-      const r = await axios.put(`/api/inpatient/admissions/${bodyReleaseAdmId}/body-release`, bodyReleaseTrack);
+      const dtKeys = [
+        'body_in_mortuary_at', 'body_out_mortuary_at', 'embalming_at',
+        'pm_referred_at', 'pm_completed_at', 'police_noc_received_at',
+      ];
+      const payload = { ...bodyReleaseTrack };
+      for (const k of dtKeys) {
+        if (payload[k]) payload[k] = localDateTimeToApi(payload[k]);
+      }
+      const r = await axios.put(`/api/inpatient/admissions/${bodyReleaseAdmId}/body-release`, payload);
       setBodyReleaseRec(r.data);
       toast({ title: 'Saved', description: 'Mortuary tracking updated.' });
     } catch (err) {
@@ -3368,7 +3271,7 @@ const InpatientModule = () => {
         ot_room_number: otForm.ot_room_number,
         procedure_name: otForm.procedure_name,
         procedure_id: otForm.procedure_id ? parseInt(otForm.procedure_id) : null,
-        scheduled_date: new Date(otForm.scheduled_date).toISOString(),
+        scheduled_date: localDateTimeToApi(otForm.scheduled_date),
         estimated_duration_minutes: otForm.estimated_duration_minutes ? parseInt(otForm.estimated_duration_minutes) : null,
         pre_op_notes: otForm.pre_op_notes || null,
       };
@@ -3999,7 +3902,7 @@ const InpatientModule = () => {
                           { v: 'visits', l: 'Visits' },
                           { v: 'lab', l: 'Lab' },
                           { v: 'medications', l: 'Meds' },
-                          ...(ip('view_food_orders') ? [{ v: 'food', l: 'Food' }] : []),
+                          ...(canteen('view_orders') || canteen('place_order') ? [{ v: 'food', l: 'Food' }] : []),
                         ]},
                         ...(canViewBilling ? {
                           billing: { label: 'Billing', tabs: [
@@ -4239,189 +4142,14 @@ const InpatientModule = () => {
                         )}
                       </TabsContent>
 
-                      {/* Food sub-tab — per-admission meal schedule */}
+                      {/* Food sub-tab — canteen catalog orders for this admission */}
                       <TabsContent value="food" className="space-y-3 mt-3">
-                        {(() => {
-                          const mealTypes = ['breakfast', 'lunch', 'dinner', 'snacks'];
-                          const mealEmoji = { breakfast: '🌅', lunch: '🍱', dinner: '🍽️', snacks: '🍪' };
-                          const mealLabel = { breakfast: 'Breakfast', lunch: 'Lunch', dinner: 'Dinner', snacks: 'Snacks' };
-                          const today = new Date();
-                          const dates = [];
-                          for (let i = 0; i < foodDaysAhead; i++) {
-                            const d = new Date(today);
-                            d.setDate(today.getDate() + i);
-                            dates.push(d.toISOString().split('T')[0]);
-                          }
-                          // Map orders by date+type for quick lookup
-                          const byCell = {};
-                          (foodOrders || []).forEach(o => {
-                            byCell[`${o.meal_date}|${o.meal_type}`] = o;
-                          });
-                          const canOrder = ip('order_food');
-                          const canDeliver = ip('mark_food_delivered');
-                          const noPlans = Object.keys(foodMealPlans).length === 0;
-                          // Running total for unbilled
-                          const unbilledTotal = (foodOrders || []).reduce((s, o) => (
-                            o.status !== 'cancelled' && !o.billed ? s + parseFloat(o.price || 0) : s
-                          ), 0);
-
-                          return (
-                            <div className="space-y-3">
-                              {/* No meal plan banner */}
-                              {noPlans && (
-                                <div className="border border-amber-300 bg-amber-50 rounded p-3 text-xs text-amber-900">
-                                  <strong>No meal plan set</strong> for room type "{activityAdmission?.room_type || ''}".
-                                  Hospital admin can set prices when creating / editing the room.
-                                </div>
-                              )}
-
-                              {/* Diet + notes header */}
-                              {canOrder && !noPlans && (
-                                <div className="grid grid-cols-2 gap-3 border rounded-lg p-3 bg-gray-50">
-                                  <div>
-                                    <Label className="text-xs">Diet preference (applied to new orders)</Label>
-                                    <Select value={foodDiet} onValueChange={setFoodDiet}>
-                                      <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                                      <SelectContent>
-                                        <SelectItem value="veg">Vegetarian</SelectItem>
-                                        <SelectItem value="non-veg">Non-Vegetarian</SelectItem>
-                                        <SelectItem value="diabetic">Diabetic-friendly</SelectItem>
-                                        <SelectItem value="soft">Soft diet</SelectItem>
-                                        <SelectItem value="liquid">Liquid diet</SelectItem>
-                                        <SelectItem value="custom">Custom (see notes)</SelectItem>
-                                      </SelectContent>
-                                    </Select>
-                                  </div>
-                                  <div>
-                                    <Label className="text-xs">Notes (allergies, restrictions)</Label>
-                                    <Input className="h-8 text-xs" value={foodNotes} onChange={e => setFoodNotes(e.target.value)} placeholder="e.g. no salt, no nuts" />
-                                  </div>
-                                </div>
-                              )}
-
-                              {/* Day-range selector */}
-                              <div className="flex items-center justify-between text-xs">
-                                <div className="flex items-center gap-2">
-                                  <Label className="mb-0">Show next</Label>
-                                  <Select value={String(foodDaysAhead)} onValueChange={v => setFoodDaysAhead(parseInt(v))}>
-                                    <SelectTrigger className="h-7 w-20 text-xs"><SelectValue /></SelectTrigger>
-                                    <SelectContent>
-                                      <SelectItem value="1">1 day</SelectItem>
-                                      <SelectItem value="3">3 days</SelectItem>
-                                      <SelectItem value="7">7 days</SelectItem>
-                                      <SelectItem value="14">14 days</SelectItem>
-                                    </SelectContent>
-                                  </Select>
-                                </div>
-                                <span className="text-gray-500">
-                                  Unbilled food charges: <strong className="text-gray-700">₹{unbilledTotal.toFixed(2)}</strong>
-                                </span>
-                              </div>
-
-                              {/* Meal schedule grid */}
-                              <div className="border rounded-lg overflow-hidden">
-                                <table className="w-full text-xs">
-                                  <thead className="bg-gray-50 border-b">
-                                    <tr>
-                                      <th className="text-left px-2 py-2 font-medium">Date</th>
-                                      {mealTypes.map(mt => (
-                                        <th key={mt} className="text-center px-2 py-2 font-medium">
-                                          <div>{mealEmoji[mt]} {mealLabel[mt]}</div>
-                                          <div className="text-[10px] text-gray-500 font-normal">
-                                            {foodMealPlans[mt] ? `₹${foodMealPlans[mt]}` : '—'}
-                                          </div>
-                                        </th>
-                                      ))}
-                                      {canOrder && !noPlans && <th className="w-20"></th>}
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {dates.map((d, idx) => {
-                                      const dateObj = new Date(d + 'T00:00:00');
-                                      const dayLabel = idx === 0 ? 'Today' : idx === 1 ? 'Tomorrow'
-                                        : dateObj.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
-                                      return (
-                                        <tr key={d} className="border-b last:border-b-0">
-                                          <td className="px-2 py-2 align-middle">
-                                            <div className="font-medium">{dayLabel}</div>
-                                            <div className="text-[10px] text-gray-400">{d}</div>
-                                          </td>
-                                          {mealTypes.map(mt => {
-                                            const cell = byCell[`${d}|${mt}`];
-                                            const hasPlan = (foodMealPlans[mt] || 0) > 0;
-                                            const status = cell?.status;
-                                            const billed = cell?.billed;
-                                            // Visual state
-                                            let cellClass = 'border rounded h-12 flex flex-col items-center justify-center text-[10px] transition-colors';
-                                            let inner;
-                                            if (!cell) {
-                                              cellClass += hasPlan ? ' bg-white hover:bg-blue-50 cursor-pointer text-gray-400' : ' bg-gray-100 text-gray-300';
-                                              inner = hasPlan ? <span>+ order</span> : <span>—</span>;
-                                            } else if (status === 'cancelled') {
-                                              cellClass += ' bg-gray-50 text-gray-400 line-through cursor-pointer hover:bg-blue-50';
-                                              inner = <span>₹{parseFloat(cell.price).toFixed(0)}</span>;
-                                            } else if (status === 'delivered') {
-                                              cellClass += ' bg-green-100 text-green-800 font-semibold';
-                                              inner = <>
-                                                <span>✓✓ ₹{parseFloat(cell.price).toFixed(0)}</span>
-                                                {billed && <span className="text-[9px] opacity-70">billed</span>}
-                                              </>;
-                                            } else {
-                                              // ordered
-                                              cellClass += billed
-                                                ? ' bg-amber-100 text-amber-800 font-semibold'
-                                                : ' bg-blue-100 text-blue-800 font-semibold cursor-pointer hover:bg-blue-200';
-                                              inner = <>
-                                                <span>✓ ₹{parseFloat(cell.price).toFixed(0)}</span>
-                                                {billed ? <span className="text-[9px] opacity-70">billed</span> : null}
-                                              </>;
-                                            }
-                                            const clickable = canOrder && hasPlan && !billed;
-                                            return (
-                                              <td key={mt} className="px-1 py-1 text-center">
-                                                <div
-                                                  className={cellClass}
-                                                  onClick={clickable ? () => handleToggleFoodCell(d, mt, cell) : undefined}
-                                                  title={cell ? `${status}${billed ? ' • billed' : ''}` : (hasPlan ? 'Click to order' : 'No meal plan')}
-                                                >
-                                                  {inner}
-                                                </div>
-                                                {/* Mark delivered button */}
-                                                {cell && status === 'ordered' && !billed && canDeliver && (
-                                                  <button
-                                                    type="button"
-                                                    onClick={() => handleMarkFoodDelivered(cell.id)}
-                                                    className="text-[9px] text-blue-600 hover:underline mt-0.5"
-                                                  >
-                                                    Mark delivered
-                                                  </button>
-                                                )}
-                                              </td>
-                                            );
-                                          })}
-                                          {canOrder && !noPlans && (
-                                            <td className="px-1 py-1 text-center">
-                                              <Button size="sm" variant="ghost" className="h-7 text-[10px]"
-                                                onClick={() => handleOrderWholeDay(d)}
-                                                disabled={foodBusy}>
-                                                Order day
-                                              </Button>
-                                            </td>
-                                          )}
-                                        </tr>
-                                      );
-                                    })}
-                                  </tbody>
-                                </table>
-                              </div>
-
-                              <p className="text-[10px] text-gray-400 italic">
-                                Click a cell to order / cancel. Already-billed meals can't be changed (refund via deposit flow).
-                                Delivered = ✓✓ (green). Ordered = ✓ (blue, unbilled / amber, billed).
-                              </p>
-                            </div>
-                          );
-                        })()}
+                        <CanteenOrderPanel
+                          admissionId={activityAdmission?.id}
+                          canPlaceOrder={canteen('place_order')}
+                          canViewOrders={canteen('view_orders') || canteen('place_order')}
+                          compact
+                        />
                       </TabsContent>
 
                       {/* Bill sub-tab */}
@@ -4590,6 +4318,28 @@ const InpatientModule = () => {
                                         </div>
                                       );
                                     })()}
+                                    {(billData.food_total > 0 || (billData.food_entries || []).length > 0) && (
+                                      <div>
+                                        <div className="flex justify-between">
+                                          <span className="text-gray-500">Canteen / Food</span>
+                                          <span>₹{(billData.food_total || 0).toFixed(2)}</span>
+                                        </div>
+                                        <div className="ml-4 mt-1 space-y-0.5">
+                                          {(billData.food_entries || []).map((f, idx) => (
+                                            <div key={`${f.source || 'food'}-${f.id || idx}`} className="flex justify-between text-xs">
+                                              <span className="text-gray-500">
+                                                {f.source === 'canteen'
+                                                  ? (f.item_name || 'Item')
+                                                  : `Meal: ${f.meal_type || 'meal'}`}
+                                                {f.meal_date ? ` (${f.meal_date})` : ''}
+                                                {f.quantity > 1 ? ` ×${f.quantity}` : ''}
+                                              </span>
+                                              <span>₹{(f.price || 0).toFixed(2)}</span>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    )}
                                   </>
                                 );
                               })()}
@@ -4820,7 +4570,7 @@ const InpatientModule = () => {
                           <div className="flex justify-between items-center mb-2">
                             <h3 className="text-sm font-semibold flex items-center gap-1.5"><UserPlus className="h-4 w-4" /> Nurse Assignments</h3>
                             {ip('assign_nurses') && (
-                              <Button size="sm" onClick={() => { setNurseAssignForm({ nurse_id: '', shift: 'morning', assignment_date: new Date().toISOString().slice(0, 10), is_primary: false, notes: '' }); setShowNurseAssignDialog(true); }}>
+                              <Button size="sm" onClick={() => { setNurseAssignForm({ nurse_id: '', shift: 'morning', assignment_date: localDateString(), is_primary: false, notes: '' }); setShowNurseAssignDialog(true); }}>
                                 <Plus className="h-4 w-4 mr-1" /> Assign Nurse
                               </Button>
                             )}
@@ -6097,7 +5847,7 @@ const InpatientModule = () => {
             <div className="p-6 overflow-y-auto h-full space-y-4">
               <div className="flex items-center justify-between">
                 <h2 className="text-lg font-semibold">Bed Reservations</h2>
-                <Button onClick={() => { setReservationForm({ patient_id: '', bed_id: '', room_id: '', room_type: '', reserved_for_date: new Date().toISOString().slice(0, 16), reservation_reason: 'elective', notes: '' }); setReservationSelectedPatient(null); setShowReservationDialog(true); }}>
+                <Button onClick={() => { setReservationForm({ patient_id: '', bed_id: '', room_id: '', room_type: '', reserved_for_date: localDateTimeString(), reservation_reason: 'elective', notes: '' }); setReservationSelectedPatient(null); setShowReservationDialog(true); }}>
                   <Plus className="h-4 w-4 mr-2" /> New Reservation
                 </Button>
               </div>
@@ -9688,14 +9438,14 @@ const InpatientModule = () => {
         <DialogContent className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>{editingRoom ? `Edit Room ${editingRoom.room_number}` : 'Add Room'}</DialogTitle>
-            <p className="text-xs text-gray-500 mt-1">Configure the room in three steps: basics, pricing &amp; meals, and features.</p>
+            <p className="text-xs text-gray-500 mt-1">Configure the room in three steps: basics, pricing, and features.</p>
           </DialogHeader>
           <form onSubmit={handleSaveRoom} className="space-y-4">
             {/* Step nav */}
             <div className="flex border-b">
               {[
                 { key: 'basics', label: '1. Basics' },
-                { key: 'pricing', label: '2. Pricing & Meals' },
+                { key: 'pricing', label: '2. Pricing' },
                 { key: 'features', label: '3. Features' },
               ].map(s => (
                 <button
@@ -9724,7 +9474,7 @@ const InpatientModule = () => {
                     </div>
                     <div>
                       <Label>Room Type *</Label>
-                      <Select value={roomForm.room_type} onValueChange={v => { setRoomForm(p => ({ ...p, room_type: v })); _loadMealPricesForType(v); }}>
+                      <Select value={roomForm.room_type} onValueChange={v => setRoomForm(p => ({ ...p, room_type: v }))}>
                         <SelectTrigger><SelectValue /></SelectTrigger>
                         <SelectContent>
                           {roomTypes.length > 0 ? roomTypes.map(t => (
@@ -9762,7 +9512,7 @@ const InpatientModule = () => {
                 </div>
               )}
 
-              {/* SECTION 2: PRICING & MEALS */}
+              {/* SECTION 2: PRICING */}
               {roomDialogSection === 'pricing' && (
                 <div className="space-y-5">
                   <div className="border rounded-lg p-3 bg-gray-50">
@@ -9778,37 +9528,9 @@ const InpatientModule = () => {
                       </div>
                     </div>
                   </div>
-
-                  <div className="border rounded-lg p-3 bg-amber-50/40 border-amber-200">
-                    <div className="flex items-center justify-between mb-2">
-                      <h4 className="text-xs font-semibold text-amber-800 uppercase tracking-wide">Meal Prices ({roomForm.room_type ? (roomTypes.find(rt => rt.value === roomForm.room_type)?.label || roomForm.room_type) : 'Select type first'})</h4>
-                      <span className="text-[10px] text-amber-700">Applied to all {roomForm.room_type} rooms</span>
-                    </div>
-                    <p className="text-xs text-gray-600 mb-3">
-                      Per-meal price. Patients in this room type can order meals at these rates. Leave blank to disable that meal type.
-                    </p>
-                    <div className="grid grid-cols-2 gap-3">
-                      {[
-                        { key: 'breakfast', label: 'Breakfast', emoji: '🌅' },
-                        { key: 'lunch', label: 'Lunch', emoji: '🍱' },
-                        { key: 'dinner', label: 'Dinner', emoji: '🍽️' },
-                        { key: 'snacks', label: 'Snacks / Tea', emoji: '🍪' },
-                      ].map(meal => (
-                        <div key={meal.key}>
-                          <Label className="text-xs">{meal.emoji} {meal.label} (₹)</Label>
-                          <Input
-                            type="number" min="0" step="0.01"
-                            value={roomForm.meal_prices?.[meal.key] || ''}
-                            onChange={e => setRoomForm(p => ({ ...p, meal_prices: { ...p.meal_prices, [meal.key]: e.target.value } }))}
-                            placeholder="0.00"
-                          />
-                        </div>
-                      ))}
-                    </div>
-                    <p className="text-[10px] text-gray-500 mt-3 italic">
-                      Tip: Changes apply to <strong>all</strong> rooms of type "{roomForm.room_type}" — this is a room-type-wide price.
-                    </p>
-                  </div>
+                  <p className="text-xs text-gray-500">
+                    Food catalog and prices are managed in the <strong>Canteen</strong> module — not per room type.
+                  </p>
                 </div>
               )}
 

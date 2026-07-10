@@ -14,6 +14,27 @@ from app.utils.patient_age import age_display_from_data
 DEFAULT_LETTERHEAD_GAP_PT = 100.0
 
 
+def _to_system_local(val):
+    """Parse/normalize a datetime to naive system-local wall clock."""
+    if val is None or val == "":
+        return None
+    if isinstance(val, str):
+        val = datetime.fromisoformat(val.replace("Z", "+00:00"))
+    if getattr(val, "tzinfo", None) is not None:
+        val = val.astimezone().replace(tzinfo=None)
+    return val
+
+
+def _fmt_system_dt(val, fmt="%d/%m/%Y %I:%M %p", empty="-"):
+    """Format a date/datetime for PDF display in system local time."""
+    if not val:
+        return empty
+    try:
+        return _to_system_local(val).strftime(fmt)
+    except Exception:
+        return str(val)
+
+
 def _age_gender_str(data: dict, *, gender: str = "", age_key: str = "patient_age") -> str:
     """Build 'Age / Gender' display line for PDF headers."""
     age_display = age_display_from_data(data, age_key=age_key)
@@ -1931,15 +1952,8 @@ class PDFService:
         # PATIENT INFO — bordered box matching reference layout
         # ============================================================
         def _fmt_dt(val):
-            """Format a date/datetime value for display."""
-            if not val:
-                return '-'
-            try:
-                if isinstance(val, str):
-                    val = datetime.fromisoformat(val.replace('Z', '+00:00'))
-                return val.strftime('%d/%m/%Y %I:%M %p')
-            except Exception:
-                return str(val)
+            """Format a date/datetime value for display (system local)."""
+            return _fmt_system_dt(val)
 
         patient_name = report_data.get('patient_name', '')
         patient_gender = report_data.get('patient_gender', '')
@@ -2235,14 +2249,7 @@ class PDFService:
             return Paragraph(f"<b>{label}</b> :  {value}", cell_value)
 
         def _fmt_dt(val):
-            if not val:
-                return '-'
-            try:
-                if isinstance(val, str):
-                    val = datetime.fromisoformat(val.replace('Z', '+00:00'))
-                return val.strftime('%d/%m/%Y %I:%M %p')
-            except Exception:
-                return str(val)
+            return _fmt_system_dt(val)
 
         # ============================================================
         # REPORT TITLE (in flowable area, below header)
@@ -4487,10 +4494,7 @@ class PDFService:
 
         elements.append(Spacer(1, 6))
         as_of = payload.get("as_of", "")
-        try:
-            as_of_h = datetime.fromisoformat(as_of.replace("Z", "+00:00")).strftime("%d/%m/%Y %H:%M")
-        except Exception:
-            as_of_h = as_of
+        as_of_h = _fmt_system_dt(as_of, fmt="%d/%m/%Y %H:%M", empty=as_of or "")
         elements.append(Paragraph(f"DAILY CENSUS REPORT — {as_of_h}",
             ParagraphStyle('H', parent=self.styles['Normal'], fontSize=13, alignment=1,
                 fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4)))
@@ -5444,6 +5448,129 @@ class PDFService:
         tbl.setStyle(TableStyle(style))
         elements.append(tbl)
         _finalize(doc, elements, hospital_info)
+        buffer.seek(0)
+        return buffer
+
+
+    def generate_canteen_sale_receipt_pdf(
+        self, sale_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT,
+    ):
+        """Walk-in canteen POS receipt."""
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(
+            buffer, pagesize=A4,
+            rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=20,
+        )
+        elements = []
+        page_width = A4[0] - 60
+        is_voided = (sale_data.get("status") == "voided")
+
+        self._pharmacy_header(
+            elements, hospital_info, include_header,
+            "CANTEEN SALE RECEIPT", page_width, letterhead_gap_pt,
+        )
+
+        cell = ParagraphStyle(
+            "C", parent=self.styles["Normal"], fontSize=8,
+            fontName="Helvetica", textColor=colors.black, leading=11,
+        )
+
+        def lv(label, value):
+            return Paragraph(f"<b>{label}:</b> {value}", cell)
+
+        sd = sale_data.get("sale_date")
+        try:
+            sd_str = datetime.fromisoformat(str(sd)).strftime("%d/%m/%Y %I:%M%p") if sd else ""
+        except Exception:
+            sd_str = str(sd or "")
+
+        meta = Table(
+            [
+                [
+                    lv("Sale #", sale_data.get("sale_number", "")),
+                    lv("Date", sd_str),
+                    lv("Payment", (sale_data.get("payment_type") or "—").upper()),
+                ],
+                [
+                    lv("Customer", sale_data.get("customer_name") or "Walk-in"),
+                    lv("Phone", sale_data.get("customer_phone") or "—"),
+                    lv("Status", (sale_data.get("status") or "—").upper()),
+                ],
+            ],
+            colWidths=[page_width / 3] * 3,
+        )
+        meta.setStyle(TableStyle([
+            ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
+            ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.grey),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        elements.append(meta)
+        elements.append(Spacer(1, 8))
+
+        header_p = ParagraphStyle("H", parent=cell, fontName="Helvetica-Bold")
+        rows = [[
+            Paragraph("#", header_p),
+            Paragraph("Item", header_p),
+            Paragraph("Qty", header_p),
+            Paragraph("Rate", header_p),
+            Paragraph("Amount", header_p),
+        ]]
+        for i, it in enumerate(sale_data.get("items") or [], start=1):
+            rows.append([
+                Paragraph(str(i), cell),
+                Paragraph(str(it.get("item_name") or ""), cell),
+                Paragraph(str(it.get("quantity") or 0), cell),
+                Paragraph(f"{float(it.get('unit_price') or 0):.2f}", cell),
+                Paragraph(f"{float(it.get('line_total') or 0):.2f}", cell),
+            ])
+        tbl = Table(rows, colWidths=[30, page_width - 210, 50, 65, 65])
+        tbl.setStyle(TableStyle([
+            ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
+            ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.grey),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+            ("ALIGN", (2, 1), (-1, -1), "RIGHT"),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ]))
+        elements.append(tbl)
+        elements.append(Spacer(1, 8))
+
+        totals = Table(
+            [
+                [Paragraph("<b>Subtotal</b>", cell), Paragraph(f"₹{float(sale_data.get('subtotal') or 0):.2f}", cell)],
+                [Paragraph("Discount", cell), Paragraph(f"₹{float(sale_data.get('discount_amount') or 0):.2f}", cell)],
+                [Paragraph("<b>Grand Total</b>", cell), Paragraph(f"<b>₹{float(sale_data.get('grand_total') or 0):.2f}</b>", cell)],
+            ],
+            colWidths=[page_width - 100, 100],
+        )
+        totals.setStyle(TableStyle([
+            ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+            ("TOPPADDING", (0, 0), (-1, -1), 2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ]))
+        elements.append(totals)
+
+        if sale_data.get("notes"):
+            elements.append(Spacer(1, 6))
+            elements.append(Paragraph(f"<b>Notes:</b> {sale_data['notes']}", cell))
+        if is_voided:
+            elements.append(Spacer(1, 8))
+            void_style = ParagraphStyle(
+                "Void", parent=self.styles["Normal"], fontSize=14,
+                alignment=1, fontName="Helvetica-Bold", textColor=colors.red,
+            )
+            elements.append(Paragraph("*** VOIDED ***", void_style))
+            if sale_data.get("void_reason"):
+                elements.append(Paragraph(f"Reason: {sale_data['void_reason']}", cell))
+
+        doc.build(elements)
         buffer.seek(0)
         return buffer
 
