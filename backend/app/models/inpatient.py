@@ -151,6 +151,8 @@ class Admission(Base):
     cancelled_at = Column(DateTime(timezone=True), nullable=True)
     cancelled_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     cancellation_reason = Column(Text, nullable=True)
+    # Admin catch-up reconstruction — skip live bed claim + daily auto-post
+    is_catch_up = Column(Boolean, default=False, nullable=False)
 
     patient = relationship("Patient", back_populates="admissions")
     admitting_doctor = relationship("User", foreign_keys=[admitting_doctor_id])

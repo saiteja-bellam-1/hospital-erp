@@ -250,6 +250,8 @@ NEW_COLUMNS = [
     ("admission_discharge_summaries", "physical_examination_notes", "TEXT"),
     ("admission_discharge_summaries", "include_admission_vitals", "BOOLEAN DEFAULT 1"),
     ("admission_discharge_summaries", "emergency_instructions", "TEXT"),
+    # Admin catch-up: historical IP stays reconstructed without live bed claim
+    ("admissions", "is_catch_up", "BOOLEAN DEFAULT 0"),
 ]
 
 # B6 — body release table is created via create_all on startup; no column adds.

@@ -6,6 +6,11 @@ import { Label } from '../../components/ui/label';
 import { Textarea } from '../../components/ui/textarea';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../hooks/use-toast';
+import axios from 'axios';
+import ModuleConfigForm from './ModuleConfigForm';
+import PayerSchemesAdmin from './inpatient/PayerSchemesAdmin';
+import CatchUpBills from './admin/CatchUpBills';
+import { Link } from 'react-router-dom';
 import {
   Building2,
   Users,
@@ -20,12 +25,9 @@ import {
   ShieldCheck,
   Loader2,
   CreditCard,
-  Printer
+  Printer,
+  CalendarClock,
 } from 'lucide-react';
-import axios from 'axios';
-import ModuleConfigForm from './ModuleConfigForm';
-import PayerSchemesAdmin from './inpatient/PayerSchemesAdmin';
-import { Link } from 'react-router-dom';
 
 const HospitalAdminModule = () => {
   const { user } = useAuth();
@@ -424,8 +426,21 @@ const HospitalAdminModule = () => {
           <CreditCard className="h-4 w-4 mr-2" />
           Payer Schemes
         </Button>
+        <Button
+          variant="ghost"
+          className={`px-4 py-2 ${
+            activeTab === 'catch-up'
+              ? 'border-b-2 border-blue-500 text-blue-600'
+              : 'text-gray-600 hover:text-gray-800'
+          }`}
+          onClick={() => setActiveTab('catch-up')}
+        >
+          <CalendarClock className="h-4 w-4 mr-2" />
+          Catch-up Bills
+        </Button>
       </div>
 
+      {activeTab === 'catch-up' && <CatchUpBills />}
       {activeTab === 'payer-schemes' && <PayerSchemesAdmin />}
 
       {/* Hospital Information Tab */}

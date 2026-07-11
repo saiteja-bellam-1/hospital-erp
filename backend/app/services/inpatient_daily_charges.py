@@ -44,6 +44,8 @@ def auto_post_daily_visits_for_admission(db, admission, target_date=None, actor_
 
     if admission.status != "admitted":
         return None
+    if getattr(admission, "is_catch_up", False):
+        return None
     if not admission.admitting_doctor_id:
         return None
 

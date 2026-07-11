@@ -974,6 +974,15 @@ async def get_all_bills(
         apt_query = apt_query.filter(Appointment.referred_by.ilike(f"%{referred_by}%"))
 
     for apt in apt_query.order_by(Appointment.created_at.desc()).all():
+        # Catch-up consultations also create a Bill (CU-CONS-*); show that ledger
+        # row instead so Service Date drives the dashboard date.
+        cu_bill = db.query(Bill).filter(
+            Bill.bill_type == "consultation",
+            Bill.reference_id == apt.id,
+            Bill.bill_number.like("CU-%"),
+        ).first()
+        if cu_bill:
+            continue
         p = apt.patient
         doctor = db.query(User).filter(User.id == apt.doctor_id).first() if apt.doctor_id else None
         cancelled_by_user = db.query(User).filter(User.id == apt.bill_cancelled_by).first() if getattr(apt, 'bill_cancelled_by', None) else None
@@ -1387,6 +1396,80 @@ async def get_all_bills(
                 "balance_due": float(b.total_amount or 0) - paid_total,
                 "admission_id": None,
             })
+
+    # --- Catch-up / POS ledger bills (Bill rows with Service Date on bill_date) ---
+    # Consultation catch-up: CU-* bills (source Appointment skipped above).
+    # Misc / pharmacy / canteen catch-up: bill_type catch_up|pharmacy|canteen.
+    # Lab catch-up already surfaces via PatientLabOrder.order_date — skip Bill.lab.
+    if bill_type in (None, 'catch_up', 'pharmacy', 'canteen', 'consultation', 'misc'):
+        ledger_types = []
+        if bill_type in (None, 'catch_up', 'misc'):
+            ledger_types.append("catch_up")
+        if bill_type in (None, 'pharmacy'):
+            ledger_types.append("pharmacy")
+        if bill_type in (None, 'canteen'):
+            ledger_types.append("canteen")
+        if bill_type in (None, 'consultation'):
+            ledger_types.append("consultation")
+
+        if ledger_types:
+            ledger_q = db.query(Bill).join(Patient, Bill.patient_id == Patient.id).filter(
+                Patient.hospital_id == hospital_id,
+                Bill.bill_type.in_(ledger_types),
+                sql_func.date(Bill.bill_date) >= d_from,
+                sql_func.date(Bill.bill_date) <= d_to,
+                Bill.status != "cancelled",
+            )
+            # Consultation ledger: only CU-* catch-up bills (normal consults stay on Appointment)
+            if "consultation" in ledger_types and bill_type != "consultation":
+                pass  # filter per-row below
+            if patient_search:
+                q = f"%{patient_search}%"
+                ledger_q = ledger_q.filter(
+                    (Patient.first_name.ilike(q)) | (Patient.last_name.ilike(q)) | (Patient.primary_phone.ilike(q))
+                )
+            if payment_status:
+                mapped = {"paid": "paid", "pending": "pending", "cancelled": "cancelled"}.get(
+                    payment_status, payment_status
+                )
+                ledger_q = ledger_q.filter(Bill.status == mapped)
+
+            for b in ledger_q.order_by(Bill.bill_date.desc()).all():
+                if b.bill_type == "consultation" and not (b.bill_number or "").startswith("CU-"):
+                    continue
+                p = db.query(Patient).filter(Patient.id == b.patient_id).first()
+                items_list = db.query(BillItem).filter(BillItem.bill_id == b.id).all()
+                items_text = ", ".join(it.item_name for it in items_list[:3])
+                if len(items_list) > 3:
+                    items_text += f" +{len(items_list) - 3} more"
+                paid_total = sum(float(pay.amount_paid) for pay in (b.payments or []))
+                row_type = b.bill_type if b.bill_type != "catch_up" else "catch_up"
+                bills.append({
+                    "id": f"CU-{b.id}",
+                    "bill_id": b.id,
+                    "type": row_type,
+                    "date": b.bill_date.isoformat() if b.bill_date else "",
+                    "patient_name": f"{p.first_name} {p.last_name}" if p else "Unknown",
+                    "patient_phone": p.primary_phone if p else "",
+                    "patient_id": p.patient_id if p else "",
+                    "_doctor_id": None,
+                    "doctor_name": "",
+                    "reference": b.bill_number,
+                    "items": items_text or "Catch-up bill",
+                    "subtotal": float(b.subtotal or 0),
+                    "discount": float(b.discount_amount or 0),
+                    "amount": float(b.total_amount or 0),
+                    "payment_status": b.status or "pending",
+                    "payment_method": "",
+                    "referred_by": b.referred_by or "",
+                    "cancel_reason": "",
+                    "cancelled_by": "",
+                    "cancelled_at": "",
+                    "amount_paid": paid_total,
+                    "balance_due": float(b.total_amount or 0) - paid_total,
+                    "admission_id": None,
+                    "is_catch_up": True,
+                })
 
     # Sort all by date descending
     bills.sort(key=lambda b: b["date"], reverse=True)

@@ -285,6 +285,7 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
     const items = [];
     add(items, make('Users & Roles', ClipboardList, '/dashboard/admin'));
     add(items, make('Hospital Config', Building2, '/dashboard/hospital-admin'));
+    add(items, make('Catch-up Bills', Receipt, '/dashboard/catch-up'));
     add(items, make('License', Shield, '/dashboard/license'));
     add(items, make('Database', Database, '/dashboard/backup'));
     add(items, make('Software Update', DownloadCloud, '/dashboard/software-update'));
