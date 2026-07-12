@@ -5,6 +5,7 @@ import { Button } from '../../../components/ui/button';
 import { Input } from '../../../components/ui/input';
 import { Label } from '../../../components/ui/label';
 import { useToast } from '../../../hooks/use-toast';
+import PatientSearchPicker from '../../../components/PatientSearchPicker';
 import { CalendarClock, Loader2, Plus, Trash2 } from 'lucide-react';
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
@@ -77,70 +78,6 @@ function DatesPanel({ dates, setDates }) {
   );
 }
 
-function PatientSearch({ patientId, setPatientId, label = 'Patient' }) {
-  const [q, setQ] = useState('');
-  const [hits, setHits] = useState([]);
-  const [selected, setSelected] = useState(null);
-
-  const search = async () => {
-    if (!q.trim()) return;
-    try {
-      const { data } = await axios.get('/api/patients/', { params: { search: q.trim(), limit: 10 } });
-      const list = Array.isArray(data) ? data : (data?.patients || data?.items || []);
-      setHits(list);
-    } catch {
-      try {
-        const { data } = await axios.post('/api/patients/search?page=1&per_page=10', {
-          search_term: q.trim(),
-          sort_by: 'name',
-          sort_order: 'asc',
-        });
-        setHits(data?.patients || []);
-      } catch {
-        setHits([]);
-      }
-    }
-  };
-
-  return (
-    <div className="space-y-2">
-      <Label>{label}</Label>
-      <div className="flex gap-2">
-        <Input
-          placeholder="Search name / phone / MRN"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), search())}
-        />
-        <Button type="button" variant="outline" onClick={search}>Search</Button>
-      </div>
-      {hits.length > 0 && (
-        <div className="border rounded-md max-h-40 overflow-auto text-sm">
-          {hits.map((p) => (
-            <button
-              key={p.id}
-              type="button"
-              className={`w-full text-left px-3 py-2 hover:bg-slate-100 ${patientId === p.id ? 'bg-blue-50' : ''}`}
-              onClick={() => {
-                setPatientId(p.id);
-                setSelected(p);
-                setHits([]);
-              }}
-            >
-              {p.first_name} {p.last_name} — {p.primary_phone || p.phone || ''} {p.mrn ? `(${p.mrn})` : ''}
-            </button>
-          ))}
-        </div>
-      )}
-      {selected && (
-        <p className="text-xs text-muted-foreground">
-          Selected: {selected.first_name} {selected.last_name} (id {selected.id})
-        </p>
-      )}
-    </div>
-  );
-}
-
 function ChargeSection({ title, onAdd, children }) {
   return (
     <div className="space-y-2 border rounded-md p-3">
@@ -170,6 +107,7 @@ const CatchUpBills = () => {
   const [packages, setPackages] = useState([]);
 
   const [patientId, setPatientId] = useState(null);
+  const [selectedPatient, setSelectedPatient] = useState(null);
   const [doctorId, setDoctorId] = useState('');
   const [consultFee, setConsultFee] = useState('');
   const [regFee, setRegFee] = useState('0');
@@ -227,7 +165,9 @@ const CatchUpBills = () => {
         axios.get('/api/inpatient/nurses').catch(() => ({ data: [] })),
         axios.get('/api/inpatient/ancillary-services', { params: { active_only: true } }).catch(() => ({ data: [] })),
         axios.get('/api/inpatient/packages', { params: { active_only: true } }).catch(() => ({ data: [] })),
-        axios.get('/api/canteen/items', { params: { active_only: true } }).catch(() => ({ data: [] })),
+        axios.get('/api/admin/catch-up/canteen-catalog')
+          .catch(() => axios.get('/api/canteen/items', { params: { active_only: true } }))
+          .catch(() => ({ data: [] })),
       ]).then(([roomRes, nurseRes, ancRes, pkgRes, foodRes]) => {
         setRooms(Array.isArray(roomRes.data) ? roomRes.data : (roomRes.data?.rooms || []));
         setNurses(Array.isArray(nurseRes.data) ? nurseRes.data : []);
@@ -281,19 +221,19 @@ const CatchUpBills = () => {
       }));
 
     const canteen_orders = foodOrders
-      .filter((o) => o.items?.some((i) => i.item_name && i.unit_price !== ''))
       .map((o) => ({
         serve_date: o.serve_date || dates.service_date,
         notes: o.notes || null,
-        items: o.items
-          .filter((i) => i.item_name && i.unit_price !== '')
+        items: (o.items || [])
           .map((i) => ({
             item_id: i.item_id ? Number(i.item_id) : null,
-            item_name: i.item_name,
+            item_name: String(i.item_name || '').trim(),
             quantity: Number(i.quantity || 1),
-            unit_price: Number(i.unit_price || 0),
-          })),
-      }));
+            unit_price: i.unit_price === '' || i.unit_price == null ? null : Number(i.unit_price),
+          }))
+          .filter((i) => i.item_name && i.unit_price != null && !Number.isNaN(i.unit_price)),
+      }))
+      .filter((o) => o.items.length > 0);
 
     const pharmacy_lines = pharmacyIpLines
       .filter((l) => l.item_name && l.unit_price !== '')
@@ -422,6 +362,8 @@ const CatchUpBills = () => {
       setDates(emptyDates());
       setLines([{ item_name: '', quantity: 1, unit_price: '' }]);
       setSelectedTests([]);
+      setSelectedPatient(null);
+      setPatientId(null);
       setDoctorVisits([]);
       setNurseVisits([]);
       setAncillaryRows([]);
@@ -503,13 +445,26 @@ const CatchUpBills = () => {
         <CardContent className="space-y-4">
           <DatesPanel dates={dates} setDates={setDates} />
           {type !== 'canteen' && type !== 'append' && (
-            <PatientSearch patientId={patientId} setPatientId={setPatientId} />
+            <PatientSearchPicker
+              value={selectedPatient}
+              onChange={(p) => {
+                setSelectedPatient(p);
+                setPatientId(p?.id ?? null);
+              }}
+              label="Patient"
+              required
+              compact
+            />
           )}
           {type === 'canteen' && (
-            <PatientSearch
-              patientId={patientId}
-              setPatientId={setPatientId}
+            <PatientSearchPicker
+              value={selectedPatient}
+              onChange={(p) => {
+                setSelectedPatient(p);
+                setPatientId(p?.id ?? null);
+              }}
               label="Patient (optional — links to central bill)"
+              compact
             />
           )}
 
@@ -716,6 +671,9 @@ const CatchUpBills = () => {
                     {packages.map((p) => (
                       <option key={p.id} value={p.id}>
                         {p.package_name} — ₹{p.base_price}
+                        {p.included_stay_days
+                          ? ` · ${p.included_stay_days}d included`
+                          : ''}
                       </option>
                     ))}
                   </select>
@@ -729,6 +687,20 @@ const CatchUpBills = () => {
                     onChange={(e) => setPackagePrice(e.target.value)}
                   />
                 </div>
+                {packageId && (() => {
+                  const pkg = packages.find((p) => String(p.id) === String(packageId));
+                  if (!pkg) return null;
+                  const days = Number(pkg.included_stay_days || 0);
+                  return (
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {days > 0
+                        ? `Package covers ${days} room-day(s); extra days bill as excess room stay.`
+                        : (pkg.included_services || []).includes('room')
+                          ? 'Package covers room for the full stay (no excess room).'
+                          : 'No included stay days on this package — full room rent applies.'}
+                    </p>
+                  );
+                })()}
               </div>
               )}
 
@@ -965,7 +937,7 @@ const CatchUpBills = () => {
                                   ...it,
                                   item_id: id,
                                   item_name: cat?.name || it.item_name,
-                                  unit_price: cat ? String(cat.price) : it.unit_price,
+                                  unit_price: cat != null ? String(cat.price ?? '') : it.unit_price,
                                 } : it),
                               } : x));
                             }}
@@ -975,6 +947,11 @@ const CatchUpBills = () => {
                               <option key={c.id} value={c.id}>{c.name} — ₹{c.price}</option>
                             ))}
                           </select>
+                          {canteenItems.length === 0 && (
+                            <p className="text-[10px] text-amber-700 mt-0.5">
+                              No catalog loaded — type item name and price below.
+                            </p>
+                          )}
                         </div>
                         <div className="col-span-3">
                           <Input
@@ -1078,7 +1055,15 @@ const CatchUpBills = () => {
                 <Button type="button" variant="outline" onClick={runPreview}>Preview charges</Button>
                 {preview && (
                   <p className="text-sm">
-                    {preview.stay_days}d room ₹{preview.room_total}
+                    {preview.stay_days}d stay
+                    {preview.included_stay_days
+                      ? ` (${preview.included_stay_days}d in package`
+                        + (preview.excess_room_days
+                          ? `, ${preview.excess_room_days}d excess room`
+                          : ', no excess room')
+                        + ')'
+                      : ''}
+                    {' · '}room ₹{preview.room_total}
                     {' + '}visits ₹{preview.visit_total}
                     {' + '}anc ₹{preview.ancillary_total}
                     {' + '}food ₹{preview.food_total}

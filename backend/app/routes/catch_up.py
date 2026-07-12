@@ -33,6 +33,7 @@ from app.models.pharmacy import PharmacyInventory, PharmacySale, PharmacySaleIte
 from app.models.user import User
 from app.services.catch_up_service import (
     assert_catch_up_dates,
+    as_naive,
     create_bill_with_payment,
     date_to_datetime,
     get_hospital,
@@ -652,6 +653,33 @@ async def catch_up_history(
     return out
 
 
+@router.get("/canteen-catalog")
+async def catch_up_canteen_catalog(
+    current_user: User = Depends(require_feature_permission(Modules.BILLING, "catch_up_bills")),
+    db: Session = Depends(get_db),
+):
+    """Canteen menu for catch-up IP food lines (uses catch-up permission, not canteen)."""
+    hospital = get_hospital(db, current_user)
+    rows = (
+        db.query(CanteenItem)
+        .filter(
+            CanteenItem.hospital_id == hospital.id,
+            CanteenItem.is_active == True,  # noqa: E712
+        )
+        .order_by(CanteenItem.sort_order.asc(), CanteenItem.name.asc())
+        .all()
+    )
+    return [
+        {
+            "id": it.id,
+            "name": it.name,
+            "price": float(it.price or 0),
+            "is_veg": bool(it.is_veg),
+        }
+        for it in rows
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Inpatient stay reconstruction
 # ---------------------------------------------------------------------------
@@ -766,7 +794,7 @@ async def catch_up_inpatient_stay(
         patient_id=patient.id,
         admitting_doctor_id=doctor.id,
         room_id=room.id,
-        admission_date=data.admission_date,
+        admission_date=as_naive(data.admission_date),
         admission_type=data.admission_type or "elective",
         admission_reason=data.admission_reason,
         status="admitted",
@@ -774,7 +802,7 @@ async def catch_up_inpatient_stay(
         is_catch_up=True,
         initial_room_charge_per_day=float(room.room_charge_per_day or 0),
         acceptance_status="accepted",
-        accepted_at=data.admission_date,
+        accepted_at=as_naive(data.admission_date),
         accepted_by_doctor_id=doctor.id,
         bed_number=None,
         bed_id=None,
@@ -788,7 +816,7 @@ async def catch_up_inpatient_stay(
             patient_id=patient.id,
             visitor_id=v.visitor_id,
             visit_type=v.visit_type or "doctor_visit",
-            visit_datetime=v.visit_datetime,
+            visit_datetime=as_naive(v.visit_datetime),
             notes=v.notes,
             charge_amount=float(v.charge_amount or 0),
             billed=False,
@@ -812,21 +840,22 @@ async def catch_up_inpatient_stay(
             quantity=qty,
             unit_price=unit,
             total_amount=round(unit * qty, 2),
-            charged_at=a.charged_at or data.admission_date,
+            charged_at=as_naive(a.charged_at) or as_naive(data.admission_date),
             notes=a.notes,
             hospital_id=hospital.id,
             created_by_id=current_user.id,
         ))
 
     for co in data.canteen_orders:
+        serve = co.serve_date or as_naive(data.admission_date).date()
         order = CanteenOrder(
             hospital_id=hospital.id,
             admission_id=admission.id,
             patient_id=patient.id,
             status="delivered",
             notes=co.notes,
-            serve_date=co.serve_date or data.admission_date.date(),
-            ordered_at=date_to_datetime(co.serve_date or data.admission_date.date()),
+            serve_date=serve,
+            ordered_at=date_to_datetime(serve),
             ordered_by_id=current_user.id,
             billed=False,
         )
@@ -834,15 +863,22 @@ async def catch_up_inpatient_stay(
         db.flush()
         for li in co.items:
             unit = Decimal(str(round(float(li.unit_price), 2)))
-            qty = int(li.quantity)
-            db.add(CanteenOrderItem(
+            qty = max(int(li.quantity or 1), 1)
+            name = (li.item_name or "").strip()
+            if not name:
+                raise HTTPException(status_code=400, detail="Food order line requires item_name")
+            item = CanteenOrderItem(
                 order_id=order.id,
                 item_id=li.item_id,
-                item_name=li.item_name,
+                item_name=name,
                 unit_price=unit,
                 quantity=qty,
                 line_total=Decimal(str(round(float(unit) * qty, 2))),
-            ))
+            )
+            # Keep the relationship collection in sync so later joinedload /
+            # identity-map reads see the lines without a stale empty cache.
+            order.items.append(item)
+        db.flush()
 
     # Financial-only pharmacy sale deferred to admission bill (no stock deduction)
     if data.pharmacy_lines:
@@ -925,13 +961,13 @@ async def catch_up_inpatient_stay(
 
     discharge = DischargeRecord(
         admission_id=admission.id,
-        discharge_date=data.discharge_date,
+        discharge_date=as_naive(data.discharge_date),
         discharge_type=data.discharge_type or "normal",
         condition_on_discharge=data.condition_on_discharge,
         discharge_summary=data.discharge_summary or "Catch-up reconstruction",
         diagnosis_on_discharge=data.diagnosis_on_discharge,
         discharge_approved_by_id=current_user.id,
-        total_stay_days=max((data.discharge_date - data.admission_date).days, 1),
+        total_stay_days=max((as_naive(data.discharge_date) - as_naive(data.admission_date)).days, 1),
     )
     db.add(discharge)
     admission.status = "discharged"
@@ -1070,8 +1106,8 @@ async def catch_up_inpatient_preview(
     current_user: User = Depends(require_feature_permission(Modules.BILLING, "catch_up_bills")),
     db: Session = Depends(get_db),
 ):
-    """Dry-run charge estimate without persisting. Uses temporary in-memory math
-    similar to a real stay (room days + visit/ancillary/canteen sums)."""
+    """Dry-run charge estimate without persisting. Matches package room rules:
+    included stay days are covered by the package; only excess room days bill."""
     assert_catch_up_dates(data.service_date, data.payment_date)
     if data.discharge_date < data.admission_date:
         raise HTTPException(status_code=400, detail="discharge_date must be on or after admission_date")
@@ -1080,9 +1116,11 @@ async def catch_up_inpatient_preview(
     if not room:
         raise HTTPException(status_code=404, detail="Room not found")
 
-    stay_days = max((data.discharge_date - data.admission_date).days, 1)
+    from app.routes.inpatient import _apply_package_room, _included_room_rate, _PKG_CAT_ROOM
+
+    stay_days = max((as_naive(data.discharge_date) - as_naive(data.admission_date)).days, 1)
     room_rate = 0.0 if data.is_observation else float(room.room_charge_per_day or 0)
-    room_total = round(room_rate * stay_days, 2)
+    full_room_total = round(room_rate * stay_days, 2)
     visit_total = round(sum(float(v.charge_amount or 0) for v in data.visits), 2)
 
     ancillary_total = 0.0
@@ -1106,12 +1144,53 @@ async def catch_up_inpatient_preview(
     )
 
     package_total = 0.0
+    included_stay_days = 0
+    excess_room_days = stay_days if not data.is_observation else 0
+    room_lines = []
+    room_total = full_room_total
+    pkg = None
     if data.surgery_package_id:
+        pkg = db.query(SurgeryPackage).filter(SurgeryPackage.id == data.surgery_package_id).first()
         if data.surgery_package_price is not None:
             package_total = float(data.surgery_package_price)
         else:
-            pkg = db.query(SurgeryPackage).filter(SurgeryPackage.id == data.surgery_package_id).first()
             package_total = float(pkg.base_price or 0) if pkg else 0.0
+
+        if pkg and not data.is_observation:
+            included = set(pkg.included_services or [])
+            included_stay_days = int(pkg.included_stay_days or 0)
+            room_covered = (_PKG_CAT_ROOM in included) or (included_stay_days > 0)
+            if room_covered:
+                if included_stay_days <= 0:
+                    room_total = 0.0
+                    excess_room_days = 0
+                    room_lines = []
+                else:
+                    included_room_rate = _included_room_rate(
+                        db, hospital.id, pkg.included_room_type,
+                    )
+                    has_reference_rate = bool(pkg.included_room_type) and included_room_rate > 0
+                    admit_n = as_naive(data.admission_date)
+                    disc_n = as_naive(data.discharge_date)
+                    segments = [{
+                        "from": admit_n.isoformat() if admit_n else "",
+                        "to": disc_n.isoformat() if disc_n else "",
+                        "days": stay_days,
+                        "rate": room_rate,
+                        "total": full_room_total,
+                    }]
+                    room_total, room_lines = _apply_package_room(
+                        segments,
+                        stay_days,
+                        included_stay_days,
+                        included_room_rate,
+                        has_reference_rate=has_reference_rate,
+                    )
+                    excess_room_days = sum(
+                        int(l.get("days") or 0)
+                        for l in room_lines
+                        if "excess" in (l.get("label") or "").lower()
+                    )
 
     subtotal = round(
         room_total + visit_total + ancillary_total + food_total + pharmacy_total + package_total,
@@ -1119,7 +1198,11 @@ async def catch_up_inpatient_preview(
     )
     return {
         "stay_days": stay_days,
+        "included_stay_days": included_stay_days,
+        "excess_room_days": excess_room_days,
         "room_total": room_total,
+        "full_room_total": full_room_total,
+        "room_lines": room_lines,
         "visit_total": visit_total,
         "ancillary_total": ancillary_total,
         "food_total": food_total,
@@ -1207,7 +1290,7 @@ def _add_catch_up_charge_rows(
             patient_id=patient.id,
             visitor_id=v.visitor_id,
             visit_type=v.visit_type or "doctor_visit",
-            visit_datetime=v.visit_datetime,
+            visit_datetime=as_naive(v.visit_datetime),
             notes=v.notes,
             charge_amount=float(v.charge_amount or 0),
             billed=False,
@@ -1231,21 +1314,22 @@ def _add_catch_up_charge_rows(
             quantity=qty,
             unit_price=unit,
             total_amount=round(unit * qty, 2),
-            charged_at=a.charged_at or default_dt,
+            charged_at=as_naive(a.charged_at) or as_naive(default_dt),
             notes=a.notes,
             hospital_id=hospital.id,
             created_by_id=current_user.id,
         ))
 
     for co in canteen_orders:
+        serve = co.serve_date or as_naive(default_dt).date()
         order = CanteenOrder(
             hospital_id=hospital.id,
             admission_id=admission.id,
             patient_id=patient.id,
             status="delivered",
             notes=co.notes,
-            serve_date=co.serve_date or default_dt.date(),
-            ordered_at=date_to_datetime(co.serve_date or default_dt.date()),
+            serve_date=serve,
+            ordered_at=date_to_datetime(serve),
             ordered_by_id=current_user.id,
             billed=False,
         )
@@ -1253,15 +1337,20 @@ def _add_catch_up_charge_rows(
         db.flush()
         for li in co.items:
             unit = Decimal(str(round(float(li.unit_price), 2)))
-            qty = int(li.quantity)
-            db.add(CanteenOrderItem(
+            qty = max(int(li.quantity or 1), 1)
+            name = (li.item_name or "").strip()
+            if not name:
+                raise HTTPException(status_code=400, detail="Food order line requires item_name")
+            item = CanteenOrderItem(
                 order_id=order.id,
                 item_id=li.item_id,
-                item_name=li.item_name,
+                item_name=name,
                 unit_price=unit,
                 quantity=qty,
                 line_total=Decimal(str(round(float(unit) * qty, 2))),
-            ))
+            )
+            order.items.append(item)
+        db.flush()
 
     if pharmacy_lines:
         from app.routes.pharmacy import _next_sale_number

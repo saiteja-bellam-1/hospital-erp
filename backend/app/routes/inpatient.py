@@ -12,6 +12,15 @@ def _now() -> datetime:
     return datetime.now()
 
 
+def _as_naive(dt: Optional[datetime]) -> Optional[datetime]:
+    """Drop tzinfo so stay-day math never mixes aware/naive (SQLite roundtrips)."""
+    if dt is None:
+        return None
+    if getattr(dt, "tzinfo", None) is not None:
+        return dt.replace(tzinfo=None)
+    return dt
+
+
 def _inline_pdf_response(pdf_buffer, filename: str) -> Response:
     """Return PDF bytes inline — more reliable than StreamingResponse(BytesIO)
     in the Windows bundled build."""
@@ -4501,10 +4510,11 @@ def _compute_admission_charges(db: Session, admission: Admission, unbilled_only:
     don't double-bill the room).
     """
     room = db.query(RoomManagement).filter(RoomManagement.id == admission.room_id).first()
-    end_date = datetime.now(admission.admission_date.tzinfo) if admission.admission_date and admission.admission_date.tzinfo else datetime.now()
+    admit_dt = _as_naive(admission.admission_date)
+    end_date = _now()
     if admission.status == "discharged" and admission.discharge:
-        end_date = admission.discharge.discharge_date or end_date
-    stay_days = max((end_date - admission.admission_date).days, 1) if admission.admission_date else 1
+        end_date = _as_naive(admission.discharge.discharge_date) or end_date
+    stay_days = max((end_date - admit_dt).days, 1) if admit_dt else 1
     # `room_charge_per_day` is reported as the *current* room rate for display.
     # The actual bill total is computed by summing rate-snapshotted segments.
     room_charge_per_day = float(room.room_charge_per_day) if room else 0.0
@@ -4520,19 +4530,19 @@ def _compute_admission_charges(db: Session, admission: Admission, unbilled_only:
     # B7.6 — Observation cases skip room rent entirely (bed used briefly,
     # typically ≤24h). Doctor visits, drugs, labs etc. still bill normally.
     is_observation = bool(getattr(admission, "is_observation", False))
-    if admission.admission_date and not is_observation:
+    if admit_dt and not is_observation:
         transfers = db.query(BedTransferHistory).filter(
             BedTransferHistory.admission_id == admission.id,
             BedTransferHistory.status.in_(["completed", "accepted"]),
         ).all()
 
         def _eff_time(t):
-            return t.accepted_at or t.transferred_at or t.created_at
+            return _as_naive(t.accepted_at or t.transferred_at or t.created_at)
 
-        transfers.sort(key=lambda t: _eff_time(t) or admission.admission_date)
+        transfers.sort(key=lambda t: _eff_time(t) or admit_dt)
 
         # Segment boundaries: admission_date → t1 → t2 → ... → end_date
-        boundaries = [admission.admission_date]
+        boundaries = [admit_dt]
         for t in transfers:
             eff = _eff_time(t)
             if eff and eff > boundaries[-1] and eff <= end_date:
@@ -4547,7 +4557,7 @@ def _compute_admission_charges(db: Session, admission: Admission, unbilled_only:
                   else room_charge_per_day)]
         for t in transfers:
             eff = _eff_time(t)
-            if eff and eff > admission.admission_date and eff <= end_date:
+            if eff and eff > admit_dt and eff <= end_date:
                 rates.append(t.to_room_charge_per_day
                              if t.to_room_charge_per_day is not None
                              else room_charge_per_day)
@@ -4774,7 +4784,15 @@ def _compute_admission_charges(db: Session, admission: Admission, unbilled_only:
     canteen_orders = canteen_q.order_by(CanteenOrder.ordered_at.asc()).all()
     canteen_total = 0.0
     for co in canteen_orders:
-        for li in (co.items or []):
+        # Re-query lines if the relationship collection is empty/stale in-session.
+        line_items = list(co.items or [])
+        if not line_items:
+            line_items = (
+                db.query(CanteenOrderItem)
+                .filter(CanteenOrderItem.order_id == co.id)
+                .all()
+            )
+        for li in line_items:
             line_amt = float(li.line_total or 0)
             canteen_total += line_amt
             food_entries.append({
@@ -4818,7 +4836,7 @@ def _compute_admission_charges(db: Session, admission: Admission, unbilled_only:
             # Coverage window. included_stay_days=0/null → no boundary
             # (whole stay covered for included categories).
             if (pkg.included_stay_days or 0) > 0 and admission.admission_date:
-                pkg_boundary = admission.admission_date + _td_v(days=pkg.included_stay_days)
+                pkg_boundary = _as_naive(admission.admission_date) + _td_v(days=pkg.included_stay_days)
 
             # Has the package fee already been billed on a prior non-cancelled
             # bill for this admission? Used in unbilled_only mode so finalize
@@ -4831,33 +4849,43 @@ def _compute_admission_charges(db: Session, admission: Admission, unbilled_only:
             ).first()
             pkg_fee_already_billed = prior_pkg_item is not None
 
+            # Room coverage: explicit "room" in included_services, OR a positive
+            # included_stay_days (package defines how many room-days are covered).
+            included_stay_days = int(pkg.included_stay_days or 0)
+            room_covered_by_package = (_PKG_CAT_ROOM in included) or (included_stay_days > 0)
+
             # Resolve package's reference room rate (for upgrade differential).
             included_room_rate = _included_room_rate(
                 db,
                 getattr(room, 'hospital_id', None) or getattr(admission, 'hospital_id', None),
                 pkg.included_room_type,
-            ) if _PKG_CAT_ROOM in included else 0.0
+            ) if room_covered_by_package else 0.0
             has_reference_rate = bool(pkg.included_room_type) and included_room_rate > 0
 
-            # ---- Room: replace total with package logic when room is included
+            # ---- Room: replace total with package logic when room is covered
             pkg_room_total = room_total
-            if _PKG_CAT_ROOM in included:
-                if rate_segments:
+            if room_covered_by_package:
+                if included_stay_days <= 0:
+                    # included_stay_days=0 + room included → unlimited cover
+                    pkg_room_total = 0.0
+                    pkg_room_lines = []
+                elif rate_segments:
                     pkg_room_total, pkg_room_lines = _apply_package_room(
                         rate_segments,
                         billable_stay_days,
-                        pkg.included_stay_days or 0,
+                        included_stay_days,
                         included_room_rate,
                         has_reference_rate=has_reference_rate,
                     )
                 else:
-                    excess_days = max(billable_stay_days - (pkg.included_stay_days or 0), 0)
-                    pkg_room_total = round(excess_days * float(pkg.excess_per_day_charge or 0), 2)
+                    excess_days = max(billable_stay_days - included_stay_days, 0)
+                    excess_rate = float(pkg.excess_per_day_charge or room_charge_per_day or 0)
+                    pkg_room_total = round(excess_days * excess_rate, 2)
                     if pkg_room_total > 0:
                         pkg_room_lines.append({
                             "label": f"Room excess stay ({excess_days} days)",
                             "days": excess_days,
-                            "rate": float(pkg.excess_per_day_charge or 0),
+                            "rate": excess_rate,
                             "total": pkg_room_total,
                         })
                 # Subtract room excess already billed on prior bills so a
@@ -5483,9 +5511,17 @@ def _create_admission_bill_record_inner(
         ))
 
     room = breakdown["_room"]
-    if pkg and _PKG_CAT_ROOM in included:
+    # Prefer package room_lines (upgrade + excess). Also treat positive
+    # included_stay_days as room coverage even when "room" wasn't ticked.
+    pkg_room_lines = (pkg or {}).get("room_lines") or []
+    room_in_pkg = bool(pkg) and (
+        _PKG_CAT_ROOM in included
+        or int((pkg or {}).get("included_stay_days") or 0) > 0
+        or bool(pkg_room_lines)
+    )
+    if room_in_pkg:
         # Package covers room — emit per-segment upgrade/excess lines only.
-        for line in pkg.get("room_lines", []):
+        for line in pkg_room_lines:
             if (line.get("total") or 0) <= 0:
                 continue
             db.add(BillItem(
@@ -5658,7 +5694,15 @@ def _create_admission_bill_record_inner(
         serve = co.serve_date.isoformat() if co.serve_date else (
             co.ordered_at.date().isoformat() if co.ordered_at else ""
         )
-        for li in (co.items or []):
+        # Prefer a fresh query — the identity map can leave `co.items` empty
+        # when lines were inserted via FK in the same session without appending
+        # to the relationship collection.
+        line_items = (
+            db.query(CanteenOrderItem)
+            .filter(CanteenOrderItem.order_id == co.id)
+            .all()
+        ) or list(co.items or [])
+        for li in line_items:
             db.add(BillItem(
                 bill_id=bill.id,
                 item_type="food",
@@ -6064,7 +6108,12 @@ async def get_bill_pdf(
     # ---- Room -------------------------------------------------------------
     room_info = breakdown.get("room") or {}
     room_segs = room_info.get("rate_segments") or []
-    if pkg_block and _PKG_CAT_ROOM in pkg_included:
+    room_covered_by_pkg = bool(pkg_block) and (
+        _PKG_CAT_ROOM in pkg_included
+        or int(pkg_block.get("included_stay_days") or 0) > 0
+        or bool(pkg_block.get("room_lines"))
+    )
+    if room_covered_by_pkg:
         # Show the COVERED portion of the room stay only: capped at
         # included_stay_days (or the actual stay, whichever is smaller).
         # Anything beyond that appears in pkg_block.room_lines as excess.

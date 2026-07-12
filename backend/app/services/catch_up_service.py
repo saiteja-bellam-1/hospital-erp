@@ -43,6 +43,15 @@ def date_to_datetime(d: date, at: time = time.min) -> datetime:
     return datetime.combine(d, at)
 
 
+def as_naive(dt: Optional[datetime]) -> Optional[datetime]:
+    """Strip tzinfo so SQLite-backed inpatient math stays consistent."""
+    if dt is None:
+        return None
+    if getattr(dt, "tzinfo", None) is not None:
+        return dt.replace(tzinfo=None)
+    return dt
+
+
 def get_hospital(db: Session, current_user) -> Hospital:
     hospital = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
     if not hospital:

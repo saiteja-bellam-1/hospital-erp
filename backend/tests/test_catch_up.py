@@ -472,6 +472,11 @@ class TestCatchUpInpatient:
         types = {it.item_type for it in items}
         # Package fee should appear; other lines depend on package overlay
         assert "package" in types or any("Package" in (it.item_name or "") for it in items)
+        food_bill_items = [
+            it for it in items if it.item_type == "food" or "Canteen" in (it.item_name or "")
+        ]
+        assert len(food_bill_items) >= 1
+        assert sum(float(it.total_price or 0) for it in food_bill_items) == pytest.approx(240.0)
         assert float(bill.total_amount) == pytest.approx(float(body["total"]))
 
         payment = db_session.query(Payment).filter(Payment.id == body["payment_id"]).first()
@@ -741,3 +746,84 @@ class TestCatchUpAppendCharges:
         ).all()
         assert len(ancs) >= 1
         assert any(float(a.total_amount or 0) == 250.0 for a in ancs)
+
+
+class TestCatchUpPackageRoomExcess:
+    def test_package_bills_excess_room_beyond_included_days(self, client, auth_headers, seed_data, db_session):
+        """Package included_stay_days covers room; days beyond bill as excess."""
+        from app.models.billing import BillItem
+
+        room = client.post(
+            "/api/inpatient/rooms",
+            headers=auth_headers,
+            json={
+                "room_number": "CU-PKG-EX",
+                "room_type": "general",
+                "floor": "1",
+                "department": "General Ward",
+                "bed_count": 2,
+                "room_charge_per_day": 1000.0,
+            },
+        )
+        assert room.status_code == 201, room.text
+        room_id = room.json()["id"]
+
+        pkg = client.post(
+            "/api/inpatient/packages",
+            headers=auth_headers,
+            json={
+                "package_name": "CatchUp Excess Room Pkg",
+                "package_code": "CU-EXRM",
+                "base_price": 10000.0,
+                "included_stay_days": 2,
+                "included_services": ["room"],
+                "excess_per_day_charge": 1000.0,
+            },
+        )
+        assert pkg.status_code == 201, pkg.text
+        package_id = pkg.json()["id"]
+
+        admit_dt = datetime(2026, 6, 1, 10, 0, 0)
+        discharge_dt = datetime(2026, 6, 6, 10, 0, 0)  # 5 days
+        payload = {
+            "patient_id": seed_data["patient_id"],
+            "admitting_doctor_id": seed_data["doctor_user_id"],
+            "room_id": room_id,
+            "admission_date": admit_dt.isoformat(),
+            "discharge_date": discharge_dt.isoformat(),
+            "service_date": "2026-06-06",
+            "payment_date": "2026-06-06",
+            "surgery_package_id": package_id,
+            "surgery_package_price": 10000,
+            "visits": [],
+            "ancillary": [],
+            "canteen_orders": [],
+            "pharmacy_lines": [],
+        }
+
+        preview = client.post(
+            "/api/admin/catch-up/inpatient-stay/preview",
+            headers=auth_headers,
+            json=payload,
+        )
+        assert preview.status_code == 200, preview.text
+        prev = preview.json()
+        assert prev["stay_days"] == 5
+        assert prev["included_stay_days"] == 2
+        assert prev["excess_room_days"] == 3
+        # 2 days covered by package, 3 excess @ ₹1000 (no upgrade without included_room_type)
+        assert prev["room_total"] == pytest.approx(3000.0)
+        assert prev["grand_total"] == pytest.approx(13000.0)
+
+        res = client.post(
+            "/api/admin/catch-up/inpatient-stay",
+            headers=auth_headers,
+            json={**payload, "deposits": []},
+        )
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert body["total"] == pytest.approx(13000.0)
+        items = db_session.query(BillItem).filter(BillItem.bill_id == body["bill_id"]).all()
+        room_items = [it for it in items if it.item_type == "room_charge"]
+        assert sum(float(i.total_price or 0) for i in room_items) == pytest.approx(3000.0)
+        assert any("excess" in (it.item_name or "").lower() for it in room_items)
