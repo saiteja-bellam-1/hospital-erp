@@ -15,7 +15,9 @@ import { useToast } from '../../../hooks/use-toast';
 import PatientSearchPicker from '../../../components/PatientSearchPicker';
 import PdfPreviewDialog from '../../../components/PdfPreviewDialog';
 import { Textarea } from '../../../components/ui/textarea';
-import { CalendarClock, FileText, Loader2, Plus, Trash2 } from 'lucide-react';
+import {
+  CalendarClock, FileText, Loader2, Plus, RefreshCw, Search, Trash2,
+} from 'lucide-react';
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
@@ -29,6 +31,7 @@ const emptyDates = () => ({
 const TYPES = [
   { id: 'consultation', label: 'Consultation' },
   { id: 'lab', label: 'Lab' },
+  { id: 'lab_reports', label: 'Saved lab reports' },
   { id: 'pharmacy', label: 'Pharmacy' },
   { id: 'canteen', label: 'Canteen' },
   { id: 'misc', label: 'Misc bill' },
@@ -145,8 +148,9 @@ const CatchUpBills = () => {
   const [previewing, setPreviewing] = useState(false);
   const [pdfPreview, setPdfPreview] = useState(null);
 
-  // Post-save lab catch-up: enter results + download report
-  const [pendingLabOrders, setPendingLabOrders] = useState([]);
+  // Persisted catch-up lab archive: result entry + future report downloads
+  const [labReports, setLabReports] = useState([]);
+  const [labReportSearch, setLabReportSearch] = useState('');
   const [labEntryForm, setLabEntryForm] = useState(null);
   const [labEntryValues, setLabEntryValues] = useState({});
   const [labRemarkValues, setLabRemarkValues] = useState({});
@@ -162,12 +166,15 @@ const CatchUpBills = () => {
 
   const loadMeta = async () => {
     try {
-      const [docRes, histRes] = await Promise.all([
+      const [docRes, histRes, labReportRes] = await Promise.all([
         axios.get('/api/hospital/doctors').catch(() => ({ data: [] })),
         axios.get('/api/admin/catch-up/history', { params: { limit: 30 } }).catch(() => ({ data: [] })),
+        axios.get('/api/admin/catch-up/lab/reports', { params: { limit: 200 } })
+          .catch(() => ({ data: [] })),
       ]);
       setDoctors(Array.isArray(docRes.data) ? docRes.data : (docRes.data?.doctors || []));
       setHistory(Array.isArray(histRes.data) ? histRes.data : []);
+      setLabReports(Array.isArray(labReportRes.data) ? labReportRes.data : []);
     } catch {
       /* ignore */
     }
@@ -518,13 +525,6 @@ const CatchUpBills = () => {
           path: res.data.pdf.path,
         });
       }
-      if (type === 'lab' && Array.isArray(res?.data?.orders) && res.data.orders.length) {
-        setPendingLabOrders(res.data.orders.map((o) => ({
-          ...o,
-          has_report: !!o.has_report,
-          report_id: o.report_id || null,
-        })));
-      }
       setDates(emptyDates());
       setLines([{ item_name: '', quantity: 1, unit_price: '' }]);
       setSelectedTests([]);
@@ -589,11 +589,7 @@ const CatchUpBills = () => {
       );
       toast({ title: 'Lab report saved', description: 'Opening report PDF…' });
       setLabEntryOpen(false);
-      setPendingLabOrders((prev) => prev.map((o) => (
-        o.id === labEntryForm.order_id
-          ? { ...o, has_report: true, report_id: data.report_id, status: 'completed' }
-          : o
-      )));
+      loadMeta();
       if (data?.pdf?.path) {
         setPdfPreview({ title: data.pdf.title || 'Lab report', path: data.pdf.path });
       }
@@ -611,6 +607,15 @@ const CatchUpBills = () => {
   const nurseLabel = (n) => n.first_name
     ? `${n.first_name} ${n.last_name || ''}`.trim()
     : (n.name || `Nurse #${n.id}`);
+
+  const filteredLabReports = labReports.filter((row) => {
+    const needle = labReportSearch.trim().toLowerCase();
+    if (!needle) return true;
+    return [
+      row.patient_name, row.mrn, row.test_name, row.test_code,
+      row.order_number, row.lab_bill_number, row.service_date,
+    ].some((value) => String(value || '').toLowerCase().includes(needle));
+  });
 
   return (
     <div className="space-y-6">
@@ -638,6 +643,7 @@ const CatchUpBills = () => {
         ))}
       </div>
 
+      {type !== 'lab_reports' && (
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Dates</CardTitle>
@@ -1278,7 +1284,9 @@ const CatchUpBills = () => {
           </div>
         </CardContent>
       </Card>
+      )}
 
+      {type !== 'lab_reports' && (
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Recent catch-up entries</CardTitle>
@@ -1300,21 +1308,36 @@ const CatchUpBills = () => {
           )}
         </CardContent>
       </Card>
+      )}
 
-      {pendingLabOrders.length > 0 && (
+      {type === 'lab_reports' && (
         <Card className="border-blue-200">
           <CardHeader>
-            <CardTitle className="text-base flex items-center gap-2">
-              <FileText className="h-4 w-4 text-blue-600" />
-              Enter lab results &amp; download report
-            </CardTitle>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <CardTitle className="text-base flex items-center gap-2">
+                <FileText className="h-4 w-4 text-blue-600" />
+                Stored catch-up lab reports
+              </CardTitle>
+              <Button type="button" size="sm" variant="outline" onClick={loadMeta}>
+                <RefreshCw className="h-3.5 w-3.5 mr-1" /> Refresh
+              </Button>
+            </div>
           </CardHeader>
           <CardContent className="space-y-2">
             <p className="text-xs text-muted-foreground">
-              Bill is saved. Enter parameter values for each test, then download the clinical report PDF.
-              These orders stay under Catch-up — they are not sent to Lab Tech.
+              Reports are stored in the database and remain available here for future viewing,
+              printing, or downloading. Orders awaiting values can also be completed here.
             </p>
-            {pendingLabOrders.map((o) => (
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                className="pl-9"
+                value={labReportSearch}
+                onChange={(e) => setLabReportSearch(e.target.value)}
+                placeholder="Search patient, MRN, test, order or bill number"
+              />
+            </div>
+            {filteredLabReports.map((o) => (
               <div
                 key={o.id}
                 className="flex flex-wrap items-center justify-between gap-2 border rounded-md p-3"
@@ -1322,8 +1345,14 @@ const CatchUpBills = () => {
                 <div className="text-sm">
                   <div className="font-medium">{o.test_name || `Order #${o.id}`}</div>
                   <div className="text-xs text-muted-foreground">
+                    {o.patient_name || 'Unknown patient'}
+                    {o.mrn ? ` · MRN ${o.mrn}` : ''}
+                    {o.service_date ? ` · Service ${o.service_date}` : ''}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
                     {o.order_number}
-                    {o.has_report ? ' · Report ready' : ' · Awaiting results'}
+                    {o.lab_bill_number ? ` · ${o.lab_bill_number}` : ''}
+                    {o.has_report ? ' · Report stored' : ' · Awaiting results'}
                   </div>
                 </div>
                 <div className="flex gap-2">
@@ -1338,7 +1367,7 @@ const CatchUpBills = () => {
                       variant="outline"
                       onClick={() => setPdfPreview({
                         title: `Lab report — ${o.order_number || o.test_name}`,
-                        path: `/api/lab/reports/${o.report_id}/download`,
+                        path: o.pdf?.path || `/api/lab/reports/${o.report_id}/download`,
                       })}
                       disabled={!o.report_id}
                     >
@@ -1348,15 +1377,11 @@ const CatchUpBills = () => {
                 </div>
               </div>
             ))}
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="text-muted-foreground"
-              onClick={() => setPendingLabOrders([])}
-            >
-              Dismiss
-            </Button>
+            {filteredLabReports.length === 0 && (
+              <p className="text-sm text-muted-foreground py-3 text-center">
+                {labReports.length ? 'No reports match this search.' : 'No catch-up lab reports yet.'}
+              </p>
+            )}
           </CardContent>
         </Card>
       )}

@@ -773,7 +773,7 @@ class BillItemOverride(BaseModel):
     source_id: Optional[int] = None
     item_type: str = Field(..., max_length=40)
     item_name: str = Field(..., min_length=1, max_length=300)
-    quantity: int = Field(default=1, ge=1)
+    quantity: float = Field(default=1.0, gt=0)
     unit_price: float = Field(default=0.0, ge=0)
     total_price: float = Field(default=0.0, ge=0)
 
@@ -5476,7 +5476,7 @@ def _create_admission_bill_record_inner(
                 bill_id=bill.id,
                 item_type=it.item_type,
                 item_name=it.item_name,
-                quantity=int(it.quantity or 1),
+                quantity=float(it.quantity or 1),
                 unit_price=float(it.unit_price or 0),
                 total_price=float(it.total_price or 0),
             ))
@@ -5619,7 +5619,7 @@ def _create_admission_bill_record_inner(
                 bill_id=bill.id,
                 item_type="ancillary",
                 item_name=label,
-                quantity=int(c.quantity) if float(c.quantity).is_integer() else 1,
+                quantity=float(c.quantity or 1),
                 unit_price=float(c.unit_price or 0),
                 total_price=float(c.total_amount or 0),
             ))
@@ -5799,14 +5799,13 @@ async def finalize_bill(
         items_override=items_override,
     )
     prior_summary = _admission_balance_summary(db, admission)
-    # net_deposits = total_collected - total_refunded. With the draft total as
-    # what *this* finalize would book, the post-finalize balance is:
-    #   net_deposits - (billed_on_bills_before + draft_total)
-    # We approximate already-billed-and-this-final as prior_billed + draft.
+    # Comprehensive override (items_override) is a full restatement of all
+    # charges — the final bill replaces interim totals. Without an override,
+    # the draft only covers unbilled charges, so add prior billed amounts.
     prior_billed_on_bills = float(prior_summary.get("billed_on_bills") or 0)
+    billed_basis = draft_total if items_override is not None else (prior_billed_on_bills + draft_total)
     post_finalize_balance = round(
-        float(prior_summary.get("net_deposits") or 0)
-        - (prior_billed_on_bills + draft_total),
+        float(prior_summary.get("net_deposits") or 0) - billed_basis,
         2,
     )
     if abs(post_finalize_balance) >= 0.01:
@@ -5931,6 +5930,8 @@ async def finalize_and_settle_bill(
     prior_summary = _admission_balance_summary(db, admission)
     prior_billed_on_bills = float(prior_summary.get("billed_on_bills") or 0)
     net_deposits_before = float(prior_summary.get("net_deposits") or 0)
+    # Comprehensive override replaces interim totals; auto path adds to them.
+    billed_basis = draft_total if items_override is not None else (prior_billed_on_bills + draft_total)
 
     settle = data.settle
     if settle.direction == "collect":
@@ -5938,14 +5939,14 @@ async def finalize_and_settle_bill(
     else:
         # Refund — guard against refunding more than the credit on hand even
         # after the bill is booked.
-        post_bill_credit = round(net_deposits_before - (prior_billed_on_bills + draft_total), 2)
+        post_bill_credit = round(net_deposits_before - billed_basis, 2)
         if float(settle.amount) > post_bill_credit + 0.01:
             raise HTTPException(
                 status_code=409,
                 detail=f"Refund of Rs.{settle.amount:,.2f} exceeds the credit that will remain after this bill (Rs.{post_bill_credit:,.2f}).",
             )
         net_deposits_after = round(net_deposits_before - float(settle.amount), 2)
-    post_finalize_balance = round(net_deposits_after - (prior_billed_on_bills + draft_total), 2)
+    post_finalize_balance = round(net_deposits_after - billed_basis, 2)
     if abs(post_finalize_balance) >= 0.01:
         raise HTTPException(
             status_code=400,
@@ -5956,8 +5957,8 @@ async def finalize_and_settle_bill(
                     f"Post-settle balance would be Rs.{post_finalize_balance:,.2f}."
                 ),
                 "draft_total": draft_total,
-                "expected_collect": round(max(0.0, draft_total + prior_billed_on_bills - net_deposits_before), 2),
-                "expected_refund": round(max(0.0, net_deposits_before - prior_billed_on_bills - draft_total), 2),
+                "expected_collect": round(max(0.0, billed_basis - net_deposits_before), 2),
+                "expected_refund": round(max(0.0, net_deposits_before - billed_basis), 2),
             },
         )
 
@@ -6074,10 +6075,10 @@ async def get_bill_pdf(
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_bill")),
     db: Session = Depends(get_db),
 ):
-    """Inpatient bill PDF — uses the live computed breakdown so it always
-    shows itemised charges (room, visits, OT, ancillary, pharmacy, lab) even
-    when the saved Bill snapshot stored category totals only. Falls back to
-    a "preview" header when no Bill record exists yet.
+    """Inpatient bill PDF — prefers saved BillItem snapshots when a bill
+    record exists (stable historical name/qty/rate/amount). Falls back to the
+    live computed breakdown for preview when no Bill exists yet, or for legacy
+    bills that stored only category totals.
 
     ``bill_id`` lets the operator print a specific historical bill — including
     cancelled ones — for audit. Cancelled bills are rendered with a CANCELLED
@@ -6108,241 +6109,269 @@ async def get_bill_pdf(
     room = db.query(RoomManagement).filter(RoomManagement.id == admission.room_id).first()
     bed = db.query(Bed).filter(Bed.id == admission.bed_id).first() if admission.bed_id else None
 
-    # Build itemised display rows from the computed breakdown.
+    # Build itemised display rows. Prefer saved BillItem snapshots when a bill
+    # record exists — those are the operator-finalized name/qty/rate/amount and
+    # stay stable even if the catalog is later renamed. Fall back to the live
+    # computed breakdown for previews (no bill yet) or legacy bills with no items.
     breakdown = _compute_admission_charges(db, admission, unbilled_only=False)
-    pkg_block = breakdown.get("package")
-    pkg_included = set(pkg_block.get("included_services") or []) if pkg_block else set()
+    items = []
+    saved_bill_items = []
+    if bill:
+        saved_bill_items = db.query(BillItem).filter(BillItem.bill_id == bill.id).order_by(BillItem.id).all()
 
-    INCLUDED_TAG = "  [INCLUDED]"
+    if saved_bill_items:
+        def _fmt_qty(q):
+            try:
+                qf = float(q or 0)
+            except (TypeError, ValueError):
+                return "1"
+            if qf.is_integer():
+                return str(int(qf))
+            return f"{qf:g}"
 
-    # Bucketed item collection so the printed bill always orders as:
-    #   1. Package fee
-    #   2. Included (covered-by-package) non-lab rows
-    #   3. Excluded / excess / non-package non-lab rows
-    #   4. Lab tests (included first, then excluded)
-    bucket_included = []
-    bucket_excluded = []
-    bucket_lab_included = []
-    bucket_lab_excluded = []
-    bucket_package = []
+        items = [
+            {
+                "description": it.item_name or "",
+                "qty": _fmt_qty(it.quantity),
+                "rate": float(it.unit_price or 0),
+                "amount": float(it.total_price or 0),
+            }
+            for it in saved_bill_items
+        ]
+    else:
+        pkg_block = breakdown.get("package")
+        pkg_included = set(pkg_block.get("included_services") or []) if pkg_block else set()
 
-    # ---- Room -------------------------------------------------------------
-    room_info = breakdown.get("room") or {}
-    room_segs = room_info.get("rate_segments") or []
-    room_covered_by_pkg = bool(pkg_block) and (
-        _PKG_CAT_ROOM in pkg_included
-        or int(pkg_block.get("included_stay_days") or 0) > 0
-        or bool(pkg_block.get("room_lines"))
-    )
-    if room_covered_by_pkg:
-        # Show the COVERED portion of the room stay only: capped at
-        # included_stay_days (or the actual stay, whichever is smaller).
-        # Anything beyond that appears in pkg_block.room_lines as excess.
-        stay_days_total = int(breakdown.get('billable_stay_days') or breakdown.get('stay_days') or 0)
-        included_days_cap = int(pkg_block.get('included_stay_days') or 0)
-        # included_stay_days=0 means "covers entire stay", so use full stay then.
-        covered_days = stay_days_total if included_days_cap <= 0 else min(stay_days_total, included_days_cap)
+        INCLUDED_TAG = "  [INCLUDED]"
 
-        if room_segs and covered_days > 0:
-            remaining = covered_days
-            for seg in room_segs:
-                if remaining <= 0:
-                    break
-                seg_days = min(int(seg['days']), remaining)
-                if seg_days <= 0:
-                    continue
+        # Bucketed item collection so the printed bill always orders as:
+        #   1. Package fee
+        #   2. Included (covered-by-package) non-lab rows
+        #   3. Excluded / excess / non-package non-lab rows
+        #   4. Lab tests (included first, then excluded)
+        bucket_included = []
+        bucket_excluded = []
+        bucket_lab_included = []
+        bucket_lab_excluded = []
+        bucket_package = []
+
+        # ---- Room -------------------------------------------------------------
+        room_info = breakdown.get("room") or {}
+        room_segs = room_info.get("rate_segments") or []
+        room_covered_by_pkg = bool(pkg_block) and (
+            _PKG_CAT_ROOM in pkg_included
+            or int(pkg_block.get("included_stay_days") or 0) > 0
+            or bool(pkg_block.get("room_lines"))
+        )
+        if room_covered_by_pkg:
+            # Show the COVERED portion of the room stay only: capped at
+            # included_stay_days (or the actual stay, whichever is smaller).
+            # Anything beyond that appears in pkg_block.room_lines as excess.
+            stay_days_total = int(breakdown.get('billable_stay_days') or breakdown.get('stay_days') or 0)
+            included_days_cap = int(pkg_block.get('included_stay_days') or 0)
+            # included_stay_days=0 means "covers entire stay", so use full stay then.
+            covered_days = stay_days_total if included_days_cap <= 0 else min(stay_days_total, included_days_cap)
+
+            if room_segs and covered_days > 0:
+                remaining = covered_days
+                for seg in room_segs:
+                    if remaining <= 0:
+                        break
+                    seg_days = min(int(seg['days']), remaining)
+                    if seg_days <= 0:
+                        continue
+                    bucket_included.append({
+                        "description": f"Room rent — {room_info.get('room_number')} ({room_info.get('room_type')}){INCLUDED_TAG}",
+                        "qty": f"{seg_days} day(s)",
+                        "rate": seg['rate'],
+                        "amount": 0,
+                    })
+                    remaining -= seg_days
+            elif covered_days > 0:
                 bucket_included.append({
                     "description": f"Room rent — {room_info.get('room_number')} ({room_info.get('room_type')}){INCLUDED_TAG}",
-                    "qty": f"{seg_days} day(s)",
-                    "rate": seg['rate'],
+                    "qty": f"{covered_days} day(s)",
+                    "rate": room_info.get('charge_per_day') or 0,
                     "amount": 0,
                 })
-                remaining -= seg_days
-        elif covered_days > 0:
-            bucket_included.append({
-                "description": f"Room rent — {room_info.get('room_number')} ({room_info.get('room_type')}){INCLUDED_TAG}",
-                "qty": f"{covered_days} day(s)",
-                "rate": room_info.get('charge_per_day') or 0,
-                "amount": 0,
-            })
-        for line in pkg_block.get("room_lines") or []:
-            if (line.get('total') or 0) <= 0:
-                continue
-            bucket_excluded.append({
-                "description": line.get('label') or "Room excess",
-                "qty": f"{line.get('days') or 1} day(s)",
-                "rate": line.get('rate') or 0,
-                "amount": line.get('total') or 0,
-            })
-    elif room_segs:
-        for seg in room_segs:
+            for line in pkg_block.get("room_lines") or []:
+                if (line.get('total') or 0) <= 0:
+                    continue
+                bucket_excluded.append({
+                    "description": line.get('label') or "Room excess",
+                    "qty": f"{line.get('days') or 1} day(s)",
+                    "rate": line.get('rate') or 0,
+                    "amount": line.get('total') or 0,
+                })
+        elif room_segs:
+            for seg in room_segs:
+                bucket_excluded.append({
+                    "description": f"Room rent — {room_info.get('room_number')} ({room_info.get('room_type')})",
+                    "qty": f"{seg['days']} day(s)",
+                    "rate": seg['rate'],
+                    "amount": seg['total'],
+                })
+        elif breakdown.get("room_total", 0) > 0:
             bucket_excluded.append({
                 "description": f"Room rent — {room_info.get('room_number')} ({room_info.get('room_type')})",
-                "qty": f"{seg['days']} day(s)",
-                "rate": seg['rate'],
-                "amount": seg['total'],
+                "qty": f"{breakdown.get('stay_days', 0)} day(s)",
+                "rate": room_info.get('charge_per_day') or 0,
+                "amount": breakdown['room_total'],
             })
-    elif breakdown.get("room_total", 0) > 0:
-        bucket_excluded.append({
-            "description": f"Room rent — {room_info.get('room_number')} ({room_info.get('room_type')})",
-            "qty": f"{breakdown.get('stay_days', 0)} day(s)",
-            "rate": room_info.get('charge_per_day') or 0,
-            "amount": breakdown['room_total'],
-        })
 
-    # ---- Visits — emit a covered row and/or an excess-stay row per type.
-    for vtype, vinfo in (breakdown.get("visits") or {}).items():
-        if not vinfo or not vinfo.get('count'):
-            continue
-        type_label = vtype.replace('_', ' ').title()
-        type_in_pkg = bool(vinfo.get("included_in_package")) or bool(vinfo.get("covered_count"))
-        covered_count = int(vinfo.get("covered_count") or 0)
-        billed_count = int(vinfo.get("billed_count") or 0)
-        if pkg_block and type_in_pkg and (covered_count or billed_count):
-            if covered_count:
-                covered_orig = float(vinfo.get("covered_total_original") or 0)
-                bucket_included.append({
-                    "description": f"{type_label}{INCLUDED_TAG}",
-                    "qty": f"× {covered_count}",
-                    "rate": (covered_orig / covered_count) if covered_count else 0,
-                    "amount": 0,
-                })
-            if billed_count:
-                billed_total = float(vinfo.get("billed_total") or vinfo.get("total") or 0)
+        # ---- Visits — emit a covered row and/or an excess-stay row per type.
+        for vtype, vinfo in (breakdown.get("visits") or {}).items():
+            if not vinfo or not vinfo.get('count'):
+                continue
+            type_label = vtype.replace('_', ' ').title()
+            type_in_pkg = bool(vinfo.get("included_in_package")) or bool(vinfo.get("covered_count"))
+            covered_count = int(vinfo.get("covered_count") or 0)
+            billed_count = int(vinfo.get("billed_count") or 0)
+            if pkg_block and type_in_pkg and (covered_count or billed_count):
+                if covered_count:
+                    covered_orig = float(vinfo.get("covered_total_original") or 0)
+                    bucket_included.append({
+                        "description": f"{type_label}{INCLUDED_TAG}",
+                        "qty": f"× {covered_count}",
+                        "rate": (covered_orig / covered_count) if covered_count else 0,
+                        "amount": 0,
+                    })
+                if billed_count:
+                    billed_total = float(vinfo.get("billed_total") or vinfo.get("total") or 0)
+                    bucket_excluded.append({
+                        "description": f"{type_label} (excess stay)",
+                        "qty": f"× {billed_count}",
+                        "rate": (billed_total / billed_count) if billed_count else 0,
+                        "amount": billed_total,
+                    })
+            else:
+                count = int(vinfo.get('count') or 0)
+                total = float(vinfo.get('total') or 0)
                 bucket_excluded.append({
-                    "description": f"{type_label} (excess stay)",
-                    "qty": f"× {billed_count}",
-                    "rate": (billed_total / billed_count) if billed_count else 0,
-                    "amount": billed_total,
+                    "description": type_label,
+                    "qty": f"× {count}",
+                    "rate": (total / count) if count else 0,
+                    "amount": total,
                 })
-        else:
-            count = int(vinfo.get('count') or 0)
-            total = float(vinfo.get('total') or 0)
+
+        # ---- OT — one row per procedure with covered/excess tag.
+        for ot in (breakdown.get("ot_entries") or []):
+            covered = bool(ot.get("included_in_package"))
+            ref_total = float(ot.get("original_total") if covered else ot.get("total") or 0)
+            proc_name = ot.get('procedure', ot.get('procedure_name', 'Procedure'))
+            suffix = INCLUDED_TAG if covered else (
+                " (excess stay)" if pkg_block and _pkg_ot_included(pkg_included) else ""
+            )
+            row = {
+                "description": f"OT — {proc_name}{suffix}",
+                "qty": "1",
+                "rate": ref_total,
+                "amount": 0 if covered else float(ot.get('total') or 0),
+            }
+            (bucket_included if covered else bucket_excluded).append(row)
+
+        # ---- Ancillary — itemised with covered/excess tag.
+        for anc in (breakdown.get("ancillary_entries") or []):
+            covered = bool(anc.get("included_in_package"))
+            ref_total = float(anc.get("original_total") if covered else (anc.get("total_amount") or anc.get('total') or 0))
+            suffix = INCLUDED_TAG if covered else (
+                " (excess stay)" if pkg_block and _PKG_CAT_ANCILLARY in pkg_included else ""
+            )
+            row = {
+                "description": f"Ancillary — {anc.get('service_name', 'Service')}{suffix}",
+                "qty": str(anc.get('quantity', 1)),
+                "rate": float(anc.get('unit_price') or 0),
+                "amount": 0 if covered else float(anc.get('total_amount') or anc.get('total') or 0),
+            }
+            (bucket_included if covered else bucket_excluded).append(row)
+
+        # ---- Pharmacy — lump sums split into covered + billed.
+        pharmacy_covered_total = float((pkg_block or {}).get("pharmacy_covered_total") or 0)
+        if pharmacy_covered_total > 0:
+            bucket_included.append({
+                "description": "Pharmacy / Medications" + INCLUDED_TAG,
+                "qty": "—",
+                "rate": "",
+                "amount": 0,
+            })
+        if breakdown.get("pharmacy_total", 0) > 0:
+            excess_suffix = " (excess stay)" if pkg_block and _PKG_CAT_PHARMACY in pkg_included else ""
             bucket_excluded.append({
-                "description": type_label,
-                "qty": f"× {count}",
-                "rate": (total / count) if count else 0,
-                "amount": total,
+                "description": f"Pharmacy / Medications{excess_suffix}",
+                "qty": "—",
+                "rate": "",
+                "amount": breakdown['pharmacy_total'],
             })
 
-    # ---- OT — one row per procedure with covered/excess tag.
-    for ot in (breakdown.get("ot_entries") or []):
-        covered = bool(ot.get("included_in_package"))
-        ref_total = float(ot.get("original_total") if covered else ot.get("total") or 0)
-        proc_name = ot.get('procedure', ot.get('procedure_name', 'Procedure'))
-        suffix = INCLUDED_TAG if covered else (
-            " (excess stay)" if pkg_block and _pkg_ot_included(pkg_included) else ""
-        )
-        row = {
-            "description": f"OT — {proc_name}{suffix}",
-            "qty": "1",
-            "rate": ref_total,
-            "amount": 0 if covered else float(ot.get('total') or 0),
-        }
-        (bucket_included if covered else bucket_excluded).append(row)
+        # ---- Lab — one row per test. Included labs go in their own sub-bucket
+        # ahead of excluded labs; the whole lab section is rendered AFTER all
+        # non-lab rows so the bill ends with the lab listing.
+        for lab in (breakdown.get("lab_entries") or []):
+            covered = bool(lab.get("included_in_package"))
+            amount = float(lab.get('amount') or 0)
+            suffix = INCLUDED_TAG if covered else ""
+            if not covered and pkg_block and _PKG_CAT_LAB in pkg_included:
+                suffix = " (excess stay)" if not lab.get("test_excluded") else ""
+            row = {
+                "description": f"Lab — {lab.get('test_name', 'Test')} ({lab.get('order_number', '')}){suffix}",
+                "qty": "1",
+                "rate": amount,
+                "amount": 0 if covered else amount,
+            }
+            (bucket_lab_included if covered else bucket_lab_excluded).append(row)
 
-    # ---- Ancillary — itemised with covered/excess tag.
-    for anc in (breakdown.get("ancillary_entries") or []):
-        covered = bool(anc.get("included_in_package"))
-        ref_total = float(anc.get("original_total") if covered else (anc.get("total_amount") or anc.get('total') or 0))
-        suffix = INCLUDED_TAG if covered else (
-            " (excess stay)" if pkg_block and _PKG_CAT_ANCILLARY in pkg_included else ""
-        )
-        row = {
-            "description": f"Ancillary — {anc.get('service_name', 'Service')}{suffix}",
-            "qty": str(anc.get('quantity', 1)),
-            "rate": anc.get('unit_price', 0),
-            "amount": 0 if covered else float(anc.get('total_amount') or anc.get('total') or 0),
-        }
-        (bucket_included if covered else bucket_excluded).append(row)
-
-    # ---- Pharmacy — lump sums split into covered + billed.
-    pharmacy_covered_total = float((pkg_block or {}).get("pharmacy_covered_total") or 0)
-    if pharmacy_covered_total > 0:
-        bucket_included.append({
-            "description": "Pharmacy / Medications" + INCLUDED_TAG,
-            "qty": "—",
-            "rate": "",
-            "amount": 0,
-        })
-    if breakdown.get("pharmacy_total", 0) > 0:
-        excess_suffix = " (excess stay)" if pkg_block and _PKG_CAT_PHARMACY in pkg_included else ""
-        bucket_excluded.append({
-            "description": f"Pharmacy / Medications{excess_suffix}",
-            "qty": "—",
-            "rate": "",
-            "amount": breakdown['pharmacy_total'],
-        })
-
-    # ---- Lab — one row per test. Included labs go in their own sub-bucket
-    # ahead of excluded labs; the whole lab section is rendered AFTER all
-    # non-lab rows so the bill ends with the lab listing.
-    for lab in (breakdown.get("lab_entries") or []):
-        covered = bool(lab.get("included_in_package"))
-        amount = float(lab.get('amount') or 0)
-        suffix = INCLUDED_TAG if covered else ""
-        if not covered and pkg_block and _PKG_CAT_LAB in pkg_included:
-            suffix = " (excess stay)" if not lab.get("test_excluded") else ""
-        row = {
-            "description": f"Lab — {lab.get('test_name', 'Test')} ({lab.get('order_number', '')}){suffix}",
-            "qty": "1",
-            "rate": amount,
-            "amount": 0 if covered else amount,
-        }
-        (bucket_lab_included if covered else bucket_lab_excluded).append(row)
-
-    # Catering — legacy meal slots + canteen à-la-carte lines (excluded section).
-    food_entries = breakdown.get("food_entries") or []
-    if food_entries:
-        legacy = [f for f in food_entries if f.get("source") != "canteen"]
-        canteen_lines = [f for f in food_entries if f.get("source") == "canteen"]
-        if legacy:
-            food_by_type: dict = {}
-            for f in legacy:
-                mt = f.get("meal_type", "meal")
-                food_by_type.setdefault(mt, {"count": 0, "total": 0.0})
-                food_by_type[mt]["count"] += 1
-                food_by_type[mt]["total"] += float(f.get("price") or 0)
-            for mt, info in food_by_type.items():
-                rate = info["total"] / info["count"] if info["count"] else 0
+        # Catering — legacy meal slots + canteen à-la-carte lines (excluded section).
+        food_entries = breakdown.get("food_entries") or []
+        if food_entries:
+            legacy = [f for f in food_entries if f.get("source") != "canteen"]
+            canteen_lines = [f for f in food_entries if f.get("source") == "canteen"]
+            if legacy:
+                food_by_type: dict = {}
+                for f in legacy:
+                    mt = f.get("meal_type", "meal")
+                    food_by_type.setdefault(mt, {"count": 0, "total": 0.0})
+                    food_by_type[mt]["count"] += 1
+                    food_by_type[mt]["total"] += float(f.get("price") or 0)
+                for mt, info in food_by_type.items():
+                    rate = info["total"] / info["count"] if info["count"] else 0
+                    bucket_excluded.append({
+                        "description": f"Catering — {mt.title()}",
+                        "qty": f"× {info['count']}",
+                        "rate": rate,
+                        "amount": info["total"],
+                    })
+            for f in canteen_lines:
+                qty = int(f.get("quantity") or 1)
                 bucket_excluded.append({
-                    "description": f"Catering — {mt.title()}",
-                    "qty": f"× {info['count']}",
-                    "rate": rate,
-                    "amount": info["total"],
+                    "description": f"Canteen — {f.get('item_name', 'Item')}" + (
+                        f" ({f.get('meal_date')})" if f.get("meal_date") else ""
+                    ),
+                    "qty": str(qty),
+                    "rate": float(f.get("unit_price") or 0),
+                    "amount": float(f.get("price") or 0),
                 })
-        for f in canteen_lines:
-            qty = int(f.get("quantity") or 1)
-            bucket_excluded.append({
-                "description": f"Canteen — {f.get('item_name', 'Item')}" + (
-                    f" ({f.get('meal_date')})" if f.get("meal_date") else ""
-                ),
-                "qty": str(qty),
-                "rate": float(f.get("unit_price") or 0),
-                "amount": float(f.get("price") or 0),
+
+        # ---- Package fee line (always at the very top when present).
+        if pkg_block and float(pkg_block.get("agreed_price") or 0) > 0 \
+                and not pkg_block.get("fee_already_billed"):
+            pkg_label = f"Surgery Package: {pkg_block.get('package_name', '')}"
+            if pkg_block.get("package_code"):
+                pkg_label += f" [{pkg_block['package_code']}]"
+            bucket_package.append({
+                "description": pkg_label,
+                "qty": "1",
+                "rate": float(pkg_block["agreed_price"]),
+                "amount": float(pkg_block["agreed_price"]),
             })
 
-    # ---- Package fee line (always at the very top when present).
-    if pkg_block and float(pkg_block.get("agreed_price") or 0) > 0 \
-            and not pkg_block.get("fee_already_billed"):
-        pkg_label = f"Surgery Package: {pkg_block.get('package_name', '')}"
-        if pkg_block.get("package_code"):
-            pkg_label += f" [{pkg_block['package_code']}]"
-        bucket_package.append({
-            "description": pkg_label,
-            "qty": "1",
-            "rate": float(pkg_block["agreed_price"]),
-            "amount": float(pkg_block["agreed_price"]),
-        })
-
-    # Final assembled order: package → included → excluded → lab (included → excluded)
-    items = (
-        bucket_package
-        + bucket_included
-        + bucket_excluded
-        + bucket_lab_included
-        + bucket_lab_excluded
-    )
+        # Final assembled order: package → included → excluded → lab (included → excluded)
+        items = (
+            bucket_package
+            + bucket_included
+            + bucket_excluded
+            + bucket_lab_included
+            + bucket_lab_excluded
+        )
 
     # Totals — prefer the saved Bill snapshot when present; otherwise show the
     # live computed breakdown so a "preview" is still meaningful.
@@ -9479,7 +9508,10 @@ async def list_ancillary_services(
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
 ):
-    q = db.query(AncillaryServiceCatalog)
+    hospital = _get_hospital(db, current_user)
+    q = db.query(AncillaryServiceCatalog).filter(
+        AncillaryServiceCatalog.hospital_id == hospital.id,
+    )
     if active_only:
         q = q.filter(AncillaryServiceCatalog.is_active == True)
     if category:
@@ -9508,7 +9540,11 @@ async def update_ancillary_service(
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_ancillary_catalog")),
     db: Session = Depends(get_db),
 ):
-    svc = db.query(AncillaryServiceCatalog).filter(AncillaryServiceCatalog.id == service_id).first()
+    hospital = _get_hospital(db, current_user)
+    svc = db.query(AncillaryServiceCatalog).filter(
+        AncillaryServiceCatalog.id == service_id,
+        AncillaryServiceCatalog.hospital_id == hospital.id,
+    ).first()
     if not svc:
         raise HTTPException(status_code=404, detail="Service not found")
     for k, v in data.model_dump(exclude_unset=True).items():
@@ -9524,7 +9560,11 @@ async def delete_ancillary_service(
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_ancillary_catalog")),
     db: Session = Depends(get_db),
 ):
-    svc = db.query(AncillaryServiceCatalog).filter(AncillaryServiceCatalog.id == service_id).first()
+    hospital = _get_hospital(db, current_user)
+    svc = db.query(AncillaryServiceCatalog).filter(
+        AncillaryServiceCatalog.id == service_id,
+        AncillaryServiceCatalog.hospital_id == hospital.id,
+    ).first()
     if not svc:
         raise HTTPException(status_code=404, detail="Service not found")
     svc.is_active = False  # soft-delete to preserve historical charges
@@ -9693,6 +9733,7 @@ async def create_ancillary_charge(
         raise HTTPException(status_code=404, detail="Admission not found")
     svc = db.query(AncillaryServiceCatalog).filter(
         AncillaryServiceCatalog.id == data.service_id,
+        AncillaryServiceCatalog.hospital_id == hospital.id,
         AncillaryServiceCatalog.is_active == True,
     ).first()
     if not svc:
@@ -9729,7 +9770,14 @@ async def list_ancillary_charges(
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_bill")),
     db: Session = Depends(get_db),
 ):
-    q = db.query(AdmissionAncillaryCharge).filter(AdmissionAncillaryCharge.admission_id == admission_id)
+    hospital = _get_hospital(db, current_user)
+    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    if not admission:
+        raise HTTPException(status_code=404, detail="Admission not found")
+    q = db.query(AdmissionAncillaryCharge).filter(
+        AdmissionAncillaryCharge.admission_id == admission_id,
+        AdmissionAncillaryCharge.hospital_id == hospital.id,
+    )
     if unbilled_only:
         q = q.filter(AdmissionAncillaryCharge.billed == False)
     rows = q.order_by(AdmissionAncillaryCharge.charged_at.desc()).all()
@@ -9743,7 +9791,11 @@ async def update_ancillary_charge(
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_ancillary_charges")),
     db: Session = Depends(get_db),
 ):
-    c = db.query(AdmissionAncillaryCharge).filter(AdmissionAncillaryCharge.id == charge_id).first()
+    hospital = _get_hospital(db, current_user)
+    c = db.query(AdmissionAncillaryCharge).filter(
+        AdmissionAncillaryCharge.id == charge_id,
+        AdmissionAncillaryCharge.hospital_id == hospital.id,
+    ).first()
     if not c:
         raise HTTPException(status_code=404, detail="Charge not found")
     if c.billed:
@@ -9765,7 +9817,11 @@ async def delete_ancillary_charge(
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_ancillary_charges")),
     db: Session = Depends(get_db),
 ):
-    c = db.query(AdmissionAncillaryCharge).filter(AdmissionAncillaryCharge.id == charge_id).first()
+    hospital = _get_hospital(db, current_user)
+    c = db.query(AdmissionAncillaryCharge).filter(
+        AdmissionAncillaryCharge.id == charge_id,
+        AdmissionAncillaryCharge.hospital_id == hospital.id,
+    ).first()
     if not c:
         raise HTTPException(status_code=404, detail="Charge not found")
     if c.billed:

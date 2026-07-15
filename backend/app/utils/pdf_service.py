@@ -653,29 +653,41 @@ class PDFService:
         elements.append(Spacer(1, 6))
 
         # ============================================================
-        # ITEMS TABLE — Sno | Description | Code | Rate (same as OPD)
+        # ITEMS TABLE — Sno | Description | Qty | Rate | Amount
         # ============================================================
         sno_w = 0.4 * inch
-        code_w = 1.0 * inch
-        rate_w = 1.2 * inch
-        desc_w = page_width - sno_w - code_w - rate_w
+        qty_w = 0.7 * inch
+        rate_w = 1.0 * inch
+        amt_w = 1.1 * inch
+        desc_w = page_width - sno_w - qty_w - rate_w - amt_w
 
         items_header = [
             Paragraph('<b>Sno</b>', cell_label),
             Paragraph('<b>Description</b>', cell_label),
-            Paragraph('<b>Qty</b>', cell_label),
-            Paragraph('<b>Rate</b>', ParagraphStyle('R', parent=cell_label, alignment=2)),
+            Paragraph('<b>Qty</b>', ParagraphStyle('Qc', parent=cell_label, alignment=1)),
+            Paragraph('<b>Rate</b>', ParagraphStyle('Rr', parent=cell_label, alignment=2)),
+            Paragraph('<b>Amount</b>', ParagraphStyle('Ra', parent=cell_label, alignment=2)),
         ]
         items_data = [items_header]
         items = bill_data.get('items') or []
         for idx, it in enumerate(items, start=1):
+            rate_val = it.get('rate')
+            try:
+                rate_str = f"{float(rate_val):,.2f}" if rate_val not in (None, "") else "—"
+            except (TypeError, ValueError):
+                rate_str = "—"
             items_data.append([
                 Paragraph(str(idx), cell_value),
                 Paragraph(it.get('description', ''), cell_value),
-                Paragraph(str(it.get('qty', '')) or '—', cell_value),
+                Paragraph(str(it.get('qty', '')) or '—',
+                    ParagraphStyle('Qc', parent=cell_value, alignment=1)),
+                Paragraph(
+                    rate_str,
+                    ParagraphStyle('Rr', parent=cell_value, alignment=2),
+                ),
                 Paragraph(
                     f"{float(it.get('amount') or 0):,.2f}",
-                    ParagraphStyle('R', parent=cell_value, alignment=2),
+                    ParagraphStyle('Ra', parent=cell_value, alignment=2),
                 ),
             ])
         if len(items_data) == 1:
@@ -683,10 +695,12 @@ class PDFService:
                 Paragraph('—', cell_value),
                 Paragraph('No itemised charges', cell_value),
                 Paragraph('—', cell_value),
+                Paragraph('—',
+                    ParagraphStyle('Rr', parent=cell_value, alignment=2)),
                 Paragraph('0.00',
-                    ParagraphStyle('R', parent=cell_value, alignment=2)),
+                    ParagraphStyle('Ra', parent=cell_value, alignment=2)),
             ])
-        items_table = Table(items_data, colWidths=[sno_w, desc_w, code_w, rate_w])
+        items_table = Table(items_data, colWidths=[sno_w, desc_w, qty_w, rate_w, amt_w])
         items_table.setStyle(TableStyle([
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('TOPPADDING', (0, 0), (-1, -1), 4),
@@ -766,7 +780,7 @@ class PDFService:
                         if bill_data.get('balance_due') is not None
                         else (total - deposits_total))
 
-        summary_label_w = page_width - code_w - rate_w
+        summary_label_w = page_width - qty_w - amt_w
         # When neither a discount nor a tax row is shown, the Sub Total + Total
         # rows are redundant — collapse them into a single "Bill Total" line.
         has_adjustments = discount > 0 or tax > 0
@@ -815,7 +829,7 @@ class PDFService:
                     ParagraphStyle('Bal', parent=cell_value_right,
                         fontName='Helvetica-Bold'))],
             ])
-        payment_table = Table(payment_data, colWidths=[summary_label_w, code_w, rate_w])
+        payment_table = Table(payment_data, colWidths=[summary_label_w, qty_w, amt_w])
         payment_table.setStyle(TableStyle([
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('TOPPADDING', (0, 0), (-1, -1), 3),

@@ -12,7 +12,7 @@ import axios from 'axios';
 import {
   Receipt, Search, Download, DollarSign, TrendingUp, Clock,
   CheckCircle2, Loader2, XCircle, Ban, CreditCard, Eye,
-  Building2, Stethoscope, FlaskConical, BedDouble, Printer, FileText, ChevronDown
+  Building2, Stethoscope, FlaskConical, BedDouble, Pill, Printer, FileText, ChevronDown
 } from 'lucide-react';
 import { printPdfFromUrl } from '../../utils/printPdf';
 import PdfPreviewDialog from '../../components/PdfPreviewDialog';
@@ -110,6 +110,7 @@ const BillingModule = () => {
     if (patientSearch) params.set('patient_search', patientSearch);
     if (activeTab === 'outpatient') params.set('bill_type', 'consultation');
     else if (activeTab === 'lab') params.set('bill_type', 'lab');
+    else if (activeTab === 'pharmacy') params.set('bill_type', 'pharmacy');
     else if (activeTab === 'inpatient') params.set('bill_type', 'admission');
     if (paymentStatus !== 'all') params.set('payment_status', paymentStatus);
     if (doctorFilter !== 'all') params.set('doctor_id', doctorFilter);
@@ -145,6 +146,7 @@ const BillingModule = () => {
     switch (type) {
       case 'consultation': return <Stethoscope className="h-3 w-3" />;
       case 'lab': return <FlaskConical className="h-3 w-3" />;
+      case 'pharmacy': return <Pill className="h-3 w-3" />;
       case 'admission': return <BedDouble className="h-3 w-3" />;
       default: return <Receipt className="h-3 w-3" />;
     }
@@ -154,6 +156,7 @@ const BillingModule = () => {
     switch (type) {
       case 'consultation': return 'border-blue-200 text-blue-700 bg-blue-50';
       case 'lab': return 'border-purple-200 text-purple-700 bg-purple-50';
+      case 'pharmacy': return 'border-emerald-200 text-emerald-700 bg-emerald-50';
       case 'admission': return 'border-teal-200 text-teal-700 bg-teal-50';
       default: return 'border-gray-200 text-gray-700';
     }
@@ -178,6 +181,8 @@ const BillingModule = () => {
       case 'lab':
         if (bill.lab_bill_group_id) return `/api/lab/bills/${bill.lab_bill_group_id}/pdf`;
         return bill.bill_id ? `/api/lab/orders/${bill.bill_id}/bill` : null;
+      case 'pharmacy':
+        return bill.bill_id ? `/api/pharmacy/sales/${bill.bill_id}/invoice/pdf` : null;
       case 'admission':
         return bill.admission_id ? `/api/inpatient/admissions/${bill.admission_id}/bill/pdf` : null;
       case 'day_care':
@@ -644,7 +649,7 @@ const BillingModule = () => {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">Billing Management</h1>
-          <p className="text-muted-foreground text-sm">Manage outpatient, lab, and inpatient bills</p>
+          <p className="text-muted-foreground text-sm">Manage outpatient, lab, pharmacy, and inpatient bills</p>
         </div>
         <div className="flex gap-2">
           <Button onClick={openConsolidateDialog} variant="outline">
@@ -714,6 +719,7 @@ const BillingModule = () => {
                   <p className="text-xl font-bold">{summary.total_bills}</p>
                   <p className="text-[10px] text-gray-400">
                     {summary.appointment_count} consult + {summary.lab_count} lab
+                    {summary.pharmacy_count > 0 && ` + ${summary.pharmacy_count} pharmacy`}
                     {summary.admission_count > 0 && ` + ${summary.admission_count} admission`}
                   </p>
                 </div>
@@ -744,6 +750,9 @@ const BillingModule = () => {
           </TabsTrigger>
           <TabsTrigger value="lab">
             <FlaskConical className="h-3.5 w-3.5 mr-1" /> Lab
+          </TabsTrigger>
+          <TabsTrigger value="pharmacy">
+            <Pill className="h-3.5 w-3.5 mr-1" /> Pharmacy
           </TabsTrigger>
           <TabsTrigger value="inpatient">
             <BedDouble className="h-3.5 w-3.5 mr-1" /> Inpatient
@@ -976,7 +985,7 @@ const BillingModule = () => {
         </TabsContent>
 
         {/* Bills Table - same content for all tabs, filtered by activeTab */}
-        {['all', 'outpatient', 'lab', 'inpatient'].map(tab => (
+        {['all', 'outpatient', 'lab', 'pharmacy', 'inpatient'].map(tab => (
           <TabsContent key={tab} value={tab} className="mt-4">
             <Card>
               <CardContent className="pt-4">
@@ -1065,7 +1074,7 @@ const BillingModule = () => {
                                 {bill.payment_status !== 'cancelled' && (
                                   bill.type === 'admission'
                                     ? bill.admission_id
-                                    : bill.payment_status !== 'pending'
+                                    : bill.type !== 'pharmacy' && bill.payment_status !== 'pending'
                                 ) && (
                                   <Button size="sm" variant="ghost" className="h-6 text-[10px] text-red-500 hover:text-red-700 hover:bg-red-50 px-2"
                                     onClick={() => { setCancelBill(bill); setCancelReason(''); }}>

@@ -49,9 +49,9 @@ function loadCart() {
   }
 }
 
-function saveCart(storeId, items, customer) {
+function saveCart(storeId, items, customer, prescription) {
   try {
-    sessionStorage.setItem(CART_KEY, JSON.stringify({ storeId, items, customer }));
+    sessionStorage.setItem(CART_KEY, JSON.stringify({ storeId, items, customer, prescription }));
   } catch { /* ignore quota */ }
 }
 
@@ -92,6 +92,9 @@ export default function SalesCounter() {
   const [editReason, setEditReason] = useState('');
   const [editReasonOpen, setEditReasonOpen] = useState(false);
   const [loadingEdit, setLoadingEdit] = useState(isEditing);
+  const [patientPrescriptions, setPatientPrescriptions] = useState([]);
+  const [activePrescription, setActivePrescription] = useState(null);
+  const [loadingPrescription, setLoadingPrescription] = useState(false);
 
   const counterStoreId = editingSale?.store_id || activeStoreId;
 
@@ -120,6 +123,7 @@ export default function SalesCounter() {
         if (!cancelled) {
           setItems(refreshed);
           if (saved.customer) setCustomer(saved.customer);
+          if (saved.prescription) setActivePrescription(saved.prescription);
         }
       }
       if (!cancelled) setCartRestored(true);
@@ -237,8 +241,8 @@ export default function SalesCounter() {
 
   useEffect(() => {
     if (isEditing || !cartRestored || !activeStoreId) return;
-    saveCart(activeStoreId, items, customer);
-  }, [items, customer, activeStoreId, cartRestored, isEditing]);
+    saveCart(activeStoreId, items, customer, activePrescription);
+  }, [items, customer, activePrescription, activeStoreId, cartRestored, isEditing]);
 
   const lookup = useCallback(async (q, isBarcode = false) => {
     if (!q || q.length < 2) { setLookupResults([]); return; }
@@ -281,6 +285,8 @@ export default function SalesCounter() {
 
   const handlePatientChange = (patient) => {
     setSelectedPatient(patient);
+    setPatientPrescriptions([]);
+    setActivePrescription(null);
     if (!patient) {
       setCustomer({
         patient_phone: '', patient_ip_id: '', patient_name: '', patient_address: '',
@@ -325,6 +331,73 @@ export default function SalesCounter() {
       return forLine?.batch ? [forLine.batch] : [];
     }
   };
+
+  const loadPrescriptionIntoPos = async (rx) => {
+    if (!rx) return;
+    setLoadingPrescription(true);
+    try {
+      const cartLines = await Promise.all((rx.items || [])
+        .filter((item) => Number(item.quantity_remaining || 0) > 0)
+        .map(async (item) => {
+          const medR = await axios.get(`/api/pharmacy/medicines/${item.medicine_id}`);
+          const medicine = medR.data;
+          const batches = await loadBatchesForMedicine(item.medicine_id);
+          return {
+            medicine,
+            prescription_item_id: item.item_id,
+            qty_tabs: item.quantity_remaining,
+            qty_strips: '',
+            rate_tier: 'A',
+            discount_pct: medicine.default_discount_pct || '',
+            batch_id: null,
+            batch: null,
+            batches,
+            barcode_scanned: false,
+          };
+        }));
+      setItems(cartLines);
+      setActivePrescription(rx);
+      setBillingMode('cash_at_pharmacy');
+      setCustomer((s) => ({ ...s, doctor_name: rx.doctor_name || s.doctor_name }));
+      toast({
+        title: `Prescription ${rx.prescription_number} loaded`,
+        description: `${cartLines.length} item(s) added to POS. Quantities can be edited before billing.`,
+      });
+    } catch (e) {
+      setActivePrescription(null);
+      toast({ variant: 'destructive', title: 'Could not load prescription', description: errMsg(e) });
+    } finally {
+      setLoadingPrescription(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isEditing || !selectedPatient?.patient_id || !counterStoreId) return;
+    let cancelled = false;
+    setLoadingPrescription(true);
+    axios.get('/api/pharmacy/prescriptions/pending', {
+      params: { patient_id: selectedPatient.patient_id },
+    }).then(async (r) => {
+      if (cancelled) return;
+      const outpatientRows = (r.data || []).filter((rx) => !rx.admission_id);
+      setPatientPrescriptions(outpatientRows);
+      if (outpatientRows.length > 0) {
+        await loadPrescriptionIntoPos(outpatientRows[0]);
+      } else {
+        setActivePrescription(null);
+      }
+    }).catch(() => {
+      if (!cancelled) {
+        setPatientPrescriptions([]);
+        setActivePrescription(null);
+      }
+    }).finally(() => {
+      if (!cancelled) setLoadingPrescription(false);
+    });
+    return () => { cancelled = true; };
+  // The loader intentionally runs when patient/store selection changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEditing, selectedPatient?.patient_id, counterStoreId]);
 
   const addLine = async (med) => {
     const batches = await loadBatchesForMedicine(med.id);
@@ -519,12 +592,16 @@ export default function SalesCounter() {
     try {
       const payload = {
         ...customer,
+        prescription_id: items.some((ln) => ln.prescription_item_id)
+          ? (activePrescription?.id || null)
+          : null,
         store_id: counterStoreId,
         billing_mode: billingMode,
         tax_mode: taxMode,
         bill_discount_amount: billDiscAmt,
         items: items.map(ln => ({
           medicine_id: ln.medicine.id,
+          prescription_item_id: ln.prescription_item_id || null,
           qty_tabs: parseFloat(ln.qty_tabs) || 0,
           qty_strips: parseFloat(ln.qty_strips) || 0,
           rate_tier: ln.rate_tier,
@@ -556,6 +633,8 @@ export default function SalesCounter() {
       setItems([]);
       clearCartStorage();
       setSelectedPatient(null);
+      setPatientPrescriptions([]);
+      setActivePrescription(null);
       setBillingMode('cash_at_pharmacy');
       setTaxMode('inclusive');
       setBillDiscountAmount('');
@@ -584,6 +663,8 @@ export default function SalesCounter() {
     setItems([]);
     setLastSale(null);
     setSelectedPatient(null);
+    setPatientPrescriptions([]);
+    setActivePrescription(null);
     setBillingMode('cash_at_pharmacy');
     setTaxMode('inclusive');
     setBillDiscountAmount('');
@@ -860,6 +941,39 @@ export default function SalesCounter() {
             label="Patient"
             compact
           />
+          {selectedPatient && (
+            <div className="rounded-md border bg-blue-50/60 px-2.5 py-2 text-xs">
+              {loadingPrescription ? (
+                <span className="text-blue-700">Checking pending outpatient prescriptions…</span>
+              ) : patientPrescriptions.length === 0 ? (
+                <span className="text-gray-500">No pending outpatient prescription found.</span>
+              ) : (
+                <div className="space-y-1.5">
+                  <div className="font-medium text-blue-900">
+                    Pending prescription{patientPrescriptions.length > 1 ? 's' : ''}
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {patientPrescriptions.map((rx) => (
+                      <Button
+                        key={rx.id}
+                        type="button"
+                        size="sm"
+                        variant={activePrescription?.id === rx.id ? 'default' : 'outline'}
+                        className="h-7 text-xs"
+                        onClick={() => loadPrescriptionIntoPos(rx)}
+                        disabled={loadingPrescription}
+                      >
+                        {rx.prescription_number} · {rx.items.length} item(s)
+                      </Button>
+                    ))}
+                  </div>
+                  {activePrescription && (
+                    <p className="text-blue-700">Loaded into POS — edit quantities, batches, or discounts before saving.</p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-2">
             <div><Label className="text-xs">Phone</Label><Input className={compactInput} value={customer.patient_phone} onChange={e => setC('patient_phone', e.target.value)} /></div>
             <div><Label className="text-xs">IP-ID</Label><Input className={compactInput} value={customer.patient_ip_id} onChange={e => setC('patient_ip_id', e.target.value)} /></div>

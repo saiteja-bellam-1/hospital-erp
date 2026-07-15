@@ -1423,7 +1423,7 @@ const InpatientModule = () => {
       );
       if (existingFinal) {
         toast({ title: 'Final bill exists', description: `${existingFinal.bill_number} — opening preview.` });
-        await handlePrintBillPdf(activityAdmission.id);
+        await handlePrintBillPdf(activityAdmission.id, existingFinal.id);
         return;
       }
       // Comprehensive final bill: fetch ALL charges + unbilled-only (for room billed-so-far).
@@ -1521,7 +1521,7 @@ const InpatientModule = () => {
           source: 'ancillary', source_id: a.id,
           item_type: 'ancillary',
           item_name: `${a.service_name || 'Service'}${a.category ? ' (' + a.category + ')' : ''}`,
-          quantity: parseInt(a.quantity || 1),
+          quantity: parseFloat(a.quantity || 1),
           unit_price: parseFloat(a.unit_price || 0),
           total_price: parseFloat(a.total_amount || 0),
           is_prior: !!a.billed,
@@ -1635,7 +1635,7 @@ const InpatientModule = () => {
           source_id: it.source_id || null,
           item_type: it.item_type || 'custom',
           item_name: it.item_name || '',
-          quantity: Math.max(1, parseInt(it.quantity) || 1),
+          quantity: Math.max(0.01, parseFloat(it.quantity) || 1),
           unit_price: parseFloat(it.unit_price) || 0,
           total_price: parseFloat(it.total_price) || 0,
         })),
@@ -1648,11 +1648,10 @@ const InpatientModule = () => {
         payload.tax_percentage = parseFloat(reviewBillTaxPct);
       }
 
-      // Pick path based on whether a settle is needed: balance != 0 → atomic
-      // finalize-and-settle; balance = 0 → plain finalize.
-      const priorBilled = parseFloat(balance?.billed_on_bills) || 0;
+      // Comprehensive final bill replaces interim totals — settle against the
+      // reviewed grand total alone (do not add prior billed again).
       const netDeposits = parseFloat(balance?.net_deposits) || 0;
-      const postBalance = +(netDeposits - (priorBilled + reviewBillGrandTotal)).toFixed(2);
+      const postBalance = +(netDeposits - reviewBillGrandTotal).toFixed(2);
 
       let url = `/api/inpatient/admissions/${activityAdmission.id}/bill/finalize`;
       if (Math.abs(postBalance) >= 0.01) {
@@ -3316,12 +3315,13 @@ const InpatientModule = () => {
     }
   };
 
-  const handlePrintBillPdf = async (admissionId) => {
+  const handlePrintBillPdf = async (admissionId, billId = null) => {
     setBillPdfLoading(true);
     try {
+      const params = billId ? { bill_id: billId } : undefined;
       const res = await axios.get(
         `/api/inpatient/admissions/${admissionId}/bill/pdf`,
-        { responseType: 'blob' },
+        { responseType: 'blob', params },
       );
       if (billPdfUrl) URL.revokeObjectURL(billPdfUrl);
       const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
@@ -4205,7 +4205,7 @@ const InpatientModule = () => {
                                       <div className="flex items-center gap-2">
                                         <span className={`font-semibold ${b.status === 'cancelled' ? 'line-through text-gray-400' : ''}`}>₹{b.total_amount.toFixed(2)}</span>
                                         <Button variant="ghost" size="sm" className="h-6 px-2 text-xs text-blue-600 hover:text-blue-700"
-                                          onClick={() => handlePrintBillPdf(activityAdmission.id)}>
+                                          onClick={() => handlePrintBillPdf(activityAdmission.id, b.id)}>
                                           <Eye className="h-3 w-3 mr-1" />View
                                         </Button>
                                         {b.status !== 'cancelled' && (
@@ -4262,12 +4262,29 @@ const InpatientModule = () => {
                                       </div>
                                     )}
                                     {((billData.ancillary_entries || []).length > 0) && (
-                                      <div className="flex justify-between">
-                                        <span className="text-gray-500">
-                                          Ancillary services ({(billData.ancillary_entries || []).length})
-                                          {billData.package && isIncluded('ancillary') && <Tag />}
-                                        </span>
-                                        <span>₹{(billData.ancillary_total || 0).toFixed(2)}</span>
+                                      <div>
+                                        <div className="flex justify-between">
+                                          <span className="text-gray-500">
+                                            Ancillary services ({(billData.ancillary_entries || []).length})
+                                            {billData.package && isIncluded('ancillary') && <Tag />}
+                                          </span>
+                                          <span>₹{(billData.ancillary_total || 0).toFixed(2)}</span>
+                                        </div>
+                                        <div className="ml-4 mt-1 space-y-0.5">
+                                          {(billData.ancillary_entries || []).map(a => (
+                                            <div key={a.id} className="flex justify-between text-xs">
+                                              <span className="text-gray-500 truncate max-w-[70%]">
+                                                {a.service_name || 'Service'}
+                                                {a.category ? ` (${a.category})` : ''}
+                                                {a.quantity != null && Number(a.quantity) !== 1 ? ` × ${a.quantity}` : ''}
+                                                {a.included_in_package && <Tag />}
+                                              </span>
+                                              <span className={a.included_in_package ? 'text-gray-400 line-through' : ''}>
+                                                ₹{parseFloat(a.total_amount || a.total || 0).toFixed(2)}
+                                              </span>
+                                            </div>
+                                          ))}
+                                        </div>
                                       </div>
                                     )}
                                     {(billData.pharmacy_total > 0 || (billData.package && isIncluded('pharmacy'))) && (
@@ -4356,10 +4373,60 @@ const InpatientModule = () => {
                             </div>
 
                             {ip('manage_ancillary_charges') && (
-                              <div className="flex gap-2 flex-wrap">
-                                <Button size="sm" variant="outline" onClick={() => { setAncillaryForm({ service_id: '', quantity: 1, unit_price: '', notes: '' }); setShowAncillaryDialog(true); }}>
-                                  <Plus className="h-4 w-4 mr-1" /> Add Service Charge
-                                </Button>
+                              <div className="space-y-2">
+                                <div className="flex gap-2 flex-wrap">
+                                  <Button size="sm" variant="outline" onClick={() => { setAncillaryForm({ service_id: '', quantity: 1, unit_price: '', notes: '' }); setShowAncillaryDialog(true); }}>
+                                    <Plus className="h-4 w-4 mr-1" /> Add Service Charge
+                                  </Button>
+                                </div>
+                                {ancillaryCharges.length > 0 && (
+                                  <div className="border rounded text-xs overflow-hidden">
+                                    <table className="w-full">
+                                      <thead className="bg-gray-50 border-b">
+                                        <tr>
+                                          <th className="text-left px-2 py-1.5 font-medium">Service</th>
+                                          <th className="text-right px-2 py-1.5 font-medium w-14">Qty</th>
+                                          <th className="text-right px-2 py-1.5 font-medium w-20">Rate</th>
+                                          <th className="text-right px-2 py-1.5 font-medium w-20">Total</th>
+                                          <th className="text-left px-2 py-1.5 font-medium w-16">Status</th>
+                                          <th className="w-8"></th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {ancillaryCharges.map(c => (
+                                          <tr key={c.id} className="border-b last:border-0">
+                                            <td className="px-2 py-1.5">
+                                              <div className="font-medium truncate max-w-[180px]">{c.service_name || 'Service'}</div>
+                                              {c.category && <div className="text-[10px] text-gray-400">{c.category}</div>}
+                                              {c.notes && <div className="text-[10px] text-gray-400 truncate max-w-[180px]">{c.notes}</div>}
+                                            </td>
+                                            <td className="px-2 py-1.5 text-right">{c.quantity}</td>
+                                            <td className="px-2 py-1.5 text-right">₹{parseFloat(c.unit_price || 0).toFixed(2)}</td>
+                                            <td className="px-2 py-1.5 text-right">₹{parseFloat(c.total_amount || 0).toFixed(2)}</td>
+                                            <td className="px-2 py-1.5">
+                                              {c.billed
+                                                ? <Badge variant="outline" className="text-[10px]">billed</Badge>
+                                                : <Badge variant="secondary" className="text-[10px]">open</Badge>}
+                                            </td>
+                                            <td className="px-1 py-1.5">
+                                              {!c.billed && (
+                                                <Button variant="ghost" size="sm" className="h-6 w-6 p-0 text-red-600"
+                                                  onClick={() => setConfirmState({
+                                                    open: true,
+                                                    title: 'Remove ancillary charge?',
+                                                    message: `${c.service_name || 'Service'} — ₹${parseFloat(c.total_amount || 0).toFixed(2)}`,
+                                                    onConfirm: () => { setConfirmState({ open: false }); handleDeleteAncillaryCharge(c.id); },
+                                                  })}>
+                                                  <X className="h-3.5 w-3.5" />
+                                                </Button>
+                                              )}
+                                            </td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                )}
                               </div>
                             )}
 
@@ -9055,9 +9122,9 @@ const InpatientModule = () => {
         <DialogContent className="max-w-4xl max-h-[92vh] overflow-y-auto">
           <DialogHeader><DialogTitle>Review & Generate Final Bill — {activityAdmission?.patient_name || ''}</DialogTitle></DialogHeader>
           {(() => {
-            const priorBilled = parseFloat(balance?.billed_on_bills) || 0;
+            // Comprehensive final replaces interim totals — settle vs reviewed total only.
             const netDeposits = parseFloat(balance?.net_deposits) || 0;
-            const postBalance = +(netDeposits - (priorBilled + reviewBillGrandTotal)).toFixed(2);
+            const postBalance = +(netDeposits - reviewBillGrandTotal).toFixed(2);
             const owes = postBalance < -0.01;
             const refund = postBalance > 0.01;
             const balanced = !owes && !refund;
@@ -9074,10 +9141,10 @@ const InpatientModule = () => {
               <div className={`border rounded-lg p-3 text-sm mb-2 ${cls}`}>
                 <div className="font-semibold">{label}</div>
                 <div className="text-xs mt-1 opacity-80">
-                  Bill total ₹{(priorBilled + reviewBillGrandTotal).toFixed(2)} ·
+                  Bill total ₹{reviewBillGrandTotal.toFixed(2)} ·
                   Deposits ₹{netDeposits.toFixed(2)}
-                  {priorBilled > 0 && (
-                    <> · Prior bills ₹{priorBilled.toFixed(2)} · New ₹{reviewBillGrandTotal.toFixed(2)}</>
+                  {(parseFloat(balance?.billed_on_bills) || 0) > 0 && (
+                    <span> · Prior interim ₹{(parseFloat(balance?.billed_on_bills) || 0).toFixed(2)} (included in statement above)</span>
                   )}
                 </div>
                 {!balanced && (
@@ -9191,11 +9258,11 @@ const InpatientModule = () => {
                               )}
                             </td>
                             <td className="px-2 py-1">
-                              <Input type="number" min="1" className="h-7 text-xs text-right"
+                              <Input type="number" min="0.01" step="0.01" className="h-7 text-xs text-right"
                                 value={it.quantity}
                                 onChange={e => setReviewBillItems(arr => {
                                   const n = [...arr];
-                                  const q = Math.max(1, parseInt(e.target.value) || 1);
+                                  const q = Math.max(0.01, parseFloat(e.target.value) || 0.01);
                                   const up = parseFloat(n[idx].unit_price) || 0;
                                   n[idx] = { ...n[idx], quantity: q, total_price: +(q * up).toFixed(2) };
                                   return n;
@@ -9208,7 +9275,7 @@ const InpatientModule = () => {
                                   const n = [...arr];
                                   const raw = e.target.value;
                                   const up = parseFloat(raw) || 0;
-                                  const q = parseInt(n[idx].quantity) || 1;
+                                  const q = parseFloat(n[idx].quantity) || 1;
                                   n[idx] = { ...n[idx], unit_price: raw, total_price: +(q * up).toFixed(2) };
                                   return n;
                                 })} />

@@ -237,6 +237,88 @@ def test_sale_fifo_deducts_and_void_restores(client, auth_headers, pharmacy_seed
     assert r.status_code == 400
 
 
+def test_outpatient_prescription_loads_and_sells_through_pos(
+    client, auth_headers, pharmacy_seed, db_session, seed_data,
+):
+    from app.models.patient import Patient
+    from app.models.pharmacy import Prescription, PrescriptionItem
+
+    patient = db_session.query(Patient).filter(
+        Patient.id == seed_data["patient_id"]
+    ).first()
+    lookup = client.get(
+        "/api/prescriptions/medicines-lookup",
+        params={"q": "Smoke Med"},
+        headers=auth_headers,
+    )
+    assert lookup.status_code == 200, lookup.text
+    assert any(
+        medicine["id"] == pharmacy_seed["medicine_id"]
+        for medicine in lookup.json()
+    )
+
+    filled = client.post(
+        "/api/prescriptions-simple/",
+        json={
+            "patient_id": patient.patient_id,
+            "medicines": [{
+                "medicine_id": pharmacy_seed["medicine_id"],
+                "name": "Smoke Med",
+                "dosage": "1 tablet",
+                "duration": "5 days",
+                "quantity": "5",
+            }],
+            "diagnosis": "POS integration smoke",
+        },
+        headers=auth_headers,
+    )
+    assert filled.status_code == 200, filled.text
+
+    pending = client.get(
+        "/api/pharmacy/prescriptions/pending",
+        params={"patient_id": patient.patient_id},
+        headers=auth_headers,
+    )
+    assert pending.status_code == 200, pending.text
+    rx = next(
+        row for row in pending.json()
+        if row["prescription_number"] == filled.json()["prescription_id"]
+    )
+    item = rx["items"][0]
+    assert item["medicine_id"] == pharmacy_seed["medicine_id"]
+    assert item["quantity_remaining"] == 5
+
+    sale = client.post(
+        "/api/pharmacy/sales",
+        json={
+            "payment_type": "cash",
+            "billing_mode": "cash_at_pharmacy",
+            "patient_ip_id": patient.patient_id,
+            "patient_name": f"{patient.first_name} {patient.last_name}",
+            "prescription_id": rx["id"],
+            "items": [{
+                "medicine_id": item["medicine_id"],
+                "prescription_item_id": item["item_id"],
+                "qty_tabs": 3,
+                "rate_tier": "A",
+            }],
+        },
+        headers=auth_headers,
+    )
+    assert sale.status_code == 201, sale.text
+
+    db_session.expire_all()
+    pharmacy_rx = db_session.query(Prescription).filter(
+        Prescription.id == rx["id"]
+    ).first()
+    pharmacy_item = db_session.query(PrescriptionItem).filter(
+        PrescriptionItem.id == item["item_id"]
+    ).first()
+    assert pharmacy_rx.status == "partial"
+    assert pharmacy_rx.pharmacy_sale_id == sale.json()["id"]
+    assert pharmacy_item.quantity_dispensed == 3
+
+
 def test_multi_batch_rates_on_purchase_and_sale(client, auth_headers, pharmacy_seed):
     """Each batch keeps its own MRP / P-Rate / Rate A / qty-per-strip."""
     H = auth_headers

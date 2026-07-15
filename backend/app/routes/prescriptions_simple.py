@@ -22,6 +22,7 @@ router = APIRouter()
 
 # Pydantic models for API
 class MedicineItem(BaseModel):
+    medicine_id: Optional[int] = Field(None, description="Linked pharmacy medicine ID")
     name: str = Field(..., description="Medicine name (e.g., Paracetamol 500mg)")
     dosage: str = Field(..., description="Dosage instructions (e.g., 1 tablet twice daily)")
     duration: str = Field(..., description="Duration (e.g., 5 days)")
@@ -76,6 +77,153 @@ def generate_prescription_id() -> str:
     timestamp = datetime.now().strftime('%Y%m%d')
     unique_id = str(uuid.uuid4()).split('-')[0].upper()
     return f"RX-{timestamp}-{unique_id}"
+
+
+def _prescribed_quantity(value) -> int:
+    """Coerce the OP free-text quantity field to a positive stock quantity."""
+    if value is None or value == "":
+        return 1
+    try:
+        return max(1, int(float(value)))
+    except (TypeError, ValueError):
+        # Older records may contain values such as "10 tablets".
+        import re
+        match = re.search(r"\d+(?:\.\d+)?", str(value))
+        return max(1, int(float(match.group(0)))) if match else 1
+
+
+def _sync_to_pharmacy_prescription(
+    db: Session,
+    simple: SimplePrescription,
+    patient: Patient,
+) -> None:
+    """Mirror a filled OP prescription into pharmacy's stock-linked queue."""
+    from app.models.pharmacy import (
+        Medicine,
+        MedicineCategory,
+        Prescription,
+        PrescriptionItem,
+    )
+    from app.utils.pharmacy_pricing import medicine_sale_rate
+    from app.utils.prescription_schedule import build_dosage_instruction
+
+    linked = None
+    if simple.pharmacy_prescription_id:
+        linked = db.query(Prescription).filter(
+            Prescription.id == simple.pharmacy_prescription_id,
+            Prescription.patient_id == patient.id,
+        ).first()
+
+    medicines = simple.medicines or []
+    if simple.status in ("blank", "cancelled") or not medicines:
+        if linked and linked.status == "pending" and not any(
+            float(item.quantity_dispensed or 0) > 0 for item in linked.items
+        ):
+            linked.status = "cancelled"
+        return
+
+    can_replace = (
+        linked is not None
+        and linked.status == "pending"
+        and not linked.pharmacy_sale_id
+        and not any(float(item.quantity_dispensed or 0) > 0 for item in linked.items)
+    )
+    if not can_replace:
+        linked = Prescription(
+            prescription_number=simple.prescription_id,
+            patient_id=patient.id,
+            doctor_id=simple.doctor_id,
+            consultation_id=simple.consultation_id,
+            admission_id=None,
+            notes=simple.notes,
+            status="pending",
+        )
+        # A previously dispensed/cancelled version may already use the stable OP
+        # number. Keep it for audit and mint a revision number for the new order.
+        if db.query(Prescription.id).filter(
+            Prescription.prescription_number == linked.prescription_number
+        ).first():
+            linked.prescription_number = f"{simple.prescription_id}-{uuid.uuid4().hex[:6].upper()}"
+        db.add(linked)
+        db.flush()
+        simple.pharmacy_prescription_id = linked.id
+    else:
+        db.query(PrescriptionItem).filter(
+            PrescriptionItem.prescription_id == linked.id
+        ).delete(synchronize_session=False)
+        linked.doctor_id = simple.doctor_id
+        linked.consultation_id = simple.consultation_id
+        linked.notes = simple.notes
+        linked.status = "pending"
+
+    general_category = None
+    total_amount = 0.0
+    for med_data in medicines:
+        name = str(med_data.get("name") or "").strip()
+        if not name:
+            continue
+        medicine_id = med_data.get("medicine_id")
+        medicine = None
+        if medicine_id:
+            medicine = db.query(Medicine).filter(
+                Medicine.id == medicine_id,
+                Medicine.hospital_id == simple.hospital_id,
+                Medicine.is_active == True,  # noqa: E712
+            ).first()
+        if not medicine:
+            medicine = db.query(Medicine).filter(
+                Medicine.hospital_id == simple.hospital_id,
+                Medicine.is_active == True,  # noqa: E712
+                Medicine.name.ilike(name),
+            ).first()
+        if not medicine:
+            if general_category is None:
+                general_category = db.query(MedicineCategory).filter(
+                    MedicineCategory.hospital_id == simple.hospital_id,
+                    MedicineCategory.name == "General",
+                ).first()
+                if not general_category:
+                    general_category = MedicineCategory(
+                        name="General",
+                        description="General medicines without specific category",
+                        hospital_id=simple.hospital_id,
+                    )
+                    db.add(general_category)
+                    db.flush()
+            medicine = Medicine(
+                medicine_code=f"TXT-{uuid.uuid4().hex[:8].upper()}",
+                name=name,
+                category_id=general_category.id,
+                unit_price=0.0,
+                rate_a=0.0,
+                hospital_id=simple.hospital_id,
+                requires_prescription=True,
+                is_hidden=True,
+            )
+            db.add(medicine)
+            db.flush()
+
+        quantity = _prescribed_quantity(med_data.get("quantity"))
+        unit_price = medicine_sale_rate(medicine)
+        total = unit_price * quantity
+        total_amount += total
+        db.add(PrescriptionItem(
+            prescription_id=linked.id,
+            medicine_id=medicine.id,
+            quantity_prescribed=quantity,
+            quantity_dispensed=0,
+            dosage=build_dosage_instruction(
+                med_data.get("dosage"),
+                med_data.get("frequency_schedule") or "1-0-0",
+                med_data.get("food_timing") or "after_food",
+            ),
+            duration=med_data.get("duration") or "",
+            instructions=med_data.get("instructions"),
+            unit_price=unit_price,
+            total_price=total,
+            status="pending",
+        ))
+    linked.total_amount = total_amount
 
 
 def _prescription_id_for_appointment(appointment: Appointment) -> str:
@@ -531,6 +679,7 @@ async def create_prescription(
     # Convert medicines to JSON format
     medicines_json = [
         {
+            "medicine_id": medicine.medicine_id,
             "name": medicine.name,
             "dosage": medicine.dosage,
             "duration": medicine.duration,
@@ -556,6 +705,7 @@ async def create_prescription(
         existing.appointment_id = resolved_appointment_id
         existing.doctor_id = current_user.id
         existing.status = "active"
+        _sync_to_pharmacy_prescription(db, existing, patient)
         db.commit()
         db.refresh(existing)
         return build_prescription_response(existing, db)
@@ -581,6 +731,8 @@ async def create_prescription(
     )
     
     db.add(prescription)
+    db.flush()
+    _sync_to_pharmacy_prescription(db, prescription, patient)
     db.commit()
     db.refresh(prescription)
     
@@ -693,6 +845,7 @@ async def update_prescription(
     if prescription_data.medicines is not None:
         medicines_json = [
             {
+                "medicine_id": medicine.medicine_id,
                 "name": medicine.name,
                 "dosage": medicine.dosage,
                 "duration": medicine.duration,
@@ -715,7 +868,14 @@ async def update_prescription(
         
     if prescription_data.status is not None:
         prescription.status = prescription_data.status
-    
+
+    patient = db.query(Patient).filter(
+        Patient.patient_id == prescription.patient_id,
+        Patient.hospital_id == current_user.hospital_id,
+    ).first()
+    if patient:
+        _sync_to_pharmacy_prescription(db, prescription, patient)
+
     db.commit()
     db.refresh(prescription)
     
@@ -960,6 +1120,12 @@ async def cancel_prescription(
         )
     
     prescription.status = "cancelled"
+    patient = db.query(Patient).filter(
+        Patient.patient_id == prescription.patient_id,
+        Patient.hospital_id == current_user.hospital_id,
+    ).first()
+    if patient:
+        _sync_to_pharmacy_prescription(db, prescription, patient)
     db.commit()
     
     return {"message": "Prescription cancelled successfully"}

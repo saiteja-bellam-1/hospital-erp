@@ -6,6 +6,7 @@ from datetime import datetime, time
 
 from app.models.outpatient import Appointment
 from app.models.patient import Patient
+from app.models.pharmacy import Prescription, PrescriptionItem
 from app.models.prescriptions_simple import SimplePrescription
 
 
@@ -151,6 +152,31 @@ def test_doctor_save_reuses_blank_prescription_id(client, auth_headers, db_sessi
     ).all()
     assert len(rows) == 1
     assert rows[0].prescription_id == blank_rx_id
+    assert rows[0].pharmacy_prescription_id is not None
+
+    pharmacy_rx = db_session.query(Prescription).filter(
+        Prescription.id == rows[0].pharmacy_prescription_id
+    ).first()
+    assert pharmacy_rx is not None
+    assert pharmacy_rx.patient_id == patient.id
+    assert pharmacy_rx.admission_id is None
+    assert pharmacy_rx.status == "pending"
+    pharmacy_items = db_session.query(PrescriptionItem).filter(
+        PrescriptionItem.prescription_id == pharmacy_rx.id
+    ).all()
+    assert len(pharmacy_items) == 1
+    assert pharmacy_items[0].quantity_prescribed == 1
+
+    pending = client.get(
+        "/api/pharmacy/prescriptions/pending",
+        params={"patient_id": patient.patient_id},
+        headers=auth_headers,
+    )
+    assert pending.status_code == 200
+    matched = next(row for row in pending.json() if row["id"] == pharmacy_rx.id)
+    assert matched["patient_id"] == patient.patient_id
+    assert matched["admission_id"] is None
+    assert matched["items"][0]["medicine_name"] == "Paracetamol 500mg"
 
 
 def test_issue_blank_prescription_requires_doctor(client, auth_headers, db_session, seed_data):

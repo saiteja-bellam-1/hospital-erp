@@ -20,6 +20,7 @@ from app.models.ehr import Consultation
 from app.models.lab import PatientLabOrder, LabTest, LabTestCategory, LabTestPackage
 from app.models.billing import Bill, BillItem, Payment
 from app.models.inpatient import Admission
+from app.models.pharmacy import PharmacySale
 from app.utils.dependencies import get_current_user
 from app.utils.pdf_settings import bill_pdf_gen_kwargs, pdf_gen_kwargs
 
@@ -940,7 +941,7 @@ async def get_all_bills(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Centralised billing view — all appointment + lab + admission bills with filters."""
+    """Centralised billing view — consultation, lab, pharmacy, and admission bills."""
     if not any(r in current_user.role_names for r in ['super_admin', 'hospital_admin', 'receptionist']):
         raise HTTPException(status_code=403, detail="Not authorized")
 
@@ -1147,6 +1148,78 @@ async def get_all_bills(
             "cancelled_by": f"{lab_cancelled_by.first_name} {lab_cancelled_by.last_name}" if lab_cancelled_by else "",
             "cancelled_at": lo.bill_cancelled_at.isoformat() if getattr(lo, 'bill_cancelled_at', None) else "",
         })
+
+    # --- Pharmacy counter sales ---
+    # Deferred inpatient sales are consumed by admission bills and must not be
+    # listed separately here, otherwise the same medicines are double-counted.
+    # Pharmacy stores patient/doctor details as sale-time free text, so the
+    # ID-based doctor and referral filters intentionally exclude these rows.
+    if bill_type in (None, 'pharmacy') and not doctor_id and not referred_by:
+        pharmacy_query = db.query(PharmacySale).filter(
+            PharmacySale.hospital_id == hospital_id,
+            PharmacySale.billing_mode == "cash_at_pharmacy",
+            sql_func.date(PharmacySale.sale_date) >= d_from,
+            sql_func.date(PharmacySale.sale_date) <= d_to,
+        )
+        if patient_search:
+            q = f"%{patient_search}%"
+            pharmacy_query = pharmacy_query.filter(
+                (PharmacySale.patient_name.ilike(q))
+                | (PharmacySale.patient_phone.ilike(q))
+                | (PharmacySale.patient_ip_id.ilike(q))
+            )
+        if payment_status:
+            if payment_status == "cancelled":
+                pharmacy_query = pharmacy_query.filter(PharmacySale.status == "voided")
+            elif payment_status == "paid":
+                pharmacy_query = pharmacy_query.filter(
+                    PharmacySale.status == "completed",
+                    PharmacySale.payment_type == "cash",
+                )
+            elif payment_status == "pending":
+                pharmacy_query = pharmacy_query.filter(
+                    PharmacySale.status == "completed",
+                    PharmacySale.payment_type == "credit",
+                )
+            else:
+                pharmacy_query = pharmacy_query.filter(False)
+
+        for sale in pharmacy_query.order_by(PharmacySale.sale_date.desc()).all():
+            medicine_names = [
+                item.medicine.name
+                for item in sale.items[:3]
+                if item.medicine and item.medicine.name
+            ]
+            items_text = ", ".join(medicine_names)
+            if len(sale.items) > 3:
+                items_text += f" +{len(sale.items) - 3} more"
+            sale_status = (
+                "cancelled" if sale.status == "voided"
+                else "pending" if sale.payment_type == "credit"
+                else "paid"
+            )
+            bills.append({
+                "id": f"PHARM-{sale.id}",
+                "bill_id": sale.id,
+                "type": "pharmacy",
+                "date": sale.sale_date.isoformat() if sale.sale_date else "",
+                "patient_name": sale.patient_name or "Walk-in customer",
+                "patient_phone": sale.patient_phone or "",
+                "patient_id": sale.patient_ip_id or "",
+                "_doctor_id": None,
+                "doctor_name": sale.doctor_name or "",
+                "reference": sale.sale_number,
+                "items": items_text or "Pharmacy medicines",
+                "subtotal": float(sale.subtotal or 0),
+                "discount": float(sale.discount_total or 0),
+                "amount": float(sale.grand_total or 0),
+                "payment_status": sale_status,
+                "payment_method": sale.payment_type or "",
+                "referred_by": "",
+                "cancel_reason": sale.void_reason or "",
+                "cancelled_by": "",
+                "cancelled_at": sale.voided_at.isoformat() if sale.voided_at else "",
+            })
 
     # --- Admission (inpatient) bills — one summary row per admission ---
     # Each admission is represented by a single row whose amount = total of all
@@ -1489,6 +1562,7 @@ async def get_all_bills(
     cancelled_count = sum(1 for b in bills if b["payment_status"] == "cancelled")
     apt_count = sum(1 for b in bills if b["type"] == "consultation")
     lab_count = sum(1 for b in bills if b["type"] == "lab")
+    pharmacy_count = sum(1 for b in bills if b["type"] == "pharmacy")
     adm_count = sum(1 for b in bills if b["type"] == "admission")
 
     # Extract unique doctors from bills for filter dropdown
@@ -1533,6 +1607,7 @@ async def get_all_bills(
             "total_pending": total_pending,
             "appointment_count": apt_count,
             "lab_count": lab_count,
+            "pharmacy_count": pharmacy_count,
             "admission_count": adm_count,
             "cancelled_count": cancelled_count,
         },
@@ -1634,6 +1709,7 @@ def _build_billing_export_xlsx(data: dict, date_from: str, date_to: str) -> byte
         ("Pending", float(summary.get("total_pending") or 0)),
         ("Consultation bills", summary.get("appointment_count", 0)),
         ("Lab bills", summary.get("lab_count", 0)),
+        ("Pharmacy bills", summary.get("pharmacy_count", 0)),
         ("Admission bills", summary.get("admission_count", 0)),
         ("Cancelled", summary.get("cancelled_count", 0)),
     ]

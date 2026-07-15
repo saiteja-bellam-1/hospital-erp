@@ -232,6 +232,15 @@ class TestComprehensiveBilling:
 
         comprehensive_total = sum(it["total_price"] for it in items)
 
+        # Cover the comprehensive total so the settle-gate allows finalize.
+        dep = client.post(
+            f"/api/inpatient/admissions/{_state['admission_id']}/deposits",
+            json={"amount": comprehensive_total, "payment_method": "cash", "deposit_type": "initial"},
+            headers=auth_headers,
+        )
+        assert dep.status_code == 201, dep.text
+        _state["settlement_deposit"] = float(comprehensive_total)
+
         resp = client.post(
             f"/api/inpatient/admissions/{_state['admission_id']}/bill/finalize",
             json={"items_override": items},
@@ -321,8 +330,9 @@ class TestComprehensiveBilling:
         assert resp.status_code == 200, resp.text
         data = resp.json()
         net_deposits = data.get("deposits_total", 0)
-        assert abs(net_deposits - _state["deposit_amount"]) < 0.01, (
-            f"Net deposits {net_deposits} should equal deposit amount {_state['deposit_amount']}"
+        expected = float(_state.get("settlement_deposit") or 0) + float(_state["deposit_amount"])
+        assert abs(net_deposits - expected) < 0.01, (
+            f"Net deposits {net_deposits} should equal {expected}"
         )
 
     def test_balance_due_calculation(self, client, auth_headers):
@@ -359,7 +369,7 @@ class TestComprehensiveBilling:
         )
         assert resp.status_code == 200, resp.text
         data = resp.json()
-        expected_net = _state["deposit_amount"] + 2000.0
+        expected_net = float(_state.get("settlement_deposit") or 0) + float(_state["deposit_amount"]) + 2000.0
         assert abs(data["deposits_total"] - expected_net) < 0.01
 
     # ------------------------------------------------------------------
@@ -378,13 +388,14 @@ class TestComprehensiveBilling:
 
         adm_row = next((b for b in bills if b.get("admission_id") == _state["admission_id"]), None)
         assert adm_row is not None
-        # Should have 2 deposits (initial + topup)
-        assert len(adm_row.get("deposits", [])) == 2
+        # Settlement deposit (pre-finalize) + recorded initial + topup
+        assert len(adm_row.get("deposits", [])) == 3
         net = sum(
             d["amount"] if d["deposit_type"] != "refund" else -d["amount"]
             for d in adm_row["deposits"]
         )
-        assert abs(net - (5000.0 + 2000.0)) < 0.01
+        expected = float(_state.get("settlement_deposit") or 0) + 5000.0 + 2000.0
+        assert abs(net - expected) < 0.01
 
     # ------------------------------------------------------------------
     # 14. Balance summary endpoint
@@ -476,11 +487,25 @@ class TestComprehensiveBilling:
                     "quantity": 1, "unit_price": v["amount"], "total_price": v["amount"],
                 })
 
-        resp = client.post(
-            f"/api/inpatient/admissions/{_state['admission_id']}/bill/finalize",
-            json={"items_override": items},
+        reissue_total = sum(it["total_price"] for it in items)
+        bal = client.get(
+            f"/api/inpatient/admissions/{_state['admission_id']}/balance",
             headers=auth_headers,
-        )
+        ).json()
+        net_deposits = float(bal.get("net_deposits") or 0)
+        post_balance = round(net_deposits - reissue_total, 2)
+
+        payload = {"items_override": items}
+        url = f"/api/inpatient/admissions/{_state['admission_id']}/bill/finalize"
+        if abs(post_balance) >= 0.01:
+            url = f"/api/inpatient/admissions/{_state['admission_id']}/bill/finalize-and-settle"
+            payload["settle"] = {
+                "direction": "refund" if post_balance > 0 else "collect",
+                "amount": abs(post_balance),
+                "payment_method": "cash",
+            }
+
+        resp = client.post(url, json=payload, headers=auth_headers)
         assert resp.status_code == 200, resp.text
         data = resp.json()
         assert data["bill_subtype"] == "final"

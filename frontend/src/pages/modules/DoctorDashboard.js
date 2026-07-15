@@ -117,6 +117,7 @@ const DoctorDashboard = () => {
   // Prescription form state
   const [prescriptionForm, setPrescriptionForm] = useState({
     medications: [{
+      medicine_id: '',
       medicine_name: '',
       quantity_prescribed: 1,
       dosage: '',
@@ -794,6 +795,7 @@ const DoctorDashboard = () => {
             };
             const dosageInstruction = `${med.dosage || '1 dose'} - ${frequencyText} ${foodTimingTexts[med.food_timing] || 'after food'}`;
             return {
+              medicine_id: med.medicine_id ? Number(med.medicine_id) : null,
               name: med.medicine_name,
               dosage: dosageInstruction,
               duration: med.duration || 'Complete course',
@@ -851,7 +853,7 @@ const DoctorDashboard = () => {
 
         setPrescriptionForm({
           medications: [{
-            medicine_name: '', quantity_prescribed: 1, dosage: '',
+            medicine_id: '', medicine_name: '', quantity_prescribed: 1, dosage: '',
             frequency_schedule: '1-0-0', food_timing: 'after_food', duration: '', instructions: ''
           }],
           diagnosis: '', notes: '', follow_up_date: ''
@@ -911,7 +913,7 @@ const DoctorDashboard = () => {
     setPrescriptionForm(prev => ({
       ...prev,
       medications: [...prev.medications, {
-        medicine_name: '', quantity_prescribed: 1, dosage: '',
+        medicine_id: '', medicine_name: '', quantity_prescribed: 1, dosage: '',
         frequency_schedule: '1-0-0', food_timing: 'after_food', duration: '', instructions: ''
       }]
     }));
@@ -2288,6 +2290,7 @@ const DoctorDashboard = () => {
                       diagnosis: createdPrescription.diagnosis || prev.diagnosis,
                       notes: createdPrescription.notes || prev.notes,
                       medications: createdPrescription.medicines.map(m => ({
+                        medicine_id: m.medicine_id || '',
                         medicine_name: m.name || '',
                         quantity_prescribed: m.quantity ? parseInt(m.quantity) || 1 : 1,
                         dosage: m.dosage || '',
@@ -2420,7 +2423,7 @@ const DoctorDashboard = () => {
               <div className="flex justify-between items-center mb-2">
                 <Label className="text-sm font-semibold">Medications</Label>
               </div>
-              <div className="border rounded-lg overflow-hidden">
+              <div className="relative border rounded-lg overflow-visible">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="bg-gray-50 border-b text-left">
@@ -2439,9 +2442,21 @@ const DoctorDashboard = () => {
                         <tr key={index} className="border-b last:border-0 hover:bg-gray-50/50">
                           <td className="px-2 py-2 text-gray-400 text-center">{index + 1}</td>
                           <td className="px-2 py-2">
-                            <Input value={medication.medicine_name || ''}
-                              onChange={(e) => updateMedication(index, 'medicine_name', e.target.value)}
-                              placeholder="Medicine name" className="h-8 text-sm" />
+                            <MedicineLookupInput
+                              lookupUrl="/api/prescriptions/medicines-lookup"
+                              value={medication.medicine_name || ''}
+                              medicineId={medication.medicine_id}
+                              onChange={({ medicine_id, medicine_name }) => {
+                                setPrescriptionForm(prev => ({
+                                  ...prev,
+                                  medications: prev.medications.map((item, i) => (
+                                    i === index ? { ...item, medicine_id, medicine_name } : item
+                                  )),
+                                }));
+                              }}
+                              placeholder="Search pharmacy or type medicine"
+                              className="[&_input]:h-8 [&_input]:text-sm"
+                            />
                           </td>
                           <td className="px-2 py-2">
                             <Input value={medication.dosage}

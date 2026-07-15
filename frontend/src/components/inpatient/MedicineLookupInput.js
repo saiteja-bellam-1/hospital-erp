@@ -4,12 +4,12 @@ import axios from 'axios';
 import { Input } from '../ui/input';
 
 /**
- * Medicine search for inpatient prescribing.
- * Uses the cross-module lookup endpoint; falls back to plain text when
- * catalog search is unavailable.
+ * Medicine search for prescribing. Uses the supplied cross-module catalog
+ * endpoint and always permits free text when no result is selected.
  */
 export default function MedicineLookupInput({
   admissionId,
+  lookupUrl,
   value = '',
   medicineId = '',
   onChange,
@@ -19,15 +19,18 @@ export default function MedicineLookupInput({
   const [results, setResults] = useState([]);
   const [open, setOpen] = useState(false);
   const timerRef = useRef(null);
+  const endpoint = lookupUrl || (
+    admissionId ? `/api/inpatient/admissions/${admissionId}/medicines-lookup` : null
+  );
 
   const search = useCallback(async (query) => {
-    if (!admissionId || !query || query.trim().length < 2) {
+    if (!endpoint || !query || query.trim().length < 2) {
       setResults([]);
       return;
     }
     try {
       const res = await axios.get(
-        `/api/inpatient/admissions/${admissionId}/medicines-lookup`,
+        endpoint,
         { params: { q: query.trim(), limit: 15 } },
       );
       setResults(res.data || []);
@@ -35,7 +38,7 @@ export default function MedicineLookupInput({
     } catch {
       setResults([]);
     }
-  }, [admissionId]);
+  }, [endpoint]);
 
   useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
 
@@ -57,7 +60,7 @@ export default function MedicineLookupInput({
   };
 
   return (
-    <div className={`relative ${className}`}>
+    <div className={`relative ${open ? 'z-50' : 'z-0'} ${className}`}>
       <Input
         placeholder={placeholder}
         value={value}
@@ -67,7 +70,7 @@ export default function MedicineLookupInput({
         {...{ [NAV_SKIP_ATTR]: '' }}
       />
       {open && results.length > 0 && !medicineId && (
-        <div className="absolute z-20 w-full bg-white border rounded shadow-lg mt-1 max-h-40 overflow-y-auto">
+        <div className="absolute z-[100] w-full bg-white border rounded-md shadow-xl mt-1 max-h-48 overflow-y-auto">
           {results.map(m => (
             <div
               key={m.id}

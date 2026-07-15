@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -306,6 +307,51 @@ async def get_prescriptions(
         query = query.filter(Prescription.doctor_id == current_user.id)
     prescriptions = query.offset(offset).limit(limit).all()
     return [build_prescription_response(p, db) for p in prescriptions]
+
+
+@router.get("/medicines-lookup")
+async def lookup_outpatient_medicines(
+    q: str = Query(..., min_length=1),
+    limit: int = Query(20, ge=1, le=50),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Search the pharmacy catalog for outpatient prescribing.
+
+    Doctors do not need pharmacy permissions. Free-text remains supported by
+    the prescription form when no catalog result is selected.
+    """
+    _assert_can_create_prescription(current_user, db, admission_id=None)
+    like = f"%{q.strip()}%"
+    medicines = (
+        db.query(Medicine)
+        .filter(
+            Medicine.hospital_id == current_user.hospital_id,
+            Medicine.is_active == True,  # noqa: E712
+            Medicine.is_hidden == False,  # noqa: E712
+            or_(
+                Medicine.name.ilike(like),
+                Medicine.generic_name.ilike(like),
+                Medicine.medicine_code.ilike(like),
+                Medicine.strength.ilike(like),
+            ),
+        )
+        .order_by(Medicine.name)
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "id": medicine.id,
+            "name": medicine.name,
+            "generic_name": medicine.generic_name,
+            "strength": medicine.strength,
+            "dosage_form": medicine.dosage_form,
+            "medicine_code": medicine.medicine_code,
+            "unit_price": medicine_sale_rate(medicine),
+        }
+        for medicine in medicines
+    ]
 
 
 @router.get("/{prescription_id}", response_model=PrescriptionResponse)

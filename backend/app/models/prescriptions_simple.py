@@ -16,6 +16,12 @@ class SimplePrescription(Base):
     consultation_id = Column(Integer, ForeignKey("consultations.id"), nullable=True)
     appointment_id = Column(Integer, ForeignKey("appointments.id"), nullable=True)
     admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=True)
+    pharmacy_prescription_id = Column(
+        Integer,
+        ForeignKey("prescriptions.id"),
+        nullable=True,
+        index=True,
+    )
 
     # Store medicines as JSON array
     medicines = Column(JSON, nullable=False)  

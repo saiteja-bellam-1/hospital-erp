@@ -480,6 +480,64 @@ def _assert_catch_up_lab_order(db: Session, order_id: int, hospital_id: int) -> 
     return order
 
 
+@router.get("/lab/reports")
+async def catch_up_lab_reports(
+    limit: int = 100,
+    current_user: User = Depends(require_feature_permission(Modules.BILLING, "catch_up_bills")),
+    db: Session = Depends(get_db),
+):
+    """Persisted catch-up lab orders/reports for later result entry and download."""
+    hospital = get_hospital(db, current_user)
+    rows = (
+        db.query(PatientLabOrder, LabTest, Patient, LabReport)
+        .join(Patient, Patient.id == PatientLabOrder.patient_id)
+        .join(LabTest, LabTest.id == PatientLabOrder.test_id)
+        .outerjoin(LabReport, LabReport.order_id == PatientLabOrder.id)
+        .filter(
+            Patient.hospital_id == hospital.id,
+            PatientLabOrder.lab_bill_number.like("LB-CU-%"),
+        )
+        .order_by(PatientLabOrder.order_date.desc(), PatientLabOrder.id.desc())
+        .limit(max(1, min(limit, 500)))
+        .all()
+    )
+    return [
+        {
+            "id": order.id,
+            "order_id": order.id,
+            "order_number": order.order_number,
+            "lab_bill_group_id": order.lab_bill_group_id,
+            "lab_bill_number": order.lab_bill_number,
+            "patient_id": patient.id,
+            "patient_name": _patient_label(patient),
+            "mrn": patient.mrn,
+            "test_id": test.id,
+            "test_name": test.name,
+            "test_code": test.test_code,
+            "service_date": order.order_date.date().isoformat() if order.order_date else None,
+            "collection_date": (
+                order.collection_date.date().isoformat()
+                if order.collection_date else None
+            ),
+            "status": order.status,
+            "has_report": report is not None,
+            "report_id": report.id if report else None,
+            "report_date": (
+                report.report_date.date().isoformat()
+                if report and report.report_date else None
+            ),
+            "pdf": (
+                {
+                    "path": f"/api/lab/reports/{report.id}/download",
+                    "title": f"Lab report — {order.order_number}",
+                }
+                if report else None
+            ),
+        }
+        for order, test, patient, report in rows
+    ]
+
+
 @router.get("/lab/orders/{order_id}/entry-form")
 async def catch_up_lab_entry_form(
     order_id: int,

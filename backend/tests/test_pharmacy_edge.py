@@ -3,7 +3,8 @@ Phase 3 tests — pharmacy sales / dispense edge cases.
 
 P3.1 cross-hospital prescription dispense rejected.
 P3.3 concurrent sale-number collision is retried and resolved (not user-visible).
-P3.4 patient_ip_id validation (must be a real Patient with active admission).
+P3.4 patient_ip_id validation (must be a real Patient; active admission is
+required only for deferred inpatient billing).
 P3.5 void window honored when configured > 0; bypass via void_sale_legacy.
 P3.7 discount stacking > 100% raises 400.
 P3.8 free quantity distribution across batches sums exactly to free_total.
@@ -48,6 +49,7 @@ def _confirm_purchase(client, headers, setup, *, qty=20, rate=10.0):
         "items": [{
             "medicine_id": setup["medicine_id"],
             "batch_number": f"B-{uuid.uuid4().hex[:5]}",
+            "expiry_date": "2028-12-31",
             "mrp": 25.0, "quantity": qty, "free_quantity": 0,
             "purchase_rate": rate, "discount_pct": 0,
             "hsn_id": setup["hsn_id"],
@@ -145,7 +147,7 @@ def test_flush_retry_helper_remints_on_integrity_error(db_session):
 
 
 # --------------------------------------------------------------------------
-# P3.4 — patient_ip_id must be a real admitted patient in this hospital
+# P3.4 — patient_ip_id must be a real patient in this hospital
 # --------------------------------------------------------------------------
 
 def test_patient_ip_id_unknown_rejected(client, auth_headers, edge_setup):
@@ -159,9 +161,10 @@ def test_patient_ip_id_unknown_rejected(client, auth_headers, edge_setup):
     assert "patient_ip_id" in r.json()["detail"]
 
 
-def test_patient_ip_id_without_admission_rejected(client, auth_headers, edge_setup,
-                                                  db_session, seed_data):
-    """Patient exists in this hospital but has no active admission → 400."""
+def test_patient_ip_id_without_admission_allowed_for_cash_sale(
+    client, auth_headers, edge_setup, db_session, seed_data,
+):
+    """An outpatient can be linked to a cash-at-pharmacy sale."""
     from app.models.patient import Patient
     pat = Patient(
         patient_id=str(uuid.uuid4()), first_name="OP", last_name="Walk",
@@ -176,8 +179,9 @@ def test_patient_ip_id_without_admission_rejected(client, auth_headers, edge_set
         "patient_ip_id": pat.patient_id,
         "items": [{"medicine_id": edge_setup["medicine_id"], "quantity": 1, "rate": 20.0}],
     })
-    assert r.status_code == 400
-    assert "active admission" in r.json()["detail"]
+    assert r.status_code == 201, r.text
+    assert r.json()["patient_ip_id"] == pat.patient_id
+    assert r.json()["admission_id"] is None
 
 
 # --------------------------------------------------------------------------

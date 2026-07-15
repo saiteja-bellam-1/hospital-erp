@@ -2310,6 +2310,7 @@ def get_purchase(
 
 class SaleItemIn(BaseModel):
     medicine_id: int
+    prescription_item_id: Optional[int] = None
     qty_tabs: float = 0.0
     qty_strips: float = 0.0
     # Legacy single-unit payload (still accepted for older clients)
@@ -2355,6 +2356,7 @@ class SaleItemOut(BaseModel):
 
 class SaleIn(BaseModel):
     payment_type: str = Field("cash", pattern="^(cash|credit)$")
+    prescription_id: Optional[int] = None
     store_id: Optional[int] = None
     tax_mode: str = Field("exclusive", pattern="^(exclusive|inclusive)$")
     billing_mode: str = Field(
@@ -2586,15 +2588,117 @@ def _resolve_sale_admission(
                 ),
             )
         return active.id
-    if not active:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Patient {patient_ip_id} has no active admission. "
-                "Leave patient_ip_id blank for OP / walk-in sales."
-            ),
-        )
+    # Cash-at-pharmacy sales may be linked to either an outpatient or an
+    # inpatient. The historical patient_ip_id column stores the patient's UUID
+    # despite its name, so an active admission is only required for deferred IP
+    # billing.
     return None
+
+
+def _validate_pos_prescription(
+    db: Session,
+    current_user: User,
+    data: SaleIn,
+) -> Optional[Prescription]:
+    """Validate Rx-linked POS lines and their requested quantities."""
+    if not data.prescription_id:
+        return None
+
+    from app.models.patient import Patient as _RxPatient
+    rx = (
+        db.query(Prescription)
+        .join(_RxPatient, _RxPatient.id == Prescription.patient_id)
+        .filter(
+            Prescription.id == data.prescription_id,
+            _RxPatient.hospital_id == current_user.hospital_id,
+        )
+        .first()
+    )
+    if not rx:
+        raise HTTPException(status_code=404, detail="Prescription not found")
+    if rx.status not in ("pending", "partial"):
+        raise HTTPException(status_code=400, detail=f"Prescription is already {rx.status}")
+
+    patient = db.query(_RxPatient).filter(_RxPatient.id == rx.patient_id).first()
+    if not data.patient_ip_id or not patient or data.patient_ip_id != patient.patient_id:
+        raise HTTPException(status_code=400, detail="The selected patient does not match this prescription")
+    if rx.admission_id is None and data.billing_mode != "cash_at_pharmacy":
+        raise HTTPException(status_code=400, detail="Outpatient prescriptions must be paid at the pharmacy")
+
+    requested_by_item: dict[int, float] = {}
+    for line in data.items:
+        if line.prescription_item_id is None:
+            continue
+        item = db.query(PrescriptionItem).filter(
+            PrescriptionItem.id == line.prescription_item_id,
+            PrescriptionItem.prescription_id == rx.id,
+        ).first()
+        if not item:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Prescription item {line.prescription_item_id} is not on Rx {rx.prescription_number}",
+            )
+        if item.medicine_id != line.medicine_id:
+            raise HTTPException(status_code=400, detail="Prescription item medicine does not match the POS line")
+        medicine = db.query(Medicine).filter(Medicine.id == line.medicine_id).first()
+        if not medicine:
+            raise HTTPException(status_code=400, detail=f"Invalid medicine_id {line.medicine_id}")
+        qty_tabs, qty_strips = _parse_sale_item_qty(line, medicine)
+        base_qty = combined_base_qty(qty_tabs, qty_strips, medicine)
+        requested_by_item[item.id] = requested_by_item.get(item.id, 0.0) + base_qty
+
+    if not requested_by_item:
+        raise HTTPException(status_code=400, detail="No prescription items were included in this sale")
+    for item_id, requested in requested_by_item.items():
+        item = db.query(PrescriptionItem).filter(PrescriptionItem.id == item_id).first()
+        remaining = float(item.quantity_prescribed or 0) - float(item.quantity_dispensed or 0)
+        if requested <= 0 or requested > remaining + 1e-9:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Prescription item {item_id}: requested {requested:g}, remaining {remaining:g}",
+            )
+    return rx
+
+
+def _apply_pos_prescription_sale(
+    db: Session,
+    rx: Prescription,
+    data: SaleIn,
+    sale: PharmacySale,
+    current_user: User,
+) -> None:
+    """Advance prescription quantities using the editable POS quantities."""
+    for line in data.items:
+        if line.prescription_item_id is None:
+            continue
+        item = db.query(PrescriptionItem).filter(
+            PrescriptionItem.id == line.prescription_item_id,
+            PrescriptionItem.prescription_id == rx.id,
+        ).first()
+        medicine = db.query(Medicine).filter(Medicine.id == line.medicine_id).first()
+        if not item or not medicine:
+            continue
+        qty_tabs, qty_strips = _parse_sale_item_qty(line, medicine)
+        item.quantity_dispensed = float(item.quantity_dispensed or 0) + combined_base_qty(
+            qty_tabs, qty_strips, medicine
+        )
+        item.status = (
+            "dispensed"
+            if item.quantity_dispensed >= float(item.quantity_prescribed or 0)
+            else "partial"
+        )
+
+    all_items = db.query(PrescriptionItem).filter(
+        PrescriptionItem.prescription_id == rx.id
+    ).all()
+    rx.status = "dispensed" if all(
+        item.status == "dispensed" for item in all_items
+    ) else "partial"
+    if rx.status == "dispensed":
+        rx.dispensed_by_id = current_user.id
+        rx.dispensed_date = datetime.now()
+    rx.pharmacy_sale_id = sale.id
+    rx.dispense_store_id = sale.store_id
 
 
 def _restore_sale_items_stock(
@@ -2814,6 +2918,7 @@ def create_sale(
 
     billing_mode = data.billing_mode or "cash_at_pharmacy"
     ip_admission_id = _resolve_sale_admission(db, current_user, data.patient_ip_id, billing_mode)
+    linked_rx = _validate_pos_prescription(db, current_user, data)
 
     sale_store_id = resolve_store_id(db, current_user, data.store_id)
 
@@ -2851,9 +2956,12 @@ def create_sale(
     sale.discount_total = round(disc_total, 2)
     sale.tax_total = round(tax_total, 2)
     sale.grand_total = round(grand, 2)
+    if linked_rx:
+        _apply_pos_prescription_sale(db, linked_rx, data, sale, current_user)
     db.commit(); db.refresh(sale)
     _audit(db, current_user, "create_sale", "pharmacy_sale", sale.id,
-           f"Created sale {sale.sale_number} (₹{sale.grand_total})")
+           f"Created sale {sale.sale_number} (₹{sale.grand_total})",
+           details={"prescription_id": linked_rx.id} if linked_rx else None)
     return _shape_sale(sale, db)
 
 
@@ -3091,26 +3199,38 @@ class PendingRxOut(BaseModel):
     status: str
     notes: Optional[str] = None
     admission_id: Optional[int] = None
+    patient_id: Optional[str] = None
     patient_name: Optional[str] = None
+    doctor_name: Optional[str] = None
     items: List[PendingRxItemOut] = Field(default_factory=list)
 
 
 @router.get("/prescriptions/pending", response_model=List[PendingRxOut])
 def list_pending_prescriptions(
+    patient_id: Optional[str] = None,
     limit: int = 100,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_dispense_queue")),
+    current_user: User = Depends(require_feature_permission_any(
+        Modules.PHARMACY, "view_dispense_queue", "create_sale"
+    )),
 ):
-    """List prescriptions awaiting (full or partial) dispensing."""
+    """List pending prescriptions, optionally for one patient UUID."""
     from app.models.patient import Patient
 
-    rxs = db.query(Prescription).filter(
+    query = db.query(Prescription).join(
+        Patient, Patient.id == Prescription.patient_id
+    ).filter(
+        Patient.hospital_id == current_user.hospital_id,
         Prescription.status.in_(["pending", "partial"]),
-    ).order_by(Prescription.prescription_date.desc()).limit(limit).all()
+    )
+    if patient_id:
+        query = query.filter(Patient.patient_id == patient_id)
+    rxs = query.order_by(Prescription.prescription_date.desc()).limit(limit).all()
 
     out = []
     for rx in rxs:
         patient = db.query(Patient).filter(Patient.id == rx.patient_id).first()
+        doctor = db.query(User).filter(User.id == rx.doctor_id).first()
         items = []
         for it in rx.items:
             med = db.query(Medicine).filter(Medicine.id == it.medicine_id).first()
@@ -3131,8 +3251,12 @@ def list_pending_prescriptions(
             prescription_date=rx.prescription_date, status=rx.status,
             notes=rx.notes,
             admission_id=rx.admission_id,
+            patient_id=patient.patient_id if patient else None,
             patient_name=(
                 f"{patient.first_name} {patient.last_name}" if patient else None
+            ),
+            doctor_name=(
+                f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else None
             ),
             items=items,
         ))

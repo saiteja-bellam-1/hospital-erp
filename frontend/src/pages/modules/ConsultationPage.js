@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { FREQUENCY_OPTIONS } from '../../utils/prescriptionSchedule';
+import MedicineLookupInput from '../../components/inpatient/MedicineLookupInput';
 
 const ConsultationPage = () => {
   const [searchParams] = useSearchParams();
@@ -45,7 +46,7 @@ const ConsultationPage = () => {
 
   // Prescription
   const [prescriptionForm, setPrescriptionForm] = useState({
-    medications: [{ medicine_name: '', quantity_prescribed: 1, dosage: '', frequency_schedule: '1-0-0', food_timing: 'after_food', duration: '', instructions: '' }],
+    medications: [{ medicine_id: '', medicine_name: '', quantity_prescribed: 1, dosage: '', frequency_schedule: '1-0-0', food_timing: 'after_food', duration: '', instructions: '' }],
     diagnosis: '', notes: '', follow_up_date: ''
   });
   const [prescriptions, setPrescriptions] = useState([]);
@@ -118,6 +119,7 @@ const ConsultationPage = () => {
     setCurrentPrescriptionId(existing.prescription_id);
     setSavedPrescription(existing);
     const meds = (existing.medicines || []).map(m => ({
+      medicine_id: m.medicine_id || '',
       medicine_name: m.name || '',
       quantity_prescribed: m.quantity ? parseInt(m.quantity) || 1 : 1,
       dosage: m.dosage || '',
@@ -395,7 +397,7 @@ const ConsultationPage = () => {
   const addMedication = () => {
     setPrescriptionForm(prev => ({
       ...prev,
-      medications: [...prev.medications, { medicine_name: '', quantity_prescribed: 1, dosage: '', frequency_schedule: '1-0-0', food_timing: 'after_food', duration: '', instructions: '' }]
+      medications: [...prev.medications, { medicine_id: '', medicine_name: '', quantity_prescribed: 1, dosage: '', frequency_schedule: '1-0-0', food_timing: 'after_food', duration: '', instructions: '' }]
     }));
   };
 
@@ -419,6 +421,7 @@ const ConsultationPage = () => {
     setSaving(true);
     try {
       const medicinesPayload = validMeds.map(m => ({
+        medicine_id: m.medicine_id ? Number(m.medicine_id) : null,
         name: m.medicine_name,
         dosage: m.dosage || 'As directed',
         duration: m.duration || 'As directed',
@@ -783,7 +786,7 @@ const ConsultationPage = () => {
                 <Label className="text-base font-semibold">Medications</Label>
               </div>
 
-              <div className="border rounded-lg overflow-hidden">
+              <div className="relative border rounded-lg overflow-visible">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="bg-gray-50 border-b text-left">
@@ -802,8 +805,21 @@ const ConsultationPage = () => {
                         <tr key={idx} className="border-b last:border-0 hover:bg-gray-50/50">
                           <td className="px-2 py-2 text-gray-400 text-center">{idx + 1}</td>
                           <td className="px-2 py-2">
-                            <Input value={med.medicine_name || ''} onChange={(e) => updateMedication(idx, 'medicine_name', e.target.value)}
-                              placeholder="Medicine name" className="h-8 text-sm" />
+                            <MedicineLookupInput
+                              lookupUrl="/api/prescriptions/medicines-lookup"
+                              value={med.medicine_name || ''}
+                              medicineId={med.medicine_id}
+                              onChange={({ medicine_id, medicine_name }) => {
+                                setPrescriptionForm(prev => ({
+                                  ...prev,
+                                  medications: prev.medications.map((item, i) => (
+                                    i === idx ? { ...item, medicine_id, medicine_name } : item
+                                  )),
+                                }));
+                              }}
+                              placeholder="Search pharmacy or type medicine"
+                              className="[&_input]:h-8 [&_input]:text-sm"
+                            />
                           </td>
                           <td className="px-2 py-2">
                             <Input value={med.dosage} onChange={(e) => updateMedication(idx, 'dosage', e.target.value)}

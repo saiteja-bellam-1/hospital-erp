@@ -55,7 +55,7 @@ class BillItem(Base):
     item_type = Column(String(50), nullable=False)  # consultation, lab_test, medicine, room_charge, etc.
     item_name = Column(String(200), nullable=False)
     item_code = Column(String(50))
-    quantity = Column(Integer, default=1)
+    quantity = Column(Float, default=1.0)
     unit_price = Column(Float, nullable=False)
     total_price = Column(Float, nullable=False)
     discount_percentage = Column(Float, default=0.0)

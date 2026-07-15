@@ -1116,6 +1116,17 @@ class TestCatchUpLabResultsAndReport:
         order_id = body["order_ids"][0]
         assert body["orders"][0]["status"] == "collected"
 
+        stored = client.get(
+            "/api/admin/catch-up/lab/reports",
+            headers=auth_headers,
+        )
+        assert stored.status_code == 200, stored.text
+        stored_order = next(row for row in stored.json() if row["order_id"] == order_id)
+        assert stored_order["test_name"] == "CatchUp Glucose"
+        assert stored_order["service_date"] == svc
+        assert stored_order["has_report"] is False
+        assert stored_order["report_id"] is None
+
         form = client.get(
             f"/api/admin/catch-up/lab/orders/{order_id}/entry-form",
             headers=auth_headers,
@@ -1152,6 +1163,17 @@ class TestCatchUpLabResultsAndReport:
         report = db_session.query(LabReport).filter(LabReport.id == sub["report_id"]).first()
         assert report is not None
         assert report.report_date.date().isoformat() == svc
+
+        stored = client.get(
+            "/api/admin/catch-up/lab/reports",
+            headers=auth_headers,
+        )
+        assert stored.status_code == 200, stored.text
+        stored_report = next(row for row in stored.json() if row["order_id"] == order_id)
+        assert stored_report["has_report"] is True
+        assert stored_report["report_id"] == sub["report_id"]
+        assert stored_report["report_date"] == svc
+        assert stored_report["pdf"]["path"] == sub["pdf"]["path"]
 
         pdf = client.get(
             f"/api/lab/reports/{sub['report_id']}/download",
