@@ -113,6 +113,7 @@ const LabTechDashboard = () => {
       const pendingRes = await axios.get('/api/lab/orders');
       const pending = (pendingRes.data || []).filter(
         (o) => ['ordered', 'collected', 'processing'].includes(o.status)
+          && !(o.lab_bill_number || '').startsWith('LB-CU-')
       );
       setOrders(pending);
     } catch (err) {

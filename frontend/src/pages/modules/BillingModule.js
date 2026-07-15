@@ -12,12 +12,18 @@ import axios from 'axios';
 import {
   Receipt, Search, Download, DollarSign, TrendingUp, Clock,
   CheckCircle2, Loader2, XCircle, Ban, CreditCard, Eye,
-  Building2, Stethoscope, FlaskConical, BedDouble, Printer, FileText
+  Building2, Stethoscope, FlaskConical, BedDouble, Printer, FileText, ChevronDown
 } from 'lucide-react';
 import { printPdfFromUrl } from '../../utils/printPdf';
 import PdfPreviewDialog from '../../components/PdfPreviewDialog';
 import PatientSearchPicker from '../../components/PatientSearchPicker';
-import { localDateString, localDateStringOffset } from '../../utils/localDate';
+import { localDateString, localDateStringOffset, localWeekStart, localMonthStart, localLastMonthRange } from '../../utils/localDate';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '../../components/ui/dropdown-menu';
 
 const BillingModule = () => {
   const [bills, setBills] = useState([]);
@@ -95,23 +101,26 @@ const BillingModule = () => {
 
   // PDF preview for consultation / lab bills (and any row without a detail dialog)
   const [pdfPreview, setPdfPreview] = useState(null);
+  const [exporting, setExporting] = useState(false);
+
+  const buildBillingParams = useCallback(() => {
+    const params = new URLSearchParams();
+    params.set('date_from', dateFrom);
+    params.set('date_to', dateTo);
+    if (patientSearch) params.set('patient_search', patientSearch);
+    if (activeTab === 'outpatient') params.set('bill_type', 'consultation');
+    else if (activeTab === 'lab') params.set('bill_type', 'lab');
+    else if (activeTab === 'inpatient') params.set('bill_type', 'admission');
+    if (paymentStatus !== 'all') params.set('payment_status', paymentStatus);
+    if (doctorFilter !== 'all') params.set('doctor_id', doctorFilter);
+    if (referralFilter !== 'all') params.set('referred_by', referralFilter);
+    return params;
+  }, [dateFrom, dateTo, patientSearch, activeTab, paymentStatus, doctorFilter, referralFilter]);
 
   const fetchBills = useCallback(async () => {
     setLoading(true);
     try {
-      const params = new URLSearchParams();
-      params.set('date_from', dateFrom);
-      params.set('date_to', dateTo);
-      if (patientSearch) params.set('patient_search', patientSearch);
-      // Map tab to bill_type filter
-      if (activeTab === 'outpatient') params.set('bill_type', 'consultation');
-      else if (activeTab === 'lab') params.set('bill_type', 'lab');
-      else if (activeTab === 'inpatient') params.set('bill_type', 'admission');
-      if (paymentStatus !== 'all') params.set('payment_status', paymentStatus);
-      if (doctorFilter !== 'all') params.set('doctor_id', doctorFilter);
-      if (referralFilter !== 'all') params.set('referred_by', referralFilter);
-
-      const res = await axios.get(`/api/hospital/billing?${params.toString()}`);
+      const res = await axios.get(`/api/hospital/billing?${buildBillingParams().toString()}`);
       setBills(res.data.bills || []);
       setSummary(res.data.summary || null);
       if (res.data.doctors) setDoctors(res.data.doctors);
@@ -121,7 +130,7 @@ const BillingModule = () => {
     } finally {
       setLoading(false);
     }
-  }, [dateFrom, dateTo, patientSearch, activeTab, paymentStatus, doctorFilter, referralFilter]);
+  }, [buildBillingParams]);
 
   useEffect(() => { fetchBills(); }, [fetchBills]);
 
@@ -585,6 +594,45 @@ const BillingModule = () => {
     URL.revokeObjectURL(url);
   };
 
+  const downloadExcel = async () => {
+    setExporting(true);
+    try {
+      const res = await axios.get(`/api/hospital/billing/export.xlsx?${buildBillingParams().toString()}`, {
+        responseType: 'blob',
+      });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `billing_${dateFrom}_to_${dateTo}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Excel export failed:', err);
+      alert('Could not export Excel report');
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const applyPeriodPreset = (preset) => {
+    const now = new Date();
+    if (preset === 'today') {
+      const t = localDateString(now);
+      setDateFrom(t);
+      setDateTo(t);
+    } else if (preset === 'week') {
+      setDateFrom(localWeekStart(now));
+      setDateTo(localDateString(now));
+    } else if (preset === 'month') {
+      setDateFrom(localMonthStart(now));
+      setDateTo(localDateString(now));
+    } else if (preset === 'last_month') {
+      const { from, to } = localLastMonthRange(now);
+      setDateFrom(from);
+      setDateTo(to);
+    }
+  };
+
   const resetFilters = () => {
     setDateFrom(weekAgo); setDateTo(today); setPatientSearch('');
     setPaymentStatus('all'); setDoctorFilter('all'); setReferralFilter('all');
@@ -602,9 +650,23 @@ const BillingModule = () => {
           <Button onClick={openConsolidateDialog} variant="outline">
             <FileText className="h-4 w-4 mr-1" /> Consolidate Bills
           </Button>
-          <Button onClick={downloadCSV} disabled={bills.length === 0} variant="outline">
-            <Download className="h-4 w-4 mr-1" /> Export CSV
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" disabled={exporting}>
+                {exporting ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Download className="h-4 w-4 mr-1" />}
+                Export
+                <ChevronDown className="h-3.5 w-3.5 ml-1 opacity-70" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onSelect={() => { downloadExcel(); }} disabled={exporting}>
+                Export Excel (.xlsx)
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={downloadCSV} disabled={bills.length === 0}>
+                Export CSV
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
 
@@ -703,6 +765,28 @@ const BillingModule = () => {
               <div>
                 <Label className="text-xs">To</Label>
                 <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="w-[150px] h-9" />
+              </div>
+              <div>
+                <Label className="text-xs">Quick range</Label>
+                <div className="flex flex-wrap gap-1">
+                  {[
+                    { id: 'today', label: 'Today' },
+                    { id: 'week', label: 'This week' },
+                    { id: 'month', label: 'This month' },
+                    { id: 'last_month', label: 'Last month' },
+                  ].map((p) => (
+                    <Button
+                      key={p.id}
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-9 px-2.5 text-xs"
+                      onClick={() => applyPeriodPreset(p.id)}
+                    >
+                      {p.label}
+                    </Button>
+                  ))}
+                </div>
               </div>
               <div>
                 <Label className="text-xs">Patient</Label>

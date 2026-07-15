@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File, Form, Body
 from fastapi.responses import StreamingResponse, FileResponse, Response
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func as sqlfunc, and_, cast, Date, update as sa_update
@@ -567,6 +567,7 @@ class DischargeSummaryUpsert(BaseModel):
     activity_restrictions: Optional[str] = None
     primary_doctor_id: Optional[int] = None
     secondary_doctor_id: Optional[int] = None
+    custom_fields: Optional[dict] = None
 
 
 class DischargeSummaryResponse(BaseModel):
@@ -609,6 +610,7 @@ class DischargeSummaryResponse(BaseModel):
     department_name: Optional[str] = None
     surgery_date: Optional[str] = None
     allergies_summary: Optional[str] = None
+    custom_fields: Optional[dict] = None
 
     class Config:
         from_attributes = True
@@ -3444,6 +3446,7 @@ def _get_or_create_summary(db: Session, admission_id: int) -> AdmissionDischarge
 
 
 def _build_summary_pdf_payload(db: Session, admission: Admission, summary: AdmissionDischargeSummary, discharge: Optional[DischargeRecord] = None) -> dict:
+    from app.services.discharge_summary_template_service import coerce_custom_fields
     patient = admission.patient
     room = admission.room
     primary = summary.primary_doctor or admission.attending_physician or admission.admitting_doctor
@@ -3517,6 +3520,7 @@ def _build_summary_pdf_payload(db: Session, admission: Admission, summary: Admis
         "diet_instructions": summary.diet_instructions or "",
         "activity_restrictions": summary.activity_restrictions or "",
         "consultant_name": _doctor_display_name(primary) or _doctor_display_name(summary.written_by) or "",
+        "custom_fields": coerce_custom_fields(summary.custom_fields),
     }
 
 
@@ -3597,6 +3601,12 @@ async def upsert_discharge_summary(
         summary.take_home_medications = [
             m.model_dump() if hasattr(m, "model_dump") else m for m in meds
         ]
+    custom_fields = update_data.pop("custom_fields", None)
+    if custom_fields is not None:
+        from app.services.discharge_summary_template_service import coerce_custom_fields
+        if not isinstance(custom_fields, (dict, str)) and custom_fields is not None:
+            raise HTTPException(status_code=400, detail="custom_fields must be an object")
+        summary.custom_fields = coerce_custom_fields(custom_fields)
     for k, v in update_data.items():
         setattr(summary, k, v)
     if not summary.written_by_id:
@@ -3624,8 +3634,14 @@ async def finalize_discharge_summary(
     summary = _get_or_create_summary(db, admission_id)
     if summary.status == "locked":
         raise HTTPException(status_code=400, detail="Discharge summary is already locked")
-    if not (summary.primary_diagnosis or "").strip():
-        raise HTTPException(status_code=400, detail="Primary diagnosis is required before finalizing")
+    from app.services.discharge_summary_template_service import (
+        get_template,
+        validate_summary_against_template,
+    )
+    template = get_template(db)
+    err = validate_summary_against_template(summary, template)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
     summary.status = "ready"
     summary.finalized_by_id = current_user.id
     summary.finalized_at = datetime.now()
@@ -3724,8 +3740,9 @@ async def preview_discharge_summary_pdf(
     )
     if summary.status == "draft":
         pdf_kwargs['watermark'] = "DRAFT"
+    from app.services.discharge_summary_template_service import get_template
     pdf_buffer = pdf_service.generate_discharge_summary_pdf(
-        discharge_data, hospital_info, **pdf_kwargs,
+        discharge_data, hospital_info, template=get_template(db), **pdf_kwargs,
     )
     filename = f"DischargeSummaryPreview_{admission.admission_number}.pdf"
     return _inline_pdf_response(pdf_buffer, filename)
@@ -3774,8 +3791,9 @@ async def get_discharge_summary_pdf(
     pdf_kwargs = pdf_gen_kwargs(
         db, current_user.hospital_id, 'discharge_summary', query_include_header=include_header,
     )
+    from app.services.discharge_summary_template_service import get_template
     pdf_buffer = pdf_service.generate_discharge_summary_pdf(
-        discharge_data, hospital_info, **pdf_kwargs,
+        discharge_data, hospital_info, template=get_template(db), **pdf_kwargs,
     )
     filename = f"DischargeSummary_{admission.admission_number}.pdf"
     return _inline_pdf_response(pdf_buffer, filename)
@@ -4143,7 +4161,10 @@ async def get_discharge_pdf(
     pdf_kwargs = pdf_gen_kwargs(
         db, current_user.hospital_id, 'discharge_summary', query_include_header=include_header,
     )
-    pdf_buffer = pdf_service.generate_discharge_summary_pdf(discharge_data, hospital_info, **pdf_kwargs)
+    from app.services.discharge_summary_template_service import get_template
+    pdf_buffer = pdf_service.generate_discharge_summary_pdf(
+        discharge_data, hospital_info, template=get_template(db), **pdf_kwargs,
+    )
 
     return _inline_pdf_response(pdf_buffer, f"discharge_{admission.admission_number}.pdf")
 
@@ -10581,6 +10602,129 @@ async def my_assigned_patients(
             "assignment_notes": a.notes,
         })
     return result
+
+
+# ============================================================
+# Discharge Summary Template (hospital-wide layout)
+# ============================================================
+
+class DischargeSummaryTemplateBody(BaseModel):
+    version: int = 1
+    document_title: str = "DISCHARGE SUMMARY"
+    show_department_line: bool = True
+    blocks: list
+
+
+@router.get("/discharge-summary-template")
+async def get_discharge_summary_template(
+    current_user: User = Depends(require_feature_permission_any(
+        Modules.INPATIENT,
+        "manage_discharge_summary_template",
+        "write_discharge_summary",
+        "view_discharge_summary",
+    )),
+    db: Session = Depends(get_db),
+):
+    from app.services.discharge_summary_template_service import (
+        STANDARD_FIELD_KEYS,
+        get_template,
+    )
+    tpl = get_template(db)
+    return {
+        **tpl,
+        "standard_field_catalog": sorted(STANDARD_FIELD_KEYS),
+    }
+
+
+@router.put("/discharge-summary-template")
+async def put_discharge_summary_template(
+    data: DischargeSummaryTemplateBody,
+    current_user: User = Depends(require_feature_permission(
+        Modules.INPATIENT, "manage_discharge_summary_template")),
+    db: Session = Depends(get_db),
+):
+    from app.services.discharge_summary_template_service import save_template
+    try:
+        tpl = save_template(
+            db, data.model_dump(), created_by=getattr(current_user, "id", None))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    log_action(
+        db, current_user, "update_discharge_summary_template", "inpatient",
+        "HospitalSettings", None, "Updated hospital discharge summary template",
+    )
+    return tpl
+
+
+@router.post("/discharge-summary-template/reset")
+async def reset_discharge_summary_template(
+    current_user: User = Depends(require_feature_permission(
+        Modules.INPATIENT, "manage_discharge_summary_template")),
+    db: Session = Depends(get_db),
+):
+    from app.services.discharge_summary_template_service import reset_template
+    tpl = reset_template(db)
+    log_action(
+        db, current_user, "reset_discharge_summary_template", "inpatient",
+        "HospitalSettings", None, "Reset hospital discharge summary template to default",
+    )
+    return tpl
+
+
+@router.post("/discharge-summary-template/preview")
+async def preview_discharge_summary_template(
+    data: Optional[DischargeSummaryTemplateBody] = Body(None),
+    include_header: Optional[bool] = Query(None),
+    current_user: User = Depends(require_feature_permission(
+        Modules.INPATIENT, "manage_discharge_summary_template")),
+    db: Session = Depends(get_db),
+):
+    """Sample PDF using the draft template (unsaved body) or the saved hospital template."""
+    from fastapi.responses import Response
+    from app.services.discharge_summary_template_service import (
+        get_template,
+        validate_template,
+    )
+    from app.utils.print_preview import _sample_discharge_summary
+
+    if data is not None:
+        try:
+            template = validate_template(data.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    else:
+        template = get_template(db)
+
+    sample = _sample_discharge_summary()
+    custom = dict(sample.get("custom_fields") or {})
+    for block in template.get("blocks") or []:
+        if block.get("type") == "custom_field":
+            key = block.get("field_key")
+            if key and key not in custom:
+                custom[key] = f"Sample content for {block.get('label') or key}"
+    sample["custom_fields"] = custom
+
+    hospital = _get_hospital(db, current_user)
+    hospital_info = {
+        "name": hospital.name,
+        "address": hospital.address or "",
+        "phone": hospital.phone or "",
+        "email": hospital.email or "",
+        "logo_url": hospital.logo_url if hasattr(hospital, "logo_url") else "",
+        "hospital_subname": hospital.hospital_subname if hasattr(hospital, "hospital_subname") else "",
+    }
+    pdf_kwargs = pdf_gen_kwargs(
+        db, current_user.hospital_id, "discharge_summary",
+        query_include_header=include_header,
+    )
+    pdf_buffer = pdf_service.generate_discharge_summary_pdf(
+        sample, hospital_info, template=template, **pdf_kwargs,
+    )
+    return Response(
+        content=pdf_buffer.getvalue(),
+        media_type="application/pdf",
+        headers={"Content-Disposition": 'inline; filename="discharge-summary-template-preview.pdf"'},
+    )
 
 
 # ============================================================

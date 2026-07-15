@@ -30,6 +30,7 @@ const ReceptionPackagesPage = () => {
   const [priority, setPriority] = useState('normal');
   const [notes, setNotes] = useState('');
   const [referredBy, setReferredBy] = useState('');
+  const [discount, setDiscount] = useState('');
   const [bookingLoading, setBookingLoading] = useState(false);
   const [referralList, setReferralList] = useState([]);
   const [pkgDuplicateWarning, setPkgDuplicateWarning] = useState(null);
@@ -83,8 +84,17 @@ const ReceptionPackagesPage = () => {
     setPriority('normal');
     setNotes('');
     setReferredBy('');
+    setDiscount('');
+    setPkgDuplicateWarning(null);
     setShowBookingDialog(true);
   };
+
+  const packagePrice = selectedPackage?.package_price || 0;
+  const packageSavings = selectedPackage
+    ? Math.max((selectedPackage.actual_price || 0) - packagePrice, 0)
+    : 0;
+  const extraDiscount = Math.min(Math.max(parseFloat(discount) || 0, 0), packagePrice);
+  const amountToPay = Math.max(packagePrice - extraDiscount, 0);
 
   const bookPackage = async (force = false) => {
     if (!selectedPatient || !selectedPackage) return;
@@ -118,6 +128,7 @@ const ReceptionPackagesPage = () => {
         notes: notes || null,
         referred_by: referredBy || null,
         payment_method: paymentMethod,
+        discount_amount: extraDiscount,
         force: force,
       }, { responseType: 'blob' });
 
@@ -340,18 +351,44 @@ const ReceptionPackagesPage = () => {
               </div>
 
               {/* Total */}
-              <div className="bg-gray-50 p-3 rounded-lg">
+              <div className="bg-gray-50 p-3 rounded-lg space-y-1.5">
                 <div className="flex justify-between text-sm">
                   <span>Actual Price</span>
                   <span className="line-through text-gray-400">Rs. {selectedPackage.actual_price}</span>
                 </div>
-                <div className="flex justify-between text-sm text-green-600">
-                  <span>Discount</span>
-                  <span>- Rs. {(selectedPackage.actual_price - selectedPackage.package_price).toFixed(2)}</span>
+                {packageSavings > 0 && (
+                  <div className="flex justify-between text-sm text-green-600">
+                    <span>Package Discount</span>
+                    <span>- Rs. {packageSavings.toFixed(2)}</span>
+                  </div>
+                )}
+                <div className="flex justify-between text-sm">
+                  <span>Package Price</span>
+                  <span>Rs. {packagePrice.toFixed(2)}</span>
                 </div>
+                <div className="flex justify-between text-sm items-center">
+                  <Label htmlFor="pkg-discount" className="text-sm font-normal">Additional Discount</Label>
+                  <Input
+                    id="pkg-discount"
+                    type="number"
+                    min={0}
+                    max={packagePrice}
+                    step="0.01"
+                    value={discount}
+                    onChange={(e) => setDiscount(e.target.value)}
+                    className="w-28 h-8 text-right text-sm"
+                    placeholder="0.00"
+                  />
+                </div>
+                {extraDiscount > 0 && (
+                  <div className="flex justify-between text-sm text-green-600">
+                    <span>Extra Discount</span>
+                    <span>- Rs. {extraDiscount.toFixed(2)}</span>
+                  </div>
+                )}
                 <div className="flex justify-between font-bold text-lg border-t mt-2 pt-2">
                   <span>Amount to Pay</span>
-                  <span>Rs. {selectedPackage.package_price}</span>
+                  <span>Rs. {amountToPay.toFixed(2)}</span>
                 </div>
               </div>
 

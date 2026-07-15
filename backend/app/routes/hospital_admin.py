@@ -1,9 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func as sql_func, cast, Date
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from datetime import datetime, date, timedelta
+from io import BytesIO
 import os
 import uuid
 import json
@@ -1537,6 +1539,169 @@ async def get_all_bills(
         "doctors": doctor_list,
         "referrals": referral_list,
     }
+
+
+def _format_export_date(value) -> str:
+    """Format bill date strings for spreadsheet cells (YYYY-MM-DD when possible)."""
+    if not value:
+        return ""
+    s = str(value)
+    if "T" in s:
+        return s.split("T", 1)[0]
+    return s[:10] if len(s) >= 10 else s
+
+
+def _build_billing_export_xlsx(data: dict, date_from: str, date_to: str) -> bytes:
+    """Build a two-sheet Excel workbook from the unified billing list payload."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Bills"
+
+    headers = [
+        "Date", "Type", "Reference", "Patient", "Phone", "Items",
+        "Amount", "Discount", "Final", "Doctor", "Referred By",
+        "Status", "Payment Method",
+    ]
+    header_font = Font(bold=True)
+    header_fill = PatternFill("solid", fgColor="E8EEF5")
+    thin = Border(
+        left=Side(style="thin", color="CCCCCC"),
+        right=Side(style="thin", color="CCCCCC"),
+        top=Side(style="thin", color="CCCCCC"),
+        bottom=Side(style="thin", color="CCCCCC"),
+    )
+
+    for col, title in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=title)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.border = thin
+
+    for row_idx, b in enumerate(data.get("bills") or [], 2):
+        values = [
+            _format_export_date(b.get("date")),
+            b.get("type") or "",
+            b.get("reference") or "",
+            b.get("patient_name") or "",
+            b.get("patient_phone") or "",
+            b.get("items") or "",
+            float(b.get("subtotal") or 0),
+            float(b.get("discount") or 0),
+            float(b.get("amount") or 0),
+            b.get("doctor_name") or "",
+            b.get("referred_by") or "",
+            b.get("payment_status") or "",
+            b.get("payment_method") or "",
+        ]
+        for col, val in enumerate(values, 1):
+            cell = ws.cell(row=row_idx, column=col, value=val)
+            cell.border = thin
+            if col in (7, 8, 9):
+                cell.number_format = "#,##0.00"
+                cell.alignment = Alignment(horizontal="right")
+
+    from openpyxl.utils import get_column_letter
+    col_widths = [12, 14, 16, 22, 14, 36, 12, 10, 12, 20, 16, 12, 14]
+    for i, width in enumerate(col_widths, 1):
+        ws.column_dimensions[get_column_letter(i)].width = width
+
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:M{max(1, len(data.get('bills') or []) + 1)}"
+
+    # Summary sheet
+    summary = data.get("summary") or {}
+    ws2 = wb.create_sheet("Summary")
+    ws2["A1"] = "Billing Export Summary"
+    ws2["A1"].font = Font(bold=True, size=14)
+    ws2["A3"] = "Date from"
+    ws2["B3"] = date_from
+    ws2["A4"] = "Date to"
+    ws2["B4"] = date_to
+    ws2["A6"] = "Metric"
+    ws2["B6"] = "Value"
+    ws2["A6"].font = header_font
+    ws2["B6"].font = header_font
+    ws2["A6"].fill = header_fill
+    ws2["B6"].fill = header_fill
+
+    metrics = [
+        ("Total bills", summary.get("total_bills", 0)),
+        ("Total billed", float(summary.get("total_billed") or 0)),
+        ("Collected", float(summary.get("total_paid") or 0)),
+        ("Pending", float(summary.get("total_pending") or 0)),
+        ("Consultation bills", summary.get("appointment_count", 0)),
+        ("Lab bills", summary.get("lab_count", 0)),
+        ("Admission bills", summary.get("admission_count", 0)),
+        ("Cancelled", summary.get("cancelled_count", 0)),
+    ]
+    # By-type rollup from rows
+    by_type: dict = {}
+    for b in data.get("bills") or []:
+        if b.get("payment_status") == "cancelled":
+            continue
+        t = b.get("type") or "other"
+        by_type[t] = by_type.get(t, 0.0) + float(b.get("amount") or 0)
+
+    for i, (label, value) in enumerate(metrics, 7):
+        ws2.cell(row=i, column=1, value=label)
+        cell = ws2.cell(row=i, column=2, value=value)
+        if isinstance(value, float):
+            cell.number_format = "#,##0.00"
+
+    start = 7 + len(metrics) + 1
+    ws2.cell(row=start, column=1, value="Amount by type").font = header_font
+    ws2.cell(row=start + 1, column=1, value="Type").font = header_font
+    ws2.cell(row=start + 1, column=2, value="Amount").font = header_font
+    for i, (t, amt) in enumerate(sorted(by_type.items()), start + 2):
+        ws2.cell(row=i, column=1, value=t)
+        cell = ws2.cell(row=i, column=2, value=amt)
+        cell.number_format = "#,##0.00"
+
+    ws2.column_dimensions["A"].width = 22
+    ws2.column_dimensions["B"].width = 16
+
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+@router.get("/billing/export.xlsx")
+async def export_billing_xlsx(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    patient_search: Optional[str] = None,
+    bill_type: Optional[str] = None,
+    payment_status: Optional[str] = None,
+    doctor_id: Optional[int] = None,
+    referred_by: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Excel export of the unified billing list using the same filters as GET /billing."""
+    data = await get_all_bills(
+        date_from=date_from,
+        date_to=date_to,
+        patient_search=patient_search,
+        bill_type=bill_type,
+        payment_status=payment_status,
+        doctor_id=doctor_id,
+        referred_by=referred_by,
+        current_user=current_user,
+        db=db,
+    )
+    today = date.today()
+    d_from = date_from or today.isoformat()
+    d_to = date_to or today.isoformat()
+    content = _build_billing_export_xlsx(data, d_from, d_to)
+    filename = f"billing_{d_from}_to_{d_to}.xlsx"
+    return StreamingResponse(
+        BytesIO(content),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # --- Bill Detail (from bills table) ---

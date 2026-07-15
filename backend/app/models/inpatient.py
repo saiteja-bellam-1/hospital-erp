@@ -214,6 +214,8 @@ class AdmissionDischargeSummary(Base):
     follow_up_date = Column(DateTime(timezone=True), nullable=True)
     diet_instructions = Column(Text, nullable=True)
     activity_restrictions = Column(Text, nullable=True)
+    # Hospital-template custom section values: { field_key: string }
+    custom_fields = Column(JSON, nullable=True)
 
     primary_doctor_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     secondary_doctor_id = Column(Integer, ForeignKey("users.id"), nullable=True)

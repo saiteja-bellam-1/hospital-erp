@@ -13,6 +13,29 @@ export function localDateStringOffset(days) {
   return localDateString(d);
 }
 
+/** Monday (or today if Monday) of the week containing `date`, as YYYY-MM-DD. */
+export function localWeekStart(date = new Date()) {
+  const d = date instanceof Date ? new Date(date) : new Date(date);
+  const day = d.getDay(); // 0 = Sunday
+  const diff = day === 0 ? 6 : day - 1;
+  d.setDate(d.getDate() - diff);
+  return localDateString(d);
+}
+
+/** First day of the month containing `date`, as YYYY-MM-DD. */
+export function localMonthStart(date = new Date()) {
+  const d = date instanceof Date ? new Date(date) : new Date(date);
+  return localDateString(new Date(d.getFullYear(), d.getMonth(), 1));
+}
+
+/** Previous calendar month as { from, to } YYYY-MM-DD inclusive. */
+export function localLastMonthRange(date = new Date()) {
+  const d = date instanceof Date ? new Date(date) : new Date(date);
+  const from = new Date(d.getFullYear(), d.getMonth() - 1, 1);
+  const to = new Date(d.getFullYear(), d.getMonth(), 0);
+  return { from: localDateString(from), to: localDateString(to) };
+}
+
 /** Local datetime as YYYY-MM-DDTHH:mm for <input type="datetime-local">. */
 export function localDateTimeString(date = new Date()) {
   const d = date instanceof Date ? date : new Date(date);

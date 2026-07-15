@@ -247,6 +247,9 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
     if (hasAnyRole('hospital_admin', 'super_admin', 'billing_admin', 'receptionist', 'frontdesk')) {
       add(items, make('Billing Setup', Package, '/dashboard/inpatient/billing-setup'));
     }
+    if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin')) {
+      add(items, make('Discharge Summary Template', FileText, '/dashboard/inpatient/discharge-summary-template'));
+    }
     if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'doctor')) {
       add(items, make('Procedures', Scissors, '/dashboard/inpatient/procedures'));
     }

@@ -4,9 +4,18 @@ import { Card, CardContent, CardHeader, CardTitle } from '../../../components/ui
 import { Button } from '../../../components/ui/button';
 import { Input } from '../../../components/ui/input';
 import { Label } from '../../../components/ui/label';
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '../../../components/ui/dialog';
 import { useToast } from '../../../hooks/use-toast';
 import PatientSearchPicker from '../../../components/PatientSearchPicker';
-import { CalendarClock, Loader2, Plus, Trash2 } from 'lucide-react';
+import PdfPreviewDialog from '../../../components/PdfPreviewDialog';
+import { Textarea } from '../../../components/ui/textarea';
+import { CalendarClock, FileText, Loader2, Plus, Trash2 } from 'lucide-react';
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
@@ -130,6 +139,21 @@ const CatchUpBills = () => {
   const [packagePrice, setPackagePrice] = useState('');
   const [preview, setPreview] = useState(null);
   const [appendAdmissionId, setAppendAdmissionId] = useState('');
+
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [confirmDraft, setConfirmDraft] = useState(null);
+  const [previewing, setPreviewing] = useState(false);
+  const [pdfPreview, setPdfPreview] = useState(null);
+
+  // Post-save lab catch-up: enter results + download report
+  const [pendingLabOrders, setPendingLabOrders] = useState([]);
+  const [labEntryForm, setLabEntryForm] = useState(null);
+  const [labEntryValues, setLabEntryValues] = useState({});
+  const [labRemarkValues, setLabRemarkValues] = useState({});
+  const [labManualAbnormal, setLabManualAbnormal] = useState({});
+  const [labInterpretation, setLabInterpretation] = useState('');
+  const [labEntryOpen, setLabEntryOpen] = useState(false);
+  const [labSubmitting, setLabSubmitting] = useState(false);
 
   const doctorById = (id) => doctors.find((d) => String(d.id) === String(id));
   const nurseById = (id) => nurses.find((n) => String(n.id) === String(id));
@@ -262,103 +286,245 @@ const CatchUpBills = () => {
     };
   };
 
-  const submit = async () => {
-    setSaving(true);
-    try {
-      let res;
-      if (type === 'consultation') {
-        if (!patientId || !doctorId) throw new Error('Patient and doctor are required');
-        res = await axios.post('/api/admin/catch-up/consultation', {
+  const lineItemsPayload = () => lines
+    .filter((l) => l.item_name && l.unit_price !== '')
+    .map((l) => ({
+      item_name: l.item_name,
+      quantity: Number(l.quantity || 1),
+      unit_price: Number(l.unit_price || 0),
+      ...(type === 'misc' ? { item_type: 'misc' } : {}),
+    }));
+
+  /** Build create/preview request for the active tab. Throws on validation. */
+  const buildRequestBody = () => {
+    if (type === 'consultation') {
+      if (!patientId || !doctorId) throw new Error('Patient and doctor are required');
+      return {
+        url: '/api/admin/catch-up/consultation',
+        previewUrl: '/api/admin/catch-up/consultation/preview',
+        body: {
           ...datesPayload(),
           patient_id: patientId,
           doctor_id: Number(doctorId),
           consultation_fee: Number(consultFee || 0),
           registration_fee: Number(regFee || 0),
-        });
-      } else if (type === 'lab') {
-        if (!patientId || selectedTests.length === 0) throw new Error('Patient and at least one test required');
-        res = await axios.post('/api/admin/catch-up/lab', {
+        },
+      };
+    }
+    if (type === 'lab') {
+      if (!patientId || selectedTests.length === 0) throw new Error('Patient and at least one test required');
+      return {
+        url: '/api/admin/catch-up/lab',
+        previewUrl: '/api/admin/catch-up/lab/preview',
+        body: {
           ...datesPayload(),
           patient_id: patientId,
           test_ids: selectedTests.map(Number),
           doctor_id: doctorId ? Number(doctorId) : null,
-        });
-      } else if (type === 'pharmacy') {
-        if (!patientId) throw new Error('Patient is required for pharmacy catch-up');
-        const items = lines
-          .filter((l) => l.item_name && l.unit_price !== '')
-          .map((l) => ({
-            item_name: l.item_name,
-            quantity: Number(l.quantity || 1),
-            unit_price: Number(l.unit_price || 0),
-          }));
-        if (!items.length) throw new Error('Add at least one line');
-        res = await axios.post('/api/admin/catch-up/pharmacy-sale', {
+        },
+      };
+    }
+    if (type === 'pharmacy') {
+      if (!patientId) throw new Error('Patient is required for pharmacy catch-up');
+      const items = lineItemsPayload();
+      if (!items.length) throw new Error('Add at least one line');
+      return {
+        url: '/api/admin/catch-up/pharmacy-sale',
+        previewUrl: '/api/admin/catch-up/pharmacy-sale/preview',
+        body: {
           ...datesPayload(),
           patient_id: patientId,
           items,
           affect_stock: affectStock,
-        });
-      } else if (type === 'canteen') {
-        const items = lines
-          .filter((l) => l.item_name && l.unit_price !== '')
-          .map((l) => ({
-            item_name: l.item_name,
-            quantity: Number(l.quantity || 1),
-            unit_price: Number(l.unit_price || 0),
-          }));
-        if (!items.length) throw new Error('Add at least one line');
-        res = await axios.post('/api/admin/catch-up/canteen-sale', {
+        },
+      };
+    }
+    if (type === 'canteen') {
+      const items = lineItemsPayload();
+      if (!items.length) throw new Error('Add at least one line');
+      return {
+        url: '/api/admin/catch-up/canteen-sale',
+        previewUrl: '/api/admin/catch-up/canteen-sale/preview',
+        body: {
           ...datesPayload(),
           patient_id: patientId || null,
           items,
-        });
-      } else if (type === 'misc') {
-        if (!patientId) throw new Error('Patient is required');
-        const items = lines
-          .filter((l) => l.item_name && l.unit_price !== '')
-          .map((l) => ({
-            item_name: l.item_name,
-            quantity: Number(l.quantity || 1),
-            unit_price: Number(l.unit_price || 0),
-            item_type: 'misc',
-          }));
-        if (!items.length) throw new Error('Add at least one line');
-        res = await axios.post('/api/admin/catch-up/misc-bill', {
+        },
+      };
+    }
+    if (type === 'misc') {
+      if (!patientId) throw new Error('Patient is required');
+      const items = lineItemsPayload();
+      if (!items.length) throw new Error('Add at least one line');
+      return {
+        url: '/api/admin/catch-up/misc-bill',
+        previewUrl: '/api/admin/catch-up/misc-bill/preview',
+        body: {
           ...datesPayload(),
           patient_id: patientId,
           items,
-        });
-      } else if (type === 'inpatient') {
-        if (!patientId || !admitDoctorId || !roomId) {
-          throw new Error('Patient, admitting doctor, and room are required');
-        }
-        res = await axios.post('/api/admin/catch-up/inpatient-stay', buildIpPayload());
-      } else if (type === 'append') {
-        if (!appendAdmissionId) throw new Error('Catch-up admission ID is required');
-        const ip = buildIpPayload();
-        const payload = {
-          ...datesPayload(),
-          visits: ip.visits,
-          ancillary: ip.ancillary,
-          canteen_orders: ip.canteen_orders,
-          pharmacy_lines: ip.pharmacy_lines,
-        };
-        if (!payload.visits.length && !payload.ancillary.length
-            && !payload.canteen_orders.length && !payload.pharmacy_lines.length) {
-          throw new Error('Add at least one charge to append');
-        }
-        res = await axios.post(
-          `/api/admin/catch-up/inpatient/${Number(appendAdmissionId)}/append-charges`,
-          payload,
-        );
+        },
+      };
+    }
+    if (type === 'inpatient') {
+      if (!patientId || !admitDoctorId || !roomId) {
+        throw new Error('Patient, admitting doctor, and room are required');
       }
+      return {
+        url: '/api/admin/catch-up/inpatient-stay',
+        previewUrl: '/api/admin/catch-up/inpatient-stay/preview',
+        body: buildIpPayload(),
+      };
+    }
+    if (type === 'append') {
+      if (!appendAdmissionId) throw new Error('Catch-up admission ID is required');
+      const ip = buildIpPayload();
+      const body = {
+        ...datesPayload(),
+        visits: ip.visits,
+        ancillary: ip.ancillary,
+        canteen_orders: ip.canteen_orders,
+        pharmacy_lines: ip.pharmacy_lines,
+      };
+      if (!body.visits.length && !body.ancillary.length
+          && !body.canteen_orders.length && !body.pharmacy_lines.length) {
+        throw new Error('Add at least one charge to append');
+      }
+      const items = [];
+      body.visits.forEach((v) => {
+        items.push({
+          item_name: (v.visit_type || 'visit').replace(/_/g, ' '),
+          quantity: 1,
+          unit_price: Number(v.charge_amount || 0),
+          total_price: Number(v.charge_amount || 0),
+        });
+      });
+      body.ancillary.forEach((a) => {
+        const svc = ancillaryServices.find((s) => String(s.id) === String(a.service_id));
+        const unit = a.unit_price != null ? Number(a.unit_price) : Number(svc?.default_charge || 0);
+        const qty = Number(a.quantity || 1);
+        items.push({
+          item_name: svc?.service_name || svc?.name || `Service #${a.service_id}`,
+          quantity: qty,
+          unit_price: unit,
+          total_price: Math.round(unit * qty * 100) / 100,
+        });
+      });
+      (body.canteen_orders || []).forEach((o) => {
+        (o.items || []).forEach((li) => {
+          const total = Math.round(Number(li.unit_price) * Number(li.quantity) * 100) / 100;
+          items.push({
+            item_name: li.item_name,
+            quantity: li.quantity,
+            unit_price: li.unit_price,
+            total_price: total,
+          });
+        });
+      });
+      body.pharmacy_lines.forEach((li) => {
+        const total = Math.round(Number(li.unit_price) * Number(li.quantity) * 100) / 100;
+        items.push({
+          item_name: li.item_name,
+          quantity: li.quantity,
+          unit_price: li.unit_price,
+          total_price: total,
+        });
+      });
+      const grand = items.reduce((s, i) => s + Number(i.total_price || 0), 0);
+      return {
+        url: `/api/admin/catch-up/inpatient/${Number(appendAdmissionId)}/append-charges`,
+        previewUrl: null,
+        localDraft: {
+          bill_type: 'admission_append',
+          patient_name: selectedPatient
+            ? `${selectedPatient.first_name || ''} ${selectedPatient.last_name || ''}`.trim()
+            : null,
+          service_date: dates.service_date,
+          payment_date: dates.payment_date,
+          payment_method: dates.payment_method,
+          items,
+          subtotal: grand,
+          grand_total: grand,
+          creates_central_bill: true,
+          warnings: [
+            'Append will cancel the current paid final bill, add these charges, and re-finalize.',
+            'Totals below are new charges only — not the full re-finalized bill.',
+          ],
+        },
+        body,
+      };
+    }
+    throw new Error('Unknown catch-up type');
+  };
+
+  const errMsg = (err) => {
+    const detail = err?.response?.data?.detail;
+    if (typeof detail === 'string') return detail;
+    if (detail?.message) return detail.message;
+    return err.message || 'Request failed';
+  };
+
+  const fetchDraftPreview = async () => {
+    const req = buildRequestBody();
+    if (req.localDraft) return req.localDraft;
+    const { data } = await axios.post(req.previewUrl, req.body);
+    return data;
+  };
+
+  const openConfirm = async () => {
+    setPreviewing(true);
+    try {
+      const draft = await fetchDraftPreview();
+      setConfirmDraft(draft);
+      setPreview(draft);
+      setConfirmOpen(true);
+    } catch (err) {
+      toast({ title: 'Preview failed', description: errMsg(err), variant: 'destructive' });
+    } finally {
+      setPreviewing(false);
+    }
+  };
+
+  const runPreview = async () => {
+    setPreviewing(true);
+    try {
+      const draft = await fetchDraftPreview();
+      setPreview(draft);
+      setConfirmDraft(draft);
+      setConfirmOpen(true);
+    } catch (err) {
+      toast({ title: 'Preview failed', description: errMsg(err), variant: 'destructive' });
+    } finally {
+      setPreviewing(false);
+    }
+  };
+
+  const executeSubmit = async () => {
+    setSaving(true);
+    try {
+      const req = buildRequestBody();
+      const res = await axios.post(req.url, req.body);
       toast({
         title: 'Catch-up saved',
         description: res?.data?.bill_number
           ? `Bill ${res.data.bill_number} — ₹${res.data.total}`
           : `Total ₹${res?.data?.total ?? ''}`,
       });
+      setConfirmOpen(false);
+      setConfirmDraft(null);
+      if (res?.data?.pdf?.path) {
+        setPdfPreview({
+          title: res.data.pdf.title || `Bill ${res.data.bill_number || ''}`.trim(),
+          path: res.data.pdf.path,
+        });
+      }
+      if (type === 'lab' && Array.isArray(res?.data?.orders) && res.data.orders.length) {
+        setPendingLabOrders(res.data.orders.map((o) => ({
+          ...o,
+          has_report: !!o.has_report,
+          report_id: o.report_id || null,
+        })));
+      }
       setDates(emptyDates());
       setLines([{ item_name: '', quantity: 1, unit_price: '' }]);
       setSelectedTests([]);
@@ -375,32 +541,66 @@ const CatchUpBills = () => {
       setAppendAdmissionId('');
       loadMeta();
     } catch (err) {
-      const detail = err?.response?.data?.detail;
-      const msg = typeof detail === 'string'
-        ? detail
-        : (detail?.message || err.message || 'Failed to save catch-up');
-      toast({ title: 'Error', description: msg, variant: 'destructive' });
+      toast({ title: 'Error', description: errMsg(err), variant: 'destructive' });
     } finally {
       setSaving(false);
     }
   };
 
-  const runPreview = async () => {
+  const openLabEntry = async (orderId) => {
     try {
-      if (!roomId) throw new Error('Select a room first');
-      const { data } = await axios.post('/api/admin/catch-up/inpatient-stay/preview', {
-        ...buildIpPayload(),
-        patient_id: patientId || 0,
-        admitting_doctor_id: Number(admitDoctorId || doctors[0]?.id || 0),
-      });
-      setPreview(data);
+      const { data } = await axios.get(`/api/admin/catch-up/lab/orders/${orderId}/entry-form`);
+      setLabEntryForm(data);
+      const initial = {};
+      (data.parameters || []).forEach((p) => { initial[p.id] = ''; });
+      setLabEntryValues(initial);
+      setLabRemarkValues({});
+      setLabManualAbnormal({});
+      setLabInterpretation('');
+      setLabEntryOpen(true);
+      if (!(data.parameters || []).length) {
+        toast({
+          title: 'No parameters',
+          description: 'This test has no parameters configured. Configure them under Lab → Tests first.',
+          variant: 'destructive',
+        });
+      }
     } catch (err) {
-      const detail = err?.response?.data?.detail;
-      toast({
-        title: 'Preview failed',
-        description: typeof detail === 'string' ? detail : err.message,
-        variant: 'destructive',
-      });
+      toast({ title: 'Failed to load entry form', description: errMsg(err), variant: 'destructive' });
+    }
+  };
+
+  const submitLabResults = async () => {
+    if (!labEntryForm) return;
+    setLabSubmitting(true);
+    try {
+      const results = Object.entries(labEntryValues)
+        .filter(([, value]) => value !== '')
+        .map(([paramId, value]) => ({
+          parameter_id: parseInt(paramId, 10),
+          value: String(value),
+          remarks: labRemarkValues[paramId] || null,
+          manual_abnormal: !!labManualAbnormal[paramId],
+        }));
+      if (!results.length) throw new Error('Enter at least one parameter value');
+      const { data } = await axios.post(
+        `/api/admin/catch-up/lab/orders/${labEntryForm.order_id}/results`,
+        { results, interpretation: labInterpretation || null },
+      );
+      toast({ title: 'Lab report saved', description: 'Opening report PDF…' });
+      setLabEntryOpen(false);
+      setPendingLabOrders((prev) => prev.map((o) => (
+        o.id === labEntryForm.order_id
+          ? { ...o, has_report: true, report_id: data.report_id, status: 'completed' }
+          : o
+      )));
+      if (data?.pdf?.path) {
+        setPdfPreview({ title: data.pdf.title || 'Lab report', path: data.pdf.path });
+      }
+    } catch (err) {
+      toast({ title: 'Failed to save results', description: errMsg(err), variant: 'destructive' });
+    } finally {
+      setLabSubmitting(false);
     }
   };
 
@@ -1050,37 +1250,30 @@ const CatchUpBills = () => {
                 ))}
               </ChargeSection>
 
-              {type === 'inpatient' && (
-              <div className="flex gap-2 flex-wrap items-center">
-                <Button type="button" variant="outline" onClick={runPreview}>Preview charges</Button>
-                {preview && (
-                  <p className="text-sm">
-                    {preview.stay_days}d stay
-                    {preview.included_stay_days
-                      ? ` (${preview.included_stay_days}d in package`
-                        + (preview.excess_room_days
-                          ? `, ${preview.excess_room_days}d excess room`
-                          : ', no excess room')
-                        + ')'
-                      : ''}
-                    {' · '}room ₹{preview.room_total}
-                    {' + '}visits ₹{preview.visit_total}
-                    {' + '}anc ₹{preview.ancillary_total}
-                    {' + '}food ₹{preview.food_total}
-                    {' + '}meds ₹{preview.pharmacy_total || 0}
-                    {' + '}pkg ₹{preview.package_total || 0}
-                    {' → '}<strong>₹{preview.grand_total}</strong>
-                  </p>
-                )}
-              </div>
+              {type === 'inpatient' && preview && preview.stay_days != null && (
+                <p className="text-sm text-muted-foreground">
+                  Last preview: {preview.stay_days}d stay
+                  {preview.included_stay_days
+                    ? ` (${preview.included_stay_days}d in package`
+                      + (preview.excess_room_days
+                        ? `, ${preview.excess_room_days}d excess room`
+                        : ', no excess room')
+                      + ')'
+                    : ''}
+                  {' · '}₹{preview.grand_total}
+                </p>
               )}
             </div>
           )}
 
-          <div className="pt-2">
-            <Button onClick={submit} disabled={saving}>
-              {saving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-              {type === 'append' ? 'Append & re-finalize' : 'Save catch-up'}
+          <div className="pt-2 flex flex-wrap gap-2">
+            <Button type="button" variant="outline" onClick={runPreview} disabled={previewing || saving}>
+              {previewing && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Preview bill
+            </Button>
+            <Button onClick={openConfirm} disabled={saving || previewing}>
+              {(saving || previewing) && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              {type === 'append' ? 'Review & append' : 'Review & save'}
             </Button>
           </div>
         </CardContent>
@@ -1107,6 +1300,308 @@ const CatchUpBills = () => {
           )}
         </CardContent>
       </Card>
+
+      {pendingLabOrders.length > 0 && (
+        <Card className="border-blue-200">
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              <FileText className="h-4 w-4 text-blue-600" />
+              Enter lab results &amp; download report
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            <p className="text-xs text-muted-foreground">
+              Bill is saved. Enter parameter values for each test, then download the clinical report PDF.
+              These orders stay under Catch-up — they are not sent to Lab Tech.
+            </p>
+            {pendingLabOrders.map((o) => (
+              <div
+                key={o.id}
+                className="flex flex-wrap items-center justify-between gap-2 border rounded-md p-3"
+              >
+                <div className="text-sm">
+                  <div className="font-medium">{o.test_name || `Order #${o.id}`}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {o.order_number}
+                    {o.has_report ? ' · Report ready' : ' · Awaiting results'}
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  {!o.has_report ? (
+                    <Button type="button" size="sm" onClick={() => openLabEntry(o.id)}>
+                      Enter results
+                    </Button>
+                  ) : (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setPdfPreview({
+                        title: `Lab report — ${o.order_number || o.test_name}`,
+                        path: `/api/lab/reports/${o.report_id}/download`,
+                      })}
+                      disabled={!o.report_id}
+                    >
+                      View / print report
+                    </Button>
+                  )}
+                </div>
+              </div>
+            ))}
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground"
+              onClick={() => setPendingLabOrders([])}
+            >
+              Dismiss
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      <Dialog open={labEntryOpen} onOpenChange={(v) => { if (!v && !labSubmitting) setLabEntryOpen(false); }}>
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>
+              Enter results — {labEntryForm?.test_name || 'Lab test'}
+            </DialogTitle>
+          </DialogHeader>
+          {labEntryForm && (
+            <div className="space-y-3 text-sm">
+              <p className="text-muted-foreground">
+                Patient: <span className="text-foreground font-medium">{labEntryForm.patient_name}</span>
+                {labEntryForm.patient_gender ? ` (${labEntryForm.patient_gender})` : ''}
+                {' · '}Order #{labEntryForm.order_number}
+                {labEntryForm.service_date ? ` · Service ${labEntryForm.service_date}` : ''}
+              </p>
+              {(labEntryForm.parameters || []).length === 0 ? (
+                <p className="text-amber-700 text-xs">
+                  No parameters configured for this test. Add them under Lab → Tests, then try again.
+                </p>
+              ) : (
+                <div className="border rounded-md overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-50">
+                      <tr>
+                        <th className="text-left p-2">Parameter</th>
+                        <th className="text-left p-2">Value</th>
+                        <th className="text-left p-2">Unit</th>
+                        <th className="text-left p-2">Reference</th>
+                        <th className="text-left p-2">Remarks</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {labEntryForm.parameters.map((param) => {
+                        const value = labEntryValues[param.id] ?? '';
+                        const options = param.possible_values || [];
+                        return (
+                          <tr key={param.id} className="border-t">
+                            <td className="p-2 font-medium whitespace-nowrap">{param.parameter_name}</td>
+                            <td className="p-2">
+                              {options.length > 0 ? (
+                                <select
+                                  className="h-8 rounded-md border px-2 text-sm min-w-[140px]"
+                                  value={value}
+                                  onChange={(e) => setLabEntryValues({
+                                    ...labEntryValues,
+                                    [param.id]: e.target.value,
+                                  })}
+                                >
+                                  <option value="">Select</option>
+                                  {options.map((opt) => (
+                                    <option key={opt} value={opt}>{opt}</option>
+                                  ))}
+                                </select>
+                              ) : param.field_type === 'less_than' ? (
+                                <div className="flex items-center gap-1">
+                                  <span className="text-muted-foreground">&lt;</span>
+                                  <Input
+                                    type="number"
+                                    step="any"
+                                    className="h-8 w-[130px]"
+                                    value={value}
+                                    onChange={(e) => setLabEntryValues({
+                                      ...labEntryValues,
+                                      [param.id]: e.target.value,
+                                    })}
+                                  />
+                                </div>
+                              ) : param.field_type === 'greater_than' ? (
+                                <div className="flex items-center gap-1">
+                                  <span className="text-muted-foreground">&gt;</span>
+                                  <Input
+                                    type="number"
+                                    step="any"
+                                    className="h-8 w-[130px]"
+                                    value={value}
+                                    onChange={(e) => setLabEntryValues({
+                                      ...labEntryValues,
+                                      [param.id]: e.target.value,
+                                    })}
+                                  />
+                                </div>
+                              ) : (
+                                <Input
+                                  type={param.field_type === 'numeric' ? 'text' : 'text'}
+                                  inputMode={param.field_type === 'numeric' ? 'decimal' : undefined}
+                                  className="h-8 w-[150px]"
+                                  value={value}
+                                  onChange={(e) => setLabEntryValues({
+                                    ...labEntryValues,
+                                    [param.id]: e.target.value,
+                                  })}
+                                  placeholder="Value"
+                                />
+                              )}
+                            </td>
+                            <td className="p-2 text-muted-foreground">{param.unit || '—'}</td>
+                            <td className="p-2 text-xs text-muted-foreground">
+                              {param.reference_min != null && param.reference_max != null
+                                ? `${param.reference_min} – ${param.reference_max}`
+                                : (param.normal_value || '—')}
+                            </td>
+                            <td className="p-2">
+                              <div className="flex items-center gap-2">
+                                <label className="flex items-center gap-1 text-[10px] text-red-600 whitespace-nowrap">
+                                  <input
+                                    type="checkbox"
+                                    checked={!!labManualAbnormal[param.id]}
+                                    onChange={(e) => setLabManualAbnormal({
+                                      ...labManualAbnormal,
+                                      [param.id]: e.target.checked,
+                                    })}
+                                  />
+                                  Abnormal
+                                </label>
+                                <Input
+                                  className="h-8 w-[120px] text-xs"
+                                  value={labRemarkValues[param.id] || ''}
+                                  onChange={(e) => setLabRemarkValues({
+                                    ...labRemarkValues,
+                                    [param.id]: e.target.value,
+                                  })}
+                                  placeholder="Remarks"
+                                />
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              <div>
+                <Label>Interpretation / notes</Label>
+                <Textarea
+                  value={labInterpretation}
+                  onChange={(e) => setLabInterpretation(e.target.value)}
+                  rows={3}
+                  placeholder="Optional"
+                />
+              </div>
+            </div>
+          )}
+          <DialogFooter className="gap-2">
+            <Button type="button" variant="outline" onClick={() => setLabEntryOpen(false)} disabled={labSubmitting}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={submitLabResults}
+              disabled={labSubmitting || !(labEntryForm?.parameters || []).length}
+            >
+              {labSubmitting && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Save report &amp; preview PDF
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={confirmOpen} onOpenChange={(v) => { if (!v && !saving) setConfirmOpen(false); }}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Confirm catch-up bill</DialogTitle>
+          </DialogHeader>
+          {confirmDraft && (
+            <div className="space-y-3 text-sm">
+              <div className="grid grid-cols-2 gap-2 text-muted-foreground">
+                <div>Patient: <span className="text-foreground">{confirmDraft.patient_name || '—'}</span></div>
+                <div>Type: <span className="text-foreground">{confirmDraft.bill_type}</span></div>
+                <div>Service date: <span className="text-foreground">{confirmDraft.service_date}</span></div>
+                <div>Payment date: <span className="text-foreground">{confirmDraft.payment_date}</span></div>
+                <div>Method: <span className="text-foreground">{confirmDraft.payment_method}</span></div>
+                <div>
+                  Central bill:{' '}
+                  <span className="text-foreground">
+                    {confirmDraft.creates_central_bill === false ? 'No' : 'Yes'}
+                  </span>
+                </div>
+              </div>
+              {(confirmDraft.warnings || []).length > 0 && (
+                <ul className="list-disc pl-5 text-amber-700 text-xs space-y-1">
+                  {confirmDraft.warnings.map((w, i) => (
+                    <li key={i}>{w}</li>
+                  ))}
+                </ul>
+              )}
+              <div className="border rounded-md overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50">
+                    <tr>
+                      <th className="text-left p-2 font-medium">Item</th>
+                      <th className="text-right p-2 font-medium">Qty</th>
+                      <th className="text-right p-2 font-medium">Rate</th>
+                      <th className="text-right p-2 font-medium">Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(confirmDraft.items || []).map((it, i) => (
+                      <tr key={i} className="border-t">
+                        <td className="p-2">{it.item_name}</td>
+                        <td className="p-2 text-right">{it.quantity}</td>
+                        <td className="p-2 text-right">₹{Number(it.unit_price || 0).toFixed(2)}</td>
+                        <td className="p-2 text-right">
+                          ₹{Number(it.total_price != null ? it.total_price : (it.quantity * it.unit_price) || 0).toFixed(2)}
+                        </td>
+                      </tr>
+                    ))}
+                    {!(confirmDraft.items || []).length && (
+                      <tr>
+                        <td colSpan={4} className="p-3 text-center text-muted-foreground">No line items</td>
+                      </tr>
+                    )}
+                  </tbody>
+                  <tfoot>
+                    <tr className="border-t bg-slate-50 font-semibold">
+                      <td className="p-2" colSpan={3}>Total</td>
+                      <td className="p-2 text-right">₹{Number(confirmDraft.grand_total || 0).toFixed(2)}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+          )}
+          <DialogFooter className="gap-2">
+            <Button type="button" variant="outline" onClick={() => setConfirmOpen(false)} disabled={saving}>
+              Cancel
+            </Button>
+            <Button type="button" onClick={executeSubmit} disabled={saving}>
+              {saving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Confirm &amp; create
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <PdfPreviewDialog
+        open={!!pdfPreview}
+        onClose={() => setPdfPreview(null)}
+        title={pdfPreview?.title || 'Bill Preview'}
+        path={pdfPreview?.path || null}
+      />
     </div>
   );
 };

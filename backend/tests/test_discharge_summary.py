@@ -1,8 +1,16 @@
 """Discharge summary workflow: doctor write, finalize, print gate, discharge lock."""
 
+from io import BytesIO
+
 from inpatient_test_helpers import API, discharge_active_admissions, ready_discharge_summary
 
 _state: dict = {}
+
+
+def _pdf_text(content: bytes) -> str:
+    from PyPDF2 import PdfReader
+    reader = PdfReader(BytesIO(content))
+    return "\n".join((page.extract_text() or "") for page in reader.pages)
 
 
 class TestDischargeSummaryWorkflow:
@@ -205,3 +213,194 @@ class TestDischargeSummaryWorkflow:
             headers=auth_headers,
         )
         assert death.status_code == 201, death.text
+
+
+class TestDischargeSummaryTemplate:
+    """Hospital-wide block template: customize layout + preview."""
+
+    def test_get_default_template(self, client, auth_headers):
+        r = client.get(f"{API}/discharge-summary-template", headers=auth_headers)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["version"] == 1
+        assert data["document_title"] == "DISCHARGE SUMMARY"
+        assert data.get("is_default") is True
+        types = [b["type"] for b in data["blocks"]]
+        assert "patient_info" in types
+        assert "standard_section" in types
+        assert "medications_table" in types
+        assert "primary_diagnosis" in {
+            b["field_key"] for b in data["blocks"] if b["type"] == "standard_section"
+        }
+
+    def test_save_custom_template_and_preview(self, client, auth_headers):
+        base = client.get(f"{API}/discharge-summary-template", headers=auth_headers).json()
+        blocks = [
+            b for b in base["blocks"]
+            if not (b.get("type") == "standard_section" and b.get("field_key") == "family_history")
+        ]
+        # Rename primary diagnosis
+        for b in blocks:
+            if b.get("type") == "standard_section" and b.get("field_key") == "primary_diagnosis":
+                b["label"] = "Final Diagnosis"
+        blocks.append({
+            "id": "custom-1",
+            "type": "custom_field",
+            "field_key": "dialysis_notes",
+            "label": "Dialysis Notes",
+            "input": "textarea",
+            "required": False,
+        })
+        blocks.append({
+            "id": "static-1",
+            "type": "static_text",
+            "label": "Hospital Policy",
+            "content": "Bring this summary to your next OPD visit.",
+        })
+        # Move course before primary diagnosis
+        course = next(
+            b for b in blocks
+            if b.get("type") == "standard_section" and b.get("field_key") == "course_in_hospital"
+        )
+        primary = next(
+            b for b in blocks
+            if b.get("type") == "standard_section" and b.get("field_key") == "primary_diagnosis"
+        )
+        blocks.remove(course)
+        blocks.insert(blocks.index(primary), course)
+
+        payload = {
+            "version": 1,
+            "document_title": "CUSTOM DISCHARGE SUMMARY",
+            "show_department_line": True,
+            "blocks": blocks,
+        }
+        preview = client.post(
+            f"{API}/discharge-summary-template/preview",
+            json=payload,
+            headers=auth_headers,
+        )
+        assert preview.status_code == 200, preview.text
+        assert "pdf" in preview.headers["content-type"].lower()
+        text = _pdf_text(preview.content)
+        assert "Hospital Policy" in text
+        assert "Dialysis Notes" in text or "Sample content for Dialysis" in text
+        assert "Final Diagnosis" in text
+        assert "Family History" not in text
+
+        saved = client.put(
+            f"{API}/discharge-summary-template",
+            json=payload,
+            headers=auth_headers,
+        )
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["is_default"] is False
+        assert saved.json()["document_title"] == "CUSTOM DISCHARGE SUMMARY"
+
+        got = client.get(f"{API}/discharge-summary-template", headers=auth_headers)
+        assert got.status_code == 200
+        assert got.json()["document_title"] == "CUSTOM DISCHARGE SUMMARY"
+        assert "dialysis_notes" in {
+            b["field_key"] for b in got.json()["blocks"] if b["type"] == "custom_field"
+        }
+
+    def test_custom_fields_on_summary_and_pdf(self, client, auth_headers, seed_data):
+        discharge_active_admissions(client, auth_headers, seed_data["patient_id"])
+        room = client.post(
+            f"{API}/rooms",
+            json={
+                "room_number": "DS-TPL",
+                "room_type": "general",
+                "bed_count": 1,
+                "room_charge_per_day": 400.0,
+            },
+            headers=auth_headers,
+        )
+        assert room.status_code == 201, room.text
+        adm = client.post(
+            f"{API}/admissions",
+            json={
+                "patient_id": seed_data["patient_id"],
+                "admitting_doctor_id": seed_data["doctor_user_id"],
+                "room_id": room.json()["id"],
+                "admission_type": "elective",
+            },
+            headers=auth_headers,
+        )
+        assert adm.status_code == 201, adm.text
+        adm_id = adm.json()["id"]
+
+        # Ensure template has a required dialysis_notes custom field
+        tpl = client.get(f"{API}/discharge-summary-template", headers=auth_headers).json()
+        blocks = list(tpl["blocks"])
+        found = False
+        for b in blocks:
+            if b.get("type") == "custom_field" and b.get("field_key") == "dialysis_notes":
+                b["required"] = True
+                b["label"] = "Dialysis Notes"
+                found = True
+        if not found:
+            blocks.append({
+                "id": "custom-dialysis",
+                "type": "custom_field",
+                "field_key": "dialysis_notes",
+                "label": "Dialysis Notes",
+                "input": "textarea",
+                "required": True,
+            })
+        put = client.put(f"{API}/discharge-summary-template", json={
+            "version": 1,
+            "document_title": tpl["document_title"],
+            "show_department_line": tpl.get("show_department_line", True),
+            "blocks": blocks,
+        }, headers=auth_headers)
+        assert put.status_code == 200, put.text
+        assert any(
+            b.get("field_key") == "dialysis_notes" and b.get("required")
+            for b in put.json()["blocks"] if b.get("type") == "custom_field"
+        )
+
+        # Finalize without required custom field should fail
+        client.put(
+            f"{API}/admissions/{adm_id}/discharge-summary",
+            json={
+                "primary_diagnosis": "CKD stage 5",
+                "custom_fields": {},
+            },
+            headers=auth_headers,
+        )
+        bad = client.post(
+            f"{API}/admissions/{adm_id}/discharge-summary/finalize",
+            headers=auth_headers,
+        )
+        assert bad.status_code == 400, bad.text
+
+        client.put(
+            f"{API}/admissions/{adm_id}/discharge-summary",
+            json={
+                "primary_diagnosis": "CKD stage 5",
+                "custom_fields": {"dialysis_notes": "HD thrice weekly via AV fistula"},
+            },
+            headers=auth_headers,
+        )
+        fin = client.post(
+            f"{API}/admissions/{adm_id}/discharge-summary/finalize",
+            headers=auth_headers,
+        )
+        assert fin.status_code == 200, fin.text
+        assert fin.json().get("custom_fields", {}).get("dialysis_notes")
+
+        pdf = client.get(
+            f"{API}/admissions/{adm_id}/discharge-summary/pdf",
+            headers=auth_headers,
+        )
+        assert pdf.status_code == 200, pdf.text
+        text = _pdf_text(pdf.content)
+        assert "Dialysis Notes" in text
+        assert "HD thrice weekly" in text
+
+    def test_reset_template(self, client, auth_headers):
+        r = client.post(f"{API}/discharge-summary-template/reset", headers=auth_headers)
+        assert r.status_code == 200, r.text
+        assert r.json().get("is_default") is True
+        assert r.json()["document_title"] == "DISCHARGE SUMMARY"

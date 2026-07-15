@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import axios from 'axios';
 import { Button } from '../../../components/ui/button';
 import { Input } from '../../../components/ui/input';
@@ -58,6 +58,7 @@ const EMPTY_FORM = {
   department_name: '',
   allergies_summary: '',
   surgery_date: '',
+  custom_fields: {},
 };
 
 const STATUS_BADGE = {
@@ -127,43 +128,92 @@ const DischargeSummaryEditor = ({
   const [showPdfPreview, setShowPdfPreview] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
   const [editingSubmitted, setEditingSubmitted] = useState(false);
+  const [template, setTemplate] = useState(null);
 
   const update = (patch) => setForm(p => ({ ...p, ...patch }));
+
+  const hasStandard = useCallback((fieldKey) => {
+    if (!template?.blocks) return true;
+    return template.blocks.some(
+      (b) => b.type === 'standard_section' && b.field_key === fieldKey,
+    );
+  }, [template]);
+
+  const hasBlockType = useCallback((type) => {
+    if (!template?.blocks) return true;
+    return template.blocks.some((b) => b.type === type);
+  }, [template]);
+
+  const standardLabel = useCallback((fieldKey, fallback) => {
+    const block = (template?.blocks || []).find(
+      (b) => b.type === 'standard_section' && b.field_key === fieldKey,
+    );
+    return block?.label || fallback;
+  }, [template]);
+
+  const customBlocks = useMemo(
+    () => (template?.blocks || []).filter((b) => b.type === 'custom_field'),
+    [template],
+  );
+
+  const staticBlocks = useMemo(
+    () => (template?.blocks || []).filter((b) => b.type === 'static_text'),
+    [template],
+  );
+
+  const primaryRequired = useMemo(() => {
+    if (!template?.blocks) return true;
+    return template.blocks.some(
+      (b) => b.type === 'standard_section'
+        && b.field_key === 'primary_diagnosis'
+        && b.required,
+    );
+  }, [template]);
 
   const load = useCallback(async () => {
     if (!admissionId || !open) return;
     setLoading(true);
     try {
-      const res = await axios.get(`/api/inpatient/admissions/${admissionId}/discharge-summary`);
-      const data = res.data;
-      setStatus(data.status);
-      setForm({
-        ...EMPTY_FORM,
-        ...data,
-        include_admission_vitals: data.include_admission_vitals !== false,
-        follow_up_date: data.follow_up_date
-          ? String(data.follow_up_date).slice(0, 10) : '',
-        primary_doctor_id: data.primary_doctor_id ? String(data.primary_doctor_id) : '',
-        secondary_doctor_id: data.secondary_doctor_id ? String(data.secondary_doctor_id) : '',
-        take_home_medications: data.take_home_medications || [],
-        payer_label: data.payer_label || '',
-        department_name: data.department_name || '',
-        allergies_summary: data.allergies_summary || '',
-        surgery_date: data.surgery_date || '',
-        chief_complaint: data.chief_complaint || '',
-      });
-    } catch (err) {
-      if (err.response?.status === 404) {
+      const [summaryRes, tplRes] = await Promise.all([
+        axios.get(`/api/inpatient/admissions/${admissionId}/discharge-summary`).catch((err) => {
+          if (err.response?.status === 404) return { data: null, notFound: true };
+          throw err;
+        }),
+        axios.get('/api/inpatient/discharge-summary-template').catch(() => ({ data: null })),
+      ]);
+      if (tplRes.data) setTemplate(tplRes.data);
+
+      if (summaryRes.notFound || !summaryRes.data) {
         setStatus(null);
         setForm(EMPTY_FORM);
       } else {
-        toast({
-          variant: 'destructive',
-          title: 'Could not load summary',
-          description: typeof err.response?.data?.detail === 'string'
-            ? err.response.data.detail : 'Network error',
+        const data = summaryRes.data;
+        setStatus(data.status);
+        setForm({
+          ...EMPTY_FORM,
+          ...data,
+          include_admission_vitals: data.include_admission_vitals !== false,
+          follow_up_date: data.follow_up_date
+            ? String(data.follow_up_date).slice(0, 10) : '',
+          primary_doctor_id: data.primary_doctor_id ? String(data.primary_doctor_id) : '',
+          secondary_doctor_id: data.secondary_doctor_id ? String(data.secondary_doctor_id) : '',
+          take_home_medications: data.take_home_medications || [],
+          payer_label: data.payer_label || '',
+          department_name: data.department_name || '',
+          allergies_summary: data.allergies_summary || '',
+          surgery_date: data.surgery_date || '',
+          chief_complaint: data.chief_complaint || '',
+          custom_fields: data.custom_fields && typeof data.custom_fields === 'object'
+            ? data.custom_fields : {},
         });
       }
+    } catch (err) {
+      toast({
+        variant: 'destructive',
+        title: 'Could not load summary',
+        description: typeof err.response?.data?.detail === 'string'
+          ? err.response.data.detail : 'Network error',
+      });
     } finally {
       setLoading(false);
     }
@@ -208,7 +258,14 @@ const DischargeSummaryEditor = ({
       ? parseInt(form.primary_doctor_id, 10) : null,
     secondary_doctor_id: form.secondary_doctor_id
       ? parseInt(form.secondary_doctor_id, 10) : null,
+    custom_fields: form.custom_fields || {},
   });
+
+  const updateCustomField = (key, value) => {
+    update({
+      custom_fields: { ...(form.custom_fields || {}), [key]: value },
+    });
+  };
 
   const handleSave = async () => {
     setSaving(true);
@@ -230,10 +287,27 @@ const DischargeSummaryEditor = ({
   };
 
   const handleFinalize = async () => {
-    if (!form.primary_diagnosis?.trim()) {
-      toast({ variant: 'destructive', title: 'Primary diagnosis required', description: 'Go to step 2 and enter the primary diagnosis.' });
+    if (primaryRequired && !form.primary_diagnosis?.trim()) {
+      toast({
+        variant: 'destructive',
+        title: 'Primary diagnosis required',
+        description: 'Go to step 2 and enter the primary diagnosis.',
+      });
       setStep(2);
       return;
+    }
+    for (const block of customBlocks) {
+      if (!block.required) continue;
+      const val = (form.custom_fields || {})[block.field_key];
+      if (!(val || '').trim()) {
+        toast({
+          variant: 'destructive',
+          title: `${block.label || block.field_key} required`,
+          description: 'Complete required custom fields on the Advice & Review step.',
+        });
+        setStep(4);
+        return;
+      }
     }
     setSaving(true);
     try {
@@ -389,6 +463,7 @@ const DischargeSummaryEditor = ({
                 </SelectContent>
               </Select>
             </div>
+            {hasBlockType('condition_on_discharge') && (
             <div>
               <Label>Condition on discharge</Label>
               <Select value={form.condition_on_discharge} disabled={locked}
@@ -402,6 +477,9 @@ const DischargeSummaryEditor = ({
                 </SelectContent>
               </Select>
             </div>
+            )}
+            {hasBlockType('consultants') && (
+            <>
             <div>
               <Label>Primary doctor</Label>
               <Select value={form.primary_doctor_id} disabled={locked}
@@ -431,6 +509,8 @@ const DischargeSummaryEditor = ({
                 </SelectContent>
               </Select>
             </div>
+            </>
+            )}
           </div>
           {(form.payer_label || form.department_name) && (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm bg-slate-50 border rounded p-3">
@@ -464,56 +544,74 @@ const DischargeSummaryEditor = ({
     if (step === 2) {
       return (
         <div className="space-y-4">
-          <Section title="Chief Complaints">
-            <Textarea rows={2} disabled={locked} value={form.chief_complaint}
-                      onChange={e => update({ chief_complaint: e.target.value })}
-                      placeholder="Pre-filled from admission when available" />
-          </Section>
-          {form.allergies_summary && (
+          {hasStandard('chief_complaints_hpi') && (
+            <>
+              <Section title={standardLabel('chief_complaints_hpi', 'Chief Complaints')}>
+                <Textarea rows={2} disabled={locked} value={form.chief_complaint}
+                          onChange={e => update({ chief_complaint: e.target.value })}
+                          placeholder="Pre-filled from admission when available" />
+              </Section>
+              <Section title="History of Present Illness">
+                <Textarea rows={2} disabled={locked} value={form.present_medical_history}
+                          onChange={e => update({ present_medical_history: e.target.value })} />
+              </Section>
+            </>
+          )}
+          {hasStandard('allergies_summary') && form.allergies_summary && (
             <div className="text-sm bg-amber-50 border border-amber-100 rounded p-2">
-              <span className="font-medium text-amber-900">Allergies (from patient record): </span>
+              <span className="font-medium text-amber-900">
+                {standardLabel('allergies_summary', 'Allergies')} (from patient record):{' '}
+              </span>
               {form.allergies_summary}
             </div>
           )}
-          <Section title="Provisional Diagnosis">
-            <Textarea rows={2} disabled={locked} value={form.provisional_diagnosis}
-                      onChange={e => update({ provisional_diagnosis: e.target.value })} />
-          </Section>
-          <Section title="Primary Diagnosis *">
-            <Textarea rows={2} disabled={locked} value={form.primary_diagnosis}
-                      onChange={e => update({ primary_diagnosis: e.target.value })}
-                      placeholder="Required before marking ready for print" />
-          </Section>
-          <Section title="Past History">
-            <Textarea rows={2} disabled={locked} value={form.past_history}
-                      onChange={e => update({ past_history: e.target.value })} />
-          </Section>
-          <Section title="Family History">
-            <Textarea rows={2} disabled={locked} value={form.family_history}
-                      onChange={e => update({ family_history: e.target.value })} />
-          </Section>
-          <Section title="History of Present Illness">
-            <Textarea rows={2} disabled={locked} value={form.present_medical_history}
-                      onChange={e => update({ present_medical_history: e.target.value })} />
-          </Section>
-          <Section title="Physical Examination (additional notes)">
-            <Textarea rows={2} disabled={locked} value={form.physical_examination_notes}
-                      onChange={e => update({ physical_examination_notes: e.target.value })}
-                      placeholder="Systemic examination notes; admission vitals are auto-included on print when enabled" />
-            <label className="flex items-center gap-2 text-xs text-gray-600 mt-1">
-              <input
-                type="checkbox"
-                disabled={locked}
-                checked={form.include_admission_vitals !== false}
-                onChange={e => update({ include_admission_vitals: e.target.checked })}
-              />
-              Include first recorded admission vitals on printed summary
-            </label>
-          </Section>
-          <Section title="Key Findings at Admission">
-            <Textarea rows={2} disabled={locked} value={form.findings_at_admission}
-                      onChange={e => update({ findings_at_admission: e.target.value })} />
-          </Section>
+          {hasStandard('provisional_diagnosis') && (
+            <Section title={standardLabel('provisional_diagnosis', 'Provisional Diagnosis')}>
+              <Textarea rows={2} disabled={locked} value={form.provisional_diagnosis}
+                        onChange={e => update({ provisional_diagnosis: e.target.value })} />
+            </Section>
+          )}
+          {hasStandard('primary_diagnosis') && (
+            <Section title={`${standardLabel('primary_diagnosis', 'Primary Diagnosis')}${primaryRequired ? ' *' : ''}`}>
+              <Textarea rows={2} disabled={locked} value={form.primary_diagnosis}
+                        onChange={e => update({ primary_diagnosis: e.target.value })}
+                        placeholder={primaryRequired ? 'Required before marking ready for print' : ''} />
+            </Section>
+          )}
+          {hasStandard('past_history') && (
+            <Section title={standardLabel('past_history', 'Past History')}>
+              <Textarea rows={2} disabled={locked} value={form.past_history}
+                        onChange={e => update({ past_history: e.target.value })} />
+            </Section>
+          )}
+          {hasStandard('family_history') && (
+            <Section title={standardLabel('family_history', 'Family History')}>
+              <Textarea rows={2} disabled={locked} value={form.family_history}
+                        onChange={e => update({ family_history: e.target.value })} />
+            </Section>
+          )}
+          {hasStandard('physical_examination') && (
+            <Section title={standardLabel('physical_examination', 'Physical Examination (additional notes)')}>
+              <Textarea rows={2} disabled={locked} value={form.physical_examination_notes}
+                        onChange={e => update({ physical_examination_notes: e.target.value })}
+                        placeholder="Systemic examination notes; admission vitals are auto-included on print when enabled" />
+              <label className="flex items-center gap-2 text-xs text-gray-600 mt-1">
+                <input
+                  type="checkbox"
+                  disabled={locked}
+                  checked={form.include_admission_vitals !== false}
+                  onChange={e => update({ include_admission_vitals: e.target.checked })}
+                />
+                Include first recorded admission vitals on printed summary
+              </label>
+            </Section>
+          )}
+          {hasStandard('findings_at_admission') && (
+            <Section title={standardLabel('findings_at_admission', 'Key Findings at Admission')}>
+              <Textarea rows={2} disabled={locked} value={form.findings_at_admission}
+                        onChange={e => update({ findings_at_admission: e.target.value })} />
+            </Section>
+          )}
         </div>
       );
     }
@@ -521,38 +619,52 @@ const DischargeSummaryEditor = ({
     if (step === 3) {
       return (
         <div className="space-y-4">
-          <div className="flex items-center justify-between gap-2 flex-wrap">
-            <h4 className="text-sm font-semibold text-gray-800">Surgery / OT Findings</h4>
-            {!locked && (
-              <Button type="button" size="sm" variant="outline" onClick={handleImportOt}>
-                Import from OT
-              </Button>
-            )}
-          </div>
-          <Section title="Summary of Key Investigation">
-            <Textarea rows={3} disabled={locked} value={form.investigations_summary}
-                      onChange={e => update({ investigations_summary: e.target.value })} />
-          </Section>
-          <Section title="Course in Hospital">
-            <Textarea rows={4} disabled={locked} value={form.course_in_hospital}
-                      onChange={e => update({ course_in_hospital: e.target.value })} />
-          </Section>
-          <Section title="Surgery / Procedure Notes">
-            <Textarea rows={3} disabled={locked} value={form.procedure_notes}
-                      onChange={e => update({ procedure_notes: e.target.value })}
-                      placeholder="Procedure name, OT findings, anaesthesia details" />
-          </Section>
+          {hasStandard('procedure_notes') && (
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <h4 className="text-sm font-semibold text-gray-800">Surgery / OT Findings</h4>
+              {!locked && (
+                <Button type="button" size="sm" variant="outline" onClick={handleImportOt}>
+                  Import from OT
+                </Button>
+              )}
+            </div>
+          )}
+          {hasStandard('investigations_summary') && (
+            <Section title={standardLabel('investigations_summary', 'Summary of Key Investigation')}>
+              <Textarea rows={3} disabled={locked} value={form.investigations_summary}
+                        onChange={e => update({ investigations_summary: e.target.value })} />
+            </Section>
+          )}
+          {hasStandard('course_in_hospital') && (
+            <Section title={standardLabel('course_in_hospital', 'Course in Hospital')}>
+              <Textarea rows={4} disabled={locked} value={form.course_in_hospital}
+                        onChange={e => update({ course_in_hospital: e.target.value })} />
+            </Section>
+          )}
+          {hasStandard('procedure_notes') && (
+            <Section title={standardLabel('procedure_notes', 'Surgery / Procedure Notes')}>
+              <Textarea rows={3} disabled={locked} value={form.procedure_notes}
+                        onChange={e => update({ procedure_notes: e.target.value })}
+                        placeholder="Procedure name, OT findings, anaesthesia details" />
+            </Section>
+          )}
         </div>
       );
     }
 
     return (
       <div className="space-y-4">
-        <Section title="Discharge Advice">
-          <Textarea rows={3} disabled={locked} value={form.discharge_advice}
-                    onChange={e => update({ discharge_advice: e.target.value })} />
-        </Section>
-        <Section title="Follow Up">
+        {hasStandard('discharge_advice') && (
+          <Section title={standardLabel('discharge_advice', 'Discharge Advice')}>
+            <Textarea rows={3} disabled={locked} value={form.discharge_advice}
+                      onChange={e => update({ discharge_advice: e.target.value })} />
+          </Section>
+        )}
+        {hasBlockType('follow_up') && (
+        <Section title={
+          (template?.blocks || []).find((b) => b.type === 'follow_up')?.label
+          || 'Follow Up'
+        }>
           <Textarea rows={2} disabled={locked} value={form.follow_up}
                     onChange={e => update({ follow_up: e.target.value })}
                     placeholder="OPD review instructions, department, named consultants" />
@@ -580,7 +692,45 @@ const DischargeSummaryEditor = ({
                       placeholder="e.g. fever, bleeding, wound discharge — contact casualty immediately" />
           </div>
         </Section>
-        <Section title="Take-home medications">
+        )}
+        {customBlocks.map((block) => (
+          <Section
+            key={block.id}
+            title={`${block.label || block.field_key}${block.required ? ' *' : ''}`}
+          >
+            {block.input === 'text' ? (
+              <Input
+                disabled={locked}
+                value={(form.custom_fields || {})[block.field_key] || ''}
+                onChange={(e) => updateCustomField(block.field_key, e.target.value)}
+              />
+            ) : (
+              <Textarea
+                rows={3}
+                disabled={locked}
+                value={(form.custom_fields || {})[block.field_key] || ''}
+                onChange={(e) => updateCustomField(block.field_key, e.target.value)}
+              />
+            )}
+          </Section>
+        ))}
+        {staticBlocks.map((block) => (
+          <div
+            key={block.id}
+            className="text-sm bg-slate-50 border rounded p-3 space-y-1"
+          >
+            {block.label && (
+              <div className="font-semibold text-gray-800">{block.label}</div>
+            )}
+            <p className="text-gray-600 whitespace-pre-wrap">{block.content}</p>
+            <p className="text-xs text-gray-400">Printed on every discharge summary (hospital note)</p>
+          </div>
+        ))}
+        {hasBlockType('medications_table') && (
+        <Section title={
+          (template?.blocks || []).find((b) => b.type === 'medications_table')?.label
+          || 'Take-home medications'
+        }>
           <TakeHomeMedicinesSection
             medications={form.take_home_medications || []}
             onMedicationsChange={locked ? undefined : (meds) => update({ take_home_medications: meds })}
@@ -588,6 +738,7 @@ const DischargeSummaryEditor = ({
             description="Prescription for the patient to take home."
           />
         </Section>
+        )}
         {!locked && (
           <p className="text-xs text-gray-500 bg-gray-50 border rounded p-2">
             Review all steps, then use <b>Mark ready for print</b> so reception can print and discharge the patient.

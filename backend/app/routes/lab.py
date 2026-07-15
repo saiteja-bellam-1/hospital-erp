@@ -363,6 +363,7 @@ class PackageBooking(BaseModel):
     notes: Optional[str] = None
     referred_by: Optional[str] = Field(None, max_length=100)
     payment_method: str = Field(..., pattern="^(cash|card|upi|cheque|online|insurance)$")
+    discount_amount: float = Field(default=0.0, ge=0)
     force: bool = False
 
 # ============================================================
@@ -1671,15 +1672,17 @@ async def regenerate_lab_bill(
         })
         total += order.amount or 0
 
-    # Calculate discount: if all orders share same package_booking_id, use package pricing
+    # Package bills: one line at actual_price; paid = sum of stored order amounts
+    # (package price minus any extra operator discount applied at booking).
     discount = 0.0
     pkg = None
     if orders[0].package_id:
         pkg = db.query(LabTestPackage).filter(LabTestPackage.id == orders[0].package_id).first()
         if pkg:
+            paid = round(sum(o.amount or 0 for o in orders), 2)
             items = [{"item_name": pkg.name, "item_code": pkg.package_code, "total_price": pkg.actual_price}]
             total = pkg.actual_price
-            discount = pkg.actual_price - pkg.package_price
+            discount = round(pkg.actual_price - paid, 2)
 
     now = orders[0].payment_date or orders[0].order_date or datetime.now()
     stored_number = next(
@@ -1771,8 +1774,9 @@ async def download_grouped_lab_bill(
             "total_price": pkg.actual_price,
         }]
         subtotal = pkg.actual_price
-        discount = round(pkg.actual_price - pkg.package_price, 2)
-        amount_paid = pkg.package_price
+        # Paid is whatever was stored on orders (package price − any extra discount).
+        amount_paid = round(sum(o.amount or 0.0 for o in orders), 2)
+        discount = round(pkg.actual_price - amount_paid, 2)
     else:
         items = []
         subtotal = 0.0
@@ -2097,13 +2101,18 @@ async def submit_results(
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
 
-    if order.status == "completed":
-        raise HTTPException(status_code=400, detail="Results already submitted")
-
     # Check if report already exists
     existing = db.query(LabReport).filter(LabReport.order_id == order_id).first()
     if existing:
         raise HTTPException(status_code=400, detail="Report already exists for this order")
+
+    # Legacy catch-up marked completed without a LabReport — allow late entry.
+    # If completed with a report, the existing check above already blocked.
+    if order.status == "completed":
+        # no report → fall through (admin/lab can backfill results)
+        pass
+    elif order.status == "cancelled":
+        raise HTTPException(status_code=400, detail="Cannot submit results for a cancelled order")
 
     result_values = [{"parameter_id": r.parameter_id, "value": r.value, "remarks": r.remarks or "", "manual_abnormal": r.manual_abnormal} for r in data.results]
 
@@ -2713,20 +2722,29 @@ async def book_package(
 
     _reject_rapid_repeat_booking(db, data.patient_id, [t.id for t in tests])
 
-    # Proportional discount distribution
+    # Net payable = package price minus any extra operator discount.
+    # Extra discount is folded into stored order amounts so reprints / billing
+    # list stay consistent without a separate discount column.
+    extra_discount = round(min(float(data.discount_amount or 0), float(pkg.package_price or 0)), 2)
+    net_payable = round(float(pkg.package_price or 0) - extra_discount, 2)
+
+    # Proportional distribution of net payable across package tests
     booking_id = f"PKG-{str(uuid.uuid4())[:8].upper()}"
     now = datetime.now()
     bill_group_id, bill_number = _new_lab_bill_group("PKG")
     orders = []
     distributed_total = 0.0
+    actual_price = float(pkg.actual_price or 0)
 
     for i, test in enumerate(tests):
         if i == len(tests) - 1:
             # Last test gets the remainder to avoid floating-point rounding
-            amount = round(pkg.package_price - distributed_total, 2)
-        else:
-            amount = round((test.cost / pkg.actual_price) * pkg.package_price, 2)
+            amount = round(net_payable - distributed_total, 2)
+        elif actual_price > 0:
+            amount = round((float(test.cost or 0) / actual_price) * net_payable, 2)
             distributed_total += amount
+        else:
+            amount = 0.0
 
         order = PatientLabOrder(
             order_number=f"LAB-{str(uuid.uuid4())[:8].upper()}",
@@ -2764,7 +2782,8 @@ async def book_package(
 
     age = _patient_age(patient)
 
-    discount = round(pkg.actual_price - pkg.package_price, 2)
+    # Catalog savings + any extra operator discount, as a single discount line
+    discount = round(float(pkg.actual_price or 0) - net_payable, 2)
     # bill_number was set above when stamping the orders so the persisted
     # number matches the PDF.
 
@@ -2785,7 +2804,7 @@ async def book_package(
         "items": bill_items,
         "subtotal": pkg.actual_price,
         "discount_amount": discount,
-        "amount_paid": pkg.package_price,
+        "amount_paid": net_payable,
         "balance_due": 0,
         "prepared_by": f"{current_user.first_name} {current_user.last_name}",
         "package_name": pkg.name,

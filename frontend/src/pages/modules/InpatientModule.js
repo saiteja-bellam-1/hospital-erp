@@ -31,6 +31,7 @@ import DischargeHistory from './inpatient/discharge/DischargeHistory';
 import CanteenOrderPanel from './canteen/CanteenOrderPanel';
 import DischargeSummaryEditor from './inpatient/DischargeSummaryEditor';
 import DischargeSummaryPreviewCard from './inpatient/discharge/DischargeSummaryPreviewCard';
+import DischargeSummaryTemplatePage from './inpatient/DischargeSummaryTemplatePage';
 import TakeHomeMedicinesSection from '../../components/prescription/TakeHomeMedicinesSection';
 import {
   Plus, Search, Edit2, Trash2, Bed, Activity, Clock, User, Users,
@@ -90,6 +91,7 @@ const TAB_TO_PATH = {
   setup: 'billing-setup',
   procedures: 'procedures',
   reports: 'reports',
+  'discharge-summary-template': 'discharge-summary-template',
 };
 const PATH_TO_TAB = Object.fromEntries(
   Object.entries(TAB_TO_PATH).map(([k, v]) => [v, k])
@@ -6230,6 +6232,13 @@ const InpatientModule = () => {
             </div>
           )}
 
+          {/* ============ DISCHARGE SUMMARY TEMPLATE ============ */}
+          {activeTab === 'discharge-summary-template' && (
+            <div className="overflow-hidden h-full flex flex-col">
+              <DischargeSummaryTemplatePage />
+            </div>
+          )}
+
           {/* ============ BILLING SETUP (catalogs) ============ */}
           {activeTab === 'setup' && (
             <div className="p-6 overflow-y-auto h-full space-y-4">
@@ -6321,9 +6330,14 @@ const InpatientModule = () => {
                 <TabsContent value="consent-templates" className="space-y-3 mt-3">
                   <div className="flex justify-between items-center">
                     <p className="text-sm text-gray-500">Reusable consent form templates by category (surgical, anaesthesia, blood transfusion, etc.)</p>
-                    <Button size="sm" onClick={() => { setEditingConsentTemplate(null); setConsentTemplateForm({ consent_type: 'surgical', template_name: '', content: '', language: 'english' }); setShowConsentTemplateDialog(true); }}>
-                      <Plus className="h-4 w-4 mr-1" /> New Template
-                    </Button>
+                    <div className="flex gap-2">
+                      <Button size="sm" variant="outline" onClick={() => setActiveTab('discharge-summary-template')}>
+                        Discharge Summary Template
+                      </Button>
+                      <Button size="sm" onClick={() => { setEditingConsentTemplate(null); setConsentTemplateForm({ consent_type: 'surgical', template_name: '', content: '', language: 'english' }); setShowConsentTemplateDialog(true); }}>
+                        <Plus className="h-4 w-4 mr-1" /> New Template
+                      </Button>
+                    </div>
                   </div>
                   {consentTemplates.length === 0 ? (
                     <Card><CardContent className="py-8 text-center text-gray-500 text-sm">No templates configured.</CardContent></Card>

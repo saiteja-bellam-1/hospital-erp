@@ -180,19 +180,44 @@ def _sample_discharge_summary() -> dict:
         "patient_name": "Sample Patient",
         "mrn": "MRN-PREVIEW",
         "patient_id": "P-PREVIEW",
+        "patient_phone": "9876543210",
         "age": "45",
         "gender": "F",
         "village": "Sample Village",
         "district": "Sample District",
+        "address_line": "Sample Village, Sample District",
+        "room_number": "101",
+        "bed_label": "A",
+        "ward_type": "General",
+        "department_name": "General Medicine",
+        "payer_label": "Cash / Self Pay",
         "doctor_name": "Dr. Sample Doctor",
+        "consultant_name": "Dr. Sample Doctor",
+        "consultants": [{
+            "display_line": "Dr. Sample Doctor, MD (General Medicine)",
+            "name": "Dr. Sample Doctor",
+        }],
         "admission_date": now.strftime("%d/%m/%Y"),
         "discharge_date": now.strftime("%d/%m/%Y"),
+        "surgery_date": "",
         "discharge_type": "normal",
         "condition_on_admission": "stable",
         "condition_on_discharge": "stable",
-        "diagnosis": "Sample diagnosis (preview only)",
-        "treatment": "Sample treatment given during stay",
-        "discharge_summary": "Sample discharge summary text for preview.",
+        "chief_complaints_hpi": "Fever and abdominal pain for 3 days.",
+        "allergies_summary": "No known allergies",
+        "past_history": "Hypertension on regular medication.",
+        "family_history": "Father — diabetes mellitus.",
+        "physical_examination": "General Examination:\nTemp: 98.6°F\nPR: 78/min\nBP: 120/80 mm Hg",
+        "provisional_diagnosis": "Acute gastritis",
+        "primary_diagnosis": "Acute gastritis, resolved",
+        "findings_at_admission": "Mild epigastric tenderness.",
+        "investigations_summary": "CBC within normal limits. USG abdomen — normal.",
+        "course_in_hospital": "Managed with IV fluids, PPI, and antiemetics. Improved over 2 days.",
+        "procedure_notes": "",
+        "discharge_advice": "Continue oral PPI for 2 weeks. Soft diet.",
+        "diagnosis": "Acute gastritis, resolved",
+        "treatment": "Managed with IV fluids, PPI, and antiemetics.",
+        "discharge_summary": "Uneventful recovery. Fit for discharge.",
         "take_home_medications": [
             {
                 "medicine_name": "Sample Medicine 500mg",
@@ -206,10 +231,12 @@ def _sample_discharge_summary() -> dict:
         "medications": "",
         "follow_up": "Review in 1 week",
         "follow_up_date": now.strftime("%d/%m/%Y"),
+        "emergency_instructions": "Seek care if severe pain or vomiting returns.",
         "diet_instructions": "Normal diet",
         "activity_restrictions": "Avoid strenuous activity",
         "total_stay_days": 3,
         "total_charges": 15000.0,
+        "custom_fields": {},
     }
 
 
@@ -514,9 +541,11 @@ def generate_print_preview_pdf(
         )
 
     if report_type == "discharge_summary":
+        from app.services.discharge_summary_template_service import get_template
         return pdf_service.generate_discharge_summary_pdf(
             _sample_discharge_summary(),
             hi,
+            template=get_template(db),
             **kwargs,
         )
 
