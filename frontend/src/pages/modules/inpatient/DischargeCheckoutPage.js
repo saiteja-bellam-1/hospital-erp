@@ -40,7 +40,7 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge, doct
   const [summaryEditorOpen, setSummaryEditorOpen] = useState(false);
   const checkout = useDischargeCheckout(admissionId, permissions);
   const {
-    loading, submitting, admission, bill, derived, deposits, finalBill, gatePass,
+    loading, submitting, admission, bill, derived, settlement, deposits, finalBill, gatePass,
     step, maxReachable, clinicalForm, settleForm, setSettleForm, gatePassForm, setGatePassForm,
     blockers, depositForm, setDepositForm,
     canAddDeposit, canFinalize, canDischarge, canIssuePass, canWriteSummary, canViewSummary,
@@ -81,6 +81,7 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge, doct
   const isComplete = !!gatePass;
   const readOnlyBill = !!finalBill && step > 1;
   const summaryReady = summaryDoc?.status === 'ready' || summaryDoc?.status === 'locked';
+  const checkoutOwes = settlement?.owes ?? derived.owes;
 
   const printBar = (
     <DischargePrintBar
@@ -105,7 +106,19 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge, doct
 
   const primaryLabel = () => {
     if (isComplete) return 'Back to worklist';
-    if (step === 1) return finalBill ? 'Continue to Summary' : 'Generate Bill & Continue';
+    if (step === 1) {
+      if (settlement?.direction === 'collect') {
+        return finalBill
+          ? `Collect ${rupee(settlement.amount)} & Continue`
+          : `Generate Bill, Collect ${rupee(settlement.amount)} & Continue`;
+      }
+      if (settlement?.direction === 'refund') {
+        return finalBill
+          ? `Refund ${rupee(settlement.amount)} & Continue`
+          : `Generate Bill, Refund ${rupee(settlement.amount)} & Continue`;
+      }
+      return finalBill ? 'Continue to Summary' : 'Generate Bill & Continue';
+    }
     if (step === 2) {
       if (derived.isDischarged) return 'Continue to Gate Pass';
       return blockers.length > 0 ? 'Override & Discharge' : 'Discharge & Continue';
@@ -141,10 +154,10 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge, doct
             <Badge className={derived.isDischarged ? 'bg-gray-200 text-gray-800' : 'bg-emerald-100 text-emerald-800'}>
               {derived.isDischarged ? 'Discharged' : 'Admitted'}
             </Badge>
-            {derived.owes > 0.01
-              ? <Badge className="bg-red-100 text-red-800">Owes {rupee(derived.owes)}</Badge>
-              : derived.owes < -0.01
-                ? <Badge className="bg-blue-100 text-blue-800">Credit {rupee(Math.abs(derived.owes))}</Badge>
+            {checkoutOwes > 0.01
+              ? <Badge className="bg-red-100 text-red-800">Owes {rupee(checkoutOwes)}</Badge>
+              : checkoutOwes < -0.01
+                ? <Badge className="bg-blue-100 text-blue-800">Credit {rupee(Math.abs(checkoutOwes))}</Badge>
                 : <Badge className="bg-green-100 text-green-800">Settled</Badge>}
             {finalBill && <Badge className="bg-blue-100 text-blue-800 text-xs">{finalBill.bill_number}</Badge>}
             {gatePass && <Badge className="bg-purple-100 text-purple-800">{gatePass.pass_number}</Badge>}
@@ -177,7 +190,7 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge, doct
                   <Button size="sm" variant="outline" onClick={() => setDepositForm({
                     amount: '', method: 'cash', ref: '', notes: '',
                   })}>
-                    <Plus className="h-3.5 w-3.5 mr-1" /> Deposit
+                    <Plus className="h-3.5 w-3.5 mr-1" /> Add Deposit
                   </Button>
                 )}
               </div>
@@ -191,15 +204,20 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge, doct
               <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
                 <Stat label="Stay charges" value={rupee(derived.stayCharges)} />
                 <Stat label="Deposits" value={rupee(derived.deposited)} />
-                <Stat label="Balance" value={rupee(Math.abs(derived.owes))}
-                      tone={derived.owes > 0.01 ? 'red' : derived.owes < -0.01 ? 'blue' : 'green'} />
+                <Stat label="Balance" value={rupee(Math.abs(checkoutOwes))}
+                      tone={checkoutOwes > 0.01 ? 'red' : checkoutOwes < -0.01 ? 'blue' : 'green'} />
                 {bill?.stay_days != null && <Stat label="Stay days" value={String(bill.stay_days)} />}
                 {bill?.room_total != null && <Stat label="Room" value={rupee(bill.room_total)} />}
                 {bill?.visit_total != null && <Stat label="Visits" value={rupee(bill.visit_total)} />}
+                {finalBill && Number(finalBill.discount_amount || 0) > 0 && (
+                  <Stat label="Discount applied" value={`-${rupee(finalBill.discount_amount)}`} tone="green" />
+                )}
+                {finalBill && <Stat label="Final bill total" value={rupee(finalBill.total_amount)} tone="blue" />}
               </div>
 
-              {!readOnlyBill && settleForm && canFinalize && (
+              {!readOnlyBill && settleForm && (canFinalize || finalBill) && (
                 <>
+                  {!finalBill && canFinalize && (
                   <div className="grid grid-cols-3 gap-3">
                     <div>
                       <Label className="text-xs">Discount type</Label>
@@ -223,21 +241,39 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge, doct
                              onChange={e => setSettleForm(p => ({ ...p, taxPct: e.target.value }))} />
                     </div>
                   </div>
+                  )}
 
                   <div className="bg-gray-50 border rounded p-3 space-y-2 text-sm">
                     <div className="flex justify-between">
-                      <span>To {settleForm.direction === 'refund' ? 'refund' : settleForm.direction === 'collect' ? 'collect' : 'settle'}</span>
+                      <span>To {settlement?.direction === 'refund' ? 'refund' : settlement?.direction === 'collect' ? 'collect' : 'settle'}</span>
                       <b className={
-                        settleForm.direction === 'collect' ? 'text-red-600'
-                          : settleForm.direction === 'refund' ? 'text-blue-600' : 'text-green-600'
-                      }>{rupee(Math.abs(derived.owes))}</b>
+                        settlement?.direction === 'collect' ? 'text-red-600'
+                          : settlement?.direction === 'refund' ? 'text-blue-600' : 'text-green-600'
+                      }>{rupee(settlement?.amount || 0)}</b>
                     </div>
-                    {settleForm.direction !== 'none' && (
+                    {!finalBill && (settlement?.discountAmount > 0 || settlement?.taxAmount > 0) && (
+                      <div className="text-xs border-t pt-2 space-y-1">
+                        {settlement.discountAmount > 0 && (
+                          <div className="flex justify-between text-green-700">
+                            <span>Discount</span><span>-{rupee(settlement.discountAmount)}</span>
+                          </div>
+                        )}
+                        {settlement.taxAmount > 0 && (
+                          <div className="flex justify-between text-orange-700">
+                            <span>Tax</span><span>+{rupee(settlement.taxAmount)}</span>
+                          </div>
+                        )}
+                        <div className="flex justify-between font-medium">
+                          <span>Adjusted final total</span><span>{rupee(settlement.adjustedTotal)}</span>
+                        </div>
+                      </div>
+                    )}
+                    {settlement?.direction !== 'none' && (
                       <div className="grid grid-cols-2 gap-3 pt-2">
                         <div>
                           <Label className="text-xs">Amount (₹)</Label>
-                          <Input type="number" min="0" step="0.01" value={settleForm.amount}
-                                 onChange={e => setSettleForm(p => ({ ...p, amount: e.target.value }))} />
+                          <Input type="number" min="0" step="0.01"
+                                 value={(settlement?.amount || 0).toFixed(2)} readOnly />
                         </div>
                         <div>
                           <Label className="text-xs">Method</Label>
@@ -259,7 +295,7 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge, doct
                         </div>
                       </div>
                     )}
-                    {settleForm.direction === 'none' && (
+                    {settlement?.direction === 'none' && (
                       <p className="text-xs text-green-700 flex items-center gap-1">
                         <CheckCircle2 className="h-3 w-3" /> Balance zero — generate final bill only.
                       </p>

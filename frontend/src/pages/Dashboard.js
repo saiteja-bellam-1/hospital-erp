@@ -37,6 +37,7 @@ import InpatientModule from './modules/InpatientModule';
 import AdminModule from './modules/AdminModule';
 import HospitalAdminModule from './modules/HospitalAdminModule';
 import CatchUpBills from './modules/admin/CatchUpBills';
+import SettlementsPage from './modules/admin/SettlementsPage';
 import PrintSettingsPage from './modules/PrintSettingsPage';
 import DoctorDashboard from './modules/DoctorDashboard';
 import ReceptionistDashboard from './modules/ReceptionistDashboard';
@@ -561,6 +562,7 @@ const Dashboard = () => {
             <Route path="/inpatient/*" element={<InpatientModule />} />
             <Route path="/admin/*" element={<AdminModule />} />
             <Route path="/hospital-admin/*" element={<HospitalAdminModule />} />
+            <Route path="/settlements" element={<SettlementsPage />} />
             <Route path="/catch-up" element={<CatchUpBills />} />
             <Route path="/print-settings" element={<PrintSettingsPage />} />
             <Route path="/license" element={<LicenseManagement />} />

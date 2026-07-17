@@ -49,6 +49,42 @@ export const EMPTY_SETTLE_FORM = (derived) => {
   };
 };
 
+export function computeCheckoutSettlement(derived, form, hasFinalBill = false) {
+  if (!derived) return null;
+  if (hasFinalBill || !form) {
+    const owes = Number(derived.owes || 0);
+    return {
+      subtotal: Number(derived.stayCharges || 0),
+      discountAmount: 0,
+      taxAmount: 0,
+      adjustedTotal: Number(derived.stayCharges || 0),
+      owes,
+      direction: owes > 0.01 ? 'collect' : owes < -0.01 ? 'refund' : 'none',
+      amount: Math.abs(owes),
+    };
+  }
+
+  const subtotal = Number(derived.stayCharges || 0);
+  const discountValue = Math.max(0, Number(form.discountValue || 0));
+  const discountAmount = form.discountType === 'percentage'
+    ? Math.min(subtotal, subtotal * Math.min(discountValue, 100) / 100)
+    : Math.min(subtotal, discountValue);
+  const afterDiscount = Math.max(0, subtotal - discountAmount);
+  const taxAmount = afterDiscount * Math.min(Math.max(Number(form.taxPct || 0), 0), 100) / 100;
+  const adjustedTotal = +(afterDiscount + taxAmount).toFixed(2);
+  const owes = +(adjustedTotal - Number(derived.deposited || 0)).toFixed(2);
+
+  return {
+    subtotal,
+    discountAmount: +discountAmount.toFixed(2),
+    taxAmount: +taxAmount.toFixed(2),
+    adjustedTotal,
+    owes,
+    direction: owes > 0.01 ? 'collect' : owes < -0.01 ? 'refund' : 'none',
+    amount: Math.abs(owes),
+  };
+}
+
 export const EMPTY_GATE_PASS_FORM = {
   attendant_name: '',
   attendant_relationship: '',
@@ -72,12 +108,16 @@ export const fmtInr = (n) => `₹${(Number(n) || 0).toLocaleString('en-IN', {
   maximumFractionDigits: 2,
 })}`;
 
-export function computeDerived(bill, balance, admission) {
+export function computeDerived(bill, balance, admission, finalBill = null) {
   if (!bill || !balance) return null;
   const computed = Number(bill.grand_total ?? bill.subtotal ?? 0);
   const billed = Number(balance.total_billed ?? 0);
   const deposited = Number(balance.net_deposits ?? 0);
-  const stayCharges = Math.max(computed, billed);
+  // A final bill is authoritative because it includes locked discounts/tax.
+  // The live charge preview remains pre-discount and must not replace it.
+  const stayCharges = finalBill
+    ? Number(finalBill.total_amount ?? billed)
+    : Math.max(computed, billed);
   const owes = +(stayCharges - deposited).toFixed(2);
   const isDischarged = admission?.status === 'discharged';
   return { stayCharges, billed, deposited, owes, isDischarged };

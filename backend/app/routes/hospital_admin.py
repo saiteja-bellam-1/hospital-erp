@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func as sql_func, cast, Date
@@ -121,6 +121,26 @@ def require_print_settings_editor(current_user: User = Depends(get_current_user)
             detail="Print settings access required",
         )
     return current_user
+
+
+def _category_split(items) -> dict:
+    """Group saved inpatient bill lines into settlement reporting buckets."""
+    totals = {"lab": 0.0, "pharmacy": 0.0, "canteen": 0.0, "hospital": 0.0}
+    for item in items:
+        item_type = (item.item_type or "").lower()
+        amount = float(item.total_price or 0)
+        if item_type == "lab_test":
+            totals["lab"] += amount
+        elif item_type == "pharmacy":
+            totals["pharmacy"] += amount
+        elif item_type == "food":
+            totals["canteen"] += amount
+        else:
+            totals["hospital"] += amount
+
+    rounded = {key: round(value, 2) for key, value in totals.items()}
+    rounded["total"] = round(sum(rounded.values()), 2)
+    return rounded
 
 # HOSPITAL INFORMATION ENDPOINTS
 @router.get("/info", response_model=HospitalInfoResponse)
@@ -681,6 +701,67 @@ async def get_dashboard_overview(
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/inpatient-settlements-summary")
+async def get_inpatient_settlements_summary(
+    date_from: Optional[date] = Query(default=None, alias="from"),
+    date_to: Optional[date] = Query(default=None, alias="to"),
+    current_user: User = Depends(require_hospital_admin),
+    db: Session = Depends(get_db),
+):
+    """Summarize final inpatient bill lines for settlement visibility."""
+    today = date.today()
+    period_from = date_from or today.replace(day=1)
+    period_to = date_to or today
+    if period_from > period_to:
+        raise HTTPException(status_code=400, detail="'from' date must be on or before 'to' date")
+
+    bill_rows = (
+        db.query(Bill, Patient, Admission)
+        .join(Patient, Bill.patient_id == Patient.id)
+        .outerjoin(Admission, Admission.id == Bill.reference_id)
+        .filter(
+            Patient.hospital_id == current_user.hospital_id,
+            Bill.bill_type == "admission",
+            Bill.bill_subtype == "final",
+            Bill.status != "cancelled",
+            sql_func.date(Bill.bill_date) >= period_from,
+            sql_func.date(Bill.bill_date) <= period_to,
+        )
+        .order_by(Bill.bill_date.desc(), Bill.id.desc())
+        .all()
+    )
+
+    bill_ids = [bill.id for bill, _, _ in bill_rows]
+    items_by_bill = {bill_id: [] for bill_id in bill_ids}
+    if bill_ids:
+        for item in db.query(BillItem).filter(BillItem.bill_id.in_(bill_ids)).all():
+            items_by_bill[item.bill_id].append(item)
+
+    totals = {"lab": 0.0, "pharmacy": 0.0, "canteen": 0.0, "hospital": 0.0, "total": 0.0}
+    bills = []
+    for bill, patient, admission in bill_rows:
+        split = _category_split(items_by_bill.get(bill.id, []))
+        for key in totals:
+            totals[key] += split[key]
+        bills.append({
+            "bill_id": bill.id,
+            "bill_number": bill.bill_number,
+            "bill_date": bill.bill_date.isoformat() if bill.bill_date else None,
+            "patient_id": patient.patient_id,
+            "patient_name": f"{patient.first_name} {patient.last_name}".strip(),
+            "admission_id": bill.reference_id,
+            "admission_number": admission.admission_number if admission else "",
+            **split,
+        })
+
+    return {
+        "period": {"from": period_from.isoformat(), "to": period_to.isoformat()},
+        "bill_count": len(bills),
+        "totals": {key: round(value, 2) for key, value in totals.items()},
+        "bills": bills,
+    }
 
 
 def _get_dashboard_data(current_user, db):

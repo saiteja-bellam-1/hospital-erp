@@ -10,6 +10,7 @@ import axios from 'axios';
 import ModuleConfigForm from './ModuleConfigForm';
 import PayerSchemesAdmin from './inpatient/PayerSchemesAdmin';
 import CatchUpBills from './admin/CatchUpBills';
+import SettlementsPage from './admin/SettlementsPage';
 import { Link } from 'react-router-dom';
 import {
   Building2,
@@ -25,6 +26,7 @@ import {
   ShieldCheck,
   Loader2,
   CreditCard,
+  IndianRupee,
   Printer,
   CalendarClock,
 } from 'lucide-react';
@@ -353,7 +355,7 @@ const HospitalAdminModule = () => {
       </div>
 
       {/* Navigation Tabs */}
-      <div className="flex space-x-1 border-b">
+      <div className="flex space-x-1 overflow-x-auto border-b">
         <Button
           variant="ghost"
           className={`px-4 py-2 ${
@@ -429,6 +431,18 @@ const HospitalAdminModule = () => {
         <Button
           variant="ghost"
           className={`px-4 py-2 ${
+            activeTab === 'settlements'
+              ? 'border-b-2 border-blue-500 text-blue-600'
+              : 'text-gray-600 hover:text-gray-800'
+          }`}
+          onClick={() => setActiveTab('settlements')}
+        >
+          <IndianRupee className="h-4 w-4 mr-2" />
+          Settlements
+        </Button>
+        <Button
+          variant="ghost"
+          className={`px-4 py-2 ${
             activeTab === 'catch-up'
               ? 'border-b-2 border-blue-500 text-blue-600'
               : 'text-gray-600 hover:text-gray-800'
@@ -442,6 +456,7 @@ const HospitalAdminModule = () => {
 
       {activeTab === 'catch-up' && <CatchUpBills />}
       {activeTab === 'payer-schemes' && <PayerSchemesAdmin />}
+      {activeTab === 'settlements' && <SettlementsPage />}
 
       {/* Hospital Information Tab */}
       {activeTab === 'hospital-info' && (

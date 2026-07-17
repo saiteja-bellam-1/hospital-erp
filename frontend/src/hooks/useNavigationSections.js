@@ -7,7 +7,7 @@ import {
   BarChart3, ClipboardList, Shield, Database, ScrollText, Activity, Stethoscope,
   DownloadCloud, Pill, ShoppingCart, Boxes, Truck, BookOpen, LayoutGrid, Plus,
   Warehouse, Tags, Layers, Ruler, Percent, Link2, ArrowLeftRight, Store, Droplets,
-  UtensilsCrossed,
+  UtensilsCrossed, IndianRupee,
 } from 'lucide-react';
 import { PHARMACY_ROLE_NAMES } from './usePharmacyPermissions';
 import { CANTEEN_ROLE_NAMES } from './useCanteenPermissions';
@@ -288,6 +288,7 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
     const items = [];
     add(items, make('Users & Roles', ClipboardList, '/dashboard/admin'));
     add(items, make('Hospital Config', Building2, '/dashboard/hospital-admin'));
+    add(items, make('Settlements', IndianRupee, '/dashboard/settlements'));
     add(items, make('Catch-up Bills', Receipt, '/dashboard/catch-up'));
     add(items, make('License', Shield, '/dashboard/license'));
     add(items, make('Database', Database, '/dashboard/backup'));

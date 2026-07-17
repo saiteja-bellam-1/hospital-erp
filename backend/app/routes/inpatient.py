@@ -8604,7 +8604,11 @@ async def create_gate_pass(
     outstanding = round(max(0.0, -balance["balance"]), 2)
 
     override = False
-    if unpaid_bills or outstanding > 0.01:
+    # The admission balance is canonical. A comprehensive final bill replaces
+    # older interim totals, so those interim rows may retain a non-paid status
+    # even though the final bill is fully covered. Do not require an override
+    # when the actual admission balance is zero.
+    if outstanding > 0.01:
         if not data.override_reason or not data.override_reason.strip():
             raise HTTPException(
                 status_code=409,

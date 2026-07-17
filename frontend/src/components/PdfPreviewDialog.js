@@ -3,20 +3,21 @@ import axios from 'axios';
 import { Link } from 'react-router-dom';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { Button } from './ui/button';
-import { Printer } from 'lucide-react';
+import { Download, Printer } from 'lucide-react';
 
 /**
  * Generic PDF preview dialog — letterhead follows Print Settings (server-side).
  *
  * Props:
- *   open    boolean
- *   onClose fn
- *   title   string
- *   path    string — API path to GET
- *   params  object — extra query params
+ *   open     boolean
+ *   onClose  fn
+ *   title    string
+ *   path     string — API path to GET
+ *   params   object — extra query params
+ *   filename string — optional download filename (defaults to document.pdf)
  */
 const PdfPreviewDialog = ({
-  open, onClose, title = 'PDF Preview', path, params = {},
+  open, onClose, title = 'PDF Preview', path, params = {}, filename = 'document.pdf',
 }) => {
   const [pdfUrl, setPdfUrl] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -70,6 +71,16 @@ const PdfPreviewDialog = ({
     await printPdfFromUrl(pdfUrl);
   };
 
+  const handleDownload = () => {
+    if (!pdfUrl) return;
+    const anchor = document.createElement('a');
+    anchor.href = pdfUrl;
+    anchor.download = filename || 'document.pdf';
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+  };
+
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) handleClose(); }}>
       <DialogContent className="max-w-4xl max-h-[90vh] overflow-hidden">
@@ -99,6 +110,14 @@ const PdfPreviewDialog = ({
           <div className="flex items-center gap-3">
             <Button variant="outline" onClick={handleClose} className="flex-1">
               Close
+            </Button>
+            <Button
+              variant="outline"
+              onClick={handleDownload}
+              disabled={!pdfUrl || loading}
+              className="flex-1"
+            >
+              <Download className="h-4 w-4 mr-2" /> Download
             </Button>
             <Button
               onClick={handlePrint}

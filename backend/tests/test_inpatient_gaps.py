@@ -414,6 +414,7 @@ class TestGatePass:
             json={"discharge_type": "normal", "condition_on_discharge": "stable",
                   "discharge_summary": "Discharged with balance outstanding",
                   "force_outstanding_balance": True,
+                  "force_no_final_bill": True,
                   "override_reason": "Bill to be settled at counter"},
             headers=auth_headers,
         )
@@ -490,6 +491,12 @@ class TestGatePass:
                   "deposit_type": "initial"},
             headers=auth_headers,
         )
+        final = client.post(
+            f"{API}/admissions/{adm_id}/bill/finalize",
+            json={},
+            headers=auth_headers,
+        )
+        assert final.status_code == 200, final.text
         ready_discharge_summary(client, adm_id, auth_headers)
         disc = client.post(
             f"{API}/admissions/{adm_id}/discharge",
@@ -501,6 +508,85 @@ class TestGatePass:
 
         gp = client.post(f"{API}/admissions/{adm_id}/gate-pass", json={},
                          headers=auth_headers)
+        assert gp.status_code == 201, gp.text
+        assert gp.json()["override_balance"] is False
+        assert gp.json()["outstanding_at_issue"] == 0
+
+    def test_zero_balance_with_interim_bill_needs_no_gate_pass_override(
+        self, client, auth_headers, seed_data,
+    ):
+        """A comprehensive final bill replaces interim totals for the exit gate."""
+        adm = client.post(
+            f"{API}/admissions",
+            json={
+                "patient_id": seed_data["patient_id"],
+                "admitting_doctor_id": seed_data["doctor_user_id"],
+                "room_id": _gp["room_id"],
+                "admission_type": "elective",
+                "admission_reason": "Settled comprehensive bill",
+            },
+            headers=auth_headers,
+        )
+        assert adm.status_code == 201, adm.text
+        adm_id = adm.json()["id"]
+
+        preview = client.get(f"{API}/admissions/{adm_id}/bill", headers=auth_headers)
+        assert preview.status_code == 200, preview.text
+        total = float(preview.json()["grand_total"])
+        assert total > 0
+
+        interim = client.post(
+            f"{API}/admissions/{adm_id}/bill/interim",
+            json={},
+            headers=auth_headers,
+        )
+        assert interim.status_code == 200, interim.text
+
+        deposit = client.post(
+            f"{API}/admissions/{adm_id}/deposits",
+            json={"amount": total, "payment_method": "cash", "deposit_type": "topup"},
+            headers=auth_headers,
+        )
+        assert deposit.status_code == 201, deposit.text
+
+        final = client.post(
+            f"{API}/admissions/{adm_id}/bill/finalize",
+            json={
+                "items_override": [{
+                    "source": "custom",
+                    "source_id": None,
+                    "item_type": "admission_charges",
+                    "item_name": "Comprehensive admission charges",
+                    "quantity": 1,
+                    "unit_price": total,
+                    "total_price": total,
+                }],
+            },
+            headers=auth_headers,
+        )
+        assert final.status_code == 200, final.text
+
+        balance = client.get(
+            f"{API}/admissions/{adm_id}/balance", headers=auth_headers,
+        )
+        assert balance.status_code == 200, balance.text
+        assert abs(float(balance.json()["balance"])) <= 0.01
+
+        ready_discharge_summary(client, adm_id, auth_headers)
+        disc = client.post(
+            f"{API}/admissions/{adm_id}/discharge",
+            json={
+                "discharge_type": "normal",
+                "condition_on_discharge": "stable",
+                "discharge_summary": "Settled and discharged",
+            },
+            headers=auth_headers,
+        )
+        assert disc.status_code == 201, disc.text
+
+        gp = client.post(
+            f"{API}/admissions/{adm_id}/gate-pass", json={}, headers=auth_headers,
+        )
         assert gp.status_code == 201, gp.text
         assert gp.json()["override_balance"] is False
         assert gp.json()["outstanding_at_issue"] == 0
