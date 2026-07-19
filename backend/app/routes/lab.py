@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func as sqlfunc
@@ -302,6 +302,34 @@ class StatsResponse(BaseModel):
     total_orders: int
     pending_orders: int
     completed_today: int
+
+# --- Import Schemas ---
+
+class ImportRowError(BaseModel):
+    sheet: str
+    row: int
+    message: str
+
+class ImportPreviewRow(BaseModel):
+    row: int
+    test_code: str
+    name: str
+    category: Optional[str] = None
+    status: str  # new | update | skip | error
+    message: Optional[str] = None
+    parameter_count: int = 0
+
+class ImportSummary(BaseModel):
+    dry_run: bool
+    total_rows: int
+    created: int
+    updated: int
+    skipped: int
+    error_count: int
+    categories_created: List[str] = []
+    sample_types_created: List[str] = []
+    errors: List[ImportRowError] = []
+    preview: List[ImportPreviewRow] = []
 
 # --- Package Schemas ---
 
@@ -2897,6 +2925,466 @@ def _create_seed_parameter(test_id: int, param: dict, display_order: int) -> Lab
         critical_high=param.get("critical_high"),
         display_order=display_order,
         **legacy,
+    )
+
+
+# ============================================================
+# Bulk Import (Excel / CSV)
+# ============================================================
+
+_IMPORT_TEST_HEADERS = [
+    "test_code", "name", "category", "sample_type", "cost",
+    "method", "description", "preparation_instructions",
+]
+_IMPORT_PARAM_HEADERS = [
+    "test_code", "section", "parameter_name", "unit", "method", "field_type",
+    "ref_min", "ref_max", "gender", "age_min", "age_max", "description",
+    "possible_values", "normal_value", "abnormal_values",
+    "critical_low", "critical_high",
+]
+_VALID_FIELD_TYPES = {
+    "numeric", "tiered_numeric", "less_than", "greater_than",
+    "positive_negative", "reactive", "presence_absence", "cloudy_clear",
+    "colour", "manual", "text", "select",
+}
+
+
+def _norm_header(h) -> str:
+    if h is None:
+        return ""
+    return str(h).strip().lower().replace(" ", "_")
+
+
+def _cell_str(v):
+    if v is None:
+        return None
+    s = str(v).strip()
+    return s if s != "" else None
+
+
+def _cell_float(v):
+    s = _cell_str(v)
+    if s is None:
+        return None
+    try:
+        return float(s)
+    except (ValueError, TypeError):
+        raise ValueError(f"'{s}' is not a valid number")
+
+
+def _cell_list(v):
+    s = _cell_str(v)
+    if s is None:
+        return None
+    parts = [p.strip() for p in s.split(",") if p.strip()]
+    return parts or None
+
+
+def _row_is_empty(r) -> bool:
+    return not any(c is not None and str(c).strip() != "" for c in r)
+
+
+def _read_xlsx_sheet(wb, preferred_names, fallback_first=False):
+    """Return list of row dicts keyed by normalized header, with 1-based '_row'."""
+    lower_map = {name.lower(): name for name in wb.sheetnames}
+    ws = None
+    for pn in preferred_names:
+        if pn.lower() in lower_map:
+            ws = wb[lower_map[pn.lower()]]
+            break
+    if ws is None:
+        if fallback_first and wb.sheetnames:
+            ws = wb[wb.sheetnames[0]]
+        else:
+            return []
+    rows = list(ws.iter_rows(values_only=True))
+    header_idx = next((i for i, r in enumerate(rows) if not _row_is_empty(r)), None)
+    if header_idx is None:
+        return []
+    headers = [_norm_header(c) for c in rows[header_idx]]
+    out = []
+    for j in range(header_idx + 1, len(rows)):
+        r = rows[j]
+        if _row_is_empty(r):
+            continue
+        rowdict = {}
+        for k, h in enumerate(headers):
+            if not h:
+                continue
+            rowdict[h] = r[k] if k < len(r) else None
+        rowdict["_row"] = j + 1  # 1-based, matches spreadsheet numbering
+        out.append(rowdict)
+    return out
+
+
+def _parse_import_xlsx(content: bytes):
+    import io
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True, read_only=True)
+    test_rows = _read_xlsx_sheet(wb, ["Tests"], fallback_first=True)
+    param_rows = _read_xlsx_sheet(wb, ["Parameters"])
+    return test_rows, param_rows
+
+
+def _parse_import_csv(content: bytes):
+    """CSV is tests-only (single sheet). Parameters require the .xlsx template."""
+    import csv
+    import io
+    text = content.decode("utf-8-sig", errors="replace")
+    reader = csv.DictReader(io.StringIO(text))
+    test_rows = []
+    for i, raw in enumerate(reader):
+        rowdict = {_norm_header(k): v for k, v in raw.items() if k is not None}
+        rowdict["_row"] = i + 2  # header is line 1
+        test_rows.append(rowdict)
+    return test_rows, []
+
+
+def _build_params_for_test(param_rows_for_test, errors):
+    """Collapse parameter rows into parameter dicts; rows sharing a
+    parameter_name accumulate multiple reference_ranges (in order)."""
+    ordered = []
+    by_name = {}
+    for pr in param_rows_for_test:
+        pname = _cell_str(pr.get("parameter_name"))
+        rownum = pr.get("_row", 0)
+        if not pname:
+            errors.append(ImportRowError(sheet="Parameters", row=rownum, message="Missing parameter_name"))
+            continue
+        key = pname.lower()
+        if key not in by_name:
+            field_type = (_cell_str(pr.get("field_type")) or "numeric").lower()
+            if field_type not in _VALID_FIELD_TYPES:
+                errors.append(ImportRowError(
+                    sheet="Parameters", row=rownum,
+                    message=f"Invalid field_type '{field_type}' for '{pname}' — using 'numeric'",
+                ))
+                field_type = "numeric"
+            by_name[key] = {
+                "name": pname,
+                "unit": _cell_str(pr.get("unit")),
+                "method": _cell_str(pr.get("method")),
+                "section": _cell_str(pr.get("section")),
+                "field_type": field_type,
+                "possible_values": _cell_list(pr.get("possible_values")),
+                "normal_value": _cell_str(pr.get("normal_value")),
+                "abnormal_values": _cell_list(pr.get("abnormal_values")),
+                "reference_ranges": [],
+            }
+            try:
+                by_name[key]["critical_low"] = _cell_float(pr.get("critical_low"))
+                by_name[key]["critical_high"] = _cell_float(pr.get("critical_high"))
+            except ValueError as e:
+                errors.append(ImportRowError(sheet="Parameters", row=rownum, message=f"{pname}: {e}"))
+                by_name[key]["critical_low"] = None
+                by_name[key]["critical_high"] = None
+            ordered.append(key)
+        entry = by_name[key]
+        try:
+            rmin = _cell_float(pr.get("ref_min"))
+            rmax = _cell_float(pr.get("ref_max"))
+            age_min = _cell_float(pr.get("age_min"))
+            age_max = _cell_float(pr.get("age_max"))
+        except ValueError as e:
+            errors.append(ImportRowError(sheet="Parameters", row=rownum, message=f"{pname}: {e}"))
+            continue
+        gender = (_cell_str(pr.get("gender")) or "common").lower()
+        desc = _cell_str(pr.get("description"))
+        if rmin is not None or rmax is not None or desc:
+            entry["reference_ranges"].append({
+                "min": rmin, "max": rmax, "gender": gender,
+                "age_min": age_min, "age_max": age_max,
+                "description": desc or "",
+            })
+    result = []
+    for key in ordered:
+        e = by_name[key]
+        if not e["reference_ranges"]:
+            e["reference_ranges"] = None
+        result.append(e)
+    return result
+
+
+@router.get("/tests/import/template")
+async def download_import_template(
+    current_user: User = Depends(require_permission(Modules.LAB, "read")),
+    db: Session = Depends(get_db),
+):
+    """Download a ready-to-fill .xlsx template (Tests + Parameters sheets)."""
+    _require_lab_admin(current_user)
+    import io
+    import openpyxl
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Tests"
+    ws.append(_IMPORT_TEST_HEADERS)
+    ws.append(["CBC", "Complete Blood Count", "Hematology", "Blood (EDTA)", 300,
+               "Automated Analyzer", "Full blood count", "None"])
+    ws.append(["LFT", "Liver Function Test", "Biochemistry", "Blood (Serum)", 600,
+               "Colorimetric", "Liver panel", "Fasting 8-12 hours"])
+
+    ws2 = wb.create_sheet("Parameters")
+    ws2.append(_IMPORT_PARAM_HEADERS)
+    ws2.append(["CBC", "", "Hemoglobin", "g/dL", "", "numeric", 13, 17, "male", "", "",
+                "", "", "", "", "", ""])
+    ws2.append(["CBC", "", "Hemoglobin", "g/dL", "", "numeric", 12, 15, "female", "", "",
+                "", "", "", "", "", ""])
+    ws2.append(["LFT", "", "SGPT (ALT)", "U/L", "", "numeric", 7, 56, "common", "", "",
+                "", "", "", "", "", ""])
+
+    ws3 = wb.create_sheet("Instructions")
+    notes = [
+        ["KT HEALTH ERP — Lab Test Import Template"],
+        [""],
+        ["Fill the 'Tests' sheet — one row per test."],
+        ["  Required columns: test_code, name, category, cost."],
+        ["  Categories and sample types are created automatically if they don't exist."],
+        [""],
+        ["Fill the 'Parameters' sheet (optional) — one row per reference range."],
+        ["  Link to a test using the same test_code."],
+        ["  Repeat parameter_name on multiple rows to add several reference ranges"],
+        ["  (e.g. one row per gender or age band)."],
+        [""],
+        ["gender values: male, female, common"],
+        ["field_type values: " + ", ".join(sorted(_VALID_FIELD_TYPES))],
+        ["possible_values / abnormal_values: comma-separated (e.g. Positive, Negative)"],
+    ]
+    for row in notes:
+        ws3.append(row)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=lab_tests_import_template.xlsx"},
+    )
+
+
+@router.get("/tests/import/sample-csv")
+async def download_import_sample_csv(
+    current_user: User = Depends(require_permission(Modules.LAB, "read")),
+    db: Session = Depends(get_db),
+):
+    """Download a sample CSV (tests only) that can be imported as-is."""
+    _require_lab_admin(current_user)
+    import csv
+    import io
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(_IMPORT_TEST_HEADERS)
+    writer.writerow(["CBC", "Complete Blood Count", "Hematology", "Blood (EDTA)", "300",
+                     "Automated Analyzer", "Full blood count", "None"])
+    writer.writerow(["LFT", "Liver Function Test", "Biochemistry", "Blood (Serum)", "600",
+                     "Colorimetric", "Liver panel", "Fasting 8-12 hours"])
+    writer.writerow(["RFT", "Renal Function Test", "Biochemistry", "Blood (Serum)", "550",
+                     "Colorimetric", "Kidney panel", "None"])
+    writer.writerow(["TSH", "Thyroid Stimulating Hormone", "Endocrinology", "Blood (Serum)",
+                     "400", "CLIA", "Thyroid screen", "None"])
+    data = buf.getvalue().encode("utf-8-sig")
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=lab_tests_sample.csv"},
+    )
+
+
+@router.post("/tests/import", response_model=ImportSummary)
+async def import_tests(
+    file: UploadFile = File(...),
+    dry_run: bool = Form(False),
+    on_duplicate: str = Form("skip"),
+    current_user: User = Depends(require_permission(Modules.LAB, "write")),
+    db: Session = Depends(get_db),
+):
+    """Bulk-import lab tests (and optional parameters) from .xlsx or .csv.
+
+    - Auto-creates missing categories and sample types.
+    - Validates each row; valid rows import while invalid rows are reported.
+    - ``dry_run=True`` validates and previews without writing anything.
+    - ``on_duplicate`` = ``skip`` (default) or ``update`` for existing test_code.
+    """
+    _require_lab_admin(current_user)
+    if on_duplicate not in ("skip", "update"):
+        on_duplicate = "skip"
+
+    filename = (file.filename or "").lower()
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+    try:
+        if filename.endswith(".csv"):
+            test_rows, param_rows = _parse_import_csv(content)
+        elif filename.endswith(".xlsx"):
+            test_rows, param_rows = _parse_import_xlsx(content)
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported file type. Upload a .xlsx or .csv file.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not read file: {e}")
+
+    hospital_id = current_user.hospital_id
+    categories = {
+        c.name.strip().lower(): c
+        for c in db.query(LabTestCategory).filter(LabTestCategory.hospital_id == hospital_id).all()
+    }
+    sample_types = {
+        s.name.strip().lower(): s
+        for s in db.query(SampleType).filter(SampleType.hospital_id == hospital_id).all()
+    }
+
+    # Group parameter rows by test_code (case-insensitive)
+    params_by_test = {}
+    for pr in param_rows:
+        tc = _cell_str(pr.get("test_code"))
+        if not tc or tc.startswith("#"):
+            continue
+        params_by_test.setdefault(tc.lower(), []).append(pr)
+
+    errors: List[ImportRowError] = []
+    preview: List[ImportPreviewRow] = []
+    categories_created: List[str] = []
+    sample_types_created: List[str] = []
+    created = updated = skipped = 0
+    total_rows = 0
+
+    for tr in test_rows:
+        rownum = tr.get("_row", 0)
+        test_code = _cell_str(tr.get("test_code"))
+        if not test_code or test_code.startswith("#"):
+            continue
+        total_rows += 1
+
+        name = _cell_str(tr.get("name"))
+        cat_name = _cell_str(tr.get("category"))
+        row_errs = []
+        if not name:
+            row_errs.append("Missing test name")
+        if not cat_name:
+            row_errs.append("Missing category")
+        cost = 0.0
+        try:
+            parsed_cost = _cell_float(tr.get("cost"))
+            if parsed_cost is not None:
+                cost = parsed_cost
+        except ValueError:
+            row_errs.append("Cost must be a number")
+        if cost < 0:
+            row_errs.append("Cost cannot be negative")
+
+        if row_errs:
+            msg = "; ".join(row_errs)
+            errors.append(ImportRowError(sheet="Tests", row=rownum, message=msg))
+            preview.append(ImportPreviewRow(
+                row=rownum, test_code=test_code, name=name or "",
+                category=cat_name, status="error", message=msg,
+            ))
+            continue
+
+        existing = db.query(LabTest).filter(
+            LabTest.test_code == test_code,
+            LabTest.hospital_id == hospital_id,
+        ).first()
+        if existing and on_duplicate == "skip":
+            skipped += 1
+            preview.append(ImportPreviewRow(
+                row=rownum, test_code=test_code, name=name, category=cat_name,
+                status="skip", message="Test code already exists",
+            ))
+            continue
+
+        # Resolve / auto-create category
+        cat = categories.get(cat_name.lower())
+        if not cat:
+            cat = LabTestCategory(name=cat_name, hospital_id=hospital_id)
+            db.add(cat)
+            db.flush()
+            categories[cat_name.lower()] = cat
+            categories_created.append(cat_name)
+
+        # Resolve / auto-create sample type
+        st_name = _cell_str(tr.get("sample_type"))
+        st = None
+        if st_name:
+            st = sample_types.get(st_name.lower())
+            if not st:
+                st = SampleType(name=st_name, hospital_id=hospital_id)
+                db.add(st)
+                db.flush()
+                sample_types[st_name.lower()] = st
+                sample_types_created.append(st_name)
+
+        p_list = _build_params_for_test(params_by_test.get(test_code.lower(), []), errors)
+
+        if existing:  # on_duplicate == "update"
+            existing.name = name
+            existing.description = _cell_str(tr.get("description"))
+            existing.category_id = cat.id
+            existing.cost = cost
+            existing.method = _cell_str(tr.get("method"))
+            existing.preparation_instructions = _cell_str(tr.get("preparation_instructions"))
+            if st:
+                existing.sample_type_id = st.id
+                existing.sample_type = st.name
+            if p_list:
+                db.query(LabTestParameter).filter(LabTestParameter.test_id == existing.id).delete()
+                for i, p in enumerate(p_list):
+                    db.add(_create_seed_parameter(existing.id, p, i))
+            updated += 1
+            preview.append(ImportPreviewRow(
+                row=rownum, test_code=test_code, name=name, category=cat_name,
+                status="update", parameter_count=len(p_list),
+            ))
+        else:
+            test = LabTest(
+                test_code=test_code, name=name, description=_cell_str(tr.get("description")),
+                category_id=cat.id, cost=cost,
+                sample_type=(st.name if st else None),
+                sample_type_id=(st.id if st else None),
+                method=_cell_str(tr.get("method")),
+                preparation_instructions=_cell_str(tr.get("preparation_instructions")),
+                hospital_id=hospital_id,
+            )
+            db.add(test)
+            db.flush()
+            for i, p in enumerate(p_list):
+                db.add(_create_seed_parameter(test.id, p, i))
+            created += 1
+            preview.append(ImportPreviewRow(
+                row=rownum, test_code=test_code, name=name, category=cat_name,
+                status="new", parameter_count=len(p_list),
+            ))
+
+    if dry_run:
+        db.rollback()
+    else:
+        db.commit()
+        try:
+            from app.services.audit_service import log_action
+            log_action(
+                db, current_user, "import_lab_tests", "lab", "LabTest", None,
+                description=f"Imported lab tests: {created} created, {updated} updated, {skipped} skipped",
+                details={"created": created, "updated": updated, "skipped": skipped,
+                         "categories_created": categories_created,
+                         "sample_types_created": sample_types_created},
+            )
+        except Exception:
+            pass
+
+    return ImportSummary(
+        dry_run=dry_run,
+        total_rows=total_rows,
+        created=created,
+        updated=updated,
+        skipped=skipped,
+        error_count=len(errors),
+        categories_created=categories_created,
+        sample_types_created=sample_types_created,
+        errors=errors,
+        preview=preview,
     )
 
 

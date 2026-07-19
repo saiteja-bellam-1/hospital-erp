@@ -1,13 +1,11 @@
 {
   "setup_complete": true,
-  "db_path": "/Users/saiteja/Documents/GitHub/hospital-ERP/backend/kthealth_erp.db",
-  "backup_locations": [
-    "/Users/saiteja/Documents/GitHub/claude-skills-marketing"
-  ],
-  "hospital_name": "Testing",
+  "db_path": "C:\\Users\\bella\\Downloads\\Projects\\hospital-erp\\backend\\kthealth_erp.db",
+  "backup_locations": [],
+  "hospital_name": "Test Hospital",
   "snapshot_interval_minutes": 30,
   "snapshot_retention_hours": 72,
   "gdrive_last_error": null,
-  "gdrive_last_sent": "2026-04-08",
-  "last_update_check": "2026-07-17T08:08:29.210930"
+  "gdrive_last_sent": null,
+  "last_update_check": null
 }

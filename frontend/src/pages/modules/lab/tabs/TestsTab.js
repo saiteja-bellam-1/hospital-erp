@@ -9,8 +9,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Textarea } from '../../../../components/ui/textarea';
 import { Badge } from '../../../../components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../../../components/ui/dialog';
-import { Plus, Edit2, Trash2, Search, RefreshCw, Settings2, Loader2 } from 'lucide-react';
+import { Plus, Edit2, Trash2, Search, RefreshCw, Settings2, Loader2, Upload, TestTube } from 'lucide-react';
 import { useLabFeedback } from '../useLabFeedback';
+import LabTestImportDialog from '../LabTestImportDialog';
 
 export default function TestsTab() {
   const navigate = useNavigate();
@@ -22,6 +23,7 @@ export default function TestsTab() {
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [showDialog, setShowDialog] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({
     test_code: '', name: '', description: '', category_id: '',
@@ -153,6 +155,9 @@ export default function TestsTab() {
           <Button variant="outline" size="sm" onClick={fetchTests}>
             <RefreshCw className="h-4 w-4" />
           </Button>
+          <Button variant="outline" onClick={() => setShowImport(true)}>
+            <Upload className="h-4 w-4 mr-2" /> Import
+          </Button>
           <Button onClick={() => openDialog()}>
             <Plus className="h-4 w-4 mr-2" /> Add Test
           </Button>
@@ -165,8 +170,21 @@ export default function TestsTab() {
         </div>
       ) : tests.length === 0 ? (
         <Card>
-          <CardContent className="py-12 text-center text-gray-500">
-            No tests found. Create a test or seed defaults from the Dashboard.
+          <CardContent className="py-12 text-center">
+            <TestTube className="h-12 w-12 text-slate-200 mx-auto mb-3" />
+            <p className="text-sm font-medium text-slate-600">No lab tests yet</p>
+            <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
+              Setting up your lab? Import your entire test list at once from an Excel or CSV file,
+              or add tests one by one.
+            </p>
+            <div className="flex items-center justify-center gap-2 mt-4">
+              <Button onClick={() => setShowImport(true)}>
+                <Upload className="h-4 w-4 mr-2" /> Import Tests
+              </Button>
+              <Button variant="outline" onClick={() => openDialog()}>
+                <Plus className="h-4 w-4 mr-2" /> Add Test
+              </Button>
+            </div>
           </CardContent>
         </Card>
       ) : (
@@ -293,6 +311,13 @@ export default function TestsTab() {
           </div>
         </DialogContent>
       </Dialog>
+
+      <LabTestImportDialog
+        open={showImport}
+        onOpenChange={setShowImport}
+        onImported={() => { fetchTests(); fetchCategories(); fetchSampleTypes(); }}
+        showFeedback={showFeedback}
+      />
 
       <ConfirmDialogEl />
     </div>

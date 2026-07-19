@@ -23,6 +23,8 @@ import {
 } from 'lucide-react';
 import axios from 'axios';
 import BulkUserImportDialog from './admin/BulkUserImport';
+import ModuleConfigForm from './ModuleConfigForm';
+import RolePermissionsEditor from './admin/RolePermissionsEditor';
 
 const AdminModule = () => {
   const { user } = useAuth();
@@ -43,6 +45,7 @@ const AdminModule = () => {
   const [passwordResetUser, setPasswordResetUser] = useState(null);
   const [newPassword, setNewPassword] = useState('');
   const [userLimit, setUserLimit] = useState(null);
+  const [selectedConfigModule, setSelectedConfigModule] = useState('lab');
 
   const [userForm, setUserForm] = useState({
     username: '',
@@ -488,24 +491,23 @@ const AdminModule = () => {
             <Users className="inline h-4 w-4 mr-2" />
             User Management
           </button>
-          {hasRole('super_admin') && (
-            <button
-              onClick={() => setActiveTab('roles')}
-              className={`py-2 px-1 border-b-2 font-medium text-sm ${
-                activeTab === 'roles'
-                  ? 'border-primary text-primary'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              }`}
-            >
-              <Shield className="inline h-4 w-4 mr-2" />
-              Role Management
-            </button>
-          )}
+          <button
+            onClick={() => setActiveTab('roles')}
+            className={`py-2 px-1 border-b-2 font-medium text-sm ${
+              activeTab === 'roles'
+                ? 'border-primary text-primary'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            }`}
+          >
+            <Shield className="inline h-4 w-4 mr-2" />
+            Roles &amp; Permissions
+          </button>
         </nav>
       </div>
 
-      {/* Module Management Tab - Super Admin Only */}
+      {/* Modules Tab - Super Admin Only (enable/disable + per-module config) */}
       {activeTab === 'modules' && hasRole('super_admin') && (
+        <div className="space-y-6">
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center">
@@ -547,6 +549,39 @@ const AdminModule = () => {
             </div>
           </CardContent>
         </Card>
+
+        {/* Per-module configuration (moved here from Hospital Administration) */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center">
+              <Settings className="mr-2 h-5 w-5" />
+              Module Settings
+            </CardTitle>
+            <p className="text-sm text-gray-500 mt-1">
+              Configure behaviour for individual modules.
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex flex-wrap gap-2">
+              {[
+                { id: 'lab', name: 'Laboratory' },
+                { id: 'pharmacy', name: 'Pharmacy' },
+              ].map((module) => (
+                <Button
+                  key={module.id}
+                  variant={selectedConfigModule === module.id ? 'default' : 'outline'}
+                  onClick={() => setSelectedConfigModule(module.id)}
+                >
+                  {module.name}
+                </Button>
+              ))}
+            </div>
+            {(selectedConfigModule === 'lab' || selectedConfigModule === 'pharmacy') && (
+              <ModuleConfigForm moduleName={selectedConfigModule} />
+            )}
+          </CardContent>
+        </Card>
+        </div>
       )}
 
       {/* User Management Tab */}
@@ -951,9 +986,11 @@ const AdminModule = () => {
         </div>
       )}
 
-      {/* Role Management Tab - Super Admin Only */}
-      {activeTab === 'roles' && hasRole('super_admin') && (
+      {/* Roles & Permissions Tab — role CRUD (super_admin) + per-role feature grants (all admins) */}
+      {activeTab === 'roles' && (
         <div className="space-y-6">
+          {hasRole('super_admin') && (
+          <div className="space-y-6">
           <div className="flex justify-between items-center">
             <h2 className="text-xl font-semibold">Role Management</h2>
             <Button
@@ -1052,6 +1089,10 @@ const AdminModule = () => {
               </div>
             </CardContent>
           </Card>
+          </div>
+          )}
+
+          <RolePermissionsEditor />
         </div>
       )}
 

@@ -4,15 +4,17 @@ import axios from 'axios';
 import { Card, CardContent, CardHeader, CardTitle } from '../../../../components/ui/card';
 import { Button } from '../../../../components/ui/button';
 import {
-  TestTube, Plus, Activity, ClipboardList, CheckCircle, Loader2, Database,
+  TestTube, Plus, Activity, ClipboardList, CheckCircle, Loader2, Database, Upload,
 } from 'lucide-react';
 import { useLabFeedback } from '../useLabFeedback';
+import LabTestImportDialog from '../LabTestImportDialog';
 
 export default function DashboardTab() {
   const navigate = useNavigate();
   const { showFeedback, confirm, FeedbackToast, ConfirmDialogEl } = useLabFeedback();
   const [stats, setStats] = useState(null);
   const [seeding, setSeeding] = useState(false);
+  const [showImport, setShowImport] = useState(false);
 
   const fetchStats = useCallback(async () => {
     try {
@@ -107,6 +109,9 @@ export default function DashboardTab() {
             <Button variant="outline" onClick={() => navigate('/dashboard/lab/categories')}>
               <Plus className="h-4 w-4 mr-2" /> New Category
             </Button>
+            <Button variant="outline" onClick={() => setShowImport(true)}>
+              <Upload className="h-4 w-4 mr-2" /> Import Tests
+            </Button>
             <Button variant="outline" onClick={handleSeedDefaults} disabled={seeding}>
               {seeding ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Database className="h-4 w-4 mr-2" />}
               Seed Default Tests
@@ -114,6 +119,13 @@ export default function DashboardTab() {
           </div>
         </CardContent>
       </Card>
+
+      <LabTestImportDialog
+        open={showImport}
+        onOpenChange={setShowImport}
+        onImported={fetchStats}
+        showFeedback={showFeedback}
+      />
 
       <ConfirmDialogEl />
     </div>

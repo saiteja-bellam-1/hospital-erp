@@ -8,11 +8,8 @@ import {
   RefreshCw,
   Calendar,
   TrendingUp,
-  Users,
   IndianRupee,
-  Clock,
   CheckCircle,
-  XCircle,
   AlertCircle
 } from 'lucide-react';
 import { localDateString } from '../../../utils/localDate';
@@ -24,6 +21,7 @@ const ReceptionReportsPage = () => {
 
   useEffect(() => {
     fetchReport(reportDate);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const fetchReport = async (date) => {

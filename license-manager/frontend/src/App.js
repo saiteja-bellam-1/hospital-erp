@@ -88,10 +88,12 @@ function App() {
   const [statusFilter, setStatusFilter] = useState('all');
   const [showForm, setShowForm] = useState(false);
   const [showRenew, setShowRenew] = useState(null);
-  const [renewForm, setRenewForm] = useState({ days: 365, plan: 'standard', max_users: 50, features: [], gdrive_backup_enabled: false, seller_id: '' });
+  const [renewForm, setRenewForm] = useState({ months: 12, days: 0, plan: 'standard', max_users: 50, features: [], gdrive_backup_enabled: false, seller_id: '' });
+  const [customDuration, setCustomDuration] = useState(false);
+  const [renewCustomDuration, setRenewCustomDuration] = useState(false);
   const [form, setForm] = useState({
     hospital_id: '', hospital_name: '', machine_id: '', plan: 'standard',
-    max_users: 50, days: 365,
+    max_users: 50, months: 12, days: 0,
     features: ['outpatient', 'lab', 'ehr', 'admin'],
     modules: [], notes: '',
     seller_id: '', seller_name: '', seller_address: '', seller_phone: '',
@@ -175,6 +177,7 @@ function App() {
 
   const createLicense = async () => {
     if (!form.hospital_id || !form.hospital_name || !form.machine_id) return;
+    if ((form.months || 0) <= 0 && (form.days || 0) <= 0) { showMessage('Validity must be at least 1 day', 'error'); return; }
     setSaving(true);
     try {
       const payload = { ...form };
@@ -190,7 +193,8 @@ function App() {
       if (r.ok) {
         showMessage('License generated successfully');
         setShowForm(false);
-        setForm({ hospital_id: '', hospital_name: '', machine_id: '', plan: 'standard', max_users: 50, days: 365, features: ['outpatient', 'lab', 'ehr', 'admin'], modules: [], notes: '', seller_id: '', seller_name: '', seller_address: '', seller_phone: '', gdrive_backup_enabled: false });
+        setCustomDuration(false);
+        setForm({ hospital_id: '', hospital_name: '', machine_id: '', plan: 'standard', max_users: 50, months: 12, days: 0, features: ['outpatient', 'lab', 'ehr', 'admin'], modules: [], notes: '', seller_id: '', seller_name: '', seller_address: '', seller_phone: '', gdrive_backup_enabled: false });
         fetchLicenses(); fetchDash();
         if (selectedCust) fetchCustDetail(selectedCust);
       } else {
@@ -202,6 +206,7 @@ function App() {
   };
 
   const renewLicense = async (licenseId) => {
+    if ((renewForm.months || 0) <= 0 && (renewForm.days || 0) <= 0) { showMessage('Validity must be at least 1 day', 'error'); return; }
     const payload = { ...renewForm };
     // Build seller if selected
     if (payload.seller_id) {
@@ -224,8 +229,25 @@ function App() {
     }
   };
 
-  const downloadLicense = (licenseId) => {
-    window.open(`${API}/licenses/${licenseId}/download`, '_blank');
+  const downloadLicense = async (licenseId) => {
+    try {
+      const r = await fetch(`${API}/licenses/${licenseId}/download`);
+      if (!r.ok) { showMessage('Failed to download license', 'error'); return; }
+      const blob = await r.blob();
+      const disposition = r.headers.get('Content-Disposition') || '';
+      const match = disposition.match(/filename\*?=(?:UTF-8'')?["']?([^"';]+)/i);
+      const filename = match ? decodeURIComponent(match[1]) : `${licenseId}.lic`;
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch {
+      showMessage('Failed to download license', 'error');
+    }
   };
 
   const deleteLicense = async (licenseId) => {
@@ -526,7 +548,7 @@ function App() {
                               className="p-1.5 rounded-lg bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 transition-colors">
                               <Icon d={Icons.download} className="w-3.5 h-3.5" />
                             </button>
-                            <button onClick={() => { setShowRenew(lic); setRenewForm({ days: 365, plan: lic.plan || 'standard', max_users: lic.max_users || 50, features: lic.features || [], gdrive_backup_enabled: false, seller_id: '' }); }} title="Renew"
+                            <button onClick={() => { setShowRenew(lic); setRenewCustomDuration(false); setRenewForm({ months: 12, days: 0, plan: lic.plan || 'standard', max_users: lic.max_users || 50, features: lic.features || [], gdrive_backup_enabled: false, seller_id: '' }); }} title="Renew"
                               className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition-colors">
                               <Icon d={Icons.refresh} className="w-3.5 h-3.5" />
                             </button>
@@ -692,7 +714,7 @@ function App() {
                               <Icon d={Icons.download} className="w-3 h-3" /> Download
                             </button>
                             {lic.computed_status !== 'renewed' && (
-                              <button onClick={() => { setShowRenew(lic); setRenewForm({ days: 365, plan: lic.plan || 'standard', max_users: lic.max_users || 50, features: lic.features || [], gdrive_backup_enabled: false, seller_id: '' }); }} title="Renew"
+                              <button onClick={() => { setShowRenew(lic); setRenewCustomDuration(false); setRenewForm({ months: 12, days: 0, plan: lic.plan || 'standard', max_users: lic.max_users || 50, features: lic.features || [], gdrive_backup_enabled: false, seller_id: '' }); }} title="Renew"
                                 className="px-2.5 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 text-xs font-medium flex items-center gap-1">
                                 <Icon d={Icons.refresh} className="w-3 h-3" /> Renew
                               </button>
@@ -1015,15 +1037,36 @@ function App() {
               onChange={e => setForm({...form, machine_id: e.target.value})} placeholder="CA86-C087-6261" />
             <div>
               <label className="block text-xs font-medium text-slate-400 mb-1.5">Validity</label>
-              <select value={form.days} onChange={e => setForm({...form, days: parseInt(e.target.value)})}
+              <select value={customDuration ? 'custom' : String(form.months)}
+                onChange={e => {
+                  if (e.target.value === 'custom') { setCustomDuration(true); }
+                  else { setCustomDuration(false); setForm({...form, months: parseInt(e.target.value), days: 0}); }
+                }}
                 className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500/50">
-                <option value={30}>1 Month</option>
-                <option value={90}>3 Months</option>
-                <option value={180}>6 Months</option>
-                <option value={365}>1 Year</option>
-                <option value={730}>2 Years</option>
-                <option value={1095}>3 Years</option>
+                <option value="1">1 Month</option>
+                <option value="3">3 Months</option>
+                <option value="6">6 Months</option>
+                <option value="12">1 Year</option>
+                <option value="24">2 Years</option>
+                <option value="36">3 Years</option>
+                <option value="custom">Custom</option>
               </select>
+              {customDuration && (
+                <div className="grid grid-cols-2 gap-2 mt-2">
+                  <div>
+                    <label className="block text-[10px] text-slate-500 mb-1">Months</label>
+                    <input type="number" min={0} value={form.months}
+                      onChange={e => setForm({...form, months: parseInt(e.target.value) || 0})}
+                      className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500/50" />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-slate-500 mb-1">Days</label>
+                    <input type="number" min={0} value={form.days}
+                      onChange={e => setForm({...form, days: parseInt(e.target.value) || 0})}
+                      className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500/50" />
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
@@ -1157,15 +1200,36 @@ function App() {
             <div className="grid grid-cols-3 gap-3">
               <div>
                 <label className="block text-xs font-medium text-slate-400 mb-1.5">Validity</label>
-                <select value={renewForm.days} onChange={e => setRenewForm({...renewForm, days: parseInt(e.target.value)})}
+                <select value={renewCustomDuration ? 'custom' : String(renewForm.months)}
+                  onChange={e => {
+                    if (e.target.value === 'custom') { setRenewCustomDuration(true); }
+                    else { setRenewCustomDuration(false); setRenewForm({...renewForm, months: parseInt(e.target.value), days: 0}); }
+                  }}
                   className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500/50">
-                  <option value={30}>1 Month</option>
-                  <option value={90}>3 Months</option>
-                  <option value={180}>6 Months</option>
-                  <option value={365}>1 Year</option>
-                  <option value={730}>2 Years</option>
-                  <option value={1095}>3 Years</option>
+                  <option value="1">1 Month</option>
+                  <option value="3">3 Months</option>
+                  <option value="6">6 Months</option>
+                  <option value="12">1 Year</option>
+                  <option value="24">2 Years</option>
+                  <option value="36">3 Years</option>
+                  <option value="custom">Custom</option>
                 </select>
+                {renewCustomDuration && (
+                  <div className="grid grid-cols-2 gap-2 mt-2">
+                    <div>
+                      <label className="block text-[10px] text-slate-500 mb-1">Months</label>
+                      <input type="number" min={0} value={renewForm.months}
+                        onChange={e => setRenewForm({...renewForm, months: parseInt(e.target.value) || 0})}
+                        className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500/50" />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-slate-500 mb-1">Days</label>
+                      <input type="number" min={0} value={renewForm.days}
+                        onChange={e => setRenewForm({...renewForm, days: parseInt(e.target.value) || 0})}
+                        className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500/50" />
+                    </div>
+                  </div>
+                )}
               </div>
               <div>
                 <label className="block text-xs font-medium text-slate-400 mb-1.5">Plan</label>

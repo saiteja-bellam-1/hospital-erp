@@ -15,15 +15,9 @@ import {
   Filter,
   UserPlus,
   RefreshCw,
-  Activity,
-  Pill,
-  Eye,
-  Pencil,
-  History,
   Calendar,
   ChevronLeft,
-  ChevronRight,
-  Printer
+  ChevronRight
 } from 'lucide-react';
 import VitalsForm from '../../../components/vitals/VitalsForm';
 import LabTestBookingDialog from '../../../components/LabTestBookingDialog';
@@ -44,7 +38,6 @@ const ReceptionPatientsPage = () => {
   const [showPatientDialog, setShowPatientDialog] = useState(false);
   const [showEditPatientDialog, setShowEditPatientDialog] = useState(false);
   const [showVitalsDialog, setShowVitalsDialog] = useState(false);
-  const [showPrescriptionsDialog, setShowPrescriptionsDialog] = useState(false);
   const [showHistoryDialog, setShowHistoryDialog] = useState(false);
   const [appointmentHistory, setAppointmentHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -56,10 +49,6 @@ const ReceptionPatientsPage = () => {
     emergency_contact_name: '', emergency_contact_phone: '', emergency_contact_relation: '',
     address_line1: '', address_line2: '', village: '', mandal: '', district: ''
   });
-
-  // Prescription state
-  const [prescriptions, setPrescriptions] = useState([]);
-  const [prescriptionsLoading, setPrescriptionsLoading] = useState(false);
 
   // Filter states
   const [filterGender, setFilterGender] = useState('all');
@@ -144,6 +133,7 @@ const ReceptionPatientsPage = () => {
       fetchPatients(pageToFetch);
     }, searchTerm ? 300 : 0);
     return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentPage, filterKey, searchTerm]);
 
   const fetchPatients = async (page = currentPage) => {
@@ -177,26 +167,6 @@ const ReceptionPatientsPage = () => {
     } finally {
       setLoading(false);
     }
-  };
-
-  const searchPatientByPhone = async (phone) => {
-    try {
-      const token = localStorage.getItem('token');
-      const response = await fetch(`/api/patients/phone/${phone}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        }
-      });
-      if (response.ok) {
-        const patient = await response.json();
-        setSelectedPatient(patient);
-        return patient;
-      }
-    } catch (error) {
-      console.error('Error searching patient:', error);
-    }
-    return null;
   };
 
   const createPatient = async () => {
@@ -260,63 +230,6 @@ const ReceptionPatientsPage = () => {
       toast({ title: 'Error', description: 'Error registering patient', variant: 'destructive' });
     } finally {
       setLoading(false);
-    }
-  };
-
-  const fetchPrescriptions = async (patientId) => {
-    setPrescriptionsLoading(true);
-    try {
-      const token = localStorage.getItem('token');
-      const response = await fetch(`/api/prescriptions-simple/?patient_id=${patientId}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        }
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setPrescriptions(Array.isArray(data) ? data : []);
-      } else {
-        console.error('Failed to fetch prescriptions:', response.status);
-        setPrescriptions([]);
-      }
-    } catch (error) {
-      console.error('Error fetching prescriptions:', error);
-      setPrescriptions([]);
-    } finally {
-      setPrescriptionsLoading(false);
-    }
-  };
-
-  const printPrescription = async (prescriptionId) => {
-    try {
-      const token = localStorage.getItem('token');
-      const response = await fetch(`/api/prescriptions-simple/${prescriptionId}/download`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (response.ok) {
-        const blob = await response.blob();
-        const url = window.URL.createObjectURL(blob);
-        
-        // Create iframe for printing
-        const iframe = document.createElement('iframe');
-        iframe.style.display = 'none';
-        document.body.appendChild(iframe);
-        iframe.src = url;
-        
-        iframe.onload = () => {
-          iframe.contentWindow.print();
-          setTimeout(() => {
-            document.body.removeChild(iframe);
-            window.URL.revokeObjectURL(url);
-          }, 1000);
-        };
-      } else {
-        toast({ title: 'Print Failed', description: 'Failed to print prescription', variant: 'destructive' });
-      }
-    } catch (error) {
-      console.error('Error printing prescription:', error);
-      toast({ title: 'Error', description: 'Error printing prescription', variant: 'destructive' });
     }
   };
 
@@ -392,11 +305,6 @@ const ReceptionPatientsPage = () => {
     } finally {
       setLoading(false);
     }
-  };
-
-  const formatDate = (dateString) => {
-    if (!dateString) return 'N/A';
-    return new Date(dateString).toLocaleDateString();
   };
 
   const fetchAppointmentHistory = async (patientId) => {
@@ -1130,93 +1038,6 @@ const ReceptionPatientsPage = () => {
             )}
             <div className="flex justify-end pt-2">
               <Button variant="outline" onClick={() => setShowHistoryDialog(false)}>Close</Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      {/* Prescriptions Dialog */}
-      <Dialog open={showPrescriptionsDialog} onOpenChange={setShowPrescriptionsDialog}>
-        <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Prescriptions - {selectedPatient?.first_name} {selectedPatient?.last_name}</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4">
-            {prescriptionsLoading ? (
-              <div className="flex items-center justify-center py-8">
-                <RefreshCw className="h-6 w-6 animate-spin mr-2" />
-                <span>Loading prescriptions...</span>
-              </div>
-            ) : prescriptions.length === 0 ? (
-              <div className="text-center py-8">
-                <Pill className="h-12 w-12 text-gray-400 mx-auto mb-3" />
-                <p className="text-gray-500">No prescriptions found for this patient</p>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                {prescriptions.map((prescription) => (
-                  <Card key={prescription.prescription_id}>
-                    <CardHeader className="pb-3">
-                      <div className="flex justify-between items-start">
-                        <div>
-                          <h6 className="font-semibold">RX-{prescription.prescription_number}</h6>
-                          <div className="flex items-center gap-4 text-sm text-gray-500">
-                            <p>
-                              <User className="h-3 w-3 inline mr-1" />
-                              Doctor: {prescription.doctor_name}
-                            </p>
-                            <p>Date: {new Date(prescription.prescription_date).toLocaleDateString()}</p>
-                            {prescription.diagnosis && (
-                              <p className="text-blue-700 font-medium">
-                                Diagnosis: {prescription.diagnosis}
-                              </p>
-                            )}
-                          </div>
-                        </div>
-                        <Button size="sm" variant="outline"
-                          onClick={() => printPrescription(prescription.prescription_id)}>
-                          <Printer className="h-3.5 w-3.5 mr-1" /> Print
-                        </Button>
-                      </div>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="space-y-3">
-                        <h6 className="font-medium text-sm">Medicines:</h6>
-                        <div className="grid gap-3">
-                          {prescription.medicines.map((medicine, index) => (
-                            <div key={index} className="bg-gray-50 rounded-lg p-3">
-                              <div className="flex justify-between items-start">
-                                <div className="flex-1">
-                                  <p className="font-medium">{medicine.name}</p>
-                                  <p><strong>Dosage:</strong> {medicine.dosage}</p>
-                                  <p><strong>Duration:</strong> {medicine.duration}</p>
-                                  <p><strong>Quantity:</strong> {medicine.quantity}</p>
-                                  {medicine.instructions && (
-                                    <p><strong>Instructions:</strong> {medicine.instructions}</p>
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-
-                      {prescription.notes && (
-                        <div className="mt-4 p-3 bg-blue-50 rounded-lg">
-                          <h6 className="font-medium text-sm text-blue-800 mb-1">Notes:</h6>
-                          <p className="text-sm text-blue-700">{prescription.notes}</p>
-                        </div>
-                      )}
-                    </CardContent>
-                  </Card>
-                ))}
-              </div>
-            )}
-            
-            <div className="flex justify-end pt-4">
-              <Button variant="outline" onClick={() => setShowPrescriptionsDialog(false)}>
-                Close
-              </Button>
             </div>
           </div>
         </DialogContent>

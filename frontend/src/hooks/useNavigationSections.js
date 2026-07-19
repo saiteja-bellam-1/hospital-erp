@@ -142,8 +142,8 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
     if (items.length > 0) sections.push({ label: 'Outpatient', items });
   }
 
-  // ── PRINT SETTINGS (reception + hospital admin) ──
-  if (hasAnyRole('receptionist', 'hospital_admin', 'super_admin')) {
+  // ── PRINT SETTINGS (reception staff only — admins get it under Administration) ──
+  if (hasRole('receptionist') && !hasAnyRole('hospital_admin', 'super_admin')) {
     const items = [];
     add(items, make('Print Settings', Printer, '/dashboard/print-settings'));
     if (items.length > 0) sections.push({ label: 'Settings', items });
@@ -281,20 +281,25 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
     if (items.length > 0) sections.push({ label: 'Canteen', items });
   }
 
-  // ── ADMIN ──
+  // ── ADMINISTRATION + SYSTEM ──
   // Billing dashboard and Day Care live under the Outpatient group above for
-  // admins, so they're omitted here to avoid duplicates.
+  // admins, so they're omitted here to avoid duplicates. Split into two groups:
+  // "Administration" (day-to-day admin config/ops) and "System" (technical/system).
   if (hasAnyRole('super_admin', 'hospital_admin')) {
-    const items = [];
-    add(items, make('Users & Roles', ClipboardList, '/dashboard/admin'));
-    add(items, make('Hospital Config', Building2, '/dashboard/hospital-admin'));
-    add(items, make('Settlements', IndianRupee, '/dashboard/settlements'));
-    add(items, make('Catch-up Bills', Receipt, '/dashboard/catch-up'));
-    add(items, make('License', Shield, '/dashboard/license'));
-    add(items, make('Database', Database, '/dashboard/backup'));
-    add(items, make('Software Update', DownloadCloud, '/dashboard/software-update'));
-    add(items, make('Audit Logs', ScrollText, '/dashboard/audit'));
-    sections.push({ label: 'Admin', items });
+    const admin = [];
+    add(admin, make('Users & Roles', ClipboardList, '/dashboard/admin'));
+    add(admin, make('Hospital Config', Building2, '/dashboard/hospital-admin'));
+    add(admin, make('Print Settings', Printer, '/dashboard/print-settings'));
+    add(admin, make('Settlements', IndianRupee, '/dashboard/settlements'));
+    add(admin, make('Catch-up Bills', Receipt, '/dashboard/catch-up'));
+    if (admin.length > 0) sections.push({ label: 'Administration', items: admin });
+
+    const system = [];
+    add(system, make('License', Shield, '/dashboard/license'));
+    add(system, make('Database', Database, '/dashboard/backup'));
+    add(system, make('Software Update', DownloadCloud, '/dashboard/software-update'));
+    add(system, make('Audit Logs', ScrollText, '/dashboard/audit'));
+    if (system.length > 0) sections.push({ label: 'System', items: system });
   }
 
   // ── NURSE ──

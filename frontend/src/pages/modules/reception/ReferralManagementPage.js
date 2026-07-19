@@ -11,7 +11,7 @@ import { useToast } from '../../../hooks/use-toast';
 import axios from 'axios';
 import {
   Users, Plus, Search, Edit2, Trash2, Phone, MapPin, Eye, Loader2,
-  DollarSign, Receipt, ArrowLeft, Stethoscope, TestTube
+  DollarSign, ArrowLeft, Stethoscope, TestTube
 } from 'lucide-react';
 
 const ReferralManagementPage = () => {
@@ -32,13 +32,14 @@ const ReferralManagementPage = () => {
   // Detail view
   const [selectedReferral, setSelectedReferral] = useState(null);
   const [details, setDetails] = useState(null);
-  const [detailsLoading, setDetailsLoading] = useState(false);
+  const [, setDetailsLoading] = useState(false);
 
   // Commission form
   const [showCommForm, setShowCommForm] = useState(false);
   const [commForm, setCommForm] = useState({ amount: '', payment_method: 'cash', notes: '' });
   const [commSaving, setCommSaving] = useState(false);
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { fetchReferrals(); }, []);
 
   const fetchReferrals = async () => {

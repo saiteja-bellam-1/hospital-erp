@@ -6,9 +6,10 @@ from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import Optional, List
 from datetime import datetime, timedelta, timezone
+import calendar
 import sqlite3
 import uuid
 import json
@@ -203,6 +204,22 @@ class SellerInfo(BaseModel):
     phone: Optional[str] = Field(None, max_length=20)
 
 
+def add_months(dt: datetime, months: int) -> datetime:
+    """Add calendar months to a datetime, clamping the day to the target month's length."""
+    if not months:
+        return dt
+    total = dt.month - 1 + months
+    year = dt.year + total // 12
+    month = total % 12 + 1
+    day = min(dt.day, calendar.monthrange(year, month)[1])
+    return dt.replace(year=year, month=month, day=day)
+
+
+def compute_expiry(start: datetime, months: int = 0, days: int = 0) -> datetime:
+    """Expiry = start + calendar months + extra days."""
+    return add_months(start, months) + timedelta(days=days)
+
+
 class LicenseCreate(BaseModel):
     customer_id: Optional[int] = None
     hospital_id: str = Field(..., max_length=20)
@@ -210,21 +227,35 @@ class LicenseCreate(BaseModel):
     machine_id: str = Field(..., max_length=20)
     plan: str = Field(default="standard")
     max_users: int = Field(default=50)
-    days: int = Field(default=365, ge=1)
+    months: int = Field(default=0, ge=0)
+    days: int = Field(default=365, ge=0)
     features: List[str] = ["outpatient", "lab", "ehr", "admin"]
     modules: List[str] = []
     notes: Optional[str] = None
     seller: Optional[SellerInfo] = None
     gdrive_backup_enabled: bool = False
 
+    @model_validator(mode="after")
+    def _check_duration(self):
+        if self.months <= 0 and self.days <= 0:
+            raise ValueError("Duration must be at least 1 day")
+        return self
+
 
 class LicenseRenew(BaseModel):
-    days: int = Field(default=365, ge=1)
+    months: int = Field(default=0, ge=0)
+    days: int = Field(default=365, ge=0)
     plan: Optional[str] = None
     max_users: Optional[int] = None
     features: Optional[List[str]] = None
     seller: Optional[SellerInfo] = None
     gdrive_backup_enabled: Optional[bool] = None
+
+    @model_validator(mode="after")
+    def _check_duration(self):
+        if self.months <= 0 and self.days <= 0:
+            raise ValueError("Duration must be at least 1 day")
+        return self
 
 
 # ============================================================
@@ -300,6 +331,8 @@ def list_licenses(search: Optional[str] = None, status: Optional[str] = None):
 def create_license(data: LicenseCreate):
     now = datetime.now(timezone.utc)
     license_id = str(uuid.uuid4())
+    expires_at = compute_expiry(now, data.months, data.days)
+    total_days = (expires_at - now).days
 
     license_data = {
         "license_id": license_id,
@@ -310,7 +343,7 @@ def create_license(data: LicenseCreate):
         "max_users": data.max_users,
         "features": data.features,
         "issued_at": now.isoformat(),
-        "expires_at": (now + timedelta(days=data.days)).isoformat(),
+        "expires_at": expires_at.isoformat(),
     }
     if data.seller:
         license_data["seller"] = data.seller.model_dump()
@@ -341,8 +374,8 @@ def create_license(data: LicenseCreate):
         license_id, data.customer_id, data.hospital_id, data.hospital_name, data.machine_id,
         data.plan, data.max_users,
         json.dumps(data.features), json.dumps(data.modules),
-        now.isoformat(), (now + timedelta(days=data.days)).isoformat(),
-        data.days, lic_content, data.notes,
+        now.isoformat(), expires_at.isoformat(),
+        total_days, lic_content, data.notes,
     ))
     conn.commit()
     conn.close()
@@ -360,6 +393,8 @@ def renew_license(license_id: str, data: LicenseRenew):
 
     now = datetime.now(timezone.utc)
     new_license_id = str(uuid.uuid4())
+    expires_at = compute_expiry(now, data.months, data.days)
+    total_days = (expires_at - now).days
 
     # Use provided values or fall back to old license values
     new_plan = data.plan or row["plan"]
@@ -376,7 +411,7 @@ def renew_license(license_id: str, data: LicenseRenew):
         "max_users": new_max_users,
         "features": new_features,
         "issued_at": now.isoformat(),
-        "expires_at": (now + timedelta(days=data.days)).isoformat(),
+        "expires_at": expires_at.isoformat(),
     }
 
     # Seller info
@@ -426,8 +461,8 @@ def renew_license(license_id: str, data: LicenseRenew):
         new_license_id, row["hospital_id"], row["hospital_name"], row["machine_id"],
         new_plan, new_max_users,
         json.dumps(new_features), row["modules"],
-        now.isoformat(), (now + timedelta(days=data.days)).isoformat(),
-        data.days, lic_content, f"Renewed from {license_id}",
+        now.isoformat(), expires_at.isoformat(),
+        total_days, lic_content, f"Renewed from {license_id}",
     ))
     conn.commit()
     conn.close()
