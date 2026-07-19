@@ -44,6 +44,7 @@ REPORT_CATALOG: list[dict[str, str]] = [
     {"key": "body_release", "label": "Body Release", "module": "inpatient"},
     {"key": "refund_receipt", "label": "Refund Receipt", "module": "billing"},
     {"key": "credit_note", "label": "Credit Note", "module": "billing"},
+    {"key": "settlement_statement", "label": "Settlement Statement", "module": "billing"},
     {"key": "census", "label": "Census Report", "module": "inpatient"},
     {"key": "handover", "label": "Handover Report", "module": "inpatient"},
     {"key": "monthly_outcomes", "label": "Monthly Outcomes", "module": "inpatient"},

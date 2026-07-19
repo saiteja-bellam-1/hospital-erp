@@ -502,6 +502,19 @@ const AdminModule = () => {
             <Shield className="inline h-4 w-4 mr-2" />
             Roles &amp; Permissions
           </button>
+          {hasRole('super_admin') && (
+            <button
+              onClick={() => setActiveTab('module-settings')}
+              className={`py-2 px-1 border-b-2 font-medium text-sm ${
+                activeTab === 'module-settings'
+                  ? 'border-primary text-primary'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+              }`}
+            >
+              <Settings className="inline h-4 w-4 mr-2" />
+              Module Settings
+            </button>
+          )}
         </nav>
       </div>
 
@@ -549,8 +562,12 @@ const AdminModule = () => {
             </div>
           </CardContent>
         </Card>
+        </div>
+      )}
 
-        {/* Per-module configuration (moved here from Hospital Administration) */}
+      {/* Module Settings Tab — per-module configuration (lab / pharmacy) */}
+      {activeTab === 'module-settings' && (
+        <div className="space-y-6">
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center">

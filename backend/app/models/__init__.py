@@ -7,6 +7,7 @@ from .billing import Bill, BillItem, PaymentMethod, Payment
 from .ehr import Consultation, Diagnosis, TreatmentPlan, MedicalNote
 from .outpatient import Appointment, OutpatientVisit
 from .inpatient import Admission, RoomManagement, DischargeRecord
+from .settlement import Settlement, SettlementConfig
 
 __all__ = [
     "User", "UserRole", "UserPermission",
@@ -17,5 +18,6 @@ __all__ = [
     "Bill", "BillItem", "PaymentMethod", "Payment",
     "Consultation", "Diagnosis", "TreatmentPlan", "MedicalNote",
     "Appointment", "OutpatientVisit",
-    "Admission", "RoomManagement", "DischargeRecord"
+    "Admission", "RoomManagement", "DischargeRecord",
+    "Settlement", "SettlementConfig"
 ]

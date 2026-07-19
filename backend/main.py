@@ -37,6 +37,7 @@ from app.models.canteen import (  # noqa: F401
     CanteenCategory, CanteenItem, CanteenOrder, CanteenOrderItem,
     CanteenSale, CanteenSaleItem,
 )
+from app.models.settlement import Settlement, SettlementConfig  # noqa: F401
 
 # Import route modules
 from app.routes import auth, patients, admin, system, module_admin, hospital_admin, appointments, prescriptions, medicines, consultations, prescriptions_simple, doctor_availability, lab, ehr, license, backup, referrals, audit, inpatient, outpatient_procedures, pharmacy, canteen, catch_up

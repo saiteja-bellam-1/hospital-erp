@@ -34,6 +34,13 @@ const PHARMACY_EXTRA_FIELDS = [
   { key: 'gst_number', label: 'GST Number', placeholder: '36AABCU9603R1ZM' },
 ];
 
+// Provider identity fields — only relevant when the lab/pharmacy is a third party.
+// For in-house, these are left empty so reports fall back to the hospital's own details.
+const PROVIDER_FIELD_KEYS = [
+  ...COMMON_FIELDS.map(f => f.key),
+  'provider_logo',
+];
+
 const ImageUploadField = ({ label, configKey, value, onChange }) => {
   const [uploading, setUploading] = useState(false);
   const { toast } = useToast();
@@ -114,12 +121,14 @@ const ImageUploadField = ({ label, configKey, value, onChange }) => {
 
 const ModuleConfigForm = ({ moduleName }) => {
   const [config, setConfig] = useState({});
+  const [providerType, setProviderType] = useState('in_house');
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const { toast } = useToast();
 
   const isPharmacy = moduleName === 'pharmacy';
   const moduleLabel = isPharmacy ? 'Pharmacy' : 'Laboratory';
+  const isThirdParty = providerType === 'third_party';
 
   useEffect(() => {
     fetchConfig();
@@ -129,7 +138,11 @@ const ModuleConfigForm = ({ moduleName }) => {
     setLoading(true);
     try {
       const response = await axios.get(`/api/hospital/module-config/${moduleName}`);
-      setConfig(response.data.config || {});
+      const loaded = response.data.config || {};
+      setConfig(loaded);
+      // Infer the mode from stored data: a provider name means it's an external
+      // third party; otherwise the lab/pharmacy is run by the hospital itself.
+      setProviderType((loaded.provider_name || '').trim() ? 'third_party' : 'in_house');
     } catch (error) {
       console.error('Failed to fetch module config:', error);
     } finally {
@@ -141,8 +154,25 @@ const ModuleConfigForm = ({ moduleName }) => {
     setConfig(prev => ({ ...prev, [key]: value }));
   };
 
+  const handleProviderTypeChange = (type) => {
+    setProviderType(type);
+    // Switching to in-house clears the provider identity fields so reports fall
+    // back to the hospital's own name/address/logo.
+    if (type === 'in_house') {
+      setConfig(prev => {
+        const next = { ...prev };
+        PROVIDER_FIELD_KEYS.forEach(k => { next[k] = ''; });
+        return next;
+      });
+    }
+  };
+
   const handleSave = async (e) => {
     e.preventDefault();
+    if (isThirdParty && !(config.provider_name || '').trim()) {
+      toast({ variant: 'destructive', title: 'Missing name', description: `Enter the third-party ${moduleLabel.toLowerCase()} name` });
+      return;
+    }
     setSaving(true);
     try {
       await axios.put(`/api/hospital/module-config/${moduleName}`, { config });
@@ -160,7 +190,42 @@ const ModuleConfigForm = ({ moduleName }) => {
 
   return (
     <form onSubmit={handleSave} className="space-y-6">
-      {/* Provider Info */}
+      {/* Ownership toggle */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">{moduleLabel} Ownership</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex flex-wrap gap-2">
+            {[
+              { id: 'in_house', label: 'In-house', hint: `Run by the hospital itself` },
+              { id: 'third_party', label: 'Third-party', hint: `Operated by an external provider` },
+            ].map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => handleProviderTypeChange(opt.id)}
+                className={`px-4 py-2 rounded-md border text-sm text-left ${
+                  providerType === opt.id
+                    ? 'border-primary bg-primary/10 text-primary font-medium'
+                    : 'border-gray-200 hover:bg-gray-50'
+                }`}
+              >
+                <div>{opt.label}</div>
+                <div className="text-xs text-gray-500 font-normal">{opt.hint}</div>
+              </button>
+            ))}
+          </div>
+          {!isThirdParty && (
+            <p className="text-xs text-gray-500">
+              The hospital's own name, address, and logo will be used on {moduleLabel.toLowerCase()} reports.
+            </p>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Provider Info — only for third-party */}
+      {isThirdParty && (
       <Card>
         <CardHeader>
           <CardTitle className="text-base">
@@ -189,6 +254,7 @@ const ModuleConfigForm = ({ moduleName }) => {
           />
         </CardContent>
       </Card>
+      )}
 
       {/* Registration */}
       <Card>

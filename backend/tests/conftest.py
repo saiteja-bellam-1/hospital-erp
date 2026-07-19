@@ -45,6 +45,7 @@ def db_engine():
     import app.models.referral      # noqa: F401
     import app.models.outpatient    # noqa: F401
     import app.models.canteen       # noqa: F401
+    import app.models.settlement    # noqa: F401
 
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     tmp.close()

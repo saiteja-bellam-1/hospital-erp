@@ -452,13 +452,13 @@ def renew_license(license_id: str, data: LicenseRenew):
     # Mark old as expired
     conn.execute("UPDATE licenses SET status = 'renewed' WHERE license_id = ?", (license_id,))
 
-    # Insert new
+    # Insert new (carry over the customer link from the old license)
     conn.execute("""
-        INSERT INTO licenses (license_id, hospital_id, hospital_name, machine_id, plan, max_users,
+        INSERT INTO licenses (license_id, customer_id, hospital_id, hospital_name, machine_id, plan, max_users,
             features, modules, issued_at, expires_at, days, status, lic_file_content, notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
     """, (
-        new_license_id, row["hospital_id"], row["hospital_name"], row["machine_id"],
+        new_license_id, row["customer_id"], row["hospital_id"], row["hospital_name"], row["machine_id"],
         new_plan, new_max_users,
         json.dumps(new_features), row["modules"],
         now.isoformat(), expires_at.isoformat(),
@@ -693,7 +693,9 @@ def update_customer(customer_id: int, data: CustomerUpdate):
         conn.close()
         raise HTTPException(status_code=404, detail="Customer not found")
 
-    updates = {k: v for k, v in data.dict(exclude_unset=True).items() if v is not None}
+    # Apply exactly the fields the client sent (exclude_unset), so values can be
+    # cleared and is_active can be toggled off. Fields not sent are left untouched.
+    updates = data.dict(exclude_unset=True)
     if updates:
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         conn.execute(f"UPDATE customers SET {set_clause} WHERE id = ?", (*updates.values(), customer_id))

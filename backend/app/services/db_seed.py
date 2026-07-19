@@ -669,6 +669,8 @@ def init_database_and_seed(seed: Mapping, db_path: str) -> None:
     from app.models.outpatient import Appointment  # noqa
     from app.models.patient import Patient  # noqa
     from app.models.referral import Referral  # noqa
+    from app.models.canteen import CanteenCategory, CanteenItem, CanteenOrder, CanteenOrderItem, CanteenSale, CanteenSaleItem  # noqa
+    from app.models.settlement import Settlement, SettlementConfig  # noqa
 
     engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)

@@ -21,6 +21,9 @@ from app.models.lab import PatientLabOrder, LabTest, LabTestCategory, LabTestPac
 from app.models.billing import Bill, BillItem, Payment
 from app.models.inpatient import Admission
 from app.models.pharmacy import PharmacySale
+from app.models.settlement import (
+    Settlement, SettlementConfig, SETTLEMENT_UNITS, DEFAULT_PAYOUT_PERCENTAGE,
+)
 from app.utils.dependencies import get_current_user
 from app.utils.pdf_settings import bill_pdf_gen_kwargs, pdf_gen_kwargs
 
@@ -141,6 +144,132 @@ def _category_split(items) -> dict:
     rounded = {key: round(value, 2) for key, value in totals.items()}
     rounded["total"] = round(sum(rounded.values()), 2)
     return rounded
+
+
+UNIT_LABELS = {"lab": "Laboratory", "pharmacy": "Pharmacy", "canteen": "Canteen"}
+
+
+def _settlement_bill_rows(db, hospital_id, period_from, period_to):
+    """Finalized, non-cancelled inpatient bills in range with their items.
+
+    Shared source of truth for the summary view and payout computation so the
+    figures always line up.
+    """
+    bill_rows = (
+        db.query(Bill, Patient, Admission)
+        .join(Patient, Bill.patient_id == Patient.id)
+        .outerjoin(Admission, Admission.id == Bill.reference_id)
+        .filter(
+            Patient.hospital_id == hospital_id,
+            Bill.bill_type == "admission",
+            Bill.bill_subtype == "final",
+            Bill.status != "cancelled",
+            sql_func.date(Bill.bill_date) >= period_from,
+            sql_func.date(Bill.bill_date) <= period_to,
+        )
+        .order_by(Bill.bill_date.desc(), Bill.id.desc())
+        .all()
+    )
+    bill_ids = [bill.id for bill, _, _ in bill_rows]
+    items_by_bill = {bill_id: [] for bill_id in bill_ids}
+    if bill_ids:
+        for item in db.query(BillItem).filter(BillItem.bill_id.in_(bill_ids)).all():
+            items_by_bill[item.bill_id].append(item)
+    return bill_rows, items_by_bill
+
+
+def _get_payout_config(db, hospital_id) -> dict:
+    """Return {unit: payout_percentage} for the fixed units, defaulting to 100."""
+    config = {unit: DEFAULT_PAYOUT_PERCENTAGE for unit in SETTLEMENT_UNITS}
+    for row in db.query(SettlementConfig).filter(SettlementConfig.hospital_id == hospital_id).all():
+        if row.unit in config:
+            config[row.unit] = float(row.payout_percentage)
+    return config
+
+
+def _unit_gross_for_period(db, hospital_id, unit, period_from, period_to):
+    """Compute a business unit's gross revenue + contributing bills for a period."""
+    bill_rows, items_by_bill = _settlement_bill_rows(db, hospital_id, period_from, period_to)
+    gross = 0.0
+    contributing = []
+    for bill, patient, admission in bill_rows:
+        split = _category_split(items_by_bill.get(bill.id, []))
+        amount = split.get(unit, 0.0)
+        if amount <= 0:
+            continue
+        gross += amount
+        contributing.append({
+            "bill_id": bill.id,
+            "bill_number": bill.bill_number,
+            "bill_date": bill.bill_date.isoformat() if bill.bill_date else None,
+            "patient_name": f"{patient.first_name} {patient.last_name}".strip(),
+            "amount": round(amount, 2),
+        })
+    return round(gross, 2), contributing
+
+
+def _next_settlement_number(db) -> str:
+    """Generate a unique STL-YYYYMM-#### settlement number."""
+    prefix = f"STL-{date.today().strftime('%Y%m')}-"
+    last = (
+        db.query(Settlement)
+        .filter(Settlement.settlement_number.like(f"{prefix}%"))
+        .order_by(Settlement.id.desc())
+        .first()
+    )
+    seq = 1
+    if last and last.settlement_number.startswith(prefix):
+        try:
+            seq = int(last.settlement_number.rsplit("-", 1)[-1]) + 1
+        except (ValueError, IndexError):
+            seq = 1
+    return f"{prefix}{seq:04d}"
+
+
+def _serialize_settlement(s: Settlement) -> dict:
+    return {
+        "id": s.id,
+        "settlement_number": s.settlement_number,
+        "unit": s.unit,
+        "unit_label": UNIT_LABELS.get(s.unit, s.unit.title()),
+        "period_from": s.period_from.isoformat() if s.period_from else None,
+        "period_to": s.period_to.isoformat() if s.period_to else None,
+        "gross_amount": round(float(s.gross_amount or 0), 2),
+        "payout_percentage": float(s.payout_percentage or 0),
+        "payout_amount": round(float(s.payout_amount or 0), 2),
+        "hospital_share": round(float(s.hospital_share or 0), 2),
+        "bill_count": s.bill_count or 0,
+        "status": s.status,
+        "payment_method": s.payment_method,
+        "payment_reference": s.payment_reference,
+        "payment_date": s.payment_date.isoformat() if s.payment_date else None,
+        "notes": s.notes,
+        "created_at": s.created_at.isoformat() if s.created_at else None,
+    }
+
+
+class SettlementConfigUpdate(BaseModel):
+    lab: Optional[float] = None
+    pharmacy: Optional[float] = None
+    canteen: Optional[float] = None
+
+
+class SettlementCreate(BaseModel):
+    unit: str
+    date_from: date = Field(alias="from")
+    date_to: date = Field(alias="to")
+    payment_method: Optional[str] = None
+    payment_reference: Optional[str] = None
+    payment_date: Optional[date] = None
+    notes: Optional[str] = None
+
+    class Config:
+        populate_by_name = True
+
+
+class SettlementCancel(BaseModel):
+    reason: Optional[str] = None
+
 
 # HOSPITAL INFORMATION ENDPOINTS
 @router.get("/info", response_model=HospitalInfoResponse)
@@ -717,27 +846,9 @@ async def get_inpatient_settlements_summary(
     if period_from > period_to:
         raise HTTPException(status_code=400, detail="'from' date must be on or before 'to' date")
 
-    bill_rows = (
-        db.query(Bill, Patient, Admission)
-        .join(Patient, Bill.patient_id == Patient.id)
-        .outerjoin(Admission, Admission.id == Bill.reference_id)
-        .filter(
-            Patient.hospital_id == current_user.hospital_id,
-            Bill.bill_type == "admission",
-            Bill.bill_subtype == "final",
-            Bill.status != "cancelled",
-            sql_func.date(Bill.bill_date) >= period_from,
-            sql_func.date(Bill.bill_date) <= period_to,
-        )
-        .order_by(Bill.bill_date.desc(), Bill.id.desc())
-        .all()
+    bill_rows, items_by_bill = _settlement_bill_rows(
+        db, current_user.hospital_id, period_from, period_to
     )
-
-    bill_ids = [bill.id for bill, _, _ in bill_rows]
-    items_by_bill = {bill_id: [] for bill_id in bill_ids}
-    if bill_ids:
-        for item in db.query(BillItem).filter(BillItem.bill_id.in_(bill_ids)).all():
-            items_by_bill[item.bill_id].append(item)
 
     totals = {"lab": 0.0, "pharmacy": 0.0, "canteen": 0.0, "hospital": 0.0, "total": 0.0}
     bills = []
@@ -756,12 +867,296 @@ async def get_inpatient_settlements_summary(
             **split,
         })
 
+    rounded_totals = {key: round(value, 2) for key, value in totals.items()}
+
+    # Per-unit payout preview for the fixed business units, using the
+    # configured payout percentage (hospital keeps the remainder).
+    config = _get_payout_config(db, current_user.hospital_id)
+    units = []
+    for unit in SETTLEMENT_UNITS:
+        gross = rounded_totals.get(unit, 0.0)
+        pct = config.get(unit, DEFAULT_PAYOUT_PERCENTAGE)
+        payout = round(gross * pct / 100.0, 2)
+        units.append({
+            "unit": unit,
+            "unit_label": UNIT_LABELS.get(unit, unit.title()),
+            "gross_amount": gross,
+            "payout_percentage": pct,
+            "payout_amount": payout,
+            "hospital_share": round(gross - payout, 2),
+        })
+
     return {
         "period": {"from": period_from.isoformat(), "to": period_to.isoformat()},
         "bill_count": len(bills),
-        "totals": {key: round(value, 2) for key, value in totals.items()},
+        "totals": rounded_totals,
         "bills": bills,
+        "config": config,
+        "units": units,
     }
+
+
+@router.get("/settlement-config")
+async def get_settlement_config(
+    current_user: User = Depends(require_hospital_admin),
+    db: Session = Depends(get_db),
+):
+    """Payout percentages for the fixed business units."""
+    return {"config": _get_payout_config(db, current_user.hospital_id)}
+
+
+@router.put("/settlement-config")
+async def update_settlement_config(
+    payload: SettlementConfigUpdate,
+    current_user: User = Depends(require_hospital_admin),
+    db: Session = Depends(get_db),
+):
+    """Set payout percentages (0–100) per business unit."""
+    updates = payload.model_dump(exclude_none=True)
+    for unit, pct in updates.items():
+        if unit not in SETTLEMENT_UNITS:
+            continue
+        try:
+            pct_val = float(pct)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"Invalid percentage for {unit}")
+        if pct_val < 0 or pct_val > 100:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Payout percentage for {UNIT_LABELS.get(unit, unit)} must be between 0 and 100",
+            )
+        row = (
+            db.query(SettlementConfig)
+            .filter(
+                SettlementConfig.hospital_id == current_user.hospital_id,
+                SettlementConfig.unit == unit,
+            )
+            .first()
+        )
+        if row:
+            row.payout_percentage = pct_val
+            row.updated_by_id = current_user.id
+        else:
+            db.add(SettlementConfig(
+                hospital_id=current_user.hospital_id,
+                unit=unit,
+                payout_percentage=pct_val,
+                updated_by_id=current_user.id,
+            ))
+    db.commit()
+
+    from app.services.audit_service import log_action
+    log_action(db, current_user, "update_settlement_config", "billing",
+               "SettlementConfig", details=updates)
+    return {"config": _get_payout_config(db, current_user.hospital_id)}
+
+
+@router.get("/settlements")
+async def list_settlements(
+    date_from: Optional[date] = Query(default=None, alias="from"),
+    date_to: Optional[date] = Query(default=None, alias="to"),
+    unit: Optional[str] = Query(default=None),
+    current_user: User = Depends(require_hospital_admin),
+    db: Session = Depends(get_db),
+):
+    """Recorded settlement payouts, newest first."""
+    query = db.query(Settlement).filter(Settlement.hospital_id == current_user.hospital_id)
+    if unit:
+        query = query.filter(Settlement.unit == unit)
+    if date_from:
+        query = query.filter(Settlement.period_to >= date_from)
+    if date_to:
+        query = query.filter(Settlement.period_from <= date_to)
+    rows = query.order_by(Settlement.created_at.desc(), Settlement.id.desc()).all()
+    return {"settlements": [_serialize_settlement(s) for s in rows]}
+
+
+@router.post("/settlements")
+async def create_settlement(
+    payload: SettlementCreate,
+    current_user: User = Depends(require_hospital_admin),
+    db: Session = Depends(get_db),
+):
+    """Record a payout to a business unit for a date range.
+
+    Computes the unit's gross revenue for the period from finalized inpatient
+    bills, applies the configured payout percentage, and stores a snapshot.
+    Rejects overlaps with existing (non-cancelled) settlements for the same
+    unit so revenue is not paid out twice.
+    """
+    unit = (payload.unit or "").lower()
+    if unit not in SETTLEMENT_UNITS:
+        raise HTTPException(status_code=400, detail="Unknown business unit")
+    if payload.date_from > payload.date_to:
+        raise HTTPException(status_code=400, detail="'from' date must be on or before 'to' date")
+
+    # Overlap guard: [from, to] must not intersect an active settlement's range.
+    overlap = (
+        db.query(Settlement)
+        .filter(
+            Settlement.hospital_id == current_user.hospital_id,
+            Settlement.unit == unit,
+            Settlement.status != "cancelled",
+            Settlement.period_from <= payload.date_to,
+            Settlement.period_to >= payload.date_from,
+        )
+        .first()
+    )
+    if overlap:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"This period overlaps an existing settlement "
+                f"({overlap.settlement_number}, {overlap.period_from} to {overlap.period_to}) "
+                f"for {UNIT_LABELS.get(unit, unit)}."
+            ),
+        )
+
+    gross, contributing = _unit_gross_for_period(
+        db, current_user.hospital_id, unit, payload.date_from, payload.date_to
+    )
+    if gross <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No {UNIT_LABELS.get(unit, unit)} revenue to settle in this period.",
+        )
+
+    config = _get_payout_config(db, current_user.hospital_id)
+    pct = config.get(unit, DEFAULT_PAYOUT_PERCENTAGE)
+    payout = round(gross * pct / 100.0, 2)
+
+    settlement = Settlement(
+        settlement_number=_next_settlement_number(db),
+        hospital_id=current_user.hospital_id,
+        unit=unit,
+        period_from=payload.date_from,
+        period_to=payload.date_to,
+        gross_amount=gross,
+        payout_percentage=pct,
+        payout_amount=payout,
+        hospital_share=round(gross - payout, 2),
+        bill_count=len(contributing),
+        status="paid",
+        payment_method=payload.payment_method,
+        payment_reference=payload.payment_reference,
+        payment_date=payload.payment_date,
+        notes=payload.notes,
+        created_by_id=current_user.id,
+    )
+    db.add(settlement)
+    db.commit()
+    db.refresh(settlement)
+
+    from app.services.audit_service import log_action
+    log_action(db, current_user, "record_settlement", "billing", "Settlement",
+               settlement.id, details={
+                   "unit": unit, "gross": gross, "payout": payout,
+                   "period": f"{payload.date_from} to {payload.date_to}",
+               })
+    return _serialize_settlement(settlement)
+
+
+@router.post("/settlements/{settlement_id}/cancel")
+async def cancel_settlement(
+    settlement_id: int,
+    payload: SettlementCancel,
+    current_user: User = Depends(require_hospital_admin),
+    db: Session = Depends(get_db),
+):
+    """Void a recorded settlement (frees its period to be settled again)."""
+    settlement = (
+        db.query(Settlement)
+        .filter(
+            Settlement.id == settlement_id,
+            Settlement.hospital_id == current_user.hospital_id,
+        )
+        .first()
+    )
+    if not settlement:
+        raise HTTPException(status_code=404, detail="Settlement not found")
+    if settlement.status == "cancelled":
+        raise HTTPException(status_code=400, detail="Settlement is already cancelled")
+
+    settlement.status = "cancelled"
+    settlement.cancelled_at = datetime.now()
+    settlement.cancelled_by_id = current_user.id
+    settlement.cancelled_reason = payload.reason
+    db.commit()
+    db.refresh(settlement)
+
+    from app.services.audit_service import log_action
+    log_action(db, current_user, "cancel_settlement", "billing", "Settlement",
+               settlement.id, details={"reason": payload.reason})
+    return _serialize_settlement(settlement)
+
+
+@router.get("/settlements/{settlement_id}/pdf")
+async def settlement_statement_pdf(
+    settlement_id: int,
+    current_user: User = Depends(require_hospital_admin),
+    db: Session = Depends(get_db),
+):
+    """Printable settlement statement to hand/send to the business unit."""
+    settlement = (
+        db.query(Settlement)
+        .filter(
+            Settlement.id == settlement_id,
+            Settlement.hospital_id == current_user.hospital_id,
+        )
+        .first()
+    )
+    if not settlement:
+        raise HTTPException(status_code=404, detail="Settlement not found")
+
+    # Contributing bills are recomputed from the stored period for the detail
+    # table; the headline amounts come from the stored snapshot.
+    _, contributing = _unit_gross_for_period(
+        db, current_user.hospital_id, settlement.unit,
+        settlement.period_from, settlement.period_to,
+    )
+
+    hospital = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
+    hospital_info = {
+        "name": hospital.name if hospital else "HOSPITAL",
+        "address": hospital.address if hospital else "",
+        "phone": hospital.phone if hospital else "",
+        "email": hospital.email if hospital else "",
+        "logo_url": getattr(hospital, "logo_url", "") if hospital else "",
+        "hospital_subname": getattr(hospital, "hospital_subname", "") if hospital else "",
+    }
+    statement = {
+        "settlement_number": settlement.settlement_number,
+        "unit_label": UNIT_LABELS.get(settlement.unit, settlement.unit.title()),
+        "status": settlement.status,
+        "period_from": settlement.period_from.strftime("%d/%m/%Y") if settlement.period_from else "",
+        "period_to": settlement.period_to.strftime("%d/%m/%Y") if settlement.period_to else "",
+        "gross_amount": float(settlement.gross_amount or 0),
+        "payout_percentage": float(settlement.payout_percentage or 0),
+        "payout_amount": float(settlement.payout_amount or 0),
+        "hospital_share": float(settlement.hospital_share or 0),
+        "bill_count": settlement.bill_count or 0,
+        "payment_method": settlement.payment_method,
+        "payment_reference": settlement.payment_reference,
+        "payment_date": settlement.payment_date.strftime("%d/%m/%Y") if settlement.payment_date else None,
+        "notes": settlement.notes,
+        "generated_at": datetime.now().strftime("%d/%m/%Y %I:%M %p"),
+        "bills": [{
+            "bill_number": b["bill_number"],
+            "bill_date": (b["bill_date"][:10] if b.get("bill_date") else ""),
+            "patient_name": b["patient_name"],
+            "amount": b["amount"],
+        } for b in contributing],
+    }
+
+    from app.utils.pdf_service import pdf_service
+    buf = pdf_service.generate_settlement_statement_pdf(
+        statement, hospital_info,
+        **pdf_gen_kwargs(db, current_user.hospital_id, "settlement_statement"),
+    )
+    return StreamingResponse(
+        buf, media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{settlement.settlement_number}.pdf"'},
+    )
 
 
 def _get_dashboard_data(current_user, db):

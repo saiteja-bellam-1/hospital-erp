@@ -5645,5 +5645,159 @@ class PDFService:
         return buffer
 
 
+    def generate_settlement_statement_pdf(
+        self, statement, hospital_info, include_header=True,
+        letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT,
+    ):
+        """Business-unit settlement statement.
+
+        `statement` dict keys: settlement_number, unit_label, status,
+        period_from, period_to, gross_amount, payout_percentage, payout_amount,
+        hospital_share, bill_count, payment_method, payment_reference,
+        payment_date, notes, generated_at, and optional `bills` list of
+        {bill_number, bill_date, patient_name, amount}.
+        """
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(
+            buffer, pagesize=A4,
+            rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=20,
+        )
+        elements = []
+        page_width = A4[0] - 60
+
+        title = f"SETTLEMENT STATEMENT — {str(statement.get('unit_label') or '').upper()}"
+        self._pharmacy_header(
+            elements, hospital_info, include_header, title, page_width, letterhead_gap_pt,
+        )
+
+        cell = ParagraphStyle(
+            "SettleCell", parent=self.styles["Normal"], fontSize=9,
+            fontName="Helvetica", textColor=colors.black, leading=12,
+        )
+
+        def lv(label, value):
+            return Paragraph(f"<b>{label}:</b> {value}", cell)
+
+        col_w = page_width / 2
+        meta = Table(
+            [
+                [lv("Settlement #", statement.get("settlement_number", "")),
+                 lv("Generated", statement.get("generated_at", ""))],
+                [lv("Business Unit", statement.get("unit_label", "")),
+                 lv("Status", str(statement.get("status") or "paid").upper())],
+                [lv("Period", f"{statement.get('period_from', '')} to {statement.get('period_to', '')}"),
+                 lv("Bills covered", statement.get("bill_count", 0))],
+                [lv("Payment Mode", str(statement.get("payment_method") or "—").replace("_", " ").title()),
+                 lv("Reference", statement.get("payment_reference") or "—")],
+                [lv("Payment Date", statement.get("payment_date") or "—"),
+                 lv("", "")],
+            ],
+            colWidths=[col_w, col_w],
+        )
+        meta.setStyle(TableStyle([
+            ("BOX", (0, 0), (-1, -1), 1, colors.black),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 8),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        elements.append(meta)
+        elements.append(Spacer(1, 10))
+
+        gross = float(statement.get("gross_amount") or 0)
+        pct = float(statement.get("payout_percentage") or 0)
+        payout = float(statement.get("payout_amount") or 0)
+        hosp = float(statement.get("hospital_share") or 0)
+
+        summary = Table(
+            [
+                [Paragraph("<b>Description</b>", cell), Paragraph("<b>Amount (₹)</b>", cell)],
+                [Paragraph(f"Gross revenue generated ({statement.get('unit_label', '')})", cell),
+                 Paragraph(f"{gross:,.2f}", cell)],
+                [Paragraph(f"Payout share ({pct:g}%)", cell),
+                 Paragraph(f"{payout:,.2f}", cell)],
+                [Paragraph(f"Hospital retention ({(100 - pct):g}%)", cell),
+                 Paragraph(f"{hosp:,.2f}", cell)],
+                [Paragraph("<b>Net amount payable to unit</b>", cell),
+                 Paragraph(f"<b>{payout:,.2f}</b>", cell)],
+            ],
+            colWidths=[page_width - 130, 130],
+        )
+        summary.setStyle(TableStyle([
+            ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
+            ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.grey),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+            ("BACKGROUND", (0, -1), (-1, -1), colors.whitesmoke),
+            ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 8),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        elements.append(summary)
+
+        bills = statement.get("bills") or []
+        if bills:
+            elements.append(Spacer(1, 12))
+            elements.append(Paragraph("<b>Contributing inpatient bills</b>", cell))
+            elements.append(Spacer(1, 4))
+            small = ParagraphStyle("SettleSmall", parent=cell, fontSize=8, leading=10)
+            hdr = ParagraphStyle("SettleHdr", parent=small, fontName="Helvetica-Bold")
+            rows = [[
+                Paragraph("Bill #", hdr), Paragraph("Date", hdr),
+                Paragraph("Patient", hdr), Paragraph("Amount (₹)", hdr),
+            ]]
+            for b in bills:
+                rows.append([
+                    Paragraph(str(b.get("bill_number") or ""), small),
+                    Paragraph(str(b.get("bill_date") or ""), small),
+                    Paragraph(str(b.get("patient_name") or ""), small),
+                    Paragraph(f"{float(b.get('amount') or 0):,.2f}", small),
+                ])
+            btbl = Table(rows, colWidths=[110, 90, page_width - 300, 100], repeatRows=1)
+            btbl.setStyle(TableStyle([
+                ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
+                ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.grey),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                ("ALIGN", (3, 1), (3, -1), "RIGHT"),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ]))
+            elements.append(btbl)
+
+        if statement.get("notes"):
+            elements.append(Spacer(1, 10))
+            elements.append(Paragraph(f"<b>Notes:</b> {statement['notes']}", cell))
+
+        if str(statement.get("status")) == "cancelled":
+            elements.append(Spacer(1, 10))
+            void_style = ParagraphStyle(
+                "SettleVoid", parent=self.styles["Normal"], fontSize=14,
+                alignment=1, fontName="Helvetica-Bold", textColor=colors.red,
+            )
+            elements.append(Paragraph("*** CANCELLED ***", void_style))
+
+        elements.append(Spacer(1, 30))
+        sign = Table(
+            [[Paragraph("Received by (Business Unit)", cell),
+              Paragraph("Authorised by (Hospital)", cell)]],
+            colWidths=[col_w, col_w],
+        )
+        sign.setStyle(TableStyle([
+            ("LINEABOVE", (0, 0), (0, 0), 0.5, colors.black),
+            ("LINEABOVE", (1, 0), (1, 0), 0.5, colors.black),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ]))
+        elements.append(sign)
+
+        _finalize(doc, elements, hospital_info,
+                  watermark="CANCELLED" if str(statement.get("status")) == "cancelled" else None)
+        buffer.seek(0)
+        return buffer
+
+
 # Create global instance
 pdf_service = PDFService()
