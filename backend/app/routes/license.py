@@ -77,10 +77,8 @@ async def generate_rebind_request(
     """
     _require_admin(current_user)
 
-    import hashlib
     import json as _json
-    from datetime import datetime as _dt
-    from app.utils.machine_id import get_machine_id_full
+    from app.services.license_service import build_rebind_request_payload
 
     license_record = get_current_license(db)
     if not license_record:
@@ -94,43 +92,21 @@ async def generate_rebind_request(
             detail="The current license has no stored signature data. Re-upload the original .lic first.",
         )
 
-    machine = get_machine_id_full()
-    new_machine_id = machine["machine_id"]
-    old_machine_id = ""
-    try:
-        from app.licensing.crypto import verify_license_file
-        original = verify_license_file(license_record.raw_license_data)
-        old_machine_id = original.get("machine_id", "") or ""
-    except Exception:
-        # We still let the request go through — vendor can decide whether to honour it
-        pass
+    request_payload = build_rebind_request_payload(
+        license_record.raw_license_data,
+        license_id=license_record.license_id,
+        hospital_id=license_record.hospital_id,
+        hospital_name=license_record.hospital_name,
+        requested_by=current_user.username,
+    )
+    new_machine_id = request_payload["new_machine_id"]
+    old_machine_id = request_payload["old_machine_id"]
 
     if old_machine_id and old_machine_id == new_machine_id:
         raise HTTPException(
             status_code=400,
             detail="This machine already matches the licensed machine ID — no rebind needed.",
         )
-
-    # The "signature proof" is a SHA-256 of the original signed .lic content.
-    # The vendor's License Manager can recompute it from the stored copy of
-    # the license to confirm this request really came from a holder of the
-    # original .lic and hasn't been forged from public license metadata alone.
-    proof = hashlib.sha256(license_record.raw_license_data.encode("utf-8")).hexdigest()
-
-    request_payload = {
-        "request_type": "license_rebind",
-        "request_version": 1,
-        "license_id": license_record.license_id,
-        "hospital_id": license_record.hospital_id,
-        "hospital_name": license_record.hospital_name,
-        "old_machine_id": old_machine_id,
-        "new_machine_id": new_machine_id,
-        "new_machine_hostname": machine.get("hostname"),
-        "new_machine_os": machine.get("os"),
-        "requested_by": current_user.username,
-        "requested_at": _dt.utcnow().isoformat() + "Z",
-        "license_signature_proof_sha256": proof,
-    }
 
     try:
         from app.services.audit_service import log_action

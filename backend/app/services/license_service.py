@@ -41,6 +41,59 @@ def get_current_license(db: Session) -> License | None:
     return db.query(License).order_by(License.id.desc()).first()
 
 
+def build_rebind_request_payload(
+    raw_license_data: str,
+    *,
+    license_id: str | None = None,
+    hospital_id: str | None = None,
+    hospital_name: str | None = None,
+    requested_by: str = "",
+) -> dict:
+    """Build a ``.rebind.json`` request payload from a signed ``.lic`` string.
+
+    Shared by two callers:
+      - the License Management page, where the license is already installed in
+        the running DB, and
+      - the Backup restore flow, where the license is read straight out of a
+        backup ``.db`` that was created on another machine (so it can never be
+        loaded into the running app because of the machine-binding guard).
+
+    Metadata (license_id / hospital_id / hospital_name) falls back to the
+    values inside the signed payload when explicit values aren't supplied. The
+    ``license_signature_proof_sha256`` lets the vendor's License Manager
+    confirm the requester actually holds the original signed ``.lic`` before
+    re-issuing.
+    """
+    import hashlib
+    from datetime import datetime as _dt
+    from app.utils.machine_id import get_machine_id_full
+
+    try:
+        signed = verify_license_file(raw_license_data)
+    except Exception:
+        signed = {}
+
+    machine = get_machine_id_full()
+    new_machine_id = machine["machine_id"]
+    old_machine_id = signed.get("machine_id", "") or ""
+    proof = hashlib.sha256(raw_license_data.encode("utf-8")).hexdigest()
+
+    return {
+        "request_type": "license_rebind",
+        "request_version": 1,
+        "license_id": license_id or signed.get("license_id"),
+        "hospital_id": hospital_id or signed.get("hospital_id"),
+        "hospital_name": hospital_name or signed.get("hospital_name"),
+        "old_machine_id": old_machine_id,
+        "new_machine_id": new_machine_id,
+        "new_machine_hostname": machine.get("hostname"),
+        "new_machine_os": machine.get("os"),
+        "requested_by": requested_by,
+        "requested_at": _dt.utcnow().isoformat() + "Z",
+        "license_signature_proof_sha256": proof,
+    }
+
+
 def get_license_status(db: Session) -> dict:
     """Get current license status info for API responses."""
     license_record = get_current_license(db)

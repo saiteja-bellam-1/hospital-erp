@@ -127,6 +127,7 @@ const LicenseManagement = () => {
       expiring_soon: { variant: 'default', className: 'bg-yellow-100 text-yellow-800', icon: <AlertTriangle className="h-3 w-3" />, label: 'Expiring Soon' },
       grace_period: { variant: 'default', className: 'bg-red-100 text-red-800', icon: <Clock className="h-3 w-3" />, label: 'Grace Period' },
       expired: { variant: 'destructive', className: '', icon: <XCircle className="h-3 w-3" />, label: 'Expired' },
+      machine_mismatch: { variant: 'destructive', className: '', icon: <Cpu className="h-3 w-3" />, label: 'Machine Mismatch' },
       no_license: { variant: 'secondary', className: '', icon: <Shield className="h-3 w-3" />, label: 'No License' },
     };
     const config = configs[status] || configs.no_license;

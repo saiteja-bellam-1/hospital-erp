@@ -180,3 +180,54 @@ def test_validate_backup_db_file_rejects_no_users(tmp_path):
     with pytest.raises(HTTPException) as exc:
         _validate_backup_db_file(str(db), "/nonexistent/current.db", allow_same_path=True)
     assert "no users" in str(exc.value.detail).lower()
+
+
+def _make_db_with_foreign_license(path):
+    """Create a structurally-valid hospital DB whose license fails machine
+    binding (unverifiable raw data → treated as mismatch)."""
+    import sqlite3
+    conn = sqlite3.connect(str(path))
+    conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY)")
+    conn.execute("INSERT INTO users (id) VALUES (1)")
+    conn.execute(
+        "CREATE TABLE licenses (id INTEGER PRIMARY KEY, license_id TEXT, "
+        "hospital_id TEXT, hospital_name TEXT, raw_license_data TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO licenses (id, license_id, hospital_id, hospital_name, raw_license_data) "
+        "VALUES (1, 'LIC-1', 'H1', 'Test Hospital', 'not-a-valid-signed-license')"
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_validate_backup_db_file_blocks_machine_mismatch(tmp_path):
+    """A backup whose license belongs to another machine is blocked with a
+    machine-parseable structured detail so the UI can offer a rebind."""
+    from app.routes.backup import _validate_backup_db_file
+    from fastapi import HTTPException
+
+    db = tmp_path / "foreign.db"
+    _make_db_with_foreign_license(db)
+
+    with pytest.raises(HTTPException) as exc:
+        _validate_backup_db_file(str(db), "/nonexistent/current.db", allow_same_path=True)
+    detail = exc.value.detail
+    assert isinstance(detail, dict)
+    assert detail["code"] == "license_machine_mismatch"
+    assert "current_machine_id" in detail
+
+
+def test_validate_backup_db_file_allows_machine_mismatch_when_acknowledged(tmp_path):
+    """With allow_machine_mismatch=True the binding guard is bypassed so the
+    operator can migrate a DB from another machine and rebind afterwards."""
+    from app.routes.backup import _validate_backup_db_file
+
+    db = tmp_path / "foreign.db"
+    _make_db_with_foreign_license(db)
+
+    # Should NOT raise.
+    _validate_backup_db_file(
+        str(db), "/nonexistent/current.db",
+        allow_same_path=True, allow_machine_mismatch=True,
+    )

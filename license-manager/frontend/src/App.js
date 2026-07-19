@@ -88,6 +88,7 @@ function App() {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [showForm, setShowForm] = useState(false);
+  const [processingRebind, setProcessingRebind] = useState(false);
   const [showRenew, setShowRenew] = useState(null);
   const [renewForm, setRenewForm] = useState({ months: 12, days: 0, plan: 'standard', max_users: 50, features: [], gdrive_backup_enabled: false, seller_id: '' });
   const [customDuration, setCustomDuration] = useState(false);
@@ -228,6 +229,38 @@ function App() {
       const e = await r.json();
       showMessage(e.detail || 'Renewal failed', 'error');
     }
+  };
+
+  const processRebind = async (file) => {
+    setProcessingRebind(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const r = await fetch(`${API}/licenses/process-rebind`, { method: 'POST', body: fd });
+      if (!r.ok) {
+        let detail = 'Could not process rebind request';
+        try { detail = (await r.json()).detail || detail; } catch {}
+        showMessage(typeof detail === 'string' ? detail : 'Could not process rebind request', 'error');
+        return;
+      }
+      // Success — the response is the rebound .lic file. Download it for the vendor to send back.
+      const blob = await r.blob();
+      const disposition = r.headers.get('Content-Disposition') || '';
+      const match = disposition.match(/filename\*?=(?:UTF-8'')?["']?([^"';]+)/i);
+      const filename = match ? decodeURIComponent(match[1]) : 'rebound.lic';
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      showMessage('Rebind processed — new .lic downloaded. Send it to the hospital to upload.');
+      fetchLicenses(); fetchDash();
+    } catch {
+      showMessage('Could not process rebind request', 'error');
+    } finally { setProcessingRebind(false); }
   };
 
   const downloadLicense = async (licenseId) => {
@@ -481,11 +514,20 @@ function App() {
                   <h2 className="text-2xl font-bold text-white">Licenses</h2>
                   <p className="text-sm text-slate-500 mt-1">{licenses.length} license{licenses.length !== 1 ? 's' : ''} total</p>
                 </div>
-                <button onClick={() => setShowForm(true)}
-                  className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-sm font-semibold transition-colors shadow-lg shadow-blue-600/20">
-                  <Icon d={Icons.plus} className="w-4 h-4" />
-                  Generate License
-                </button>
+                <div className="flex items-center gap-2">
+                  <label className="flex items-center gap-2 px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-sm font-semibold transition-colors cursor-pointer border border-slate-700/50">
+                    <Icon d={Icons.upload || "M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"} className="w-4 h-4" />
+                    {processingRebind ? 'Processing…' : 'Process Rebind Request'}
+                    <input type="file" accept=".json,.rebind.json,application/json" className="hidden"
+                      disabled={processingRebind}
+                      onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) processRebind(f); }} />
+                  </label>
+                  <button onClick={() => setShowForm(true)}
+                    className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-sm font-semibold transition-colors shadow-lg shadow-blue-600/20">
+                    <Icon d={Icons.plus} className="w-4 h-4" />
+                    Generate License
+                  </button>
+                </div>
               </div>
 
               {/* Filters */}

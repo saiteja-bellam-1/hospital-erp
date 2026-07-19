@@ -9,7 +9,7 @@ import axios from 'axios';
 import { Badge } from '../../components/ui/badge';
 import {
   FolderSync, FolderOpen, Plus, X, Play, CheckCircle2, AlertCircle, Loader2, RefreshCw,
-  Database, HardDrive, MapPin, ShieldCheck, Image, FileText, Settings, Clock, Timer, RotateCcw, AlertTriangle, Cloud, Upload
+  Database, HardDrive, MapPin, ShieldCheck, Image, FileText, Settings, Clock, Timer, RotateCcw, AlertTriangle, Cloud, Upload, Download, Cpu
 } from 'lucide-react';
 import { localDateString } from '../../utils/localDate';
 
@@ -36,6 +36,10 @@ const BackupManagement = () => {
   const [uploadFile, setUploadFile] = useState(null);
   const [showUploadDialog, setShowUploadDialog] = useState(false);
   const [uploadingRestore, setUploadingRestore] = useState(false);
+  // Machine-mismatch recovery: set when a restore/upload is blocked because the
+  // backup's license belongs to another machine. { context: 'restore'|'upload', message, license_machine_id, current_machine_id }
+  const [rebindInfo, setRebindInfo] = useState(null);
+  const [rebindBusy, setRebindBusy] = useState(false);
   const { toast } = useToast();
 
   const fetchSnapshotStatus = async () => {
@@ -139,6 +143,89 @@ const BackupManagement = () => {
     if (!d) return '-';
     try { return new Date(d).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }); }
     catch { return d; }
+  };
+
+  const saveBlobResponse = (res, fallbackName) => {
+    const blob = new Blob([res.data], { type: 'application/json' });
+    const cd = res.headers['content-disposition'] || '';
+    const m = cd.match(/filename="?([^";]+)"?/);
+    const fname = m ? m[1] : fallbackName;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fname;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  // Turn a restore/upload error into either a machine-mismatch recovery prompt
+  // or a plain alert. Returns true if it was handled as a mismatch.
+  const handleRestoreError = (err, context) => {
+    const detail = err.response?.data?.detail;
+    if (detail && typeof detail === 'object' && detail.code === 'license_machine_mismatch') {
+      setShowRestoreDialog(false);
+      setShowUploadDialog(false);
+      setRebindInfo({ context, ...detail });
+      return true;
+    }
+    alert(typeof detail === 'string' ? detail : (context === 'upload' ? 'Restore from upload failed' : 'Restore failed'));
+    return false;
+  };
+
+  const downloadRebindRequest = async () => {
+    if (!rebindInfo) return;
+    setRebindBusy(true);
+    try {
+      let res;
+      if (rebindInfo.context === 'upload') {
+        if (!uploadFile) { toast({ variant: 'destructive', title: 'File missing', description: 'Re-select the .db file and try again.' }); return; }
+        const fd = new FormData();
+        fd.append('file', uploadFile);
+        res = await axios.post('/api/backup/restore-upload/rebind-request', fd, {
+          headers: { 'Content-Type': 'multipart/form-data' }, responseType: 'blob',
+        });
+      } else {
+        res = await axios.post('/api/backup/restore/rebind-request', { backup_path: selectedRestore?.path }, { responseType: 'blob' });
+      }
+      saveBlobResponse(res, 'kthealth_rebind.rebind.json');
+      toast({ title: 'Rebind request downloaded', description: 'Send this file to your vendor. They will return a fresh .lic bound to this machine, which you upload in License Management.' });
+    } catch (err) {
+      let msg = 'Could not generate rebind request';
+      try {
+        const text = err.response?.data instanceof Blob ? JSON.parse(await err.response.data.text())?.detail : err.response?.data?.detail;
+        if (typeof text === 'string') msg = text;
+      } catch {}
+      toast({ variant: 'destructive', title: 'Failed', description: msg });
+    } finally { setRebindBusy(false); }
+  };
+
+  const restoreAnyway = async () => {
+    if (!rebindInfo) return;
+    setRebindBusy(true);
+    try {
+      let res;
+      if (rebindInfo.context === 'upload') {
+        if (!uploadFile) { toast({ variant: 'destructive', title: 'File missing', description: 'Re-select the .db file and try again.' }); return; }
+        const fd = new FormData();
+        fd.append('file', uploadFile);
+        fd.append('allow_machine_mismatch', 'true');
+        res = await axios.post('/api/backup/restore-upload', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+      } else {
+        res = await axios.post('/api/backup/restore', {
+          backup_path: selectedRestore?.path,
+          backup_type: selectedRestore?.type,
+          allow_machine_mismatch: true,
+        });
+      }
+      setRebindInfo(null);
+      alert(`${res.data.message}\n\nThe restored license is bound to another machine, so the system is now in a "machine mismatch" state. Log back in as an admin, then upload the rebound .lic in License Management once your vendor returns it.\n\nYou will be logged out now.`);
+      localStorage.clear();
+      window.location.href = '/';
+    } catch (err) {
+      alert(typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Restore failed');
+    } finally { setRebindBusy(false); }
   };
 
   if (loading) return <div className="flex items-center justify-center p-12"><Loader2 className="w-6 h-6 animate-spin" /></div>;
@@ -646,7 +733,7 @@ const BackupManagement = () => {
                     localStorage.clear();
                     window.location.href = '/';
                   } catch (err) {
-                    alert(err.response?.data?.detail || 'Restore failed');
+                    handleRestoreError(err, 'restore');
                   } finally { setRestoring(false); }
                 }}>
                 {restoring ? <><Loader2 className="w-4 h-4 mr-1 animate-spin" /> Restoring...</> : 'Restore Database'}
@@ -697,11 +784,43 @@ const BackupManagement = () => {
                     localStorage.clear();
                     window.location.href = '/';
                   } catch (err) {
-                    const detail = err.response?.data?.detail;
-                    alert(typeof detail === 'string' ? detail : 'Restore from upload failed');
+                    handleRestoreError(err, 'upload');
                   } finally { setUploadingRestore(false); }
                 }}>
                 {uploadingRestore ? <><Loader2 className="w-4 h-4 mr-1 animate-spin" /> Uploading & Restoring...</> : 'Upload & Restore'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Machine-mismatch recovery Dialog */}
+      <Dialog open={!!rebindInfo} onOpenChange={(open) => { if (!open && !rebindBusy) setRebindInfo(null); }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-amber-500" /> License is from another machine
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
+              <p>{rebindInfo?.message || 'This backup carries a license bound to a different machine.'}</p>
+            </div>
+            <div className="bg-gray-50 rounded-lg p-3 space-y-1 text-xs">
+              <div className="flex items-center gap-1"><Cpu className="w-3 h-3" /> License machine: <code>{rebindInfo?.license_machine_id || 'unknown'}</code></div>
+              <div className="flex items-center gap-1"><Cpu className="w-3 h-3" /> This machine: <code>{rebindInfo?.current_machine_id || '-'}</code></div>
+            </div>
+            <div className="text-sm text-gray-600 space-y-2">
+              <p><strong>Recommended:</strong> download a rebind request and send it to your vendor. They return a fresh <code>.lic</code> bound to this machine, which you upload under License Management.</p>
+              <p>Or <strong>restore anyway</strong> to load this data now — the system will run in a "machine mismatch" state (admins can still log in) until you upload the rebound license.</p>
+            </div>
+            <div className="flex flex-col sm:flex-row justify-end gap-2 pt-2 border-t">
+              <Button variant="outline" disabled={rebindBusy} onClick={() => setRebindInfo(null)}>Cancel</Button>
+              <Button variant="outline" disabled={rebindBusy} onClick={restoreAnyway}>
+                {rebindBusy ? <><Loader2 className="w-4 h-4 mr-1 animate-spin" /> Working...</> : <><RotateCcw className="w-4 h-4 mr-1" /> Restore anyway</>}
+              </Button>
+              <Button disabled={rebindBusy} onClick={downloadRebindRequest}>
+                {rebindBusy ? <><Loader2 className="w-4 h-4 mr-1 animate-spin" /> Working...</> : <><Download className="w-4 h-4 mr-1" /> Download Rebind Request</>}
               </Button>
             </div>
           </div>

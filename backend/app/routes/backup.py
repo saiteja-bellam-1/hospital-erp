@@ -1,7 +1,8 @@
 """
 Backup management API endpoints.
 """
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from typing import List, Optional
 import os
@@ -422,6 +423,14 @@ _restore_in_progress = False
 class RestoreRequest(BaseModel):
     backup_path: str
     backup_type: str  # manual, snapshot, mirror
+    # Set True only after the operator has acknowledged the machine-mismatch
+    # prompt: the restored DB carries a license bound to another machine and
+    # they intend to request a rebind afterwards.
+    allow_machine_mismatch: bool = False
+
+
+class RebindFromBackupRequest(BaseModel):
+    backup_path: str
 
 
 @router.get("/restore/list")
@@ -491,11 +500,24 @@ async def list_restore_points(current_user: User = Depends(get_current_user)):
     return {"restore_points": restore_points}
 
 
-def _validate_backup_db_file(backup_path: str, current_db: str, allow_same_path: bool = False) -> None:
+def _validate_backup_db_file(
+    backup_path: str,
+    current_db: str,
+    allow_same_path: bool = False,
+    allow_machine_mismatch: bool = False,
+) -> None:
     """Raises HTTPException on any problem. Same checks as the original
     inline validation in /restore, plus a machine-binding pre-check so an
     admin can't accidentally swap in a DB whose license belongs to another
-    machine (would leave the system in machine_mismatch after the swap)."""
+    machine (would leave the system in machine_mismatch after the swap).
+
+    When ``allow_machine_mismatch`` is True the machine-binding block is
+    downgraded from a hard error to a no-op — used when the operator has
+    explicitly acknowledged they're migrating a DB from another machine and
+    intends to request a license rebind afterwards. In that case the error
+    carries a structured ``detail`` (``code == "license_machine_mismatch"``)
+    so the frontend can offer the rebind / "restore anyway" choices instead
+    of a dead-end message."""
     import sqlite3
 
     if not os.path.isfile(backup_path):
@@ -528,7 +550,7 @@ def _validate_backup_db_file(backup_path: str, current_db: str, allow_same_path:
                 ).fetchone()
             except sqlite3.Error:
                 row = None
-            if row and row[0]:
+            if row and row[0] and not allow_machine_mismatch:
                 from app.services.license_service import verify_license_machine_binding
                 class _Stub:
                     pass
@@ -538,13 +560,18 @@ def _validate_backup_db_file(backup_path: str, current_db: str, allow_same_path:
                 if not ok:
                     raise HTTPException(
                         status_code=400,
-                        detail=(
-                            "Backup contains a license bound to a different machine "
-                            f"(license bound to {lic_mid or '(unknown)'}, this machine "
-                            f"is {cur_mid}). Use the setup wizard's restore flow to "
-                            "generate a rebind request, or remove the license row from "
-                            "the backup before restoring."
-                        ),
+                        detail={
+                            "code": "license_machine_mismatch",
+                            "message": (
+                                "This backup's license is bound to a different machine "
+                                f"(license machine {lic_mid or 'unknown'}, this machine "
+                                f"{cur_mid}). Generate a rebind request so your vendor can "
+                                "re-issue the license for this machine, or restore anyway "
+                                "and rebind afterwards."
+                            ),
+                            "license_machine_id": lic_mid,
+                            "current_machine_id": cur_mid,
+                        },
                     )
         finally:
             conn.close()
@@ -762,6 +789,74 @@ def _cleanup_old_pre_restore(pre_restore_dir: str, keep: int = 5) -> None:
         pass
 
 
+def _read_backup_license(backup_path: str) -> Optional[dict]:
+    """Read the newest license row (raw signature + identity columns) out of a
+    backup .db file. Read-only; returns None when the backup has no license."""
+    import sqlite3
+    try:
+        conn = sqlite3.connect(f"file:{backup_path}?mode=ro", uri=True)
+    except Exception:
+        return None
+    try:
+        row = conn.execute(
+            "SELECT raw_license_data, license_id, hospital_id, hospital_name "
+            "FROM licenses ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    if not row or not row[0]:
+        return None
+    return {
+        "raw_license_data": row[0],
+        "license_id": row[1],
+        "hospital_id": row[2],
+        "hospital_name": row[3],
+    }
+
+
+def _rebind_response_from_backup(backup_path: str, requested_by: str) -> Response:
+    """Build a downloadable .rebind.json from the license stored inside a
+    backup .db. This is what makes the 'DB from another machine' edge case
+    recoverable: the operator can generate the rebind request straight from
+    the backup, without first having to swap it in (which the machine-binding
+    guard would otherwise block)."""
+    import json as _json
+    from app.services.license_service import build_rebind_request_payload
+
+    lic = _read_backup_license(backup_path)
+    if not lic:
+        raise HTTPException(
+            status_code=400,
+            detail="This backup does not contain a license, so there is nothing to rebind.",
+        )
+    try:
+        payload = build_rebind_request_payload(
+            lic["raw_license_data"],
+            license_id=lic["license_id"],
+            hospital_id=lic["hospital_id"],
+            hospital_name=lic["hospital_name"],
+            requested_by=requested_by,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not build rebind request: {e}")
+
+    if payload.get("old_machine_id") and payload["old_machine_id"] == payload["new_machine_id"]:
+        raise HTTPException(
+            status_code=400,
+            detail="This backup's license already matches this machine — no rebind needed.",
+        )
+
+    safe_name = (lic.get("hospital_name") or "kthealth").replace(" ", "_")
+    filename = f"{safe_name}_rebind_{payload['new_machine_id']}.rebind.json"
+    return Response(
+        content=_json.dumps(payload, indent=2),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.post("/restore")
 async def restore_database(
     data: RestoreRequest,
@@ -777,7 +872,9 @@ async def restore_database(
 
     backup_path = data.backup_path
     current_db = get_configured_db_path()
-    _validate_backup_db_file(backup_path, current_db)
+    _validate_backup_db_file(
+        backup_path, current_db, allow_machine_mismatch=data.allow_machine_mismatch
+    )
 
     try:
         return _run_restore_from_path(backup_path, data.backup_type, current_user)
@@ -785,14 +882,33 @@ async def restore_database(
         _restore_in_progress = False
 
 
+@router.post("/restore/rebind-request")
+async def rebind_request_from_backup(
+    data: RebindFromBackupRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """Generate a .rebind.json for the license inside a listed backup file,
+    without restoring it. Lets the operator kick off a rebind for a DB that
+    came from another machine."""
+    _require_admin(current_user)
+    if not os.path.isfile(data.backup_path):
+        raise HTTPException(status_code=400, detail="Backup file not found")
+    return _rebind_response_from_backup(data.backup_path, current_user.username)
+
+
 @router.post("/restore-upload")
 async def restore_database_from_upload(
     file: UploadFile = File(...),
+    allow_machine_mismatch: bool = Form(False),
     current_user: User = Depends(get_current_user),
 ):
     """Restore the database from an uploaded .db file (e.g. one received over
     USB / cloud sync). Same safety steps as /restore: validates the upload,
-    snapshots the current DB to pre-restore, then swaps it in."""
+    snapshots the current DB to pre-restore, then swaps it in.
+
+    ``allow_machine_mismatch`` bypasses the license machine-binding guard for
+    the documented 'migrating a DB from another machine' case; the operator is
+    expected to request a rebind afterwards."""
     _require_admin(current_user)
     from app.utils.config import get_configured_db_path
 
@@ -812,13 +928,49 @@ async def restore_database_from_upload(
                 out.write(chunk)
 
         current_db = get_configured_db_path()
-        _validate_backup_db_file(tmp_path, current_db, allow_same_path=True)
+        _validate_backup_db_file(
+            tmp_path, current_db, allow_same_path=True,
+            allow_machine_mismatch=allow_machine_mismatch,
+        )
 
         _restore_in_progress = True
         try:
             return _run_restore_from_path(tmp_path, "upload", current_user)
         finally:
             _restore_in_progress = False
+    finally:
+        try:
+            if os.path.isfile(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+
+
+@router.post("/restore-upload/rebind-request")
+async def rebind_request_from_upload(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+):
+    """Generate a .rebind.json for the license inside an uploaded .db file,
+    without restoring it. Companion to /restore-upload for the case where the
+    uploaded DB is bound to another machine."""
+    _require_admin(current_user)
+
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".db", prefix="kthealth_rebind_")
+    os.close(tmp_fd)
+    try:
+        with open(tmp_path, "wb") as out:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                out.write(chunk)
+
+        with open(tmp_path, "rb") as f:
+            if not f.read(16).startswith(b"SQLite format 3"):
+                raise HTTPException(status_code=400, detail="File is not a valid SQLite database")
+
+        return _rebind_response_from_backup(tmp_path, current_user.username)
     finally:
         try:
             if os.path.isfile(tmp_path):
