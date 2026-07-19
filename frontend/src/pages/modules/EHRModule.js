@@ -8,9 +8,11 @@ import {
   Search, FileText, Activity, Pill, TestTube, User, Calendar, ArrowLeft,
   Phone, MapPin, Heart, Clock, ChevronDown, ChevronUp, Printer,
   Stethoscope, ClipboardList, AlertCircle, CheckCircle, Eye,
-  ChevronLeft, ChevronRight
+  ChevronLeft, ChevronRight, AlertTriangle, Bed, Receipt, Download,
+  IndianRupee, CalendarDays
 } from 'lucide-react';
 import { format } from 'date-fns';
+import { printPdfFromUrl } from '../../utils/printPdf';
 
 const EHRModule = () => {
   const [searchQuery, setSearchQuery] = useState('');
@@ -130,6 +132,48 @@ const EHRModule = () => {
     } catch (err) {
       console.error('Download failed:', err);
     }
+  };
+
+  // Generic download for an aggregated document (prescription / lab report / discharge summary)
+  const downloadDocument = async (doc) => {
+    try {
+      const res = await fetch(doc.download_url, { headers });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${(doc.label || 'document').replace(/[^a-z0-9]+/gi, '_')}.pdf`;
+      a.click();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Document download failed:', err);
+    }
+  };
+
+  const formatMoney = (amount) => {
+    const n = Number(amount || 0);
+    return `₹${n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  };
+
+  const billStatusColor = (status) => {
+    const map = {
+      paid: 'bg-green-100 text-green-700',
+      partial: 'bg-yellow-100 text-yellow-700',
+      pending: 'bg-orange-100 text-orange-700',
+      cancelled: 'bg-red-100 text-red-700',
+    };
+    return map[status] || 'bg-gray-100 text-gray-600';
+  };
+
+  const severityColor = (severity) => {
+    const map = {
+      mild: 'bg-yellow-100 text-yellow-700',
+      moderate: 'bg-orange-100 text-orange-700',
+      severe: 'bg-red-100 text-red-700',
+      anaphylaxis: 'bg-red-600 text-white',
+    };
+    return map[severity] || 'bg-gray-100 text-gray-600';
   };
 
   const statusColor = (status) => {
@@ -530,6 +574,25 @@ const EHRModule = () => {
       {/* Patient History View */}
       {patientHistory && !loadingHistory && (
         <>
+          {/* Allergy Alert Banner */}
+          {(patientHistory.allergies || []).some(a => a.is_active) && (
+            <div className="rounded-lg border-l-4 border-red-500 bg-red-50 p-3">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="h-5 w-5 text-red-600 shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-sm font-semibold text-red-700">Allergy Alert</p>
+                  <div className="flex flex-wrap gap-2 mt-1">
+                    {patientHistory.allergies.filter(a => a.is_active).map(a => (
+                      <Badge key={a.id} className={`text-xs ${severityColor(a.severity)}`}>
+                        {a.allergen}{a.severity ? ` (${a.severity})` : ''}{a.reaction ? ` — ${a.reaction}` : ''}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Patient Info Card */}
           <Card>
             <CardContent className="pt-4">
@@ -592,7 +655,11 @@ const EHRModule = () => {
               )}
 
               {/* Summary Stats */}
-              <div className="mt-4 pt-3 border-t grid grid-cols-3 gap-4">
+              <div className="mt-4 pt-3 border-t grid grid-cols-3 md:grid-cols-6 gap-4">
+                <div className="text-center">
+                  <p className="text-2xl font-bold text-indigo-600">{patientHistory.summary?.visit_count ?? 0}</p>
+                  <p className="text-xs text-gray-500">Visits</p>
+                </div>
                 <div className="text-center">
                   <p className="text-2xl font-bold text-blue-600">{patientHistory.consultations.length}</p>
                   <p className="text-xs text-gray-500">Consultations</p>
@@ -605,17 +672,30 @@ const EHRModule = () => {
                   <p className="text-2xl font-bold text-purple-600">{patientHistory.lab_orders.length}</p>
                   <p className="text-xs text-gray-500">Lab Orders</p>
                 </div>
+                <div className="text-center">
+                  <p className="text-2xl font-bold text-gray-700">{formatMoney(patientHistory.billing?.total_billed)}</p>
+                  <p className="text-xs text-gray-500">Billed to Date</p>
+                </div>
+                <div className="text-center">
+                  <p className={`text-2xl font-bold ${(patientHistory.billing?.outstanding || 0) > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                    {formatMoney(patientHistory.billing?.outstanding)}
+                  </p>
+                  <p className="text-xs text-gray-500">Outstanding</p>
+                </div>
               </div>
             </CardContent>
           </Card>
 
           {/* Tabs */}
           <Tabs value={activeTab} onValueChange={setActiveTab}>
-            <TabsList className="grid w-full grid-cols-4">
+            <TabsList className="grid w-full grid-cols-4 md:grid-cols-7">
               <TabsTrigger value="timeline"><Clock className="h-4 w-4 mr-1" /> Timeline</TabsTrigger>
+              <TabsTrigger value="visits"><CalendarDays className="h-4 w-4 mr-1" /> Visits</TabsTrigger>
               <TabsTrigger value="consultations"><Stethoscope className="h-4 w-4 mr-1" /> Consultations</TabsTrigger>
               <TabsTrigger value="prescriptions"><Pill className="h-4 w-4 mr-1" /> Prescriptions</TabsTrigger>
               <TabsTrigger value="lab"><TestTube className="h-4 w-4 mr-1" /> Lab</TabsTrigger>
+              <TabsTrigger value="billing"><Receipt className="h-4 w-4 mr-1" /> Billing</TabsTrigger>
+              <TabsTrigger value="documents"><FileText className="h-4 w-4 mr-1" /> Documents</TabsTrigger>
             </TabsList>
 
             {/* Timeline Tab */}
@@ -651,6 +731,91 @@ const EHRModule = () => {
                   )}
                 </CardContent>
               </Card>
+            </TabsContent>
+
+            {/* Visits Tab */}
+            <TabsContent value="visits">
+              <div className="space-y-4">
+                {/* Appointments */}
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm flex items-center gap-2">
+                      <CalendarDays className="h-4 w-4" /> Appointments ({(patientHistory.appointments || []).length})
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {(patientHistory.appointments || []).length === 0 ? (
+                      <p className="text-sm text-gray-400 py-4 text-center">No appointments found.</p>
+                    ) : (
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="text-left text-gray-500 border-b">
+                            <th className="pb-2 pr-2">Date</th>
+                            <th className="pb-2 pr-2">Number</th>
+                            <th className="pb-2 pr-2">Doctor</th>
+                            <th className="pb-2 pr-2">Status</th>
+                            <th className="pb-2 pr-2">Payment</th>
+                            <th className="pb-2 text-right">Amount</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {patientHistory.appointments.map(ap => (
+                            <tr key={ap.id} className="border-b last:border-0">
+                              <td className="py-2 pr-2">{formatDate(ap.appointment_date)}</td>
+                              <td className="py-2 pr-2 text-gray-600">{ap.appointment_number}</td>
+                              <td className="py-2 pr-2">{ap.doctor_name}</td>
+                              <td className="py-2 pr-2"><Badge className={`text-xs ${statusColor(ap.status)}`}>{ap.status}</Badge></td>
+                              <td className="py-2 pr-2"><Badge className={`text-xs ${billStatusColor(ap.payment_status)}`}>{ap.payment_status}</Badge></td>
+                              <td className="py-2 text-right">{formatMoney(ap.final_amount)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </CardContent>
+                </Card>
+
+                {/* Admissions */}
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm flex items-center gap-2">
+                      <Bed className="h-4 w-4" /> Admissions ({(patientHistory.admissions || []).length})
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {(patientHistory.admissions || []).length === 0 ? (
+                      <p className="text-sm text-gray-400 py-4 text-center">No admissions found.</p>
+                    ) : (
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="text-left text-gray-500 border-b">
+                            <th className="pb-2 pr-2">Admitted</th>
+                            <th className="pb-2 pr-2">Discharged</th>
+                            <th className="pb-2 pr-2">Number</th>
+                            <th className="pb-2 pr-2">Type</th>
+                            <th className="pb-2 pr-2">Bed</th>
+                            <th className="pb-2 pr-2">Doctor</th>
+                            <th className="pb-2">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {patientHistory.admissions.map(adm => (
+                            <tr key={adm.id} className="border-b last:border-0">
+                              <td className="py-2 pr-2">{formatDate(adm.admission_date)}</td>
+                              <td className="py-2 pr-2">{adm.discharge_date ? formatDate(adm.discharge_date) : '—'}</td>
+                              <td className="py-2 pr-2 text-gray-600">{adm.admission_number}</td>
+                              <td className="py-2 pr-2 capitalize">{adm.admission_type}</td>
+                              <td className="py-2 pr-2">{adm.bed_number || '—'}</td>
+                              <td className="py-2 pr-2">{adm.doctor_name}</td>
+                              <td className="py-2"><Badge className={`text-xs ${statusColor(adm.status)}`}>{adm.status}</Badge></td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
             </TabsContent>
 
             {/* Consultations Tab */}
@@ -731,6 +896,132 @@ const EHRModule = () => {
                           </div>
                         );
                       })}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            {/* Billing Tab */}
+            <TabsContent value="billing">
+              <div className="space-y-4">
+                {/* Summary cards */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <Card>
+                    <CardContent className="pt-4 flex items-center gap-3">
+                      <div className="h-10 w-10 rounded-full bg-gray-100 flex items-center justify-center">
+                        <IndianRupee className="h-5 w-5 text-gray-600" />
+                      </div>
+                      <div>
+                        <p className="text-xs text-gray-500">Total Billed</p>
+                        <p className="text-xl font-bold">{formatMoney(patientHistory.billing?.total_billed)}</p>
+                      </div>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardContent className="pt-4 flex items-center gap-3">
+                      <div className="h-10 w-10 rounded-full bg-green-100 flex items-center justify-center">
+                        <CheckCircle className="h-5 w-5 text-green-600" />
+                      </div>
+                      <div>
+                        <p className="text-xs text-gray-500">Total Paid</p>
+                        <p className="text-xl font-bold text-green-600">{formatMoney(patientHistory.billing?.total_paid)}</p>
+                      </div>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardContent className="pt-4 flex items-center gap-3">
+                      <div className={`h-10 w-10 rounded-full flex items-center justify-center ${(patientHistory.billing?.outstanding || 0) > 0 ? 'bg-red-100' : 'bg-gray-100'}`}>
+                        <AlertCircle className={`h-5 w-5 ${(patientHistory.billing?.outstanding || 0) > 0 ? 'text-red-600' : 'text-gray-500'}`} />
+                      </div>
+                      <div>
+                        <p className="text-xs text-gray-500">Outstanding</p>
+                        <p className={`text-xl font-bold ${(patientHistory.billing?.outstanding || 0) > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                          {formatMoney(patientHistory.billing?.outstanding)}
+                        </p>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+
+                {/* Bill list */}
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm flex items-center gap-2">
+                      <Receipt className="h-4 w-4" /> Bills ({(patientHistory.billing?.bills || []).length})
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {(patientHistory.billing?.bills || []).length === 0 ? (
+                      <div className="text-center py-8 text-gray-500">
+                        <Receipt className="h-10 w-10 mx-auto mb-2 text-gray-300" />
+                        <p>No bills found for this patient.</p>
+                      </div>
+                    ) : (
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="text-left text-gray-500 border-b">
+                            <th className="pb-2 pr-2">Date</th>
+                            <th className="pb-2 pr-2">Bill No.</th>
+                            <th className="pb-2 pr-2">Type</th>
+                            <th className="pb-2 pr-2 text-right">Amount</th>
+                            <th className="pb-2 pr-2 text-right">Paid</th>
+                            <th className="pb-2">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {patientHistory.billing.bills.map(b => (
+                            <tr key={b.id} className="border-b last:border-0">
+                              <td className="py-2 pr-2">{formatDate(b.bill_date)}</td>
+                              <td className="py-2 pr-2 text-gray-600">{b.bill_number}</td>
+                              <td className="py-2 pr-2 capitalize">{b.bill_type}{b.bill_subtype && b.bill_subtype !== 'final' ? ` (${b.bill_subtype})` : ''}</td>
+                              <td className="py-2 pr-2 text-right">{formatMoney(b.total_amount)}</td>
+                              <td className="py-2 pr-2 text-right">{formatMoney(b.amount_paid)}</td>
+                              <td className="py-2"><Badge className={`text-xs ${billStatusColor(b.status)}`}>{b.status}</Badge></td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+            </TabsContent>
+
+            {/* Documents Tab */}
+            <TabsContent value="documents">
+              <Card>
+                <CardContent className="pt-4">
+                  {(patientHistory.documents || []).length === 0 ? (
+                    <div className="text-center py-8 text-gray-500">
+                      <FileText className="h-10 w-10 mx-auto mb-2 text-gray-300" />
+                      <p>No documents found for this patient.</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {patientHistory.documents.map((doc, idx) => (
+                        <div key={`doc-${idx}`} className="flex items-center justify-between border rounded-lg p-3 hover:bg-gray-50">
+                          <div className="flex items-center gap-3">
+                            <span className={`p-2 rounded ${doc.type === 'prescription' ? 'bg-green-100 text-green-600' : doc.type === 'lab_report' ? 'bg-purple-100 text-purple-600' : 'bg-blue-100 text-blue-600'}`}>
+                              {doc.type === 'prescription' ? <Pill className="h-4 w-4" /> : doc.type === 'lab_report' ? <TestTube className="h-4 w-4" /> : <FileText className="h-4 w-4" />}
+                            </span>
+                            <div>
+                              <p className="text-sm font-medium">{doc.label}</p>
+                              <p className="text-xs text-gray-500">{formatDate(doc.date)}</p>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <Button size="sm" variant="ghost" className="h-8 w-8 p-0" title="View / Print"
+                              onClick={() => printPdfFromUrl(doc.download_url)}>
+                              <Printer className="h-4 w-4" />
+                            </Button>
+                            <Button size="sm" variant="ghost" className="h-8 w-8 p-0" title="Download"
+                              onClick={() => downloadDocument(doc)}>
+                              <Download className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   )}
                 </CardContent>

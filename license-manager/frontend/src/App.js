@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import ktLogo from './assets/Final Logo KT (1).jpg';
 
 const API = '/api';
 
@@ -362,8 +363,8 @@ function App() {
       <aside className="w-60 bg-slate-925 border-r border-slate-800/50 flex flex-col">
         <div className="p-5 border-b border-slate-800/50">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 bg-gradient-to-br from-blue-500 to-cyan-400 rounded-lg flex items-center justify-center">
-              <Icon d={Icons.shield} className="w-5 h-5 text-white" />
+            <div className="w-9 h-9 bg-white rounded-lg flex items-center justify-center overflow-hidden">
+              <img src={ktLogo} alt="KT Health" className="w-full h-full object-contain" />
             </div>
             <div>
               <h1 className="text-sm font-bold text-white tracking-tight">KT License</h1>

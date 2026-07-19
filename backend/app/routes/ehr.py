@@ -5,10 +5,13 @@ from datetime import date
 import json
 
 from config.database import get_db
-from app.models.patient import Patient, PatientMedicalHistory
+from app.models.patient import Patient, PatientMedicalHistory, PatientAllergy
 from app.models.ehr import Consultation, Diagnosis, TreatmentPlan, MedicalNote
 from app.models.prescriptions_simple import SimplePrescription
 from app.models.lab import PatientLabOrder, LabTest, LabReport, LabTestParameter
+from app.models.outpatient import Appointment
+from app.models.inpatient import Admission
+from app.models.billing import Bill, Payment
 from app.models.user import User
 from app.utils.dependencies import get_current_user
 
@@ -269,6 +272,132 @@ async def get_patient_full_history(
             "report": report_data,
         })
 
+    # --- Allergies (patient-level, carries across encounters) ---
+    allergies_db = db.query(PatientAllergy).filter(
+        PatientAllergy.patient_id == patient.id
+    ).order_by(PatientAllergy.is_active.desc(), PatientAllergy.recorded_at.desc()).all()
+
+    allergies = [
+        {
+            "id": a.id,
+            "allergy_type": a.allergy_type,
+            "allergen": a.allergen,
+            "severity": a.severity,
+            "reaction": a.reaction,
+            "notes": a.notes,
+            "is_active": a.is_active,
+            "recorded_at": a.recorded_at.isoformat() if a.recorded_at else None,
+        }
+        for a in allergies_db
+    ]
+
+    # --- Appointments (outpatient encounters) ---
+    appointments_db = db.query(Appointment).filter(
+        Appointment.patient_id == patient.id
+    ).order_by(Appointment.appointment_date.desc()).all()
+
+    appointments = []
+    for ap in appointments_db:
+        doctor = db.query(User).filter(User.id == ap.doctor_id).first()
+        appointments.append({
+            "id": ap.id,
+            "appointment_number": ap.appointment_number,
+            "appointment_date": ap.appointment_date.isoformat() if ap.appointment_date else None,
+            "doctor_name": f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else "Unknown",
+            "status": ap.status,
+            "payment_status": ap.payment_status,
+            "final_amount": ap.final_amount,
+        })
+
+    # --- Admissions (inpatient encounters) ---
+    admissions_db = db.query(Admission).filter(
+        Admission.patient_id == patient.id
+    ).order_by(Admission.admission_date.desc()).all()
+
+    admissions = []
+    for adm in admissions_db:
+        doctor = db.query(User).filter(User.id == adm.admitting_doctor_id).first()
+        discharge = adm.discharge  # DischargeRecord or None
+        has_summary = adm.discharge_summary_doc is not None
+        admissions.append({
+            "id": adm.id,
+            "admission_number": adm.admission_number,
+            "admission_date": adm.admission_date.isoformat() if adm.admission_date else None,
+            "discharge_date": discharge.discharge_date.isoformat() if discharge and discharge.discharge_date else None,
+            "admission_type": adm.admission_type,
+            "status": adm.status,
+            "bed_number": adm.bed_number,
+            "doctor_name": f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else "Unknown",
+            "reason": adm.admission_reason,
+            "has_discharge_summary": has_summary,
+        })
+
+    # --- Billing rollup (Bill-table based patient financial summary) ---
+    # NOTE: this is a rollup of the `bills` table only. In-progress inpatient
+    # interim/unbilled charges (tracked per-admission) are not reflected here.
+    bills_db = db.query(Bill).filter(
+        Bill.patient_id == patient.id,
+        Bill.hospital_id == current_user.hospital_id
+    ).order_by(Bill.bill_date.desc()).all()
+
+    bills = []
+    total_billed = 0.0
+    total_paid = 0.0
+    for b in bills_db:
+        paid = db.query(func.coalesce(func.sum(Payment.amount_paid), 0.0)).filter(
+            Payment.bill_id == b.id
+        ).scalar() or 0.0
+        is_counted = b.status != "cancelled" and b.bill_type != "credit_note"
+        if is_counted:
+            total_billed += (b.total_amount or 0.0)
+            total_paid += paid
+        bills.append({
+            "id": b.id,
+            "bill_number": b.bill_number,
+            "bill_type": b.bill_type,
+            "bill_subtype": b.bill_subtype,
+            "bill_date": b.bill_date.isoformat() if b.bill_date else None,
+            "total_amount": b.total_amount,
+            "amount_paid": round(paid, 2),
+            "status": b.status,
+        })
+
+    outstanding = round(total_billed - total_paid, 2)
+    billing = {
+        "total_billed": round(total_billed, 2),
+        "total_paid": round(total_paid, 2),
+        "outstanding": outstanding,
+        "bill_count": len(bills),
+        "bills": bills,
+    }
+
+    # --- Documents (aggregation of existing generated PDFs; no new uploads) ---
+    documents = []
+    for rx in prescriptions:
+        documents.append({
+            "type": "prescription",
+            "label": f"Prescription — {rx['diagnosis'] or rx['prescription_id']}",
+            "date": rx["prescription_date"],
+            "download_url": f"/api/prescriptions-simple/{rx['prescription_id']}/download",
+        })
+    for lo in lab_orders:
+        if lo.get("report"):
+            documents.append({
+                "type": "lab_report",
+                "label": f"Lab Report — {lo['test_name']}",
+                "date": lo["report"].get("report_date") or lo["order_date"],
+                "download_url": f"/api/lab/reports/{lo['report']['id']}/download",
+            })
+    for adm in admissions:
+        if adm["has_discharge_summary"]:
+            documents.append({
+                "type": "discharge_summary",
+                "label": f"Discharge Summary — {adm['admission_number']}",
+                "date": adm["discharge_date"] or adm["admission_date"],
+                "download_url": f"/api/inpatient/admissions/{adm['id']}/discharge-summary/pdf/preview",
+            })
+    documents.sort(key=lambda d: d["date"] or "", reverse=True)
+
     # --- Build unified timeline ---
     timeline = []
 
@@ -296,12 +425,30 @@ async def get_patient_full_history(
     # Sort timeline by date descending
     timeline.sort(key=lambda x: x["date"] or "", reverse=True)
 
+    summary = {
+        "consultation_count": len(consultations),
+        "prescription_count": len(prescriptions),
+        "lab_order_count": len(lab_orders),
+        "appointment_count": len(appointments),
+        "admission_count": len(admissions),
+        "visit_count": len(appointments) + len(admissions),
+        "active_allergy_count": sum(1 for a in allergies if a["is_active"]),
+        "total_billed": billing["total_billed"],
+        "outstanding": billing["outstanding"],
+    }
+
     return {
         "patient": patient_info,
         "medical_history": medical_history,
+        "allergies": allergies,
         "consultations": consultations,
         "prescriptions": prescriptions,
         "lab_orders": lab_orders,
+        "appointments": appointments,
+        "admissions": admissions,
+        "billing": billing,
+        "documents": documents,
+        "summary": summary,
         "timeline": timeline,
     }
 
