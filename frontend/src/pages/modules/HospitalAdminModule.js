@@ -72,7 +72,19 @@ const HospitalAdminModule = () => {
   const fetchHospitalInfo = async () => {
     try {
       const response = await axios.get('/api/hospital/info');
-      setHospitalInfo(response.data);
+      const data = response.data || {};
+      // Merge into the existing shape so every field stays a defined string.
+      // The API can omit fields or return null, which would otherwise flip a
+      // controlled <Input> to uncontrolled (React warning + lost value).
+      setHospitalInfo((prev) => {
+        const merged = { ...prev };
+        Object.keys(prev).forEach((key) => {
+          if (data[key] !== undefined && data[key] !== null) {
+            merged[key] = data[key];
+          }
+        });
+        return merged;
+      });
     } catch (error) {
       toast({
         variant: "destructive",

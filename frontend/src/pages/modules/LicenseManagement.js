@@ -372,16 +372,29 @@ const LicenseManagement = () => {
             {machineInfo && license?.license_id && (
               <div className="text-xs text-gray-600 space-y-1">
                 <div>Current license: <code>{license.license_id}</code></div>
+                {license?.license_machine_id && (
+                  <div className="flex items-center gap-1">
+                    <Cpu className="w-3 h-3" />
+                    Licensed machine: <code>{license.license_machine_id}</code>
+                  </div>
+                )}
                 <div className="flex items-center gap-1">
                   <Cpu className="w-3 h-3" />
                   This machine: <code>{machineInfo.machine_id}</code>
                 </div>
               </div>
             )}
-            <Button onClick={downloadRebindRequest} disabled={rebinding}>
-              <Download className="w-4 h-4 mr-2" />
-              {rebinding ? 'Generating…' : 'Generate Rebind Request'}
-            </Button>
+            {license?.machine_match === false ? (
+              <Button onClick={downloadRebindRequest} disabled={rebinding}>
+                <Download className="w-4 h-4 mr-2" />
+                {rebinding ? 'Generating…' : 'Generate Rebind Request'}
+              </Button>
+            ) : (
+              <p className="text-sm text-green-700 flex items-center gap-1">
+                <CheckCircle className="w-4 h-4" />
+                This machine already matches the licensed machine — no rebind is needed.
+              </p>
+            )}
           </CardContent>
         </Card>
       )}
