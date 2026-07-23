@@ -287,12 +287,6 @@ const InpatientModule = () => {
   const [reviewBillDiscount, setReviewBillDiscount] = useState({ type: 'flat', value: '' });
   const [reviewBillTaxPct, setReviewBillTaxPct] = useState('');
   // Inline settle form inside the Review Final Bill dialog. The bill must
-  // balance to ₹0 before Generate Final Bill is allowed; if the draft total
-  // doesn't match deposits, the operator fills this and we hit
-  // /bill/finalize-and-settle to do both in one tx.
-  const [reviewSettleForm, setReviewSettleForm] = useState({
-    method: 'cash', reference: '', notes: '',
-  });
   // Bill PDF preview dialog
   const [showBillPdfDialog, setShowBillPdfDialog] = useState(false);
   const [billPdfUrl, setBillPdfUrl] = useState(null);
@@ -1648,30 +1642,33 @@ const InpatientModule = () => {
         payload.tax_percentage = parseFloat(reviewBillTaxPct);
       }
 
-      // Comprehensive final bill replaces interim totals — settle against the
-      // reviewed grand total alone (do not add prior billed again).
-      const netDeposits = parseFloat(balance?.net_deposits) || 0;
-      const postBalance = +(netDeposits - reviewBillGrandTotal).toFixed(2);
-
-      let url = `/api/inpatient/admissions/${activityAdmission.id}/bill/finalize`;
-      if (Math.abs(postBalance) >= 0.01) {
-        const direction = postBalance < 0 ? 'collect' : 'refund';
-        payload.settle = {
-          direction,
-          amount: +Math.abs(postBalance).toFixed(2),
-          payment_method: reviewSettleForm.method || 'cash',
-          reference_number: reviewSettleForm.reference || undefined,
-          notes: reviewSettleForm.notes || undefined,
-        };
-        url = `/api/inpatient/admissions/${activityAdmission.id}/bill/finalize-and-settle`;
-      }
-
-      await axios.post(url, payload);
+      // Finalize only — collect/refund happens in discharge checkout settle
+      // step or via deposits after the final bill exists.
+      const res = await axios.post(
+        `/api/inpatient/admissions/${activityAdmission.id}/bill/finalize`,
+        payload,
+      );
       setShowReviewBillDialog(false);
-      setReviewSettleForm({ method: 'cash', reference: '', notes: '' });
       fetchBill(activityAdmission.id);
       fetchBalance(activityAdmission.id);
       fetchDeposits(activityAdmission.id);
+      fetchAdmissionBills(activityAdmission.id);
+      const action = res.data?.requires_action;
+      const collect = Number(res.data?.amount_to_collect || 0);
+      const refund = Number(res.data?.amount_to_refund || 0);
+      if (action === 'collect' && collect > 0) {
+        toast({
+          title: 'Final bill generated',
+          description: `Outstanding ₹${collect.toFixed(2)} — collect via Deposits or discharge checkout.`,
+        });
+      } else if (action === 'refund' && refund > 0) {
+        toast({
+          title: 'Final bill generated',
+          description: `Credit ₹${refund.toFixed(2)} — refund via Deposits or discharge checkout.`,
+        });
+      } else {
+        toast({ title: 'Final bill generated', description: 'Balance is settled.' });
+      }
       await handlePrintBillPdf(activityAdmission.id);
     } catch (err) {
       const detail = err.response?.data?.detail;
@@ -2409,20 +2406,17 @@ const InpatientModule = () => {
 
   // Phase 2: Interim bill
   const handleGenerateInterim = async () => {
+    if (!activityAdmission) return;
     setLoading(true);
     try {
-      const payload = {
-        discount_type: billDiscount.type,
-        discount_value: parseFloat(billDiscount.value) || 0,
-        tax_percentage: parseFloat(billTaxPct) || 0,
-      };
-      const res = await axios.post(`/api/inpatient/admissions/${activityAdmission.id}/bill/interim`, payload);
-      fetchBill(activityAdmission.id);
-      fetchAdmissionBills(activityAdmission.id);
-      fetchBalance(activityAdmission.id);
-      await handlePrintBillPdf(activityAdmission.id);
+      // Print-only statement of charges so far — no Bill row, no stamping.
+      await handlePrintBillPdf(activityAdmission.id, null, { asInterim: true });
+      toast({
+        title: 'Interim statement',
+        description: 'Charges so far — for reference only. Settlement happens at final bill.',
+      });
     } catch (err) {
-      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed to create interim bill';
+      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed to print interim statement';
       toast({ variant: 'destructive', title: 'Error', description: msg });
     } finally { setLoading(false); }
   };
@@ -3315,13 +3309,15 @@ const InpatientModule = () => {
     }
   };
 
-  const handlePrintBillPdf = async (admissionId, billId = null) => {
+  const handlePrintBillPdf = async (admissionId, billId = null, opts = {}) => {
     setBillPdfLoading(true);
     try {
-      const params = billId ? { bill_id: billId } : undefined;
+      const params = {};
+      if (billId) params.bill_id = billId;
+      if (opts.asInterim) params.as_interim = true;
       const res = await axios.get(
         `/api/inpatient/admissions/${admissionId}/bill/pdf`,
-        { responseType: 'blob', params },
+        { responseType: 'blob', params: Object.keys(params).length ? params : undefined },
       );
       if (billPdfUrl) URL.revokeObjectURL(billPdfUrl);
       const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
@@ -9122,20 +9118,19 @@ const InpatientModule = () => {
         <DialogContent className="max-w-4xl max-h-[92vh] overflow-y-auto">
           <DialogHeader><DialogTitle>Review & Generate Final Bill — {activityAdmission?.patient_name || ''}</DialogTitle></DialogHeader>
           {(() => {
-            // Comprehensive final replaces interim totals — settle vs reviewed total only.
+            // Informative balance preview — settlement happens after finalize.
             const netDeposits = parseFloat(balance?.net_deposits) || 0;
             const postBalance = +(netDeposits - reviewBillGrandTotal).toFixed(2);
             const owes = postBalance < -0.01;
             const refund = postBalance > 0.01;
-            const balanced = !owes && !refund;
             const settleAmount = +Math.abs(postBalance).toFixed(2);
             const cls = owes
               ? 'border-red-300 bg-red-50 text-red-900'
               : refund ? 'border-green-300 bg-green-50 text-green-900'
               : 'border-gray-200 bg-gray-50 text-gray-700';
             const label = owes
-              ? `Patient owes ₹${settleAmount.toFixed(2)} — collect before generating`
-              : refund ? `Refund due ₹${settleAmount.toFixed(2)} — refund before generating`
+              ? `After finalize, patient will owe ₹${settleAmount.toFixed(2)} — collect in settlement step`
+              : refund ? `After finalize, refund due ₹${settleAmount.toFixed(2)} — refund in settlement step`
               : 'Balanced ✓ — ready to generate';
             return (
               <div className={`border rounded-lg p-3 text-sm mb-2 ${cls}`}>
@@ -9147,38 +9142,6 @@ const InpatientModule = () => {
                     <span> · Prior interim ₹{(parseFloat(balance?.billed_on_bills) || 0).toFixed(2)} (included in statement above)</span>
                   )}
                 </div>
-                {!balanced && (
-                  <div className="mt-2 grid grid-cols-3 gap-2">
-                    <div>
-                      <Label className="text-[10px] uppercase">Method</Label>
-                      <Select value={reviewSettleForm.method}
-                              onValueChange={v => setReviewSettleForm(p => ({ ...p, method: v }))}>
-                        <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="cash">Cash</SelectItem>
-                          <SelectItem value="card">Card</SelectItem>
-                          <SelectItem value="upi">UPI</SelectItem>
-                          <SelectItem value="cheque">Cheque</SelectItem>
-                          <SelectItem value="online">Online transfer</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div>
-                      <Label className="text-[10px] uppercase">Reference</Label>
-                      <Input className="h-8 text-xs"
-                             placeholder="Optional"
-                             value={reviewSettleForm.reference}
-                             onChange={e => setReviewSettleForm(p => ({ ...p, reference: e.target.value }))} />
-                    </div>
-                    <div>
-                      <Label className="text-[10px] uppercase">Notes</Label>
-                      <Input className="h-8 text-xs"
-                             placeholder="Optional"
-                             value={reviewSettleForm.notes}
-                             onChange={e => setReviewSettleForm(p => ({ ...p, notes: e.target.value }))} />
-                    </div>
-                  </div>
-                )}
               </div>
             );
           })()}
@@ -9361,23 +9324,9 @@ const InpatientModule = () => {
 
             <div className="flex justify-end gap-2 pt-2">
               <Button type="button" variant="outline" onClick={() => setShowReviewBillDialog(false)}>Cancel</Button>
-              {(() => {
-                const priorBilled = parseFloat(balance?.billed_on_bills) || 0;
-                const netDeposits = parseFloat(balance?.net_deposits) || 0;
-                const postBalance = +(netDeposits - (priorBilled + reviewBillGrandTotal)).toFixed(2);
-                const settleAmt = +Math.abs(postBalance).toFixed(2);
-                const owes = postBalance < -0.01;
-                const refund = postBalance > 0.01;
-                const cta = loading ? 'Working…'
-                  : owes ? `Collect ₹${settleAmt.toFixed(2)} & Generate Final Bill`
-                  : refund ? `Refund ₹${settleAmt.toFixed(2)} & Generate Final Bill`
-                  : 'Generate Final Bill';
-                return (
-                  <Button type="button" onClick={handleSubmitReviewedBill} disabled={loading}>
-                    {cta}
-                  </Button>
-                );
-              })()}
+              <Button type="button" onClick={handleSubmitReviewedBill} disabled={loading}>
+                {loading ? 'Working…' : 'Generate Final Bill'}
+              </Button>
             </div>
           </div>
         </DialogContent>

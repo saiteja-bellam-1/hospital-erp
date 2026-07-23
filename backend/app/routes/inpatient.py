@@ -5787,45 +5787,10 @@ async def finalize_bill(
             detail="No outstanding charges to finalize. All charges may already be on prior bills — the review dialog will let you confirm and close the admission.",
         )
 
-    # Balance precheck — refuse to finalize unless deposits already cover the
-    # would-be bill (within ₹0.01). The UI is expected to either collect the
-    # owed amount / issue the refund first, or call /bill/finalize-and-settle
-    # to do both atomically.
-    draft_total = _compute_draft_final_bill_total(
-        breakdown,
-        discount_value=(data.discount_value if data else 0) or 0,
-        discount_type=(data.discount_type if data else "flat") or "flat",
-        tax_percentage=(data.tax_percentage if data else 0) or 0,
-        items_override=items_override,
-    )
-    prior_summary = _admission_balance_summary(db, admission)
-    # Comprehensive override (items_override) is a full restatement of all
-    # charges — the final bill replaces interim totals. Without an override,
-    # the draft only covers unbilled charges, so add prior billed amounts.
-    prior_billed_on_bills = float(prior_summary.get("billed_on_bills") or 0)
-    billed_basis = draft_total if items_override is not None else (prior_billed_on_bills + draft_total)
-    post_finalize_balance = round(
-        float(prior_summary.get("net_deposits") or 0) - billed_basis,
-        2,
-    )
-    if abs(post_finalize_balance) >= 0.01:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "unsettled_balance",
-                "message": (
-                    "Settle the balance before finalising the bill. "
-                    "Either collect/refund the difference first or use "
-                    "/bill/finalize-and-settle to do both in one step."
-                ),
-                "draft_total": draft_total,
-                "net_deposits": float(prior_summary.get("net_deposits") or 0),
-                "balance": post_finalize_balance,
-                "amount_to_collect": round(max(0.0, -post_finalize_balance), 2),
-                "amount_to_refund": round(max(0.0, post_finalize_balance), 2),
-            },
-        )
-
+    # Finalize may leave an outstanding balance — collect/refund happens in a
+    # separate step (checkout settle, deposits, or finalize-and-settle).
+    # Response fields requires_action / amount_to_collect / amount_to_refund
+    # tell the UI what to prompt next.
     bill = _create_admission_bill_record(
         db, admission, hospital, current_user, breakdown,
         discount_value=(data.discount_value if data else 0) or 0,
@@ -5884,8 +5849,8 @@ async def finalize_and_settle_bill(
     admission lands at balance = 0 in a single transaction. Either both rows
     persist or neither does.
 
-    Used by the Review Final Bill dialog when the operator clicks the inline
-    Collect/Refund button.
+    Kept for API compatibility. Prefer finalize then collect/refund separately
+    (discharge checkout settle step).
     """
     admission = db.query(Admission).filter(Admission.id == admission_id).first()
     if not admission:
@@ -6072,6 +6037,11 @@ async def create_interim_bill(
 async def get_bill_pdf(
     admission_id: int,
     bill_id: Optional[int] = Query(default=None, description="Specific bill row to render (any status). Defaults to the latest non-cancelled bill."),
+    as_interim: bool = Query(
+        default=False,
+        description="Print a live charges-so-far statement with INTERIM watermark. "
+                    "Does not create a Bill row or stamp charges. Ignored when bill_id is set.",
+    ),
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_bill")),
     db: Session = Depends(get_db),
 ):
@@ -6083,6 +6053,9 @@ async def get_bill_pdf(
     ``bill_id`` lets the operator print a specific historical bill — including
     cancelled ones — for audit. Cancelled bills are rendered with a CANCELLED
     watermark; interim bills render with an INTERIM watermark.
+
+    ``as_interim=true`` forces a live preview of all charges so far (no Bill
+    create/stamp) with an INTERIM watermark — used by the Interim Bill button.
     """
     admission = db.query(Admission).filter(Admission.id == admission_id).first()
     if not admission:
@@ -6096,6 +6069,9 @@ async def get_bill_pdf(
         ).first()
         if not bill:
             raise HTTPException(status_code=404, detail="Bill not found for this admission")
+    elif as_interim:
+        # Print-only interim statement — always live charges, never a saved Bill.
+        bill = None
     else:
         # Optional Bill record (may not exist — we still render a preview)
         bill = db.query(Bill).filter(
@@ -6389,10 +6365,15 @@ async def get_bill_pdf(
         discount = 0.0
         tax = 0.0
         total = subtotal
-        bill_number = f"PREVIEW-{admission.admission_number}"
         bill_date = datetime.now().strftime("%d/%m/%Y")
-        bill_subtype = 'preview'
-        status = 'not_finalized'
+        if as_interim:
+            bill_number = f"INTERIM-PREVIEW-{admission.admission_number}"
+            bill_subtype = 'interim'
+            status = 'preview'
+        else:
+            bill_number = f"PREVIEW-{admission.admission_number}"
+            bill_subtype = 'preview'
+            status = 'not_finalized'
 
     # Deposit summary + balance (uses existing helper)
     bal = _admission_balance_summary(db, admission)
@@ -7152,7 +7133,7 @@ class VitalSignsCreate(BaseModel):
     bp_diastolic: Optional[int] = Field(default=None, ge=20, le=200)
     heart_rate: Optional[int] = Field(default=None, ge=20, le=300)
     respiratory_rate: Optional[int] = Field(default=None, ge=4, le=80)
-    temperature_c: Optional[float] = Field(default=None, ge=25.0, le=45.0)
+    temperature_c: Optional[float] = None
     spo2: Optional[int] = Field(default=None, ge=40, le=100)
     blood_glucose: Optional[float] = Field(default=None, ge=10, le=1000)
     pain_score: Optional[int] = Field(default=None, ge=0, le=10)

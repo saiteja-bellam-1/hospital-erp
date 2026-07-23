@@ -107,23 +107,22 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge, doct
   const primaryLabel = () => {
     if (isComplete) return 'Back to worklist';
     if (step === 1) {
-      if (settlement?.direction === 'collect') {
-        return finalBill
-          ? `Collect ${rupee(settlement.amount)} & Continue`
-          : `Generate Bill, Collect ${rupee(settlement.amount)} & Continue`;
-      }
-      if (settlement?.direction === 'refund') {
-        return finalBill
-          ? `Refund ${rupee(settlement.amount)} & Continue`
-          : `Generate Bill, Refund ${rupee(settlement.amount)} & Continue`;
-      }
-      return finalBill ? 'Continue to Summary' : 'Generate Bill & Continue';
+      return finalBill ? 'Continue to Settlement' : 'Generate Final Bill';
     }
     if (step === 2) {
+      if (settlement?.direction === 'collect') {
+        return `Collect ${rupee(settlement.amount)} & Continue`;
+      }
+      if (settlement?.direction === 'refund') {
+        return `Refund ${rupee(settlement.amount)} & Continue`;
+      }
+      return 'Continue to Summary';
+    }
+    if (step === 3) {
       if (derived.isDischarged) return 'Continue to Gate Pass';
       return blockers.length > 0 ? 'Override & Discharge' : 'Discharge & Continue';
     }
-    if (step === 3) return gatePass ? 'Reprint Documents' : 'Issue Gate Pass & Print';
+    if (step === 4) return gatePass ? 'Reprint Documents' : 'Issue Gate Pass & Print';
     return 'Next';
   };
 
@@ -177,13 +176,13 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge, doct
         </div>
       </div>
 
-      {/* Step content */}
+      {/* Step 1 — Finalize bill (discount / tax) */}
       {step === 1 && (
         <div className="space-y-4">
           <Card>
             <CardHeader className="pb-2 flex flex-row items-center justify-between">
               <CardTitle className="text-base flex items-center gap-2">
-                <IndianRupee className="h-4 w-4" /> Bill &amp; Settlement
+                <IndianRupee className="h-4 w-4" /> Finalize Bill
               </CardTitle>
               <div className="flex gap-1">
                 {canAddDeposit && !derived.isDischarged && (
@@ -198,13 +197,13 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge, doct
             <CardContent className="space-y-4">
               {finalBill && (
                 <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2">
-                  Final bill <b>{finalBill.bill_number}</b> already exists — review and continue.
+                  Final bill <b>{finalBill.bill_number}</b> already exists — continue to settlement.
                 </div>
               )}
               <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
                 <Stat label="Stay charges" value={rupee(derived.stayCharges)} />
                 <Stat label="Deposits" value={rupee(derived.deposited)} />
-                <Stat label="Balance" value={rupee(Math.abs(checkoutOwes))}
+                <Stat label="Balance preview" value={rupee(Math.abs(checkoutOwes))}
                       tone={checkoutOwes > 0.01 ? 'red' : checkoutOwes < -0.01 ? 'blue' : 'green'} />
                 {bill?.stay_days != null && <Stat label="Stay days" value={String(bill.stay_days)} />}
                 {bill?.room_total != null && <Stat label="Room" value={rupee(bill.room_total)} />}
@@ -215,9 +214,8 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge, doct
                 {finalBill && <Stat label="Final bill total" value={rupee(finalBill.total_amount)} tone="blue" />}
               </div>
 
-              {!readOnlyBill && settleForm && (canFinalize || finalBill) && (
+              {!readOnlyBill && settleForm && canFinalize && !finalBill && (
                 <>
-                  {!finalBill && canFinalize && (
                   <div className="grid grid-cols-3 gap-3">
                     <div>
                       <Label className="text-xs">Discount type</Label>
@@ -241,18 +239,9 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge, doct
                              onChange={e => setSettleForm(p => ({ ...p, taxPct: e.target.value }))} />
                     </div>
                   </div>
-                  )}
-
                   <div className="bg-gray-50 border rounded p-3 space-y-2 text-sm">
-                    <div className="flex justify-between">
-                      <span>To {settlement?.direction === 'refund' ? 'refund' : settlement?.direction === 'collect' ? 'collect' : 'settle'}</span>
-                      <b className={
-                        settlement?.direction === 'collect' ? 'text-red-600'
-                          : settlement?.direction === 'refund' ? 'text-blue-600' : 'text-green-600'
-                      }>{rupee(settlement?.amount || 0)}</b>
-                    </div>
-                    {!finalBill && (settlement?.discountAmount > 0 || settlement?.taxAmount > 0) && (
-                      <div className="text-xs border-t pt-2 space-y-1">
+                    {(settlement?.discountAmount > 0 || settlement?.taxAmount > 0) && (
+                      <div className="text-xs space-y-1">
                         {settlement.discountAmount > 0 && (
                           <div className="flex justify-between text-green-700">
                             <span>Discount</span><span>-{rupee(settlement.discountAmount)}</span>
@@ -263,12 +252,76 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge, doct
                             <span>Tax</span><span>+{rupee(settlement.taxAmount)}</span>
                           </div>
                         )}
-                        <div className="flex justify-between font-medium">
-                          <span>Adjusted final total</span><span>{rupee(settlement.adjustedTotal)}</span>
-                        </div>
                       </div>
                     )}
-                    {settlement?.direction !== 'none' && (
+                    <div className="flex justify-between font-medium">
+                      <span>Adjusted final total</span><span>{rupee(settlement?.adjustedTotal || derived.stayCharges)}</span>
+                    </div>
+                    <p className="text-xs text-gray-500 pt-1 border-t">
+                      Payment collection / refund happens in the next step.
+                    </p>
+                  </div>
+                </>
+              )}
+
+              {deposits.length > 0 && (
+                <div className="border rounded overflow-hidden">
+                  <div className="bg-gray-50 px-3 py-1.5 text-xs font-medium">Deposits ({deposits.length})</div>
+                  <div className="max-h-32 overflow-y-auto text-xs">
+                    {deposits.map(d => (
+                      <div key={d.id} className="flex justify-between px-3 py-1 border-t">
+                        <span>{d.deposit_number} · {d.payment_method}</span>
+                        <span className={d.deposit_type === 'refund' ? 'text-blue-700' : ''}>
+                          {d.deposit_type === 'refund' ? '-' : ''}{rupee(d.amount)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Step 2 — Collect / Refund */}
+      {step === 2 && (
+        <div className="space-y-4">
+          <Card>
+            <CardHeader className="pb-2 flex flex-row items-center justify-between">
+              <CardTitle className="text-base flex items-center gap-2">
+                <Wallet className="h-4 w-4" /> Collect / Refund
+              </CardTitle>
+              {canAddDeposit && !derived.isDischarged && (
+                <Button size="sm" variant="outline" onClick={() => setDepositForm({
+                  amount: '', method: 'cash', ref: '', notes: '',
+                })}>
+                  <Plus className="h-3.5 w-3.5 mr-1" /> Add Deposit
+                </Button>
+              )}
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {!finalBill ? (
+                <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2">
+                  Generate the final bill in the previous step before settling.
+                </div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+                    <Stat label="Final bill" value={rupee(finalBill.total_amount)} tone="blue" />
+                    <Stat label="Deposits" value={rupee(derived.deposited)} />
+                    <Stat label="Balance" value={rupee(Math.abs(checkoutOwes))}
+                          tone={checkoutOwes > 0.01 ? 'red' : checkoutOwes < -0.01 ? 'blue' : 'green'} />
+                  </div>
+                  <div className="bg-gray-50 border rounded p-3 space-y-2 text-sm">
+                    <div className="flex justify-between">
+                      <span>To {settlement?.direction === 'refund' ? 'refund' : settlement?.direction === 'collect' ? 'collect' : 'settle'}</span>
+                      <b className={
+                        settlement?.direction === 'collect' ? 'text-red-600'
+                          : settlement?.direction === 'refund' ? 'text-blue-600' : 'text-green-600'
+                      }>{rupee(settlement?.amount || 0)}</b>
+                    </div>
+                    {settlement?.direction !== 'none' && settleForm && (
                       <div className="grid grid-cols-2 gap-3 pt-2">
                         <div>
                           <Label className="text-xs">Amount (₹)</Label>
@@ -297,13 +350,12 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge, doct
                     )}
                     {settlement?.direction === 'none' && (
                       <p className="text-xs text-green-700 flex items-center gap-1">
-                        <CheckCircle2 className="h-3 w-3" /> Balance zero — generate final bill only.
+                        <CheckCircle2 className="h-3 w-3" /> Balance zero — continue to discharge summary.
                       </p>
                     )}
                   </div>
                 </>
               )}
-
               {deposits.length > 0 && (
                 <div className="border rounded overflow-hidden">
                   <div className="bg-gray-50 px-3 py-1.5 text-xs font-medium">Deposits ({deposits.length})</div>
@@ -324,7 +376,8 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge, doct
         </div>
       )}
 
-      {step === 2 && (
+      {/* Step 3 — Discharge summary */}
+      {step === 3 && (
         <div className="space-y-4">
           <DischargeSummaryReview
             summary={summaryDoc}
@@ -338,7 +391,8 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge, doct
         </div>
       )}
 
-      {step === 3 && (
+      {/* Step 4 — Gate pass */}
+      {step === 4 && (
         <div className="space-y-4">
           {isComplete ? (
             <Card>
@@ -411,8 +465,7 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge, doct
         </div>
       )}
 
-      {/* Skipped steps summary when resuming at gate pass */}
-      {step === 3 && derived.isDischarged && !isComplete && (
+      {step === 4 && derived.isDischarged && !isComplete && (
         <Card>
           <CardContent className="py-3 text-xs text-gray-500">
             Discharged on {admission.discharge_date
@@ -437,10 +490,10 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge, doct
           )}
         </div>
         <Button onClick={onPrimaryAction} disabled={submitting && !isComplete}
-                variant={!isComplete && step === 2 && blockers.length > 0 ? 'destructive' : 'default'}>
+                variant={!isComplete && step === 3 && blockers.length > 0 ? 'destructive' : 'default'}>
           {submitting && !isComplete && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
           {primaryLabel()}
-          {!isComplete && step < 3 && step !== 2 && <ChevronRight className="h-4 w-4 ml-1" />}
+          {!isComplete && step < 4 && step !== 3 && <ChevronRight className="h-4 w-4 ml-1" />}
         </Button>
       </div>
 
@@ -449,7 +502,7 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge, doct
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>Receive Deposit</DialogTitle>
-            <DialogDescription>Top-up before finalizing the bill.</DialogDescription>
+            <DialogDescription>Top-up before or during settlement.</DialogDescription>
           </DialogHeader>
           {depositForm && (
             <div className="space-y-3">
@@ -501,7 +554,7 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge, doct
   );
 };
 
-/** Single-page discharge checkout: worklist + inline 3-step flow. */
+/** Single-page discharge checkout: worklist + inline 4-step flow. */
 const DischargeCheckoutPage = ({
   admissionId,
   onSelectAdmission,
@@ -517,7 +570,7 @@ const DischargeCheckoutPage = ({
         <div>
           <h2 className="text-lg font-semibold">Discharge &amp; Exit</h2>
           <p className="text-sm text-gray-500">
-            One flow — bill, discharge summary, and gate pass.
+            One flow — finalize bill, settle, discharge summary, and gate pass.
           </p>
         </div>
         <DischargeWorklist onPick={onSelectAdmission} refreshKey={worklistRefreshKey} />

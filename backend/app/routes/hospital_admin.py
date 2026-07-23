@@ -2102,20 +2102,79 @@ def _format_export_date(value) -> str:
     return s[:10] if len(s) >= 10 else s
 
 
-def _build_billing_export_xlsx(data: dict, date_from: str, date_to: str) -> bytes:
-    """Build a two-sheet Excel workbook from the unified billing list payload."""
+_BILLING_EXPORT_HEADERS = [
+    "Date", "Type", "Reference", "Patient", "Phone", "Items",
+    "Amount", "Discount", "Final", "Doctor", "Referred By",
+    "Status", "Payment Method",
+]
+
+
+def _resolve_export_doctor_name(data: dict, doctor_id: Optional[int]) -> Optional[str]:
+    if not doctor_id:
+        return None
+    for d in data.get("doctors") or []:
+        if d.get("id") == doctor_id:
+            return d.get("name") or f"Doctor #{doctor_id}"
+    return f"Doctor #{doctor_id}"
+
+
+def _billing_export_meta(
+    data: dict,
+    *,
+    date_from: str,
+    date_to: str,
+    bill_type: Optional[str] = None,
+    payment_status: Optional[str] = None,
+    patient_search: Optional[str] = None,
+    doctor_id: Optional[int] = None,
+    referred_by: Optional[str] = None,
+):
+    from app.utils.export_branding import build_export_meta
+    return build_export_meta(
+        date_from=date_from,
+        date_to=date_to,
+        bill_type=bill_type,
+        payment_status=payment_status,
+        patient_search=patient_search,
+        doctor_name=_resolve_export_doctor_name(data, doctor_id),
+        referred_by=referred_by,
+        summary=data.get("summary") or {},
+    )
+
+
+def _billing_export_row(b: dict) -> list:
+    return [
+        _format_export_date(b.get("date")),
+        b.get("type") or "",
+        b.get("reference") or "",
+        b.get("patient_name") or "",
+        b.get("patient_phone") or "",
+        b.get("items") or "",
+        float(b.get("subtotal") or 0),
+        float(b.get("discount") or 0),
+        float(b.get("amount") or 0),
+        b.get("doctor_name") or "",
+        b.get("referred_by") or "",
+        b.get("payment_status") or "",
+        b.get("payment_method") or "",
+    ]
+
+
+def _build_billing_export_xlsx(
+    data: dict,
+    hospital: dict,
+    meta_rows: list,
+) -> bytes:
+    """Build a branded two-sheet Excel workbook from the unified billing list payload."""
     from openpyxl import Workbook
     from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
+    from openpyxl.utils import get_column_letter
+    from app.utils.export_branding import apply_workbook_branding
 
     wb = Workbook()
     ws = wb.active
     ws.title = "Bills"
 
-    headers = [
-        "Date", "Type", "Reference", "Patient", "Phone", "Items",
-        "Amount", "Discount", "Final", "Doctor", "Referred By",
-        "Status", "Payment Method",
-    ]
     header_font = Font(bold=True)
     header_fill = PatternFill("solid", fgColor="E8EEF5")
     thin = Border(
@@ -2125,58 +2184,45 @@ def _build_billing_export_xlsx(data: dict, date_from: str, date_to: str) -> byte
         bottom=Side(style="thin", color="CCCCCC"),
     )
 
-    for col, title in enumerate(headers, 1):
-        cell = ws.cell(row=1, column=col, value=title)
+    data_header_row = apply_workbook_branding(ws, hospital, meta_rows)
+
+    for col, title in enumerate(_BILLING_EXPORT_HEADERS, 1):
+        cell = ws.cell(row=data_header_row, column=col, value=title)
         cell.font = header_font
         cell.fill = header_fill
         cell.border = thin
 
-    for row_idx, b in enumerate(data.get("bills") or [], 2):
-        values = [
-            _format_export_date(b.get("date")),
-            b.get("type") or "",
-            b.get("reference") or "",
-            b.get("patient_name") or "",
-            b.get("patient_phone") or "",
-            b.get("items") or "",
-            float(b.get("subtotal") or 0),
-            float(b.get("discount") or 0),
-            float(b.get("amount") or 0),
-            b.get("doctor_name") or "",
-            b.get("referred_by") or "",
-            b.get("payment_status") or "",
-            b.get("payment_method") or "",
-        ]
-        for col, val in enumerate(values, 1):
+    bills = data.get("bills") or []
+    for offset, b in enumerate(bills):
+        row_idx = data_header_row + 1 + offset
+        for col, val in enumerate(_billing_export_row(b), 1):
             cell = ws.cell(row=row_idx, column=col, value=val)
             cell.border = thin
             if col in (7, 8, 9):
                 cell.number_format = "#,##0.00"
                 cell.alignment = Alignment(horizontal="right")
 
-    from openpyxl.utils import get_column_letter
     col_widths = [12, 14, 16, 22, 14, 36, 12, 10, 12, 20, 16, 12, 14]
     for i, width in enumerate(col_widths, 1):
-        ws.column_dimensions[get_column_letter(i)].width = width
+        letter = get_column_letter(i)
+        # Don't shrink column A if branding already widened it for the logo
+        existing = ws.column_dimensions[letter].width or 0
+        ws.column_dimensions[letter].width = max(existing, width)
 
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:M{max(1, len(data.get('bills') or []) + 1)}"
+    last_data_row = data_header_row + max(len(bills), 0)
+    freeze_row = data_header_row + 1
+    ws.freeze_panes = f"A{freeze_row}"
+    ws.auto_filter.ref = f"A{data_header_row}:M{max(data_header_row, last_data_row)}"
 
-    # Summary sheet
+    # Summary sheet — same hospital brand + filter context, then detailed metrics
     summary = data.get("summary") or {}
     ws2 = wb.create_sheet("Summary")
-    ws2["A1"] = "Billing Export Summary"
-    ws2["A1"].font = Font(bold=True, size=14)
-    ws2["A3"] = "Date from"
-    ws2["B3"] = date_from
-    ws2["A4"] = "Date to"
-    ws2["B4"] = date_to
-    ws2["A6"] = "Metric"
-    ws2["B6"] = "Value"
-    ws2["A6"].font = header_font
-    ws2["B6"].font = header_font
-    ws2["A6"].fill = header_fill
-    ws2["B6"].fill = header_fill
+    summary_start = apply_workbook_branding(ws2, hospital, meta_rows)
+
+    ws2.cell(row=summary_start, column=1, value="Metric").font = header_font
+    ws2.cell(row=summary_start, column=2, value="Value").font = header_font
+    ws2.cell(row=summary_start, column=1).fill = header_fill
+    ws2.cell(row=summary_start, column=2).fill = header_fill
 
     metrics = [
         ("Total bills", summary.get("total_bills", 0)),
@@ -2189,35 +2235,99 @@ def _build_billing_export_xlsx(data: dict, date_from: str, date_to: str) -> byte
         ("Admission bills", summary.get("admission_count", 0)),
         ("Cancelled", summary.get("cancelled_count", 0)),
     ]
-    # By-type rollup from rows
     by_type: dict = {}
-    for b in data.get("bills") or []:
+    for b in bills:
         if b.get("payment_status") == "cancelled":
             continue
         t = b.get("type") or "other"
         by_type[t] = by_type.get(t, 0.0) + float(b.get("amount") or 0)
 
-    for i, (label, value) in enumerate(metrics, 7):
-        ws2.cell(row=i, column=1, value=label)
-        cell = ws2.cell(row=i, column=2, value=value)
+    for i, (label, value) in enumerate(metrics):
+        r = summary_start + 1 + i
+        ws2.cell(row=r, column=1, value=label)
+        cell = ws2.cell(row=r, column=2, value=value)
         if isinstance(value, float):
             cell.number_format = "#,##0.00"
 
-    start = 7 + len(metrics) + 1
+    start = summary_start + 1 + len(metrics) + 1
     ws2.cell(row=start, column=1, value="Amount by type").font = header_font
     ws2.cell(row=start + 1, column=1, value="Type").font = header_font
     ws2.cell(row=start + 1, column=2, value="Amount").font = header_font
-    for i, (t, amt) in enumerate(sorted(by_type.items()), start + 2):
-        ws2.cell(row=i, column=1, value=t)
-        cell = ws2.cell(row=i, column=2, value=amt)
+    for i, (t, amt) in enumerate(sorted(by_type.items())):
+        ws2.cell(row=start + 2 + i, column=1, value=t)
+        cell = ws2.cell(row=start + 2 + i, column=2, value=amt)
         cell.number_format = "#,##0.00"
 
-    ws2.column_dimensions["A"].width = 22
-    ws2.column_dimensions["B"].width = 16
+    ws2.column_dimensions["A"].width = max(ws2.column_dimensions["A"].width or 0, 22)
+    ws2.column_dimensions["B"].width = max(ws2.column_dimensions["B"].width or 0, 16)
 
     buf = BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+def _build_billing_export_csv(
+    data: dict,
+    hospital: dict,
+    meta_rows: list,
+) -> bytes:
+    """Build a UTF-8 CSV with hospital name/address + filter/totals header rows."""
+    import csv
+    from io import StringIO
+    from app.utils.export_branding import csv_brand_lines
+
+    out = StringIO()
+    writer = csv.writer(out)
+    for line in csv_brand_lines(hospital, meta_rows):
+        writer.writerow(line)
+    writer.writerow(_BILLING_EXPORT_HEADERS)
+    for b in data.get("bills") or []:
+        writer.writerow(_billing_export_row(b))
+    # utf-8-sig so Excel on Windows opens Unicode cleanly
+    return ("\ufeff" + out.getvalue()).encode("utf-8")
+
+
+async def _load_billing_export_bundle(
+    *,
+    date_from: Optional[str],
+    date_to: Optional[str],
+    patient_search: Optional[str],
+    bill_type: Optional[str],
+    payment_status: Optional[str],
+    doctor_id: Optional[int],
+    referred_by: Optional[str],
+    current_user: User,
+    db: Session,
+):
+    """Shared data load for Excel/CSV billing exports."""
+    from app.utils.export_branding import hospital_brand_dict
+
+    data = await get_all_bills(
+        date_from=date_from,
+        date_to=date_to,
+        patient_search=patient_search,
+        bill_type=bill_type,
+        payment_status=payment_status,
+        doctor_id=doctor_id,
+        referred_by=referred_by,
+        current_user=current_user,
+        db=db,
+    )
+    today = date.today()
+    d_from = date_from or today.isoformat()
+    d_to = date_to or today.isoformat()
+    hospital = hospital_brand_dict(db, current_user.hospital_id)
+    meta_rows = _billing_export_meta(
+        data,
+        date_from=d_from,
+        date_to=d_to,
+        bill_type=bill_type,
+        payment_status=payment_status,
+        patient_search=patient_search,
+        doctor_id=doctor_id,
+        referred_by=referred_by,
+    )
+    return data, d_from, d_to, hospital, meta_rows
 
 
 @router.get("/billing/export.xlsx")
@@ -2233,7 +2343,7 @@ async def export_billing_xlsx(
     db: Session = Depends(get_db),
 ):
     """Excel export of the unified billing list using the same filters as GET /billing."""
-    data = await get_all_bills(
+    data, d_from, d_to, hospital, meta_rows = await _load_billing_export_bundle(
         date_from=date_from,
         date_to=date_to,
         patient_search=patient_search,
@@ -2244,14 +2354,44 @@ async def export_billing_xlsx(
         current_user=current_user,
         db=db,
     )
-    today = date.today()
-    d_from = date_from or today.isoformat()
-    d_to = date_to or today.isoformat()
-    content = _build_billing_export_xlsx(data, d_from, d_to)
+    content = _build_billing_export_xlsx(data, hospital, meta_rows)
     filename = f"billing_{d_from}_to_{d_to}.xlsx"
     return StreamingResponse(
         BytesIO(content),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/billing/export.csv")
+async def export_billing_csv(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    patient_search: Optional[str] = None,
+    bill_type: Optional[str] = None,
+    payment_status: Optional[str] = None,
+    doctor_id: Optional[int] = None,
+    referred_by: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """CSV export with hospital name/address header and the same filters as GET /billing."""
+    data, d_from, d_to, hospital, meta_rows = await _load_billing_export_bundle(
+        date_from=date_from,
+        date_to=date_to,
+        patient_search=patient_search,
+        bill_type=bill_type,
+        payment_status=payment_status,
+        doctor_id=doctor_id,
+        referred_by=referred_by,
+        current_user=current_user,
+        db=db,
+    )
+    content = _build_billing_export_csv(data, hospital, meta_rows)
+    filename = f"billing_{d_from}_to_{d_to}.csv"
+    return StreamingResponse(
+        BytesIO(content),
+        media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 

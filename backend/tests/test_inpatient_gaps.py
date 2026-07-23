@@ -169,6 +169,63 @@ class TestAdmissionAcceptance:
 
 
 # ======================================================================
+# Print-only interim statement (no Bill row / no stamping)
+# ======================================================================
+_interim_preview: dict = {}
+
+
+class TestInterimPreviewPdf:
+    """Interim Bill UI prints a live PDF with INTERIM watermark — no Bill create."""
+
+    def test_setup(self, client, auth_headers, seed_data):
+        _discharge_active(client, auth_headers, seed_data["patient_id"])
+        room = client.post(
+            f"{API}/rooms",
+            json={"room_number": "IPREV-1", "room_type": "general", "bed_count": 1,
+                  "room_charge_per_day": 800.0},
+            headers=auth_headers,
+        )
+        assert room.status_code == 201, room.text
+        adm = client.post(
+            f"{API}/admissions",
+            json={
+                "patient_id": seed_data["patient_id"],
+                "admitting_doctor_id": seed_data["doctor_user_id"],
+                "room_id": room.json()["id"],
+                "admission_type": "elective",
+                "admission_reason": "Interim preview PDF test",
+            },
+            headers=auth_headers,
+        )
+        assert adm.status_code == 201, adm.text
+        _interim_preview["admission_id"] = adm.json()["id"]
+
+    def test_as_interim_pdf_does_not_create_bill(self, client, auth_headers):
+        adm_id = _interim_preview["admission_id"]
+        before = client.get(f"{API}/admissions/{adm_id}/bills", headers=auth_headers)
+        assert before.status_code == 200
+        count_before = len(before.json())
+
+        pdf = client.get(
+            f"{API}/admissions/{adm_id}/bill/pdf",
+            params={"as_interim": True},
+            headers=auth_headers,
+        )
+        assert pdf.status_code == 200, pdf.text
+        assert pdf.headers.get("content-type", "").startswith("application/pdf")
+        assert pdf.content[:4] == b"%PDF"
+
+        after = client.get(f"{API}/admissions/{adm_id}/bills", headers=auth_headers)
+        assert after.status_code == 200
+        assert len(after.json()) == count_before
+
+        # Charges remain unbilled — balance still includes live unbilled total.
+        bal = client.get(f"{API}/admissions/{adm_id}/balance", headers=auth_headers)
+        assert bal.status_code == 200
+        assert float(bal.json().get("billed_on_bills") or 0) == 0.0
+
+
+# ======================================================================
 # Bill reconciliation + post-finalize Settle hint (collect path)
 # ======================================================================
 _rec: dict = {}

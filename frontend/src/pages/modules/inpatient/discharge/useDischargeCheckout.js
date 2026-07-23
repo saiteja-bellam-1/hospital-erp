@@ -130,7 +130,7 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
       }
       if (draft?.gatePassForm) setGatePassForm({ ...EMPTY_GATE_PASS_FORM, ...draft.gatePassForm });
       if (draft?.step && !gp) {
-        setStep(Math.max(start, Math.min(draft.step, 3)));
+        setStep(Math.max(start, Math.min(draft.step, 4)));
         setMaxReachable(Math.max(start, draft.maxReachable || start));
       } else {
         setStep(start);
@@ -172,8 +172,8 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
   const updateClinical = (patch) => setClinicalForm(p => ({ ...p, ...patch }));
 
   const goToStep = (n) => {
-    if (derived?.isDischarged && n === 2) return;
-    if (n >= 1 && n <= 3 && n <= maxReachable) setStep(n);
+    if (derived?.isDischarged && n === 3) return;
+    if (n >= 1 && n <= 4 && n <= maxReachable) setStep(n);
   };
 
   const advanceStep = (n) => {
@@ -187,6 +187,10 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
       return null;
     }
     if (s === 2) {
+      if (!finalBill) return 'Generate the final bill before settling.';
+      return null;
+    }
+    if (s === 3) {
       const dischargeType = clinicalForm.discharge_type || summaryDoc?.discharge_type || 'normal';
       const isDama = dischargeType === 'against_advice';
       const isDeath = dischargeType === 'death';
@@ -201,7 +205,7 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
       }
       return null;
     }
-    if (s === 3) {
+    if (s === 4) {
       if (!gatePassForm.attendant_name.trim()) return 'Attendant name is required.';
       if (gatePassForm.overrideErr && !gatePassForm.overrideReason.trim()) {
         return 'Override reason is required.';
@@ -211,65 +215,14 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
     return null;
   };
 
+  /** Step 1 — generate final bill only (discount/tax). Settlement is step 2. */
   const submitFinalizeBill = async () => {
     if (finalBill) {
-      if (!settlement || settlement.direction === 'none') {
-        advanceStep(2);
-        return true;
-      }
-      if (settlement.direction === 'collect' && !canAddDeposit) {
-        toast({
-          variant: 'destructive',
-          title: 'No permission to collect payment',
-          description: 'A user with Receive Deposits permission must settle this balance.',
-        });
-        return false;
-      }
-      const amt = settlement.amount;
-      setSubmitting(true);
-      try {
-        const isRefund = settlement.direction === 'refund';
-        await axios.post(
-          isRefund
-            ? `/api/inpatient/admissions/${admissionId}/refund`
-            : `/api/inpatient/admissions/${admissionId}/deposits`,
-          {
-            amount: amt,
-            ...(isRefund ? {} : { deposit_type: 'topup' }),
-            payment_method: settleForm?.method || 'cash',
-            reference_number: settleForm?.ref || null,
-            notes: settleForm?.notes || (isRefund
-              ? 'Final bill refund at discharge'
-              : 'Final bill payment collected at discharge'),
-          },
-        );
-        const refreshed = await fetchAll();
-        if (Math.abs(refreshed?.d?.owes || 0) <= 0.01) {
-          toast({
-            title: isRefund ? 'Refund recorded' : 'Payment collected',
-            description: `${rupee(amt)} ${isRefund ? 'refunded' : 'received'}. Proceed to discharge summary.`,
-          });
-          advanceStep(2);
-          return true;
-        }
-        toast({
-          variant: 'destructive',
-          title: 'Balance still outstanding',
-          description: 'The billing balance changed. Review the updated amount before continuing.',
-        });
-        return false;
-      } catch (err) {
-        const detail = err.response?.data?.detail;
-        const msg = typeof detail === 'string' ? detail : (detail?.message || 'Could not settle final bill');
-        toast({ variant: 'destructive', title: 'Settlement failed', description: msg });
-        return false;
-      } finally {
-        setSubmitting(false);
-      }
+      const owes = Math.abs(Number(derived?.owes || 0));
+      advanceStep(owes > 0.01 ? 2 : 3);
+      return true;
     }
     if (!settleForm) return false;
-    const direction = settlement?.direction || 'none';
-    const amt = settlement?.amount || 0;
     setSubmitting(true);
     try {
       const billBody = {
@@ -277,34 +230,85 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
         discount_type: settleForm.discountType || 'flat',
         tax_percentage: parseFloat(settleForm.taxPct || '0') || 0,
       };
-      if (direction === 'none') {
-        await axios.post(`/api/inpatient/admissions/${admissionId}/bill/finalize`, billBody);
-      } else {
-        await axios.post(`/api/inpatient/admissions/${admissionId}/bill/finalize-and-settle`, {
-          ...billBody,
-          settle: {
-            direction,
-            amount: amt,
-            payment_method: settleForm.method,
-            reference_number: settleForm.ref || null,
-            notes: settleForm.notes || null,
-          },
-        });
-      }
-      toast({ title: 'Final bill generated', description: 'Proceed to discharge summary.' });
-      await fetchAll();
-      advanceStep(2);
+      await axios.post(`/api/inpatient/admissions/${admissionId}/bill/finalize`, billBody);
+      toast({ title: 'Final bill generated', description: 'Continue to collect or refund.' });
+      const refreshed = await fetchAll();
+      if (refreshed?.d) setSettleForm(EMPTY_SETTLE_FORM(refreshed.d));
+      const owes = Math.abs(Number(refreshed?.d?.owes || 0));
+      advanceStep(owes > 0.01 ? 2 : 3);
       return true;
     } catch (err) {
       const detail = err.response?.data?.detail;
       if (err.response?.status === 409 && detail?.code === 'final_bill_exists') {
-        toast({ title: 'Final bill already exists', description: 'Proceeding to clinical step.' });
-        await fetchAll();
-        advanceStep(2);
+        toast({ title: 'Final bill already exists', description: 'Continue to settlement.' });
+        const refreshed = await fetchAll();
+        const owes = Math.abs(Number(refreshed?.d?.owes || 0));
+        advanceStep(owes > 0.01 ? 2 : 3);
         return true;
       }
       const msg = typeof detail === 'string' ? detail : (detail?.message || 'Could not finalize bill');
       toast({ variant: 'destructive', title: 'Finalize failed', description: msg });
+      return false;
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  /** Step 2 — collect outstanding or refund credit against the final bill. */
+  const submitSettle = async () => {
+    if (!finalBill) {
+      toast({ variant: 'destructive', title: 'Final bill required', description: 'Generate the final bill first.' });
+      return false;
+    }
+    if (!settlement || settlement.direction === 'none') {
+      advanceStep(3);
+      return true;
+    }
+    if (settlement.direction === 'collect' && !canAddDeposit) {
+      toast({
+        variant: 'destructive',
+        title: 'No permission to collect payment',
+        description: 'A user with Receive Deposits permission must settle this balance.',
+      });
+      return false;
+    }
+    const amt = settlement.amount;
+    setSubmitting(true);
+    try {
+      const isRefund = settlement.direction === 'refund';
+      await axios.post(
+        isRefund
+          ? `/api/inpatient/admissions/${admissionId}/refund`
+          : `/api/inpatient/admissions/${admissionId}/deposits`,
+        {
+          amount: amt,
+          ...(isRefund ? {} : { deposit_type: 'topup' }),
+          payment_method: settleForm?.method || 'cash',
+          reference_number: settleForm?.ref || null,
+          notes: settleForm?.notes || (isRefund
+            ? 'Final bill refund at discharge'
+            : 'Final bill payment collected at discharge'),
+        },
+      );
+      const refreshed = await fetchAll();
+      if (Math.abs(refreshed?.d?.owes || 0) <= 0.01) {
+        toast({
+          title: isRefund ? 'Refund recorded' : 'Payment collected',
+          description: `${rupee(amt)} ${isRefund ? 'refunded' : 'received'}. Proceed to discharge summary.`,
+        });
+        advanceStep(3);
+        return true;
+      }
+      toast({
+        variant: 'destructive',
+        title: 'Balance still outstanding',
+        description: 'The billing balance changed. Review the updated amount before continuing.',
+      });
+      return false;
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      const msg = typeof detail === 'string' ? detail : (detail?.message || 'Could not settle final bill');
+      toast({ variant: 'destructive', title: 'Settlement failed', description: msg });
       return false;
     } finally {
       setSubmitting(false);
@@ -330,7 +334,7 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
 
   const submitDischarge = async () => {
     if (derived?.isDischarged) {
-      advanceStep(3);
+      advanceStep(4);
       return { wasDeath: clinicalForm.discharge_type === 'death', skipped: true };
     }
     setSubmitting(true);
@@ -348,7 +352,7 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
           : 'Complete gate pass next.',
       });
       await fetchAll();
-      advanceStep(3);
+      advanceStep(4);
       return { wasDeath: isDeath, admissionId };
     } catch (err) {
       const detail = err.response?.data?.detail;
@@ -358,15 +362,15 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
           title: 'Summary not ready',
           description: detail.message || 'Doctor must finalize the discharge summary first.',
         });
-        setStep(2);
+        setStep(3);
         return null;
       }
       if (err.response?.status === 409 && detail?.code === 'credit_refund_required') {
         toast({
           variant: 'destructive', title: 'Refund required',
-          description: detail.message || 'Return to Bill step and issue refund.',
+          description: detail.message || 'Return to Collect / Refund and issue refund.',
         });
-        setStep(1);
+        setStep(2);
         return null;
       }
       const gateCodes = ['outstanding_balance', 'unacknowledged_critical_alerts',
@@ -377,6 +381,9 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
           variant: 'destructive', title: 'Safety gate hit',
           description: `${detail.message} Provide override reason and resubmit.`,
         });
+        if (detail.code === 'outstanding_balance' || detail.code === 'final_bill_required') {
+          setStep(detail.code === 'final_bill_required' ? 1 : 2);
+        }
         return null;
       }
       const msg = typeof detail === 'string' ? detail : (detail?.message || 'Discharge failed');
@@ -517,21 +524,25 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
       return null;
     }
     if (step === 1) {
-      const ok = await submitFinalizeBill();
-      return ok || finalBill ? null : null;
+      await submitFinalizeBill();
+      return null;
     }
     if (step === 2) {
+      await submitSettle();
+      return null;
+    }
+    if (step === 3) {
       if (!canDischarge && !derived?.isDischarged) {
         toast({ variant: 'destructive', title: 'No permission to discharge patients' });
         return null;
       }
       if (derived?.isDischarged) {
-        advanceStep(3);
+        advanceStep(4);
         return null;
       }
       return submitDischarge();
     }
-    if (step === 3) {
+    if (step === 4) {
       if (!canIssuePass) {
         toast({ variant: 'destructive', title: 'No permission to issue gate pass' });
         return null;

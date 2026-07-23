@@ -583,20 +583,24 @@ const BillingModule = () => {
     }
   };
 
-  const downloadCSV = () => {
-    const headers = ['Date', 'Type', 'Reference', 'Patient', 'Phone', 'Items', 'Amount', 'Discount', 'Final', 'Doctor', 'Referred By', 'Status', 'Payment Method'];
-    const rows = bills.map(b => [
-      formatDate(b.date), b.type, b.reference, b.patient_name, b.patient_phone,
-      b.items, b.subtotal, b.discount, b.amount, b.doctor_name, b.referred_by, b.payment_status, b.payment_method
-    ]);
-    const csv = [headers.join(','), ...rows.map(r => r.map(v => `"${v}"`).join(','))].join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `billing_${dateFrom}_to_${dateTo}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+  const downloadCSV = async () => {
+    setExporting(true);
+    try {
+      const res = await axios.get(`/api/hospital/billing/export.csv?${buildBillingParams().toString()}`, {
+        responseType: 'blob',
+      });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `billing_${dateFrom}_to_${dateTo}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('CSV export failed:', err);
+      alert('Could not export CSV report');
+    } finally {
+      setExporting(false);
+    }
   };
 
   const downloadExcel = async () => {
@@ -667,7 +671,7 @@ const BillingModule = () => {
               <DropdownMenuItem onSelect={() => { downloadExcel(); }} disabled={exporting}>
                 Export Excel (.xlsx)
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={downloadCSV} disabled={bills.length === 0}>
+              <DropdownMenuItem onSelect={() => { downloadCSV(); }} disabled={exporting}>
                 Export CSV
               </DropdownMenuItem>
             </DropdownMenuContent>
