@@ -44,6 +44,13 @@ const PrintSettingsPreviewDialog = ({
           include_header_on_pdfs: draftSettings.includeHeaderOnPdfs,
           include_footer_on_pdfs: draftSettings.includeFooterOnPdfs !== false,
           detailed_billing_on_pdfs: draftSettings.detailedBillingOnPdfs !== false,
+          prescription_include_vitals: draftSettings.prescriptionIncludeVitals !== false,
+          prescription_vitals_layout: draftSettings.prescriptionVitalsLayout || 'show',
+          prescription_vitals_column_width_in:
+            draftSettings.prescriptionVitalsColumnWidthIn != null
+              ? Number(draftSettings.prescriptionVitalsColumnWidthIn)
+              : 1.75,
+          prescription_vital_fields: draftSettings.prescriptionVitalFields || [],
           letterhead_gap_mm: gap,
           report_header_overrides: draftSettings.overrides || {},
           report_footer_overrides: draftSettings.footerOverrides || {},

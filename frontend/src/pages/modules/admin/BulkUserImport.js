@@ -97,7 +97,7 @@ const BulkUserImportDialog = ({ open, onOpenChange, onImported }) => {
 
   const handleUpload = async () => {
     if (!file) {
-      toast({ title: 'Pick a CSV file first', variant: 'destructive' });
+      toast({ title: 'Pick an Excel or CSV file first', variant: 'destructive' });
       return;
     }
     setBusy(true);
@@ -180,7 +180,7 @@ const BulkUserImportDialog = ({ open, onOpenChange, onImported }) => {
           <div className="rounded-md border border-blue-100 bg-blue-50 p-3 text-sm text-blue-900 flex items-start gap-2">
             <Icon className="h-4 w-4 mt-0.5 shrink-0" />
             <div>
-              <div className="font-medium mb-1">{meta.label} CSV format</div>
+              <div className="font-medium mb-1">{meta.label} Excel / CSV format</div>
               <div className="text-xs leading-relaxed">{meta.description}</div>
               <div className="text-xs mt-1 text-blue-800">
                 Passwords are hashed before storage. Every imported user is forced to
@@ -200,7 +200,7 @@ const BulkUserImportDialog = ({ open, onOpenChange, onImported }) => {
               <input
                 id="bulk-import-file"
                 type="file"
-                accept=".csv,text/csv"
+                accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 className="hidden"
                 onChange={(e) => {
                   setFile(e.target.files?.[0] || null);
@@ -210,7 +210,7 @@ const BulkUserImportDialog = ({ open, onOpenChange, onImported }) => {
               <Button variant="outline" size="sm" asChild>
                 <span>
                   <Upload className="h-4 w-4 mr-2" />
-                  {file ? file.name : 'Choose CSV...'}
+                  {file ? file.name : 'Choose Excel or CSV...'}
                 </span>
               </Button>
             </label>

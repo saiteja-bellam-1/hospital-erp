@@ -287,6 +287,7 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
   // "Administration" (day-to-day admin config/ops) and "System" (technical/system).
   if (hasAnyRole('super_admin', 'hospital_admin')) {
     const admin = [];
+    add(admin, make('Guided Setup', ClipboardList, '/dashboard/setup'));
     add(admin, make('Users & Roles', ClipboardList, '/dashboard/admin'));
     add(admin, make('Hospital Config', Building2, '/dashboard/hospital-admin'));
     add(admin, make('Print Settings', Printer, '/dashboard/print-settings'));

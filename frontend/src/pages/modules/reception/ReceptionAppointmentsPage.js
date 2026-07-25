@@ -14,6 +14,7 @@ import PatientSearchPicker from '../../../components/PatientSearchPicker';
 import ReferralSelectWithCreate from '../../../components/ReferralSelectWithCreate';
 import AppointmentAvailabilityOverride from '../../../components/AppointmentAvailabilityOverride';
 import AppointmentTimeField from '../../../components/AppointmentTimeField';
+import VitalsForm from '../../../components/vitals/VitalsForm';
 import {
   APPOINTMENT_OVERRIDE_DEFAULTS,
   buildAppointmentCreatePayload,
@@ -45,7 +46,8 @@ import {
   History,
   TestTube,
   Download,
-  Package
+  Package,
+  Activity
 } from 'lucide-react';
 
 const ReceptionAppointmentsPage = () => {
@@ -89,6 +91,8 @@ const ReceptionAppointmentsPage = () => {
 
   // Dialogs
   const [showAppointmentDialog, setShowAppointmentDialog] = useState(false);
+  const [showVitalsDialog, setShowVitalsDialog] = useState(false);
+  const [vitalsPatient, setVitalsPatient] = useState(null);
   const [showBillPreviewDialog, setShowBillPreviewDialog] = useState(false);
   const [currentBill, setCurrentBill] = useState(null);
   const [billPdfUrl, setBillPdfUrl] = useState(null);
@@ -863,6 +867,17 @@ const ReceptionAppointmentsPage = () => {
     setShowNotesDialog(true);
   };
 
+  const openVitalsForAppointment = (appointment) => {
+    const nameParts = (appointment.patient_name || '').trim().split(/\s+/);
+    setVitalsPatient({
+      id: appointment.patient_uuid || appointment.patient_id,
+      patient_id: appointment.patient_uuid || appointment.patient_id,
+      first_name: nameParts[0] || '',
+      last_name: nameParts.slice(1).join(' '),
+    });
+    setShowVitalsDialog(true);
+  };
+
   const handleSaveNotes = async () => {
     try {
       const token = localStorage.getItem('token');
@@ -1221,6 +1236,15 @@ const ReceptionAppointmentsPage = () => {
                     {/* Document actions */}
                     <Button size="sm" variant="ghost" className="h-7 px-3 text-xs text-gray-600 hover:text-gray-900" onClick={() => openNotesDialog(appointment)}>
                       Notes
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 px-3 text-xs text-rose-600 hover:text-rose-800"
+                      disabled={!appointment.patient_uuid}
+                      onClick={() => openVitalsForAppointment(appointment)}
+                    >
+                      <Activity className="h-3 w-3 mr-1" /> Record Vitals
                     </Button>
                     {appointment.consultation_fee > 0 && (
                       <Button size="sm" variant="ghost" className="h-7 px-3 text-xs text-gray-600 hover:text-gray-900" onClick={() => showBillPreview(appointment.id)}>
@@ -1883,6 +1907,20 @@ const ReceptionAppointmentsPage = () => {
         title={confirmState.title}
         description={confirmState.description}
         onConfirm={confirmState.onConfirm}
+      />
+
+      <VitalsForm
+        isOpen={showVitalsDialog}
+        onClose={() => {
+          setShowVitalsDialog(false);
+          setVitalsPatient(null);
+        }}
+        selectedPatient={vitalsPatient}
+        userRole="receptionist"
+        onSave={() => {
+          setShowVitalsDialog(false);
+          setVitalsPatient(null);
+        }}
       />
 
       {/* Lab Bill Preview Dialog */}

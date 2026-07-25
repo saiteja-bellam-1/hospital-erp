@@ -762,7 +762,7 @@ async def restore_user(
     return {"message": "User restored successfully"}
 
 # ---------------------------------------------------------------------------
-# Bulk user import (doctors / nurses) — CSV upload
+# Bulk user import (doctors / nurses / staff) — Excel or CSV upload
 # ---------------------------------------------------------------------------
 #
 # Installer-time "normal users" bulk import lives in the Inno Setup wizard
@@ -776,18 +776,36 @@ async def restore_user(
 # never apply partially. The frontend is expected to surface row-level errors
 # from the response.
 
-CSV_MAX_BYTES = 1 * 1024 * 1024  # 1 MB — generous for 5k rows
+USER_IMPORT_MAX_BYTES = 5 * 1024 * 1024
 
 
 async def _read_csv_upload(file: UploadFile) -> str:
     raw = await file.read()
-    if len(raw) > CSV_MAX_BYTES:
-        raise HTTPException(status_code=413, detail="CSV file too large (max 1 MB)")
+    if len(raw) > USER_IMPORT_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Import file too large (max 5 MB)")
+    filename = (file.filename or "").lower()
+    if filename.endswith(".xlsx"):
+        import csv
+        import io
+        import openpyxl
+
+        try:
+            workbook = openpyxl.load_workbook(
+                io.BytesIO(raw), read_only=True, data_only=True
+            )
+            worksheet = workbook["Data"] if "Data" in workbook.sheetnames else workbook.active
+            text = io.StringIO()
+            writer = csv.writer(text)
+            for row in worksheet.iter_rows(values_only=True):
+                writer.writerow(["" if value is None else value for value in row])
+            return text.getvalue()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Could not read Excel file: {exc}")
     try:
         # Tolerate Excel-saved UTF-8 BOM.
         return raw.decode("utf-8-sig")
     except UnicodeDecodeError:
-        raise HTTPException(status_code=400, detail="CSV must be UTF-8 encoded")
+        raise HTTPException(status_code=400, detail="Upload an .xlsx file or a UTF-8 CSV")
 
 
 def _resolve_hospital_id(db: Session) -> int:
@@ -803,7 +821,7 @@ async def bulk_import_doctors(
     current_user: User = Depends(require_admin_access),
     db: Session = Depends(get_db),
 ):
-    """Bulk-create doctor users from a CSV upload.
+    """Bulk-create doctor users from an Excel or CSV upload.
 
     Required columns: username, email, first_name, last_name, password,
     specialization, license_number. Optional: phone, qualification,
@@ -854,7 +872,7 @@ async def bulk_import_nurses(
     current_user: User = Depends(require_admin_access),
     db: Session = Depends(get_db),
 ):
-    """Bulk-create nurse users from a CSV upload.
+    """Bulk-create nurse users from an Excel or CSV upload.
 
     Required columns: username, email, first_name, last_name, password.
     Optional: phone.
@@ -903,7 +921,7 @@ async def bulk_import_staff(
     current_user: User = Depends(require_admin_access),
     db: Session = Depends(get_db),
 ):
-    """Bulk-create normal staff users from a CSV upload.
+    """Bulk-create normal staff users from an Excel or CSV upload.
 
     Required columns: username, email, first_name, last_name, role, password.
     Optional: phone, additional_roles (semicolon-separated).

@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Textarea } from '../../../../components/ui/textarea';
 import { Badge } from '../../../../components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../../../components/ui/dialog';
-import { Plus, Edit2, Trash2, Search, RefreshCw, Settings2, Loader2, Upload, TestTube } from 'lucide-react';
+import { Plus, Edit2, Trash2, Search, RefreshCw, Settings2, Loader2, Upload, Download, TestTube } from 'lucide-react';
 import { useLabFeedback } from '../useLabFeedback';
 import LabTestImportDialog from '../LabTestImportDialog';
 
@@ -20,6 +20,7 @@ export default function TestsTab() {
   const [sampleTypes, setSampleTypes] = useState([]);
   const [tests, setTests] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [showDialog, setShowDialog] = useState(false);
@@ -124,6 +125,48 @@ export default function TestsTab() {
     }, 'Delete Test');
   };
 
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const res = await axios.get('/api/lab/tests/export/xlsx', { responseType: 'blob' });
+      const contentType = res.headers['content-type'] || '';
+      if (contentType.includes('application/json')) {
+        const text = await res.data.text?.() || await new Response(res.data).text();
+        let detail = 'Failed to export lab tests';
+        try { detail = JSON.parse(text).detail || detail; } catch { /* keep default */ }
+        throw new Error(typeof detail === 'string' ? detail : 'Failed to export lab tests');
+      }
+      const disposition = res.headers['content-disposition'] || '';
+      const match = disposition.match(/filename=([^;]+)/);
+      const filename = match ? match[1].trim().replace(/"/g, '') : 'lab_tests_export.xlsx';
+      const url = window.URL.createObjectURL(new Blob([res.data], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      showFeedback('Lab tests exported');
+    } catch (err) {
+      const detail = err.response?.data;
+      let message = err.message || 'Failed to export lab tests';
+      if (detail instanceof Blob) {
+        try {
+          const parsed = JSON.parse(await detail.text());
+          if (typeof parsed.detail === 'string') message = parsed.detail;
+        } catch { /* keep message */ }
+      } else if (typeof detail?.detail === 'string') {
+        message = detail.detail;
+      }
+      showFeedback(message, 'error');
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <div className="space-y-4">
       <FeedbackToast />
@@ -157,6 +200,12 @@ export default function TestsTab() {
           </Button>
           <Button variant="outline" onClick={() => setShowImport(true)}>
             <Upload className="h-4 w-4 mr-2" /> Import
+          </Button>
+          <Button variant="outline" onClick={handleExport} disabled={exporting}>
+            {exporting
+              ? <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              : <Download className="h-4 w-4 mr-2" />}
+            Export
           </Button>
           <Button onClick={() => openDialog()}>
             <Plus className="h-4 w-4 mr-2" /> Add Test

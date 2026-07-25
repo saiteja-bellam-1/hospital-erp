@@ -2939,7 +2939,7 @@ _IMPORT_TEST_HEADERS = [
 _IMPORT_PARAM_HEADERS = [
     "test_code", "section", "parameter_name", "unit", "method", "field_type",
     "ref_min", "ref_max", "gender", "age_min", "age_max", "description",
-    "possible_values", "normal_value", "abnormal_values",
+    "is_normal", "possible_values", "normal_value", "abnormal_values", "notes",
     "critical_low", "critical_high",
 ]
 _VALID_FIELD_TYPES = {
@@ -2978,6 +2978,11 @@ def _cell_list(v):
         return None
     parts = [p.strip() for p in s.split(",") if p.strip()]
     return parts or None
+
+
+def _cell_bool(v) -> bool:
+    s = (_cell_str(v) or "").lower()
+    return s in {"1", "true", "yes", "y"}
 
 
 def _row_is_empty(r) -> bool:
@@ -3069,6 +3074,7 @@ def _build_params_for_test(param_rows_for_test, errors):
                 "possible_values": _cell_list(pr.get("possible_values")),
                 "normal_value": _cell_str(pr.get("normal_value")),
                 "abnormal_values": _cell_list(pr.get("abnormal_values")),
+                "notes": _cell_str(pr.get("notes")),
                 "reference_ranges": [],
             }
             try:
@@ -3095,6 +3101,7 @@ def _build_params_for_test(param_rows_for_test, errors):
                 "min": rmin, "max": rmax, "gender": gender,
                 "age_min": age_min, "age_max": age_max,
                 "description": desc or "",
+                "is_normal": _cell_bool(pr.get("is_normal")),
             })
     result = []
     for key in ordered:
@@ -3126,11 +3133,11 @@ async def download_import_template(
     ws2 = wb.create_sheet("Parameters")
     ws2.append(_IMPORT_PARAM_HEADERS)
     ws2.append(["CBC", "", "Hemoglobin", "g/dL", "", "numeric", 13, 17, "male", "", "",
-                "", "", "", "", "", ""])
+                "", False, "", "", "", "", "", ""])
     ws2.append(["CBC", "", "Hemoglobin", "g/dL", "", "numeric", 12, 15, "female", "", "",
-                "", "", "", "", "", ""])
+                "", False, "", "", "", "", "", ""])
     ws2.append(["LFT", "", "SGPT (ALT)", "U/L", "", "numeric", 7, 56, "common", "", "",
-                "", "", "", "", "", ""])
+                "", False, "", "", "", "", "", ""])
 
     ws3 = wb.create_sheet("Instructions")
     notes = [
@@ -3147,6 +3154,7 @@ async def download_import_template(
         [""],
         ["gender values: male, female, common"],
         ["field_type values: " + ", ".join(sorted(_VALID_FIELD_TYPES))],
+        ["is_normal values: true or false (used by tiered_numeric ranges)"],
         ["possible_values / abnormal_values: comma-separated (e.g. Positive, Negative)"],
     ]
     for row in notes:
@@ -3386,6 +3394,155 @@ async def import_tests(
         errors=errors,
         preview=preview,
     )
+
+
+def _export_list_cell(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(v).strip() for v in value if v is not None and str(v).strip())
+    return str(value).strip()
+
+
+def _export_reference_ranges(param: LabTestParameter) -> list:
+    """Return ranges in import format, including legacy-only parameters."""
+    raw = param.reference_ranges
+    if isinstance(raw, list) and raw:
+        ranges = []
+        for row in raw:
+            if not isinstance(row, dict):
+                continue
+            ranges.append({
+                "min": row.get("min"),
+                "max": row.get("max"),
+                "gender": row.get("gender") or "common",
+                "age_min": row.get("age_min"),
+                "age_max": row.get("age_max"),
+                "description": row.get("description") or "",
+                "is_normal": bool(row.get("is_normal", False)),
+            })
+        if ranges:
+            return ranges
+
+    ranges = []
+    legacy_ranges = [
+        ("male", param.reference_min_male, param.reference_max_male, None, None),
+        ("female", param.reference_min_female, param.reference_max_female, None, None),
+        ("common", param.reference_min_default, param.reference_max_default, None, None),
+        ("common", param.reference_min_child, param.reference_max_child, 0, 12),
+    ]
+    for gender, minimum, maximum, age_min, age_max in legacy_ranges:
+        if minimum is not None or maximum is not None:
+            ranges.append({
+                "min": minimum,
+                "max": maximum,
+                "gender": gender,
+                "age_min": age_min,
+                "age_max": age_max,
+                "description": "Child" if age_max == 12 else "",
+                "is_normal": False,
+            })
+    return ranges
+
+
+@router.get("/tests/export/xlsx")
+async def export_tests_xlsx(
+    current_user: User = Depends(require_permission(Modules.LAB, "read")),
+    db: Session = Depends(get_db),
+):
+    """Export active lab tests in the same workbook format accepted by import."""
+    _require_lab_admin(current_user)
+    import io
+    import openpyxl
+
+    try:
+        tests = (
+            db.query(LabTest)
+            .filter(
+                LabTest.hospital_id == current_user.hospital_id,
+                LabTest.is_active == True,
+            )
+            .order_by(LabTest.name)
+            .all()
+        )
+
+        wb = openpyxl.Workbook()
+        tests_sheet = wb.active
+        tests_sheet.title = "Tests"
+        tests_sheet.append(_IMPORT_TEST_HEADERS)
+
+        params_sheet = wb.create_sheet("Parameters")
+        params_sheet.append(_IMPORT_PARAM_HEADERS)
+
+        for test in tests:
+            category = db.query(LabTestCategory).filter(
+                LabTestCategory.id == test.category_id
+            ).first()
+            sample_type = db.query(SampleType).filter(
+                SampleType.id == test.sample_type_id
+            ).first() if test.sample_type_id else None
+            tests_sheet.append([
+                test.test_code,
+                test.name,
+                category.name if category else "",
+                sample_type.name if sample_type else (test.sample_type or ""),
+                test.cost if test.cost is not None else 0,
+                test.method or "",
+                test.description or "",
+                test.preparation_instructions or "",
+            ])
+
+            parameters = (
+                db.query(LabTestParameter)
+                .filter(
+                    LabTestParameter.test_id == test.id,
+                    LabTestParameter.is_active == True,
+                )
+                .order_by(LabTestParameter.display_order, LabTestParameter.id)
+                .all()
+            )
+            for param in parameters:
+                ranges = _export_reference_ranges(param) or [{}]
+                for reference_range in ranges:
+                    params_sheet.append([
+                        test.test_code,
+                        param.section or "",
+                        param.parameter_name,
+                        param.unit or "",
+                        param.method or "",
+                        param.field_type or "numeric",
+                        reference_range.get("min"),
+                        reference_range.get("max"),
+                        reference_range.get("gender") or "common",
+                        reference_range.get("age_min"),
+                        reference_range.get("age_max"),
+                        reference_range.get("description") or "",
+                        bool(reference_range.get("is_normal", False)),
+                        _export_list_cell(param.possible_values),
+                        param.normal_value or "",
+                        _export_list_cell(param.abnormal_values),
+                        param.notes or "",
+                        param.critical_low,
+                        param.critical_high,
+                    ])
+
+        for sheet in (tests_sheet, params_sheet):
+            sheet.freeze_panes = "A2"
+            if sheet.max_row >= 1 and sheet.max_column >= 1:
+                sheet.auto_filter.ref = sheet.dimensions
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return StreamingResponse(
+            buf,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": "attachment; filename=lab_tests_export.xlsx"},
+        )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Export failed: {e}")
 
 
 @router.post("/seed-defaults")

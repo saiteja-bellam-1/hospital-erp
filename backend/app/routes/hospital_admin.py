@@ -724,10 +724,35 @@ async def get_print_settings(
     return get_print_settings_payload(db, current_user.hospital_id)
 
 
+@router.get("/vitals-config")
+async def get_vitals_config(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Vitals fields configured for OPD collection and prescription display.
+
+    Readable by any authenticated hospital user (reception, nurse, doctor, admin)
+    so Record Vitals forms can show only the hospital's selected fields.
+    """
+    from app.utils.pdf_settings import (
+        PRESCRIPTION_VITAL_CATALOG,
+        get_prescription_vital_fields,
+    )
+
+    return {
+        "vital_fields": get_prescription_vital_fields(db, current_user.hospital_id),
+        "vital_catalog": PRESCRIPTION_VITAL_CATALOG,
+    }
+
+
 class PrintSettingsUpdate(BaseModel):
     include_header_on_pdfs: Optional[bool] = None
     include_footer_on_pdfs: Optional[bool] = None
     detailed_billing_on_pdfs: Optional[bool] = None
+    prescription_include_vitals: Optional[bool] = None
+    prescription_vitals_layout: Optional[str] = None
+    prescription_vitals_column_width_in: Optional[float] = None
+    prescription_vital_fields: Optional[list[str]] = None
     letterhead_gap_mm: Optional[float] = None
     report_header_overrides: Optional[dict[str, str]] = None
     report_footer_overrides: Optional[dict[str, str]] = None
@@ -738,6 +763,10 @@ class PrintSettingsPreviewRequest(BaseModel):
     include_header_on_pdfs: bool = True
     include_footer_on_pdfs: bool = True
     detailed_billing_on_pdfs: bool = True
+    prescription_include_vitals: bool = True
+    prescription_vitals_layout: Optional[str] = None
+    prescription_vitals_column_width_in: Optional[float] = None
+    prescription_vital_fields: Optional[list[str]] = None
     letterhead_gap_mm: float = 35.0
     report_header_overrides: Optional[dict[str, str]] = None
     report_footer_overrides: Optional[dict[str, str]] = None
@@ -751,13 +780,40 @@ async def preview_print_settings(
 ):
     """Return a sample PDF using draft settings (no save required)."""
     from fastapi.responses import Response
-    from app.utils.pdf_settings import MAX_LETTERHEAD_GAP_MM, MIN_LETTERHEAD_GAP_MM
+    from app.utils.pdf_settings import (
+        MAX_LETTERHEAD_GAP_MM,
+        MAX_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN,
+        MIN_LETTERHEAD_GAP_MM,
+        MIN_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN,
+        PRESCRIPTION_VITALS_LAYOUTS,
+        normalize_prescription_vitals_layout,
+    )
     from app.utils.print_preview import generate_print_preview_pdf
 
     if not (MIN_LETTERHEAD_GAP_MM <= data.letterhead_gap_mm <= MAX_LETTERHEAD_GAP_MM):
         raise HTTPException(
             status_code=400,
             detail=f"letterhead_gap_mm must be between {MIN_LETTERHEAD_GAP_MM} and {MAX_LETTERHEAD_GAP_MM}",
+        )
+    layout = data.prescription_vitals_layout
+    if layout is None:
+        layout = "show" if data.prescription_include_vitals else "blank"
+    layout = normalize_prescription_vitals_layout(layout)
+    if layout not in PRESCRIPTION_VITALS_LAYOUTS:
+        raise HTTPException(status_code=400, detail="Invalid prescription_vitals_layout")
+    width_in = data.prescription_vitals_column_width_in
+    if width_in is not None and not (
+        MIN_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN
+        <= width_in
+        <= MAX_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"prescription_vitals_column_width_in must be between "
+                f"{MIN_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN} and "
+                f"{MAX_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN} inches"
+            ),
         )
     buf = generate_print_preview_pdf(
         db,
@@ -766,6 +822,10 @@ async def preview_print_settings(
         include_header_on_pdfs=data.include_header_on_pdfs,
         include_footer_on_pdfs=data.include_footer_on_pdfs,
         detailed_billing_on_pdfs=data.detailed_billing_on_pdfs,
+        prescription_include_vitals=data.prescription_include_vitals,
+        prescription_vitals_layout=layout,
+        prescription_vitals_column_width_in=width_in,
+        prescription_vital_fields=data.prescription_vital_fields,
         letterhead_gap_mm=data.letterhead_gap_mm,
         report_header_overrides=data.report_header_overrides,
         report_footer_overrides=data.report_footer_overrides,
@@ -785,7 +845,11 @@ async def update_print_settings(
 ):
     from app.utils.pdf_settings import (
         MAX_LETTERHEAD_GAP_MM,
+        MAX_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN,
         MIN_LETTERHEAD_GAP_MM,
+        MIN_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN,
+        PRESCRIPTION_VITALS_LAYOUTS,
+        normalize_prescription_vitals_layout,
         update_print_settings as save_print_settings,
     )
 
@@ -795,12 +859,35 @@ async def update_print_settings(
                 status_code=400,
                 detail=f"letterhead_gap_mm must be between {MIN_LETTERHEAD_GAP_MM} and {MAX_LETTERHEAD_GAP_MM}",
             )
+    layout = data.prescription_vitals_layout
+    if layout is not None:
+        layout = normalize_prescription_vitals_layout(layout)
+        if layout not in PRESCRIPTION_VITALS_LAYOUTS:
+            raise HTTPException(status_code=400, detail="Invalid prescription_vitals_layout")
+    if data.prescription_vitals_column_width_in is not None:
+        if not (
+            MIN_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN
+            <= data.prescription_vitals_column_width_in
+            <= MAX_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"prescription_vitals_column_width_in must be between "
+                    f"{MIN_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN} and "
+                    f"{MAX_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN} inches"
+                ),
+            )
     payload = save_print_settings(
         db,
         current_user.hospital_id,
         include_header_on_pdfs=data.include_header_on_pdfs,
         include_footer_on_pdfs=data.include_footer_on_pdfs,
         detailed_billing_on_pdfs=data.detailed_billing_on_pdfs,
+        prescription_include_vitals=data.prescription_include_vitals,
+        prescription_vitals_layout=layout,
+        prescription_vitals_column_width_in=data.prescription_vitals_column_width_in,
+        prescription_vital_fields=data.prescription_vital_fields,
         letterhead_gap_mm=data.letterhead_gap_mm,
         report_header_overrides=data.report_header_overrides,
         report_footer_overrides=data.report_footer_overrides,

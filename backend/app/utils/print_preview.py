@@ -131,7 +131,19 @@ def _sample_prescription() -> dict:
                 "food_timing": "after_food",
             },
         ],
-        "vitals": {},
+        "vitals": {
+            "vital_signs": {
+                "height": "170",
+                "weight": "70",
+                "blood_pressure": "120/80",
+                "heart_rate": "72",
+                "temperature": "98.6",
+                "respiratory_rate": "16",
+                "oxygen_saturation": "98",
+                "bmi": "24.2",
+                "pain_scale": "2",
+            }
+        },
         "consultation": {},
         "lab_tests": [],
     }
@@ -416,6 +428,10 @@ def generate_print_preview_pdf(
     include_header_on_pdfs: bool,
     detailed_billing_on_pdfs: bool = True,
     include_footer_on_pdfs: bool = True,
+    prescription_include_vitals: bool = True,
+    prescription_vitals_layout: str | None = None,
+    prescription_vitals_column_width_in: float | None = None,
+    prescription_vital_fields: list[str] | None = None,
     letterhead_gap_mm: float,
     report_header_overrides: dict[str, str] | None = None,
     report_footer_overrides: dict[str, str] | None = None,
@@ -435,12 +451,36 @@ def generate_print_preview_pdf(
         "include_header": opts.include_header,
         "letterhead_gap_pt": opts.letterhead_gap_pt,
     }
-    from app.utils.pdf_settings import FOOTER_REPORT_KEYS
+    from app.utils.pdf_settings import (
+        DEFAULT_PRESCRIPTION_VITAL_FIELDS,
+        DEFAULT_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN,
+        FOOTER_REPORT_KEYS,
+        clamp_prescription_vitals_column_width_in,
+        normalize_prescription_vital_fields,
+        normalize_prescription_vitals_layout,
+    )
     if report_type in FOOTER_REPORT_KEYS:
         kwargs["include_footer"] = opts.include_footer
     bill_layout_keys = {"opd_bill", "lab_bill", "inpatient_bill"}
     if report_type in bill_layout_keys:
         kwargs["detailed_billing"] = detailed_billing_on_pdfs
+    if report_type == "prescription":
+        if prescription_vitals_layout is not None:
+            layout = normalize_prescription_vitals_layout(prescription_vitals_layout)
+        else:
+            layout = "show" if prescription_include_vitals else "blank"
+        kwargs["vitals_layout"] = layout
+        kwargs["include_vitals"] = layout == "show"
+        kwargs["vital_fields"] = (
+            normalize_prescription_vital_fields(prescription_vital_fields)
+            if prescription_vital_fields is not None
+            else list(DEFAULT_PRESCRIPTION_VITAL_FIELDS)
+        )
+        kwargs["vitals_column_width_in"] = (
+            clamp_prescription_vitals_column_width_in(prescription_vitals_column_width_in)
+            if prescription_vitals_column_width_in is not None
+            else DEFAULT_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN
+        )
     hi = _hospital_info(db, hospital_id)
 
     if report_type == "prescription":

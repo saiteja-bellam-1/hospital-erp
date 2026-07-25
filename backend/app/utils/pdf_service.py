@@ -1319,12 +1319,48 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_prescription_pdf(self, prescription_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, blank_mode=False):
+    def generate_prescription_pdf(
+        self,
+        prescription_data,
+        hospital_info,
+        include_header=True,
+        letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT,
+        blank_mode=False,
+        include_vitals=True,
+        vital_fields=None,
+        vitals_layout=None,
+        vitals_column_width_in=None,
+    ):
         """Generate PDF for prescription matching the reference layout:
         Header → Doctor+Patient info box → Diagnosis → Vitals (left) + Medicines (right) → Instructions
 
         When blank_mode=True, vitals show labeled empty rows for handwritten entry.
+        vitals_layout: 'show' | 'blank' | 'remove'
+          - show: print vitals in the left column
+          - blank: reserve empty left column for pre-printed stationery
+          - remove: no left column; medicines use full width from the start
+        vital_fields selects which vitals appear and in what order (show mode).
+        vitals_column_width_in controls left column width in inches for show/blank.
         """
+        from app.utils.pdf_settings import (
+            DEFAULT_PRESCRIPTION_VITAL_FIELDS,
+            DEFAULT_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN,
+            INCH_TO_PT,
+            clamp_prescription_vitals_column_width_in,
+            normalize_prescription_vitals_layout,
+            resolve_prescription_vital_field_defs,
+        )
+
+        if vitals_layout is None:
+            vitals_layout = "show" if include_vitals else "blank"
+        vitals_layout = normalize_prescription_vitals_layout(vitals_layout)
+        include_vitals = vitals_layout == "show"
+        width_in = clamp_prescription_vitals_column_width_in(
+            vitals_column_width_in
+            if vitals_column_width_in is not None
+            else DEFAULT_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN
+        )
+
         buffer = BytesIO()
 
         doc = SimpleDocTemplate(
@@ -1368,6 +1404,10 @@ class PDFService:
 
         footer_style = ParagraphStyle('RxFooter', parent=self.styles['Normal'],
             fontSize=7, alignment=1, fontName='Helvetica', textColor=colors.grey)
+
+        vital_field_defs = resolve_prescription_vital_field_defs(
+            vital_fields if vital_fields is not None else DEFAULT_PRESCRIPTION_VITAL_FIELDS
+        )
 
         def lbl(text):
             return Paragraph(f"<b>{text}</b>", cell_lbl)
@@ -1541,67 +1581,86 @@ class PDFService:
         # VITALS (left) + MEDICINES / DIAGNOSIS (right) — side by side
         # ============================================================
         vitals = prescription_data.get('vitals')
-        vitals_left_width = page_width * 0.25
-        meds_right_width = page_width * 0.73
         gap = page_width * 0.02
-
-        # --- Build vitals sub-table ---
-        blank_vital_fields = (
-            ('Height', 'cms'),
-            ('Weight', 'Kg'),
-            ('Blood\nPressure', ''),
-            ('Pulse', '/min'),
-            ('Temperature', '°F'),
-            ('Resp. Rate', '/min'),
-            ('SpO2', '%'),
-        )
-        vitals_rows = [[Paragraph('<b><u>Vitals</u></b>', cell_lbl), '']]
-        if blank_mode:
-            for label, unit_hint in blank_vital_fields:
-                hint = f" <font size='7' color='#888888'>{unit_hint}</font>" if unit_hint else ''
-                vitals_rows.append([
-                    lbl(label),
-                    Paragraph(hint or '&nbsp;', cell_val),
-                ])
-        elif vitals and vitals.get('vital_signs'):
-            vs = vitals['vital_signs']
-            if vs.get('height'):
-                vitals_rows.append([lbl('Height'), val(f"{vs['height']} cms")])
-            if vs.get('weight'):
-                vitals_rows.append([lbl('Weight'), val(f"{vs['weight']} Kg")])
-            if vs.get('blood_pressure'):
-                vitals_rows.append([lbl('Blood\nPressure'), val(vs['blood_pressure'])])
-            if vs.get('heart_rate'):
-                vitals_rows.append([lbl('Pulse'), val(str(vs['heart_rate']))])
-            if vs.get('temperature'):
-                vitals_rows.append([lbl('Temperature'), val(f"{vs['temperature']} F")])
-            if vs.get('respiratory_rate'):
-                vitals_rows.append([lbl('Resp. Rate'), val(str(vs['respiratory_rate']))])
-            if vs.get('spo2') or vs.get('oxygen_saturation'):
-                vitals_rows.append([lbl('SpO2'), val(f"{vs.get('spo2') or vs.get('oxygen_saturation')}%")])
-            if vs.get('bmi'):
-                vitals_rows.append([lbl('BMI'), val(str(vs['bmi']))])
+        if vitals_layout == "remove":
+            vitals_left_width = 0
+            meds_right_width = page_width
         else:
-            vitals_rows.append([Paragraph('No vitals recorded', cell_val_sm), ''])
+            vitals_left_width = width_in * INCH_TO_PT
+            meds_right_width = page_width - vitals_left_width - gap
 
-        vitals_table = Table(vitals_rows, colWidths=[vitals_left_width * 0.55, vitals_left_width * 0.45])
-        vitals_style = [
-            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-            ('TOPPADDING', (0, 0), (-1, -1), 3),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
-            ('LEFTPADDING', (0, 0), (-1, -1), 2),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 2),
-            ('SPAN', (0, 0), (1, 0)),  # header spans
-        ]
-        if blank_mode:
-            vitals_style.extend([
-                ('TOPPADDING', (0, 1), (-1, -1), 6),
-                ('BOTTOMPADDING', (0, 1), (-1, -1), 10),
-                ('LINEBELOW', (1, 1), (1, -1), 0.5, border_color),
-            ])
-        vitals_table.setStyle(TableStyle(vitals_style))
+        def _format_vital_value(key, vs):
+            if not vs:
+                return None
+            if key == 'height' and vs.get('height'):
+                return f"{vs['height']} cms"
+            if key == 'weight' and vs.get('weight'):
+                return f"{vs['weight']} Kg"
+            if key == 'blood_pressure' and vs.get('blood_pressure'):
+                return str(vs['blood_pressure'])
+            if key == 'heart_rate' and vs.get('heart_rate'):
+                return str(vs['heart_rate'])
+            if key == 'temperature' and vs.get('temperature'):
+                return f"{vs['temperature']} F"
+            if key == 'respiratory_rate' and vs.get('respiratory_rate'):
+                return str(vs['respiratory_rate'])
+            if key == 'spo2':
+                spo2_val = vs.get('spo2') or vs.get('oxygen_saturation')
+                return f"{spo2_val}%" if spo2_val else None
+            if key == 'bmi' and vs.get('bmi'):
+                return str(vs['bmi'])
+            if key == 'pain_scale':
+                pain = vs.get('pain_scale') or vs.get('pain_score')
+                return str(pain) if pain not in (None, '') else None
+            return None
 
-        # --- Lab tests (left column) ---
+        # --- Build vitals sub-table (show layout only) ---
+        vitals_table = None
+        if vitals_layout == "show":
+            vitals_rows = [[Paragraph('<b><u>Vitals</u></b>', cell_lbl), '']]
+            if blank_mode:
+                for field in vital_field_defs:
+                    label = field['label']
+                    if field['key'] == 'blood_pressure':
+                        label = 'Blood\nPressure'
+                    unit_hint = field.get('unit') or ''
+                    hint = f" <font size='7' color='#888888'>{unit_hint}</font>" if unit_hint else ''
+                    vitals_rows.append([
+                        lbl(label),
+                        Paragraph(hint or '&nbsp;', cell_val),
+                    ])
+            elif vitals and vitals.get('vital_signs'):
+                vs = vitals['vital_signs']
+                for field in vital_field_defs:
+                    formatted = _format_vital_value(field['key'], vs)
+                    if formatted:
+                        label = field['label']
+                        if field['key'] == 'blood_pressure':
+                            label = 'Blood\nPressure'
+                        vitals_rows.append([lbl(label), val(formatted)])
+            else:
+                vitals_rows.append([Paragraph('No vitals recorded', cell_val_sm), ''])
+
+            vitals_table = Table(vitals_rows, colWidths=[vitals_left_width * 0.55, vitals_left_width * 0.45])
+            vitals_style = [
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('TOPPADDING', (0, 0), (-1, -1), 3),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                ('LEFTPADDING', (0, 0), (-1, -1), 2),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 2),
+                ('SPAN', (0, 0), (1, 0)),  # header spans
+            ]
+            if blank_mode:
+                vitals_style.extend([
+                    ('TOPPADDING', (0, 1), (-1, -1), 6),
+                    ('BOTTOMPADDING', (0, 1), (-1, -1), 10),
+                    ('LINEBELOW', (1, 1), (1, -1), 0.5, border_color),
+                ])
+            vitals_table.setStyle(TableStyle(vitals_style))
+
+        # --- Lab tests ---
+        # In remove layout, labs go full-width above medicines so the left
+        # column stays gone. Otherwise labs stay in the left column.
         lab_tests = prescription_data.get('lab_tests', [])
         lab_rows = []
         if lab_tests:
@@ -1613,12 +1672,13 @@ class PDFService:
                     Paragraph(f"&bull; {t.get('test_name', '')}", cell_val_sm),
                     Paragraph(status_text, cell_val_sm),
                 ])
-        elif blank_mode:
+        elif blank_mode and vitals_layout != "remove":
             lab_rows.append([Paragraph('<b><u>Lab Tests</u></b>', cell_lbl), ''])
 
         lab_tests_table = None
+        lab_col_width = page_width if vitals_layout == "remove" else vitals_left_width
         if lab_rows:
-            lab_tests_table = Table(lab_rows, colWidths=[vitals_left_width * 0.65, vitals_left_width * 0.35])
+            lab_tests_table = Table(lab_rows, colWidths=[lab_col_width * 0.65, lab_col_width * 0.35])
             lab_tests_table.setStyle(TableStyle([
                 ('VALIGN', (0, 0), (-1, -1), 'TOP'),
                 ('TOPPADDING', (0, 0), (-1, -1), 2),
@@ -1628,18 +1688,35 @@ class PDFService:
                 ('SPAN', (0, 0), (1, 0)),
             ]))
 
-        # Combine vitals + lab tests into left column
-        left_col_parts = [[vitals_table]]
-        if lab_tests_table:
-            left_col_parts.append([Spacer(1, 14 if blank_mode else 8)])
-            left_col_parts.append([lab_tests_table])
-        left_col_wrapper = Table(left_col_parts, colWidths=[vitals_left_width])
-        left_col_wrapper.setStyle(TableStyle([
-            ('LEFTPADDING', (0, 0), (-1, -1), 0),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 0),
-            ('TOPPADDING', (0, 0), (-1, -1), 0),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
-        ]))
+        left_col_parts = []
+        full_width_labs = None
+        if vitals_layout == "remove":
+            if lab_tests_table:
+                full_width_labs = lab_tests_table
+        else:
+            if vitals_table is not None:
+                left_col_parts.append([vitals_table])
+            if lab_tests_table and vitals_layout == "show":
+                if left_col_parts:
+                    left_col_parts.append([Spacer(1, 14 if blank_mode else 8)])
+                left_col_parts.append([lab_tests_table])
+            elif lab_tests_table and vitals_layout == "blank":
+                # Keep labs out of the reserved blank pre-print area; place below later
+                full_width_labs = lab_tests_table
+
+        reserve_left_for_preprint = vitals_layout == "blank"
+        has_left_column = bool(left_col_parts) or reserve_left_for_preprint
+        left_col_wrapper = None
+        if left_col_parts:
+            left_col_wrapper = Table(left_col_parts, colWidths=[vitals_left_width])
+            left_col_wrapper.setStyle(TableStyle([
+                ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+                ('TOPPADDING', (0, 0), (-1, -1), 0),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+            ]))
+        elif reserve_left_for_preprint:
+            left_col_wrapper = Spacer(vitals_left_width, 1)
 
         # --- Build medicines sub-table ---
         food_timing_map = {
@@ -1721,20 +1798,34 @@ class PDFService:
             ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
         ]))
 
-        # Side by side layout with vertical divider
-        layout_table = Table(
-            [[left_col_wrapper, meds_wrapper]],
-            colWidths=[vitals_left_width, meds_right_width + gap]
-        )
-        layout_table.setStyle(TableStyle([
-            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-            ('LEFTPADDING', (0, 0), (-1, -1), 0),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 0),
-            ('TOPPADDING', (0, 0), (-1, -1), 0),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
-            ('LINEAFTER', (0, 0), (0, -1), 0.5, colors.Color(0.7, 0.7, 0.7)),  # Vertical divider line
-        ]))
-        elements.append(layout_table)
+        if full_width_labs is not None and vitals_layout == "remove":
+            elements.append(full_width_labs)
+            elements.append(Spacer(1, 8))
+
+        if has_left_column:
+            layout_table = Table(
+                [[left_col_wrapper, meds_wrapper]],
+                colWidths=[vitals_left_width, meds_right_width + gap]
+            )
+            layout_style = [
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+                ('TOPPADDING', (0, 0), (-1, -1), 0),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+            ]
+            if vitals_layout == "show":
+                layout_style.append(
+                    ('LINEAFTER', (0, 0), (0, -1), 0.5, colors.Color(0.7, 0.7, 0.7))
+                )
+            layout_table.setStyle(TableStyle(layout_style))
+            elements.append(layout_table)
+        else:
+            elements.append(meds_wrapper)
+
+        if full_width_labs is not None and vitals_layout == "blank":
+            elements.append(Spacer(1, 8))
+            elements.append(full_width_labs)
 
         # ============================================================
         # INSTRUCTIONS — filled prescriptions only

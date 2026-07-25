@@ -40,7 +40,7 @@ from app.models.canteen import (  # noqa: F401
 from app.models.settlement import Settlement, SettlementConfig  # noqa: F401
 
 # Import route modules
-from app.routes import auth, patients, admin, system, module_admin, hospital_admin, appointments, prescriptions, medicines, consultations, prescriptions_simple, doctor_availability, lab, ehr, license, backup, referrals, audit, inpatient, outpatient_procedures, pharmacy, canteen, catch_up
+from app.routes import auth, patients, admin, system, module_admin, hospital_admin, onboarding, appointments, prescriptions, medicines, consultations, prescriptions_simple, doctor_availability, lab, ehr, license, backup, referrals, audit, inpatient, outpatient_procedures, pharmacy, canteen, catch_up
 from app.middleware.license_middleware import LicenseMiddleware
 from app.middleware.audit_middleware import AuditMiddleware
 from app.middleware.maintenance import MaintenanceMiddleware
@@ -449,6 +449,7 @@ app.include_router(admin.router, prefix="/api/admin", tags=["Administration"])
 app.include_router(system.router, prefix="/api/system", tags=["System"])
 app.include_router(module_admin.router, prefix="/api/modules", tags=["Module Administration"])
 app.include_router(hospital_admin.router, prefix="/api/hospital", tags=["Hospital Administration"])
+app.include_router(onboarding.router, prefix="/api/onboarding", tags=["Hospital Onboarding"])
 app.include_router(appointments.router, prefix="/api/appointments", tags=["Appointments"])
 app.include_router(consultations.router, prefix="/api/consultations", tags=["Consultations"])
 app.include_router(prescriptions.router, prefix="/api/prescriptions", tags=["Prescriptions"])

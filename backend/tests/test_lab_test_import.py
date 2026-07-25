@@ -19,6 +19,7 @@ import uuid
 import openpyxl
 
 from app.models.lab import LabTest, LabTestCategory, LabTestParameter, SampleType
+from app.routes.lab import _IMPORT_PARAM_HEADERS, _IMPORT_TEST_HEADERS
 
 
 def _uc(prefix: str) -> str:
@@ -85,6 +86,29 @@ def test_import_sample_csv_downloads(client, auth_headers):
     assert "test_code,name,category" in resp.text
 
 
+def test_export_downloads_import_compatible_xlsx(client, auth_headers):
+    resp = client.get("/api/lab/tests/export/xlsx", headers=auth_headers)
+    assert resp.status_code == 200, resp.text
+    assert "spreadsheet" in resp.headers.get("content-type", "")
+
+    wb = openpyxl.load_workbook(io.BytesIO(resp.content), data_only=True)
+    assert "Tests" in wb.sheetnames
+    assert "Parameters" in wb.sheetnames
+    assert [cell.value for cell in wb["Tests"][1]] == _IMPORT_TEST_HEADERS
+    assert [cell.value for cell in wb["Parameters"][1]] == _IMPORT_PARAM_HEADERS
+
+    round_trip = _upload(
+        client,
+        auth_headers,
+        resp.content,
+        "lab_tests_export.xlsx",
+        dry_run=True,
+        on_duplicate="update",
+    )
+    assert round_trip.status_code == 200, round_trip.text
+    assert round_trip.json()["error_count"] == 0
+
+
 # --------------------------------------------------------------------------
 # Import — dry run
 # --------------------------------------------------------------------------
@@ -147,6 +171,42 @@ def test_import_creates_test_category_sampletype_and_params(client, auth_headers
     hb = params_db[0]
     assert len(hb.reference_ranges) == 2
     assert {r["gender"] for r in hb.reference_ranges} == {"male", "female"}
+
+
+def test_export_preserves_import_fields_and_tier_normal_flag(client, auth_headers):
+    code = _uc("EXP")
+    category = f"ExportCat-{uuid.uuid4().hex[:5]}"
+    tests = [[code, "Export Round Trip", category, "Serum", 425, "Analyzer", "Panel", "Fasting"]]
+    params = [[
+        code, "Lipids", "Total Cholesterol", "mg/dL", "Enzymatic", "tiered_numeric",
+        None, 199, "common", None, None, "Desirable", True,
+        None, None, None, "Export note", 50, 500,
+    ]]
+    imported = _upload(
+        client,
+        auth_headers,
+        _xlsx_bytes(tests, params, params_header=_IMPORT_PARAM_HEADERS),
+        "round-trip.xlsx",
+    )
+    assert imported.status_code == 200, imported.text
+
+    exported = client.get("/api/lab/tests/export/xlsx", headers=auth_headers)
+    assert exported.status_code == 200, exported.text
+    wb = openpyxl.load_workbook(io.BytesIO(exported.content), data_only=True)
+
+    test_rows = list(wb["Tests"].iter_rows(min_row=2, values_only=True))
+    assert (code, "Export Round Trip", category, "Serum", 425) == next(
+        row[:5] for row in test_rows if row[0] == code
+    )
+
+    param_rows = list(wb["Parameters"].iter_rows(min_row=2, values_only=True))
+    exported_param = next(row for row in param_rows if row[0] == code)
+    param_data = dict(zip(_IMPORT_PARAM_HEADERS, exported_param))
+    assert param_data["description"] == "Desirable"
+    assert param_data["is_normal"] is True
+    assert param_data["notes"] == "Export note"
+    assert param_data["critical_low"] == 50
+    assert param_data["critical_high"] == 500
 
 
 def test_import_reuses_existing_category(client, auth_headers, db_session, seed_data):

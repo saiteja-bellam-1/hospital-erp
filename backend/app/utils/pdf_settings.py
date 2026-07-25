@@ -19,13 +19,56 @@ PRINT_REPORT_FOOTER_OVERRIDES_KEY = "report_footer_overrides"
 # Reports where staff-name / signature footers can be toggled (phase 1: reception + lab).
 FOOTER_REPORT_KEYS = frozenset({"opd_bill", "lab_bill", "lab_report"})
 PRINT_DETAILED_BILLING_KEY = "detailed_billing_on_pdfs"
+PRINT_PRESCRIPTION_INCLUDE_VITALS_KEY = "prescription_include_vitals"
+PRINT_PRESCRIPTION_VITAL_FIELDS_KEY = "prescription_vital_fields"
+PRINT_PRESCRIPTION_VITALS_LAYOUT_KEY = "prescription_vitals_layout"
+PRINT_PRESCRIPTION_VITALS_COLUMN_WIDTH_KEY = "prescription_vitals_column_width_in"
+# Legacy key (percent); still read for migration when inches not set.
+PRINT_PRESCRIPTION_VITALS_COLUMN_WIDTH_PCT_KEY = "prescription_vitals_column_width_pct"
 
 DEFAULT_LETTERHEAD_GAP_MM = 35.0  # ~100 pt
 MIN_LETTERHEAD_GAP_MM = 0.0
 MAX_LETTERHEAD_GAP_MM = 80.0
 MM_TO_PT = 72.0 / 25.4
+INCH_TO_PT = 72.0
+
+# show = print vitals; blank = reserve empty left column; remove = medicines full width
+PRESCRIPTION_VITALS_LAYOUTS = frozenset({"show", "blank", "remove"})
+DEFAULT_PRESCRIPTION_VITALS_LAYOUT = "show"
+
+# Prescription PDF margins are 40pt each side on A4 (see pdf_service.generate_prescription_pdf).
+_A4_WIDTH_PT = 595.27
+_PRESCRIPTION_SIDE_MARGIN_PT = 40.0
+PRESCRIPTION_USABLE_WIDTH_IN = (_A4_WIDTH_PT - 2 * _PRESCRIPTION_SIDE_MARGIN_PT) / INCH_TO_PT
+MIN_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN = 0.5  # fixed minimum
+MAX_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN = round(PRESCRIPTION_USABLE_WIDTH_IN * 0.40, 2)  # 40% of usable
+DEFAULT_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN = 1.75  # ~former 25% default
 
 OverrideValue = str  # "inherit" | "on" | "off"
+
+# Catalog of vitals that can appear on the prescription left column.
+# Order here is the default display order when the hospital has not customized.
+PRESCRIPTION_VITAL_CATALOG: list[dict[str, str]] = [
+    {"key": "height", "label": "Height", "unit": "cms"},
+    {"key": "weight", "label": "Weight", "unit": "Kg"},
+    {"key": "blood_pressure", "label": "Blood Pressure", "unit": ""},
+    {"key": "heart_rate", "label": "Pulse", "unit": "/min"},
+    {"key": "temperature", "label": "Temperature", "unit": "°F"},
+    {"key": "respiratory_rate", "label": "Resp. Rate", "unit": "/min"},
+    {"key": "spo2", "label": "SpO2", "unit": "%"},
+    {"key": "bmi", "label": "BMI", "unit": ""},
+    {"key": "pain_scale", "label": "Pain Score", "unit": ""},
+]
+VALID_PRESCRIPTION_VITAL_KEYS = {v["key"] for v in PRESCRIPTION_VITAL_CATALOG}
+DEFAULT_PRESCRIPTION_VITAL_FIELDS: list[str] = [
+    "height",
+    "weight",
+    "blood_pressure",
+    "heart_rate",
+    "temperature",
+    "respiratory_rate",
+    "spo2",
+]
 
 REPORT_CATALOG: list[dict[str, str]] = [
     {"key": "opd_bill", "label": "OPD Bill", "module": "outpatient"},
@@ -150,6 +193,180 @@ def set_hospital_detailed_billing(
         description="Show net total, paid amount, and balance on bill PDFs",
         created_by=created_by,
     )
+
+
+def get_prescription_include_vitals(db: Session, hospital_id: int | None) -> bool:
+    """When True, prescription PDFs include printed vitals (layout == show)."""
+    return get_prescription_vitals_layout(db, hospital_id) == "show"
+
+
+def set_prescription_include_vitals(
+    db: Session,
+    *,
+    include_vitals: bool,
+    created_by: int | None = None,
+) -> None:
+    """Legacy helper — maps boolean to show/blank layout."""
+    set_prescription_vitals_layout(
+        db,
+        layout="show" if include_vitals else "blank",
+        created_by=created_by,
+    )
+
+
+def normalize_prescription_vitals_layout(raw: Any) -> str:
+    if raw is None:
+        return DEFAULT_PRESCRIPTION_VITALS_LAYOUT
+    v = str(raw).strip().lower()
+    if v in PRESCRIPTION_VITALS_LAYOUTS:
+        return v
+    if v in ("1", "true", "yes", "on"):
+        return "show"
+    if v in ("0", "false", "no", "off"):
+        return "blank"
+    return DEFAULT_PRESCRIPTION_VITALS_LAYOUT
+
+
+def get_prescription_vitals_layout(db: Session, hospital_id: int | None) -> str:
+    """Prescription left-column mode: show | blank | remove."""
+    if not hospital_id:
+        return DEFAULT_PRESCRIPTION_VITALS_LAYOUT
+    row = _get_setting_row(db, PRINT_PRESCRIPTION_VITALS_LAYOUT_KEY)
+    if row and row.setting_value is not None:
+        return normalize_prescription_vitals_layout(row.setting_value)
+    # Backward compat: older installs only stored the boolean include flag
+    legacy = _get_setting_row(db, PRINT_PRESCRIPTION_INCLUDE_VITALS_KEY)
+    if legacy and legacy.setting_value is not None:
+        return "show" if _parse_bool(legacy.setting_value, default=True) else "blank"
+    return DEFAULT_PRESCRIPTION_VITALS_LAYOUT
+
+
+def set_prescription_vitals_layout(
+    db: Session,
+    *,
+    layout: str,
+    created_by: int | None = None,
+) -> str:
+    cleaned = normalize_prescription_vitals_layout(layout)
+    _upsert_setting(
+        db,
+        key=PRINT_PRESCRIPTION_VITALS_LAYOUT_KEY,
+        value=cleaned,
+        setting_type="string",
+        description="Prescription vitals column: show, blank (pre-printed), or remove",
+        created_by=created_by,
+    )
+    # Keep legacy boolean in sync for any older readers
+    _upsert_setting(
+        db,
+        key=PRINT_PRESCRIPTION_INCLUDE_VITALS_KEY,
+        value="true" if cleaned == "show" else "false",
+        setting_type="boolean",
+        description="Show vitals column on prescription PDFs",
+        created_by=created_by,
+    )
+    return cleaned
+
+
+def clamp_prescription_vitals_column_width_in(inches: float) -> float:
+    return max(
+        MIN_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN,
+        min(MAX_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN, float(inches)),
+    )
+
+
+def get_prescription_vitals_column_width_in(db: Session, hospital_id: int | None) -> float:
+    """Left column width in inches (show/blank layouts)."""
+    if not hospital_id:
+        return DEFAULT_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN
+    row = _get_setting_row(db, PRINT_PRESCRIPTION_VITALS_COLUMN_WIDTH_KEY)
+    if row and row.setting_value is not None:
+        try:
+            return clamp_prescription_vitals_column_width_in(float(row.setting_value))
+        except (TypeError, ValueError):
+            return DEFAULT_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN
+    # Migrate legacy percent setting → inches
+    legacy = _get_setting_row(db, PRINT_PRESCRIPTION_VITALS_COLUMN_WIDTH_PCT_KEY)
+    if legacy and legacy.setting_value is not None:
+        try:
+            pct = float(legacy.setting_value)
+            return clamp_prescription_vitals_column_width_in(
+                PRESCRIPTION_USABLE_WIDTH_IN * (pct / 100.0)
+            )
+        except (TypeError, ValueError):
+            pass
+    return DEFAULT_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN
+
+
+def set_prescription_vitals_column_width_in(
+    db: Session,
+    *,
+    width_in: float,
+    created_by: int | None = None,
+) -> float:
+    clamped = clamp_prescription_vitals_column_width_in(width_in)
+    _upsert_setting(
+        db,
+        key=PRINT_PRESCRIPTION_VITALS_COLUMN_WIDTH_KEY,
+        value=str(clamped),
+        setting_type="number",
+        description="Prescription left (vitals) column width in inches",
+        created_by=created_by,
+    )
+    return clamped
+
+
+def normalize_prescription_vital_fields(raw: Any) -> list[str]:
+    if not isinstance(raw, list):
+        return list(DEFAULT_PRESCRIPTION_VITAL_FIELDS)
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        key = str(item).strip()
+        if key not in VALID_PRESCRIPTION_VITAL_KEYS or key in seen:
+            continue
+        cleaned.append(key)
+        seen.add(key)
+    return cleaned if cleaned else list(DEFAULT_PRESCRIPTION_VITAL_FIELDS)
+
+
+def get_prescription_vital_fields(db: Session, hospital_id: int | None) -> list[str]:
+    """Ordered list of vital keys to show on the prescription vitals column."""
+    if not hospital_id:
+        return list(DEFAULT_PRESCRIPTION_VITAL_FIELDS)
+    row = _get_setting_row(db, PRINT_PRESCRIPTION_VITAL_FIELDS_KEY)
+    if not row or not row.setting_value:
+        return list(DEFAULT_PRESCRIPTION_VITAL_FIELDS)
+    try:
+        raw = json.loads(row.setting_value)
+    except (json.JSONDecodeError, TypeError):
+        return list(DEFAULT_PRESCRIPTION_VITAL_FIELDS)
+    return normalize_prescription_vital_fields(raw)
+
+
+def set_prescription_vital_fields(
+    db: Session,
+    *,
+    vital_fields: list[str],
+    created_by: int | None = None,
+) -> list[str]:
+    cleaned = normalize_prescription_vital_fields(vital_fields)
+    _upsert_setting(
+        db,
+        key=PRINT_PRESCRIPTION_VITAL_FIELDS_KEY,
+        value=json.dumps(cleaned),
+        setting_type="json",
+        description="Ordered vital fields shown on prescription PDFs",
+        created_by=created_by,
+    )
+    return cleaned
+
+
+def resolve_prescription_vital_field_defs(vital_fields: list[str] | None) -> list[dict[str, str]]:
+    """Map selected vital keys to catalog entries (label/unit), preserving order."""
+    keys = normalize_prescription_vital_fields(vital_fields)
+    by_key = {v["key"]: v for v in PRESCRIPTION_VITAL_CATALOG}
+    return [by_key[k] for k in keys if k in by_key]
 
 
 def get_hospital_pdf_include_header(db: Session, hospital_id: int | None) -> bool:
@@ -297,6 +514,15 @@ def get_print_settings_payload(db: Session, hospital_id: int | None) -> dict[str
         "include_header_on_pdfs": get_hospital_pdf_include_header(db, hospital_id),
         "include_footer_on_pdfs": get_hospital_pdf_include_footer(db, hospital_id),
         "detailed_billing_on_pdfs": get_hospital_detailed_billing(db, hospital_id),
+        "prescription_include_vitals": get_prescription_include_vitals(db, hospital_id),
+        "prescription_vitals_layout": get_prescription_vitals_layout(db, hospital_id),
+        "prescription_vitals_column_width_in": get_prescription_vitals_column_width_in(
+            db, hospital_id
+        ),
+        "prescription_vitals_column_width_min_in": MIN_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN,
+        "prescription_vitals_column_width_max_in": MAX_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN,
+        "prescription_vital_fields": get_prescription_vital_fields(db, hospital_id),
+        "prescription_vital_catalog": PRESCRIPTION_VITAL_CATALOG,
         "letterhead_gap_mm": get_letterhead_gap_mm(db, hospital_id),
         "report_catalog": REPORT_CATALOG,
         "footer_report_catalog": footer_catalog,
@@ -451,17 +677,25 @@ def pdf_gen_kwargs(
     report_type: str,
     *,
     query_include_header: bool | None = None,
-) -> dict[str, float | bool]:
+) -> dict[str, float | bool | list[str]]:
     """Kwargs to pass into PDFService.generate_* methods."""
     opts = resolve_print_options(
         db, hospital_id, report_type, query_include_header=query_include_header
     )
-    kw: dict[str, float | bool] = {
+    kw: dict[str, float | bool | list[str]] = {
         "include_header": opts.include_header,
         "letterhead_gap_pt": opts.letterhead_gap_pt,
     }
     if report_type in FOOTER_REPORT_KEYS:
         kw["include_footer"] = opts.include_footer
+    if report_type == "prescription":
+        layout = get_prescription_vitals_layout(db, hospital_id)
+        kw["vitals_layout"] = layout
+        kw["include_vitals"] = layout == "show"
+        kw["vital_fields"] = get_prescription_vital_fields(db, hospital_id)
+        kw["vitals_column_width_in"] = get_prescription_vitals_column_width_in(
+            db, hospital_id
+        )
     return kw
 
 
@@ -488,6 +722,10 @@ def update_print_settings(
     include_header_on_pdfs: bool | None = None,
     include_footer_on_pdfs: bool | None = None,
     detailed_billing_on_pdfs: bool | None = None,
+    prescription_include_vitals: bool | None = None,
+    prescription_vitals_layout: str | None = None,
+    prescription_vitals_column_width_in: float | None = None,
+    prescription_vital_fields: list[str] | None = None,
     letterhead_gap_mm: float | None = None,
     report_header_overrides: dict[str, str] | None = None,
     report_footer_overrides: dict[str, str] | None = None,
@@ -504,6 +742,24 @@ def update_print_settings(
     if detailed_billing_on_pdfs is not None:
         set_hospital_detailed_billing(
             db, detailed_billing=detailed_billing_on_pdfs, created_by=created_by
+        )
+    if prescription_vitals_layout is not None:
+        set_prescription_vitals_layout(
+            db, layout=prescription_vitals_layout, created_by=created_by
+        )
+    elif prescription_include_vitals is not None:
+        set_prescription_include_vitals(
+            db, include_vitals=prescription_include_vitals, created_by=created_by
+        )
+    if prescription_vitals_column_width_in is not None:
+        set_prescription_vitals_column_width_in(
+            db,
+            width_in=prescription_vitals_column_width_in,
+            created_by=created_by,
+        )
+    if prescription_vital_fields is not None:
+        set_prescription_vital_fields(
+            db, vital_fields=prescription_vital_fields, created_by=created_by
         )
     if letterhead_gap_mm is not None:
         set_letterhead_gap_mm(db, gap_mm=letterhead_gap_mm, created_by=created_by)

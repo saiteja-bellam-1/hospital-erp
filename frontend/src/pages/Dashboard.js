@@ -59,8 +59,10 @@ import BackupManagement from './modules/BackupManagement';
 import SoftwareUpdate from './modules/SoftwareUpdate';
 import LicenseBanner from '../components/LicenseBanner';
 import BackupHealthBanner from '../components/BackupHealthBanner';
+import SetupProgressBanner from '../components/SetupProgressBanner';
 import { useNavigationSections, normalizeUserRoles, canAccessLabAdminDashboard } from '../hooks/useNavigationSections';
 import HomeGrid from './modules/HomeGrid';
+import SetupWizard from './setup/SetupWizard';
 
 const HomeDashboard = ({ hasRole, enabledModules }) => {
   // Priority-based: show the most relevant dashboard for the user
@@ -468,6 +470,7 @@ const Dashboard = () => {
         {/* License Banner */}
         <LicenseBanner licenseStatus={licenseStatus} />
         <BackupHealthBanner />
+        {hasAnyRole('super_admin', 'hospital_admin') && <SetupProgressBanner />}
 
         {/* Mobile menu button */}
         <div className="lg:hidden flex items-center h-12 px-4 flex-shrink-0 bg-white border-b border-border">
@@ -562,6 +565,11 @@ const Dashboard = () => {
             <Route path="/inpatient/*" element={<InpatientModule />} />
             <Route path="/admin/*" element={<AdminModule />} />
             <Route path="/hospital-admin/*" element={<HospitalAdminModule />} />
+            <Route path="/setup" element={
+              hasAnyRole('super_admin', 'hospital_admin')
+                ? <SetupWizard />
+                : <Navigate to="/dashboard/home" replace />
+            } />
             <Route path="/settlements" element={<SettlementsPage />} />
             <Route path="/catch-up" element={<CatchUpBills />} />
             <Route path="/print-settings" element={<PrintSettingsPage />} />
