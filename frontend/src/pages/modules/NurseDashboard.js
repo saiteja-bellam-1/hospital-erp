@@ -18,6 +18,7 @@ import {
   RefreshCw,
   Bed,
   Plus,
+  Eye,
 } from 'lucide-react';
 import axios from 'axios';
 import { localDateString } from '../../utils/localDate';

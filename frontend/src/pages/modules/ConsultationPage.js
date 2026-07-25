@@ -16,6 +16,13 @@ import {
 import { format } from 'date-fns';
 import { FREQUENCY_OPTIONS } from '../../utils/prescriptionSchedule';
 import MedicineLookupInput from '../../components/inpatient/MedicineLookupInput';
+import {
+  buildVitalSignsPayload,
+  showBmiOutput,
+  showHeightInput,
+  showWeightInput,
+  useConfiguredVitalFields,
+} from '../../hooks/useConfiguredVitalFields';
 
 const ConsultationPage = () => {
   const [searchParams] = useSearchParams();
@@ -24,6 +31,7 @@ const ConsultationPage = () => {
   const patientId = searchParams.get('patientId');
   const patientUuidParam = searchParams.get('patientUuid') || '';
   const patientName = searchParams.get('patientName') || '';
+  const { vitalFields, isEnabled } = useConfiguredVitalFields();
 
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -41,7 +49,7 @@ const ConsultationPage = () => {
   const [vitalsForm, setVitalsForm] = useState({
     blood_pressure_systolic: '', blood_pressure_diastolic: '',
     heart_rate: '', temperature: '', weight: '', height: '',
-    respiratory_rate: '', oxygen_saturation: '', bmi: '', notes: ''
+    respiratory_rate: '', oxygen_saturation: '', pain_scale: '', bmi: '', notes: ''
   });
 
   // Prescription
@@ -368,13 +376,9 @@ const ConsultationPage = () => {
   const handleSaveVitals = async () => {
     setSaving(true);
     try {
-      const vitalsData = {
-        blood_pressure: `${vitalsForm.blood_pressure_systolic}/${vitalsForm.blood_pressure_diastolic}`,
-        heart_rate: vitalsForm.heart_rate, temperature: vitalsForm.temperature,
-        weight: vitalsForm.weight, height: vitalsForm.height,
-        respiratory_rate: vitalsForm.respiratory_rate, oxygen_saturation: vitalsForm.oxygen_saturation,
-        bmi: vitalsForm.bmi
-      };
+      const vitalsData = buildVitalSignsPayload(vitalsForm, vitalFields, {
+        recordedBy: 'doctor',
+      });
       const res = await fetch('/api/patients/vitals', {
         method: 'POST', headers,
         body: JSON.stringify({ patient_id: patientUuid, vital_signs: JSON.stringify(vitalsData), notes: vitalsForm.notes })
@@ -669,46 +673,79 @@ const ConsultationPage = () => {
         <TabsContent value="vitals">
           <Card>
             <CardContent className="pt-6 space-y-4">
+              <p className="text-xs text-muted-foreground">
+                Fields shown match hospital Print Settings (vitals to collect).
+              </p>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <div>
-                  <Label>BP Systolic (mmHg)</Label>
-                  <Input type="number" value={vitalsForm.blood_pressure_systolic}
-                    onChange={(e) => setVitalsForm(prev => ({ ...prev, blood_pressure_systolic: e.target.value }))} placeholder="120" />
-                </div>
-                <div>
-                  <Label>BP Diastolic (mmHg)</Label>
-                  <Input type="number" value={vitalsForm.blood_pressure_diastolic}
-                    onChange={(e) => setVitalsForm(prev => ({ ...prev, blood_pressure_diastolic: e.target.value }))} placeholder="80" />
-                </div>
-                <div>
-                  <Label>Heart Rate (bpm)</Label>
-                  <Input type="number" value={vitalsForm.heart_rate}
-                    onChange={(e) => setVitalsForm(prev => ({ ...prev, heart_rate: e.target.value }))} placeholder="72" />
-                </div>
-                <div>
-                  <Label>Temperature (F)</Label>
-                  <Input type="number" step="0.1" value={vitalsForm.temperature}
-                    onChange={(e) => setVitalsForm(prev => ({ ...prev, temperature: e.target.value }))} placeholder="98.6" />
-                </div>
-                <div>
-                  <Label>Weight (kg)</Label>
-                  <Input type="number" step="0.1" value={vitalsForm.weight}
-                    onChange={(e) => setVitalsForm(prev => ({ ...prev, weight: e.target.value }))} placeholder="70" />
-                </div>
-                <div>
-                  <Label>Height (cm)</Label>
-                  <Input type="number" value={vitalsForm.height}
-                    onChange={(e) => setVitalsForm(prev => ({ ...prev, height: e.target.value }))} placeholder="170" />
-                </div>
-                <div>
-                  <Label>SpO2 (%)</Label>
-                  <Input type="number" value={vitalsForm.oxygen_saturation}
-                    onChange={(e) => setVitalsForm(prev => ({ ...prev, oxygen_saturation: e.target.value }))} placeholder="98" />
-                </div>
-                <div>
-                  <Label>BMI</Label>
-                  <Input value={vitalsForm.bmi} readOnly className="bg-gray-50" placeholder="Auto" />
-                </div>
+                {isEnabled('blood_pressure') && (
+                  <>
+                    <div>
+                      <Label>BP Systolic (mmHg)</Label>
+                      <Input type="number" value={vitalsForm.blood_pressure_systolic}
+                        onChange={(e) => setVitalsForm(prev => ({ ...prev, blood_pressure_systolic: e.target.value }))} placeholder="120" />
+                    </div>
+                    <div>
+                      <Label>BP Diastolic (mmHg)</Label>
+                      <Input type="number" value={vitalsForm.blood_pressure_diastolic}
+                        onChange={(e) => setVitalsForm(prev => ({ ...prev, blood_pressure_diastolic: e.target.value }))} placeholder="80" />
+                    </div>
+                  </>
+                )}
+                {isEnabled('heart_rate') && (
+                  <div>
+                    <Label>Heart Rate (bpm)</Label>
+                    <Input type="number" value={vitalsForm.heart_rate}
+                      onChange={(e) => setVitalsForm(prev => ({ ...prev, heart_rate: e.target.value }))} placeholder="72" />
+                  </div>
+                )}
+                {isEnabled('temperature') && (
+                  <div>
+                    <Label>Temperature (F)</Label>
+                    <Input type="number" step="0.1" value={vitalsForm.temperature}
+                      onChange={(e) => setVitalsForm(prev => ({ ...prev, temperature: e.target.value }))} placeholder="98.6" />
+                  </div>
+                )}
+                {showWeightInput(vitalFields) && (
+                  <div>
+                    <Label>Weight (kg)</Label>
+                    <Input type="number" step="0.1" value={vitalsForm.weight}
+                      onChange={(e) => setVitalsForm(prev => ({ ...prev, weight: e.target.value }))} placeholder="70" />
+                  </div>
+                )}
+                {showHeightInput(vitalFields) && (
+                  <div>
+                    <Label>Height (cm)</Label>
+                    <Input type="number" value={vitalsForm.height}
+                      onChange={(e) => setVitalsForm(prev => ({ ...prev, height: e.target.value }))} placeholder="170" />
+                  </div>
+                )}
+                {isEnabled('spo2') && (
+                  <div>
+                    <Label>SpO2 (%)</Label>
+                    <Input type="number" value={vitalsForm.oxygen_saturation}
+                      onChange={(e) => setVitalsForm(prev => ({ ...prev, oxygen_saturation: e.target.value }))} placeholder="98" />
+                  </div>
+                )}
+                {isEnabled('respiratory_rate') && (
+                  <div>
+                    <Label>Resp. Rate (/min)</Label>
+                    <Input type="number" value={vitalsForm.respiratory_rate}
+                      onChange={(e) => setVitalsForm(prev => ({ ...prev, respiratory_rate: e.target.value }))} placeholder="16" />
+                  </div>
+                )}
+                {isEnabled('pain_scale') && (
+                  <div>
+                    <Label>Pain Scale (0-10)</Label>
+                    <Input type="number" min="0" max="10" value={vitalsForm.pain_scale || ''}
+                      onChange={(e) => setVitalsForm(prev => ({ ...prev, pain_scale: e.target.value }))} placeholder="0" />
+                  </div>
+                )}
+                {showBmiOutput(vitalFields) && (
+                  <div>
+                    <Label>BMI</Label>
+                    <Input value={vitalsForm.bmi} readOnly className="bg-gray-50" placeholder="Auto" />
+                  </div>
+                )}
               </div>
               <div>
                 <Label>Vitals Notes</Label>
