@@ -21,6 +21,9 @@ const PRE_FLIGHT = [
   'Room list with room types, daily charges and bed counts (if inpatient is licensed)',
   'Nursing visit rates by room type (if inpatient is licensed)',
   'Ancillary services such as imaging, oxygen and physiotherapy (optional)',
+  'Pharmacy medicine catalogue with medicine codes and pricing (if pharmacy is licensed)',
+  'Pharmacy supplier list for purchases (if pharmacy is licensed)',
+  'Opening stock batches — optional; can wait until first purchase',
   'Letterhead choice: ERP-generated header or pre-printed stationery',
   'A writable local or network folder for database backups',
 ];
@@ -54,6 +57,9 @@ const EMBEDDED_STEPS = new Set([
   'doctor_ip_rates',
   'opd_procedures',
   'payer_schemes',
+  'pharmacy_medicines',
+  'pharmacy_suppliers',
+  'pharmacy_opening_stock',
 ]);
 
 async function download(url, fallbackName) {
@@ -70,7 +76,18 @@ async function download(url, fallbackName) {
   window.URL.revokeObjectURL(blobUrl);
 }
 
-function ImportPanel({ templateKey, templateLabel, importUrl, onImported, busy, setBusy, setError }) {
+function ImportPanel({
+  templateKey,
+  templateLabel,
+  importUrl,
+  templateUrl,
+  onImported,
+  busy,
+  setBusy,
+  setError,
+  variant = 'onboarding',
+  onDuplicate = 'skip',
+}) {
   const [file, setFile] = useState(null);
   const [result, setResult] = useState(null);
 
@@ -82,11 +99,18 @@ function ImportPanel({ templateKey, templateLabel, importUrl, onImported, busy, 
     try {
       const formData = new FormData();
       formData.append('file', file);
+      if (variant === 'pharmacy') {
+        formData.append('dry_run', 'false');
+        formData.append('on_duplicate', onDuplicate);
+      }
       const response = await axios.post(importUrl, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
       setResult(response.data);
-      if (response.data.ok) {
+      const pharmacyOk = variant === 'pharmacy'
+        && typeof response.data?.created === 'number';
+      const onboardingOk = response.data?.ok === true;
+      if (pharmacyOk || onboardingOk) {
         setFile(null);
         await onImported?.();
       }
@@ -98,14 +122,21 @@ function ImportPanel({ templateKey, templateLabel, importUrl, onImported, busy, 
     }
   };
 
+  const downloadTemplate = () => {
+    if (templateUrl) {
+      return download(templateUrl, `${templateKey || 'setup'}_template.xlsx`);
+    }
+    return download(`/api/onboarding/templates/${templateKey}`, `${templateKey}_setup_template.xlsx`);
+  };
+
+  const pharmacySuccess = variant === 'pharmacy' && result && typeof result.created === 'number';
+  const onboardingSuccess = result?.ok === true;
+  const success = pharmacySuccess || onboardingSuccess;
+
   return (
     <div className="space-y-3 rounded-lg border border-slate-200 bg-slate-50/70 p-4">
       <div className="flex flex-wrap gap-2">
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => download(`/api/onboarding/templates/${templateKey}`, `${templateKey}_setup_template.xlsx`)}
-        >
+        <Button variant="outline" size="sm" onClick={downloadTemplate}>
           <FileSpreadsheet className="mr-2 h-4 w-4 text-emerald-600" /> Download {templateLabel} template
         </Button>
       </div>
@@ -125,16 +156,34 @@ function ImportPanel({ templateKey, templateLabel, importUrl, onImported, busy, 
         </Button>
       </div>
       {result && (
-        <div className={`rounded-md border p-3 text-sm ${result.ok ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-red-200 bg-red-50 text-red-700'}`}>
-          {result.ok ? (
-            <p>
-              Import complete
-              {result.created_rooms != null && ` — ${result.created_rooms} rooms, ${result.created_beds} beds`}
-              {result.created != null && ` — ${result.created} created`}
-              {result.updated != null && ` — ${result.updated} updated`}
-              {result.upserted != null && ` — ${result.upserted} rates saved`}
-              {result.skipped ? `, ${result.skipped} skipped` : ''}
-            </p>
+        <div className={`rounded-md border p-3 text-sm ${success ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-red-200 bg-red-50 text-red-700'}`}>
+          {success ? (
+            <div className="space-y-1">
+              <p>
+                Import complete
+                {result.created_rooms != null && ` — ${result.created_rooms} rooms, ${result.created_beds} beds`}
+                {result.created != null && ` — ${result.created} created`}
+                {result.updated != null && ` — ${result.updated} updated`}
+                {result.upserted != null && ` — ${result.upserted} rates saved`}
+                {result.skipped ? `, ${result.skipped} skipped` : ''}
+                {result.error_count ? `, ${result.error_count} row errors` : ''}
+              </p>
+              {result.masters_created?.length > 0 && (
+                <p className="text-xs">
+                  Auto-created masters: {result.masters_created.slice(0, 8).join(', ')}
+                  {result.masters_created.length > 8 ? ` (+${result.masters_created.length - 8} more)` : ''}
+                </p>
+              )}
+              {(result.errors || []).length > 0 && (
+                <div className="mt-2 space-y-1 text-amber-800">
+                  {(result.errors || []).slice(0, 6).map((item, index) => (
+                    <p key={index} className="text-xs">
+                      {item.sheet ? `${item.sheet} ` : ''}row {item.row}: {item.message}
+                    </p>
+                  ))}
+                </div>
+              )}
+            </div>
           ) : (
             <div className="space-y-1">
               <p className="font-medium">Fix these rows and try again (nothing was saved):</p>
@@ -827,6 +876,88 @@ export default function SetupWizard() {
               <Button variant="outline" onClick={() => download('/api/lab/tests/import/template', 'lab_tests_import_template.xlsx')}>
                 <FileSpreadsheet className="mr-2 h-4 w-4" /> Download detailed lab template
               </Button>
+            )}
+
+            {setupStep.key === 'pharmacy_medicines' && (
+              <div className="space-y-3">
+                <p className="text-sm text-slate-600">
+                  Import the medicine catalogue. Missing categories, companies, salts, racks, UoMs and HSN codes
+                  are created automatically. You can also download the masters workbook first if you prefer to
+                  seed lookups separately.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => download('/api/pharmacy/masters/import/template', 'pharmacy_masters_import_template.xlsx')}
+                  >
+                    <FileSpreadsheet className="mr-2 h-4 w-4" /> Masters template (optional)
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => navigate('/dashboard/pharmacy/medicines')}>
+                    <Settings2 className="mr-2 h-4 w-4" /> Open medicines
+                  </Button>
+                </div>
+                <ImportPanel
+                  templateKey="pharmacy_medicines"
+                  templateLabel="medicines"
+                  templateUrl="/api/pharmacy/medicines/import/template"
+                  importUrl="/api/pharmacy/medicines/import"
+                  variant="pharmacy"
+                  onDuplicate="skip"
+                  onImported={load}
+                  busy={busy}
+                  setBusy={setBusy}
+                  setError={setError}
+                />
+              </div>
+            )}
+
+            {setupStep.key === 'pharmacy_suppliers' && (
+              <div className="space-y-3">
+                <p className="text-sm text-slate-600">
+                  Import suppliers used for pharmacy purchases. Existing names are skipped by default.
+                </p>
+                <Button variant="outline" size="sm" onClick={() => navigate('/dashboard/pharmacy/suppliers')}>
+                  <Settings2 className="mr-2 h-4 w-4" /> Open suppliers
+                </Button>
+                <ImportPanel
+                  templateKey="pharmacy_suppliers"
+                  templateLabel="suppliers"
+                  templateUrl="/api/pharmacy/suppliers/import/template"
+                  importUrl="/api/pharmacy/suppliers/import"
+                  variant="pharmacy"
+                  onDuplicate="skip"
+                  onImported={load}
+                  busy={busy}
+                  setBusy={setBusy}
+                  setError={setError}
+                />
+              </div>
+            )}
+
+            {setupStep.key === 'pharmacy_opening_stock' && (
+              <div className="space-y-3">
+                <p className="text-sm text-slate-600">
+                  Seed opening batches after medicines exist. Quantity on update is absolute (not a delta).
+                  Leave <span className="font-medium">store_code</span> blank to use the master store.
+                  Skip this step if you will start with supplier purchases instead.
+                </p>
+                <Button variant="outline" size="sm" onClick={() => navigate('/dashboard/pharmacy/inventory')}>
+                  <Settings2 className="mr-2 h-4 w-4" /> Open inventory
+                </Button>
+                <ImportPanel
+                  templateKey="pharmacy_opening_stock"
+                  templateLabel="opening stock"
+                  templateUrl="/api/pharmacy/opening-stock/import/template"
+                  importUrl="/api/pharmacy/opening-stock/import"
+                  variant="pharmacy"
+                  onDuplicate="skip"
+                  onImported={load}
+                  busy={busy}
+                  setBusy={setBusy}
+                  setError={setError}
+                />
+              </div>
             )}
 
             {!EMBEDDED_STEPS.has(setupStep.key) && (

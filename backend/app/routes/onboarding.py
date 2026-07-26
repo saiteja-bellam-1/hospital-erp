@@ -11,11 +11,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.models.permissions import HospitalSettings
-from app.models.system import SystemModule
 from app.models.user import User
 from app.services import onboarding_import as importers
 from app.services.onboarding_state import (
     SETUP_CATEGORY,
+    get_enabled_module_names,
     get_onboarding_status,
     mark_step,
     set_json_setting,
@@ -31,6 +31,20 @@ UPLOAD_MAX_BYTES = 5 * 1024 * 1024
 def _require_admin(user: User) -> None:
     if not any(role in user.role_names for role in ("super_admin", "hospital_admin")):
         raise HTTPException(status_code=403, detail="Admin access required")
+
+
+def _require_module(db: Session, module_name: str) -> None:
+    """Reject setup actions for modules that aren't currently available.
+
+    Templates and steps are already hidden in the UI when a module is off, but
+    the import endpoints must also refuse direct calls so the setup flow stays
+    consistent with the hospital's licensed/enabled modules.
+    """
+    if module_name not in get_enabled_module_names(db):
+        raise HTTPException(
+            status_code=403,
+            detail=f"The '{module_name}' module is not enabled for this hospital",
+        )
 
 
 class StepUpdate(BaseModel):
@@ -224,18 +238,35 @@ TEMPLATES = {
             "Upload from Guided Setup > OPD / day-care procedures.",
         ],
     },
+    "pharmacy_medicines": {
+        "label": "Pharmacy medicines",
+        "filename": "pharmacy_medicines_setup_template.xlsx",
+        "module": "pharmacy",
+        "builder": "medicines",
+    },
+    "pharmacy_suppliers": {
+        "label": "Pharmacy suppliers",
+        "filename": "pharmacy_suppliers_setup_template.xlsx",
+        "module": "pharmacy",
+        "builder": "suppliers",
+    },
+    "pharmacy_masters": {
+        "label": "Pharmacy masters",
+        "filename": "pharmacy_masters_setup_template.xlsx",
+        "module": "pharmacy",
+        "builder": "masters",
+    },
+    "pharmacy_opening_stock": {
+        "label": "Pharmacy opening stock",
+        "filename": "pharmacy_opening_stock_setup_template.xlsx",
+        "module": "pharmacy",
+        "builder": "opening_stock",
+    },
 }
 
 
-def _enabled_modules(db: Session) -> set[str]:
-    return {
-        row.module_name
-        for row in db.query(SystemModule).filter(SystemModule.is_enabled.is_(True)).all()
-    }
-
-
 def _visible_templates(db: Session) -> dict:
-    enabled = _enabled_modules(db)
+    enabled = get_enabled_module_names(db)
     return {
         key: value
         for key, value in TEMPLATES.items()
@@ -248,6 +279,22 @@ def _workbook_bytes(template_key: str) -> bytes:
     from openpyxl.styles import Font, PatternFill
 
     template = TEMPLATES[template_key]
+    builder_key = template.get("builder")
+    if builder_key:
+        from app.services.pharmacy_import import (
+            build_masters_template,
+            build_medicines_template,
+            build_opening_stock_template,
+            build_suppliers_template,
+        )
+        builders = {
+            "medicines": build_medicines_template,
+            "suppliers": build_suppliers_template,
+            "masters": build_masters_template,
+            "opening_stock": build_opening_stock_template,
+        }
+        return builders[builder_key]()
+
     workbook = openpyxl.Workbook()
 
     if template.get("multi_sheet"):
@@ -377,6 +424,7 @@ async def save_nursing_rates(
 ):
     """Bulk upsert room-type nursing rates from the setup wizard grid."""
     _require_admin(current_user)
+    _require_module(db, "inpatient")
     from app.models.hospital import Hospital
     from app.models.inpatient import RoomTypeRateConfig
 
@@ -490,6 +538,7 @@ async def import_rooms(
     db: Session = Depends(get_db),
 ):
     _require_admin(current_user)
+    _require_module(db, "inpatient")
     raw = await _read_upload(file)
     try:
         return importers.import_rooms(db, raw, file.filename or "")
@@ -504,6 +553,7 @@ async def import_nursing_rates(
     db: Session = Depends(get_db),
 ):
     _require_admin(current_user)
+    _require_module(db, "inpatient")
     raw = await _read_upload(file)
     try:
         return importers.import_nursing_rates(db, raw, file.filename or "")
@@ -518,6 +568,7 @@ async def import_ancillary_services(
     db: Session = Depends(get_db),
 ):
     _require_admin(current_user)
+    _require_module(db, "inpatient")
     raw = await _read_upload(file)
     try:
         return importers.import_ancillary(db, raw, file.filename or "")
@@ -532,6 +583,7 @@ async def import_doctor_room_rates(
     db: Session = Depends(get_db),
 ):
     _require_admin(current_user)
+    _require_module(db, "inpatient")
     raw = await _read_upload(file)
     try:
         return importers.import_doctor_room_rates(db, raw, file.filename or "")
@@ -546,6 +598,7 @@ async def import_opd_procedures(
     db: Session = Depends(get_db),
 ):
     _require_admin(current_user)
+    _require_module(db, "outpatient")
     raw = await _read_upload(file)
     try:
         return importers.import_opd_procedures(

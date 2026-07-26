@@ -7,7 +7,8 @@ import { Badge } from '../../../../components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../../../../components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../../../components/ui/select';
 import { useToast } from '../../../../hooks/use-toast';
-import { Plus, Pencil, Trash2, RefreshCw, Search } from 'lucide-react';
+import { Plus, Pencil, Trash2, RefreshCw, Search, Upload, Download, Loader2 } from 'lucide-react';
+import PharmacyImportDialog, { downloadPharmacyBlob } from '../../../../components/pharmacy/PharmacyImportDialog';
 import { errMsg } from '../../PharmacyModule';
 import { usePharmacyMedicineMasters } from '../../../../hooks/usePharmacyMedicineMasters';
 import MedicineFormFields, {
@@ -24,6 +25,8 @@ export default function MedicinesTab() {
   const [categoryFilter, setCategoryFilter] = useState('');
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(EMPTY_MEDICINE_FORM);
 
@@ -89,6 +92,18 @@ export default function MedicinesTab() {
     }
   };
 
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      await downloadPharmacyBlob('/api/pharmacy/medicines/export/xlsx', 'medicines_export.xlsx', toast);
+      toast({ title: 'Medicines exported' });
+    } catch {
+      /* toast already shown */
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <Card>
       <CardHeader>
@@ -119,6 +134,13 @@ export default function MedicinesTab() {
               </SelectContent>
             </Select>
             <Button size="sm" variant="outline" onClick={load}><RefreshCw className="h-3 w-3" /></Button>
+            <Button size="sm" variant="outline" onClick={() => setImportOpen(true)}>
+              <Upload className="h-3 w-3 mr-1" /> Import
+            </Button>
+            <Button size="sm" variant="outline" onClick={handleExport} disabled={exporting}>
+              {exporting ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Download className="h-3 w-3 mr-1" />}
+              Export
+            </Button>
             <Button size="sm" onClick={openCreate}><Plus className="h-3 w-3 mr-1" /> New</Button>
           </div>
         </CardTitle>
@@ -178,6 +200,19 @@ export default function MedicinesTab() {
           </div>
         )}
       </CardContent>
+
+      <PharmacyImportDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        onImported={() => { load(); loadMasters(); }}
+        title="Import Medicines"
+        entityLabel="medicines"
+        importUrl="/api/pharmacy/medicines/import"
+        templateUrl="/api/pharmacy/medicines/import/template"
+        exportUrl="/api/pharmacy/medicines/export/xlsx"
+        duplicateLabel="If a medicine code already exists:"
+        helpText="Fill the medicines sheet with medicine_code, name, category, and pricing fields. Related masters (category, company, salt, HSN, rack, UoM) are matched by code or name and created if missing."
+      />
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-4xl max-h-[85vh] overflow-y-auto" formNav="grid">

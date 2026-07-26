@@ -9,9 +9,10 @@ import { Badge } from '../../../../components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../../../../components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../../../components/ui/select';
 import { useToast } from '../../../../hooks/use-toast';
-import { Plus, Pencil, RefreshCw, Store } from 'lucide-react';
+import { Plus, Pencil, RefreshCw, Store, Upload, Download, Loader2 } from 'lucide-react';
 import { errMsg } from '../../PharmacyModule';
 import { usePharmacyStore } from '../../../../contexts/PharmacyStoreContext';
+import PharmacyImportDialog, { downloadPharmacyBlob } from '../../../../components/pharmacy/PharmacyImportDialog';
 
 const blankForm = {
   code: '',
@@ -29,6 +30,8 @@ export default function StoresTab() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(blankForm);
   const [staff, setStaff] = useState([]);
@@ -137,6 +140,24 @@ export default function StoresTab() {
           <div className="flex gap-2">
             <Button size="sm" variant="outline" onClick={load} disabled={loading}>
               <RefreshCw className={`h-4 w-4 mr-1 ${loading ? 'animate-spin' : ''}`} /> Refresh
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => setImportOpen(true)}>
+              <Upload className="h-3 w-3 mr-1" /> Import
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={exporting}
+              onClick={async () => {
+                setExporting(true);
+                try {
+                  await downloadPharmacyBlob('/api/pharmacy/masters/export/xlsx', 'pharmacy_masters_export.xlsx', toast);
+                  toast({ title: 'Masters exported' });
+                } catch { /* toast shown */ } finally { setExporting(false); }
+              }}
+            >
+              {exporting ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Download className="h-3 w-3 mr-1" />}
+              Export
             </Button>
             <Button size="sm" onClick={openCreate}>
               <Plus className="h-4 w-4 mr-1" /> Add Store
@@ -298,6 +319,18 @@ export default function StoresTab() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <PharmacyImportDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        onImported={() => { load(); refreshContext?.(); }}
+        title="Import Pharmacy Masters"
+        entityLabel="pharmacy masters"
+        importUrl="/api/pharmacy/masters/import"
+        templateUrl="/api/pharmacy/masters/import/template"
+        exportUrl="/api/pharmacy/masters/export/xlsx"
+        helpText="The Stores sheet in the multi-sheet workbook creates or updates pharmacy locations (code upsert). Other master sheets (categories, companies, etc.) are included in the same file."
+      />
     </div>
   );
 }

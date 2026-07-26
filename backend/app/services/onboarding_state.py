@@ -19,10 +19,36 @@ from app.models.lab import LabTest
 from app.models.license import License
 from app.models.outpatient import OutpatientProcedure
 from app.models.permissions import HospitalSettings
+from app.models.pharmacy import Medicine, PharmacyInventory, PharmacySupplier
 from app.models.system import SystemModule
 from app.models.user import User
+from app.services.license_service import get_current_license
 from app.utils.config import get_backup_locations
 from app.utils.paths import get_uploads_dir
+
+
+def get_enabled_module_names(db: Session) -> set[str]:
+    """Modules that are truly available right now.
+
+    Mirrors ``/api/system/enabled-modules``: a module counts as enabled only
+    when the admin toggle is on AND (there is no license yet, or the license
+    lists the module in its features). Keeping this identical to the rest of
+    the app is what makes the setup flow adapt to the modules a hospital
+    actually has.
+    """
+    modules = db.query(SystemModule).all()
+    license_record = get_current_license(db)
+    licensed_features = set(license_record.features) if license_record and license_record.features else set()
+
+    enabled: set[str] = set()
+    for module in modules:
+        if licensed_features:
+            is_on = module.is_enabled and module.module_name in licensed_features
+        else:
+            is_on = module.is_enabled
+        if is_on or module.is_always_enabled:
+            enabled.add(module.module_name)
+    return enabled
 
 
 SETUP_CATEGORY = "onboarding"
@@ -156,6 +182,33 @@ STEP_DEFINITIONS = (
         "path": "/dashboard/lab",
         "minutes": 15,
         "module": "lab",
+    },
+    {
+        "key": "pharmacy_medicines",
+        "label": "Pharmacy medicine catalogue",
+        "description": "Import medicines from Excel. Categories, companies and other masters are created automatically when missing.",
+        "required": True,
+        "path": "/dashboard/pharmacy/medicines",
+        "minutes": 20,
+        "module": "pharmacy",
+    },
+    {
+        "key": "pharmacy_suppliers",
+        "label": "Pharmacy suppliers",
+        "description": "Import supplier ledgers used for purchases and opening stock.",
+        "required": True,
+        "path": "/dashboard/pharmacy/suppliers",
+        "minutes": 10,
+        "module": "pharmacy",
+    },
+    {
+        "key": "pharmacy_opening_stock",
+        "label": "Pharmacy opening stock",
+        "description": "Seed starting batches and quantities (optional — can wait until first purchase).",
+        "required": False,
+        "path": "/dashboard/pharmacy/inventory",
+        "minutes": 15,
+        "module": "pharmacy",
     },
     {
         "key": "backup",
@@ -324,16 +377,35 @@ def _derived_completion(db: Session, hospital: Hospital | None) -> dict[str, boo
             .count()
             > 0
         ),
+        "pharmacy_medicines": (
+            db.query(Medicine)
+            .filter(Medicine.hospital_id == hospital_id)
+            .filter(Medicine.is_active.is_(True))
+            .count()
+            > 0
+        ),
+        "pharmacy_suppliers": (
+            db.query(PharmacySupplier)
+            .filter(PharmacySupplier.hospital_id == hospital_id)
+            .filter(PharmacySupplier.is_active.is_(True))
+            .count()
+            > 0
+        ),
+        "pharmacy_opening_stock": (
+            db.query(PharmacyInventory)
+            .filter(PharmacyInventory.hospital_id == hospital_id)
+            .filter(PharmacyInventory.is_active.is_(True))
+            .filter(PharmacyInventory.quantity_in_stock > 0)
+            .count()
+            > 0
+        ),
         "backup": bool(get_backup_locations()),
     }
 
 
 def get_onboarding_status(db: Session) -> dict[str, Any]:
     hospital = db.query(Hospital).filter(Hospital.is_active.is_(True)).first()
-    enabled_modules = {
-        row.module_name
-        for row in db.query(SystemModule).filter(SystemModule.is_enabled.is_(True)).all()
-    }
+    enabled_modules = get_enabled_module_names(db)
     derived = _derived_completion(db, hospital)
     dismissed = bool(_json_value(_setting(db, "dismissed"), False))
 

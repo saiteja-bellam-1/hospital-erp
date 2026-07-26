@@ -8,7 +8,8 @@ import { Textarea } from '../../../../components/ui/textarea';
 import { Badge } from '../../../../components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../../../../components/ui/dialog';
 import { useToast } from '../../../../hooks/use-toast';
-import { Search, RefreshCw, AlertTriangle, Sliders, ScrollText } from 'lucide-react';
+import { Search, RefreshCw, AlertTriangle, Sliders, ScrollText, Upload, Download, Loader2 } from 'lucide-react';
+import PharmacyImportDialog, { downloadPharmacyBlob } from '../../../../components/pharmacy/PharmacyImportDialog';
 import { errMsg } from '../../PharmacyModule';
 import { usePharmacyStore } from '../../../../contexts/PharmacyStoreContext';
 import { displayPharmacyNumericInput, formatMoney, pharmacyNoSpinInputClass } from '../../../../utils/pharmacyUnits';
@@ -22,6 +23,8 @@ export default function InventoryTab() {
   const [search, setSearch] = useState('');
 
   const [adjustOpen, setAdjustOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [adjustTarget, setAdjustTarget] = useState(null);
   const [adjustQty, setAdjustQty] = useState('');
   const [adjustReason, setAdjustReason] = useState('');
@@ -61,6 +64,20 @@ export default function InventoryTab() {
     }
   };
 
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      await downloadPharmacyBlob('/api/pharmacy/opening-stock/export/xlsx', 'opening_stock_export.xlsx', toast);
+      toast({ title: 'Batches exported' });
+    } catch {
+      /* toast already shown */
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const showStockImportExport = view === 'stock' || view === 'batches';
+
   const tabBtn = (v, label, Icon) => (
     <Button size="sm" variant={view === v ? 'default' : 'outline'} onClick={() => setView(v)}>
       <Icon className="h-3 w-3 mr-1" /> {label}
@@ -86,6 +103,17 @@ export default function InventoryTab() {
                 </div>
               )}
               <Button size="sm" variant="outline" onClick={load}><RefreshCw className="h-3 w-3" /></Button>
+              {showStockImportExport && (
+                <>
+                  <Button size="sm" variant="outline" onClick={() => setImportOpen(true)}>
+                    <Upload className="h-3 w-3 mr-1" /> Import opening stock
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={handleExport} disabled={exporting}>
+                    {exporting ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Download className="h-3 w-3 mr-1" />}
+                    Export batches
+                  </Button>
+                </>
+              )}
             </div>
           </CardTitle>
         </CardHeader>
@@ -95,6 +123,19 @@ export default function InventoryTab() {
             : <TableForView view={view} data={data} onAdjust={openAdjust} />}
         </CardContent>
       </Card>
+
+      <PharmacyImportDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        onImported={load}
+        title="Import Opening Stock"
+        entityLabel="opening stock"
+        importUrl="/api/pharmacy/opening-stock/import"
+        templateUrl="/api/pharmacy/opening-stock/import/template"
+        exportUrl="/api/pharmacy/opening-stock/export/xlsx"
+        duplicateLabel="If a batch already exists:"
+        helpText="Each row sets opening stock for a medicine batch. The medicine must already exist in the catalog. Quantity is treated as absolute when updating an existing batch. store_code is optional and defaults to the master store."
+      />
 
       <Dialog open={adjustOpen} onOpenChange={setAdjustOpen}>
         <DialogContent className="max-w-md">

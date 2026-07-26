@@ -77,6 +77,9 @@ router = APIRouter()
 from app.routes.pharmacy_stores import router as _stores_router  # noqa: E402
 router.include_router(_stores_router)
 
+from app.routes.pharmacy_import import router as _import_router  # noqa: E402
+router.include_router(_import_router)
+
 
 # ============================================================================
 # Health

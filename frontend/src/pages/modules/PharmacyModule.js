@@ -13,7 +13,8 @@ import { Textarea } from '../../components/ui/textarea';
 import { Badge } from '../../components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../../components/ui/dialog';
 import { useToast } from '../../hooks/use-toast';
-import { Plus, Pencil, Trash2, RefreshCw, Search, Pill } from 'lucide-react';
+import { Plus, Pencil, Trash2, RefreshCw, Search, Pill, Upload, Download, Loader2 } from 'lucide-react';
+import PharmacyImportDialog, { downloadPharmacyBlob } from '../../components/pharmacy/PharmacyImportDialog';
 
 import SalesCounter from './pharmacy/SalesCounter';
 import PurchaseEntry from './pharmacy/PurchaseEntry';
@@ -43,6 +44,8 @@ export function MasterTable({ title, path, fields, displayColumns }) {
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [open, setOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [editing, setEditing] = useState(null);
 
   const blank = useMemo(
@@ -115,6 +118,18 @@ export function MasterTable({ title, path, fields, displayColumns }) {
     }
   };
 
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      await downloadPharmacyBlob('/api/pharmacy/masters/export/xlsx', 'pharmacy_masters_export.xlsx', toast);
+      toast({ title: 'Masters exported' });
+    } catch {
+      /* toast already shown */
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const filtered = rows.filter(r => {
     if (!search) return true;
     const hay = displayColumns.map(c => String(r[c.key] ?? '')).join(' ').toLowerCase();
@@ -132,6 +147,13 @@ export function MasterTable({ title, path, fields, displayColumns }) {
               <Input className="pl-8 h-8 w-48" placeholder="Search…" value={search} onChange={e => setSearch(e.target.value)} />
             </div>
             <Button size="sm" variant="outline" onClick={load}><RefreshCw className="h-3 w-3" /></Button>
+            <Button size="sm" variant="outline" onClick={() => setImportOpen(true)}>
+              <Upload className="h-3 w-3 mr-1" /> Import
+            </Button>
+            <Button size="sm" variant="outline" onClick={handleExport} disabled={exporting}>
+              {exporting ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Download className="h-3 w-3 mr-1" />}
+              Export
+            </Button>
             <Button size="sm" onClick={openCreate}><Plus className="h-3 w-3 mr-1" /> New</Button>
           </div>
         </CardTitle>
@@ -172,6 +194,18 @@ export function MasterTable({ title, path, fields, displayColumns }) {
           </div>
         )}
       </CardContent>
+
+      <PharmacyImportDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        onImported={load}
+        title={`Import ${title}`}
+        entityLabel="pharmacy masters"
+        importUrl="/api/pharmacy/masters/import"
+        templateUrl="/api/pharmacy/masters/import/template"
+        exportUrl="/api/pharmacy/masters/export/xlsx"
+        helpText="Use the multi-sheet Excel workbook to import categories, companies, salts, HSN/tax codes, racks, and units of measure. Each sheet corresponds to one master type. Existing records are matched by code or name."
+      />
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-lg">

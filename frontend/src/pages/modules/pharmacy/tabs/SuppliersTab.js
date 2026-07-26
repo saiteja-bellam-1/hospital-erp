@@ -6,7 +6,8 @@ import { Input } from '../../../../components/ui/input';
 import { Badge } from '../../../../components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../../../../components/ui/dialog';
 import { useToast } from '../../../../hooks/use-toast';
-import { Plus, Pencil, Trash2, RefreshCw, Search } from 'lucide-react';
+import { Plus, Pencil, Trash2, RefreshCw, Search, Upload, Download, Loader2 } from 'lucide-react';
+import PharmacyImportDialog, { downloadPharmacyBlob } from '../../../../components/pharmacy/PharmacyImportDialog';
 import { errMsg } from '../../PharmacyModule';
 import SupplierFormFields, { EMPTY_SUPPLIER_FORM, prepareSupplierPayload } from '../../../../components/pharmacy/SupplierFormFields';
 
@@ -16,6 +17,8 @@ export default function SuppliersTab() {
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(EMPTY_SUPPLIER_FORM);
 
@@ -65,6 +68,18 @@ export default function SuppliersTab() {
     catch (e) { toast({ variant: 'destructive', title: 'Delete failed', description: errMsg(e) }); }
   };
 
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      await downloadPharmacyBlob('/api/pharmacy/suppliers/export/xlsx', 'suppliers_export.xlsx', toast);
+      toast({ title: 'Suppliers exported' });
+    } catch {
+      /* toast already shown */
+    } finally {
+      setExporting(false);
+    }
+  };
+
 
   const filtered = rows.filter(r => {
     if (!search) return true;
@@ -84,6 +99,13 @@ export default function SuppliersTab() {
                 value={search} onChange={e => setSearch(e.target.value)} />
             </div>
             <Button size="sm" variant="outline" onClick={load}><RefreshCw className="h-3 w-3" /></Button>
+            <Button size="sm" variant="outline" onClick={() => setImportOpen(true)}>
+              <Upload className="h-3 w-3 mr-1" /> Import
+            </Button>
+            <Button size="sm" variant="outline" onClick={handleExport} disabled={exporting}>
+              {exporting ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Download className="h-3 w-3 mr-1" />}
+              Export
+            </Button>
             <Button size="sm" onClick={openCreate}><Plus className="h-3 w-3 mr-1" /> New Supplier</Button>
           </div>
         </CardTitle>
@@ -136,6 +158,19 @@ export default function SuppliersTab() {
             </div>
           )}
       </CardContent>
+
+      <PharmacyImportDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        onImported={load}
+        title="Import Suppliers"
+        entityLabel="suppliers"
+        importUrl="/api/pharmacy/suppliers/import"
+        templateUrl="/api/pharmacy/suppliers/import/template"
+        exportUrl="/api/pharmacy/suppliers/export/xlsx"
+        duplicateLabel="If a supplier already exists:"
+        helpText="Fill supplier name, contact, GSTIN, drug licence, and address fields. Existing suppliers are matched by name or GSTIN."
+      />
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-5xl max-h-[88vh] overflow-y-auto" formNav="grid">
