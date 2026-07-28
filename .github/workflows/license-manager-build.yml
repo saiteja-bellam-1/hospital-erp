@@ -1,0 +1,156 @@
+name: License Manager build
+
+# Builds KTLicenseManager.exe from license-manager/ (React frontend ->
+# PyInstaller single-file exe, see license-manager/build_exe.bat).
+#
+# Triggers:
+#   * push to main touching license-manager/** -> artifact only
+#   * tag push `license-manager-vX.Y.Z`        -> version X.Y.Z, publishes a
+#                                                 Release on this repo
+#   * workflow_dispatch                        -> artifact; set `publish: true`
+#                                                 to also publish a Release
+#
+# Versioning: tags carry the full version; everything else gets
+# <BASE_VERSION>.<github.run_number>. BASE_VERSION lives below — bump it
+# when the manager's feature set moves.
+#
+# The exe embeds the Ed25519 private signing key (app.py), so artifacts and
+# releases are internal-only — do not mirror them to a public location.
+
+on:
+  push:
+    branches: [main]
+    tags: ['license-manager-v*']
+    paths:
+      - 'license-manager/**'
+      - '.github/workflows/license-manager-build.yml'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish a GitHub Release on this repo'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write   # needed to create Releases via GITHUB_TOKEN
+
+env:
+  # Force Node 24 for JavaScript-based actions ahead of GitHub's
+  # June 2026 cutover (same as windows-build.yml).
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+  BASE_VERSION: '1.0'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # ----- version resolution -----
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -like 'refs/tags/license-manager-v*') {
+            $version = $env:GITHUB_REF -replace '^refs/tags/license-manager-v',''
+            $isRelease = 'true'
+          } elseif ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch' -and '${{ inputs.publish }}' -eq 'true') {
+            $version = "${{ env.BASE_VERSION }}.$env:GITHUB_RUN_NUMBER"
+            $isRelease = 'true'
+          } else {
+            $version = "${{ env.BASE_VERSION }}.$env:GITHUB_RUN_NUMBER"
+            $isRelease = 'false'
+          }
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { Write-Error "Bad version '$version'"; exit 1 }
+          Write-Host "Resolved version: $version (release=$isRelease)"
+          "version=$version"      | Out-File $env:GITHUB_OUTPUT -Append
+          "is_release=$isRelease" | Out-File $env:GITHUB_OUTPUT -Append
+
+      # ----- toolchains -----
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: license-manager/backend/requirements.txt
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v5
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: license-manager/frontend/package-lock.json
+
+      # ----- build the .exe -----
+      # build_exe.bat installs backend deps (incl. pyinstaller) into the
+      # system Python, builds the React bundle, and produces
+      # license-manager\backend\dist\KTLicenseManager.exe. stdin comes from
+      # NUL so the trailing `pause` does not block the runner.
+      - name: Build KTLicenseManager.exe
+        shell: cmd
+        env:
+          # CRA treats ESLint warnings as build errors when CI=true; local
+          # dev builds run with CI unset. Match dev behavior here.
+          CI: 'false'
+        run: license-manager\build_exe.bat < NUL
+
+      # ----- verify -----
+      - name: Verify exe artifact
+        shell: pwsh
+        run: |
+          $exe = 'license-manager\backend\dist\KTLicenseManager.exe'
+          if (-not (Test-Path $exe)) {
+            Write-Error "Exe not found at $exe"
+            Get-ChildItem license-manager\backend\dist -ErrorAction SilentlyContinue
+            exit 1
+          }
+          Write-Host "Exe: $exe ($((Get-Item $exe).Length) bytes)"
+
+      # Boot the exe and hit a real endpoint. This catches missing runtime
+      # deps (e.g. python-multipart absent from requirements.txt makes
+      # FastAPI raise at startup) that a build-only check would miss.
+      - name: Smoke test exe
+        shell: pwsh
+        run: |
+          $exePath = (Resolve-Path 'license-manager\backend\dist\KTLicenseManager.exe').Path
+          $proc = Start-Process -FilePath $exePath -PassThru -WorkingDirectory (Split-Path $exePath)
+          try {
+            $ok = $false
+            foreach ($i in 1..30) {
+              try {
+                $r = Invoke-WebRequest -Uri 'http://127.0.0.1:9000/api/dashboard' -UseBasicParsing -TimeoutSec 2
+                if ($r.StatusCode -eq 200) { $ok = $true; break }
+              } catch { Start-Sleep -Seconds 1 }
+            }
+            if (-not $ok) { throw "Smoke test failed: /api/dashboard did not return 200 within 30s" }
+            Write-Host "Smoke test passed: /api/dashboard returned 200"
+          } finally {
+            # PyInstaller onefile spawns a child process — kill the tree.
+            taskkill /PID $proc.Id /T /F 2>$null
+          }
+
+      # ----- upload -----
+      - name: Upload exe artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: KTLicenseManager_${{ steps.ver.outputs.version }}
+          path: license-manager/backend/dist/KTLicenseManager.exe
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Create GitHub Release
+        if: steps.ver.outputs.is_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $tag = "license-manager-v${{ steps.ver.outputs.version }}"
+          $title = "KT License Manager ${{ steps.ver.outputs.version }}"
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --title "$title" --notes "Automated build from commit $env:GITHUB_SHA"
+          }
+          gh release upload $tag 'license-manager\backend\dist\KTLicenseManager.exe' --clobber

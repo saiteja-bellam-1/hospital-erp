@@ -71,6 +71,8 @@ const Modal = ({ open, onClose, children, wide }) => {
   );
 };
 
+const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
+
 const Input = ({ label, required, ...props }) => (
   <div>
     <label className="block text-xs font-medium text-slate-400 mb-1.5">
@@ -110,7 +112,7 @@ function App() {
   const [custSearch, setCustSearch] = useState('');
   const [showCustForm, setShowCustForm] = useState(false);
   const [editingCust, setEditingCust] = useState(null);
-  const [custForm, setCustForm] = useState({ hospital_name: '', hospital_id: '', contact_person: '', phone: '', email: '', address: '', machine_id: '', notes: '' });
+  const [custForm, setCustForm] = useState({ hospital_name: '', hospital_id: '', contact_person: '', phone: '', email: '', address: '', gst_number: '', machine_id: '', notes: '' });
 
   // Seller state
   const [sellers, setSellers] = useState([]);
@@ -294,6 +296,10 @@ function App() {
   // Customer functions
   const saveCust = async () => {
     if (!custForm.hospital_name) return;
+    if (custForm.gst_number && !GSTIN_RE.test(custForm.gst_number)) {
+      showMessage('Invalid GST number — expected 15-char GSTIN (e.g. 22AAAAA0000A1Z5)', 'error');
+      return;
+    }
     setSaving(true);
     try {
       const url = editingCust ? `${API}/customers/${editingCust.id}` : `${API}/customers`;
@@ -302,7 +308,7 @@ function App() {
       if (r.ok) {
         showMessage(editingCust ? 'Customer updated' : 'Customer created');
         setShowCustForm(false); setEditingCust(null);
-        setCustForm({ hospital_name: '', hospital_id: '', contact_person: '', phone: '', email: '', address: '', machine_id: '', notes: '' });
+        setCustForm({ hospital_name: '', hospital_id: '', contact_person: '', phone: '', email: '', address: '', gst_number: '', machine_id: '', notes: '' });
         fetchCustomers(); fetchDash();
         if (selectedCust) fetchCustDetail(selectedCust);
       } else { const e = await r.json(); showMessage(e.detail || 'Failed', 'error'); }
@@ -312,7 +318,7 @@ function App() {
 
   const openEditCust = (c) => {
     setEditingCust(c);
-    setCustForm({ hospital_name: c.hospital_name, hospital_id: c.hospital_id || '', contact_person: c.contact_person || '', phone: c.phone || '', email: c.email || '', address: c.address || '', machine_id: c.machine_id || '', notes: c.notes || '' });
+    setCustForm({ hospital_name: c.hospital_name, hospital_id: c.hospital_id || '', contact_person: c.contact_person || '', phone: c.phone || '', email: c.email || '', address: c.address || '', gst_number: c.gst_number || '', machine_id: c.machine_id || '', notes: c.notes || '' });
     setShowCustForm(true);
   };
 
@@ -625,7 +631,7 @@ function App() {
                   <h2 className="text-2xl font-bold text-white">Customers</h2>
                   <p className="text-sm text-slate-500 mt-1">{customers.length} customer{customers.length !== 1 ? 's' : ''}</p>
                 </div>
-                <button onClick={() => { setEditingCust(null); setCustForm({ hospital_name: '', hospital_id: '', contact_person: '', phone: '', email: '', address: '', machine_id: '', notes: '' }); setShowCustForm(true); }}
+                <button onClick={() => { setEditingCust(null); setCustForm({ hospital_name: '', hospital_id: '', contact_person: '', phone: '', email: '', address: '', gst_number: '', machine_id: '', notes: '' }); setShowCustForm(true); }}
                   className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-sm font-semibold transition-colors shadow-lg shadow-blue-600/20">
                   <Icon d={Icons.plus} className="w-4 h-4" /> Add Customer
                 </button>
@@ -649,6 +655,7 @@ function App() {
                       <span className={`w-2 h-2 rounded-full mt-1.5 ${c.is_active ? 'bg-emerald-400' : 'bg-slate-600'}`} />
                     </div>
                     {c.contact_person && <p className="text-sm text-slate-400">{c.contact_person}</p>}
+                    {c.gst_number && <p className="text-xs text-slate-500 font-mono mt-1">GST: {c.gst_number}</p>}
                     <div className="flex gap-3 mt-2 text-xs text-slate-500">
                       {c.phone && <span>{c.phone}</span>}
                       {c.machine_id && <span className="font-mono">{c.machine_id}</span>}
@@ -696,6 +703,7 @@ function App() {
                   {custDetail.customer.contact_person && <p className="text-sm text-white">{custDetail.customer.contact_person}</p>}
                   {custDetail.customer.phone && <p className="text-xs text-slate-400">{custDetail.customer.phone}</p>}
                   {custDetail.customer.email && <p className="text-xs text-slate-400">{custDetail.customer.email}</p>}
+                  {custDetail.customer.gst_number && <p className="text-xs text-slate-400 font-mono">GST: {custDetail.customer.gst_number}</p>}
                   {custDetail.customer.address && <p className="text-xs text-slate-500 mt-1">{custDetail.customer.address}</p>}
                   {!custDetail.customer.contact_person && !custDetail.customer.phone && <p className="text-xs text-slate-600">No contact info</p>}
                 </div>
@@ -1378,6 +1386,10 @@ function App() {
               onChange={e => setCustForm({...custForm, email: e.target.value})} placeholder="hospital@email.com" />
             <Input label="Machine ID" value={custForm.machine_id}
               onChange={e => setCustForm({...custForm, machine_id: e.target.value})} placeholder="CA86-C087-6261" />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <Input label="GST Number" value={custForm.gst_number} maxLength={15}
+              onChange={e => setCustForm({...custForm, gst_number: e.target.value.toUpperCase()})} placeholder="22AAAAA0000A1Z5" />
           </div>
           <Input label="Address" value={custForm.address}
             onChange={e => setCustForm({...custForm, address: e.target.value})} placeholder="Full address" />

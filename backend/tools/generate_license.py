@@ -84,10 +84,13 @@ def main():
     with open(args.private_key) as f:
         private_key_pem = f.read()
 
-    import uuid
+    import secrets
+    # Unambiguous alphabet — no 0/O, 1/I/L — so IDs can be read over the phone
+    license_id_alphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+    license_id = "".join(secrets.choice(license_id_alphabet) for _ in range(8))
     now = datetime.utcnow()
     license_data = {
-        "license_id": str(uuid.uuid4()),
+        "license_id": license_id,
         "hospital_id": args.hospital_id,
         "hospital_name": args.hospital_name,
         "machine_id": args.machine_id,

@@ -27,7 +27,7 @@ const ProceduresBillingPage = () => {
     Array.isArray(user?.roles) ? user.roles
       : typeof user?.role === 'string' ? [user.role] : []
   ), [user]);
-  const isAdmin = roles.some((r) => ['super_admin', 'hospital_admin'].includes(r));
+  const canManageCatalog = roles.some((r) => ['super_admin', 'hospital_admin', 'receptionist'].includes(r));
 
   const [tab, setTab] = useState('generate');
   const [procedures, setProcedures] = useState([]);
@@ -237,7 +237,7 @@ const ProceduresBillingPage = () => {
         <TabsList>
           <TabsTrigger value="generate"><Receipt className="h-4 w-4 mr-1" /> Generate Bill</TabsTrigger>
           <TabsTrigger value="recent"><FileText className="h-4 w-4 mr-1" /> Recent Bills</TabsTrigger>
-          {isAdmin && <TabsTrigger value="catalog"><Edit2 className="h-4 w-4 mr-1" /> Service Catalog</TabsTrigger>}
+          {canManageCatalog && <TabsTrigger value="catalog"><Edit2 className="h-4 w-4 mr-1" /> Service Catalog</TabsTrigger>}
         </TabsList>
 
         {/* --- Generate Bill --- single card with internal dividers for a tighter layout */}
@@ -399,7 +399,7 @@ const ProceduresBillingPage = () => {
         </TabsContent>
 
         {/* --- Catalog --- */}
-        {isAdmin && (
+        {canManageCatalog && (
           <TabsContent value="catalog" className="space-y-3 mt-4">
             <div className="flex justify-end gap-2">
               <Button variant="outline" size="sm" onClick={() => fetchProcedures(true)}>

@@ -145,6 +145,19 @@ def require_admin_access(current_user: User = Depends(get_current_user)):
         )
     return current_user
 
+
+def _guard_super_admin_target(target: User, current_user: User):
+    """The vendor super admin account is immutable by anyone but itself.
+
+    super_admin is reserved for the software vendor: exactly one such account
+    exists (created by the installer seed) and no other admin — including
+    hospital_admin — may alter it in any way."""
+    if target.has_role('super_admin') and current_user.id != target.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="The super admin account is reserved for the software vendor and cannot be modified"
+        )
+
 @router.get("/super-dashboard")
 async def get_super_admin_dashboard(
     current_user: User = Depends(require_super_admin),
@@ -380,8 +393,12 @@ async def get_all_users(
     current_user: User = Depends(require_admin_access),
     db: Session = Depends(get_db)
 ):
-    """Get all users in the system"""
+    """Get all users in the system.
+
+    The vendor super admin account is hidden from non-super-admin callers."""
     users = db.query(User).all()
+    if not current_user.has_role('super_admin'):
+        users = [u for u in users if not u.has_role('super_admin')]
     return [
         UserResponse(
             id=user.id,
@@ -525,7 +542,28 @@ async def update_user(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
         )
-    
+
+    _guard_super_admin_target(user, current_user)
+
+    # Even for the vendor themselves, the account's login identity, role, and
+    # active flag are frozen through this endpoint — prevents demotion/lockout.
+    if user.has_role('super_admin'):
+        if user_data.username is not None and user_data.username != user.username:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="The super admin username cannot be changed"
+            )
+        if user_data.role_id is not None and user_data.role_id != user.role_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="The super admin role cannot be changed"
+            )
+        if user_data.is_active is not None and bool(user_data.is_active) != bool(user.is_active):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="The super admin account cannot be deactivated"
+            )
+
     # Update fields that are provided
     if user_data.username is not None:
         # Check if new username already exists (excluding current user)
@@ -633,10 +671,8 @@ async def reset_user_password(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Only super_admin can reset another super_admin's password
-    user_roles = [r.name for r in user.roles] if user.roles else [user.role.name]
-    if 'super_admin' in user_roles and not any(r in current_user.role_names for r in ['super_admin']):
-        raise HTTPException(status_code=403, detail="Only super admin can reset another super admin's password")
+    # The vendor account's password can only be reset from within that account
+    _guard_super_admin_target(user, current_user)
 
     user.password_hash = get_password_hash(data.new_password)
     # Force the recipient to choose their own password on next login
@@ -670,6 +706,24 @@ async def update_user_roles(
     role_ids = data.get('role_ids', [])
     if not role_ids:
         raise HTTPException(status_code=400, detail="At least one role is required")
+
+    # The vendor super admin account's role set is frozen: nobody else may
+    # touch it, and even the vendor cannot change it. An identical resubmission
+    # from the vendor is a no-op — the shared user form always calls this
+    # endpoint after saving, and rejecting it would break the vendor's own
+    # profile edit flow.
+    if user.has_role('super_admin'):
+        current_ids = sorted({r.id for r in (user.roles or [])} | {user.role_id})
+        if current_user.id != user.id or sorted(role_ids) != current_ids:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="The super admin account's roles cannot be modified"
+            )
+        return {
+            "message": "Roles unchanged",
+            "roles": [{"id": r.id, "name": r.name} for r in user.roles] if user.roles
+                     else [{"id": user.role.id, "name": user.role.name}],
+        }
 
     # Verify all roles exist
     roles = db.query(UserRole).filter(UserRole.id.in_(role_ids)).all()
@@ -706,6 +760,7 @@ async def get_user_roles(
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    _guard_super_admin_target(user, current_user)
     return {
         "user_id": user.id,
         "primary_role": {"id": user.role.id, "name": user.role.name},
@@ -756,6 +811,8 @@ async def restore_user(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
         )
+
+    _guard_super_admin_target(user, current_user)
 
     user.is_active = True
     db.commit()

@@ -18,13 +18,22 @@ Usage:
 
 import argparse
 import json
-import uuid
+import secrets
 import os
 import base64
 from datetime import datetime, timedelta, UTC
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives import serialization
+
+
+# Unambiguous alphabet — no 0/O, 1/I/L — so IDs can be read over the phone
+LICENSE_ID_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+LICENSE_ID_LENGTH = 8
+
+
+def generate_license_id() -> str:
+    return "".join(secrets.choice(LICENSE_ID_ALPHABET) for _ in range(LICENSE_ID_LENGTH))
 
 
 def generate_keypair():
@@ -93,7 +102,7 @@ def cmd_create_license(args):
     ]
 
     license_data = {
-        "license_id": str(uuid.uuid4()),
+        "license_id": generate_license_id(),
         "hospital_id": args.hospital_id,
         "hospital_name": args.hospital_name,
         "plan": args.plan,

@@ -23,19 +23,26 @@ from app.utils.auth import create_access_token
 DESCRIPTION_TEXT = "RefSectTest123 — body of the description that must show up in the PDF."
 
 
-def _admin_headers(seed_data, db_session):
+@pytest.fixture()
+def admin_headers(db_session, seed_data):
     """Promote the seed admin to lab_admin too (the test endpoints require
-    a lab_admin role) and return the auth header."""
+    a lab_admin role) and return the auth header. The extra role is removed
+    again on teardown so other modules sharing the session DB still see the
+    vendor super admin account in its seeded, single-role state."""
     role = db_session.query(UserRole).filter(UserRole.name == "lab_admin").first()
     if not role:
         role = UserRole(name="lab_admin", is_system_role=True)
         db_session.add(role)
         db_session.flush()
     user = db_session.query(User).filter(User.id == seed_data["admin_user_id"]).first()
-    if role not in user.roles:
+    added = role not in user.roles
+    if added:
         user.roles.append(role)
     db_session.commit()
-    return {"Authorization": f"Bearer {create_access_token(data={'sub': 'testadmin'})}"}
+    yield {"Authorization": f"Bearer {create_access_token(data={'sub': 'testadmin'})}"}
+    if added:
+        db_session.query(User).filter(User.id == seed_data["admin_user_id"]).first().roles.remove(role)
+        db_session.commit()
 
 
 def _extract_pdf_text(pdf_bytes: bytes) -> str:
@@ -45,8 +52,8 @@ def _extract_pdf_text(pdf_bytes: bytes) -> str:
     return "\n".join(page.extract_text() or "" for page in reader.pages)
 
 
-def test_description_renders_in_report_pdf(client, db_session, seed_data):
-    headers = _admin_headers(seed_data, db_session)
+def test_description_renders_in_report_pdf(client, db_session, seed_data, admin_headers):
+    headers = admin_headers
     hospital_id = seed_data["hospital_id"]
 
     # 1. Create a category + a test with a known description
@@ -122,12 +129,12 @@ def test_description_renders_in_report_pdf(client, db_session, seed_data):
     )
 
 
-def test_description_omitted_when_blank(client, db_session, seed_data):
+def test_description_omitted_when_blank(client, db_session, seed_data, admin_headers):
     """Sanity check: when LabTest.description is empty, the Reference
     Information section is correctly skipped — confirming the conditional
     in pdf_service.py works both ways.
     """
-    headers = _admin_headers(seed_data, db_session)
+    headers = admin_headers
     hospital_id = seed_data["hospital_id"]
 
     cat = LabTestCategory(
@@ -183,10 +190,10 @@ def test_description_omitted_when_blank(client, db_session, seed_data):
     )
 
 
-def test_combined_package_report_accepts_string_booking_id(client, db_session, seed_data):
+def test_combined_package_report_accepts_string_booking_id(client, db_session, seed_data, admin_headers):
     """Package booking IDs are strings like PKG-ABC12345. The combined report
     endpoint must accept them verbatim (Number() in the frontend produced NaN)."""
-    headers = _admin_headers(seed_data, db_session)
+    headers = admin_headers
     hospital_id = seed_data["hospital_id"]
     booking_id = "PKG-TEST1234"
 

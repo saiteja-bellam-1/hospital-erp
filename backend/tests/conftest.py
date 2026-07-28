@@ -128,6 +128,10 @@ def seed_data(db_engine, TestSessionLocal):
         if doctor_role is None:
             doctor_role = UserRole(name="doctor", is_system_role=True)
             session.add(doctor_role)
+        receptionist_role = session.query(UserRole).filter_by(name="receptionist").first()
+        if receptionist_role is None:
+            receptionist_role = UserRole(name="receptionist", is_system_role=True)
+            session.add(receptionist_role)
         session.flush()
 
         # Admin user
@@ -156,6 +160,20 @@ def seed_data(db_engine, TestSessionLocal):
             is_active=True,
         )
         session.add(doctor_user)
+        session.flush()
+
+        # Receptionist user
+        receptionist_user = User(
+            username="testreceptionist",
+            password_hash=get_password_hash("reception123"),
+            email="reception@test.com",
+            first_name="Rita",
+            last_name="Reception",
+            role_id=receptionist_role.id,
+            hospital_id=hospital.id,
+            is_active=True,
+        )
+        session.add(receptionist_user)
         session.flush()
 
         # Inpatient module (enabled)

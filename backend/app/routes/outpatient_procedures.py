@@ -1,7 +1,7 @@
 """Outpatient procedures — billing-only catalog + bill builder.
 
-Designed for day-care centres / OPD desks. The hospital admin maintains a
-list of procedures with default prices (Dental cleaning, IV drip, dressing, …)
+Designed for day-care centres / OPD desks. Hospital admins and receptionists
+maintain a list of procedures with default prices (Dental cleaning, IV drip, dressing, …)
 and receptionists / doctors generate bills by picking from the catalog OR
 typing one-off lines. The bill itself lives in the existing `bills` table
 with `bill_type='procedure'`, so it inherits the central Billing dashboard,
@@ -29,9 +29,10 @@ router = APIRouter()
 # Permission helpers
 # ---------------------------------------------------------------------------
 
-def _admin_only(user: User):
-    if not any(r in user.role_names for r in ('super_admin', 'hospital_admin')):
-        raise HTTPException(status_code=403, detail="Admin role required")
+def _can_manage_catalog(user: User):
+    if not any(r in user.role_names for r in
+               ('super_admin', 'hospital_admin', 'receptionist')):
+        raise HTTPException(status_code=403, detail="Not authorized to manage the service catalog")
 
 
 def _can_bill(user: User):
@@ -86,7 +87,7 @@ async def create_procedure(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    _admin_only(current_user)
+    _can_manage_catalog(current_user)
     proc = OutpatientProcedure(
         name=data.name.strip(),
         code=data.code,
@@ -112,7 +113,7 @@ async def update_procedure(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    _admin_only(current_user)
+    _can_manage_catalog(current_user)
     proc = db.query(OutpatientProcedure).filter(
         OutpatientProcedure.id == procedure_id,
         OutpatientProcedure.hospital_id == current_user.hospital_id,
@@ -139,7 +140,7 @@ async def deactivate_procedure(
     db: Session = Depends(get_db),
 ):
     """Soft delete — flips is_active=false. Existing bills remain unaffected."""
-    _admin_only(current_user)
+    _can_manage_catalog(current_user)
     proc = db.query(OutpatientProcedure).filter(
         OutpatientProcedure.id == procedure_id,
         OutpatientProcedure.hospital_id == current_user.hospital_id,

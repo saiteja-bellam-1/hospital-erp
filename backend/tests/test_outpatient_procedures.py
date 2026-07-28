@@ -29,6 +29,23 @@ class TestProcedureCatalog:
             json={"name": "Y", "default_price": 100}, headers=hdr)
         assert r.status_code == 403
 
+    def test_receptionist_can_manage_procedure(self, client, db_session, seed_data):
+        from app.utils.auth import create_access_token
+        token = create_access_token(data={"sub": "testreceptionist"})
+        hdr = {"Authorization": f"Bearer {token}"}
+        r = client.post("/api/outpatient/procedures",
+            json={"name": "Dressing", "default_price": 150}, headers=hdr)
+        assert r.status_code == 201, r.text
+        pid = r.json()["id"]
+
+        u = client.patch(f"/api/outpatient/procedures/{pid}",
+            json={"name": "Dressing Large", "default_price": 200, "is_active": True},
+            headers=hdr)
+        assert u.status_code == 200 and u.json()["name"] == "Dressing Large"
+
+        d = client.delete(f"/api/outpatient/procedures/{pid}", headers=hdr)
+        assert d.status_code == 204
+
     def test_update_and_deactivate(self, client, auth_headers):
         c = _create_proc(client, auth_headers, name="IV Drip", price=200, code="IV-1")
         pid = c.json()["id"]

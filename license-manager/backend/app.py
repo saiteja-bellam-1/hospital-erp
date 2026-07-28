@@ -11,7 +11,7 @@ from typing import Optional, List
 from datetime import datetime, timedelta, timezone
 import calendar
 import sqlite3
-import uuid
+import secrets
 import json
 import os
 import sys
@@ -58,6 +58,7 @@ def init_db():
             phone TEXT,
             email TEXT,
             address TEXT,
+            gst_number TEXT,
             machine_id TEXT,
             notes TEXT,
             is_active INTEGER DEFAULT 1,
@@ -122,11 +123,37 @@ def init_db():
         conn.execute("ALTER TABLE licenses ADD COLUMN customer_id INTEGER REFERENCES customers(id)")
     except Exception:
         pass
+    # Add gst_number column to customers if missing (migration for existing DBs)
+    try:
+        conn.execute("ALTER TABLE customers ADD COLUMN gst_number TEXT")
+    except Exception:
+        pass
     conn.commit()
     conn.close()
 
 
 init_db()
+
+
+# ============================================================
+# License ID generation
+# ============================================================
+
+# Unambiguous alphabet — no 0/O, 1/I/L — so IDs can be read over the phone
+LICENSE_ID_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+LICENSE_ID_LENGTH = 8
+
+
+def generate_license_id() -> str:
+    return "".join(secrets.choice(LICENSE_ID_ALPHABET) for _ in range(LICENSE_ID_LENGTH))
+
+
+def generate_unique_license_id(conn) -> str:
+    while True:
+        candidate = generate_license_id()
+        row = conn.execute("SELECT 1 FROM licenses WHERE license_id = ?", (candidate,)).fetchone()
+        if row is None:
+            return candidate
 
 
 # ============================================================
@@ -172,6 +199,7 @@ class CustomerCreate(BaseModel):
     phone: Optional[str] = None
     email: Optional[str] = None
     address: Optional[str] = None
+    gst_number: Optional[str] = Field(default=None, max_length=15)
     machine_id: Optional[str] = None
     notes: Optional[str] = None
 
@@ -183,6 +211,7 @@ class CustomerUpdate(BaseModel):
     phone: Optional[str] = None
     email: Optional[str] = None
     address: Optional[str] = None
+    gst_number: Optional[str] = Field(default=None, max_length=15)
     machine_id: Optional[str] = None
     notes: Optional[str] = None
     is_active: Optional[int] = None
@@ -330,7 +359,8 @@ def list_licenses(search: Optional[str] = None, status: Optional[str] = None):
 @app.post("/api/licenses")
 def create_license(data: LicenseCreate):
     now = datetime.now(timezone.utc)
-    license_id = str(uuid.uuid4())
+    conn = get_db()
+    license_id = generate_unique_license_id(conn)
     expires_at = compute_expiry(now, data.months, data.days)
     total_days = (expires_at - now).days
 
@@ -365,7 +395,6 @@ def create_license(data: LicenseCreate):
 
     lic_content = sign_license_data(license_data)
 
-    conn = get_db()
     conn.execute("""
         INSERT INTO licenses (license_id, customer_id, hospital_id, hospital_name, machine_id, plan, max_users,
             features, modules, issued_at, expires_at, days, status, lic_file_content, notes)
@@ -392,7 +421,7 @@ def renew_license(license_id: str, data: LicenseRenew):
         raise HTTPException(status_code=404, detail="License not found")
 
     now = datetime.now(timezone.utc)
-    new_license_id = str(uuid.uuid4())
+    new_license_id = generate_unique_license_id(conn)
     expires_at = compute_expiry(now, data.months, data.days)
     total_days = (expires_at - now).days
 
@@ -525,7 +554,7 @@ async def process_rebind_request(file: UploadFile = File(...)):
     except Exception:
         old_expires = now + timedelta(days=int(row["days"] or 365))
 
-    new_license_id = str(uuid.uuid4())
+    new_license_id = generate_unique_license_id(conn)
     features = json.loads(row["features"]) if row["features"] else []
 
     license_data = {
@@ -626,7 +655,7 @@ def list_customers(search: Optional[str] = None):
         rec = dict(r)
         if search:
             q = search.lower()
-            if q not in rec["hospital_name"].lower() and q not in (rec["contact_person"] or "").lower() and q not in (rec["phone"] or ""):
+            if q not in rec["hospital_name"].lower() and q not in (rec["contact_person"] or "").lower() and q not in (rec["phone"] or "") and q not in (rec.get("gst_number") or "").lower():
                 continue
         results.append(rec)
     return results
@@ -636,9 +665,9 @@ def list_customers(search: Optional[str] = None):
 def create_customer(data: CustomerCreate):
     conn = get_db()
     cur = conn.execute("""
-        INSERT INTO customers (hospital_name, hospital_id, contact_person, phone, email, address, machine_id, notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (data.hospital_name, data.hospital_id, data.contact_person, data.phone, data.email, data.address, data.machine_id, data.notes))
+        INSERT INTO customers (hospital_name, hospital_id, contact_person, phone, email, address, gst_number, machine_id, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (data.hospital_name, data.hospital_id, data.contact_person, data.phone, data.email, data.address, data.gst_number, data.machine_id, data.notes))
     conn.commit()
     cid = cur.lastrowid
     conn.close()

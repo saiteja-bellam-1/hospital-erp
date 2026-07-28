@@ -922,7 +922,11 @@ const AdminModule = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {users.map((user) => (
+                    {users.map((user) => {
+                      const isSuperAdminRow = (user.user_roles || [user.user_role]).some(r => r.name === 'super_admin');
+                      // Vendor super admin account: read-only for hospital admins
+                      const canManageRow = !isSuperAdminRow || hasRole('super_admin');
+                      return (
                       <tr key={user.id} className="border-b">
                         <td className="py-2">
                           <div>
@@ -954,22 +958,26 @@ const AdminModule = () => {
                         </td>
                         <td className="py-2">
                           <div className="flex space-x-2">
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => editUser(user)}
-                            >
-                              <Edit className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => { setPasswordResetUser(user); setNewPassword(''); }}
-                              title="Reset Password"
-                            >
-                              <KeyRound className="h-4 w-4" />
-                            </Button>
-                            {!(user.user_roles || [user.user_role]).some(r => r.name === 'super_admin') && (
+                            {canManageRow && (
+                              <>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => editUser(user)}
+                                >
+                                  <Edit className="h-4 w-4" />
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => { setPasswordResetUser(user); setNewPassword(''); }}
+                                  title="Reset Password"
+                                >
+                                  <KeyRound className="h-4 w-4" />
+                                </Button>
+                              </>
+                            )}
+                            {!isSuperAdminRow && (
                               user.is_active ? (
                                 <Button
                                   size="sm"
@@ -994,7 +1002,8 @@ const AdminModule = () => {
                           </div>
                         </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
