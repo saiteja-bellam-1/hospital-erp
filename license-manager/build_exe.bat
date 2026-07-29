@@ -1,4 +1,10 @@
 @echo off
+:: Operate from this script's own directory regardless of the caller's
+:: cwd — CI invokes it as `license-manager\build_exe.bat` from the repo
+:: root, and plain `pushd frontend` would otherwise land in the ROOT
+:: frontend/ and build the hospital app instead.
+pushd %~dp0
+
 echo ============================================
 echo  KT License Manager - Build Script
 echo ============================================
@@ -41,6 +47,7 @@ echo ============================================
 echo  Build complete!
 echo  Output: backend/dist/KTLicenseManager.exe
 echo ============================================
+popd
 pause
 exit /b 0
 
