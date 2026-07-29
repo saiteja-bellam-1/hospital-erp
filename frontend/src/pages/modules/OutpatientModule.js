@@ -987,18 +987,28 @@ const OutpatientModule = () => {
                 </div>
                 
                 {/* Consultation Fee Display */}
-                {appointmentForm.doctor_id && (
-                  <div className="bg-green-50 border border-green-200 rounded-md p-3">
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm font-medium text-green-800">
-                        Consultation Fee:
-                      </span>
-                      <span className="text-lg font-bold text-green-900">
-                        {doctors.find(d => d.id.toString() === appointmentForm.doctor_id)?.consultation_fee_inr || 'N/A'}
-                      </span>
+                {appointmentForm.doctor_id && (() => {
+                  const selectedDoctor = doctors.find(d => d.id.toString() === appointmentForm.doctor_id);
+                  const isEmergency = appointmentForm.priority === 'emergency';
+                  const feeDisplay = isEmergency
+                    ? (selectedDoctor?.emergency_fee_inr || selectedDoctor?.consultation_fee_inr || 'N/A')
+                    : (selectedDoctor?.consultation_fee_inr || 'N/A');
+                  return (
+                    <div className={`rounded-md p-3 border ${isEmergency ? 'bg-red-50 border-red-200' : 'bg-green-50 border-green-200'}`}>
+                      <div className="flex items-center justify-between">
+                        <span className={`text-sm font-medium ${isEmergency ? 'text-red-800' : 'text-green-800'}`}>
+                          {isEmergency ? 'Emergency Consultation Fee:' : 'Consultation Fee:'}
+                        </span>
+                        <span className={`text-lg font-bold ${isEmergency ? 'text-red-900' : 'text-green-900'}`}>
+                          {feeDisplay}
+                        </span>
+                      </div>
+                      {isEmergency && !selectedDoctor?.emergency_fee_inr && selectedDoctor?.consultation_fee_inr && (
+                        <p className="text-xs text-amber-600 mt-1">No emergency rate set for this doctor — regular fee applied.</p>
+                      )}
                     </div>
-                  </div>
-                )}
+                  );
+                })()}
 
                 {/* Payment Status */}
                 <div>

@@ -1174,6 +1174,9 @@ const ReceptionAppointmentsPage = () => {
                     {appointment.token_status === 'skipped' && (
                       <Badge variant="secondary" className="h-6 text-[10px] bg-amber-100 text-amber-800">SKIPPED</Badge>
                     )}
+                    {appointment.priority === 'emergency' && (
+                      <Badge className="h-6 text-[10px] bg-red-600 text-white">EMERGENCY</Badge>
+                    )}
                     {appointment.priority_boost > 0 && (
                       <Badge className="h-6 text-[10px] bg-red-600 text-white">PRIORITY</Badge>
                     )}
@@ -1376,6 +1379,23 @@ const ReceptionAppointmentsPage = () => {
                   </SelectContent>
                 </Select>
               </div>
+
+              <div className="col-span-2">
+                <label className={`flex items-center gap-2 rounded-md border p-2.5 cursor-pointer select-none ${appointmentForm.priority === 'emergency' ? 'border-red-400 bg-red-50' : 'border-gray-200'}`}>
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 accent-red-600"
+                    checked={appointmentForm.priority === 'emergency'}
+                    onChange={(e) => setAppointmentForm({ ...appointmentForm, priority: e.target.checked ? 'emergency' : 'normal' })}
+                  />
+                  <span className={`text-sm font-medium ${appointmentForm.priority === 'emergency' ? 'text-red-700' : 'text-gray-700'}`}>
+                    Emergency consultation
+                  </span>
+                  {appointmentForm.priority === 'emergency' && (
+                    <span className="text-xs text-red-600 ml-auto">Emergency fee applies</span>
+                  )}
+                </label>
+              </div>
             </div>
 
             {/* Fee Summary */}
@@ -1386,18 +1406,26 @@ const ReceptionAppointmentsPage = () => {
                   {(() => {
                     const doctor = doctors.find(d => d.id.toString() === appointmentForm.doctor_id.toString());
                     const isFollowup = appointmentForm.appointment_type === 'followup';
-                    const baseFee = doctor?.consultation_fee_inr
-                      ? parseFloat(doctor.consultation_fee_inr.replace('₹', '').replace(',', '').trim()) || 0
-                      : 0;
-                    const consultFee = isFollowup ? 0 : baseFee;
+                    const isEmergency = appointmentForm.priority === 'emergency';
+                    const parseFee = (v) => v ? parseFloat(String(v).replace('₹', '').replace(',', '').trim()) || 0 : 0;
+                    const baseFee = parseFee(doctor?.consultation_fee_inr);
+                    const emergencyFee = parseFee(doctor?.emergency_fee_inr);
+                    const consultFee = isEmergency ? (emergencyFee || baseFee) : (isFollowup ? 0 : baseFee);
                     const regFee = patientFeeInfo.is_new_patient ? patientFeeInfo.registration_fee : 0;
                     const total = consultFee + regFee - (parseFloat(appointmentForm.discount_amount) || 0);
                     return (
                       <>
-                        <div className="flex justify-between">
-                          <span>Consultation Fee{isFollowup ? ' (Follow-up — free)' : ''}</span>
+                        <div className={`flex justify-between ${isEmergency ? 'text-red-700 font-medium' : ''}`}>
+                          <span>
+                            {isEmergency
+                              ? 'Emergency Consultation Fee'
+                              : `Consultation Fee${isFollowup ? ' (Follow-up — free)' : ''}`}
+                          </span>
                           <span>₹{consultFee.toFixed(2)}</span>
                         </div>
+                        {isEmergency && emergencyFee === 0 && baseFee > 0 && (
+                          <p className="text-xs text-amber-600">No emergency rate set for this doctor — regular fee applied.</p>
+                        )}
                         {patientFeeInfo.is_new_patient && regFee > 0 && (
                           <div className="flex justify-between text-blue-600">
                             <span>Registration Fee (New Patient)</span>

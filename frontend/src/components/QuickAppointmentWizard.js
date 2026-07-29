@@ -268,10 +268,13 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
   };
 
   const doctor = doctors.find((d) => d.id.toString() === String(appointmentForm.doctor_id));
-  const baseFee = doctor?.consultation_fee_inr
-    ? parseFloat(String(doctor.consultation_fee_inr).replace('₹', '').replace(',', '').trim()) || 0
-    : 0;
-  const consultFee = appointmentForm.appointment_type === 'followup' ? 0 : baseFee;
+  const parseFee = (v) => v ? parseFloat(String(v).replace('₹', '').replace(',', '').trim()) || 0 : 0;
+  const baseFee = parseFee(doctor?.consultation_fee_inr);
+  const emergencyFee = parseFee(doctor?.emergency_fee_inr);
+  const isEmergency = appointmentForm.priority === 'emergency';
+  const consultFee = isEmergency
+    ? (emergencyFee || baseFee)
+    : (appointmentForm.appointment_type === 'followup' ? 0 : baseFee);
   const regFee = patientFeeInfo.is_new_patient ? patientFeeInfo.registration_fee : 0;
   const discount = parseFloat(appointmentForm.discount_amount) || 0;
   const feeTotal = consultFee + regFee - discount;
@@ -466,6 +469,23 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
                   </Select>
                 </div>
 
+                <div className="col-span-4">
+                  <label className={`flex items-center gap-2 rounded-md border p-2.5 cursor-pointer select-none ${isEmergency ? 'border-red-400 bg-red-50' : 'border-gray-200'}`}>
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 accent-red-600"
+                      checked={isEmergency}
+                      onChange={(e) => setAppointmentForm({ ...appointmentForm, priority: e.target.checked ? 'emergency' : 'normal' })}
+                    />
+                    <span className={`text-sm font-medium ${isEmergency ? 'text-red-700' : 'text-gray-700'}`}>
+                      Emergency consultation
+                    </span>
+                    {isEmergency && (
+                      <span className="text-xs text-red-600 ml-auto">Emergency fee applies</span>
+                    )}
+                  </label>
+                </div>
+
                 <AppointmentAvailabilityOverride
                   className="col-span-4"
                   overrideAvailability={appointmentForm.override_availability}
@@ -495,7 +515,12 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
                   <div className="col-span-4 bg-gray-50 rounded-lg p-3 border text-sm space-y-1">
                     <p className="font-medium">Fee summary</p>
                     {regFee > 0 && <p>Registration fee: ₹{regFee.toFixed(2)}</p>}
-                    <p>Consultation: ₹{consultFee.toFixed(2)}</p>
+                    <p className={isEmergency ? 'text-red-700 font-medium' : ''}>
+                      {isEmergency ? 'Emergency consultation' : 'Consultation'}: ₹{consultFee.toFixed(2)}
+                    </p>
+                    {isEmergency && emergencyFee === 0 && baseFee > 0 && (
+                      <p className="text-xs text-amber-600">No emergency rate set for this doctor — regular fee applied.</p>
+                    )}
                     <div className="flex items-center justify-between gap-2">
                       <span>Discount</span>
                       <div className="flex items-center gap-1">

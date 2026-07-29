@@ -28,7 +28,8 @@ class DoctorForAppointment(BaseModel):
     last_name: str
     specialization: Optional[str] = None
     consultation_fee_inr: Optional[str] = None
-    
+    emergency_fee_inr: Optional[str] = None
+
     class Config:
         from_attributes = True
 
@@ -121,6 +122,16 @@ class RescheduleAppointment(BaseModel):
     new_date: date
     new_time: time
 
+def _parse_fee_inr(fee_value: Optional[str]) -> float:
+    """Parse a doctor fee string like '₹1,500' into a float (0.0 when unset/invalid)."""
+    if not fee_value:
+        return 0.0
+    fee_str = str(fee_value).replace('₹', '').replace(',', '').strip()
+    try:
+        return float(fee_str)
+    except ValueError:
+        return 0.0
+
 @router.get("/doctors", response_model=List[DoctorForAppointment])
 async def get_available_doctors(
     current_user: User = Depends(require_permission(Modules.OUTPATIENT, "read")),
@@ -139,7 +150,8 @@ async def get_available_doctors(
             first_name=doctor.first_name,
             last_name=doctor.last_name,
             specialization=doctor.specialization,
-            consultation_fee_inr=doctor.consultation_fee_inr
+            consultation_fee_inr=doctor.consultation_fee_inr,
+            emergency_fee_inr=doctor.emergency_fee_inr
         )
         for doctor in doctors
     ]
@@ -365,14 +377,16 @@ async def create_appointment(
     # Calculate consultation fee from doctor's rates.
     # Follow-up visits are free — the patient already paid for the initial
     # consultation, the follow-up is part of the same care episode.
+    # Emergency bookings are charged at the doctor's emergency rate instead
+    # (falling back to the regular consultation fee when no emergency rate is
+    # configured), and are never treated as free follow-ups.
     consultation_fee = 0.0
-    if appointment_data.appointment_type != "followup" and doctor.consultation_fee_inr:
-        # Extract numeric value from fee string (e.g., "₹1500" -> 1500.0)
-        fee_str = doctor.consultation_fee_inr.replace('₹', '').replace(',', '').strip()
-        try:
-            consultation_fee = float(fee_str)
-        except ValueError:
-            consultation_fee = 0.0
+    if appointment_data.priority == "emergency":
+        consultation_fee = _parse_fee_inr(doctor.emergency_fee_inr)
+        if consultation_fee == 0.0:
+            consultation_fee = _parse_fee_inr(doctor.consultation_fee_inr)
+    elif appointment_data.appointment_type != "followup":
+        consultation_fee = _parse_fee_inr(doctor.consultation_fee_inr)
 
     # Check if patient is new (no previous appointments) → add registration fee
     registration_fee = 0.0
@@ -446,13 +460,15 @@ async def create_appointment(
             f" [AVAILABILITY OVERRIDDEN — reason: {appointment.override_reason}]"
             if appointment.override_availability else ""
         )
+        emergency_suffix = " [EMERGENCY]" if appointment.priority == "emergency" else ""
         time_label = (
             f" at {appointment_data.appointment_time}"
             if appointment_data.appointment_time is not None else ""
         )
         log_action(db, current_user, "book_appointment", "appointment", "Appointment", appointment.id,
-            f"Booked appointment for {patient_name} with {doctor_name} on {appointment_data.appointment_date}{time_label}, Fee: ₹{appointment.final_amount or 0}{override_suffix}",
+            f"Booked appointment for {patient_name} with {doctor_name} on {appointment_data.appointment_date}{time_label}, Fee: ₹{appointment.final_amount or 0}{emergency_suffix}{override_suffix}",
             details={"patient": patient_name, "doctor": doctor_name, "date": str(appointment_data.appointment_date), "amount": appointment.final_amount,
+                     "priority": appointment.priority,
                      "override_availability": appointment.override_availability, "override_reason": appointment.override_reason})
     except Exception:
         pass
@@ -538,13 +554,34 @@ async def update_appointment(
     
     # Update fields
     update_data = {k: v for k, v in appointment_update.dict().items() if v is not None}
-    
+
     for field, value in update_data.items():
         setattr(appointment, field, value)
-    
+
+    # If priority/type/discount changed on an unpaid appointment, recompute the
+    # fee so switching to/from an emergency booking charges the correct doctor
+    # rate. Paid/partial bills are left untouched to preserve the payment record.
+    fee_affecting_change = any(f in update_data for f in ("priority", "appointment_type", "discount_amount"))
+    if fee_affecting_change and appointment.payment_status == "pending":
+        doctor = db.query(User).filter(User.id == appointment.doctor_id).first()
+        if doctor:
+            if appointment.priority == "emergency":
+                appointment.consultation_fee = _parse_fee_inr(doctor.emergency_fee_inr)
+                if appointment.consultation_fee == 0.0:
+                    appointment.consultation_fee = _parse_fee_inr(doctor.consultation_fee_inr)
+            elif appointment.appointment_type == "followup":
+                appointment.consultation_fee = 0.0
+            else:
+                appointment.consultation_fee = _parse_fee_inr(doctor.consultation_fee_inr)
+            appointment.final_amount = (
+                appointment.consultation_fee
+                + (appointment.registration_fee or 0.0)
+                - (appointment.discount_amount or 0.0)
+            )
+
     db.commit()
     db.refresh(appointment)
-    
+
     return appointment
 
 @router.get("/doctor/{doctor_id}", response_model=List[AppointmentResponse])
@@ -1311,9 +1348,14 @@ async def get_appointment_bill(
     bill_number = f"BILL-APT-{appointment.appointment_number}"
     
     # Prepare bill items
+    consult_label = (
+        f"Emergency Consultation Fee - {appointment.doctor.specialization or 'General'}"
+        if appointment.priority == 'emergency'
+        else f"Consultation Fee - {appointment.doctor.specialization or 'General'}"
+    )
     items = [
         {
-            "item_name": f"Consultation Fee - {appointment.doctor.specialization or 'General'}",
+            "item_name": consult_label,
             "item_code": "CONSULT",
             "quantity": 1,
             "unit_price": appointment.consultation_fee or 0.0,
@@ -1433,7 +1475,11 @@ async def download_appointment_bill(
         "prepared_by": booked_by_name,
         "items": [
             {
-                "item_name": f"Consultation Fee - {appointment.doctor.specialization or 'General'}",
+                "item_name": (
+                    f"Emergency Consultation Fee - {appointment.doctor.specialization or 'General'}"
+                    if appointment.priority == 'emergency'
+                    else f"Consultation Fee - {appointment.doctor.specialization or 'General'}"
+                ),
                 "item_code": "CONSULT",
                 "quantity": 1,
                 "unit_price": appointment.consultation_fee or 0.0,
