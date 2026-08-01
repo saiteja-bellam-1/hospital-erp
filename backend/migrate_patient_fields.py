@@ -258,6 +258,8 @@ NEW_COLUMNS = [
     ("admission_discharge_summaries", "custom_fields", "TEXT"),
     # Admin catch-up: historical IP stays reconstructed without live bed claim
     ("admissions", "is_catch_up", "BOOLEAN DEFAULT 0"),
+    # Doctor IP visit billing mode: per_day (default) | per_visit
+    ("users", "inpatient_fee_charge_mode", "VARCHAR(20) DEFAULT 'per_day'"),
 ]
 
 # B6 — body release table is created via create_all on startup; no column adds.

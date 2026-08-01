@@ -35,7 +35,7 @@ class RoomManagement(Base):
     bed_count = Column(Integer, default=1)
     available_beds = Column(Integer, default=1)
     room_charge_per_day = Column(Float, nullable=False)
-    nursing_charge_per_visit = Column(Numeric(10, 2), default=0.00)
+    nursing_charge_per_visit = Column(Numeric(10, 2), default=0.00)  # billed once per day (column name historical)
     # Structured amenities — JSON list of strings, e.g. ["ac","tv","oxygen_point"]
     amenities = Column(Text)
     # Clinical flags
@@ -1281,7 +1281,9 @@ class DoctorDutyRoster(Base):
 class RoomTypeRateConfig(Base):
     """Per-hospital, per-room-type nursing charge configuration.
     Sits between per-room nursing_charge_per_visit and the global
-    InpatientRateConfig.nurse_visit_rate in the charge resolution chain."""
+    InpatientRateConfig.nurse_visit_rate in the charge resolution chain.
+    Despite the column name, nursing is billed at most once per calendar day.
+    """
     __tablename__ = "room_type_rate_configs"
 
     id = Column(Integer, primary_key=True, index=True)

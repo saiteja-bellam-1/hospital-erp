@@ -60,6 +60,7 @@ const AdminModule = () => {
     license_number: '',
     consultation_fee_inr: '',
     inpatient_fee_inr: '',
+    inpatient_fee_charge_mode: 'per_day',
     emergency_fee_inr: '',
     specialization: '',
     qualification: '',
@@ -189,6 +190,9 @@ const AdminModule = () => {
         license_number: userForm.license_number || null,
         consultation_fee_inr: userForm.consultation_fee_inr || null,
         inpatient_fee_inr: userForm.inpatient_fee_inr || null,
+        inpatient_fee_charge_mode: isDoctorRole()
+          ? (userForm.inpatient_fee_charge_mode || 'per_day')
+          : undefined,
         emergency_fee_inr: userForm.emergency_fee_inr || null,
         specialization: userForm.specialization || null,
         qualification: userForm.qualification || null,
@@ -249,6 +253,7 @@ const AdminModule = () => {
         license_number: '',
         consultation_fee_inr: '',
         inpatient_fee_inr: '',
+        inpatient_fee_charge_mode: 'per_day',
         emergency_fee_inr: '',
         specialization: '',
         qualification: '',
@@ -396,6 +401,7 @@ const AdminModule = () => {
       license_number: user.license_number || '',
       consultation_fee_inr: user.consultation_fee_inr || '',
       inpatient_fee_inr: user.inpatient_fee_inr || '',
+      inpatient_fee_charge_mode: user.inpatient_fee_charge_mode || 'per_day',
       emergency_fee_inr: user.emergency_fee_inr || '',
       specialization: user.specialization || '',
       qualification: user.qualification || '',
@@ -643,8 +649,13 @@ const AdminModule = () => {
                     last_name: '',
                     phone: '',
                     role_id: '',
+                    role_ids: [],
                     is_active: true,
-                    consultation_fee: '',
+                    license_number: '',
+                    consultation_fee_inr: '',
+                    inpatient_fee_inr: '',
+                    inpatient_fee_charge_mode: 'per_day',
+                    emergency_fee_inr: '',
                     specialization: '',
                     qualification: '',
                     experience_years: ''
@@ -747,7 +758,9 @@ const AdminModule = () => {
                         onChange={(e) => setUserForm({ ...userForm, inpatient_fee_inr: e.target.value })}
                         placeholder="₹500"
                       />
-                      <p className="text-xs text-gray-500 mt-1">Charged per nursing visit during inpatient admissions.</p>
+                      <p className="text-xs text-gray-500 mt-1">
+                        Nursing charges on admissions bill once per day (not per visit). Room / room-type nursing rates are the primary source.
+                      </p>
                     </div>
                   </div>
                 )}
@@ -795,6 +808,22 @@ const AdminModule = () => {
                         <Input value={userForm.emergency_fee_inr} onChange={(e) => setUserForm({ ...userForm, emergency_fee_inr: e.target.value })} placeholder="₹5000" />
                       </div>
                     </div>
+                    <div>
+                      <Label>Inpatient Fee Charge Mode</Label>
+                      <select
+                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                        value={userForm.inpatient_fee_charge_mode || 'per_day'}
+                        onChange={(e) => setUserForm({ ...userForm, inpatient_fee_charge_mode: e.target.value })}
+                      >
+                        <option value="per_day">Per day — one charge per calendar day</option>
+                        <option value="per_visit">Per visit — charge every recorded visit</option>
+                      </select>
+                      <p className="text-xs text-gray-500 mt-1">
+                        {userForm.inpatient_fee_charge_mode === 'per_visit'
+                          ? 'Every doctor visit during an admission is billed separately. Daily auto-post is off for this doctor.'
+                          : 'At most one inpatient fee per day. Extra visits the same day are recorded but not charged again.'}
+                      </p>
+                    </div>
                   </div>
                 )}
 
@@ -805,6 +834,7 @@ const AdminModule = () => {
                       <p className="text-sm font-semibold text-gray-700">Room-Type Visit Rates</p>
                       <p className="text-xs text-gray-500 mt-0.5">
                         Override the base inpatient fee per room type. Leave blank to use the base fee (₹{userForm.inpatient_fee_inr || '—'}).
+                        Rates follow the doctor&apos;s charge mode (per day or per visit).
                       </p>
                     </div>
                     <div className="border rounded overflow-hidden">

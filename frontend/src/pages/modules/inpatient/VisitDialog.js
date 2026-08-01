@@ -17,7 +17,7 @@ const TYPE_CARDS = [
     icon: Stethoscope, color: 'blue', forDoctors: true },
   { value: 'duty_doctor_visit', label: 'Duty doctor (round)', sub: 'Institutional flat fee',
     icon: ShieldAlert, color: 'amber', forDoctors: true },
-  { value: 'nurse_visit',       label: 'Nurse visit',          sub: 'Nurse fee',
+  { value: 'nurse_visit',       label: 'Nurse visit',          sub: 'Nursing fee (per day)',
     icon: Heart, color: 'pink', forDoctors: false },
 ];
 
@@ -260,6 +260,21 @@ const VisitDialog = ({
               {resolvedCharge != null
                 ? <><b>₹{resolvedCharge.toFixed(2)}</b>{' '}<span className="text-gray-400">({chargeSource})</span></>
                 : <span className="text-gray-400">no fee configured for this staff member</span>}
+              {isNurse && (
+                <span className="block text-gray-500 mt-0.5">
+                  Billed once per day — extra nurse visits today won’t add another charge.
+                </span>
+              )}
+              {isDoctor && selectedVisitor?.inpatient_fee_charge_mode === 'per_visit' && (
+                <span className="block text-gray-500 mt-0.5">
+                  Charged per visit for this doctor.
+                </span>
+              )}
+              {isDoctor && (selectedVisitor?.inpatient_fee_charge_mode || 'per_day') === 'per_day' && (
+                <span className="block text-gray-500 mt-0.5">
+                  Billed once per day for this doctor — extra visits today won’t add another charge.
+                </span>
+              )}
             </p>
           )}
           {isDuty && form.visitor_id && (

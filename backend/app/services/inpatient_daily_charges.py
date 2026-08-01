@@ -1,9 +1,10 @@
 """Daily auto-post job for inpatient charges.
 
-Posts one doctor visit per admitted patient per day at the admitting doctor's
-configured fee. Idempotent — if any doctor_visit already exists for an
-admission on the target date (auto-posted or not), the job leaves it alone so
-manually recorded visits always win.
+Posts one doctor visit per admitted patient per day when the admitting doctor
+bills inpatient fees in per_day mode. Idempotent — if any doctor_visit already
+exists for an admission on the target date (auto-posted or not), the job leaves
+it alone so manually recorded visits always win. Doctors configured for
+per_visit mode are skipped (charged only when a visit is recorded).
 
 Room rent is NOT auto-posted as a row: the bill calculation already accrues
 `stay_days * room_charge_per_day` at finalize time. Auto-posting separate
@@ -51,6 +52,16 @@ def auto_post_daily_visits_for_admission(db, admission, target_date=None, actor_
 
     target = target_date or _today_date()
 
+    doctor = db.query(User).filter(User.id == admission.admitting_doctor_id).first()
+    if not doctor:
+        return None
+
+    # Daily auto-post only applies when the admitting doctor bills per day.
+    # Per-visit doctors are charged only when a visit is explicitly recorded.
+    mode = (getattr(doctor, "inpatient_fee_charge_mode", None) or "per_day").strip().lower()
+    if mode == "per_visit":
+        return None
+
     # Idempotency: any doctor_visit on this admission with visit_datetime on `target` blocks us.
     existing = db.query(PatientVisit).filter(
         PatientVisit.admission_id == admission.id,
@@ -64,9 +75,6 @@ def auto_post_daily_visits_for_admission(db, admission, target_date=None, actor_
         if vd_date == target:
             return None  # already covered for the day
 
-    doctor = db.query(User).filter(User.id == admission.admitting_doctor_id).first()
-    if not doctor:
-        return None
     fee = float(getattr(doctor, "inpatient_fee_inr", 0) or 0)
 
     # Build a visit datetime anchored to noon of target_date so the row sorts

@@ -187,10 +187,32 @@ const DashboardShell = () => {
 
     const refreshLicenseStatus = async () => {
       try {
-        const res = await axios.get('/api/license/status');
-        setLicenseStatus(res.data);
-        localStorage.setItem('licenseStatus', JSON.stringify(res.data));
-      } catch {}
+        const roleList = normalizeUserRoles(user);
+        const isLicenseAdmin = roleList.some(
+          (r) => r === 'super_admin' || r === 'hospital_admin',
+        );
+        // Full /status is admin-only; other roles must use the public endpoint
+        // or the footer/banner lose days_remaining after refresh fails with 403.
+        if (isLicenseAdmin) {
+          const res = await axios.get('/api/license/status');
+          setLicenseStatus(res.data);
+          localStorage.setItem('licenseStatus', JSON.stringify(res.data));
+        } else {
+          const res = await axios.get('/api/license/status/public');
+          setLicenseStatus((prev) => {
+            const next = {
+              ...(prev || {}),
+              ...res.data,
+              seller_info: res.data.seller_info ?? prev?.seller_info ?? null,
+              expires_at: res.data.expires_at ?? prev?.expires_at ?? null,
+            };
+            try {
+              localStorage.setItem('licenseStatus', JSON.stringify(next));
+            } catch { /* ignore */ }
+            return next;
+          });
+        }
+      } catch { /* keep existing licenseStatus from login */ }
     };
 
     if (user) {
@@ -401,7 +423,7 @@ const DashboardShell = () => {
                 : <> &mdash; Developed by KT Health Soft</>
               }
             </span>
-            {hasAnyRole('hospital_admin', 'receptionist') && licenseStatus?.days_remaining != null && (
+            {licenseStatus?.days_remaining != null && (
               <span className="inline-flex items-center gap-1.5">
                 <span className="text-gray-300" aria-hidden>·</span>
                 <Shield className="h-3 w-3 text-gray-400" />

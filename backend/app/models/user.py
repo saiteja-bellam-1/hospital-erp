@@ -38,6 +38,11 @@ class User(Base):
     license_number = Column(String(50))    # Doctor's license number
     consultation_fee_inr = Column(String(20))  # Doctor's consultation fee in INR
     inpatient_fee_inr = Column(String(20))     # Doctor's inpatient fee in INR
+    # How inpatient_fee_inr is applied for doctor_visit billing:
+    #   per_day   — at most one charge per calendar day (default; pairs with daily auto-post)
+    #   per_visit — charge every recorded visit
+    # Nurse visits always bill per day regardless of this field.
+    inpatient_fee_charge_mode = Column(String(20), default="per_day", nullable=False)
     emergency_fee_inr = Column(String(20))     # Doctor's emergency fee in INR
     specialization = Column(String(100))  # Doctor's specialization
     qualification = Column(String(255))   # Doctor's qualifications

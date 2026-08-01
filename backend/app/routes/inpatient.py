@@ -21,6 +21,107 @@ def _as_naive(dt: Optional[datetime]) -> Optional[datetime]:
     return dt
 
 
+def _visit_date(visit) -> Optional[date]:
+    """Calendar date of a PatientVisit, or None if datetime missing."""
+    vd = getattr(visit, "visit_datetime", None)
+    if vd is None:
+        return None
+    vd = _as_naive(vd)
+    return vd.date() if hasattr(vd, "date") else None
+
+
+def _doctor_fee_charge_mode(user) -> str:
+    """Return per_day | per_visit for a doctor's inpatient fee."""
+    if not user:
+        return "per_day"
+    mode = (getattr(user, "inpatient_fee_charge_mode", None) or "per_day").strip().lower()
+    return mode if mode in ("per_day", "per_visit") else "per_day"
+
+
+def _visit_bills_per_day(visit) -> bool:
+    """Whether this visit type should collapse to one charge per calendar day.
+
+    Nurse visits always bill per day. Doctor visits follow the visitor's
+    inpatient_fee_charge_mode. Duty-doctor and procedure visits stay per visit.
+    """
+    vtype = getattr(visit, "visit_type", None)
+    if vtype == "nurse_visit":
+        return True
+    if vtype == "doctor_visit":
+        return _doctor_fee_charge_mode(getattr(visit, "visitor", None)) == "per_day"
+    return False
+
+
+def _same_day_visit_already_charged(
+    db,
+    admission_id: int,
+    visit_type: str,
+    on_date: date,
+    visitor_id: Optional[int] = None,
+) -> bool:
+    """True if a billed-amount visit of this type already exists on on_date.
+
+    For nurse_visit, visitor_id is ignored (one nursing charge per admission-day).
+    For doctor_visit, pass visitor_id to scope per doctor.
+    """
+    q = db.query(PatientVisit).filter(
+        PatientVisit.admission_id == admission_id,
+        PatientVisit.visit_type == visit_type,
+    )
+    if visitor_id is not None:
+        q = q.filter(PatientVisit.visitor_id == visitor_id)
+    for v in q.all():
+        if float(v.charge_amount or 0) <= 0:
+            continue
+        if _visit_date(v) == on_date:
+            return True
+    return False
+
+
+def _apply_per_day_visit_billing(visits: list) -> dict:
+    """Collapse per-day visit types to one billable charge per day group.
+
+    Returns {visit_id: billable_amount}. For per-day groups, the earliest visit
+    keeps max(charge) for that day; later same-day visits bill 0. Per-visit
+    types keep their snapshotted charge_amount unchanged.
+    """
+    # Sort chronologically so "first of day" is stable.
+    ordered = sorted(
+        visits,
+        key=lambda v: (_as_naive(v.visit_datetime) or datetime.min, v.id or 0),
+    )
+    billable: dict = {}
+    # group_key -> (keeper_visit_id, max_amount)
+    day_groups: dict = {}
+
+    for v in ordered:
+        amount = float(v.charge_amount or 0)
+        if not _visit_bills_per_day(v):
+            billable[v.id] = amount
+            continue
+        vd = _visit_date(v)
+        if vd is None:
+            billable[v.id] = amount
+            continue
+        # Nurse: one charge per admission-day. Doctor: one per doctor per day.
+        if v.visit_type == "nurse_visit":
+            key = ("nurse_visit", vd)
+        else:
+            key = ("doctor_visit", vd, v.visitor_id)
+        if key not in day_groups:
+            day_groups[key] = (v.id, amount)
+            billable[v.id] = amount  # provisional; may raise if a later visit has higher amount
+        else:
+            keeper_id, max_amt = day_groups[key]
+            if amount > max_amt:
+                billable[keeper_id] = 0.0
+                day_groups[key] = (v.id, amount)
+                billable[v.id] = amount
+            else:
+                billable[v.id] = 0.0
+    return billable
+
+
 def _inline_pdf_response(pdf_buffer, filename: str) -> Response:
     """Return PDF bytes inline — more reliable than StreamingResponse(BytesIO)
     in the Windows bundled build."""
@@ -915,6 +1016,7 @@ def _list_staff_by_role(db: Session, hospital_id: int, role_name: str):
             "last_name": u.last_name,
             "specialization": u.specialization,
             "inpatient_fee_inr": getattr(u, "inpatient_fee_inr", None),
+            "inpatient_fee_charge_mode": _doctor_fee_charge_mode(u),
             "consultation_fee_inr": getattr(u, "consultation_fee_inr", None),
         }
         for u in users
@@ -3022,7 +3124,9 @@ async def create_visit(
     # Auto-populate charge_amount from the visit type.
     # Resolution chains (most-specific → least-specific):
     #   nurse_visit:       per-room → room-type RoomTypeRateConfig → global nurse_visit_rate → 0
-    #   doctor_visit:      DoctorRoomTypeRate (doctor+room_type) → doctor.inpatient_fee_inr → global → 0
+    #                      (billed at most once per calendar day)
+    #   doctor_visit:      DoctorRoomTypeRate (doctor+room_type) → doctor.inpatient_fee_inr → 0
+    #                      (per_day or per_visit per doctor.inpatient_fee_charge_mode)
     #   duty_doctor_visit: hospital-wide InpatientRateConfig.duty_visit_rate → 0
     #   procedure:         0 (OT charges flow through ot_schedules)
     charge = data.charge_amount
@@ -3093,6 +3197,20 @@ async def create_visit(
                     charge = 0
         else:
             charge = 0
+
+    # Nurse visits always bill once per calendar day. Doctor visits with
+    # charge_mode=per_day likewise — extra same-day visits stay as clinical
+    # records but carry charge_amount=0.
+    if charge and float(charge) > 0:
+        visit_day = _now().date()
+        if data.visit_type == "nurse_visit":
+            if _same_day_visit_already_charged(db, admission_id, "nurse_visit", visit_day):
+                charge = 0
+        elif data.visit_type == "doctor_visit" and visitor and _doctor_fee_charge_mode(visitor) == "per_day":
+            if _same_day_visit_already_charged(
+                db, admission_id, "doctor_visit", visit_day, visitor_id=visitor.id
+            ):
+                charge = 0
 
     visit = PatientVisit(
         admission_id=admission_id,
@@ -4662,19 +4780,26 @@ def _compute_admission_charges(db: Session, admission: Admission, unbilled_only:
     if unbilled_only:
         visits_q = visits_q.filter(PatientVisit.bill_id.is_(None), PatientVisit.billed == False)
     visits = visits_q.all()
-    visit_total = sum(float(v.charge_amount or 0) for v in visits)
+    # Collapse nurse (always) and per-day doctor visits to one billable charge
+    # per calendar day so historical multi-visit days don't over-bill.
+    billable_by_id = _apply_per_day_visit_billing(visits)
+    for v in visits:
+        v._billable_amount = billable_by_id.get(v.id, float(v.charge_amount or 0))
+    visit_total = sum(float(getattr(v, "_billable_amount", 0) or 0) for v in visits)
     visit_summary = {}
     for v in visits:
         vtype = v.visit_type
+        billable_amt = float(getattr(v, "_billable_amount", 0) or 0)
         if vtype not in visit_summary:
             visit_summary[vtype] = {"count": 0, "total": 0.0, "items": []}
         visit_summary[vtype]["count"] += 1
-        visit_summary[vtype]["total"] += float(v.charge_amount or 0)
+        visit_summary[vtype]["total"] += billable_amt
         visit_summary[vtype]["items"].append({
             "id": v.id,
             "date": v.visit_datetime.isoformat() if v.visit_datetime else None,
             "visitor": f"{v.visitor.first_name} {v.visitor.last_name}" if v.visitor else "N/A",
-            "amount": float(v.charge_amount or 0),
+            "amount": billable_amt,
+            "recorded_amount": float(v.charge_amount or 0),
             "billed": bool(v.billed) or bool(v.bill_id),
             "notes": v.notes,
         })
@@ -5575,14 +5700,16 @@ def _create_admission_bill_record_inner(
             visit_label = f"{v.visit_type.replace('_', ' ').title()} - {visitor.first_name} {visitor.last_name}" if visitor else v.visit_type
             if is_excess_visit:
                 visit_label += " (excess stay)"
-            db.add(BillItem(
-                bill_id=bill.id,
-                item_type=v.visit_type,
-                item_name=visit_label,
-                quantity=1,
-                unit_price=float(v.charge_amount or 0),
-                total_price=float(v.charge_amount or 0),
-            ))
+            billable_amt = float(getattr(v, "_billable_amount", v.charge_amount) or 0)
+            if billable_amt > 0:
+                db.add(BillItem(
+                    bill_id=bill.id,
+                    item_type=v.visit_type,
+                    item_name=visit_label,
+                    quantity=1,
+                    unit_price=billable_amt,
+                    total_price=billable_amt,
+                ))
         v.billed = True
         v.bill_id = bill.id
 

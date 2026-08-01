@@ -750,7 +750,7 @@ export default function SetupWizard() {
                     <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
                       <tr>
                         <th className="px-3 py-2">Room type</th>
-                        <th className="px-3 py-2 w-48">Nursing charge / visit (INR)</th>
+                        <th className="px-3 py-2 w-48">Nursing charge / day (INR)</th>
                       </tr>
                     </thead>
                     <tbody>

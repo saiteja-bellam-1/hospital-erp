@@ -28,6 +28,14 @@ class ModuleResponse(BaseModel):
 class ModuleUpdate(BaseModel):
     is_enabled: bool
 
+_VALID_FEE_CHARGE_MODES = {"per_day", "per_visit"}
+
+
+def _normalize_fee_charge_mode(value: Optional[str], default: str = "per_day") -> str:
+    mode = (value or default).strip().lower()
+    return mode if mode in _VALID_FEE_CHARGE_MODES else default
+
+
 class UserCreateRequest(BaseModel):
     username: str
     email: str
@@ -37,7 +45,8 @@ class UserCreateRequest(BaseModel):
     phone: Optional[str] = None
     license_number: Optional[str] = None    # For doctors
     consultation_fee_inr: Optional[str] = None  # For doctors - consultation fees in INR
-    inpatient_fee_inr: Optional[str] = None     # For doctors - inpatient fees in INR  
+    inpatient_fee_inr: Optional[str] = None     # For doctors - inpatient fees in INR
+    inpatient_fee_charge_mode: Optional[str] = "per_day"  # per_day | per_visit (doctors)
     emergency_fee_inr: Optional[str] = None     # For doctors - emergency fees in INR
     specialization: Optional[str] = None    # For doctors
     qualification: Optional[str] = None     # For doctors
@@ -54,6 +63,7 @@ class UserUpdateRequest(BaseModel):
     license_number: Optional[str]    # For doctors
     consultation_fee_inr: Optional[str]  # For doctors - consultation fees in INR
     inpatient_fee_inr: Optional[str]     # For doctors - inpatient fees in INR
+    inpatient_fee_charge_mode: Optional[str] = None  # per_day | per_visit (doctors)
     emergency_fee_inr: Optional[str]     # For doctors - emergency fees in INR
     specialization: Optional[str]    # For doctors
     qualification: Optional[str]     # For doctors
@@ -72,6 +82,7 @@ class UserResponse(BaseModel):
     license_number: Optional[str] = None    # For doctors
     consultation_fee_inr: Optional[str] = None  # For doctors - consultation fees in INR
     inpatient_fee_inr: Optional[str] = None     # For doctors - inpatient fees in INR
+    inpatient_fee_charge_mode: Optional[str] = "per_day"
     emergency_fee_inr: Optional[str] = None     # For doctors - emergency fees in INR
     specialization: Optional[str] = None    # For doctors  
     qualification: Optional[str] = None     # For doctors
@@ -411,6 +422,9 @@ async def get_all_users(
             license_number=user.license_number,
         consultation_fee_inr=user.consultation_fee_inr,
         inpatient_fee_inr=user.inpatient_fee_inr,
+        inpatient_fee_charge_mode=_normalize_fee_charge_mode(
+            getattr(user, "inpatient_fee_charge_mode", None)
+        ),
         emergency_fee_inr=user.emergency_fee_inr,
             specialization=user.specialization,
             qualification=user.qualification,
@@ -475,6 +489,8 @@ async def create_user(
     # Doctor/nurse users must have a positive inpatient/visit fee.
     _ensure_visit_fee_for_role(db, user_data.role_id, user_data.inpatient_fee_inr)
 
+    charge_mode = _normalize_fee_charge_mode(user_data.inpatient_fee_charge_mode)
+
     # Create user
     user = User(
         username=user_data.username,
@@ -486,6 +502,7 @@ async def create_user(
         license_number=user_data.license_number,
         consultation_fee_inr=user_data.consultation_fee_inr,
         inpatient_fee_inr=user_data.inpatient_fee_inr,
+        inpatient_fee_charge_mode=charge_mode,
         emergency_fee_inr=user_data.emergency_fee_inr,
         specialization=user_data.specialization,
         qualification=user_data.qualification,
@@ -519,6 +536,9 @@ async def create_user(
         license_number=user.license_number,
         consultation_fee_inr=user.consultation_fee_inr,
         inpatient_fee_inr=user.inpatient_fee_inr,
+        inpatient_fee_charge_mode=_normalize_fee_charge_mode(
+            getattr(user, "inpatient_fee_charge_mode", None)
+        ),
         emergency_fee_inr=user.emergency_fee_inr,
         specialization=user.specialization,
         qualification=user.qualification,
@@ -603,6 +623,10 @@ async def update_user(
         user.consultation_fee_inr = user_data.consultation_fee_inr
     if user_data.inpatient_fee_inr is not None:
         user.inpatient_fee_inr = user_data.inpatient_fee_inr
+    if user_data.inpatient_fee_charge_mode is not None:
+        user.inpatient_fee_charge_mode = _normalize_fee_charge_mode(
+            user_data.inpatient_fee_charge_mode
+        )
     if user_data.emergency_fee_inr is not None:
         user.emergency_fee_inr = user_data.emergency_fee_inr
     if user_data.specialization is not None:
@@ -646,6 +670,9 @@ async def update_user(
         license_number=user.license_number,
         consultation_fee_inr=user.consultation_fee_inr,
         inpatient_fee_inr=user.inpatient_fee_inr,
+        inpatient_fee_charge_mode=_normalize_fee_charge_mode(
+            getattr(user, "inpatient_fee_charge_mode", None)
+        ),
         emergency_fee_inr=user.emergency_fee_inr,
         specialization=user.specialization,
         qualification=user.qualification,

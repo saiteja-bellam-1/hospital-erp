@@ -5285,7 +5285,7 @@ const InpatientModule = () => {
                     <p>Beds: {room.available_beds}/{room.bed_count} available</p>
                     <p>Room charge: ₹{room.room_charge_per_day}/day</p>
                     {room.nursing_charge_per_visit > 0 && (
-                      <p className="text-purple-700 font-medium">Nursing: ₹{room.nursing_charge_per_visit}/visit</p>
+                      <p className="text-purple-700 font-medium">Nursing: ₹{room.nursing_charge_per_visit}/day</p>
                     )}
                     {Array.isArray(amenities) && amenities.length > 0 && (
                       <div className="flex flex-wrap gap-1 pt-1">
@@ -6498,7 +6498,7 @@ const InpatientModule = () => {
 
                 <TabsContent value="room-type-rates" className="space-y-3 mt-3">
                   <p className="text-sm text-gray-500">
-                    Set nursing charge per visit for each room type. This is the "layer 1" rate — applied when a room does not have its own nursing charge set.
+                    Set nursing charge per day for each room type. This is the "layer 1" rate — applied when a room does not have its own nursing charge set. Multiple nurse visits on the same day are billed once.
                     Doctor visit rates per room type are configured in Admin → Users (doctor profile).
                   </p>
                   {roomTypeRates.length === 0 ? (
@@ -6509,7 +6509,7 @@ const InpatientModule = () => {
                         <thead className="bg-gray-50">
                           <tr>
                             <th className="px-4 py-2 text-left font-medium">Room Type</th>
-                            <th className="px-4 py-2 text-left font-medium">Nursing Charge / Visit (₹)</th>
+                            <th className="px-4 py-2 text-left font-medium">Nursing Charge / Day (₹)</th>
                             <th className="px-4 py-2 text-left font-medium"></th>
                           </tr>
                         </thead>
@@ -9589,8 +9589,8 @@ const InpatientModule = () => {
                         <Input type="number" min="0" step="0.01" required value={roomForm.room_charge_per_day} onChange={e => setRoomForm(p => ({ ...p, room_charge_per_day: e.target.value }))} placeholder="0.00" />
                       </div>
                       <div>
-                        <Label>Nursing Charge / Visit (₹)</Label>
-                        <Input type="number" min="0" step="0.01" value={roomForm.nursing_charge_per_visit} onChange={e => setRoomForm(p => ({ ...p, nursing_charge_per_visit: e.target.value }))} placeholder="Leave blank for global rate" />
+                        <Label>Nursing Charge / Day (₹)</Label>
+                        <Input type="number" min="0" step="0.01" value={roomForm.nursing_charge_per_visit} onChange={e => setRoomForm(p => ({ ...p, nursing_charge_per_visit: e.target.value }))} placeholder="Leave blank for room-type / global rate" />
                       </div>
                     </div>
                   </div>
