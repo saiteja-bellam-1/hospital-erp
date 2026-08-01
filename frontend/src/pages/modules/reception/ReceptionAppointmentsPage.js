@@ -75,6 +75,10 @@ const ReceptionAppointmentsPage = () => {
   const [labBillPdfUrl, setLabBillPdfUrl] = useState(null);
   const [labBillOrderIds, setLabBillOrderIds] = useState([]);
   const [showLabBillPreview, setShowLabBillPreview] = useState(false);
+  const [showLabCancelDialog, setShowLabCancelDialog] = useState(false);
+  const [labCancelOrder, setLabCancelOrder] = useState(null);
+  const [labCancelReason, setLabCancelReason] = useState('');
+  const [labCancelLoading, setLabCancelLoading] = useState(false);
 
   // Referrals
   const [referralList, setReferralList] = useState([]);
@@ -93,6 +97,7 @@ const ReceptionAppointmentsPage = () => {
   const [showAppointmentDialog, setShowAppointmentDialog] = useState(false);
   const [showVitalsDialog, setShowVitalsDialog] = useState(false);
   const [vitalsPatient, setVitalsPatient] = useState(null);
+  const [vitalsAppointmentId, setVitalsAppointmentId] = useState(null);
   const [showBillPreviewDialog, setShowBillPreviewDialog] = useState(false);
   const [currentBill, setCurrentBill] = useState(null);
   const [billPdfUrl, setBillPdfUrl] = useState(null);
@@ -430,6 +435,58 @@ const ReceptionAppointmentsPage = () => {
       }
     } catch (err) {
       console.error('Payment failed:', err);
+    }
+  };
+
+  const openLabCancelDialog = (order) => {
+    setLabCancelOrder(order);
+    setLabCancelReason('');
+    setShowLabCancelDialog(true);
+  };
+
+  const confirmCancelLabOrder = async () => {
+    if (!labCancelOrder) return;
+    setLabCancelLoading(true);
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`/api/lab/orders/${labCancelOrder.id}/cancel`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ reason: labCancelReason.trim() || null })
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        const detail = typeof err.detail === 'string'
+          ? err.detail
+          : 'Failed to cancel lab order';
+        toast({ variant: 'destructive', title: 'Unable to cancel', description: detail });
+        return;
+      }
+
+      const cancelled = await res.json();
+      setPendingLabOrders((orders) => orders.filter((order) => order.id !== cancelled.id));
+      setAllLabOrders((orders) => orders.map((order) => (
+        order.id === cancelled.id ? { ...order, ...cancelled } : order
+      )));
+      setShowLabCancelDialog(false);
+      setLabCancelOrder(null);
+      setLabCancelReason('');
+      toast({
+        title: 'Lab order cancelled',
+        description: 'The ordering doctor can now see the cancelled status.'
+      });
+    } catch (err) {
+      toast({
+        variant: 'destructive',
+        title: 'Unable to cancel',
+        description: 'Failed to cancel lab order'
+      });
+    } finally {
+      setLabCancelLoading(false);
     }
   };
 
@@ -875,6 +932,7 @@ const ReceptionAppointmentsPage = () => {
       first_name: nameParts[0] || '',
       last_name: nameParts.slice(1).join(' '),
     });
+    setVitalsAppointmentId(appointment.id);
     setShowVitalsDialog(true);
   };
 
@@ -1351,7 +1409,16 @@ const ReceptionAppointmentsPage = () => {
 
               <div>
                 <Label htmlFor="appointment_type">Type</Label>
-                <Select value={appointmentForm.appointment_type} onValueChange={(value) => setAppointmentForm({...appointmentForm, appointment_type: value})}>
+                <Select
+                  value={appointmentForm.priority === 'emergency' ? 'emergency' : appointmentForm.appointment_type}
+                  onValueChange={(value) => {
+                    if (value === 'emergency') {
+                      setAppointmentForm({ ...appointmentForm, appointment_type: 'consultation', priority: 'emergency' });
+                    } else {
+                      setAppointmentForm({ ...appointmentForm, appointment_type: value, priority: 'normal' });
+                    }
+                  }}
+                >
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
@@ -1359,6 +1426,7 @@ const ReceptionAppointmentsPage = () => {
                     <SelectItem value="consultation">Consultation</SelectItem>
                     <SelectItem value="followup">Follow-up</SelectItem>
                     <SelectItem value="checkup">Check-up</SelectItem>
+                    <SelectItem value="emergency">Emergency</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -1378,23 +1446,6 @@ const ReceptionAppointmentsPage = () => {
                     <SelectItem value="cheque">Cheque</SelectItem>
                   </SelectContent>
                 </Select>
-              </div>
-
-              <div className="col-span-2">
-                <label className={`flex items-center gap-2 rounded-md border p-2.5 cursor-pointer select-none ${appointmentForm.priority === 'emergency' ? 'border-red-400 bg-red-50' : 'border-gray-200'}`}>
-                  <input
-                    type="checkbox"
-                    className="h-4 w-4 accent-red-600"
-                    checked={appointmentForm.priority === 'emergency'}
-                    onChange={(e) => setAppointmentForm({ ...appointmentForm, priority: e.target.checked ? 'emergency' : 'normal' })}
-                  />
-                  <span className={`text-sm font-medium ${appointmentForm.priority === 'emergency' ? 'text-red-700' : 'text-gray-700'}`}>
-                    Emergency consultation
-                  </span>
-                  {appointmentForm.priority === 'emergency' && (
-                    <span className="text-xs text-red-600 ml-auto">Emergency fee applies</span>
-                  )}
-                </label>
               </div>
             </div>
 
@@ -1713,12 +1764,25 @@ const ReceptionAppointmentsPage = () => {
                                   <span className="ml-auto font-semibold text-sm">₹{pkg.orders.reduce((s, o) => s + (o.amount || 0), 0).toFixed(2)}</span>
                                 </div>
                                 {pkg.orders.map(order => (
-                                  <div key={order.id} className="px-3 py-1.5 pl-8 flex items-center justify-between">
-                                    <div>
+                                  <div key={order.id} className="px-3 py-1.5 pl-8 flex items-center justify-between gap-2">
+                                    <div className="min-w-0 flex-1">
                                       <p className="text-sm">{order.test_name}</p>
                                       <p className="text-xs text-gray-400">#{order.order_number} | {order.test_code}</p>
                                     </div>
-                                    <p className="text-xs text-gray-500">₹{(order.amount || 0).toFixed(2)}</p>
+                                    <div className="flex items-center gap-2 shrink-0">
+                                      <p className="text-xs text-gray-500">₹{(order.amount || 0).toFixed(2)}</p>
+                                      {order.status === 'ordered' && (
+                                        <Button
+                                          size="sm"
+                                          variant="ghost"
+                                          className="h-7 px-2 text-xs text-red-600 hover:bg-red-50 hover:text-red-700"
+                                          onClick={() => openLabCancelDialog(order)}
+                                          aria-label={`Cancel ${order.test_name} order`}
+                                        >
+                                          <XCircle className="h-3.5 w-3.5" />
+                                        </Button>
+                                      )}
+                                    </div>
                                   </div>
                                 ))}
                               </div>
@@ -1726,13 +1790,26 @@ const ReceptionAppointmentsPage = () => {
                           }
                           const order = g.data;
                           return (
-                            <div key={order.id} className="p-3 flex items-center justify-between">
-                              <div>
+                            <div key={order.id} className="p-3 flex items-center justify-between gap-2">
+                              <div className="min-w-0 flex-1">
                                 <p className="font-medium text-sm">{order.test_name}</p>
                                 <p className="text-xs text-gray-500">{order.order_number} | {order.test_code} | Dr. {order.doctor_name?.replace('Dr. ', '')}</p>
                                 {order.priority !== 'normal' && <Badge variant="destructive" className="text-xs mt-0.5">{order.priority}</Badge>}
                               </div>
-                              <p className="font-semibold text-sm">₹{(order.amount || 0).toFixed(2)}</p>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <p className="font-semibold text-sm">₹{(order.amount || 0).toFixed(2)}</p>
+                                {order.status === 'ordered' && (
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="h-7 px-2 text-xs text-red-600 hover:bg-red-50 hover:text-red-700"
+                                    onClick={() => openLabCancelDialog(order)}
+                                  >
+                                    <XCircle className="h-3.5 w-3.5 mr-1" />
+                                    Cancel
+                                  </Button>
+                                )}
+                              </div>
                             </div>
                           );
                         });
@@ -1937,17 +2014,82 @@ const ReceptionAppointmentsPage = () => {
         onConfirm={confirmState.onConfirm}
       />
 
+      {/* Clinical cancellation stays visible to the ordering doctor. */}
+      <Dialog open={showLabCancelDialog} onOpenChange={(open) => {
+        if (!open && !labCancelLoading) {
+          setShowLabCancelDialog(false);
+          setLabCancelOrder(null);
+          setLabCancelReason('');
+        }
+      }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <span className="flex h-9 w-9 items-center justify-center rounded-full bg-red-50">
+                <XCircle className="h-5 w-5 text-red-600" />
+              </span>
+              Cancel Lab Order
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            {labCancelOrder && (
+              <div className="rounded-lg border border-red-100 bg-red-50/60 p-3">
+                <p className="text-sm font-semibold text-gray-900">{labCancelOrder.test_name}</p>
+                <p className="mt-1 text-xs text-gray-600">
+                  #{labCancelOrder.order_number}
+                  {labCancelOrder.doctor_name ? ` · ${labCancelOrder.doctor_name}` : ''}
+                </p>
+              </div>
+            )}
+            <p className="text-sm text-gray-600">
+              This marks the order as cancelled at the patient&apos;s request. It remains visible to the ordering doctor.
+            </p>
+            <div>
+              <Label htmlFor="lab-cancel-reason" className="text-xs">Reason (optional)</Label>
+              <Textarea
+                id="lab-cancel-reason"
+                value={labCancelReason}
+                onChange={(event) => setLabCancelReason(event.target.value)}
+                placeholder="For example: Patient declined the test"
+                rows={3}
+                maxLength={500}
+                className="mt-1"
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                disabled={labCancelLoading}
+                onClick={() => setShowLabCancelDialog(false)}
+              >
+                Keep Order
+              </Button>
+              <Button
+                variant="destructive"
+                disabled={labCancelLoading}
+                onClick={confirmCancelLabOrder}
+              >
+                {labCancelLoading ? 'Cancelling…' : 'Cancel Order'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       <VitalsForm
         isOpen={showVitalsDialog}
         onClose={() => {
           setShowVitalsDialog(false);
           setVitalsPatient(null);
+          setVitalsAppointmentId(null);
         }}
         selectedPatient={vitalsPatient}
         userRole="receptionist"
+        appointmentId={vitalsAppointmentId}
         onSave={() => {
           setShowVitalsDialog(false);
           setVitalsPatient(null);
+          setVitalsAppointmentId(null);
         }}
       />
 

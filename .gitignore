@@ -1,6 +1,7 @@
 # Dependencies
 node_modules/
 backend/venv/
+license-manager/backend/venv/
 frontend/build/
 
 # Database

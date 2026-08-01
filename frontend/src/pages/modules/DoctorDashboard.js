@@ -1583,6 +1583,40 @@ const DoctorDashboard = () => {
                     </div>
                   )}
 
+                  {labOrders.filter(o => o.status === 'cancelled').length > 0 && (
+                    <div>
+                      <h3 className="text-sm font-semibold text-gray-600 mb-2 flex items-center gap-2">
+                        <XCircle className="h-4 w-4 text-red-500" /> Cancelled Orders
+                      </h3>
+                      <div className="space-y-1">
+                        {labOrders.filter(o => o.status === 'cancelled').map(order => (
+                          <div
+                            key={order.id}
+                            className="flex items-center justify-between gap-3 rounded-lg border border-red-100 bg-red-50/50 p-2.5 text-sm"
+                          >
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="font-medium">{order.patient_name}</span>
+                                <span className="text-gray-400">—</span>
+                                <span>{order.test_name}</span>
+                                <Badge variant="outline" className="text-xs">{order.test_code}</Badge>
+                              </div>
+                              <p className="mt-0.5 text-xs text-gray-500">
+                                #{order.order_number}
+                                {order.cancelled_at && ` | Cancelled ${format(new Date(order.cancelled_at), 'dd MMM yyyy, hh:mm a')}`}
+                              </p>
+                              <p className="mt-0.5 text-xs text-red-700/80">
+                                {order.cancelled_reason || 'Cancelled at patient request'}
+                                {order.cancelled_by_name ? ` · by ${order.cancelled_by_name}` : ''}
+                              </p>
+                            </div>
+                            <Badge className="shrink-0 bg-red-100 text-red-700">Cancelled</Badge>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
                   {/* Completed results — grouped by date, collapsible */}
                   {labOrders.filter(o => o.status === 'completed' && o.has_report).length > 0 && (
                     <div>
@@ -2839,6 +2873,7 @@ const DoctorDashboard = () => {
           last_name: selectedAppointment.patient_name?.split(' ').slice(1).join(' ') || ''
         } : null}
         userRole="doctor"
+        appointmentId={selectedAppointment?.id || null}
         onSave={(vitalsData) => {
           console.log('Vitals saved by doctor:', vitalsData);
         }}

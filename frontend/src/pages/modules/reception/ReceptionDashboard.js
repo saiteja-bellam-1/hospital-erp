@@ -14,6 +14,7 @@ import { Input } from '../../../components/ui/input';
 import { Label } from '../../../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../../components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../../components/ui/dialog';
+import { Textarea } from '../../../components/ui/textarea';
 import { useToast } from '../../../hooks/use-toast';
 import {
   Users,
@@ -33,7 +34,8 @@ import {
   Eye,
   Download,
   ArrowRight,
-  Package
+  Package,
+  XCircle
 } from 'lucide-react';
 import { localDateString } from '../../../utils/localDate';
 
@@ -221,6 +223,10 @@ const ReceptionDashboard = () => {
   const [labBillOrderIds, setLabBillOrderIds] = useState([]);
   const [showLabBillPreview, setShowLabBillPreview] = useState(false);
   const [allLabOrdersForPatient, setAllLabOrdersForPatient] = useState([]);
+  const [showLabCancelDialog, setShowLabCancelDialog] = useState(false);
+  const [labCancelOrder, setLabCancelOrder] = useState(null);
+  const [labCancelReason, setLabCancelReason] = useState('');
+  const [labCancelLoading, setLabCancelLoading] = useState(false);
 
 
   const openLabPaymentDialog = async (patientId) => {
@@ -281,6 +287,61 @@ const ReceptionDashboard = () => {
       toast({ variant: 'destructive', title: 'Error', description: 'Failed to generate lab bill' });
     } finally {
       setLabPaymentLoading(false);
+    }
+  };
+
+  const openLabCancelDialog = (order) => {
+    setLabCancelOrder(order);
+    setLabCancelReason('');
+    setShowLabCancelDialog(true);
+  };
+
+  const confirmCancelLabOrder = async () => {
+    if (!labCancelOrder) return;
+    setLabCancelLoading(true);
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`/api/lab/orders/${labCancelOrder.id}/cancel`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ reason: labCancelReason.trim() || null })
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        const detail = typeof err.detail === 'string'
+          ? err.detail
+          : 'Failed to cancel lab order';
+        toast({ variant: 'destructive', title: 'Unable to cancel', description: detail });
+        return;
+      }
+
+      const cancelled = await res.json();
+      setPendingLabOrders((orders) => orders.filter((order) => order.id !== cancelled.id));
+      setAllLabOrdersForPatient((orders) => orders.map((order) => (
+        order.id === cancelled.id ? { ...order, ...cancelled } : order
+      )));
+      setLabOrders((orders) => orders.map((order) => (
+        order.id === cancelled.id ? { ...order, ...cancelled } : order
+      )));
+      setShowLabCancelDialog(false);
+      setLabCancelOrder(null);
+      setLabCancelReason('');
+      toast({
+        title: 'Lab order cancelled',
+        description: 'The ordering doctor can now see the cancelled status.'
+      });
+    } catch (err) {
+      toast({
+        variant: 'destructive',
+        title: 'Unable to cancel',
+        description: 'Failed to cancel lab order'
+      });
+    } finally {
+      setLabCancelLoading(false);
     }
   };
 
@@ -413,6 +474,17 @@ const ReceptionDashboard = () => {
                   <p className="text-xs text-gray-400">#{order.order_number}</p>
                 </div>
                 <div className="flex items-center gap-1 ml-2">
+                  {order.payment_status !== 'paid' && order.status === 'ordered' && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 px-2 text-xs text-red-600 hover:bg-red-50 hover:text-red-700"
+                      onClick={() => openLabCancelDialog(order)}
+                      aria-label={`Cancel ${order.test_name} order`}
+                    >
+                      <XCircle className="h-3.5 w-3.5" />
+                    </Button>
+                  )}
                   {order.has_report && (
                     <Button size="sm" variant="outline" className="h-6 px-2 text-xs"
                       onClick={() => downloadLabReport(order.report_id, order.order_number)}>
@@ -455,6 +527,17 @@ const ReceptionDashboard = () => {
           <p className="text-xs text-gray-400">#{order.order_number} • {order.doctor_name}</p>
         </div>
         <div className="flex items-center gap-1 ml-2">
+          {order.payment_status !== 'paid' && order.status === 'ordered' && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 px-2 text-xs text-red-600 hover:bg-red-50 hover:text-red-700"
+              onClick={() => openLabCancelDialog(order)}
+            >
+              <XCircle className="h-3.5 w-3.5 mr-1" />
+              Cancel
+            </Button>
+          )}
           {order.payment_status !== 'paid' && (
             <Button size="sm" className="h-7 px-2 text-xs"
               onClick={() => openLabPaymentDialog(order.patient_id)}>
@@ -473,7 +556,7 @@ const ReceptionDashboard = () => {
   });
 
   const unpaidLabOrders = labOrders.filter((o) => o.payment_status !== 'paid' && o.status !== 'cancelled');
-  const paidLabOrders = labOrders.filter((o) => o.payment_status === 'paid');
+  const paidLabOrders = labOrders.filter((o) => o.payment_status === 'paid' && o.status !== 'cancelled');
 
   const getStatusBadge = (status) => {
     const colors = {
@@ -861,12 +944,25 @@ const ReceptionDashboard = () => {
                     </div>
                     <div className="border rounded-lg divide-y max-h-48 overflow-y-auto">
                       {pendingLabOrders.map(order => (
-                        <div key={order.id} className="p-3 flex items-center justify-between">
-                          <div>
+                        <div key={order.id} className="p-3 flex items-center justify-between gap-2">
+                          <div className="min-w-0 flex-1">
                             <p className="font-medium text-sm">{order.test_name}</p>
                             <p className="text-xs text-gray-500">{order.order_number} | {order.test_code} | {order.doctor_name}</p>
                           </div>
-                          <p className="font-semibold text-sm">₹{(order.amount || 0).toFixed(2)}</p>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <p className="font-semibold text-sm">₹{(order.amount || 0).toFixed(2)}</p>
+                            {order.status === 'ordered' && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 px-2 text-xs text-red-600 hover:bg-red-50 hover:text-red-700"
+                                onClick={() => openLabCancelDialog(order)}
+                              >
+                                <XCircle className="h-3.5 w-3.5 mr-1" />
+                                Cancel
+                              </Button>
+                            )}
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -941,6 +1037,68 @@ const ReceptionDashboard = () => {
                 )}
               </div>
             )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Clinical cancellation stays visible to the ordering doctor. */}
+      <Dialog open={showLabCancelDialog} onOpenChange={(open) => {
+        if (!open && !labCancelLoading) {
+          setShowLabCancelDialog(false);
+          setLabCancelOrder(null);
+          setLabCancelReason('');
+        }
+      }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <span className="flex h-9 w-9 items-center justify-center rounded-full bg-red-50">
+                <XCircle className="h-5 w-5 text-red-600" />
+              </span>
+              Cancel Lab Order
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            {labCancelOrder && (
+              <div className="rounded-lg border border-red-100 bg-red-50/60 p-3">
+                <p className="text-sm font-semibold text-gray-900">{labCancelOrder.test_name}</p>
+                <p className="mt-1 text-xs text-gray-600">
+                  #{labCancelOrder.order_number}
+                  {labCancelOrder.doctor_name ? ` · ${labCancelOrder.doctor_name}` : ''}
+                </p>
+              </div>
+            )}
+            <p className="text-sm text-gray-600">
+              This marks the order as cancelled at the patient&apos;s request. It remains visible to the ordering doctor.
+            </p>
+            <div>
+              <Label htmlFor="dashboard-lab-cancel-reason" className="text-xs">Reason (optional)</Label>
+              <Textarea
+                id="dashboard-lab-cancel-reason"
+                value={labCancelReason}
+                onChange={(event) => setLabCancelReason(event.target.value)}
+                placeholder="For example: Patient declined the test"
+                rows={3}
+                maxLength={500}
+                className="mt-1"
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                disabled={labCancelLoading}
+                onClick={() => setShowLabCancelDialog(false)}
+              >
+                Keep Order
+              </Button>
+              <Button
+                variant="destructive"
+                disabled={labCancelLoading}
+                onClick={confirmCancelLabOrder}
+              >
+                {labCancelLoading ? 'Cancelling…' : 'Cancel Order'}
+              </Button>
+            </div>
           </div>
         </DialogContent>
       </Dialog>

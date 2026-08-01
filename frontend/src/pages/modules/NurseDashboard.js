@@ -33,6 +33,7 @@ const NurseDashboard = () => {
   const [selectedPatient, setSelectedPatient] = useState(null);
   const [todayAppointments, setTodayAppointments] = useState([]);
   const [showVitalsDialog, setShowVitalsDialog] = useState(false);
+  const [vitalsAppointmentId, setVitalsAppointmentId] = useState(null);
   const [activeTab, setActiveTab] = useState('appointments');
 
   // Inpatient ward state
@@ -142,11 +143,13 @@ const NurseDashboard = () => {
       last_name: (appointment.patient_name || '').split(' ').slice(1).join(' '),
     };
     setSelectedPatient(patientForVitals);
+    setVitalsAppointmentId(appointment.id);
     setShowVitalsDialog(true);
   };
 
   const openVitalsForPatient = (patient) => {
     setSelectedPatient(patient);
+    setVitalsAppointmentId(null);
     setShowVitalsDialog(true);
   };
 
@@ -562,6 +565,7 @@ const NurseDashboard = () => {
         onClose={() => setShowVitalsDialog(false)}
         selectedPatient={selectedPatient}
         userRole="nurse"
+        appointmentId={vitalsAppointmentId}
       />
     </div>
   );

@@ -1619,10 +1619,17 @@ class PDFService:
         if vitals_layout == "show":
             vitals_rows = [[Paragraph('<b><u>Vitals</u></b>', cell_lbl), '']]
             if blank_mode:
+                # Blank Rx still prints vitals recorded earlier (e.g. by reception
+                # or nurse); fields without a value keep the handwriting line.
+                blank_vs = vitals.get('vital_signs') if vitals else None
                 for field in vital_field_defs:
                     label = field['label']
                     if field['key'] == 'blood_pressure':
                         label = 'Blood\nPressure'
+                    formatted = _format_vital_value(field['key'], blank_vs) if blank_vs else None
+                    if formatted:
+                        vitals_rows.append([lbl(label), val(formatted)])
+                        continue
                     unit_hint = field.get('unit') or ''
                     hint = f" <font size='7' color='#888888'>{unit_hint}</font>" if unit_hint else ''
                     vitals_rows.append([

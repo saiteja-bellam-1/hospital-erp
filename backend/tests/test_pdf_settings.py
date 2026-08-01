@@ -149,6 +149,19 @@ def test_resolve_include_header_per_report(db_session):
     assert resolve_include_header(
         global_default=True, report_type="opd_bill", overrides={"prescription": "off"}
     ) is True
+    # Request-time query wins over per-report override (print preview toggle).
+    assert resolve_include_header(
+        global_default=True,
+        report_type="prescription",
+        overrides={"prescription": "off"},
+        query_include_header=True,
+    ) is True
+    assert resolve_include_header(
+        global_default=True,
+        report_type="lab_report",
+        overrides={"lab_report": "on"},
+        query_include_header=False,
+    ) is False
 
 
 def test_resolve_print_options_uses_gap(db_session):

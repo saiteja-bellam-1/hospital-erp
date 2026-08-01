@@ -171,6 +171,10 @@ class PatientLabOrder(Base):
     bill_cancelled_reason = Column(Text, nullable=True)
     bill_cancelled_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     bill_cancelled_at = Column(DateTime, nullable=True)
+    # Clinical cancellation is separate from cancelling/reversing a bill.
+    cancelled_reason = Column(Text, nullable=True)
+    cancelled_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    cancelled_at = Column(DateTime, nullable=True)
     inpatient_bill_id = Column(Integer, ForeignKey("bills.id"), nullable=True)  # which admission bill consumed this lab order
     # Outpatient/reception bill grouping. Orders that were billed together
     # (e.g. all tests on one reception booking, all tests in a package, all

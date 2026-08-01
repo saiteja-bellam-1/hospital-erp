@@ -509,6 +509,68 @@ def _resolve_referred_by(patient: Patient, appointment: Optional[Appointment] = 
     return ''
 
 
+def _fetch_vitals_for_prescription(
+    db: Session,
+    patient: Optional[Patient],
+    appointment: Optional[Appointment] = None,
+    reference_date: Optional[datetime] = None,
+) -> Optional[dict]:
+    """Vitals for the prescription PDF left column (filled and blank Rx).
+
+    Priority: exact appointment match → same-calendar-day record (covers rows
+    saved before vitals were appointment-linked). Never returns stale vitals
+    from an earlier visit.
+    """
+    import json as json_lib
+    from sqlalchemy import func
+
+    if not patient:
+        return None
+
+    base_query = db.query(Consultation).filter(
+        Consultation.patient_id == patient.id,
+        Consultation.consultation_type == "vitals_recording",
+        Consultation.vital_signs.isnot(None),
+    )
+
+    vitals_consultation = None
+    if appointment is not None:
+        vitals_consultation = (
+            base_query.filter(Consultation.appointment_id == appointment.id)
+            .order_by(Consultation.created_at.desc())
+            .first()
+        )
+
+    if vitals_consultation is None:
+        ref_dt = None
+        if appointment is not None and appointment.appointment_date:
+            ref_dt = appointment.appointment_date
+        elif reference_date is not None:
+            ref_dt = reference_date
+        if ref_dt is not None:
+            ref_day = ref_dt.date() if isinstance(ref_dt, datetime) else ref_dt
+            vitals_consultation = (
+                base_query.filter(func.date(Consultation.created_at) == ref_day)
+                .order_by(Consultation.created_at.desc())
+                .first()
+            )
+
+    if not vitals_consultation or not vitals_consultation.vital_signs:
+        return None
+
+    try:
+        vital_signs = json_lib.loads(vitals_consultation.vital_signs)
+    except Exception:
+        return None
+    if not vital_signs or not any(vital_signs.values()):
+        return None
+
+    return {
+        "recorded_at": vitals_consultation.created_at.strftime('%d/%m/%Y %I:%M %p') if vitals_consultation.created_at else '',
+        "vital_signs": vital_signs,
+    }
+
+
 def _build_blank_prescription_pdf_data(
     db: Session,
     patient: Patient,
@@ -542,7 +604,7 @@ def _build_blank_prescription_pdf_data(
         "status": "blank",
         "notes": None,
         "diagnosis": None,
-        "vitals": None,
+        "vitals": _fetch_vitals_for_prescription(db, patient, appointment=appointment, reference_date=rx_dt),
         "consultation": None,
         "lab_tests": _fetch_lab_tests_for_appointment(db, patient, apt_id),
         "items": [],
@@ -961,23 +1023,15 @@ async def download_prescription_pdf(
         except Exception:
             pass
 
-    # Source 2: dedicated vitals_recording consultation
+    # Source 2: dedicated vitals_recording consultation — scoped to the linked
+    # appointment, falling back to a same-calendar-day record (never stale).
     if not vitals_data and patient:
-        vitals_consultation = db.query(Consultation).filter(
-            Consultation.patient_id == patient.id,
-            Consultation.consultation_type == "vitals_recording"
-        ).order_by(Consultation.created_at.desc()).first()
-
-        if vitals_consultation and vitals_consultation.vital_signs:
-            try:
-                vital_signs = json_lib.loads(vitals_consultation.vital_signs)
-                if vital_signs and any(vital_signs.values()):
-                    vitals_data = {
-                        "recorded_at": vitals_consultation.created_at.strftime('%d/%m/%Y %I:%M %p') if vitals_consultation.created_at else '',
-                        "vital_signs": vital_signs
-                    }
-            except Exception:
-                pass
+        vitals_data = _fetch_vitals_for_prescription(
+            db,
+            patient,
+            appointment=linked_appointment,
+            reference_date=prescription.created_at,
+        )
 
     # --- Fetch lab orders linked to this consultation/appointment only ---
     lab_tests_ordered = []

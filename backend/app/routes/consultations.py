@@ -768,6 +768,11 @@ async def cancel_lab_order(
         )
     
     lab_order.status = "cancelled"
+    lab_order.cancelled_reason = "Cancelled from consultation"
+    lab_order.cancelled_by = current_user.id
+    lab_order.cancelled_at = datetime.now()
+    if lab_order.payment_status == "pending":
+        lab_order.payment_status = "cancelled"
     db.commit()
     
     return {"message": "Lab order cancelled successfully"}

@@ -97,6 +97,10 @@ NEW_COLUMNS = [
     # instead of one row per test.
     ("patient_lab_orders", "lab_bill_group_id", "VARCHAR(64)"),
     ("patient_lab_orders", "lab_bill_number", "VARCHAR(64)"),
+    # Clinical cancellation metadata (separate from bill cancellation).
+    ("patient_lab_orders", "cancelled_reason", "TEXT"),
+    ("patient_lab_orders", "cancelled_by", "INTEGER REFERENCES users(id)"),
+    ("patient_lab_orders", "cancelled_at", "DATETIME"),
     # Phase 3 — no new columns on existing tables; new tables created via create_all
     # Phase 4 — compliance & quality
     ("admissions", "is_readmission", "BOOLEAN DEFAULT 0"),

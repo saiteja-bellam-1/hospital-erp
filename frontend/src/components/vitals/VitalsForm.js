@@ -53,6 +53,7 @@ const VitalsForm = ({
   selectedPatient,
   onSave,
   userRole = 'nurse',
+  appointmentId = null,
 }) => {
   const { toast } = useToast();
   const { vitalFields, isLoading: configLoading, isEnabled } = useConfiguredVitalFields();
@@ -108,6 +109,7 @@ const VitalsForm = ({
           patient_id: patientId,
           vital_signs: JSON.stringify(vitalsData),
           notes: vitalsForm.notes,
+          ...(appointmentId ? { appointment_id: appointmentId } : {}),
         }),
       });
 

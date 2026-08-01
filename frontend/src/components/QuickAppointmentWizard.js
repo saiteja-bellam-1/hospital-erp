@@ -443,14 +443,21 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
                 <div>
                   <Label>Type</Label>
                   <Select
-                    value={appointmentForm.appointment_type}
-                    onValueChange={(v) => setAppointmentForm({ ...appointmentForm, appointment_type: v })}
+                    value={isEmergency ? 'emergency' : appointmentForm.appointment_type}
+                    onValueChange={(v) => {
+                      if (v === 'emergency') {
+                        setAppointmentForm({ ...appointmentForm, appointment_type: 'consultation', priority: 'emergency' });
+                      } else {
+                        setAppointmentForm({ ...appointmentForm, appointment_type: v, priority: 'normal' });
+                      }
+                    }}
                   >
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="consultation">Consultation</SelectItem>
                       <SelectItem value="followup">Follow-up</SelectItem>
                       <SelectItem value="checkup">Check-up</SelectItem>
+                      <SelectItem value="emergency">Emergency</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -467,23 +474,6 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
                       ))}
                     </SelectContent>
                   </Select>
-                </div>
-
-                <div className="col-span-4">
-                  <label className={`flex items-center gap-2 rounded-md border p-2.5 cursor-pointer select-none ${isEmergency ? 'border-red-400 bg-red-50' : 'border-gray-200'}`}>
-                    <input
-                      type="checkbox"
-                      className="h-4 w-4 accent-red-600"
-                      checked={isEmergency}
-                      onChange={(e) => setAppointmentForm({ ...appointmentForm, priority: e.target.checked ? 'emergency' : 'normal' })}
-                    />
-                    <span className={`text-sm font-medium ${isEmergency ? 'text-red-700' : 'text-gray-700'}`}>
-                      Emergency consultation
-                    </span>
-                    {isEmergency && (
-                      <span className="text-xs text-red-600 ml-auto">Emergency fee applies</span>
-                    )}
-                  </label>
                 </div>
 
                 <AppointmentAvailabilityOverride

@@ -11,7 +11,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/ta
 import {
   ArrowLeft, Stethoscope, Activity, Pill, TestTube, FileText, CheckCircle,
   Clock, User, AlertCircle, Eye, Plus, Trash2, Save, Printer, Search,
-  ChevronRight, ChevronDown, History
+  ChevronRight, ChevronDown, History, XCircle
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { FREQUENCY_OPTIONS } from '../../utils/prescriptionSchedule';
@@ -235,27 +235,38 @@ const ConsultationPage = () => {
 
   const fetchExistingVitals = async () => {
     try {
-      const res = await fetch(`/api/patients/${patientUuid}/vitals`, { headers });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.length > 0) {
-          // Pre-fill with the most recent vitals
-          const latest = data[0].vital_signs;
-          if (latest) {
-            const bp = latest.blood_pressure?.split('/') || ['', ''];
-            setVitalsForm(prev => ({
-              ...prev,
-              blood_pressure_systolic: bp[0] || prev.blood_pressure_systolic,
-              blood_pressure_diastolic: bp[1] || prev.blood_pressure_diastolic,
-              heart_rate: latest.heart_rate || prev.heart_rate,
-              temperature: latest.temperature || prev.temperature,
-              weight: latest.weight || prev.weight,
-              height: latest.height || prev.height,
-              respiratory_rate: latest.respiratory_rate || prev.respiratory_rate,
-              oxygen_saturation: latest.oxygen_saturation || prev.oxygen_saturation,
-              bmi: latest.bmi || prev.bmi
-            }));
-          }
+      // Prefer vitals recorded for this appointment (e.g. by reception/nurse);
+      // fall back to the patient's most recent record.
+      let data = [];
+      if (appointmentId) {
+        const scopedRes = await fetch(`/api/patients/${patientUuid}/vitals?appointment_id=${appointmentId}`, { headers });
+        if (scopedRes.ok) {
+          data = await scopedRes.json();
+        }
+      }
+      if (data.length === 0) {
+        const res = await fetch(`/api/patients/${patientUuid}/vitals`, { headers });
+        if (res.ok) {
+          data = await res.json();
+        }
+      }
+      if (data.length > 0) {
+        // Pre-fill with the most recent vitals
+        const latest = data[0].vital_signs;
+        if (latest) {
+          const bp = latest.blood_pressure?.split('/') || ['', ''];
+          setVitalsForm(prev => ({
+            ...prev,
+            blood_pressure_systolic: bp[0] || prev.blood_pressure_systolic,
+            blood_pressure_diastolic: bp[1] || prev.blood_pressure_diastolic,
+            heart_rate: latest.heart_rate || prev.heart_rate,
+            temperature: latest.temperature || prev.temperature,
+            weight: latest.weight || prev.weight,
+            height: latest.height || prev.height,
+            respiratory_rate: latest.respiratory_rate || prev.respiratory_rate,
+            oxygen_saturation: latest.oxygen_saturation || prev.oxygen_saturation,
+            bmi: latest.bmi || prev.bmi
+          }));
         }
       }
     } catch (err) {
@@ -381,7 +392,12 @@ const ConsultationPage = () => {
       });
       const res = await fetch('/api/patients/vitals', {
         method: 'POST', headers,
-        body: JSON.stringify({ patient_id: patientUuid, vital_signs: JSON.stringify(vitalsData), notes: vitalsForm.notes })
+        body: JSON.stringify({
+          patient_id: patientUuid,
+          vital_signs: JSON.stringify(vitalsData),
+          notes: vitalsForm.notes,
+          ...(appointmentId ? { appointment_id: parseInt(appointmentId) } : {})
+        })
       });
       if (res.ok) {
         showFeedback('Vitals recorded');
@@ -1076,6 +1092,29 @@ const ConsultationPage = () => {
                   ))}
                 </div>
               )}
+
+              {labOrders.filter(o => o.status === 'cancelled').length > 0 && (
+                <div className="pt-4 border-t">
+                  <h3 className="font-semibold text-sm text-gray-600 mb-2 flex items-center gap-1.5">
+                    <XCircle className="h-4 w-4 text-red-500" /> Cancelled Orders
+                  </h3>
+                  {labOrders.filter(o => o.status === 'cancelled').map(order => (
+                    <div
+                      key={order.id}
+                      className="flex items-center justify-between gap-3 rounded border border-red-100 bg-red-50/50 p-2 mb-1 text-sm"
+                    >
+                      <div>
+                        <span>{order.test_name} ({order.test_code})</span>
+                        <p className="mt-0.5 text-xs text-red-700/80">
+                          {order.cancelled_reason || 'Cancelled at patient request'}
+                          {order.cancelled_by_name ? ` · by ${order.cancelled_by_name}` : ''}
+                        </p>
+                      </div>
+                      <Badge className="shrink-0 bg-red-100 text-red-700">Cancelled</Badge>
+                    </div>
+                  ))}
+                </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
@@ -1095,8 +1134,9 @@ const ConsultationPage = () => {
               {(() => {
                 const completedOrders = labOrders.filter(o => o.status === 'completed' && o.has_report);
                 const pendingOrders = labOrders.filter(o => o.status !== 'completed' && o.status !== 'cancelled');
+                const cancelledOrders = labOrders.filter(o => o.status === 'cancelled');
 
-                if (completedOrders.length === 0 && pendingOrders.length === 0) {
+                if (completedOrders.length === 0 && pendingOrders.length === 0 && cancelledOrders.length === 0) {
                   return (
                     <div className="text-center py-8 text-gray-500">
                       <TestTube className="h-10 w-10 mx-auto mb-3 text-gray-300" />
@@ -1144,10 +1184,38 @@ const ConsultationPage = () => {
                       </div>
                     )}
 
+                    {cancelledOrders.length > 0 && (
+                      <div>
+                        <h3 className="text-sm font-semibold text-gray-600 mb-2 flex items-center gap-2">
+                          <XCircle className="h-4 w-4 text-red-500" /> Cancelled Orders
+                        </h3>
+                        <div className="space-y-1">
+                          {cancelledOrders.map(order => (
+                            <div
+                              key={order.id}
+                              className="flex items-center justify-between gap-3 rounded-lg border border-red-100 bg-red-50/50 p-2.5 text-sm"
+                            >
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <span className="font-medium">{order.test_name}</span>
+                                  <Badge variant="outline" className="text-xs">{order.test_code}</Badge>
+                                </div>
+                                <p className="mt-0.5 text-xs text-red-700/80">
+                                  {order.cancelled_reason || 'Cancelled at patient request'}
+                                  {order.cancelled_by_name ? ` · by ${order.cancelled_by_name}` : ''}
+                                </p>
+                              </div>
+                              <Badge className="shrink-0 bg-red-100 text-red-700">Cancelled</Badge>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                     {/* Completed results grouped by date */}
                     {completedOrders.length > 0 && (
                       <div>
-                        {pendingOrders.length > 0 && (
+                        {(pendingOrders.length > 0 || cancelledOrders.length > 0) && (
                           <h3 className="text-sm font-semibold text-gray-600 mb-2 flex items-center gap-2">
                             <History className="h-4 w-4" /> Completed Results
                           </h3>

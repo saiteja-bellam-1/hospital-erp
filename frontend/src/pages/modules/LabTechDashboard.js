@@ -17,6 +17,7 @@ import axios from 'axios';
 import { format } from 'date-fns';
 import JsBarcode from 'jsbarcode';
 import { localDateString, localDateStringOffset } from '../../utils/localDate';
+import PdfPreviewDialog from '../../components/PdfPreviewDialog';
 
 const LabTechDashboard = () => {
   const { user } = useAuth();
@@ -54,11 +55,10 @@ const LabTechDashboard = () => {
   const [showReportDialog, setShowReportDialog] = useState(false);
   const [viewingReport, setViewingReport] = useState(null);
 
-  // Report print preview
-  const [showReportPrintPreview, setShowReportPrintPreview] = useState(false);
-  const [reportPdfUrl, setReportPdfUrl] = useState(null);
-  const [reportPreviewHeader, setReportPreviewHeader] = useState(false);
-  const [reportPreviewId, setReportPreviewId] = useState(null);
+  // Report print preview (shared PdfPreviewDialog)
+  const [reportPreview, setReportPreview] = useState(null);
+  // Multi-select for combined print (completed tab)
+  const [selectedReportIds, setSelectedReportIds] = useState(() => new Set());
 
   // Bill print preview
   // Bill preview dialog has been removed in favour of the centralised
@@ -172,6 +172,8 @@ const LabTechDashboard = () => {
   useEffect(() => {
     if (activeTab === 'completed') {
       fetchCompletedOrders();
+    } else {
+      setSelectedReportIds(new Set());
     }
   }, [activeTab, completedDateFrom, completedDateTo, fetchCompletedOrders]);
 
@@ -332,60 +334,99 @@ const LabTechDashboard = () => {
     return false;
   };
 
-  const downloadPackageReport = async (packageBookingId, packageName) => {
-    try {
-      const token = localStorage.getItem('token');
-      const res = await fetch(`/api/lab/reports/package/${packageBookingId}/download`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (res.ok) {
-        const blob = await res.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `${packageName}_report.pdf`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        window.URL.revokeObjectURL(url);
-      } else {
-        showFeedback('Failed to download package report', 'error');
+  const openPackageReportPreview = (packageBookingId, packageName) => {
+    setReportPreview({
+      path: `/api/lab/reports/package/${packageBookingId}/download`,
+      title: `${packageName || 'Package'} — All Reports`,
+      filename: `${packageName || 'package'}_reports.pdf`,
+    });
+  };
+
+  const printReport = (reportId) => {
+    if (!reportId) return;
+    setReportPreview({
+      path: `/api/lab/reports/${reportId}/download`,
+      title: 'Lab Report Preview',
+      filename: `lab_report_${reportId}.pdf`,
+    });
+  };
+
+  const toggleReportSelection = (reportId, patientId) => {
+    if (!reportId) return;
+    setSelectedReportIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(reportId)) {
+        next.delete(reportId);
+        return next;
       }
-    } catch {
-      showFeedback('Failed to download package report', 'error');
-    }
+      const selectedPatientIds = new Set(
+        completedOrders
+          .filter((o) => next.has(o.report_id))
+          .map((o) => o.patient_id)
+      );
+      if (selectedPatientIds.size > 0 && !selectedPatientIds.has(patientId)) {
+        showFeedback('Select reports for one patient at a time', 'error');
+        return prev;
+      }
+      next.add(reportId);
+      return next;
+    });
   };
 
-  const printReport = async (reportId, withHeader = true) => {
-    try {
-      setReportPreviewId(reportId);
-      setReportPreviewHeader(withHeader);
-      const res = await axios.get(`/api/lab/reports/${reportId}/download`, { responseType: 'blob' });
-      if (reportPdfUrl) window.URL.revokeObjectURL(reportPdfUrl);
-      const url = window.URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
-      setReportPdfUrl(url);
-      setShowReportPrintPreview(true);
-    } catch {
-      showFeedback('Failed to load report', 'error');
+  const selectGroupReports = (orders) => {
+    const printable = orders.filter((o) => o.has_report && o.report_id);
+    if (printable.length === 0) return;
+    const patientId = printable[0].patient_id;
+    if (printable.some((o) => o.patient_id !== patientId)) {
+      showFeedback('Select reports for one patient at a time', 'error');
+      return;
     }
+    setSelectedReportIds((prev) => {
+      const selectedPatientIds = new Set(
+        completedOrders
+          .filter((o) => prev.has(o.report_id))
+          .map((o) => o.patient_id)
+      );
+      if (selectedPatientIds.size > 0 && !selectedPatientIds.has(patientId)) {
+        showFeedback('Select reports for one patient at a time', 'error');
+        return prev;
+      }
+      const next = new Set(prev);
+      printable.forEach((o) => next.add(o.report_id));
+      return next;
+    });
   };
 
-  const refetchReportPdf = async (withHeader) => {
-    if (!reportPreviewId) return;
-    try {
-      const res = await axios.get(`/api/lab/reports/${reportPreviewId}/download`, { responseType: 'blob' });
-      if (reportPdfUrl) window.URL.revokeObjectURL(reportPdfUrl);
-      const url = window.URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
-      setReportPdfUrl(url);
-    } catch {
-      showFeedback('Failed to reload report', 'error');
+  const printSelectedReports = () => {
+    const ids = Array.from(selectedReportIds);
+    if (ids.length === 0) {
+      showFeedback('Select at least one report to print', 'error');
+      return;
     }
+    if (ids.length === 1) {
+      printReport(ids[0]);
+      return;
+    }
+    setReportPreview({
+      path: '/api/lab/reports/combined/download',
+      title: `Combined Lab Reports (${ids.length})`,
+      params: { report_ids: ids.join(',') },
+      filename: 'combined_lab_reports.pdf',
+    });
   };
 
-  const closeReportPreview = () => {
-    if (reportPdfUrl) { window.URL.revokeObjectURL(reportPdfUrl); setReportPdfUrl(null); }
-    setShowReportPrintPreview(false);
-    setReportPreviewId(null);
+  const renderReportCheckbox = (order) => {
+    if (activeTab !== 'completed' || !order.has_report || !order.report_id) return null;
+    return (
+      <input
+        type="checkbox"
+        className="h-4 w-4 rounded border-gray-300 shrink-0"
+        checked={selectedReportIds.has(order.report_id)}
+        onChange={() => toggleReportSelection(order.report_id, order.patient_id)}
+        title="Select for combined print"
+        aria-label={`Select report ${order.test_name || order.order_number}`}
+      />
+    );
   };
 
   const getStatusColor = (status) => {
@@ -554,7 +595,9 @@ const LabTechDashboard = () => {
     <Card key={order.id} className={order.priority !== 'normal' ? 'border-red-300' : ''}>
       <CardContent className="py-4">
         <div className="flex items-center justify-between">
-          <div className="flex-1">
+          <div className="flex items-start gap-2 flex-1 min-w-0">
+            {renderReportCheckbox(order)}
+            <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 mb-1">
               <span className="font-semibold">{order.patient_name}</span>
               <Badge className={getStatusColor(order.status)}>{order.status}</Badge>
@@ -583,6 +626,7 @@ const LabTechDashboard = () => {
                 </p>
               )}
             </div>
+            </div>
           </div>
           <div className="flex flex-wrap gap-1.5 ml-4 items-center">
             {/* Bill download moved to Billing dashboard so the user gets the
@@ -608,7 +652,7 @@ const LabTechDashboard = () => {
                 <Button size="sm" variant="outline" onClick={() => openReport(order.report_id)}>
                   <Eye className="h-3 w-3 mr-1" /> View Report
                 </Button>
-                <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => printReport(order.report_id, true)}>
+                <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => printReport(order.report_id)}>
                   <Printer className="h-3 w-3 mr-1" /> Print Report
                 </Button>
               </>
@@ -648,7 +692,9 @@ const LabTechDashboard = () => {
           <div className="space-y-2">
             {group.orders.map(order => (
               <div key={order.id} className="flex items-center justify-between bg-white rounded-lg p-3 border border-indigo-100">
-                <div className="flex-1">
+                <div className="flex items-start gap-2 flex-1 min-w-0">
+                  {renderReportCheckbox(order)}
+                  <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-0.5">
                     <span className="font-semibold text-sm">{order.patient_name}</span>
                     <span className="text-gray-300">|</span>
@@ -659,6 +705,7 @@ const LabTechDashboard = () => {
                   <div className="flex items-center gap-3 ml-5">
                     <span className="text-xs text-gray-400">#{order.order_number}</span>
                     {order.sample_id && <span className="text-xs font-mono font-semibold text-indigo-600">Sample: {order.sample_id}</span>}
+                  </div>
                   </div>
                 </div>
                 <div className="flex gap-2 ml-4">
@@ -691,13 +738,19 @@ const LabTechDashboard = () => {
               </div>
             ))}
           </div>
-          {/* Download All Reports button */}
+          {/* Preview / print all completed reports in package */}
           {completedCount > 0 && (
-            <div className="mt-3 pt-2 border-t border-indigo-200">
+            <div className="mt-3 pt-2 border-t border-indigo-200 flex flex-wrap gap-2">
               <Button size="sm" variant="outline" className="h-7 text-xs border-indigo-300 text-indigo-700"
-                onClick={() => downloadPackageReport(group.package_booking_id, group.package_name)}>
-                <FileText className="h-3 w-3 mr-1" /> Download All Reports
+                onClick={() => openPackageReportPreview(group.package_booking_id, group.package_name)}>
+                <Printer className="h-3 w-3 mr-1" /> Print All Reports
               </Button>
+              {activeTab === 'completed' && (
+                <Button size="sm" variant="ghost" className="h-7 text-xs"
+                  onClick={() => selectGroupReports(group.orders.filter((o) => o.status === 'completed'))}>
+                  Select completed
+                </Button>
+              )}
             </div>
           )}
         </CardContent>
@@ -722,7 +775,9 @@ const LabTechDashboard = () => {
         <div className="space-y-2">
           {group.orders.map(order => (
             <div key={order.id} className="flex items-center justify-between bg-white rounded-lg p-3 border border-amber-100">
-              <div className="flex-1">
+              <div className="flex items-start gap-2 flex-1 min-w-0">
+                {renderReportCheckbox(order)}
+                <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-0.5">
                   <TestTube className="h-3 w-3 text-gray-400" />
                   <span className="font-medium text-sm">{order.test_name} ({order.test_code})</span>
@@ -735,6 +790,7 @@ const LabTechDashboard = () => {
                   <span className="text-xs text-gray-400">#{order.order_number}</span>
                   <span className="text-xs text-gray-400"><User className="inline h-3 w-3 mr-0.5" />{order.doctor_name || 'N/A'}</span>
                   {order.sample_id && <span className="text-xs font-mono font-semibold text-indigo-600">Sample: {order.sample_id}</span>}
+                </div>
                 </div>
               </div>
               <div className="flex gap-2 ml-4">
@@ -767,6 +823,14 @@ const LabTechDashboard = () => {
             </div>
           ))}
         </div>
+        {activeTab === 'completed' && group.orders.some((o) => o.has_report && o.report_id) && (
+          <div className="mt-3 pt-2 border-t border-amber-200">
+            <Button size="sm" variant="ghost" className="h-7 text-xs"
+              onClick={() => selectGroupReports(group.orders)}>
+              Select all in group
+            </Button>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
@@ -819,6 +883,23 @@ const LabTechDashboard = () => {
 
   const renderCompletedTab = () => (
     <div className="space-y-4">
+      {selectedReportIds.size > 0 && (
+        <div className="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 shadow-sm">
+          <p className="text-sm text-blue-900">
+            <strong>{selectedReportIds.size}</strong> report{selectedReportIds.size === 1 ? '' : 's'} selected
+            <span className="text-blue-700"> — same patient only; packed onto shared pages to save paper</span>
+          </p>
+          <div className="flex gap-2">
+            <Button size="sm" variant="outline" onClick={() => setSelectedReportIds(new Set())}>
+              Clear
+            </Button>
+            <Button size="sm" className="bg-blue-600 hover:bg-blue-700" onClick={printSelectedReports}>
+              <Printer className="h-3.5 w-3.5 mr-1" />
+              Print selected ({selectedReportIds.size})
+            </Button>
+          </div>
+        </div>
+      )}
       <Card>
         <CardContent className="p-6">
           <div className="flex flex-wrap items-end gap-4">
@@ -1129,7 +1210,7 @@ const LabTechDashboard = () => {
           )}
 
           <div className="flex justify-end gap-2 mt-4">
-            <Button variant="outline" onClick={() => printReport(viewingReport.id, true)}>
+            <Button variant="outline" onClick={() => printReport(viewingReport.id)}>
               <Printer className="h-4 w-4 mr-2" /> Print Report
             </Button>
           </div>
@@ -1284,40 +1365,15 @@ const LabTechDashboard = () => {
         </DialogContent>
       </Dialog>
 
-      {/* Report Print Preview Dialog */}
-      <Dialog open={showReportPrintPreview} onOpenChange={closeReportPreview}>
-        <DialogContent className="max-w-4xl max-h-[90vh] overflow-hidden">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <FileText className="h-5 w-5" /> Lab Report Preview
-            </DialogTitle>
-          </DialogHeader>
-          <div className="flex flex-col space-y-4">
-            <div className="flex-1 min-h-[400px] border rounded-lg overflow-hidden">
-              {reportPdfUrl && (
-                <iframe src={reportPdfUrl} className="w-full h-full min-h-[400px] border-0" title="Report Preview" />
-              )}
-            </div>
-            <div className="flex items-center gap-3">
-              <Button variant="outline" onClick={closeReportPreview} className="flex-1">Close</Button>
-              <Button onClick={() => {
-                if (reportPdfUrl) {
-                  const iframe = document.createElement('iframe');
-                  iframe.style.display = 'none';
-                  document.body.appendChild(iframe);
-                  iframe.src = reportPdfUrl;
-                  iframe.onload = () => {
-                    iframe.contentWindow.print();
-                    setTimeout(() => document.body.removeChild(iframe), 1000);
-                  };
-                }
-              }} className="flex-1 bg-blue-600 hover:bg-blue-700">
-                <Printer className="h-4 w-4 mr-2" /> Print Report
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
+      <PdfPreviewDialog
+        open={!!reportPreview}
+        onClose={() => setReportPreview(null)}
+        title={reportPreview?.title || 'Lab Report Preview'}
+        path={reportPreview?.path || null}
+        params={reportPreview?.params || {}}
+        filename={reportPreview?.filename || 'lab_report.pdf'}
+        letterheadReportType="lab_report"
+      />
 
     </div>
   );

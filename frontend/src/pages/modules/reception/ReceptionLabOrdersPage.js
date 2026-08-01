@@ -303,6 +303,7 @@ const ReceptionLabOrdersPage = () => {
         onClose={() => setReportPreview(null)}
         title={reportPreview?.title || 'Lab Report Preview'}
         path={reportPreview?.path || null}
+        letterheadReportType="lab_report"
       />
     </div>
   );

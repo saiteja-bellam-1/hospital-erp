@@ -448,15 +448,19 @@ def resolve_include_header(
     overrides: dict[str, OverrideValue],
     query_include_header: bool | None = None,
 ) -> bool:
-    """Resolve letterhead on/off: per-report override → global → optional query param."""
+    """Resolve letterhead on/off: query override → per-report → global default.
+
+    A request-time ``include_header`` query wins so preview dialogs can toggle
+    letterhead for a single print without changing hospital Print Settings.
+    """
+    if query_include_header is not None:
+        return query_include_header
     if report_type and report_type in overrides:
         ov = overrides[report_type]
         if ov == "on":
             return True
         if ov == "off":
             return False
-    if query_include_header is not None:
-        return query_include_header
     return global_default
 
 

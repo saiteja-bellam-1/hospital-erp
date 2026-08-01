@@ -3,10 +3,16 @@ import axios from 'axios';
 import { Link } from 'react-router-dom';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { Button } from './ui/button';
+import { Label } from './ui/label';
 import { Download, Printer } from 'lucide-react';
+import {
+  resolveIncludeHeaderForReport,
+  usePdfPrintSettings,
+} from '../hooks/usePdfPrintSettings';
 
 /**
- * Generic PDF preview dialog — letterhead follows Print Settings (server-side).
+ * Generic PDF preview dialog — letterhead follows Print Settings (server-side),
+ * with an optional per-print letterhead toggle.
  *
  * Props:
  *   open     boolean
@@ -15,23 +21,51 @@ import { Download, Printer } from 'lucide-react';
  *   path     string — API path to GET
  *   params   object — extra query params
  *   filename string — optional download filename (defaults to document.pdf)
+ *   letterheadReportType string|null — when set (e.g. "lab_report"), show
+ *     Include letterhead checkbox that re-fetches with include_header
  */
 const PdfPreviewDialog = ({
-  open, onClose, title = 'PDF Preview', path, params = {}, filename = 'document.pdf',
+  open,
+  onClose,
+  title = 'PDF Preview',
+  path,
+  params = {},
+  filename = 'document.pdf',
+  letterheadReportType = null,
 }) => {
   const [pdfUrl, setPdfUrl] = useState(null);
   const [loading, setLoading] = useState(false);
+  const { settings } = usePdfPrintSettings();
+  const [includeHeader, setIncludeHeader] = useState(true);
+  const [headerInitialized, setHeaderInitialized] = useState(false);
+
+  useEffect(() => {
+    if (!open || !letterheadReportType) {
+      setHeaderInitialized(false);
+      return;
+    }
+    setIncludeHeader(resolveIncludeHeaderForReport(settings, letterheadReportType));
+    setHeaderInitialized(true);
+  }, [open, letterheadReportType, settings]);
+
+  const requestParams = {
+    ...params,
+    ...(letterheadReportType && headerInitialized
+      ? { include_header: includeHeader }
+      : {}),
+  };
 
   useEffect(() => {
     let cancelled = false;
     let createdUrl = null;
     const fetchPdf = async () => {
       if (!open || !path) return;
+      if (letterheadReportType && !headerInitialized) return;
       setLoading(true);
       try {
         const res = await axios.get(path, {
           responseType: 'blob',
-          params: { ...params },
+          params: { ...requestParams },
         });
         if (cancelled) return;
         const url = window.URL.createObjectURL(
@@ -44,6 +78,12 @@ const PdfPreviewDialog = ({
         });
       } catch (e) {
         console.error('PdfPreviewDialog: fetch failed', e);
+        if (!cancelled) {
+          setPdfUrl((prev) => {
+            if (prev) window.URL.revokeObjectURL(prev);
+            return null;
+          });
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -55,7 +95,7 @@ const PdfPreviewDialog = ({
         try { window.URL.revokeObjectURL(createdUrl); } catch {}
       }
     };
-  }, [open, path, JSON.stringify(params)]);
+  }, [open, path, JSON.stringify(requestParams), letterheadReportType, headerInitialized]);
 
   const handleClose = () => {
     if (pdfUrl) {
@@ -88,12 +128,26 @@ const PdfPreviewDialog = ({
           <DialogTitle>{title}</DialogTitle>
         </DialogHeader>
         <div className="flex flex-col space-y-4">
-          <p className="text-xs text-muted-foreground">
-            Letterhead and top gap are configured under{' '}
-            <Link to="/dashboard/print-settings" className="underline hover:text-foreground">
-              Print Settings
-            </Link>.
-          </p>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <p className="text-xs text-muted-foreground">
+              Default letterhead and top gap are configured under{' '}
+              <Link to="/dashboard/print-settings" className="underline hover:text-foreground">
+                Print Settings
+              </Link>
+              {letterheadReportType === 'lab_report' ? ' (Lab Report).' : '.'}
+            </p>
+            {letterheadReportType && (
+              <label className="inline-flex items-center gap-2 text-sm cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-gray-300"
+                  checked={includeHeader}
+                  onChange={(e) => setIncludeHeader(e.target.checked)}
+                />
+                <Label className="cursor-pointer font-normal">Include letterhead</Label>
+              </label>
+            )}
+          </div>
           <div className="flex-1 min-h-[500px] border rounded-lg overflow-hidden bg-gray-50">
             {pdfUrl ? (
               <iframe

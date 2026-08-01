@@ -256,6 +256,36 @@ def test_combined_package_report_accepts_string_booking_id(client, db_session, s
     assert "CBC Panel A" in text, f"First test missing from combined PDF. Sample: {text[:800]}"
     assert "CBC Panel B" in text, f"Second test missing from combined PDF. Sample: {text[:800]}"
 
+    # Combined-by-ids endpoint (multi-select print) — same continuous layout.
+    orders = (
+        db_session.query(PatientLabOrder)
+        .filter(PatientLabOrder.package_booking_id == booking_id)
+        .all()
+    )
+    report_ids = []
+    for order in orders:
+        report = db_session.query(LabReport).filter(LabReport.order_id == order.id).first()
+        assert report is not None
+        report_ids.append(report.id)
+
+    res_combined = client.get(
+        "/api/lab/reports/combined/download",
+        params={"report_ids": ",".join(str(i) for i in report_ids), "include_header": "false"},
+        headers=headers,
+    )
+    assert res_combined.status_code == 200, res_combined.text
+    assert res_combined.headers["content-type"] == "application/pdf"
+    combined_text = _extract_pdf_text(res_combined.content)
+    assert "CBC Panel A" in combined_text
+    assert "CBC Panel B" in combined_text
+
+    res_empty = client.get(
+        "/api/lab/reports/combined/download",
+        params={"report_ids": ""},
+        headers=headers,
+    )
+    assert res_empty.status_code == 400
+
     # NaN path must 404 — documents the frontend bug we fixed.
     res_bad = client.get("/api/lab/reports/package/NaN/download", headers=headers)
     assert res_bad.status_code == 404

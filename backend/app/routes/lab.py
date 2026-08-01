@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func as sqlfunc
@@ -223,6 +223,9 @@ class OrderCreate(BaseModel):
     force: bool = False
     notes: Optional[str] = None
 
+class OrderCancelRequest(BaseModel):
+    reason: Optional[str] = Field(None, max_length=500)
+
 class OrderResponse(BaseModel):
     id: int
     order_number: str
@@ -254,6 +257,9 @@ class OrderResponse(BaseModel):
     package_booking_id: Optional[str] = None
     sample_id: Optional[str] = None
     sample_type_name: Optional[str] = None
+    cancelled_reason: Optional[str] = None
+    cancelled_at: Optional[datetime] = None
+    cancelled_by_name: Optional[str] = None
     class Config:
         from_attributes = True
 
@@ -478,6 +484,11 @@ def _build_order_response(order: PatientLabOrder, db: Session) -> dict:
     test = db.query(LabTest).filter(LabTest.id == order.test_id).first()
     doctor = db.query(User).filter(User.id == order.doctor_id).first() if order.doctor_id else None
     report = db.query(LabReport).filter(LabReport.order_id == order.id).first()
+    cancelled_by_id = getattr(order, "cancelled_by", None)
+    cancelled_by_user = (
+        db.query(User).filter(User.id == cancelled_by_id).first()
+        if cancelled_by_id else None
+    )
     return {
         "id": order.id,
         "order_number": order.order_number,
@@ -513,6 +524,12 @@ def _build_order_response(order: PatientLabOrder, db: Session) -> dict:
         "sample_type_name": (
             test.sample_type_ref.name if test and test.sample_type_id and test.sample_type_ref
             else (test.sample_type if test else None)
+        ),
+        "cancelled_reason": getattr(order, "cancelled_reason", None),
+        "cancelled_at": getattr(order, "cancelled_at", None),
+        "cancelled_by_name": (
+            f"{cancelled_by_user.first_name} {cancelled_by_user.last_name}".strip()
+            if cancelled_by_user else None
         ),
     }
 
@@ -1605,6 +1622,64 @@ async def update_order_status(
     }
 
 
+@router.post("/orders/{order_id}/cancel", response_model=OrderResponse)
+async def cancel_lab_order_by_reception(
+    order_id: int,
+    body: OrderCancelRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Soft-cancel an uncollected outpatient lab order at patient request."""
+    _assert_reception_lab_book_role(current_user)
+
+    order = db.query(PatientLabOrder).join(Patient).filter(
+        PatientLabOrder.id == order_id,
+        Patient.hospital_id == current_user.hospital_id,
+    ).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    if order.admission_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Inpatient lab orders cannot be cancelled from reception",
+        )
+    if order.status == "cancelled":
+        raise HTTPException(status_code=400, detail="Lab order is already cancelled")
+    if order.status != "ordered":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Cannot cancel lab order with status '{order.status}'. "
+                "Only orders that have not been sample-collected can be cancelled."
+            ),
+        )
+
+    reason = (body.reason or "").strip() or "Cancelled at patient request"
+    order.status = "cancelled"
+    order.cancelled_reason = reason
+    order.cancelled_by = current_user.id
+    order.cancelled_at = datetime.now()
+    if order.payment_status == "pending":
+        order.payment_status = "cancelled"
+
+    db.commit()
+    db.refresh(order)
+
+    from app.services.audit_service import log_action
+    log_action(
+        db,
+        current_user,
+        "cancel_lab_order",
+        "lab",
+        "LabOrder",
+        order.id,
+        f"Cancelled lab order {order.order_number}: {reason}",
+    )
+
+    return _build_order_response(order, db)
+
+
 @router.get("/orders/{order_id}/bill")
 async def download_order_bill(
     order_id: int,
@@ -2214,37 +2289,135 @@ async def get_report(
         raise HTTPException(status_code=404, detail="Report not found")
     return _build_report_response(report, db)
 
-@router.get("/reports/{report_id}/download")
-async def download_report_pdf(
-    report_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Download lab report as PDF. Accessible by any authenticated user."""
-    report = db.query(LabReport).filter(LabReport.id == report_id).first()
-    if not report:
-        raise HTTPException(status_code=404, detail="Report not found")
-
-    report_data = _build_report_response(report, db)
-
-    # Get hospital info (fallback)
-    hospital = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
-    hospital_info = {
+def _lab_hospital_info(db: Session, hospital_id: Optional[int]) -> dict:
+    hospital = db.query(Hospital).filter(Hospital.id == hospital_id).first() if hospital_id else None
+    return {
         "name": hospital.name if hospital else "Hospital",
         "address": hospital.address if hospital else "",
         "phone": hospital.phone if hospital else "",
         "email": hospital.email if hospital else "",
-        "logo_url": hospital.logo_url if hospital else ""
+        "logo_url": hospital.logo_url if hospital else "",
     }
 
-    # Get lab-specific config from HospitalSettings
+
+def _lab_config_map(db: Session) -> dict:
     lab_settings = db.query(HospitalSettings).filter(
         HospitalSettings.setting_category == "lab_config"
     ).all()
-    lab_config = {s.setting_key: s.setting_value for s in lab_settings}
+    return {s.setting_key: s.setting_value for s in lab_settings}
+
+
+def _parse_report_ids_csv(report_ids: str) -> List[int]:
+    ids: List[int] = []
+    seen = set()
+    for part in (report_ids or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            rid = int(part)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid report id: {part}")
+        if rid not in seen:
+            seen.add(rid)
+            ids.append(rid)
+    if not ids:
+        raise HTTPException(status_code=400, detail="At least one report id is required")
+    return ids
+
+
+@router.get("/reports/combined/download")
+async def download_combined_reports_pdf(
+    report_ids: str = Query(..., description="Comma-separated lab report IDs"),
+    include_header: Optional[bool] = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Download a continuous combined PDF for selected completed reports (same patient)."""
+    ids = _parse_report_ids_csv(report_ids)
+    rows = (
+        db.query(LabReport, PatientLabOrder)
+        .join(PatientLabOrder, LabReport.order_id == PatientLabOrder.id)
+        .join(Patient, PatientLabOrder.patient_id == Patient.id)
+        .filter(
+            LabReport.id.in_(ids),
+            Patient.hospital_id == current_user.hospital_id,
+        )
+        .all()
+    )
+    by_id = {report.id: (report, order) for report, order in rows}
+    missing = [rid for rid in ids if rid not in by_id]
+    if missing:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Report(s) not found: {', '.join(str(m) for m in missing)}",
+        )
+
+    ordered_pairs = [by_id[rid] for rid in ids]
+    patient_ids = {order.patient_id for _, order in ordered_pairs}
+    if len(patient_ids) > 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Selected reports must belong to the same patient",
+        )
+
+    reports_data = [_build_report_response(report, db) for report, _ in ordered_pairs]
+    hospital_info = _lab_hospital_info(db, current_user.hospital_id)
+    lab_config = _lab_config_map(db)
+    pdf_kwargs = pdf_gen_kwargs(
+        db, current_user.hospital_id, "lab_report", query_include_header=include_header,
+    )
 
     try:
-        pdf_buffer = pdf_service.generate_lab_report_pdf(report_data, hospital_info, lab_config, **pdf_gen_kwargs(db, current_user.hospital_id, 'lab_report'))
+        pdf_buffer = pdf_service.generate_combined_lab_report_pdf(
+            reports_data, hospital_info, lab_config, **pdf_kwargs
+        )
+        patient = db.query(Patient).filter(Patient.id == ordered_pairs[0][1].patient_id).first()
+        patient_name = (
+            f"{patient.first_name}_{patient.last_name}" if patient else "patient"
+        )
+        filename = f"{patient_name}_lab_reports_{datetime.now().strftime('%Y%m%d')}.pdf"
+        return StreamingResponse(
+            pdf_buffer,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PDF generation error: {str(e)}")
+
+
+@router.get("/reports/{report_id}/download")
+async def download_report_pdf(
+    report_id: int,
+    include_header: Optional[bool] = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Download lab report as PDF. Accessible by any authenticated user."""
+    report = (
+        db.query(LabReport)
+        .join(PatientLabOrder, LabReport.order_id == PatientLabOrder.id)
+        .join(Patient, PatientLabOrder.patient_id == Patient.id)
+        .filter(
+            LabReport.id == report_id,
+            Patient.hospital_id == current_user.hospital_id,
+        )
+        .first()
+    )
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    report_data = _build_report_response(report, db)
+    hospital_info = _lab_hospital_info(db, current_user.hospital_id)
+    lab_config = _lab_config_map(db)
+    pdf_kwargs = pdf_gen_kwargs(
+        db, current_user.hospital_id, "lab_report", query_include_header=include_header,
+    )
+
+    try:
+        pdf_buffer = pdf_service.generate_lab_report_pdf(
+            report_data, hospital_info, lab_config, **pdf_kwargs
+        )
         filename = f"lab_report_{report_data['order_number']}_{datetime.now().strftime('%Y%m%d')}.pdf"
         return StreamingResponse(
             pdf_buffer,
@@ -2257,13 +2430,20 @@ async def download_report_pdf(
 @router.get("/reports/package/{package_booking_id}/download")
 async def download_package_report_pdf(
     package_booking_id: str,
+    include_header: Optional[bool] = Query(None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Download combined PDF for all completed tests in a package booking."""
-    orders = db.query(PatientLabOrder).filter(
-        PatientLabOrder.package_booking_id == package_booking_id
-    ).all()
+    orders = (
+        db.query(PatientLabOrder)
+        .join(Patient, PatientLabOrder.patient_id == Patient.id)
+        .filter(
+            PatientLabOrder.package_booking_id == package_booking_id,
+            Patient.hospital_id == current_user.hospital_id,
+        )
+        .all()
+    )
     if not orders:
         raise HTTPException(status_code=404, detail="No orders found for this package")
 
@@ -2277,23 +2457,15 @@ async def download_package_report_pdf(
     if not reports_data:
         raise HTTPException(status_code=404, detail="No completed reports found for this package")
 
-    hospital = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
-    hospital_info = {
-        "name": hospital.name if hospital else "Hospital",
-        "address": hospital.address if hospital else "",
-        "phone": hospital.phone if hospital else "",
-        "email": hospital.email if hospital else "",
-        "logo_url": hospital.logo_url if hospital else ""
-    }
-
-    lab_settings = db.query(HospitalSettings).filter(
-        HospitalSettings.setting_category == "lab_config"
-    ).all()
-    lab_config = {s.setting_key: s.setting_value for s in lab_settings}
+    hospital_info = _lab_hospital_info(db, current_user.hospital_id)
+    lab_config = _lab_config_map(db)
+    pdf_kwargs = pdf_gen_kwargs(
+        db, current_user.hospital_id, "lab_report", query_include_header=include_header,
+    )
 
     try:
         pdf_buffer = pdf_service.generate_combined_lab_report_pdf(
-            reports_data, hospital_info, lab_config, **pdf_gen_kwargs(db, current_user.hospital_id, 'lab_report')
+            reports_data, hospital_info, lab_config, **pdf_kwargs
         )
         pkg_name = orders[0].package.name if orders[0].package else "package"
         patient = db.query(Patient).filter(Patient.id == orders[0].patient_id).first()

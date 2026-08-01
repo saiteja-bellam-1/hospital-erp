@@ -330,6 +330,7 @@ class VitalsCreate(BaseModel):
     vital_signs: str = Field(..., description="JSON string containing vital signs data")
     notes: Optional[str] = Field(None, max_length=1000)
     recorded_by_role: Optional[str] = Field(None, description="Role of person recording vitals")
+    appointment_id: Optional[int] = Field(None, description="Linked appointment id (visit-scoped vitals)")
 
 class VitalsResponse(BaseModel):
     id: int
@@ -339,6 +340,7 @@ class VitalsResponse(BaseModel):
     recorded_by: str
     recorded_by_role: Optional[str]
     recorded_at: datetime
+    appointment_id: Optional[int] = None
     
     class Config:
         from_attributes = True
@@ -373,45 +375,71 @@ async def record_patient_vitals(
         vital_signs_dict = json.loads(vitals_data.vital_signs)
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid vital signs JSON format")
-    
-    # For now, we'll store this as a medical note in consultations or create a simple vitals log
-    # Since we don't have a dedicated vitals table, let's create a consultation record
+
     from app.models.ehr import Consultation
     import uuid
-    
-    consultation = Consultation(
-        consultation_number=f"VIT-{uuid.uuid4().hex[:8].upper()}",
-        patient_id=patient.id,
-        doctor_id=current_user.id,
-        consultation_type="vitals_recording",
-        chief_complaint="Vital signs recording",
-        vital_signs=vitals_data.vital_signs,
-        status="completed",
-        notes=vitals_data.notes or "Vital signs recorded"
-    )
-    
-    db.add(consultation)
+
+    # Validate linked appointment (visit-scoped vitals) when provided
+    if vitals_data.appointment_id is not None:
+        from app.models.outpatient import Appointment
+        appointment = db.query(Appointment).filter(Appointment.id == vitals_data.appointment_id).first()
+        if not appointment:
+            raise HTTPException(status_code=404, detail=f"Appointment not found for id: {vitals_data.appointment_id}")
+        if appointment.patient_id != patient.id:
+            raise HTTPException(status_code=400, detail="Appointment does not belong to this patient")
+
+    # Upsert: one canonical vitals record per appointment. Reception/nurse may
+    # record first; the doctor's save then updates the same row instead of
+    # appending a duplicate.
+    consultation = None
+    if vitals_data.appointment_id is not None:
+        consultation = db.query(Consultation).filter(
+            Consultation.patient_id == patient.id,
+            Consultation.consultation_type == "vitals_recording",
+            Consultation.appointment_id == vitals_data.appointment_id
+        ).order_by(Consultation.created_at.desc()).first()
+
+    if consultation:
+        consultation.vital_signs = vitals_data.vital_signs
+        consultation.notes = vitals_data.notes or consultation.notes
+        consultation.doctor_id = current_user.id
+    else:
+        consultation = Consultation(
+            consultation_number=f"VIT-{uuid.uuid4().hex[:8].upper()}",
+            patient_id=patient.id,
+            doctor_id=current_user.id,
+            appointment_id=vitals_data.appointment_id,
+            consultation_type="vitals_recording",
+            chief_complaint="Vital signs recording",
+            vital_signs=vitals_data.vital_signs,
+            status="completed",
+            notes=vitals_data.notes or "Vital signs recorded"
+        )
+        db.add(consultation)
+
     db.commit()
     db.refresh(consultation)
-    
+
     # Return formatted response
     return VitalsResponse(
         id=consultation.id,
         patient_id=vitals_data.patient_id,
         vital_signs=vital_signs_dict,
-        notes=vitals_data.notes,
+        notes=consultation.notes,
         recorded_by=f"{current_user.first_name} {current_user.last_name}",
         recorded_by_role=vitals_data.recorded_by_role or current_user.role.name,
-        recorded_at=consultation.created_at
+        recorded_at=consultation.created_at,
+        appointment_id=consultation.appointment_id
     )
 
 @router.get("/{patient_id}/vitals", response_model=List[VitalsResponse])
 async def get_patient_vitals(
     patient_id: str,
+    appointment_id: Optional[int] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get patient's vital signs history"""
+    """Get patient's vital signs history (optionally scoped to one appointment)"""
     if not current_user.hospital_id:
         raise HTTPException(status_code=400, detail="User not assigned to a hospital")
     
@@ -432,10 +460,13 @@ async def get_patient_vitals(
     
     # Get vitals from consultations
     from app.models.ehr import Consultation
-    vitals_consultations = db.query(Consultation).filter(
+    query = db.query(Consultation).filter(
         Consultation.patient_id == patient.id,
         Consultation.consultation_type == "vitals_recording"
-    ).order_by(Consultation.created_at.desc()).all()
+    )
+    if appointment_id is not None:
+        query = query.filter(Consultation.appointment_id == appointment_id)
+    vitals_consultations = query.order_by(Consultation.created_at.desc()).all()
     
     vitals_list = []
     for consultation in vitals_consultations:
@@ -455,7 +486,8 @@ async def get_patient_vitals(
             notes=consultation.notes,
             recorded_by=recorder_name,
             recorded_by_role=recorder.role.name if recorder else "unknown",
-            recorded_at=consultation.created_at
+            recorded_at=consultation.created_at,
+            appointment_id=consultation.appointment_id
         ))
 
     return vitals_list

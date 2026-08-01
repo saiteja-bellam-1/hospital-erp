@@ -673,6 +673,8 @@ const PrintSettingsPage = () => {
             <p className="text-sm text-muted-foreground">
               Choose whether each printable document uses the digital letterhead, leaves gap only,
               or follows the global default above. Click Preview on any row to see that layout.
+              Lab Report settings apply to single, package, and multi-select combined lab prints;
+              techs can still override letterhead for one print from the preview dialog.
             </p>
             <DocumentOverrideTable
               groups={groupedCatalog}

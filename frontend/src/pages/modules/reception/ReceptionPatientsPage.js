@@ -973,23 +973,17 @@ const ReceptionPatientsPage = () => {
         </DialogContent>
       </Dialog>
 
-      {/* Vitals Dialog */}
-      <Dialog open={showVitalsDialog} onOpenChange={setShowVitalsDialog}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>Record Vitals - {selectedPatient?.first_name} {selectedPatient?.last_name}</DialogTitle>
-          </DialogHeader>
-          {selectedPatient && (
-            <VitalsForm
-              patient={selectedPatient}
-              onSuccess={() => {
-                setShowVitalsDialog(false);
-                toast({ title: 'Success', description: 'Vitals recorded successfully!' });
-              }}
-            />
-          )}
-        </DialogContent>
-      </Dialog>
+      {/* Vitals Dialog — VitalsForm renders its own Dialog shell */}
+      <VitalsForm
+        isOpen={showVitalsDialog}
+        onClose={() => setShowVitalsDialog(false)}
+        selectedPatient={selectedPatient}
+        userRole="receptionist"
+        onSave={() => {
+          setShowVitalsDialog(false);
+          toast({ title: 'Success', description: 'Vitals recorded successfully!' });
+        }}
+      />
 
       {/* Visit History Dialog */}
       <Dialog open={showHistoryDialog} onOpenChange={setShowHistoryDialog}>
