@@ -187,6 +187,38 @@ const InpatientModule = () => {
     const target = seg ? `/dashboard/inpatient/${seg}` : '/dashboard/inpatient';
     if (location.pathname !== target) navigate(target);
   }, [navigate, location.pathname]);
+
+  // Deep-link from EHR: ?action=admit&patientUuid=…
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (params.get('action') !== 'admit') return;
+    const patientUuid = params.get('patientUuid');
+    if (!patientUuid) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await axios.get(`/api/patients/${encodeURIComponent(patientUuid)}`);
+        if (cancelled || !res.data) return;
+        setInitialAdmitPatient(res.data);
+        setResumeAdmissionId(null);
+        setShowAdmitWizard(true);
+      } catch {
+        toast({
+          variant: 'destructive',
+          title: 'Could not load patient',
+          description: 'Unable to open admit wizard for this patient.',
+        });
+      } finally {
+        // Clear query so refresh doesn't re-open the wizard
+        navigate(location.pathname, { replace: true });
+      }
+    })();
+
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.search]);
+
   const [loading, setLoading] = useState(false);
   const [confirmState, setConfirmState] = useState({ open: false });
 
@@ -203,6 +235,7 @@ const InpatientModule = () => {
   const [draftsTotal, setDraftsTotal] = useState(0);
   const [showAdmitWizard, setShowAdmitWizard] = useState(false);
   const [resumeAdmissionId, setResumeAdmissionId] = useState(null);
+  const [initialAdmitPatient, setInitialAdmitPatient] = useState(null);
   const [showAdmissionDialog, setShowAdmissionDialog] = useState(false);
   const [admissionForm, setAdmissionForm] = useState({
     patient_id: '', admitting_doctor_id: '', room_id: '', admission_type: 'elective',
@@ -3401,7 +3434,7 @@ const InpatientModule = () => {
         <div className="border-b bg-white px-6 py-3 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2">
             {ip('admit_patients') && (
-              <Button size="sm" onClick={() => setShowAdmitWizard(true)}>
+              <Button size="sm" onClick={() => { setInitialAdmitPatient(null); setResumeAdmissionId(null); setShowAdmitWizard(true); }}>
                 <Plus className="h-4 w-4 mr-1" /> Admit Patient
               </Button>
             )}
@@ -3597,6 +3630,7 @@ const InpatientModule = () => {
                 {admissionSubTab === 'drafts' ? (
                   <AdmissionDraftsList
                     onResume={(adm) => {
+                      setInitialAdmitPatient(null);
                       setResumeAdmissionId(adm.id);
                       setShowAdmitWizard(true);
                     }}
@@ -6542,8 +6576,10 @@ const InpatientModule = () => {
         onClose={() => {
           setShowAdmitWizard(false);
           setResumeAdmissionId(null);
+          setInitialAdmitPatient(null);
         }}
         resumeAdmissionId={resumeAdmissionId}
+        initialPatient={initialAdmitPatient}
         onCreated={() => {
           fetchAdmissions('admitted');
           fetchDraftAdmissions();

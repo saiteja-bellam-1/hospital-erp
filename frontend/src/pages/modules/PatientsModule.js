@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
@@ -15,6 +16,8 @@ import { applyDobToForm, formatPatientAge, hasValidAge, parseAgeFields } from '.
 
 const PatientsModule = () => {
   const { toast } = useToast();
+  const location = useLocation();
+  const navigate = useNavigate();
   const [patients, setPatients] = useState([]);
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -23,6 +26,7 @@ const PatientsModule = () => {
   const [selectedPatient, setSelectedPatient] = useState(null);
   const [registering, setRegistering] = useState(false);
   const [inpatientEnabled, setInpatientEnabled] = useState(false);
+  const [ehrEnabled, setEhrEnabled] = useState(false);
   const [admissions, setAdmissions] = useState([]);
   const [loadingAdmissions, setLoadingAdmissions] = useState(false);
 
@@ -62,10 +66,33 @@ const PatientsModule = () => {
     fetchPatients();
   }, [fetchPatients]);
 
+  // Universal search jump: open full patient chart in EHR when available
+  useEffect(() => {
+    const incoming = location.state?.searchPatient;
+    if (!incoming) return;
+    const uuid = incoming.patient_id;
+    if (uuid) {
+      navigate(`/dashboard/ehr/patient/${encodeURIComponent(uuid)}`, { replace: true });
+      return;
+    }
+    const term =
+      incoming.primary_phone ||
+      incoming.mrn ||
+      [incoming.first_name, incoming.last_name].filter(Boolean).join(' ').trim() ||
+      '';
+    if (term) setSearchQuery(term);
+    setSelectedPatient(incoming);
+    setShowDetailDialog(true);
+    navigate(location.pathname, { replace: true, state: {} });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.state]);
+
   useEffect(() => {
     axios.get('/api/system/enabled-modules').then(res => {
       const mod = (res.data || []).find(m => m.module_name === 'inpatient');
       if (mod?.is_enabled) setInpatientEnabled(true);
+      const ehr = (res.data || []).find(m => m.module_name === 'ehr');
+      if (ehr?.is_enabled) setEhrEnabled(true);
     }).catch(() => {});
   }, []);
 
@@ -99,6 +126,10 @@ const PatientsModule = () => {
   };
 
   const viewPatientDetail = async (patientUuid) => {
+    if (ehrEnabled && patientUuid) {
+      navigate(`/dashboard/ehr/patient/${encodeURIComponent(patientUuid)}`);
+      return;
+    }
     try {
       const response = await axios.get(`/api/patients/${patientUuid}`);
       setSelectedPatient(response.data);
@@ -163,7 +194,11 @@ const PatientsModule = () => {
           ) : (
             <div className="divide-y">
               {patients.map((patient) => (
-                <div key={patient.patient_id} className="flex items-center justify-between py-3 hover:bg-gray-50 px-2 rounded">
+                <div
+                  key={patient.patient_id}
+                  className="flex items-center justify-between py-3 hover:bg-gray-50 px-2 rounded cursor-pointer"
+                  onClick={() => viewPatientDetail(patient.patient_id)}
+                >
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       {patient.mrn && (
@@ -184,7 +219,7 @@ const PatientsModule = () => {
                       {patient.blood_group && <Badge variant="secondary" className="text-xs">{patient.blood_group}</Badge>}
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                     <Button size="sm" variant="ghost" onClick={() => viewPatientDetail(patient.patient_id)}>
                       <Eye className="h-4 w-4" />
                     </Button>

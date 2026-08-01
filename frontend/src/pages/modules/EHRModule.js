@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { Routes, Route, useNavigate, useParams } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
@@ -7,14 +8,24 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/ta
 import {
   Search, FileText, Activity, Pill, TestTube, User, Calendar, ArrowLeft,
   Phone, MapPin, Heart, Clock, ChevronDown, ChevronUp, Printer,
-  Stethoscope, ClipboardList, AlertCircle, CheckCircle, Eye,
+  Stethoscope, AlertCircle, CheckCircle,
   ChevronLeft, ChevronRight, AlertTriangle, Bed, Receipt, Download,
-  IndianRupee, CalendarDays
+  IndianRupee, CalendarDays, CalendarPlus, BedDouble, ShoppingBag
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { printPdfFromUrl } from '../../utils/printPdf';
+import LabTestBookingDialog from '../../components/LabTestBookingDialog';
 
-const EHRModule = () => {
+const EHRModule = () => (
+  <Routes>
+    <Route index element={<EHRPage />} />
+    <Route path="patient/:patientId" element={<EHRPage />} />
+  </Routes>
+);
+
+const EHRPage = () => {
+  const { patientId: routePatientId } = useParams();
+  const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState('');
   const [allPatients, setAllPatients] = useState([]);
   const [displayedPatients, setDisplayedPatients] = useState([]);
@@ -25,6 +36,8 @@ const EHRModule = () => {
   const [activeTab, setActiveTab] = useState('timeline');
   const [expandedItems, setExpandedItems] = useState({});
   const [currentPage, setCurrentPage] = useState(1);
+  const [enabledModules, setEnabledModules] = useState({});
+  const [showLabBooking, setShowLabBooking] = useState(false);
   const patientsPerPage = 10;
 
   const token = localStorage.getItem('token');
@@ -33,6 +46,18 @@ const EHRModule = () => {
   // Load all patients on mount
   useEffect(() => {
     fetchAllPatients();
+  }, []);
+
+  useEffect(() => {
+    fetch('/api/system/enabled-modules', { headers })
+      .then((res) => (res.ok ? res.json() : []))
+      .then((mods) => {
+        const map = {};
+        (mods || []).forEach((m) => { map[m.module_name] = m.is_enabled; });
+        setEnabledModules(map);
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Filter/sort patients when search query changes
@@ -58,6 +83,43 @@ const EHRModule = () => {
     setCurrentPage(1);
   }, [searchQuery, allPatients]);
 
+  const loadPatientHistory = useCallback(async (patientUuid) => {
+    if (!patientUuid) return;
+    setLoadingHistory(true);
+    setPatientHistory(null);
+    setActiveTab('timeline');
+    setExpandedItems({});
+    try {
+      const res = await fetch(`/api/ehr/patient/${patientUuid}/history`, { headers });
+      if (res.ok) {
+        const data = await res.json();
+        setPatientHistory(data);
+        setSelectedPatient(data.patient);
+      } else {
+        setSelectedPatient(null);
+        setPatientHistory(null);
+      }
+    } catch (err) {
+      console.error('Failed to load history:', err);
+      setSelectedPatient(null);
+      setPatientHistory(null);
+    } finally {
+      setLoadingHistory(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Deep-link / route: open patient detail when URL has patientId
+  useEffect(() => {
+    if (routePatientId) {
+      loadPatientHistory(routePatientId);
+    } else {
+      setSelectedPatient(null);
+      setPatientHistory(null);
+      setLoadingHistory(false);
+    }
+  }, [routePatientId, loadPatientHistory]);
+
   const fetchAllPatients = async () => {
     setLoadingPatients(true);
     try {
@@ -74,20 +136,27 @@ const EHRModule = () => {
     }
   };
 
-  const selectPatient = async (patient) => {
-    setSelectedPatient(patient);
+  const selectPatient = (patient) => {
+    const uuid = patient.patient_id;
+    if (!uuid) return;
     setSearchQuery('');
-    setLoadingHistory(true);
-    try {
-      const res = await fetch(`/api/ehr/patient/${patient.patient_id}/history`, { headers });
-      if (res.ok) {
-        setPatientHistory(await res.json());
-      }
-    } catch (err) {
-      console.error('Failed to load history:', err);
-    } finally {
-      setLoadingHistory(false);
-    }
+    navigate(`/dashboard/ehr/patient/${encodeURIComponent(uuid)}`);
+  };
+
+  const goBackToList = () => {
+    navigate('/dashboard/ehr');
+  };
+
+  const bookAppointment = () => {
+    const uuid = patientHistory?.patient?.patient_id;
+    if (!uuid) return;
+    navigate(`/dashboard/reception/appointments?action=schedule&patientUuid=${encodeURIComponent(uuid)}`);
+  };
+
+  const admitPatient = () => {
+    const uuid = patientHistory?.patient?.patient_id;
+    if (!uuid) return;
+    navigate(`/dashboard/inpatient/admissions?action=admit&patientUuid=${encodeURIComponent(uuid)}`);
   };
 
   const toggleExpand = (key) => {
@@ -187,6 +256,11 @@ const EHRModule = () => {
       ordered: 'bg-blue-100 text-blue-700',
       collected: 'bg-yellow-100 text-yellow-700',
       processing: 'bg-purple-100 text-purple-700',
+      admitted: 'bg-blue-100 text-blue-700',
+      discharged: 'bg-green-100 text-green-700',
+      scheduled: 'bg-indigo-100 text-indigo-700',
+      checked_in: 'bg-yellow-100 text-yellow-700',
+      voided: 'bg-red-100 text-red-700',
     };
     return map[status] || 'bg-gray-100 text-gray-600';
   };
@@ -195,6 +269,9 @@ const EHRModule = () => {
     if (type === 'consultation') return <Stethoscope className="h-4 w-4" />;
     if (type === 'prescription') return <Pill className="h-4 w-4" />;
     if (type === 'lab_order') return <TestTube className="h-4 w-4" />;
+    if (type === 'appointment') return <CalendarDays className="h-4 w-4" />;
+    if (type === 'admission') return <Bed className="h-4 w-4" />;
+    if (type === 'pharmacy_sale') return <ShoppingBag className="h-4 w-4" />;
     return <FileText className="h-4 w-4" />;
   };
 
@@ -202,6 +279,9 @@ const EHRModule = () => {
     if (type === 'consultation') return 'border-l-blue-500 bg-blue-50/30';
     if (type === 'prescription') return 'border-l-green-500 bg-green-50/30';
     if (type === 'lab_order') return 'border-l-purple-500 bg-purple-50/30';
+    if (type === 'appointment') return 'border-l-indigo-500 bg-indigo-50/30';
+    if (type === 'admission') return 'border-l-teal-500 bg-teal-50/30';
+    if (type === 'pharmacy_sale') return 'border-l-amber-500 bg-amber-50/30';
     return 'border-l-gray-500';
   };
 
@@ -209,7 +289,20 @@ const EHRModule = () => {
     if (type === 'consultation') return 'Consultation';
     if (type === 'prescription') return 'Prescription';
     if (type === 'lab_order') return 'Lab Order';
+    if (type === 'appointment') return 'Appointment';
+    if (type === 'admission') return 'Admission';
+    if (type === 'pharmacy_sale') return 'Pharmacy';
     return type;
+  };
+
+  const typeBadgeClass = (type) => {
+    if (type === 'consultation') return 'bg-blue-100 text-blue-600';
+    if (type === 'prescription') return 'bg-green-100 text-green-600';
+    if (type === 'lab_order') return 'bg-purple-100 text-purple-600';
+    if (type === 'appointment') return 'bg-indigo-100 text-indigo-600';
+    if (type === 'admission') return 'bg-teal-100 text-teal-600';
+    if (type === 'pharmacy_sale') return 'bg-amber-100 text-amber-600';
+    return 'bg-gray-100 text-gray-600';
   };
 
   // ============ Render Helpers ============
@@ -441,13 +534,15 @@ const EHRModule = () => {
 
   // ============ Main Render ============
 
+  const showPatientDetail = Boolean(routePatientId);
+
   return (
     <div className="space-y-4">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-3">
-          {selectedPatient && (
-            <Button variant="ghost" size="sm" onClick={() => { setSelectedPatient(null); setPatientHistory(null); }}>
+          {showPatientDetail && (
+            <Button variant="ghost" size="sm" onClick={goBackToList}>
               <ArrowLeft className="h-4 w-4 mr-1" /> Back
             </Button>
           )}
@@ -455,10 +550,29 @@ const EHRModule = () => {
             <FileText className="h-6 w-6" /> Electronic Health Records
           </h1>
         </div>
+        {patientHistory && !loadingHistory && (
+          <div className="flex items-center gap-2 flex-wrap">
+            {enabledModules.outpatient && (
+              <Button size="sm" onClick={bookAppointment}>
+                <CalendarPlus className="h-4 w-4 mr-1" /> Book Appointment
+              </Button>
+            )}
+            {enabledModules.inpatient && (
+              <Button size="sm" variant="outline" onClick={admitPatient}>
+                <BedDouble className="h-4 w-4 mr-1" /> Admit
+              </Button>
+            )}
+            {enabledModules.lab && (
+              <Button size="sm" variant="outline" onClick={() => setShowLabBooking(true)}>
+                <TestTube className="h-4 w-4 mr-1" /> Book Lab
+              </Button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Patient Search + Full List */}
-      {!selectedPatient && (
+      {!showPatientDetail && (
         <Card>
           <CardContent className="pt-4">
             <div className="relative">
@@ -564,11 +678,23 @@ const EHRModule = () => {
       )}
 
       {/* Loading */}
-      {loadingHistory && (
+      {showPatientDetail && loadingHistory && (
         <div className="text-center py-12 text-gray-500">
           <Activity className="h-8 w-8 mx-auto mb-2 animate-spin" />
           <p>Loading patient history...</p>
         </div>
+      )}
+
+      {showPatientDetail && !loadingHistory && !patientHistory && (
+        <Card>
+          <CardContent className="py-12 text-center text-gray-500">
+            <AlertCircle className="h-10 w-10 mx-auto mb-2 text-gray-300" />
+            <p>Patient record could not be loaded.</p>
+            <Button variant="outline" size="sm" className="mt-4" onClick={goBackToList}>
+              Back to patient list
+            </Button>
+          </CardContent>
+        </Card>
       )}
 
       {/* Patient History View */}
@@ -655,7 +781,7 @@ const EHRModule = () => {
               )}
 
               {/* Summary Stats */}
-              <div className="mt-4 pt-3 border-t grid grid-cols-3 md:grid-cols-6 gap-4">
+              <div className="mt-4 pt-3 border-t grid grid-cols-3 md:grid-cols-7 gap-4">
                 <div className="text-center">
                   <p className="text-2xl font-bold text-indigo-600">{patientHistory.summary?.visit_count ?? 0}</p>
                   <p className="text-xs text-gray-500">Visits</p>
@@ -673,6 +799,10 @@ const EHRModule = () => {
                   <p className="text-xs text-gray-500">Lab Orders</p>
                 </div>
                 <div className="text-center">
+                  <p className="text-2xl font-bold text-amber-600">{(patientHistory.pharmacy_sales || []).length}</p>
+                  <p className="text-xs text-gray-500">Pharmacy</p>
+                </div>
+                <div className="text-center">
                   <p className="text-2xl font-bold text-gray-700">{formatMoney(patientHistory.billing?.total_billed)}</p>
                   <p className="text-xs text-gray-500">Billed to Date</p>
                 </div>
@@ -688,12 +818,13 @@ const EHRModule = () => {
 
           {/* Tabs */}
           <Tabs value={activeTab} onValueChange={setActiveTab}>
-            <TabsList className="grid w-full grid-cols-4 md:grid-cols-7">
+            <TabsList className="grid w-full grid-cols-4 md:grid-cols-8 h-auto gap-1">
               <TabsTrigger value="timeline"><Clock className="h-4 w-4 mr-1" /> Timeline</TabsTrigger>
               <TabsTrigger value="visits"><CalendarDays className="h-4 w-4 mr-1" /> Visits</TabsTrigger>
               <TabsTrigger value="consultations"><Stethoscope className="h-4 w-4 mr-1" /> Consultations</TabsTrigger>
               <TabsTrigger value="prescriptions"><Pill className="h-4 w-4 mr-1" /> Prescriptions</TabsTrigger>
               <TabsTrigger value="lab"><TestTube className="h-4 w-4 mr-1" /> Lab</TabsTrigger>
+              <TabsTrigger value="pharmacy"><ShoppingBag className="h-4 w-4 mr-1" /> Pharmacy</TabsTrigger>
               <TabsTrigger value="billing"><Receipt className="h-4 w-4 mr-1" /> Billing</TabsTrigger>
               <TabsTrigger value="documents"><FileText className="h-4 w-4 mr-1" /> Documents</TabsTrigger>
             </TabsList>
@@ -714,7 +845,7 @@ const EHRModule = () => {
                         return (
                           <div key={key} className={`border-l-4 rounded-lg border p-3 ${typeColor(item.type)}`}>
                             <div className="flex items-center gap-2 mb-2">
-                              <span className={`p-1 rounded ${item.type === 'consultation' ? 'bg-blue-100 text-blue-600' : item.type === 'prescription' ? 'bg-green-100 text-green-600' : 'bg-purple-100 text-purple-600'}`}>
+                              <span className={`p-1 rounded ${typeBadgeClass(item.type)}`}>
                                 {typeIcon(item.type)}
                               </span>
                               <Badge variant="outline" className="text-xs">{typeLabel(item.type)}</Badge>
@@ -724,6 +855,34 @@ const EHRModule = () => {
                             {item.type === 'consultation' && renderConsultationCard(item.data, key)}
                             {item.type === 'prescription' && renderPrescriptionCard(item.data, key)}
                             {item.type === 'lab_order' && renderLabOrderCard(item.data, key)}
+                            {item.type === 'appointment' && (
+                              <div className="text-sm space-y-1">
+                                <p className="font-medium">{item.data.doctor_name}</p>
+                                <p className="text-xs text-gray-500">{item.data.appointment_number}</p>
+                                <div className="flex gap-2">
+                                  <Badge className={`text-xs ${statusColor(item.data.status)}`}>{item.data.status}</Badge>
+                                  <Badge className={`text-xs ${billStatusColor(item.data.payment_status)}`}>{item.data.payment_status}</Badge>
+                                  <span className="text-xs text-gray-600 ml-auto">{formatMoney(item.data.final_amount)}</span>
+                                </div>
+                              </div>
+                            )}
+                            {item.type === 'admission' && (
+                              <div className="text-sm space-y-1">
+                                <p className="font-medium">{item.data.admission_number} · {item.data.admission_type}</p>
+                                <p className="text-xs text-gray-500">{item.data.doctor_name}{item.data.bed_number ? ` · Bed ${item.data.bed_number}` : ''}</p>
+                                <Badge className={`text-xs ${statusColor(item.data.status)}`}>{item.data.status}</Badge>
+                              </div>
+                            )}
+                            {item.type === 'pharmacy_sale' && (
+                              <div className="text-sm space-y-1">
+                                <p className="font-medium">{item.data.sale_number}</p>
+                                <p className="text-xs text-gray-500">{item.data.doctor_name || 'Walk-in'} · {item.data.payment_type}</p>
+                                <div className="flex gap-2 items-center">
+                                  <Badge className={`text-xs ${statusColor(item.data.status)}`}>{item.data.status}</Badge>
+                                  <span className="text-xs text-gray-600 ml-auto">{formatMoney(item.data.grand_total)}</span>
+                                </div>
+                              </div>
+                            )}
                           </div>
                         );
                       })}
@@ -902,6 +1061,50 @@ const EHRModule = () => {
               </Card>
             </TabsContent>
 
+            {/* Pharmacy Tab */}
+            <TabsContent value="pharmacy">
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm flex items-center gap-2">
+                    <ShoppingBag className="h-4 w-4" /> Pharmacy Sales ({(patientHistory.pharmacy_sales || []).length})
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {(patientHistory.pharmacy_sales || []).length === 0 ? (
+                    <div className="text-center py-8 text-gray-500">
+                      <ShoppingBag className="h-10 w-10 mx-auto mb-2 text-gray-300" />
+                      <p>No pharmacy sales found for this patient.</p>
+                    </div>
+                  ) : (
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="text-left text-gray-500 border-b">
+                          <th className="pb-2 pr-2">Date</th>
+                          <th className="pb-2 pr-2">Sale No.</th>
+                          <th className="pb-2 pr-2">Doctor</th>
+                          <th className="pb-2 pr-2">Payment</th>
+                          <th className="pb-2 pr-2">Status</th>
+                          <th className="pb-2 text-right">Amount</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {patientHistory.pharmacy_sales.map((s) => (
+                          <tr key={s.id} className="border-b last:border-0">
+                            <td className="py-2 pr-2">{formatDateTime(s.sale_date)}</td>
+                            <td className="py-2 pr-2 text-gray-600">{s.sale_number}</td>
+                            <td className="py-2 pr-2">{s.doctor_name || '—'}</td>
+                            <td className="py-2 pr-2 capitalize">{s.payment_type || '—'}{s.billing_mode === 'inpatient_bill' ? ' (IP bill)' : ''}</td>
+                            <td className="py-2 pr-2"><Badge className={`text-xs ${statusColor(s.status)}`}>{s.status}</Badge></td>
+                            <td className="py-2 text-right">{formatMoney(s.grand_total)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </CardContent>
+              </Card>
+            </TabsContent>
+
             {/* Billing Tab */}
             <TabsContent value="billing">
               <div className="space-y-4">
@@ -1030,6 +1233,15 @@ const EHRModule = () => {
           </Tabs>
         </>
       )}
+
+      <LabTestBookingDialog
+        open={showLabBooking}
+        onClose={(booked) => {
+          setShowLabBooking(false);
+          if (booked && routePatientId) loadPatientHistory(routePatientId);
+        }}
+        patient={patientHistory?.patient || null}
+      />
 
     </div>
   );

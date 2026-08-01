@@ -135,6 +135,15 @@
   to { transform: scaleY(1); }
 }
 
+/* Header nav active — match sidebar active chip on dark chrome */
+.header-nav-link-active {
+  color: #fff;
+  position: relative;
+}
+.header-nav-link-active::after {
+  display: none;
+}
+
 /* Subtle card hover lift */
 .card-hover {
   transition: box-shadow 0.2s ease, transform 0.2s ease;

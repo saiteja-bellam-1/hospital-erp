@@ -900,6 +900,53 @@ async def update_print_settings(
     return {"message": "Print settings updated", **payload}
 
 
+# UI / APPEARANCE SETTINGS
+class UiSettingsUpdate(BaseModel):
+    nav_layout: Optional[str] = None
+
+
+@router.get("/ui-settings")
+async def get_ui_settings(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Hospital-wide UI chrome settings (nav layout). Readable by any authenticated user."""
+    from app.utils.ui_settings import get_ui_settings_payload
+
+    return get_ui_settings_payload(db, current_user.hospital_id)
+
+
+@router.put("/ui-settings")
+async def update_ui_settings(
+    data: UiSettingsUpdate,
+    current_user: User = Depends(require_hospital_admin),
+    db: Session = Depends(get_db),
+):
+    from app.utils.ui_settings import (
+        VALID_NAV_LAYOUTS,
+        update_ui_settings as save_ui_settings,
+    )
+
+    if data.nav_layout is not None:
+        layout = str(data.nav_layout).strip().lower()
+        if layout not in VALID_NAV_LAYOUTS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"nav_layout must be one of: {', '.join(sorted(VALID_NAV_LAYOUTS))}",
+            )
+    payload = save_ui_settings(
+        db,
+        current_user.hospital_id,
+        nav_layout=data.nav_layout,
+        created_by=current_user.id,
+    )
+    db.commit()
+    from app.services.audit_service import log_action
+    log_action(db, current_user, "update_ui_settings", "hospital", details=payload)
+    db.commit()
+    return {"message": "UI settings updated", **payload}
+
+
 @router.get("/dashboard-overview")
 async def get_dashboard_overview(
     current_user: User = Depends(get_current_user),

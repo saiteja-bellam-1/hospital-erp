@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
 from typing import Optional
 from datetime import date
@@ -12,6 +13,7 @@ from app.models.lab import PatientLabOrder, LabTest, LabReport, LabTestParameter
 from app.models.outpatient import Appointment
 from app.models.inpatient import Admission
 from app.models.billing import Bill, Payment
+from app.models.pharmacy import PharmacySale
 from app.models.user import User
 from app.utils.dependencies import get_current_user
 
@@ -19,8 +21,11 @@ router = APIRouter()
 
 
 def _require_ehr_access(current_user: User):
-    """Only doctor, hospital_admin, super_admin can access EHR"""
-    allowed = ['doctor', 'hospital_admin', 'super_admin']
+    """Clinical + front-desk roles that look up longitudinal patient records."""
+    allowed = [
+        'doctor', 'hospital_admin', 'super_admin',
+        'receptionist', 'frontdesk', 'nurse', 'inpatient_admin', 'billing_admin',
+    ]
     if not any(r in current_user.role_names for r in allowed):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -398,6 +403,35 @@ async def get_patient_full_history(
             })
     documents.sort(key=lambda d: d["date"] or "", reverse=True)
 
+    # --- Pharmacy sales (linked by patient UUID and/or phone) ---
+    sale_filters = [PharmacySale.patient_ip_id == patient.patient_id]
+    if patient.primary_phone:
+        sale_filters.append(PharmacySale.patient_phone == patient.primary_phone)
+    sales_db = (
+        db.query(PharmacySale)
+        .filter(
+            PharmacySale.hospital_id == current_user.hospital_id,
+            or_(*sale_filters),
+        )
+        .order_by(PharmacySale.sale_date.desc())
+        .limit(200)
+        .all()
+    )
+    pharmacy_sales = [
+        {
+            "id": s.id,
+            "sale_number": s.sale_number,
+            "sale_date": s.sale_date.isoformat() if s.sale_date else None,
+            "patient_name": s.patient_name,
+            "doctor_name": s.doctor_name,
+            "status": s.status,
+            "payment_type": s.payment_type,
+            "billing_mode": s.billing_mode,
+            "grand_total": s.grand_total,
+        }
+        for s in sales_db
+    ]
+
     # --- Build unified timeline ---
     timeline = []
 
@@ -422,6 +456,27 @@ async def get_patient_full_history(
             "data": lo,
         })
 
+    for ap in appointments:
+        timeline.append({
+            "type": "appointment",
+            "date": ap["appointment_date"],
+            "data": ap,
+        })
+
+    for adm in admissions:
+        timeline.append({
+            "type": "admission",
+            "date": adm["admission_date"],
+            "data": adm,
+        })
+
+    for sale in pharmacy_sales:
+        timeline.append({
+            "type": "pharmacy_sale",
+            "date": sale["sale_date"],
+            "data": sale,
+        })
+
     # Sort timeline by date descending
     timeline.sort(key=lambda x: x["date"] or "", reverse=True)
 
@@ -431,6 +486,7 @@ async def get_patient_full_history(
         "lab_order_count": len(lab_orders),
         "appointment_count": len(appointments),
         "admission_count": len(admissions),
+        "pharmacy_sale_count": len(pharmacy_sales),
         "visit_count": len(appointments) + len(admissions),
         "active_allergy_count": sum(1 for a in allergies if a["is_active"]),
         "total_billed": billing["total_billed"],
@@ -446,6 +502,7 @@ async def get_patient_full_history(
         "lab_orders": lab_orders,
         "appointments": appointments,
         "admissions": admissions,
+        "pharmacy_sales": pharmacy_sales,
         "billing": billing,
         "documents": documents,
         "summary": summary,

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '../../../components/ui/card';
 import { Button } from '../../../components/ui/button';
 import { Input } from '../../../components/ui/input';
@@ -28,6 +28,7 @@ import { applyDobToForm, formatPatientAge, hasValidAge, parseAgeFields } from '.
 const ReceptionPatientsPage = () => {
   const { toast } = useToast();
   const navigate = useNavigate();
+  const location = useLocation();
   const [patients, setPatients] = useState([]);
   const [searchMetadata, setSearchMetadata] = useState({ total_count: 0, page: 1, per_page: 10, total_pages: 0 });
   const [loading, setLoading] = useState(false);
@@ -135,6 +136,35 @@ const ReceptionPatientsPage = () => {
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentPage, filterKey, searchTerm]);
+
+  // Universal search jump: open full patient chart
+  useEffect(() => {
+    const incoming = location.state?.searchPatient;
+    if (!incoming) return;
+    if (incoming.patient_id) {
+      navigate(`/dashboard/ehr/patient/${encodeURIComponent(incoming.patient_id)}`, { replace: true });
+      return;
+    }
+    const term =
+      incoming.primary_phone ||
+      incoming.mrn ||
+      [incoming.first_name, incoming.last_name].filter(Boolean).join(' ').trim() ||
+      '';
+    if (term) setSearchTerm(term);
+    setSelectedPatient(incoming);
+    navigate(location.pathname, { replace: true, state: {} });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.state]);
+
+  const openPatientChart = (patient) => {
+    if (patient?.patient_id) {
+      navigate(`/dashboard/ehr/patient/${encodeURIComponent(patient.patient_id)}`);
+      return;
+    }
+    setSelectedPatient(patient);
+    fetchAppointmentHistory(patient.patient_id);
+    setShowHistoryDialog(true);
+  };
 
   const fetchPatients = async (page = currentPage) => {
     setLoading(true);
@@ -531,12 +561,8 @@ const ReceptionPatientsPage = () => {
                       </div>
 
                       <div className="flex space-x-2">
-                        <Button size="sm" variant="outline" onClick={() => {
-                          setSelectedPatient(patient);
-                          fetchAppointmentHistory(patient.patient_id);
-                          setShowHistoryDialog(true);
-                        }}>
-                          History
+                        <Button size="sm" variant="outline" onClick={() => openPatientChart(patient)}>
+                          View Chart
                         </Button>
                         <Button size="sm" variant="outline" onClick={() => openEditPatient(patient)}>
                           Edit

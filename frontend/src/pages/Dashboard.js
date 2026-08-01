@@ -1,26 +1,24 @@
 import React, { useState, useEffect } from 'react';
-import { Routes, Route, useLocation, useNavigate, Link, Navigate } from 'react-router-dom';
+import { Routes, Route, useLocation, Navigate } from 'react-router-dom';
 import {
-  Menu,
-  LogOut,
   Shield,
-  X,
-  ChevronRight,
-  ChevronDown,
-  BookOpen,
   Phone,
-  Monitor,
   Headphones,
   MapPin,
   Mail,
   X as XIcon,
-  LayoutGrid,
   Wifi,
+  Menu,
 } from 'lucide-react';
 import axios from 'axios';
 
 import { useAuth } from '../contexts/AuthContext';
-import hospitalLogo from '../assets/Final Logo KT (1).jpg';
+import {
+  LayoutPreferencesProvider,
+  useLayoutPreferences,
+} from '../contexts/LayoutPreferencesContext';
+import AppSidebar from '../components/layout/AppSidebar';
+import AppHeader from '../components/layout/AppHeader';
 import DashboardHome from './modules/DashboardHome';
 import HospitalAdminDashboard from './modules/HospitalAdminDashboard';
 import SuperAdminDashboard from './modules/SuperAdminDashboard';
@@ -40,7 +38,6 @@ import CatchUpBills from './modules/admin/CatchUpBills';
 import SettlementsPage from './modules/admin/SettlementsPage';
 import PrintSettingsPage from './modules/PrintSettingsPage';
 import DoctorDashboard from './modules/DoctorDashboard';
-import ReceptionistDashboard from './modules/ReceptionistDashboard';
 import ReceptionDashboard from './modules/reception/ReceptionDashboard';
 import ReceptionPatientsPage from './modules/reception/ReceptionPatientsPage';
 import ReceptionAppointmentsPage from './modules/reception/ReceptionAppointmentsPage';
@@ -77,7 +74,7 @@ const HomeDashboard = ({ hasRole, enabledModules }) => {
   return <DashboardHome />;
 };
 
-const Dashboard = () => {
+const DashboardShell = () => {
   const { user, logout, licenseStatus, setLicenseStatus } = useAuth();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showSupportPopup, setShowSupportPopup] = useState(false);
@@ -96,7 +93,6 @@ const Dashboard = () => {
   }, []);
   const [enabledModules, setEnabledModules] = useState({});
   const location = useLocation();
-  const navigate = useNavigate();
 
   // Sidebar section collapse state — persisted per user in localStorage.
   // Map of { [sectionLabel]: boolean }. true => collapsed, false => user expanded.
@@ -259,339 +255,178 @@ const Dashboard = () => {
     ? user.full_name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)
     : 'U';
 
+  const { navLayout } = useLayoutPreferences();
+  const isHeaderMode = navLayout === 'header';
+
+  const sidebarProps = {
+    sidebarOpen,
+    onClose: () => setSidebarOpen(false),
+    navigationSections,
+    collapsedSections,
+    onToggleSection: toggleSection,
+    isActive,
+    hideOnDesktop: isHeaderMode,
+    showSearch: !isHeaderMode,
+    pwaInstallPrompt,
+    setPwaInstallPrompt,
+    logout,
+    user,
+    userInitials,
+    roleLabel: getRoleLabel(),
+  };
+
   return (
-    <div className="flex h-screen overflow-hidden" style={{ background: 'hsl(var(--background))' }}>
-      {/* Sidebar */}
-      <aside className={`
-        ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
-        fixed inset-y-0 left-0 z-50 w-[260px] flex flex-col
-        transform transition-transform duration-300 ease-in-out
-        lg:translate-x-0 lg:static lg:inset-0
-      `}
-        style={{
-          background: 'hsl(var(--sidebar-bg))',
-          borderRight: '1px solid hsl(var(--sidebar-border))',
-        }}
-      >
-        {/* Logo area */}
-        <div className="flex items-center justify-between h-16 px-5 flex-shrink-0"
-          style={{ borderBottom: '1px solid hsl(var(--sidebar-border))' }}
-        >
-          <div className="flex items-center gap-2">
-            <img
-              src={hospitalLogo}
-              alt="KT Health Soft"
-              className="h-9 w-auto max-w-[180px] rounded"
-              style={{ filter: 'brightness(1.1) contrast(1.05)' }}
-            />
-          </div>
-          <button
-            className="lg:hidden p-1 rounded-md hover:bg-white/10 transition-colors"
-            style={{ color: 'hsl(var(--sidebar-fg))' }}
-            onClick={() => setSidebarOpen(false)}
-          >
-            <X className="h-5 w-5" />
-          </button>
-        </div>
+    <div
+      className={`h-screen overflow-hidden ${isHeaderMode ? 'flex flex-col' : 'flex'}`}
+      style={{ background: 'hsl(var(--background))' }}
+    >
+      {isHeaderMode && (
+        <AppHeader
+          navigationSections={navigationSections}
+          isActive={isActive}
+          onOpenMobileMenu={() => setSidebarOpen(true)}
+          logout={logout}
+          user={user}
+          userInitials={userInitials}
+          roleLabel={getRoleLabel()}
+        />
+      )}
 
-        {/* Navigation */}
-        <nav className="sidebar-nav flex-1 overflow-y-auto py-4 px-3">
-          {navigationSections.map((section, sIdx) => {
-            // Sections without a label (e.g. Home) stay flat — no header, always visible.
-            const isCollapsible = !!section.label;
-            // Default to collapsed: only explicit `false` means user expanded it.
-            // The auto-open-active-section effect below sets the active section to
-            // `false` (expanded) on every route change.
-            const isCollapsed = isCollapsible && collapsedSections[section.label] !== false;
-            return (
-              <div key={section.label || `section-${sIdx}`} className={sIdx > 0 ? 'mt-3' : ''}>
-                {isCollapsible && (
-                  <button
-                    type="button"
-                    onClick={() => toggleSection(section.label)}
-                    className="w-full flex items-center justify-between px-3 mb-1 py-1.5 rounded-md text-[11px] font-semibold tracking-wider uppercase transition-colors"
-                    style={{ color: 'hsl(var(--sidebar-muted))' }}
-                    onMouseEnter={(e) => { e.currentTarget.style.background = 'hsl(var(--sidebar-hover))'; e.currentTarget.style.color = '#fff'; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'hsl(var(--sidebar-muted))'; }}
-                  >
-                    <span>{section.label}</span>
-                    {isCollapsed
-                      ? <ChevronRight className="h-3.5 w-3.5 opacity-70" />
-                      : <ChevronDown className="h-3.5 w-3.5 opacity-70" />}
-                  </button>
-                )}
-                {!isCollapsed && (
-                  <div className="space-y-0.5">
-                    {section.items.map((item) => {
-                      const active = isActive(item.path);
-                      return (
-                        <Link
-                          key={item.text}
-                          to={item.path}
-                          className={`
-                            group flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13.5px] font-medium
-                            transition-all duration-150 relative
-                            ${active ? 'nav-item-active' : ''}
-                          `}
-                          style={{
-                            color: active ? '#fff' : 'hsl(var(--sidebar-fg))',
-                            background: active ? 'hsl(var(--sidebar-active))' : 'transparent',
-                          }}
-                          onMouseEnter={(e) => {
-                            if (!active) {
-                              e.currentTarget.style.background = 'hsl(var(--sidebar-hover))';
-                              e.currentTarget.style.color = '#fff';
-                            }
-                          }}
-                          onMouseLeave={(e) => {
-                            if (!active) {
-                              e.currentTarget.style.background = 'transparent';
-                              e.currentTarget.style.color = 'hsl(var(--sidebar-fg))';
-                            }
-                          }}
-                        >
-                          <span className="flex-shrink-0 opacity-80 group-hover:opacity-100" style={active ? { opacity: 1 } : {}}>
-                            {item.icon}
-                          </span>
-                          <span className="truncate">{item.text}</span>
-                          {active && (
-                            <ChevronRight className="h-3.5 w-3.5 ml-auto opacity-60" />
-                          )}
-                        </Link>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </nav>
+      <div className="flex flex-1 min-h-0 min-w-0">
+        <AppSidebar {...sidebarProps} />
 
-        {/* Separator */}
-        <div className="mx-3 my-1" style={{ borderTop: '1px solid hsl(var(--sidebar-border))' }} />
+        {/* Main content area */}
+        <div className="flex-1 flex flex-col min-w-0">
+          <LicenseBanner licenseStatus={licenseStatus} />
+          <BackupHealthBanner />
+          {hasAnyRole('super_admin', 'hospital_admin') && <SetupProgressBanner />}
 
-        {/* Help link */}
-        <div className="px-3 pb-1">
-          <Link
-            to="/help/docs"
-            className="flex items-center gap-3 px-3 py-2 rounded-lg text-[13px] font-medium transition-all duration-150"
-            style={{ color: 'hsl(var(--sidebar-fg))' }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = 'hsl(var(--sidebar-hover))';
-              e.currentTarget.style.color = '#fff';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = 'transparent';
-              e.currentTarget.style.color = 'hsl(var(--sidebar-fg))';
-            }}
-          >
-            <BookOpen className="h-[18px] w-[18px] opacity-80" />
-            <span>Help & Docs</span>
-          </Link>
-        </div>
-
-        {/* Add to Desktop */}
-        <div className="px-3 pb-1">
-          <button
-            onClick={async () => {
-              if (pwaInstallPrompt) {
-                pwaInstallPrompt.prompt();
-                const result = await pwaInstallPrompt.userChoice;
-                if (result.outcome === 'accepted') setPwaInstallPrompt(null);
-              } else {
-                const link = document.createElement('a');
-                link.href = '/api/system/desktop-shortcut';
-                link.download = 'KT HEALTH ERP.url';
-                link.click();
-              }
-            }}
-            className="flex items-center gap-3 px-3 py-2 rounded-lg text-[13px] font-medium transition-all duration-150 w-full"
-            style={{ color: 'hsl(var(--sidebar-fg))' }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = 'hsl(var(--sidebar-hover))';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = 'transparent';
-            }}
-          >
-            <Monitor className="h-[18px] w-[18px] opacity-80" />
-            <span>Add to Desktop</span>
-          </button>
-        </div>
-
-        {/* Logout button */}
-        <div className="px-3 pb-1">
-          <button
-            onClick={logout}
-            className="flex items-center gap-3 px-3 py-2 rounded-lg text-[13px] font-medium transition-all duration-150 w-full"
-            style={{ color: 'hsl(var(--sidebar-fg))' }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = 'hsla(0, 70%, 50%, 0.25)';
-              e.currentTarget.style.color = '#fca5a5';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = 'transparent';
-              e.currentTarget.style.color = 'hsl(var(--sidebar-fg))';
-            }}
-          >
-            <LogOut className="h-[18px] w-[18px] opacity-80" />
-            <span>Log out</span>
-          </button>
-        </div>
-
-        {/* User info at bottom of sidebar */}
-        <div className="flex-shrink-0 p-3" style={{ borderTop: '1px solid hsl(var(--sidebar-border))' }}>
-          <div className="flex items-center gap-3 px-2 py-2 rounded-lg"
-            style={{ background: 'hsl(var(--sidebar-hover))' }}
-          >
-            <div
-              className="h-8 w-8 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0"
-              style={{
-                background: 'hsl(var(--sidebar-active))',
-                color: '#fff',
-              }}
-            >
-              {userInitials}
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium truncate" style={{ color: '#fff' }}>
-                {user.full_name}
-              </p>
-              <p className="text-[11px] truncate" style={{ color: 'hsl(var(--sidebar-muted))' }}>
-                {getRoleLabel()}
-              </p>
-            </div>
-          </div>
-        </div>
-      </aside>
-
-      {/* Main content area */}
-      <div className="flex-1 flex flex-col min-w-0">
-        {/* License Banner */}
-        <LicenseBanner licenseStatus={licenseStatus} />
-        <BackupHealthBanner />
-        {hasAnyRole('super_admin', 'hospital_admin') && <SetupProgressBanner />}
-
-        {/* Mobile menu button */}
-        <div className="lg:hidden flex items-center h-12 px-4 flex-shrink-0 bg-white border-b border-border">
-          <button
-            className="p-2 -ml-2 rounded-lg hover:bg-gray-100 transition-colors"
-            onClick={() => setSidebarOpen(true)}
-          >
-            <Menu className="h-5 w-5 text-gray-600" />
-          </button>
-        </div>
-
-        {/* Page content */}
-        <main className={`flex-1 min-h-0 ${
-          location.pathname.includes('/pharmacy/sales-counter')
-            ? 'overflow-hidden flex flex-col'
-            : 'overflow-y-auto'
-        } ${(location.pathname.startsWith('/dashboard/inpatient') || location.pathname === '/dashboard/home' || location.pathname.includes('/pharmacy/sales-counter')) ? '' : 'p-4 lg:p-6'}`}>
-          {hasAnyRole('hospital_admin', 'receptionist') && licenseStatus?.days_remaining != null && !location.pathname.includes('/pharmacy/sales-counter') && (
-            <div className={`flex items-center justify-end gap-1.5 text-xs mb-4 ${location.pathname.includes('/pharmacy/sales-counter') ? 'shrink-0' : ''}`}>
-              <Shield className="h-3.5 w-3.5 text-gray-400" />
-              <span className="text-gray-400">License:</span>
-              <span className={`font-semibold ${
-                licenseStatus.days_remaining > 30 ? 'text-green-600' :
-                licenseStatus.days_remaining > 0 ? 'text-amber-600' :
-                'text-red-600'
-              }`}>
-                {licenseStatus.days_remaining > 0
-                  ? `${licenseStatus.days_remaining} days remaining`
-                  : licenseStatus.status === 'grace_period'
-                    ? `Grace period — ${Math.abs(licenseStatus.days_remaining)} days overdue`
-                    : 'Expired'
-                }
-              </span>
-              {licenseStatus.expires_at && (
-                <span className="text-gray-400">
-                  (expires {new Date(licenseStatus.expires_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })})
-                </span>
-              )}
+          {/* Mobile menu button — sidebar mode only (header mode uses AppHeader hamburger) */}
+          {!isHeaderMode && (
+            <div className="lg:hidden flex items-center h-12 px-4 flex-shrink-0 bg-white border-b border-border">
+              <button
+                type="button"
+                className="p-2 -ml-2 rounded-lg hover:bg-gray-100 transition-colors"
+                onClick={() => setSidebarOpen(true)}
+              >
+                <Menu className="h-5 w-5 text-gray-600" />
+              </button>
             </div>
           )}
-          <div className={location.pathname.includes('/pharmacy/sales-counter') ? 'flex-1 min-h-0 flex flex-col overflow-hidden' : undefined}>
-          <Routes>
-            <Route
-              path="/"
-              element={
-                <HomeDashboard hasRole={hasRole} enabledModules={enabledModules} />
-              }
-            />
-            {/* Per-role dashboards — surfaced as separate sidebar items when a
-                user has more than one role-dashboard, so neither one is hidden
-                behind the priority fallback at /dashboard. */}
-            <Route path="/admin-home" element={<SuperAdminDashboard />} />
-            <Route path="/hospital-admin-home" element={<HospitalAdminDashboard />} />
-            <Route path="/doctor-home" element={<DoctorDashboard />} />
-            <Route path="/lab-home" element={<LabTechDashboard />} />
-            <Route path="/reception-home" element={<ReceptionDashboard />} />
-            <Route path="/nurse-home" element={<NurseDashboard />} />
-            <Route
-              path="/home"
-              element={
-                <HomeGrid
-                  enabledModules={enabledModules}
-                  pwaInstallPrompt={pwaInstallPrompt}
-                  onOpenSupport={() => setShowSupportPopup(true)}
-                />
-              }
-            />
-            <Route path="/reception/patients" element={<ReceptionPatientsPage />} />
-            <Route path="/reception/appointments" element={<ReceptionAppointmentsPage />} />
-            <Route path="/reception/doctor-availability" element={<DoctorAvailabilityPage />} />
-            <Route path="/reception/reports" element={<ReceptionReportsPage />} />
-            <Route path="/reception/packages" element={<ReceptionPackagesPage />} />
-            <Route path="/reception/lab-orders" element={<ReceptionLabOrdersPage />} />
-            <Route path="/reception/procedures" element={<ProceduresBillingPage />} />
-            <Route path="/reception/referrals" element={<ReferralManagementPage />} />
-            <Route path="/patients/*" element={<PatientsModule />} />
-            <Route
-              path="lab/*"
-              element={
-                canAccessLabAdminDashboard(roles)
-                  ? <LabModule />
-                  : <Navigate to="/dashboard/lab-home" replace />
-              }
-            />
-            <Route path="/pharmacy/*" element={<PharmacyModule />} />
-            <Route path="/canteen/*" element={<CanteenModule />} />
-            <Route path="/billing/*" element={<BillingModule />} />
-            <Route path="/ehr/*" element={<EHRModule />} />
-            <Route path="/consultation" element={<ConsultationPage />} />
-            <Route path="/availability/*" element={<AvailabilityModule />} />
-            <Route path="/outpatient/*" element={hasRole('doctor') ? <DoctorDashboard /> : <OutpatientModule />} />
-            <Route path="/inpatient/*" element={<InpatientModule />} />
-            <Route path="/admin/*" element={<AdminModule />} />
-            <Route path="/hospital-admin/*" element={<HospitalAdminModule />} />
-            <Route path="/setup" element={
-              hasAnyRole('super_admin', 'hospital_admin')
-                ? <SetupWizard />
-                : <Navigate to="/dashboard/home" replace />
-            } />
-            <Route path="/settlements" element={<SettlementsPage />} />
-            <Route path="/catch-up" element={<CatchUpBills />} />
-            <Route path="/print-settings" element={<PrintSettingsPage />} />
-            <Route path="/license" element={<LicenseManagement />} />
-            <Route path="/backup" element={<BackupManagement />} />
-            <Route path="/software-update" element={<SoftwareUpdate />} />
-            <Route path="/audit" element={<AuditLogsPage />} />
-            <Route path="/support-contact" element={
-              <SupportContactPage sellerInfo={licenseStatus?.seller_info} />
-            } />
-          </Routes>
-          </div>
-        </main>
 
-        {/* Footer — pinned to bottom of content area */}
-        <footer className="flex-shrink-0 py-2 text-center text-xs text-gray-400 bg-white border-t border-gray-100">
-          Powered by <span className="font-medium text-gray-500">KT HEALTH ERP</span>
-          {licenseStatus?.seller_info?.name
-            ? <> &mdash; Sold by <span className="font-medium text-gray-500">{licenseStatus.seller_info.name}</span></>
-            : <> &mdash; Developed by KT Health Soft</>
-          }
-        </footer>
+          {/* Page content */}
+          <main className={`flex-1 min-h-0 ${
+            location.pathname.includes('/pharmacy/sales-counter')
+              ? 'overflow-hidden flex flex-col'
+              : 'overflow-y-auto'
+          } ${(location.pathname.startsWith('/dashboard/inpatient') || location.pathname === '/dashboard/home' || location.pathname.includes('/pharmacy/sales-counter')) ? '' : 'p-4 lg:p-6'}`}>
+            <div className={location.pathname.includes('/pharmacy/sales-counter') ? 'flex-1 min-h-0 flex flex-col overflow-hidden' : undefined}>
+            <Routes>
+              <Route
+                path="/"
+                element={
+                  <HomeDashboard hasRole={hasRole} enabledModules={enabledModules} />
+                }
+              />
+              {/* Per-role dashboards — surfaced as separate sidebar items when a
+                  user has more than one role-dashboard, so neither one is hidden
+                  behind the priority fallback at /dashboard. */}
+              <Route path="/admin-home" element={<SuperAdminDashboard />} />
+              <Route path="/hospital-admin-home" element={<HospitalAdminDashboard />} />
+              <Route path="/doctor-home" element={<DoctorDashboard />} />
+              <Route path="/lab-home" element={<LabTechDashboard />} />
+              <Route path="/reception-home" element={<ReceptionDashboard />} />
+              <Route path="/nurse-home" element={<NurseDashboard />} />
+              <Route
+                path="/home"
+                element={
+                  <HomeGrid
+                    enabledModules={enabledModules}
+                    pwaInstallPrompt={pwaInstallPrompt}
+                    onOpenSupport={() => setShowSupportPopup(true)}
+                  />
+                }
+              />
+              <Route path="/reception/patients" element={<ReceptionPatientsPage />} />
+              <Route path="/reception/appointments" element={<ReceptionAppointmentsPage />} />
+              <Route path="/reception/doctor-availability" element={<DoctorAvailabilityPage />} />
+              <Route path="/reception/reports" element={<ReceptionReportsPage />} />
+              <Route path="/reception/packages" element={<ReceptionPackagesPage />} />
+              <Route path="/reception/lab-orders" element={<ReceptionLabOrdersPage />} />
+              <Route path="/reception/procedures" element={<ProceduresBillingPage />} />
+              <Route path="/reception/referrals" element={<ReferralManagementPage />} />
+              <Route path="/patients/*" element={<PatientsModule />} />
+              <Route
+                path="lab/*"
+                element={
+                  canAccessLabAdminDashboard(roles)
+                    ? <LabModule />
+                    : <Navigate to="/dashboard/lab-home" replace />
+                }
+              />
+              <Route path="/pharmacy/*" element={<PharmacyModule />} />
+              <Route path="/canteen/*" element={<CanteenModule />} />
+              <Route path="/billing/*" element={<BillingModule />} />
+              <Route path="/ehr/*" element={<EHRModule />} />
+              <Route path="/consultation" element={<ConsultationPage />} />
+              <Route path="/availability/*" element={<AvailabilityModule />} />
+              <Route path="/outpatient/*" element={hasRole('doctor') ? <DoctorDashboard /> : <OutpatientModule />} />
+              <Route path="/inpatient/*" element={<InpatientModule />} />
+              <Route path="/admin/*" element={<AdminModule />} />
+              <Route path="/hospital-admin/*" element={<HospitalAdminModule />} />
+              <Route path="/setup" element={
+                hasAnyRole('super_admin', 'hospital_admin')
+                  ? <SetupWizard />
+                  : <Navigate to="/dashboard/home" replace />
+              } />
+              <Route path="/settlements" element={<SettlementsPage />} />
+              <Route path="/catch-up" element={<CatchUpBills />} />
+              <Route path="/print-settings" element={<PrintSettingsPage />} />
+              <Route path="/license" element={<LicenseManagement />} />
+              <Route path="/backup" element={<BackupManagement />} />
+              <Route path="/software-update" element={<SoftwareUpdate />} />
+              <Route path="/audit" element={<AuditLogsPage />} />
+              <Route path="/support-contact" element={
+                <SupportContactPage sellerInfo={licenseStatus?.seller_info} />
+              } />
+            </Routes>
+            </div>
+          </main>
+
+          <footer className="flex-shrink-0 py-2 px-3 text-center text-xs text-gray-400 bg-white border-t border-gray-100 flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
+            <span>
+              Powered by <span className="font-medium text-gray-500">KT HEALTH ERP</span>
+              {licenseStatus?.seller_info?.name
+                ? <> &mdash; Sold by <span className="font-medium text-gray-500">{licenseStatus.seller_info.name}</span></>
+                : <> &mdash; Developed by KT Health Soft</>
+              }
+            </span>
+            {hasAnyRole('hospital_admin', 'receptionist') && licenseStatus?.days_remaining != null && (
+              <span className="inline-flex items-center gap-1.5">
+                <span className="text-gray-300" aria-hidden>·</span>
+                <Shield className="h-3 w-3 text-gray-400" />
+                <span>License:</span>
+                <span className={`font-semibold ${
+                  licenseStatus.days_remaining > 30 ? 'text-green-600' :
+                  licenseStatus.days_remaining > 0 ? 'text-amber-600' :
+                  'text-red-600'
+                }`}>
+                  {licenseStatus.days_remaining > 0
+                    ? `${licenseStatus.days_remaining} days remaining`
+                    : licenseStatus.status === 'grace_period'
+                      ? `Grace period — ${Math.abs(licenseStatus.days_remaining)} days overdue`
+                      : 'Expired'
+                  }
+                </span>
+                {licenseStatus.expires_at && (
+                  <span>
+                    (expires {new Date(licenseStatus.expires_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })})
+                  </span>
+                )}
+              </span>
+            )}
+          </footer>
+        </div>
       </div>
 
       {/* Mobile overlay */}
@@ -602,23 +437,8 @@ const Dashboard = () => {
         />
       )}
 
-      {/* Floating Menu Grid Button — sits above the support button */}
-      <div className="fixed bottom-24 right-6 z-50 group">
-        <button
-          onClick={() => navigate('/dashboard/home')}
-          aria-label="All Menus"
-          className="h-14 w-14 rounded-full shadow-lg flex items-center justify-center transition-all duration-200 bg-emerald-600 hover:bg-emerald-700 hover:scale-105"
-        >
-          <LayoutGrid className="h-6 w-6 text-white" />
-        </button>
-        <span className="pointer-events-none absolute right-16 top-1/2 -translate-y-1/2 whitespace-nowrap rounded-md bg-gray-900 px-2 py-1 text-xs text-white opacity-0 group-hover:opacity-100 transition-opacity">
-          All Menus
-        </span>
-      </div>
-
       {/* Floating Support Button */}
       <div className="fixed bottom-6 right-6 z-50">
-        {/* Popup */}
         {showSupportPopup && (
           <>
             <div className="fixed inset-0" onClick={() => setShowSupportPopup(false)} />
@@ -633,7 +453,6 @@ const Dashboard = () => {
                 </button>
               </div>
               <div className="p-4 space-y-4 max-h-[60vh] overflow-y-auto">
-                {/* Vendor section */}
                 {licenseStatus?.seller_info?.name && (
                   <div className="space-y-2.5">
                     <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Your Vendor</p>
@@ -655,7 +474,6 @@ const Dashboard = () => {
                   </div>
                 )}
 
-                {/* KT Health section */}
                 <div className="space-y-2.5">
                   <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
                     {licenseStatus?.seller_info?.name ? 'Product Support' : 'Support'}
@@ -673,7 +491,6 @@ const Dashboard = () => {
                   </div>
                 </div>
 
-                {/* Network Access */}
                 {networkInfo?.ips?.length > 0 && (
                   <div className="space-y-2.5">
                     <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Network Access</p>
@@ -691,7 +508,6 @@ const Dashboard = () => {
                   </div>
                 )}
 
-                {/* Version */}
                 {appVersion && (
                   <p className="text-center text-[10px] text-gray-400 pt-2 border-t border-gray-100">
                     KT HEALTH ERP v{appVersion}
@@ -702,7 +518,6 @@ const Dashboard = () => {
           </>
         )}
 
-        {/* Floating button */}
         <button
           onClick={() => setShowSupportPopup(!showSupportPopup)}
           className={`h-14 w-14 rounded-full shadow-lg flex items-center justify-center transition-all duration-200 ${
@@ -720,5 +535,11 @@ const Dashboard = () => {
     </div>
   );
 };
+
+const Dashboard = () => (
+  <LayoutPreferencesProvider>
+    <DashboardShell />
+  </LayoutPreferencesProvider>
+);
 
 export default Dashboard;

@@ -123,6 +123,9 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
   if (hasAnyRole('receptionist', 'hospital_admin', 'super_admin')) {
     const items = [];
     add(items, make('Patients', Users, '/dashboard/reception/patients'));
+    if (enabledModules.ehr) {
+      add(items, make('EHR / Patient Chart', FileText, '/dashboard/ehr'));
+    }
     if (enabledModules.outpatient) {
       add(items, make('Appointments', Calendar, '/dashboard/reception/appointments'));
       add(items, make('Doctor Schedule', CalendarClock, '/dashboard/reception/doctor-availability'));
@@ -199,8 +202,8 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
     if (setup.length > 0) sections.push({ label: 'Pharmacy Setup', items: setup });
   }
 
-  // ── EHR (admin who isn't a doctor) ──
-  if (hasAnyRole('hospital_admin', 'super_admin') && !hasRole('doctor') && enabledModules.ehr) {
+  // ── EHR (non-doctor clinical / admin roles; doctors get it under Doctor section) ──
+  if (hasAnyRole('hospital_admin', 'super_admin', 'nurse', 'frontdesk', 'inpatient_admin', 'billing_admin') && !hasRole('doctor') && enabledModules.ehr) {
     const items = [];
     add(items, make('EHR', FileText, '/dashboard/ehr'));
     if (items.length > 0) sections.push({ label: 'Health Records', items });

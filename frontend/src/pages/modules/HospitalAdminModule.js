@@ -5,6 +5,7 @@ import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
 import { Textarea } from '../../components/ui/textarea';
 import { useAuth } from '../../contexts/AuthContext';
+import { useLayoutPreferences } from '../../contexts/LayoutPreferencesContext';
 import { useToast } from '../../hooks/use-toast';
 import axios from 'axios';
 import PayerSchemesAdmin from './inpatient/PayerSchemesAdmin';
@@ -18,13 +19,18 @@ import {
   Receipt,
   CreditCard,
   Printer,
+  PanelLeft,
+  PanelTop,
 } from 'lucide-react';
 
 const HospitalAdminModule = () => {
   const { user } = useAuth();
   const { toast } = useToast();
+  const { navLayout, setNavLayout } = useLayoutPreferences();
   const [activeTab, setActiveTab] = useState('hospital-info');
   const [loading, setLoading] = useState(false);
+  const [appearanceLayout, setAppearanceLayout] = useState('sidebar');
+  const [savingAppearance, setSavingAppearance] = useState(false);
 
   // Hospital Info State
   const [hospitalInfo, setHospitalInfo] = useState({
@@ -68,6 +74,34 @@ const HospitalAdminModule = () => {
       fetchRegistrationFee();
     }
   }, [user]);
+
+  useEffect(() => {
+    setAppearanceLayout(navLayout === 'header' ? 'header' : 'sidebar');
+  }, [navLayout]);
+
+  const handleAppearanceSave = async () => {
+    setSavingAppearance(true);
+    try {
+      const res = await axios.put('/api/hospital/ui-settings', {
+        nav_layout: appearanceLayout,
+      });
+      const layout = res.data?.nav_layout === 'header' ? 'header' : 'sidebar';
+      setNavLayout(layout);
+      setAppearanceLayout(layout);
+      toast({
+        title: 'Appearance updated',
+        description: 'Navigation layout applies to all users on this hospital.',
+      });
+    } catch (error) {
+      toast({
+        variant: 'destructive',
+        title: 'Error',
+        description: error?.response?.data?.detail || 'Failed to save appearance settings',
+      });
+    } finally {
+      setSavingAppearance(false);
+    }
+  };
 
   const fetchHospitalInfo = async () => {
     try {
@@ -269,6 +303,18 @@ const HospitalAdminModule = () => {
           <Printer className="h-4 w-4 mr-2" />
           Print Settings
         </Button>
+        <Button
+          variant="ghost"
+          className={`px-4 py-2 ${
+            activeTab === 'appearance'
+              ? 'border-b-2 border-blue-500 text-blue-600'
+              : 'text-gray-600 hover:text-gray-800'
+          }`}
+          onClick={() => setActiveTab('appearance')}
+        >
+          <PanelTop className="h-4 w-4 mr-2" />
+          Appearance
+        </Button>
       </div>
 
       {activeTab === 'payer-schemes' && <PayerSchemesAdmin />}
@@ -289,6 +335,68 @@ const HospitalAdminModule = () => {
             </p>
             <Button type="button" variant="outline" asChild>
               <Link to="/dashboard/print-settings">Open Print Settings</Link>
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Appearance Tab */}
+      {activeTab === 'appearance' && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center">
+              <PanelTop className="h-5 w-5 mr-2" />
+              Navigation layout
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-gray-600">
+              Applies to all users on this hospital. Changes take effect immediately after save
+              (open sessions update without a full reload).
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-xl">
+              <button
+                type="button"
+                onClick={() => setAppearanceLayout('sidebar')}
+                className={`flex items-start gap-3 rounded-lg border-2 p-4 text-left transition-colors ${
+                  appearanceLayout === 'sidebar'
+                    ? 'border-blue-500 bg-blue-50'
+                    : 'border-gray-200 hover:border-gray-300'
+                }`}
+              >
+                <PanelLeft className="h-5 w-5 mt-0.5 text-gray-700 flex-shrink-0" />
+                <div>
+                  <p className="font-medium text-gray-900">Side menu</p>
+                  <p className="text-sm text-gray-500 mt-0.5">
+                    Classic left sidebar with collapsible sections.
+                  </p>
+                </div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setAppearanceLayout('header')}
+                className={`flex items-start gap-3 rounded-lg border-2 p-4 text-left transition-colors ${
+                  appearanceLayout === 'header'
+                    ? 'border-blue-500 bg-blue-50'
+                    : 'border-gray-200 hover:border-gray-300'
+                }`}
+              >
+                <PanelTop className="h-5 w-5 mt-0.5 text-gray-700 flex-shrink-0" />
+                <div>
+                  <p className="font-medium text-gray-900">Top menu</p>
+                  <p className="text-sm text-gray-500 mt-0.5">
+                    Horizontal header nav with full-width pages and search.
+                  </p>
+                </div>
+              </button>
+            </div>
+            <Button
+              type="button"
+              onClick={handleAppearanceSave}
+              disabled={savingAppearance || appearanceLayout === navLayout}
+            >
+              <Save className="h-4 w-4 mr-2" />
+              {savingAppearance ? 'Saving…' : 'Save appearance'}
             </Button>
           </CardContent>
         </Card>

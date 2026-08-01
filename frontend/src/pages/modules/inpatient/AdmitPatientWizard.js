@@ -176,6 +176,7 @@ const AdmitPatientWizard = ({
   onCreated,
   onDraftSaved,
   resumeAdmissionId = null,
+  initialPatient = null,
   doctorsList = [],
 }) => {
   const { toast } = useToast();
@@ -201,6 +202,19 @@ const AdmitPatientWizard = ({
       patient_id: saved.patient_id,
       primary_phone: '',
     };
+  };
+
+  const applyInitialPatient = (p) => {
+    if (!p?.id) return false;
+    setSelectedPatient(p);
+    setDraft({
+      ...EMPTY_DRAFT,
+      patient_id: String(p.id),
+      patient_label: `${p.first_name || ''} ${p.last_name || ''}`.trim()
+        + ` · ${p.gender || '—'} · MRN ${p.mrn || p.patient_id || ''}`,
+    });
+    setStep(1);
+    return true;
   };
 
   // restore draft on open (server resume takes priority over browser draft)
@@ -252,6 +266,11 @@ const AdmitPatientWizard = ({
       return;
     }
 
+    // Prefill from EHR / patient chart "Admit" action — skip stale local draft
+    if (applyInitialPatient(initialPatient)) {
+      return;
+    }
+
     try {
       const raw = localStorage.getItem(DRAFT_KEY);
       if (raw) {
@@ -274,7 +293,7 @@ const AdmitPatientWizard = ({
       setSelectedPatient(null);
       setStep(1);
     }
-  }, [open, resumeAdmissionId, toast]);
+  }, [open, resumeAdmissionId, initialPatient, toast]);
 
   // persist draft as user edits
   useEffect(() => {
