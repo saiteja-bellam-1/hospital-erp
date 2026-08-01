@@ -69,130 +69,154 @@ app.add_middleware(MaintenanceMiddleware)
 
 security = HTTPBearer()
 
+def _run_schema_bootstrap():
+    """Create missing tables and apply idempotent column/index migrations.
+
+    Always runs — must NOT be gated on setup_complete. A stale or
+    cross-machine config.db_path used to make is_setup_complete() false while
+    the live engine still served an older local DB, which skipped migrations
+    and caused runtime 500s (missing columns on login, lab orders, etc.).
+    """
+    create_tables()
+    print("Database tables created successfully")
+    # Run migrations under the schema-migrations tracker. A failed
+    # migration is now LOUD: we abort startup instead of silently
+    # serving a half-migrated DB. The recorded failure stays in
+    # schema_migrations for the admin Diagnostics page.
+    from config.database import engine as _engine
+    from app.utils.schema_migrations import run_migration
+    try:
+        from migrate_patient_fields import migrate as _patient_migrate
+        run_migration(_engine, "migrate_patient_fields", _patient_migrate)
+    except Exception as e:
+        raise RuntimeError(
+            f"Schema migration migrate_patient_fields failed — refusing to boot. "
+            f"See schema_migrations table for details. Error: {e}"
+        )
+    try:
+        from migrate_inpatient_indexes import migrate_indexes as _idx_migrate
+        run_migration(_engine, "migrate_inpatient_indexes", _idx_migrate)
+    except Exception as e:
+        raise RuntimeError(
+            f"Schema migration migrate_inpatient_indexes failed — refusing to boot. Error: {e}"
+        )
+    try:
+        from migrate_drop_incidents_diet import migrate_drop_incidents_diet as _drop_migrate
+        run_migration(_engine, "migrate_drop_incidents_diet",
+                      lambda: _drop_migrate(_engine))
+    except Exception as e:
+        raise RuntimeError(
+            f"Schema migration migrate_drop_incidents_diet failed — refusing to boot. Error: {e}"
+        )
+    try:
+        from migrate_pharmacy import migrate as _pharmacy_migrate
+        run_migration(_engine, "migrate_pharmacy", _pharmacy_migrate)
+    except Exception as e:
+        raise RuntimeError(
+            f"Schema migration migrate_pharmacy failed — refusing to boot. Error: {e}"
+        )
+    try:
+        from migrate_pharmacy_stores import migrate as _pharmacy_stores_migrate
+        run_migration(_engine, "migrate_pharmacy_stores", _pharmacy_stores_migrate)
+    except Exception as e:
+        raise RuntimeError(
+            f"Schema migration migrate_pharmacy_stores failed — refusing to boot. Error: {e}"
+        )
+
+
+def _run_operational_startup():
+    """Seeds, data heals, and background jobs for an already-bootstrapped install."""
+    # Ensure role permissions exist (for installations that pre-date the wizard)
+    _ensure_role_permissions()
+    # Ensure all modules exist (add missing ones for upgrades)
+    _ensure_modules()
+    # Seed default payer schemes (Cash, Aarogyasri, Teachers, Govt Employee, Private Insurance, TPA)
+    _ensure_payer_schemes()
+    # Heal existing rows from the old `bill_type='procedure'` label to the
+    # current `day_care` value, so the central billing dashboard groups them
+    # under the right type after the rename.
+    try:
+        from config.database import get_db as _get_db
+        from sqlalchemy import text as _sql_text
+        _db = next(_get_db())
+        res = _db.execute(_sql_text(
+            "UPDATE bills SET bill_type = 'day_care' WHERE bill_type = 'procedure'"
+        ))
+        if res.rowcount:
+            print(f"Renamed {res.rowcount} legacy 'procedure' bills to 'day_care'")
+        _db.commit()
+        _db.close()
+    except Exception as _e:
+        print(f"Warning: could not rename legacy procedure bills: {_e}")
+    # Seed face-sheet + case-sheet consent templates with placeholder content
+    _ensure_admission_consent_templates()
+    # Cleanup old audit logs based on retention config
+    try:
+        from app.services.audit_service import cleanup_old_logs, get_retention_days
+        from config.database import get_db as _get_db
+        _db = next(_get_db())
+        retention = get_retention_days(_db)
+        deleted = cleanup_old_logs(_db, retention)
+        if deleted > 0:
+            print(f"Cleaned up {deleted} old audit log entries (>{retention} days)")
+        _db.close()
+    except Exception:
+        pass
+    # Start real-time mirror backup
+    locations = []
+    try:
+        from app.utils.config import start_mirror_backup, get_backup_locations
+        locations = get_backup_locations()
+        if locations:
+            start_mirror_backup(interval_seconds=60)
+            print(f"Mirror backup started — syncing every 60s to {len(locations)} location(s)")
+        else:
+            print("No backup locations configured — mirror backup not started")
+    except Exception as e:
+        print(f"Mirror backup note: {e}")
+    # Start scheduled snapshot backup
+    try:
+        from app.utils.config import start_snapshot_backup, load_config as _load_cfg
+        _cfg = _load_cfg()
+        snap_interval = _cfg.get("snapshot_interval_minutes", 30)
+        if locations:
+            start_snapshot_backup(interval_minutes=snap_interval)
+            print(f"Snapshot backup started — every {snap_interval} min")
+    except Exception as e:
+        print(f"Snapshot backup note: {e}")
+    # Start Google Drive backup thread
+    try:
+        from app.utils.config import start_gdrive_backup
+        start_gdrive_backup(interval_minutes=10)
+        print("Google Drive backup thread started — checking every 10 min")
+    except Exception as e:
+        print(f"Google Drive backup note: {e}")
+    # Inpatient daily charges auto-post (one doctor visit per admitted
+    # patient per day at the admitting doctor's fee). Idempotent — manually
+    # recorded visits supersede the auto-post.
+    try:
+        from app.services.inpatient_daily_charges import start_daily_charges_thread
+        start_daily_charges_thread(check_interval_seconds=3600)
+        print("Inpatient daily-charges thread started — hourly check")
+    except Exception as e:
+        print(f"Daily-charges note: {e}")
+
+
 @app.on_event("startup")
 async def startup_event():
     from app.utils.config import is_setup_complete
+
+    # Schema bootstrap is unconditional. setup_complete only gates operational
+    # seeds/backup threads — never column migrations.
+    _run_schema_bootstrap()
+
     if is_setup_complete():
-        create_tables()
-        print("Database tables created successfully")
-        # Run migrations under the schema-migrations tracker. A failed
-        # migration is now LOUD: we abort startup instead of silently
-        # serving a half-migrated DB. The recorded failure stays in
-        # schema_migrations for the admin Diagnostics page.
-        from config.database import engine as _engine
-        from app.utils.schema_migrations import run_migration
-        try:
-            from migrate_patient_fields import migrate as _patient_migrate
-            run_migration(_engine, "migrate_patient_fields", _patient_migrate)
-        except Exception as e:
-            raise RuntimeError(
-                f"Schema migration migrate_patient_fields failed — refusing to boot. "
-                f"See schema_migrations table for details. Error: {e}"
-            )
-        try:
-            from migrate_inpatient_indexes import migrate_indexes as _idx_migrate
-            run_migration(_engine, "migrate_inpatient_indexes", _idx_migrate)
-        except Exception as e:
-            raise RuntimeError(
-                f"Schema migration migrate_inpatient_indexes failed — refusing to boot. Error: {e}"
-            )
-        try:
-            from migrate_drop_incidents_diet import migrate_drop_incidents_diet as _drop_migrate
-            run_migration(_engine, "migrate_drop_incidents_diet",
-                          lambda: _drop_migrate(_engine))
-        except Exception as e:
-            raise RuntimeError(
-                f"Schema migration migrate_drop_incidents_diet failed — refusing to boot. Error: {e}"
-            )
-        try:
-            from migrate_pharmacy import migrate as _pharmacy_migrate
-            run_migration(_engine, "migrate_pharmacy", _pharmacy_migrate)
-        except Exception as e:
-            raise RuntimeError(
-                f"Schema migration migrate_pharmacy failed — refusing to boot. Error: {e}"
-            )
-        try:
-            from migrate_pharmacy_stores import migrate as _pharmacy_stores_migrate
-            run_migration(_engine, "migrate_pharmacy_stores", _pharmacy_stores_migrate)
-        except Exception as e:
-            raise RuntimeError(
-                f"Schema migration migrate_pharmacy_stores failed — refusing to boot. Error: {e}"
-            )
-        # Ensure role permissions exist (for installations that pre-date the wizard)
-        _ensure_role_permissions()
-        # Ensure all modules exist (add missing ones for upgrades)
-        _ensure_modules()
-        # Seed default payer schemes (Cash, Aarogyasri, Teachers, Govt Employee, Private Insurance, TPA)
-        _ensure_payer_schemes()
-        # Heal existing rows from the old `bill_type='procedure'` label to the
-        # current `day_care` value, so the central billing dashboard groups them
-        # under the right type after the rename.
-        try:
-            from config.database import get_db as _get_db
-            from sqlalchemy import text as _sql_text
-            _db = next(_get_db())
-            res = _db.execute(_sql_text(
-                "UPDATE bills SET bill_type = 'day_care' WHERE bill_type = 'procedure'"
-            ))
-            if res.rowcount:
-                print(f"Renamed {res.rowcount} legacy 'procedure' bills to 'day_care'")
-            _db.commit()
-            _db.close()
-        except Exception as _e:
-            print(f"Warning: could not rename legacy procedure bills: {_e}")
-        # Seed face-sheet + case-sheet consent templates with placeholder content
-        _ensure_admission_consent_templates()
-        # Cleanup old audit logs based on retention config
-        try:
-            from app.services.audit_service import cleanup_old_logs, get_retention_days
-            from config.database import get_db as _get_db
-            _db = next(_get_db())
-            retention = get_retention_days(_db)
-            deleted = cleanup_old_logs(_db, retention)
-            if deleted > 0:
-                print(f"Cleaned up {deleted} old audit log entries (>{retention} days)")
-            _db.close()
-        except Exception:
-            pass
-        # Start real-time mirror backup
-        try:
-            from app.utils.config import start_mirror_backup, get_backup_locations
-            locations = get_backup_locations()
-            if locations:
-                start_mirror_backup(interval_seconds=60)
-                print(f"Mirror backup started — syncing every 60s to {len(locations)} location(s)")
-            else:
-                print("No backup locations configured — mirror backup not started")
-        except Exception as e:
-            print(f"Mirror backup note: {e}")
-        # Start scheduled snapshot backup
-        try:
-            from app.utils.config import start_snapshot_backup, load_config as _load_cfg
-            _cfg = _load_cfg()
-            snap_interval = _cfg.get("snapshot_interval_minutes", 30)
-            if locations:
-                start_snapshot_backup(interval_minutes=snap_interval)
-                print(f"Snapshot backup started — every {snap_interval} min")
-        except Exception as e:
-            print(f"Snapshot backup note: {e}")
-        # Start Google Drive backup thread
-        try:
-            from app.utils.config import start_gdrive_backup
-            start_gdrive_backup(interval_minutes=10)
-            print("Google Drive backup thread started — checking every 10 min")
-        except Exception as e:
-            print(f"Google Drive backup note: {e}")
-        # Inpatient daily charges auto-post (one doctor visit per admitted
-        # patient per day at the admitting doctor's fee). Idempotent — manually
-        # recorded visits supersede the auto-post.
-        try:
-            from app.services.inpatient_daily_charges import start_daily_charges_thread
-            start_daily_charges_thread(check_interval_seconds=3600)
-            print("Inpatient daily-charges thread started — hourly check")
-        except Exception as e:
-            print(f"Daily-charges note: {e}")
+        _run_operational_startup()
     else:
-        print("Setup not complete — first launch will apply install_seed.json via bootstrap_from_seed")
+        print(
+            "Setup not complete — schema is up to date; "
+            "first launch will apply install_seed.json via bootstrap_from_seed"
+        )
 
 
 def _ensure_role_permissions():

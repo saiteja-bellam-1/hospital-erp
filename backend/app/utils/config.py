@@ -41,8 +41,13 @@ def is_setup_complete():
 
     Truth chain (no backward-compat fallback):
       1. config.json must exist AND explicitly say setup_complete=True, AND
-      2. the DB at the configured path must contain a usable users table
+      2. the DB the app will actually open must contain a usable users table
          with at least one row (sentinel-table probe).
+
+    Path resolution MUST match get_db_path() / the SQLAlchemy engine. Never
+    probe a raw config.db_path that may be a stale absolute path from another
+    machine (e.g. a Windows path copied onto macOS) — that falsely reports
+    setup incomplete and previously skipped schema migrations.
 
     The pre-wizard "DB at default path → skip wizard" fallback was removed
     deliberately. Every install must run the wizard at least once so an
@@ -68,9 +73,9 @@ def is_setup_complete():
     if not config.get("setup_complete", False):
         return False
 
+    # Same path the engine uses — ignores unreachable custom db_path values.
     from app.utils.paths import get_db_path
-    db_path = config.get("db_path") or get_db_path()
-    return _has_seeded_users(db_path)
+    return _has_seeded_users(get_db_path())
 
 
 def get_configured_db_path():

@@ -3,6 +3,7 @@ import axios from 'axios';
 import { Card, CardContent, CardHeader, CardTitle } from '../../../components/ui/card';
 import { Button } from '../../../components/ui/button';
 import { Input } from '../../../components/ui/input';
+import { QtyInput } from '../../../components/ui/qty-input';
 import { Label } from '../../../components/ui/label';
 import {
   Dialog,
@@ -769,7 +770,7 @@ const CatchUpBills = () => {
                   </div>
                   <div className="col-span-2">
                     <Label className="text-xs">Qty</Label>
-                    <Input type="number" min="1" value={l.quantity} onChange={(e) => updateLine(idx, 'quantity', e.target.value)} />
+                    <QtyInput min="1" step="1" value={l.quantity} onChange={(e) => updateLine(idx, 'quantity', e.target.value)} />
                   </div>
                   <div className="col-span-3">
                     <Label className="text-xs">Unit price</Label>
@@ -1060,8 +1061,7 @@ const CatchUpBills = () => {
                       </select>
                     </div>
                     <div className="col-span-2">
-                      <Input
-                        type="number"
+                      <QtyInput
                         min="0"
                         step="0.01"
                         placeholder="Qty"
@@ -1170,9 +1170,9 @@ const CatchUpBills = () => {
                           />
                         </div>
                         <div className="col-span-1">
-                          <Input
-                            type="number"
+                          <QtyInput
                             min="1"
+                            step="1"
                             value={li.quantity}
                             onChange={(e) => setFoodOrders((p) => p.map((x, i) => i === oIdx ? {
                               ...x,
@@ -1229,8 +1229,7 @@ const CatchUpBills = () => {
                       />
                     </div>
                     <div className="col-span-2">
-                      <Input
-                        type="number"
+                      <QtyInput
                         min="0"
                         step="0.01"
                         value={l.quantity}

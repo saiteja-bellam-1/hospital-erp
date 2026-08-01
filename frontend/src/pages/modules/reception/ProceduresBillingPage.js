@@ -3,6 +3,7 @@ import axios from 'axios';
 import { Card, CardContent, CardHeader, CardTitle } from '../../../components/ui/card';
 import { Button } from '../../../components/ui/button';
 import { Input } from '../../../components/ui/input';
+import { QtyInput } from '../../../components/ui/qty-input';
 import { Label } from '../../../components/ui/label';
 import { Badge } from '../../../components/ui/badge';
 import { Textarea } from '../../../components/ui/textarea';
@@ -284,7 +285,7 @@ const ProceduresBillingPage = () => {
                       {line.kind === 'catalog' ? (
                         <Select value={String(line.procedure_id || '')}
                           onValueChange={(v) => updateLine(idx, { procedure_id: v })}>
-                          <SelectTrigger className="col-span-5 h-9 text-xs"><SelectValue placeholder="Pick a service" /></SelectTrigger>
+                          <SelectTrigger className="col-span-4 h-9 text-xs"><SelectValue placeholder="Pick a service" /></SelectTrigger>
                           <SelectContent>
                             {procedures.length === 0 && <SelectItem value="_none" disabled>No services in catalog</SelectItem>}
                             {procedures.map((p) => (
@@ -295,11 +296,11 @@ const ProceduresBillingPage = () => {
                           </SelectContent>
                         </Select>
                       ) : (
-                        <Input className="col-span-5 h-9 text-xs" placeholder="Service description"
+                        <Input className="col-span-4 h-9 text-xs" placeholder="Service description"
                           value={line.item_name}
                           onChange={(e) => updateLine(idx, { item_name: e.target.value })} />
                       )}
-                      <Input className="col-span-1 h-9 text-xs" type="number" min="1" placeholder="Qty"
+                      <QtyInput className="col-span-2 w-full" min="1" step="1" placeholder="Qty"
                         value={line.quantity} onChange={(e) => updateLine(idx, { quantity: e.target.value })} />
                       <Input className="col-span-2 h-9 text-xs" type="number" min="0" step="0.01"
                         placeholder={line.kind === 'catalog' ? 'override price (optional)' : 'unit price'}

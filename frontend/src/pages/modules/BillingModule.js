@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
+import { QtyInput } from '../../components/ui/qty-input';
 import { Label } from '../../components/ui/label';
 import { Badge } from '../../components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select';
@@ -1634,14 +1635,14 @@ const BillingModule = () => {
             <div className="space-y-2">
               <Label className="text-xs">Line items *</Label>
               {creditNoteForm.items.map((it, idx) => (
-                <div key={idx} className="grid grid-cols-12 gap-2">
+                <div key={idx} className="grid grid-cols-12 gap-2 items-center">
                   <Input className="col-span-6" placeholder="Description" value={it.item_name}
                     onChange={(e) => {
                       const next = [...creditNoteForm.items];
                       next[idx] = { ...next[idx], item_name: e.target.value };
                       setCreditNoteForm({ ...creditNoteForm, items: next });
                     }} />
-                  <Input className="col-span-2" type="number" min="1" placeholder="Qty" value={it.quantity}
+                  <QtyInput className="col-span-2 w-full" min="1" step="1" placeholder="Qty" value={it.quantity}
                     onChange={(e) => {
                       const next = [...creditNoteForm.items];
                       next[idx] = { ...next[idx], quantity: e.target.value };

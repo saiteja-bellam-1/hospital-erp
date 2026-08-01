@@ -2351,8 +2351,15 @@ class SaleItemOut(BaseModel):
     rate_tier: str
     discount_pct: float
     tax_pct: float
+    sgst_pct: float = 0.0
+    cgst_pct: float = 0.0
     line_total: float
     barcode_scanned: bool
+    # Invoice / print enrichment (optional on API responses)
+    manufacturer: Optional[str] = None
+    schedule: Optional[str] = None
+    expiry_date: Optional[str] = None
+    hsn_code: Optional[str] = None
 
     class Config: from_attributes = True
 
@@ -2513,11 +2520,46 @@ def _pick_fifo_batches(db: Session, *, medicine_id: int, qty_needed: float, hosp
     return picks
 
 
+def _medicine_schedule_label(med: Optional[Medicine]) -> str:
+    if not med:
+        return ""
+    if getattr(med, "is_schedule_h1", False):
+        return "H1"
+    if getattr(med, "is_schedule_h", False):
+        return "H"
+    return ""
+
+
+def _medicine_manufacturer_name(db: Session, med: Optional[Medicine]) -> str:
+    if not med:
+        return ""
+    if getattr(med, "company_id", None):
+        co = db.query(PharmacyCompany).filter(PharmacyCompany.id == med.company_id).first()
+        if co and co.name:
+            return co.name
+    return (med.manufacturer or "").strip()
+
+
+def _resolve_line_hsn_code(db: Session, med: Optional[Medicine], batch: Optional[PharmacyInventory]) -> str:
+    hsn_id = None
+    if batch and getattr(batch, "hsn_id", None):
+        hsn_id = batch.hsn_id
+    elif med and getattr(med, "hsn_id", None):
+        hsn_id = med.hsn_id
+    if not hsn_id:
+        return ""
+    hsn = db.query(PharmacyHSN).filter(PharmacyHSN.id == hsn_id).first()
+    return (hsn.code if hsn else "") or ""
+
+
 def _shape_sale(s: PharmacySale, db: Session) -> SaleOut:
     items_out: List[SaleItemOut] = []
     for it in s.items:
         med = db.query(Medicine).filter(Medicine.id == it.medicine_id).first()
         batch = db.query(PharmacyInventory).filter(PharmacyInventory.id == it.batch_id).first()
+        exp = None
+        if batch and batch.expiry_date:
+            exp = batch.expiry_date.isoformat() if hasattr(batch.expiry_date, "isoformat") else str(batch.expiry_date)
         items_out.append(SaleItemOut(
             id=it.id, medicine_id=it.medicine_id,
             medicine_name=med.name if med else None,
@@ -2534,7 +2576,13 @@ def _shape_sale(s: PharmacySale, db: Session) -> SaleOut:
             ),
             rate=it.rate, rate_tier=it.rate_tier or "A",
             discount_pct=it.discount_pct or 0.0, tax_pct=it.tax_pct or 0.0,
+            sgst_pct=float(getattr(it, "sgst_pct", None) or 0.0),
+            cgst_pct=float(getattr(it, "cgst_pct", None) or 0.0),
             line_total=it.line_total or 0.0, barcode_scanned=bool(it.barcode_scanned),
+            manufacturer=_medicine_manufacturer_name(db, med),
+            schedule=_medicine_schedule_label(med),
+            expiry_date=exp,
+            hsn_code=_resolve_line_hsn_code(db, med, batch),
         ))
     return SaleOut(
         id=s.id, sale_number=s.sale_number, sale_date=s.sale_date,
@@ -4341,6 +4389,174 @@ def _hospital_info_for_pdf(db: Session, hospital_id: int) -> dict:
     }
 
 
+def _pharmacy_hospital_info_for_pdf(db: Session, hospital_id: int) -> dict:
+    """Prefer pharmacy module config (provider_* / gst_number); fall back to hospital."""
+    from app.models.permissions import HospitalSettings
+
+    h = db.query(Hospital).filter(Hospital.id == hospital_id).first()
+    settings = db.query(HospitalSettings).filter(
+        HospitalSettings.setting_category == "pharmacy_config"
+    ).all()
+    cfg = {s.setting_key: s.setting_value for s in settings}
+
+    hosp_name = h.name if h else "PHARMACY"
+    name = (cfg.get("provider_name") or "").strip() or hosp_name
+
+    addr_parts = []
+    if (cfg.get("provider_address") or "").strip():
+        addr_parts.append(cfg["provider_address"].strip())
+    city_line = ", ".join(
+        p for p in [
+            (cfg.get("provider_city") or "").strip(),
+            (cfg.get("provider_state") or "").strip(),
+            (cfg.get("provider_pincode") or "").strip(),
+        ] if p
+    )
+    if city_line:
+        addr_parts.append(city_line)
+    address = ", ".join(addr_parts) if addr_parts else (getattr(h, "address", "") if h else "")
+
+    return {
+        "name": name,
+        "hospital_subname": hosp_name if name.strip().upper() != hosp_name.strip().upper() else "",
+        "address": address,
+        "phone": (cfg.get("provider_phone") or "").strip() or (getattr(h, "phone", "") if h else ""),
+        "email": (cfg.get("provider_email") or "").strip() or (getattr(h, "email", "") if h else ""),
+        "logo_url": (cfg.get("provider_logo") or "").strip() or (getattr(h, "logo_url", "") if h else ""),
+        "gstin": (cfg.get("gst_number") or "").strip(),
+    }
+
+
+def _resolve_sale_op_ip_meta(db: Session, sale: PharmacySale) -> dict:
+    """UHID (MRN), Opno (visit/appointment), Ipno (admission number)."""
+    uhid = ""
+    village = ""
+    district = ""
+    opno = "0"
+    ipno = "0"
+
+    if getattr(sale, "patient_ip_id", None):
+        from app.models.patient import Patient
+        pat = db.query(Patient).filter(Patient.patient_id == sale.patient_ip_id).first()
+        if pat:
+            uhid = (pat.mrn or "").strip()
+            village = pat.village or ""
+            district = pat.district or ""
+
+    admission_id = getattr(sale, "admission_id", None)
+    rx = db.query(Prescription).filter(Prescription.pharmacy_sale_id == sale.id).first()
+    if not admission_id and rx and getattr(rx, "admission_id", None):
+        admission_id = rx.admission_id
+
+    if admission_id:
+        from app.models.inpatient import Admission
+        adm = db.query(Admission).filter(Admission.id == admission_id).first()
+        if adm and adm.admission_number:
+            ipno = adm.admission_number
+
+    if rx and getattr(rx, "consultation_id", None):
+        from app.models.ehr import Consultation
+        from app.models.outpatient import Appointment, OutpatientVisit
+        consult = db.query(Consultation).filter(Consultation.id == rx.consultation_id).first()
+        if consult and consult.appointment_id:
+            visit = (
+                db.query(OutpatientVisit)
+                .filter(OutpatientVisit.appointment_id == consult.appointment_id)
+                .order_by(OutpatientVisit.id.desc())
+                .first()
+            )
+            if visit and visit.visit_number:
+                opno = visit.visit_number
+            else:
+                appt = db.query(Appointment).filter(Appointment.id == consult.appointment_id).first()
+                if appt and appt.appointment_number:
+                    opno = appt.appointment_number
+
+    return {
+        "uhid": uhid or "",
+        "opno": opno or "0",
+        "ipno": ipno or "0",
+        "village": village,
+        "district": district,
+        "admission_id": admission_id,
+    }
+
+
+def _split_sale_sgst_cgst(shaped: dict) -> tuple:
+    """Return (sgst_tax, cgst_tax) by splitting each line's tax by snapshotted %.
+
+    Uses the same taxable base as POS (`compute_line_tax`) so inclusive/exclusive
+    modes stay consistent with stored tax_total.
+    """
+    tax_mode = shaped.get("tax_mode") or "exclusive"
+    sgst_total = 0.0
+    cgst_total = 0.0
+    for it in shaped.get("items") or []:
+        base = float(it.get("quantity") or 0) * float(it.get("rate") or 0)
+        disc = float(it.get("discount_pct") or 0)
+        base_after = base * (1 - disc / 100.0)
+        tax_pct = float(it.get("tax_pct") or 0)
+        _taxable, tax_amt, _lt = compute_line_tax(base_after, tax_pct, tax_mode=tax_mode)
+        sgst = float(it.get("sgst_pct") or 0)
+        cgst = float(it.get("cgst_pct") or 0)
+        denom = sgst + cgst
+        if tax_amt <= 0 or denom <= 0:
+            continue
+        sgst_total += tax_amt * (sgst / denom)
+        cgst_total += tax_amt * (cgst / denom)
+    return round(sgst_total, 2), round(cgst_total, 2)
+
+
+def _enrich_sale_invoice_payload(sale: PharmacySale, shaped: dict, db: Session) -> dict:
+    """Add retail-bill meta fields expected by generate_pharmacy_sale_invoice_pdf."""
+    meta = _resolve_sale_op_ip_meta(db, sale)
+    shaped["uhid"] = meta["uhid"]
+    shaped["opno"] = meta["opno"]
+    shaped["ipno"] = meta["ipno"]
+    if meta.get("village"):
+        shaped["village"] = meta["village"]
+    if meta.get("district"):
+        shaped["district"] = meta["district"]
+
+    billing_mode = getattr(sale, "billing_mode", None) or shaped.get("billing_mode") or "cash_at_pharmacy"
+    is_ip = (
+        billing_mode == "inpatient_bill"
+        or bool(getattr(sale, "admission_id", None))
+        or (meta.get("ipno") and meta["ipno"] != "0")
+    )
+    shaped["sales_type"] = "IP Sales" if is_ip else "OP Sales"
+    shaped["category"] = (shaped.get("payment_type") or "cash").upper()
+
+    prepared = "PHARMACY"
+    if getattr(sale, "created_by", None):
+        u = db.query(User).filter(User.id == sale.created_by).first()
+        if u and u.username:
+            prepared = u.username.upper()
+    shaped["prepared_by"] = prepared
+    shaped["printed_by"] = prepared
+
+    sgst_tax, cgst_tax = _split_sale_sgst_cgst(shaped)
+    shaped["sgst_tax"] = sgst_tax
+    shaped["cgst_tax"] = cgst_tax
+
+    payment = (shaped.get("payment_type") or "cash").lower()
+    grand = float(shaped.get("grand_total") or 0)
+    if billing_mode == "inpatient_bill" or payment == "credit":
+        shaped["paid_amt"] = 0.0
+    else:
+        shaped["paid_amt"] = grand
+
+    # Total Amt ≈ sum of line totals; Net Amt = grand_total (may differ by rounding)
+    line_sum = sum(float(it.get("line_total") or 0) for it in (shaped.get("items") or []))
+    shaped["total_amt"] = round(line_sum, 2) if line_sum else round(
+        float(shaped.get("subtotal") or 0) + float(shaped.get("tax_total") or 0)
+        - float(shaped.get("discount_total") or 0),
+        2,
+    )
+    shaped["net_amt"] = grand
+    return shaped
+
+
 def _pdf_response(buffer, filename: str) -> StreamingResponse:
     return StreamingResponse(
         buffer, media_type="application/pdf",
@@ -4363,18 +4579,8 @@ def sale_invoice_pdf(
     shaped = _shape_sale(s, db).model_dump()
     shaped["void_reason"] = s.void_reason
     shaped["store_name"] = _store_label(db, s.store_id)
-    # Pharmacy sales link to an existing Patient by ip_id when applicable;
-    # surface village/district so the address row renders in the invoice.
-    try:
-        from app.models.patient import Patient as _P
-        if getattr(s, "patient_ip_id", None):
-            _p = db.query(_P).filter(_P.patient_id == s.patient_ip_id).first()
-            if _p:
-                shaped["village"] = _p.village or ""
-                shaped["district"] = _p.district or ""
-    except Exception:
-        pass
-    hi = _hospital_info_for_pdf(db, current_user.hospital_id)
+    shaped = _enrich_sale_invoice_payload(s, shaped, db)
+    hi = _pharmacy_hospital_info_for_pdf(db, current_user.hospital_id)
     buf = pdf_service.generate_pharmacy_sale_invoice_pdf(shaped, hi, **pdf_gen_kwargs(db, current_user.hospital_id, 'pharmacy_sale_invoice'))
     return _pdf_response(buf, f"{s.sale_number}.pdf")
 

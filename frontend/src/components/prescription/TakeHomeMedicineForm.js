@@ -1,6 +1,7 @@
 import React from 'react';
 import FormNavContainer from '../FormNavContainer';
 import { Input } from '../ui/input';
+import { QtyInput } from '../ui/qty-input';
 import { Label } from '../ui/label';
 import MedicineLookupInput from '../inpatient/MedicineLookupInput';
 import PrescriptionScheduleFields from './PrescriptionScheduleFields';
@@ -54,9 +55,9 @@ export default function TakeHomeMedicineForm({ med, onChange, admissionId }) {
         </div>
         <div>
           <Label className="text-xs text-gray-500">Quantity</Label>
-          <Input
-            type="number"
+          <QtyInput
             min="1"
+            step="1"
             placeholder="10"
             value={med.quantity}
             onChange={(e) => set('quantity', e.target.value)}

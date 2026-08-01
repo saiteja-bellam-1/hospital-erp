@@ -5041,163 +5041,269 @@ class PDFService:
         elements.append(Spacer(1, 6))
 
     def generate_pharmacy_sale_invoice_pdf(self, sale_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
-        """Sale invoice for `pharmacy_sales` row.
+        """Retail-style cash/credit pharmacy bill (reference layout).
 
-        Expected `sale_data` keys:
-          sale_number, sale_date, payment_type, status,
-          patient_name, patient_phone, patient_ip_id, patient_address,
-          doctor_name, doctor_number,
-          items: [{medicine_name, batch_number, quantity, free_quantity,
-                   rate, rate_tier, discount_pct, tax_pct, line_total}],
-          subtotal, discount_total, tax_total, grand_total
+        Expected `sale_data` keys (enriched by sale_invoice_pdf route):
+          sale_number, sale_date, payment_type, status, sales_type, category,
+          patient_name, doctor_name, uhid, opno, ipno,
+          items: [{medicine_name, manufacturer, schedule, batch_number,
+                   expiry_date, hsn_code, sgst_pct, cgst_pct, quantity/qty_display,
+                   rate, line_total}],
+          sgst_tax, cgst_tax, total_amt, net_amt, paid_amt,
+          prepared_by, printed_by, discount_total, void_reason
         """
         buffer = BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=A4,
-            rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=20)
+            rightMargin=22, leftMargin=22, topMargin=22, bottomMargin=18)
         elements = []
-        page_width = A4[0] - 60
+        page_width = A4[0] - 44
 
         is_voided = (sale_data.get('status') == 'voided')
         watermark = "VOIDED" if is_voided else None
 
-        self._pharmacy_header(elements, hospital_info, include_header,
-                              "PHARMACY SALE INVOICE", page_width, letterhead_gap_pt)
+        cell = ParagraphStyle('PhBillC', parent=self.styles['Normal'], fontSize=7,
+            fontName='Helvetica', textColor=colors.black, leading=9)
+        cell_sm = ParagraphStyle('PhBillSm', parent=cell, fontSize=6.5, leading=8)
+        header_p = ParagraphStyle('PhBillH', parent=cell_sm, fontName='Helvetica-Bold')
+        center_title = ParagraphStyle('PhBillTitle', parent=self.styles['Normal'],
+            fontSize=13, alignment=1, fontName='Helvetica-Bold',
+            textColor=colors.black, spaceAfter=2)
+        center_sub = ParagraphStyle('PhBillSub', parent=self.styles['Normal'],
+            fontSize=8, alignment=1, fontName='Helvetica',
+            textColor=colors.black, spaceAfter=1)
+        center_bill = ParagraphStyle('PhBillType', parent=self.styles['Normal'],
+            fontSize=10, alignment=1, fontName='Helvetica-Bold',
+            textColor=colors.black, spaceAfter=2)
 
-        # ── Meta strip: sale # / date / payment ───────────────────────────
-        cell = ParagraphStyle('C', parent=self.styles['Normal'], fontSize=8,
-            fontName='Helvetica', textColor=colors.black, leading=11)
+        def esc(v):
+            return _escape_pdf_inline(v if v is not None else '')
+
         def lv(label, value):
-            return Paragraph(f"<b>{label}:</b> {value}", cell)
+            return Paragraph(f"<b>{esc(label)} :</b> {esc(value)}", cell)
 
+        # ── Header (pharmacy letterhead + CASH/CREDIT BILL + GSTIN) ───────
+        if include_header:
+            name = (hospital_info.get('name') or 'PHARMACY').upper()
+            elements.append(Paragraph(esc(name), center_title))
+            addr = hospital_info.get('address')
+            if addr:
+                elements.append(Paragraph(esc(addr), center_sub))
+            phone = hospital_info.get('phone')
+            if phone:
+                elements.append(Paragraph(f"Phone No : {esc(phone)}", center_sub))
+            elements.append(Spacer(1, 2))
+            elements.append(Paragraph("<u>CASH/CREDIT BILL</u>", center_bill))
+            gstin = hospital_info.get('gstin') or ''
+            elements.append(Paragraph(f"GSTINNO : {esc(gstin)}", center_sub))
+            elements.append(Spacer(1, 4))
+            elements.append(HRFlowable(width="100%", thickness=0.75, color=colors.black))
+        else:
+            elements.append(Spacer(1, letterhead_gap_pt))
+            elements.append(Paragraph("<u>CASH/CREDIT BILL</u>", center_bill))
+            gstin = hospital_info.get('gstin') or ''
+            if gstin:
+                elements.append(Paragraph(f"GSTINNO : {esc(gstin)}", center_sub))
+            elements.append(HRFlowable(width="100%", thickness=0.75, color=colors.black))
+
+        elements.append(Spacer(1, 4))
+
+        # ── Meta: Patient / UHID / Bill No ────────────────────────────────
         sd = sale_data.get('sale_date')
         try:
-            sd_str = datetime.fromisoformat(str(sd)).strftime('%d/%m/%Y %I:%M%p') if sd else ''
+            sd_str = datetime.fromisoformat(str(sd).replace('Z', '+00:00')).strftime('%d/%m/%Y %H:%M:%S') if sd else ''
         except Exception:
             sd_str = str(sd or '')
 
-        # Meta box rows: sale identity on top, patient identity below. Address
-        # spans the right two cells so long addresses don't wrap awkwardly.
-        _addr = _patient_address_line(sale_data) or sale_data.get('patient_address') or '—'
-        _ipid = sale_data.get('patient_ip_id')
-        _patient_label = sale_data.get('patient_name') or '—'
-        if _ipid:
-            _patient_label = f"{_patient_label}  (IP-ID: {_ipid})"
-
+        left_w = page_width * 0.38
+        mid_w = page_width * 0.24
+        right_w = page_width * 0.38
         meta_rows = [
-            [lv("Sale #", sale_data.get('sale_number', '')),
-             lv("Date", sd_str),
-             lv("Payment", (sale_data.get('payment_type') or '—').upper())],
-            [lv("Patient", _patient_label),
-             lv("Phone", sale_data.get('patient_phone') or '—'),
-             lv("Address", _addr)],
+            [lv("Patient Name", sale_data.get('patient_name') or ''),
+             lv("UHID", sale_data.get('uhid') or ''),
+             lv("Bill No", sale_data.get('sale_number') or '')],
+            [lv("Sales Type", sale_data.get('sales_type') or 'OP Sales'),
+             Paragraph('', cell),
+             lv("Bill Date", sd_str)],
+            [lv("Opno", sale_data.get('opno') if sale_data.get('opno') is not None else '0'),
+             Paragraph('', cell),
+             lv("Ipno", sale_data.get('ipno') if sale_data.get('ipno') is not None else '0')],
+            [lv("Doctor Name", sale_data.get('doctor_name') or ''),
+             Paragraph('', cell),
+             lv("Category", sale_data.get('category') or (sale_data.get('payment_type') or 'CASH').upper())],
         ]
-        if sale_data.get('store_name'):
-            meta_rows.insert(1, [lv("Store", sale_data.get('store_name', '')),
-                                 Paragraph('', cell), Paragraph('', cell)])
-        meta = Table(meta_rows, colWidths=[page_width / 3] * 3)
+        meta = Table(meta_rows, colWidths=[left_w, mid_w, right_w])
         meta.setStyle(TableStyle([
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ('LEFTPADDING', (0, 0), (-1, -1), 6),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
-            ('TOPPADDING', (0, 0), (-1, -1), 4),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 2),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 2),
+            ('TOPPADDING', (0, 0), (-1, -1), 1),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
         ]))
         elements.append(meta)
-        elements.append(Spacer(1, 6))
+        elements.append(Spacer(1, 3))
+        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
+        elements.append(Spacer(1, 3))
 
-        # ── Doctor block (only if present; patient now lives in the meta box)
-        doc_lines = []
-        if sale_data.get('doctor_name'):
-            doc_lines.append(lv("Doctor", sale_data['doctor_name']))
-        if sale_data.get('doctor_number'):
-            doc_lines.append(lv("Reg #", sale_data['doctor_number']))
-        if doc_lines:
-            party = Table([[doc_lines]], colWidths=[page_width])
-            party.setStyle(TableStyle([
-                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-                ('LEFTPADDING', (0, 0), (-1, -1), 6),
-                ('RIGHTPADDING', (0, 0), (-1, -1), 6),
-                ('TOPPADDING', (0, 0), (-1, -1), 4),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-            ]))
-            elements.append(party)
-            elements.append(Spacer(1, 6))
+        # ── Items: 12 columns matching reference ─────────────────────────
+        # SNo | Medicine Name | Manufacturer | Sch | Batchno | Exp.Date |
+        # Hsn | SGST% | CGST% | Qty | Price | Total Amt
+        col_ws = [22, 108, 58, 22, 48, 42, 38, 32, 32, 32, 42, 50]
+        # Scale if sum != page_width
+        col_sum = sum(col_ws)
+        if abs(col_sum - page_width) > 0.5:
+            scale = page_width / col_sum
+            col_ws = [w * scale for w in col_ws]
 
-        # ── Items table ──────────────────────────────────────────────────
-        header_p = ParagraphStyle('H', parent=cell, fontName='Helvetica-Bold')
         rows = [[
-            Paragraph("#", header_p), Paragraph("Medicine", header_p),
-            Paragraph("Batch", header_p), Paragraph("Qty", header_p),
-            Paragraph("Free", header_p), Paragraph("Rate", header_p),
-            Paragraph("Tier", header_p), Paragraph("Disc%", header_p),
-            Paragraph("Tax%", header_p), Paragraph("Amount", header_p),
+            Paragraph("SNo", header_p),
+            Paragraph("Medicine Name", header_p),
+            Paragraph("Manufacturer", header_p),
+            Paragraph("Sch", header_p),
+            Paragraph("Batchno", header_p),
+            Paragraph("Exp.Date", header_p),
+            Paragraph("Hsn", header_p),
+            Paragraph("SGST%", header_p),
+            Paragraph("CGST%", header_p),
+            Paragraph("Qty", header_p),
+            Paragraph("Price", header_p),
+            Paragraph("Total Amt", header_p),
         ]]
+
+        def _fmt_exp(val):
+            if not val:
+                return ''
+            try:
+                if isinstance(val, str):
+                    # ISO date or datetime
+                    raw = val[:10]
+                    dt = datetime.strptime(raw, '%Y-%m-%d')
+                else:
+                    dt = val
+                return dt.strftime('%b-%Y')
+            except Exception:
+                return str(val)[:8]
+
         for i, it in enumerate(sale_data.get('items') or [], start=1):
-            qty_text = it.get('qty_display') or f"{it.get('quantity', 0)}"
+            qty_text = it.get('qty_display') or f"{it.get('quantity', 0):g}"
+            sgst = it.get('sgst_pct') or 0
+            cgst = it.get('cgst_pct') or 0
+            # If only combined tax_pct is present, split evenly for display
+            if not sgst and not cgst and (it.get('tax_pct') or 0):
+                half = float(it.get('tax_pct') or 0) / 2.0
+                sgst = cgst = half
             rows.append([
-                Paragraph(str(i), cell),
-                Paragraph(str(it.get('medicine_name') or ''), cell),
-                Paragraph(str(it.get('batch_number') or '—'), cell),
-                Paragraph(str(qty_text), cell),
-                Paragraph(f"{it.get('free_quantity', 0)}", cell),
-                Paragraph(f"Rs. {it.get('rate', 0):.2f}", cell),
-                Paragraph(str(it.get('rate_tier') or '—'), cell),
-                Paragraph(f"{it.get('discount_pct', 0):g}", cell),
-                Paragraph(f"{it.get('tax_pct', 0):g}", cell),
-                Paragraph(f"Rs. {it.get('line_total', 0):.2f}", cell),
+                Paragraph(str(i), cell_sm),
+                Paragraph(esc(it.get('medicine_name') or ''), cell_sm),
+                Paragraph(esc(it.get('manufacturer') or ''), cell_sm),
+                Paragraph(esc(it.get('schedule') or ''), cell_sm),
+                Paragraph(esc(it.get('batch_number') or ''), cell_sm),
+                Paragraph(esc(_fmt_exp(it.get('expiry_date'))), cell_sm),
+                Paragraph(esc(it.get('hsn_code') or ''), cell_sm),
+                Paragraph(f"{float(sgst):g}", cell_sm),
+                Paragraph(f"{float(cgst):g}", cell_sm),
+                Paragraph(str(qty_text), cell_sm),
+                Paragraph(f"{float(it.get('rate') or 0):.2f}", cell_sm),
+                Paragraph(f"{float(it.get('line_total') or 0):.2f}", cell_sm),
             ])
-        # Column widths sum to page_width (≈535pt on A4 with 30pt side margins).
-        # Tuned so the "Free", "Disc%", "Tax%" headers fit on a single line and
-        # "Rs. 30.00" / "Rs. 150.00" values don't wrap.
-        items_tbl = Table(rows, colWidths=[
-            22, page_width - (22 + 60 + 38 + 38 + 60 + 30 + 40 + 38 + 70),
-            60, 38, 38, 60, 30, 40, 38, 70,
-        ])
+
+        items_tbl = Table(rows, colWidths=col_ws, repeatRows=1)
         items_tbl.setStyle(TableStyle([
-            # Light header band with a single rule above and below it — keeps the
-            # item rows clean and borderless while still separating the header.
-            ('BACKGROUND', (0, 0), (-1, 0), colors.whitesmoke),
             ('LINEABOVE', (0, 0), (-1, 0), 0.5, colors.black),
             ('LINEBELOW', (0, 0), (-1, 0), 0.5, colors.black),
+            ('LINEBELOW', (0, -1), (-1, -1), 0.5, colors.black),
             ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
-            ('ALIGN', (3, 1), (-1, -1), 'RIGHT'),
             ('ALIGN', (0, 1), (0, -1), 'CENTER'),
+            ('ALIGN', (7, 1), (-1, -1), 'RIGHT'),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ('FONTSIZE', (0, 0), (-1, -1), 8),
+            ('LEFTPADDING', (0, 0), (-1, -1), 1),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 1),
+            ('TOPPADDING', (0, 0), (-1, -1), 1.5),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 1.5),
+        ]))
+        elements.append(items_tbl)
+        elements.append(Spacer(1, 6))
+
+        # ── Totals: SGST/CGST left; Total/Net/Paid right ──────────────────
+        sgst_tax = float(sale_data.get('sgst_tax') or 0)
+        cgst_tax = float(sale_data.get('cgst_tax') or 0)
+        total_amt = float(sale_data.get('total_amt') if sale_data.get('total_amt') is not None
+                          else sale_data.get('grand_total') or 0)
+        net_amt = float(sale_data.get('net_amt') if sale_data.get('net_amt') is not None
+                        else sale_data.get('grand_total') or 0)
+        paid_amt = float(sale_data.get('paid_amt') if sale_data.get('paid_amt') is not None
+                         else net_amt)
+        prepared = sale_data.get('prepared_by') or 'PHARMACY'
+        printed = sale_data.get('printed_by') or prepared
+
+        left_tot = [
+            Paragraph(f"<b>SGST TAX :</b> {sgst_tax:.2f}", cell),
+            Paragraph(f"<b>CGST TAX :</b> {cgst_tax:.2f}", cell),
+            Spacer(1, 4),
+            Paragraph(f"<b>Prepared By :</b> {esc(prepared)}", cell),
+            Paragraph(f"<b>Printed By :</b> {esc(printed)}", cell),
+        ]
+        right_lines = []
+        disc = float(sale_data.get('discount_total') or 0)
+        if disc > 0:
+            right_lines.append(Paragraph(f"<b>Discount :</b> {disc:.2f}", cell))
+        right_lines.extend([
+            Paragraph(f"<b>Total Amt :</b> {total_amt:.2f}", cell),
+            Paragraph(f"<b>Net Amt :</b> {net_amt:.2f}", cell),
+            Paragraph(f"<b>Paid Amt :</b> {paid_amt:.2f}", cell),
+        ])
+        tot_tbl = Table(
+            [[left_tot, right_lines]],
+            colWidths=[page_width * 0.55, page_width * 0.45],
+        )
+        tot_tbl.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 2),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 2),
+        ]))
+        elements.append(tot_tbl)
+
+        if is_voided:
+            elements.append(Spacer(1, 6))
+            elements.append(Paragraph(
+                f"<i>VOIDED — {esc(sale_data.get('void_reason') or 'no reason recorded')}</i>",
+                ParagraphStyle('PhVoid', parent=cell, fontSize=9, textColor=colors.red),
+            ))
+
+        elements.append(Spacer(1, 8))
+        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
+        elements.append(Spacer(1, 4))
+
+        # ── Footer: Terms | *bill* | Signature ────────────────────────────
+        terms_style = ParagraphStyle('PhTerms', parent=cell, fontSize=6.5, leading=8)
+        terms = Paragraph(
+            "<b>Terms and Conditions:</b><br/>"
+            "* Goods once sold will be Exchanged with in one week only.<br/>"
+            "* Loose tablets will not be taken back.<br/>"
+            "* No cash Returns.",
+            terms_style,
+        )
+        bill_star = Paragraph(
+            f"*{esc(sale_data.get('sale_number') or '')}*",
+            ParagraphStyle('PhBillStar', parent=cell, alignment=1, fontSize=8),
+        )
+        sig = Paragraph(
+            "<br/><br/>Signature",
+            ParagraphStyle('PhSig', parent=cell, alignment=2, fontSize=8),
+        )
+        foot = Table(
+            [[terms, bill_star, sig]],
+            colWidths=[page_width * 0.52, page_width * 0.24, page_width * 0.24],
+        )
+        foot.setStyle(TableStyle([
+            ('BOX', (0, 0), (-1, -1), 0.5, colors.black),
+            ('VALIGN', (0, 0), (-1, -1), 'BOTTOM'),
             ('LEFTPADDING', (0, 0), (-1, -1), 4),
             ('RIGHTPADDING', (0, 0), (-1, -1), 4),
             ('TOPPADDING', (0, 0), (-1, -1), 4),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
         ]))
-        elements.append(items_tbl)
-        elements.append(Spacer(1, 8))
-
-        # ── Totals block (right-aligned) ─────────────────────────────────
-        tot_rows = [
-            [Paragraph("Subtotal", cell), Paragraph(f"Rs. {sale_data.get('subtotal', 0):.2f}", cell)],
-            [Paragraph("Discount", cell), Paragraph(f"−Rs. {sale_data.get('discount_total', 0):.2f}", cell)],
-            [Paragraph("Tax (SGST+CGST)", cell), Paragraph(f"+Rs. {sale_data.get('tax_total', 0):.2f}", cell)],
-            [Paragraph("<b>Grand Total</b>", cell),
-             Paragraph(f"<b>Rs. {sale_data.get('grand_total', 0):.2f}</b>", cell)],
-        ]
-        tot = Table(tot_rows, colWidths=[120, 90], hAlign='RIGHT')
-        tot.setStyle(TableStyle([
-            # Single hairline above Grand Total — separates it from the
-            # subtotal rows without boxing the whole totals block.
-            ('LINEABOVE', (0, -1), (-1, -1), 0.75, colors.black),
-            ('FONTSIZE', (0, 0), (-1, -1), 8),
-            ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
-            ('LEFTPADDING', (0, 0), (-1, -1), 6),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
-        ]))
-        elements.append(tot)
-
-        if is_voided:
-            elements.append(Spacer(1, 8))
-            elements.append(Paragraph(
-                f"<i>VOIDED — {sale_data.get('void_reason') or 'no reason recorded'}</i>",
-                ParagraphStyle('V', parent=cell, fontSize=9, textColor=colors.red),
-            ))
+        elements.append(foot)
 
         _finalize(doc, elements, hospital_info, watermark=watermark)
         buffer.seek(0)

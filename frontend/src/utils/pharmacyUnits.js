@@ -4,9 +4,10 @@
  * qty-per-strip override the medicine master (zero/missing batch fields fall back).
  */
 
-/** Hide native number-input spin buttons (Chrome, Firefox, Safari). */
-export const pharmacyNoSpinInputClass =
-  '[appearance:textfield] [-moz-appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none';
+import { noSpinInputClass } from './inputStyles';
+
+/** @deprecated Prefer noSpinInputClass from utils/inputStyles — kept for pharmacy call sites. */
+export const pharmacyNoSpinInputClass = noSpinInputClass;
 
 /** Show empty instead of 0 for cleaner pharmacy numeric fields. */
 export function displayPharmacyNumericInput(val) {

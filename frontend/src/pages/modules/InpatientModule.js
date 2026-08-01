@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
+import { QtyInput } from '../../components/ui/qty-input';
 import { Label } from '../../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select';
 import { Textarea } from '../../components/ui/textarea';
@@ -7559,7 +7560,7 @@ const InpatientModule = () => {
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <Label>Quantity *</Label>
-                <Input type="number" step="0.01" min="0.01" value={ancillaryForm.quantity} onChange={e => setAncillaryForm(p => ({ ...p, quantity: e.target.value }))} required />
+                <QtyInput step="0.01" min="0.01" value={ancillaryForm.quantity} onChange={e => setAncillaryForm(p => ({ ...p, quantity: e.target.value }))} required />
               </div>
               <div>
                 <Label>Unit Price (₹)</Label>
@@ -9060,9 +9061,9 @@ const InpatientModule = () => {
                     </div>
                     <div>
                       <Label className="text-[10px] text-gray-500">Quantity</Label>
-                      <Input
-                        type="number"
+                      <QtyInput
                         min="1"
+                        step="1"
                         value={it.quantity_prescribed}
                         onChange={e => setPrescriptionForm(p => {
                           const next = [...p.items]; next[idx] = { ...next[idx], quantity_prescribed: e.target.value }; return { ...p, items: next };
@@ -9192,7 +9193,7 @@ const InpatientModule = () => {
                 <thead className="bg-gray-50 border-b">
                   <tr>
                     <th className="text-left px-2 py-1.5">Item</th>
-                    <th className="text-right px-2 py-1.5 w-16">Qty</th>
+                    <th className="text-right px-2 py-1.5 w-24">Qty</th>
                     <th className="text-right px-2 py-1.5 w-28">Unit ₹</th>
                     <th className="text-right px-2 py-1.5 w-28">Total ₹</th>
                     <th className="w-8"></th>
@@ -9257,13 +9258,20 @@ const InpatientModule = () => {
                               )}
                             </td>
                             <td className="px-2 py-1">
-                              <Input type="number" min="0.01" step="0.01" className="h-7 text-xs text-right"
+                              <QtyInput size="sm" min="0.01" step="0.01" className="w-full text-right"
                                 value={it.quantity}
                                 onChange={e => setReviewBillItems(arr => {
                                   const n = [...arr];
-                                  const q = Math.max(0.01, parseFloat(e.target.value) || 0.01);
+                                  const raw = e.target.value;
+                                  const q = parseFloat(raw);
                                   const up = parseFloat(n[idx].unit_price) || 0;
-                                  n[idx] = { ...n[idx], quantity: q, total_price: +(q * up).toFixed(2) };
+                                  n[idx] = {
+                                    ...n[idx],
+                                    quantity: raw,
+                                    ...(Number.isFinite(q) && q > 0
+                                      ? { total_price: +(q * up).toFixed(2) }
+                                      : {}),
+                                  };
                                   return n;
                                 })} />
                             </td>
