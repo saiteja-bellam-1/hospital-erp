@@ -100,6 +100,35 @@ def tab_sale_rate(source: Any, *, tier: str = "A", strip_rate: float | None = No
     return round_money(sr / units_per_strip(source))
 
 
+def normalize_tabs_to_strips(qty_tabs: float, qty_strips: float, source: Any) -> Tuple[float, float]:
+    """Roll exact strip-multiples of tabs into strips so strip rate applies exactly."""
+    scf = units_per_strip(source)
+    tabs = float(qty_tabs or 0)
+    strips = float(qty_strips or 0)
+    if scf <= 1 or tabs <= 0:
+        return tabs, strips
+    # Exact multiple → prefer strip pricing (avoids round(strip/scf)*scf ≠ strip).
+    whole, rem = divmod(tabs, scf)
+    if abs(rem) < 1e-9 and whole > 0:
+        return 0.0, strips + whole
+    return tabs, strips
+
+
+def line_gross_before_discount(
+    *,
+    qty_tabs: float,
+    qty_strips: float,
+    tab_rate: float,
+    strip_rate: float,
+    source: Any = None,
+) -> float:
+    """Gross line amount before discount — strip-exact when tabs are full strips."""
+    tabs, strips = float(qty_tabs or 0), float(qty_strips or 0)
+    if source is not None:
+        tabs, strips = normalize_tabs_to_strips(tabs, strips, source)
+    return round_money(tabs * float(tab_rate or 0) + strips * float(strip_rate or 0))
+
+
 def combined_base_qty(qty_tabs: float, qty_strips: float, source: Any) -> float:
     """Total tablets to deduct from stock."""
     return float(qty_tabs or 0) + float(qty_strips or 0) * units_per_strip(source)
@@ -139,8 +168,15 @@ def line_subtotal_before_tax(
     tab_rate: float,
     strip_rate: float,
     discount_pct: float = 0.0,
+    source: Any = None,
 ) -> float:
-    base = float(qty_tabs or 0) * tab_rate + float(qty_strips or 0) * strip_rate
+    base = line_gross_before_discount(
+        qty_tabs=qty_tabs,
+        qty_strips=qty_strips,
+        tab_rate=tab_rate,
+        strip_rate=strip_rate,
+        source=source,
+    )
     return round_money(base * (1 - float(discount_pct or 0) / 100.0))
 
 

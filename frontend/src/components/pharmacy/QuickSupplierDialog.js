@@ -1,11 +1,14 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
-import { Loader2 } from 'lucide-react';
-import { Button } from '../ui/button';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../ui/dialog';
 import { useToast } from '../../hooks/use-toast';
 import { errorDetail } from '../../utils/apiErrors';
-import SupplierFormFields, { EMPTY_SUPPLIER_FORM, prepareSupplierPayload } from './SupplierFormFields';
+import PharmacyFormDialog from './PharmacyFormDialog';
+import SupplierFormFields, {
+  EMPTY_SUPPLIER_FORM,
+  SUPPLIER_FORM_STEPS,
+  prepareSupplierPayload,
+  supplierStepCanProceed,
+} from './SupplierFormFields';
 
 export default function QuickSupplierDialog({
   open,
@@ -16,16 +19,31 @@ export default function QuickSupplierDialog({
   const { toast } = useToast();
   const [form, setForm] = useState(EMPTY_SUPPLIER_FORM);
   const [saving, setSaving] = useState(false);
+  const [activeStep, setActiveStep] = useState(0);
 
   useEffect(() => {
     if (!open) return;
+    setActiveStep(0);
     setForm({ ...EMPTY_SUPPLIER_FORM, ...prefill });
   }, [open, prefill]);
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (!form.name?.trim()) {
+  const steps = useMemo(
+    () => SUPPLIER_FORM_STEPS.map((s, i) => ({ ...s, completed: i < activeStep })),
+    [activeStep],
+  );
+
+  const handleNext = () => {
+    if (!supplierStepCanProceed(form, activeStep)) {
       toast({ variant: 'destructive', title: 'Ledger name is required' });
+      return;
+    }
+    setActiveStep((s) => Math.min(s + 1, SUPPLIER_FORM_STEPS.length - 1));
+  };
+
+  const handleSave = async () => {
+    if (!supplierStepCanProceed(form, 0)) {
+      toast({ variant: 'destructive', title: 'Ledger name is required' });
+      setActiveStep(0);
       return;
     }
     setSaving(true);
@@ -46,21 +64,20 @@ export default function QuickSupplierDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-5xl max-h-[88vh] overflow-y-auto" formNav="grid">
-        <DialogHeader>
-          <DialogTitle>Add Supplier</DialogTitle>
-        </DialogHeader>
-        <form onSubmit={handleSubmit}>
-          <SupplierFormFields form={form} onChange={setForm} />
-          <DialogFooter className="gap-2 sm:gap-0 pt-3">
-            <Button type="button" variant="outline" onClick={() => onOpenChange?.(false)}>Cancel</Button>
-            <Button type="submit" disabled={saving}>
-              {saving ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Saving…</> : 'Add & select'}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+    <PharmacyFormDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title="Add Supplier"
+      steps={steps}
+      activeStep={activeStep}
+      onStepChange={setActiveStep}
+      onNext={handleNext}
+      onSave={handleSave}
+      saving={saving}
+      canProceed={activeStep !== 0 || supplierStepCanProceed(form, 0)}
+      saveLabel="Add & select"
+    >
+      <SupplierFormFields form={form} onChange={setForm} activeStep={activeStep} />
+    </PharmacyFormDialog>
   );
 }

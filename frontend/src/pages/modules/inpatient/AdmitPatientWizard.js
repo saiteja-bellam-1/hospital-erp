@@ -13,14 +13,16 @@ import {
 } from '../../../components/ui/select';
 import { useToast } from '../../../hooks/use-toast';
 import PatientSearchPicker from '../../../components/PatientSearchPicker';
+import PdfPreviewDialog from '../../../components/PdfPreviewDialog';
 import { printPdfFromUrl } from '../../../utils/printPdf';
+import CaseSheetClinicalFields, { EMPTY_CASE_SHEET } from './CaseSheetClinicalFields';
 import {
   Search, ChevronLeft, ChevronRight, Loader2,
   Banknote, Shield, FileCheck2, Landmark,
   CheckCircle2, AlertTriangle, FileText, X, Printer
 } from 'lucide-react';
 
-const DRAFT_KEY = 'kt_admit_wizard_draft_v2';
+const DRAFT_KEY = 'kt_admit_wizard_draft_v3';
 
 const SCHEME_ICONS = {
   cash:              Banknote,
@@ -64,20 +66,29 @@ const EMPTY_DRAFT = {
   deposit_reference: '',
   deposit_waived: false,
   deposit_waiver_reason: '',
-  // Step 4 — declarations (after admission exists)
+  // Step 4 — clinical case sheet (after activate)
+  ...EMPTY_CASE_SHEET,
+  // Step 5 — declarations (after admission exists)
   admission_id: '',
   admission_number: '',
   activated: false,
   face_sheet_signed: false,
   case_sheet_signed: false,
+  case_sheet_printed: false,
   face_sheet_doc_number: '',
   case_sheet_doc_number: '',
 };
 
-const TOTAL_STEPS = 4;
+const TOTAL_STEPS = 5;
 
 const Stepper = ({ step }) => {
-  const labels = ['Identity & Bed', 'Doctors · Payer · Deposit', 'Admit & Deposit', 'Declarations'];
+  const labels = [
+    'Identity & Bed',
+    'Doctors · Payer · Deposit',
+    'Admit & Deposit',
+    'Case Sheet',
+    'Declarations',
+  ];
   return (
     <div className="flex items-center gap-3 text-xs">
       {labels.map((label, i) => {
@@ -166,6 +177,7 @@ const admissionToDraft = (adm) => ({
   activated: !!(adm.bed_id || adm.bed_number || adm.bed_label),
   face_sheet_signed: false,
   case_sheet_signed: false,
+  case_sheet_printed: false,
   face_sheet_doc_number: '',
   case_sheet_doc_number: '',
 });
@@ -245,7 +257,7 @@ const AdmitPatientWizard = ({
           patient_id: adm.patient_id,
           primary_phone: '',
         });
-        if (merged.activated) setStep(4);
+        if (merged.activated) setStep(4); // Case Sheet (clinical)
         else if (merged.admitting_doctor_id) setStep(3);
         else if (merged.room_id) setStep(2);
         else setStep(1);
@@ -335,7 +347,7 @@ const AdmitPatientWizard = ({
 
   // Pre-reserve doc numbers on the declarations step (after admission exists).
   useEffect(() => {
-    if (step !== 4 || !draft.patient_id) return;
+    if (step !== 5 || !draft.patient_id) return;
     const reserve = async (tpl, draftKey) => {
       if (!tpl || draft[draftKey]) return;
       try {
@@ -352,6 +364,43 @@ const AdmitPatientWizard = ({
     reserve(caseTpl, 'case_sheet_doc_number');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, draft.patient_id, faceTpl, caseTpl]);
+
+  // Load / prefill clinical case sheet when entering step 4
+  useEffect(() => {
+    if (step !== 4 || !draft.admission_id) return;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await axios.get(
+          `/api/inpatient/admissions/${draft.admission_id}/admission-case-sheet`,
+        );
+        if (cancelled) return;
+        const data = res.data || {};
+        update({
+          chief_complaint: data.chief_complaint
+            || draft.chief_complaint
+            || draft.admission_reason
+            || '',
+          present_medical_history: data.present_medical_history || draft.present_medical_history || '',
+          past_history: data.past_history || draft.past_history || '',
+          family_history: data.family_history || draft.family_history || '',
+          provisional_diagnosis: data.provisional_diagnosis || draft.provisional_diagnosis || '',
+          physical_examination_notes:
+            data.physical_examination_notes || draft.physical_examination_notes || '',
+          findings_at_admission: data.findings_at_admission || draft.findings_at_admission || '',
+        });
+      } catch {
+        if (cancelled) return;
+        // Prefill chief complaint from admission reason if nothing saved yet
+        if (!draft.chief_complaint && draft.admission_reason) {
+          update({ chief_complaint: draft.admission_reason });
+        }
+      }
+    };
+    load();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, draft.admission_id]);
 
   const update = (patch) => setDraft(p => ({ ...p, ...patch }));
 
@@ -391,9 +440,10 @@ const AdmitPatientWizard = ({
     }
     return null;
   };
-  const validateStep4 = () => {
-    if (!draft.face_sheet_signed) return 'Face sheet must be marked signed.';
-    if (!draft.case_sheet_signed) return 'Case sheet must be marked signed.';
+  const validateDeclarations = () => {
+    if (!draft.face_sheet_signed) return 'Admission Form must be marked signed.';
+    if (!draft.case_sheet_signed) return 'Consent Form must be marked signed.';
+    if (!draft.case_sheet_printed) return 'Case Sheet must be marked printed.';
     return null;
   };
 
@@ -436,6 +486,10 @@ const AdmitPatientWizard = ({
     setStep(s => s + 1);
   };
   const goBack = () => {
+    if (step === 5 && draft.admission_id) {
+      setStep(4);
+      return;
+    }
     if (step === 4 && draft.admission_id) {
       setStep(3);
       return;
@@ -444,7 +498,7 @@ const AdmitPatientWizard = ({
       toast({
         variant: 'destructive',
         title: 'Admission already created',
-        description: 'Complete the declarations step or cancel and manage the admission from the list.',
+        description: 'Complete the case sheet and declarations, or cancel and manage the admission from the list.',
       });
       return;
     }
@@ -563,10 +617,13 @@ const AdmitPatientWizard = ({
         } catch (_) { /* receipt is best-effort */ }
       }
 
-      update({ activated: true });
+      update({
+        activated: true,
+        chief_complaint: draft.chief_complaint || draft.admission_reason || '',
+      });
       toast({
         title: 'Bed assigned',
-        description: `${admissionNumber} — print face sheet and case sheet on the next step.`,
+        description: `${admissionNumber} — enter case sheet details on the next step (optional).`,
       });
       setStep(4);
     } catch (err) {
@@ -591,8 +648,48 @@ const AdmitPatientWizard = ({
     }
   };
 
+  const caseSheetPayload = () => ({
+    chief_complaint: draft.chief_complaint?.trim() || null,
+    present_medical_history: draft.present_medical_history?.trim() || null,
+    past_history: draft.past_history?.trim() || null,
+    family_history: draft.family_history?.trim() || null,
+    provisional_diagnosis: draft.provisional_diagnosis?.trim() || null,
+    physical_examination_notes: draft.physical_examination_notes?.trim() || null,
+    findings_at_admission: draft.findings_at_admission?.trim() || null,
+  });
+
+  const hasAnyCaseSheetContent = () => {
+    const p = caseSheetPayload();
+    return Object.values(p).some((v) => !!v);
+  };
+
+  const saveCaseSheetAndContinue = async () => {
+    if (!draft.admission_id) {
+      toast({ variant: 'destructive', title: 'No admission', description: 'Create the admission first.' });
+      return;
+    }
+    setSaving(true);
+    try {
+      if (hasAnyCaseSheetContent()) {
+        await axios.put(
+          `/api/inpatient/admissions/${draft.admission_id}/admission-case-sheet`,
+          caseSheetPayload(),
+        );
+      }
+      setStep(5);
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      const msg = typeof detail === 'string'
+        ? detail
+        : (detail?.message || 'Failed to save case sheet');
+      toast({ variant: 'destructive', title: 'Error', description: msg });
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const finishDeclarations = async () => {
-    const err = validateStep4();
+    const err = validateDeclarations();
     if (err) { toast({ variant: 'destructive', title: 'Cannot finish', description: err }); return; }
     if (!draft.admission_id) {
       toast({ variant: 'destructive', title: 'No admission', description: 'Create the admission first.' });
@@ -602,7 +699,7 @@ const AdmitPatientWizard = ({
       toast({
         variant: 'destructive',
         title: 'Templates missing',
-        description: 'Face sheet / case sheet templates are not configured. Restart the backend or add them in Hospital Administration.',
+        description: 'Admission Form / Consent Form templates are not configured. Restart the backend or add them in Hospital Administration.',
       });
       return;
     }
@@ -629,8 +726,8 @@ const AdmitPatientWizard = ({
           throw new Error(msg);
         }
       };
-      const faceConsent = await recordConsent(faceTpl, draft.face_sheet_doc_number, 'face sheet');
-      const caseConsent = await recordConsent(caseTpl, draft.case_sheet_doc_number, 'case sheet');
+      const faceConsent = await recordConsent(faceTpl, draft.face_sheet_doc_number, 'admission form');
+      const caseConsent = await recordConsent(caseTpl, draft.case_sheet_doc_number, 'consent form');
 
       await axios.post(`/api/inpatient/admissions/${admissionId}/complete-admission`);
 
@@ -651,6 +748,9 @@ const AdmitPatientWizard = ({
       };
       printConsentPdf(faceConsent);
       printConsentPdf(caseConsent);
+      printPdfFromUrl(
+        `/api/inpatient/admissions/${admissionId}/admission-case-sheet/pdf`,
+      ).catch(() => {});
     } catch (err) {
       const msg = err.message
         || (typeof err.response?.data?.detail === 'string' ? err.response.data.detail : null)
@@ -1084,8 +1184,28 @@ const AdmitPatientWizard = ({
           </div>
         )}
 
-        {/* ---------- STEP 4 — declarations ---------- */}
+        {/* ---------- STEP 4 — clinical case sheet ---------- */}
         {step === 4 && (
+          <div className="space-y-4">
+            {draft.admission_number && (
+              <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900">
+                Admission No: <span className="font-semibold">{draft.admission_number}</span>
+              </div>
+            )}
+            <p className="text-sm text-gray-700">
+              Enter clinical case sheet details (complaints, history, provisional findings).
+              These carry into the discharge summary and can be completed or edited later. All fields are optional.
+            </p>
+            <CaseSheetClinicalFields
+              values={draft}
+              onChange={update}
+              chiefComplaintPlaceholder="Pre-filled from admission reason when available"
+            />
+          </div>
+        )}
+
+        {/* ---------- STEP 5 — declarations ---------- */}
+        {step === 5 && (
           <div className="space-y-4">
             {draft.admission_number && (
               <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900">
@@ -1094,12 +1214,12 @@ const AdmitPatientWizard = ({
               </div>
             )}
             <p className="text-sm text-gray-700">
-              Print the face sheet and case sheet for the patient to sign, then mark each as signed.
-              Templates can be edited in Hospital Administration → Consent Templates.
+              Print the Admission Form, Consent Form, and Case Sheet. Mark each form after
+              printing / signing. Consent templates can be edited in Hospital Administration → Consent Templates.
             </p>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               <DeclarationCard
-                title="Face Sheet"
+                title="Admission Form"
                 subtitle="Patient identification + responsible person details"
                 template={faceTpl}
                 signed={draft.face_sheet_signed}
@@ -1113,8 +1233,8 @@ const AdmitPatientWizard = ({
                 admissionReason={draft.admission_reason}
               />
               <DeclarationCard
-                title="Case Sheet"
-                subtitle="General consent / liability declaration"
+                title="Consent Form"
+                subtitle="General consent for treatment"
                 template={caseTpl}
                 signed={draft.case_sheet_signed}
                 onToggle={v => update({ case_sheet_signed: v })}
@@ -1126,13 +1246,18 @@ const AdmitPatientWizard = ({
                 referringDoctorId={draft.referring_doctor_kind === 'internal' ? draft.referring_doctor_id : ''}
                 admissionReason={draft.admission_reason}
               />
+              <CaseSheetPrintCard
+                admissionId={draft.admission_id}
+                printed={draft.case_sheet_printed}
+                onToggle={v => update({ case_sheet_printed: v })}
+              />
             </div>
             {(!faceTpl || !caseTpl) && (
               <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded p-3 text-sm">
                 <AlertTriangle className="h-4 w-4 text-amber-600 mt-0.5" />
                 <span>
-                  Default templates not yet seeded. Restart the backend to auto-seed
-                  the face-sheet and case-sheet, or add them manually in Hospital Administration → Consent Templates.
+                  Default Admission Form / Consent Form templates not yet seeded. Restart the backend to auto-seed
+                  them, or add them manually in Hospital Administration → Consent Templates.
                 </span>
               </div>
             )}
@@ -1159,10 +1284,19 @@ const AdmitPatientWizard = ({
             {step === 3 && (
               <Button onClick={createAdmission} disabled={saving}>
                 {saving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                {draft.admission_id ? 'Continue to declarations' : 'Create admission & deposit'}
+                {draft.admission_id && draft.activated
+                  ? 'Continue to case sheet'
+                  : 'Create admission & deposit'}
               </Button>
             )}
             {step === 4 && (
+              <Button onClick={saveCaseSheetAndContinue} disabled={saving}>
+                {saving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                {hasAnyCaseSheetContent() ? 'Save & continue' : 'Skip to declarations'}
+                <ChevronRight className="h-4 w-4 ml-1" />
+              </Button>
+            )}
+            {step === 5 && (
               <Button onClick={finishDeclarations} disabled={saving}>
                 {saving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
                 Complete admission
@@ -1186,6 +1320,24 @@ const DeclarationCard = ({
 
   const canPrefill = Boolean(template && patientId && admissionId);
 
+  const previewParams = useMemo(() => {
+    if (!canPrefill || !template?.id) return {};
+    const params = {
+      patient_id: String(patientId),
+      template_id: template.id,
+      admission_id: parseInt(admissionId, 10),
+    };
+    if (roomId) params.room_id = parseInt(roomId, 10);
+    if (doctorId) params.admitting_doctor_id = parseInt(doctorId, 10);
+    if (referringDoctorId) params.referring_doctor_id = parseInt(referringDoctorId, 10);
+    if (admissionReason) params.admission_reason = admissionReason;
+    if (docNumber) params.doc_number = docNumber;
+    return params;
+  }, [
+    canPrefill, template?.id, patientId, admissionId,
+    roomId, doctorId, referringDoctorId, admissionReason, docNumber,
+  ]);
+
   const handlePrint = async () => {
     if (!canPrefill || printing) return;
     if (!template?.id) {
@@ -1194,19 +1346,9 @@ const DeclarationCard = ({
     }
     setPrinting(true);
     try {
-      const params = {
-        patient_id: String(patientId),
-        template_id: template.id,
-        admission_id: parseInt(admissionId, 10),
-      };
-      if (roomId) params.room_id = parseInt(roomId, 10);
-      if (doctorId) params.admitting_doctor_id = parseInt(doctorId, 10);
-      if (referringDoctorId) params.referring_doctor_id = parseInt(referringDoctorId, 10);
-      if (admissionReason) params.admission_reason = admissionReason;
-      if (docNumber) params.doc_number = docNumber;
       let errMsg = null;
       const ok = await printPdfFromUrl('/api/inpatient/consents/preview-pdf', {
-        params,
+        params: previewParams,
         onError: (msg) => { errMsg = msg; },
       });
       if (!ok) {
@@ -1235,7 +1377,8 @@ const DeclarationCard = ({
       </div>
       <div className="mt-3 flex flex-wrap gap-2">
         <Button size="sm" variant="outline" onClick={() => setPreviewOpen(true)}
-                disabled={!template}>
+                disabled={!canPrefill}
+                title={!admissionId ? 'Create the admission first' : 'Preview prefilled PDF'}>
           Preview
         </Button>
         <Button size="sm" variant="outline" onClick={handlePrint}
@@ -1274,16 +1417,101 @@ const DeclarationCard = ({
                 : 'Doc number pending — you can still mark signed and complete.'}
         </div>
       )}
-      <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
-        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>{template?.template_name || title}</DialogTitle>
-          </DialogHeader>
-          <pre className="whitespace-pre-wrap text-xs font-mono bg-gray-50 p-3 rounded border">
-            {template?.content || '—'}
-          </pre>
-        </DialogContent>
-      </Dialog>
+      <PdfPreviewDialog
+        open={previewOpen}
+        onClose={() => setPreviewOpen(false)}
+        title={template?.template_name || title}
+        path={canPrefill ? '/api/inpatient/consents/preview-pdf' : null}
+        params={previewParams}
+        filename={`${(title || 'document').toLowerCase().replace(/\s+/g, '-')}-preview.pdf`}
+        letterheadReportType="consent"
+      />
+    </div>
+  );
+};
+
+
+const CaseSheetPrintCard = ({ admissionId, printed, onToggle }) => {
+  const { toast } = useToast();
+  const [printing, setPrinting] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+
+  const canPrint = Boolean(admissionId);
+  const pdfPath = canPrint
+    ? `/api/inpatient/admissions/${admissionId}/admission-case-sheet/pdf`
+    : null;
+
+  const handlePrint = async () => {
+    if (!canPrint || printing) return;
+    setPrinting(true);
+    try {
+      let errMsg = null;
+      const ok = await printPdfFromUrl(pdfPath, {
+        onError: (msg) => { errMsg = msg; },
+      });
+      if (!ok) {
+        toast({
+          variant: 'destructive',
+          title: 'Print failed',
+          description: errMsg || 'Could not load or print the case sheet.',
+        });
+      }
+    } finally {
+      setPrinting(false);
+    }
+  };
+
+  return (
+    <div className={
+      'border-2 rounded-lg p-3 ' +
+      (printed ? 'border-green-500 bg-green-50' : 'border-gray-200')
+    }>
+      <div className="flex items-start gap-2">
+        <FileText className={'h-5 w-5 ' + (printed ? 'text-green-600' : 'text-gray-500')} />
+        <div className="flex-1">
+          <div className="font-medium text-sm">Case Sheet</div>
+          <div className="text-xs text-gray-600">Clinical history from previous step</div>
+        </div>
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Button size="sm" variant="outline" onClick={() => setPreviewOpen(true)}
+                disabled={!canPrint}
+                title={!admissionId ? 'Create the admission first' : 'Preview case sheet PDF'}>
+          Preview
+        </Button>
+        <Button size="sm" variant="outline" onClick={handlePrint}
+                disabled={!canPrint || printing}
+                title={!admissionId ? 'Create the admission first' : 'Print clinical case sheet'}>
+          {printing
+            ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" /> Printing…</>
+            : <><Printer className="h-4 w-4 mr-1" /> Print</>}
+        </Button>
+        <Button size="sm"
+                variant={printed ? 'outline' : 'default'}
+                onClick={() => onToggle(!printed)}>
+          {printed
+            ? <><CheckCircle2 className="h-4 w-4 mr-1" /> Printed — undo</>
+            : 'Mark printed'}
+        </Button>
+      </div>
+      {printed && (
+        <Badge className="bg-green-100 text-green-800 text-xs mt-2">
+          ✓ Case sheet printed
+        </Badge>
+      )}
+      {!admissionId && (
+        <div className="mt-2 text-xs text-gray-400 italic">
+          Available after the admission is created.
+        </div>
+      )}
+      <PdfPreviewDialog
+        open={previewOpen}
+        onClose={() => setPreviewOpen(false)}
+        title="Case Sheet"
+        path={pdfPath}
+        filename="case-sheet-preview.pdf"
+        letterheadReportType="consent"
+      />
     </div>
   );
 };

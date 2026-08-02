@@ -80,6 +80,7 @@ def rx_cancel_seed(client, auth_headers, seed_data):
                           "items": [{
                               "medicine_id": medicine_id,
                               "batch_number": "CN-B1",
+                              "expiry_date": "2028-12-31",
                               "mrp": 50.0, "quantity": 200, "free_quantity": 0,
                               "purchase_rate": 30.0, "discount_pct": 0,
                               "hsn_id": hsn_id,

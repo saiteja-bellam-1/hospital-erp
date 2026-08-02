@@ -46,7 +46,7 @@ def setup_module_permissions():
         {"module_name": "pharmacy", "permission_name": "view_narcotic_register", "permission_description": "View narcotic / Schedule H register", "category": "user"},
         # Inventory
         {"module_name": "pharmacy", "permission_name": "view_inventory", "permission_description": "View current stock levels and batch list", "category": "user"},
-        {"module_name": "pharmacy", "permission_name": "adjust_stock", "permission_description": "Make manual stock adjustments", "category": "user"},
+        {"module_name": "pharmacy", "permission_name": "adjust_stock", "permission_description": "Make manual stock adjustments and import opening stock (pharmacy admin)", "category": "admin"},
         {"module_name": "pharmacy", "permission_name": "view_stock_ledger", "permission_description": "View stock movement ledger", "category": "user"},
         {"module_name": "pharmacy", "permission_name": "view_low_stock", "permission_description": "View low-stock alerts", "category": "user"},
         {"module_name": "pharmacy", "permission_name": "view_expiring", "permission_description": "View expiring batches alert", "category": "user"},
@@ -450,7 +450,7 @@ def setup_role_permissions():
             "lab": ["view_reports", "create_reports"]
         },
         "pharmacist": {
-            "pharmacy": ["view_catalog", "view_inventory", "adjust_stock", "view_stock_ledger", "view_low_stock", "view_expiring", "view_purchases", "create_sale", "view_sales", "apply_discount", "select_rate_tier", "dispense_rx", "view_dispense_queue", "cancel_rx", "view_narcotic_register", "view_reports"],
+            "pharmacy": ["view_catalog", "view_inventory", "view_stock_ledger", "view_low_stock", "view_expiring", "view_purchases", "create_sale", "view_sales", "apply_discount", "select_rate_tier", "dispense_rx", "view_dispense_queue", "cancel_rx", "view_narcotic_register", "view_reports"],
         },
         "receptionist": {
             "outpatient": ["schedule_appointments", "register_patients", "manage_queues", "view_appointments", "cancel_appointments"],

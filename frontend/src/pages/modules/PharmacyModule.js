@@ -30,6 +30,7 @@ import ReportsTabImpl from './pharmacy/tabs/ReportsTab';
 import SuppliersTabImpl from './pharmacy/tabs/SuppliersTab';
 import StoresTabImpl from './pharmacy/tabs/StoresTab';
 import TransfersTabImpl from './pharmacy/tabs/TransfersTab';
+import SetupTabImpl from './pharmacy/tabs/SetupTab';
 import PharmacyStoreSelector from '../../components/pharmacy/PharmacyStoreSelector';
 import { PharmacyStoreProvider } from '../../contexts/PharmacyStoreContext';
 import { usePharmacyPermissions } from '../../hooks/usePharmacyPermissions';
@@ -379,6 +380,7 @@ export const PHARMACY_PAGE_META = {
   'masters/racks': { title: 'Racks', blurb: 'Shelf and rack location codes' },
   'masters/uoms': { title: 'Units of Measure', blurb: 'Sale and stock units' },
   'masters/stores': { title: 'Stores', blurb: 'Master and satellite pharmacy locations' },
+  'setup': { title: 'Setup', blurb: 'POS defaults and pharmacy counter settings' },
   'reports': { title: 'Reports', blurb: 'Sales, stock, tax, and register reports' },
 };
 
@@ -489,6 +491,9 @@ const PharmacyModule = () => (
         } />
         <Route path="masters/stores" element={
           <PharmacyPermGate permission="manage_stores"><StoresTabImpl /></PharmacyPermGate>
+        } />
+        <Route path="setup" element={
+          <PharmacyPermGate permission="set_rates"><SetupTabImpl /></PharmacyPermGate>
         } />
         <Route path="reports" element={
           <PharmacyPermGate permission="view_reports"><ReportsTabImpl /></PharmacyPermGate>

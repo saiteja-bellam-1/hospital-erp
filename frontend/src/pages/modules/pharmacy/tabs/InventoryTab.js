@@ -13,10 +13,13 @@ import PharmacyImportDialog, { downloadPharmacyBlob } from '../../../../componen
 import { errMsg } from '../../PharmacyModule';
 import { usePharmacyStore } from '../../../../contexts/PharmacyStoreContext';
 import { displayPharmacyNumericInput, formatMoney, pharmacyNoSpinInputClass } from '../../../../utils/pharmacyUnits';
+import { usePharmacyPermissions } from '../../../../hooks/usePharmacyPermissions';
 
 export default function InventoryTab() {
   const { toast } = useToast();
   const { storeParams } = usePharmacyStore();
+  const { hasPerm } = usePharmacyPermissions();
+  const canAdjustStock = hasPerm('adjust_stock');
   const [view, setView] = useState('stock');     // stock | batches | low | expiring | ledger
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -47,10 +50,11 @@ export default function InventoryTab() {
   useEffect(() => { load(); }, [load]);
 
   const openAdjust = (batch) => {
+    if (!canAdjustStock) return;
     setAdjustTarget(batch); setAdjustQty(''); setAdjustReason(''); setAdjustOpen(true);
   };
   const saveAdjust = async () => {
-    if (!adjustTarget || !adjustQty || !adjustReason) return;
+    if (!canAdjustStock || !adjustTarget || !adjustQty || !adjustReason) return;
     try {
       await axios.post('/api/pharmacy/inventory/adjust', {
         batch_id: adjustTarget.id,
@@ -105,9 +109,11 @@ export default function InventoryTab() {
               <Button size="sm" variant="outline" onClick={load}><RefreshCw className="h-3 w-3" /></Button>
               {showStockImportExport && (
                 <>
-                  <Button size="sm" variant="outline" onClick={() => setImportOpen(true)}>
-                    <Upload className="h-3 w-3 mr-1" /> Import opening stock
-                  </Button>
+                  {canAdjustStock && (
+                    <Button size="sm" variant="outline" onClick={() => setImportOpen(true)}>
+                      <Upload className="h-3 w-3 mr-1" /> Import opening stock
+                    </Button>
+                  )}
                   <Button size="sm" variant="outline" onClick={handleExport} disabled={exporting}>
                     {exporting ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Download className="h-3 w-3 mr-1" />}
                     Export batches
@@ -120,7 +126,14 @@ export default function InventoryTab() {
         <CardContent>
           {loading ? <p className="text-center py-6 text-sm text-gray-500">Loading…</p>
             : data.length === 0 ? <p className="text-center py-6 text-sm text-gray-500">No records</p>
-            : <TableForView view={view} data={data} onAdjust={openAdjust} />}
+            : (
+              <TableForView
+                view={view}
+                data={data}
+                onAdjust={canAdjustStock ? openAdjust : null}
+                canAdjust={canAdjustStock}
+              />
+            )}
         </CardContent>
       </Card>
 
@@ -142,7 +155,10 @@ export default function InventoryTab() {
           <DialogHeader><DialogTitle>Adjust Stock — {adjustTarget?.batch_number}</DialogTitle></DialogHeader>
           <div className="space-y-3">
             <div className="text-xs text-gray-500">
-              {adjustTarget?.medicine_name} • current qty: {adjustTarget?.quantity_in_stock}
+              {adjustTarget?.medicine_name} • current qty: {adjustTarget?.quantity_in_stock} tabs
+              {(adjustTarget?.strip_conversion_factor || 1) > 1
+                ? ` (${adjustTarget.strip_conversion_factor} tabs/strip)`
+                : ''}
             </div>
             <div>
               <Label>Qty change (signed: +5 to add, −3 to remove)</Label>
@@ -165,34 +181,48 @@ export default function InventoryTab() {
   );
 }
 
-function TableForView({ view, data, onAdjust }) {
+function TableForView({ view, data, onAdjust, canAdjust }) {
   if (view === 'stock' || view === 'low') {
     return (
       <table className="w-full text-sm">
         <thead><tr className="border-b text-left text-gray-600">
           <th className="py-2 pr-4">Code</th><th className="py-2 pr-4">Medicine</th>
           <th className="py-2 pr-4">Rack</th><th className="py-2 pr-4">UoM</th>
-          <th className="py-2 pr-4">Total Stock</th><th className="py-2 pr-4">Min</th>
+          <th className="py-2 pr-4">Stock (tabs)</th>
+          <th className="py-2 pr-4">Tabs/Strip</th>
+          <th className="py-2 pr-4">Min</th>
           <th className="py-2 pr-4">Batches</th>
           <th className="py-2 pr-4">Status</th>
         </tr></thead>
         <tbody>
-          {data.map(r => (
-            <tr key={r.medicine_id} className="border-b hover:bg-gray-50">
-              <td className="py-2 pr-4 font-mono text-xs">{r.medicine_code}</td>
-              <td className="py-2 pr-4">{r.name}</td>
-              <td className="py-2 pr-4 text-xs">{r.rack_code || '—'}</td>
-              <td className="py-2 pr-4 text-xs">{r.uom || '—'}</td>
-              <td className="py-2 pr-4">{r.total_stock}</td>
-              <td className="py-2 pr-4">{r.min_qty}</td>
-              <td className="py-2 pr-4">{r.batch_count}</td>
-              <td className="py-2 pr-4">
-                {r.is_low_stock
-                  ? <Badge variant="outline" className="text-xs text-orange-700">LOW</Badge>
-                  : <Badge variant="outline" className="text-xs">OK</Badge>}
-              </td>
-            </tr>
-          ))}
+          {data.map(r => {
+            const scf = Math.max(1, parseInt(r.strip_conversion_factor, 10) || 1);
+            const tabs = Number(r.total_stock) || 0;
+            return (
+              <tr key={r.medicine_id} className="border-b hover:bg-gray-50">
+                <td className="py-2 pr-4 font-mono text-xs">{r.medicine_code}</td>
+                <td className="py-2 pr-4">{r.name}</td>
+                <td className="py-2 pr-4 text-xs">{r.rack_code || '—'}</td>
+                <td className="py-2 pr-4 text-xs">{r.uom || '—'}</td>
+                <td className="py-2 pr-4 tabular-nums">
+                  {tabs}
+                  {scf > 1 && tabs > 0 ? (
+                    <div className="text-[10px] text-gray-400">
+                      ≈ {(tabs / scf).toLocaleString(undefined, { maximumFractionDigits: 2 })} strips
+                    </div>
+                  ) : null}
+                </td>
+                <td className="py-2 pr-4 tabular-nums">{scf}</td>
+                <td className="py-2 pr-4">{r.min_qty}</td>
+                <td className="py-2 pr-4">{r.batch_count}</td>
+                <td className="py-2 pr-4">
+                  {r.is_low_stock
+                    ? <Badge variant="outline" className="text-xs text-orange-700">LOW</Badge>
+                    : <Badge variant="outline" className="text-xs">OK</Badge>}
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     );
@@ -202,27 +232,42 @@ function TableForView({ view, data, onAdjust }) {
       <table className="w-full text-sm">
         <thead><tr className="border-b text-left text-gray-600">
           <th className="py-2 pr-4">Medicine</th><th className="py-2 pr-4">Batch</th>
-          <th className="py-2 pr-4">Qty</th>
+          <th className="py-2 pr-4">Qty (tabs)</th>
+          <th className="py-2 pr-4">Tabs/Strip</th>
           <th className="py-2 pr-4">MRP</th><th className="py-2 pr-4">P-Rate</th>
-          <th className="py-2 pr-4">Rate A</th><th className="py-2 pr-4">Qty/Strip</th>
-          <th className="py-2 pr-4">Supplier</th><th className="py-2 text-right">Actions</th>
+          <th className="py-2 pr-4">Rate A</th>
+          <th className="py-2 pr-4">Supplier</th>
+          {canAdjust ? <th className="py-2 text-right">Actions</th> : null}
         </tr></thead>
         <tbody>
-          {data.map(b => (
-            <tr key={b.id} className="border-b hover:bg-gray-50">
-              <td className="py-2 pr-4">{b.medicine_name}</td>
-              <td className="py-2 pr-4 font-mono text-xs">{b.batch_number}</td>
-              <td className="py-2 pr-4">{b.quantity_in_stock}</td>
-              <td className="py-2 pr-4">₹{formatMoney(b.mrp)}</td>
-              <td className="py-2 pr-4">₹{formatMoney(b.purchase_rate)}</td>
-              <td className="py-2 pr-4">₹{formatMoney(b.rate_a)}</td>
-              <td className="py-2 pr-4">{b.strip_conversion_factor || 1}</td>
-              <td className="py-2 pr-4 text-xs">{b.supplier_name || '—'}</td>
-              <td className="py-2 text-right">
-                <Button size="sm" variant="outline" onClick={() => onAdjust(b)}>Adjust</Button>
-              </td>
-            </tr>
-          ))}
+          {data.map(b => {
+            const scf = Math.max(1, parseInt(b.strip_conversion_factor, 10) || 1);
+            const tabs = Number(b.quantity_in_stock) || 0;
+            return (
+              <tr key={b.id} className="border-b hover:bg-gray-50">
+                <td className="py-2 pr-4">{b.medicine_name}</td>
+                <td className="py-2 pr-4 font-mono text-xs">{b.batch_number}</td>
+                <td className="py-2 pr-4 tabular-nums">
+                  {tabs}
+                  {scf > 1 && tabs > 0 ? (
+                    <div className="text-[10px] text-gray-400">
+                      ≈ {(tabs / scf).toLocaleString(undefined, { maximumFractionDigits: 2 })} strips
+                    </div>
+                  ) : null}
+                </td>
+                <td className="py-2 pr-4 tabular-nums">{scf}</td>
+                <td className="py-2 pr-4">₹{formatMoney(b.mrp)}</td>
+                <td className="py-2 pr-4">₹{formatMoney(b.purchase_rate)}</td>
+                <td className="py-2 pr-4">₹{formatMoney(b.rate_a)}</td>
+                <td className="py-2 pr-4 text-xs">{b.supplier_name || '—'}</td>
+                {canAdjust ? (
+                  <td className="py-2 text-right">
+                    <Button size="sm" variant="outline" onClick={() => onAdjust(b)}>Adjust</Button>
+                  </td>
+                ) : null}
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     );

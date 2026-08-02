@@ -17,6 +17,7 @@ import { serializeTakeHomeMed } from '../../../utils/prescriptionSchedule';
 import { printPdfFromUrl } from '../../../utils/printPdf';
 import DischargeSummaryPdfPreviewDialog from './discharge/DischargeSummaryPdfPreviewDialog';
 import { summaryIsReadyForPrint } from './discharge/dischargeSummaryUtils';
+import CaseSheetClinicalFields from './CaseSheetClinicalFields';
 import {
   Loader2, FileText, CheckCircle2, ChevronLeft, ChevronRight, Printer, Eye, Pencil,
 } from 'lucide-react';
@@ -542,77 +543,44 @@ const DischargeSummaryEditor = ({
     }
 
     if (step === 2) {
+      const hpiVisible = hasStandard('chief_complaints_hpi');
       return (
-        <div className="space-y-4">
-          {hasStandard('chief_complaints_hpi') && (
-            <>
-              <Section title={standardLabel('chief_complaints_hpi', 'Chief Complaints')}>
-                <Textarea rows={2} disabled={locked} value={form.chief_complaint}
-                          onChange={e => update({ chief_complaint: e.target.value })}
-                          placeholder="Pre-filled from admission when available" />
-              </Section>
-              <Section title="History of Present Illness">
-                <Textarea rows={2} disabled={locked} value={form.present_medical_history}
-                          onChange={e => update({ present_medical_history: e.target.value })} />
-              </Section>
-            </>
-          )}
-          {hasStandard('allergies_summary') && form.allergies_summary && (
-            <div className="text-sm bg-amber-50 border border-amber-100 rounded p-2">
-              <span className="font-medium text-amber-900">
-                {standardLabel('allergies_summary', 'Allergies')} (from patient record):{' '}
-              </span>
-              {form.allergies_summary}
-            </div>
-          )}
-          {hasStandard('provisional_diagnosis') && (
-            <Section title={standardLabel('provisional_diagnosis', 'Provisional Diagnosis')}>
-              <Textarea rows={2} disabled={locked} value={form.provisional_diagnosis}
-                        onChange={e => update({ provisional_diagnosis: e.target.value })} />
-            </Section>
-          )}
-          {hasStandard('primary_diagnosis') && (
+        <CaseSheetClinicalFields
+          values={form}
+          onChange={(patch) => update(patch)}
+          disabled={locked}
+          visible={{
+            chief_complaint: hpiVisible,
+            present_medical_history: hpiVisible,
+            provisional_diagnosis: hasStandard('provisional_diagnosis'),
+            past_history: hasStandard('past_history'),
+            family_history: hasStandard('family_history'),
+            physical_examination_notes: hasStandard('physical_examination'),
+            findings_at_admission: hasStandard('findings_at_admission'),
+          }}
+          labels={{
+            chief_complaint: standardLabel('chief_complaints_hpi', 'Chief Complaints'),
+            past_history: standardLabel('past_history', 'Past History'),
+            family_history: standardLabel('family_history', 'Family History'),
+            provisional_diagnosis: standardLabel('provisional_diagnosis', 'Provisional Diagnosis'),
+            physical_examination_notes: standardLabel('physical_examination', 'Physical Examination (additional notes)'),
+            findings_at_admission: standardLabel('findings_at_admission', 'Key Findings at Admission'),
+          }}
+          allergiesSummary={hasStandard('allergies_summary') ? form.allergies_summary : null}
+          allergiesLabel={standardLabel('allergies_summary', 'Allergies')}
+          showIncludeAdmissionVitals={hasStandard('physical_examination')}
+          includeAdmissionVitals={form.include_admission_vitals}
+          onIncludeAdmissionVitalsChange={(checked) => update({ include_admission_vitals: checked })}
+          chiefComplaintPlaceholder="Pre-filled from admission when available"
+          physicalExamPlaceholder="Systemic examination notes; admission vitals are auto-included on print when enabled"
+          afterProvisional={hasStandard('primary_diagnosis') ? (
             <Section title={`${standardLabel('primary_diagnosis', 'Primary Diagnosis')}${primaryRequired ? ' *' : ''}`}>
               <Textarea rows={2} disabled={locked} value={form.primary_diagnosis}
                         onChange={e => update({ primary_diagnosis: e.target.value })}
                         placeholder={primaryRequired ? 'Required before marking ready for print' : ''} />
             </Section>
-          )}
-          {hasStandard('past_history') && (
-            <Section title={standardLabel('past_history', 'Past History')}>
-              <Textarea rows={2} disabled={locked} value={form.past_history}
-                        onChange={e => update({ past_history: e.target.value })} />
-            </Section>
-          )}
-          {hasStandard('family_history') && (
-            <Section title={standardLabel('family_history', 'Family History')}>
-              <Textarea rows={2} disabled={locked} value={form.family_history}
-                        onChange={e => update({ family_history: e.target.value })} />
-            </Section>
-          )}
-          {hasStandard('physical_examination') && (
-            <Section title={standardLabel('physical_examination', 'Physical Examination (additional notes)')}>
-              <Textarea rows={2} disabled={locked} value={form.physical_examination_notes}
-                        onChange={e => update({ physical_examination_notes: e.target.value })}
-                        placeholder="Systemic examination notes; admission vitals are auto-included on print when enabled" />
-              <label className="flex items-center gap-2 text-xs text-gray-600 mt-1">
-                <input
-                  type="checkbox"
-                  disabled={locked}
-                  checked={form.include_admission_vitals !== false}
-                  onChange={e => update({ include_admission_vitals: e.target.checked })}
-                />
-                Include first recorded admission vitals on printed summary
-              </label>
-            </Section>
-          )}
-          {hasStandard('findings_at_admission') && (
-            <Section title={standardLabel('findings_at_admission', 'Key Findings at Admission')}>
-              <Textarea rows={2} disabled={locked} value={form.findings_at_admission}
-                        onChange={e => update({ findings_at_admission: e.target.value })} />
-            </Section>
-          )}
-        </div>
+          ) : null}
+        />
       );
     }
 

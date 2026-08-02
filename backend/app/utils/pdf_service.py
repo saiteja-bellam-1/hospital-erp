@@ -3909,6 +3909,194 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
+    def generate_admission_case_sheet_pdf(
+        self, payload, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT,
+    ):
+        """Clinical case sheet printed at admission (Complaints & History)."""
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=30, bottomMargin=30)
+        elements = []
+        page_width = A4[0] - 80
+
+        title_style = ParagraphStyle(
+            'CSTitle', parent=self.styles['Title'],
+            fontSize=14, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4,
+        )
+        sub_style = ParagraphStyle(
+            'CSSub', parent=self.styles['Normal'],
+            fontSize=9, alignment=1, fontName='Helvetica', textColor=colors.black, spaceAfter=2,
+        )
+        heading = ParagraphStyle(
+            'CSHeading', parent=self.styles['Normal'],
+            fontSize=11, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4, spaceBefore=8,
+        )
+        body = ParagraphStyle(
+            'CSBody', parent=self.styles['Normal'],
+            fontSize=10, fontName='Helvetica', textColor=colors.black, spaceAfter=4, leading=13,
+        )
+        label_small = ParagraphStyle(
+            'CSLabel', parent=self.styles['Normal'],
+            fontSize=9, fontName='Helvetica-Bold', textColor=colors.black,
+        )
+        footer_style = ParagraphStyle(
+            'CSFooter', parent=self.styles['Normal'],
+            fontSize=8, alignment=1, fontName='Helvetica', textColor=colors.black,
+        )
+
+        if include_header:
+            logo_path = hospital_info.get('logo_url', '')
+            uploads_base = _get_uploads_base()
+            has_logo = False
+            full_logo_path = ''
+            if logo_path:
+                relative = logo_path.lstrip('/')
+                if relative.startswith('uploads/'):
+                    relative = relative[len('uploads/'):]
+                full_logo_path = os.path.join(uploads_base, relative)
+                has_logo = os.path.exists(full_logo_path)
+
+            centre_elems = [Paragraph(hospital_info.get('name', 'HOSPITAL').upper(), title_style)]
+            if hospital_info.get('hospital_subname'):
+                centre_elems.append(Paragraph(hospital_info['hospital_subname'], sub_style))
+            if hospital_info.get('address'):
+                centre_elems.append(Paragraph(hospital_info['address'], sub_style))
+            contact_parts = []
+            if hospital_info.get('email'):
+                contact_parts.append(f"Email: {hospital_info['email']}")
+            if hospital_info.get('phone'):
+                contact_parts.append(f"Phone: {hospital_info['phone']}")
+            if contact_parts:
+                centre_elems.append(Paragraph("  |  ".join(contact_parts), sub_style))
+
+            if has_logo:
+                try:
+                    logo_img = Image(full_logo_path, width=60, height=60)
+                    logo_img.hAlign = 'LEFT'
+                    header_table = Table([[logo_img, centre_elems]], colWidths=[70, page_width - 70])
+                except Exception:
+                    header_table = Table([[centre_elems]], colWidths=[page_width])
+            else:
+                header_table = Table([[centre_elems]], colWidths=[page_width])
+            header_table.setStyle(TableStyle([
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+            ]))
+            elements.append(header_table)
+            elements.append(Spacer(1, 6))
+            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+        else:
+            elements.append(Spacer(1, letterhead_gap_pt))
+
+        elements.append(Spacer(1, 8))
+        elements.append(Paragraph(
+            "CASE SHEET",
+            ParagraphStyle(
+                'CSMain', parent=self.styles['Normal'],
+                fontSize=13, alignment=1, fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=6,
+            ),
+        ))
+        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
+        elements.append(Spacer(1, 8))
+
+        meta_rows = [
+            [
+                Paragraph("Patient:", label_small),
+                Paragraph(str(payload.get('patient_name') or '—'), body),
+                Paragraph("MRN:", label_small),
+                Paragraph(str(payload.get('mrn') or '—'), body),
+            ],
+            [
+                Paragraph("Admission #:", label_small),
+                Paragraph(str(payload.get('admission_number') or '—'), body),
+                Paragraph("Doctor:", label_small),
+                Paragraph(str(payload.get('doctor_name') or '—'), body),
+            ],
+            [
+                Paragraph("Admitted on:", label_small),
+                Paragraph(str(payload.get('admission_date') or '—'), body),
+                Paragraph("Ward / Bed:", label_small),
+                Paragraph(str(payload.get('ward_bed') or '—'), body),
+            ],
+            [
+                Paragraph("Age / Gender:", label_small),
+                Paragraph(f"{payload.get('age') or ''} / {payload.get('gender') or ''}", body),
+                Paragraph("Phone:", label_small),
+                Paragraph(str(payload.get('primary_phone') or '—'), body),
+            ],
+        ]
+        meta_table = Table(
+            meta_rows,
+            colWidths=[page_width * 0.15, page_width * 0.35, page_width * 0.15, page_width * 0.35],
+        )
+        meta_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ]))
+        elements.append(meta_table)
+        elements.append(Spacer(1, 10))
+
+        sections = [
+            ('Chief Complaints', payload.get('chief_complaint')),
+            ('History of Present Illness', payload.get('present_medical_history')),
+            ('Past History / Previous Illness', payload.get('past_history')),
+            ('Family History', payload.get('family_history')),
+            ('Provisional Diagnosis', payload.get('provisional_diagnosis')),
+            ('Physical Examination', payload.get('physical_examination_notes')),
+            ('Key Findings at Admission', payload.get('findings_at_admission')),
+        ]
+        any_section = False
+        for title, text in sections:
+            text = (text or '').strip()
+            if not text:
+                continue
+            any_section = True
+            elements.append(Paragraph(title.upper(), heading))
+            for line in text.split('\n'):
+                if line.strip():
+                    elements.append(Paragraph(line.strip().replace('&', '&amp;').replace('<', '&lt;'), body))
+            elements.append(Spacer(1, 4))
+
+        if not any_section:
+            elements.append(Paragraph(
+                "No clinical case sheet details recorded at admission.",
+                ParagraphStyle(
+                    'CSEmpty', parent=body, textColor=colors.grey, fontName='Helvetica-Oblique',
+                ),
+            ))
+            elements.append(Spacer(1, 8))
+
+        elements.append(Spacer(1, 12))
+        elements.append(Paragraph("SIGNATURES", heading))
+        sig_table = Table(
+            [[
+                Paragraph(
+                    "<b>Doctor / Attending:</b><br/><br/><br/>____________________<br/>Name / Signature",
+                    body,
+                ),
+                Paragraph(
+                    "<b>Admitting Officer:</b><br/><br/><br/>____________________<br/>Name / Signature",
+                    body,
+                ),
+                Paragraph(
+                    "<b>Date:</b><br/><br/><br/>____________________",
+                    body,
+                ),
+            ]],
+            colWidths=[page_width / 3, page_width / 3, page_width / 3],
+        )
+        sig_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('TOPPADDING', (0, 0), (-1, -1), 6),
+        ]))
+        elements.append(sig_table)
+
+        elements.append(Spacer(1, 18))
+        elements.append(Paragraph(f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M:%S')}", footer_style))
+        _finalize(doc, elements, hospital_info)
+        buffer.seek(0)
+        return buffer
+
     def generate_death_certificate_pdf(self, cert_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
         """Death certificate / mortality record."""
         buffer = BytesIO()

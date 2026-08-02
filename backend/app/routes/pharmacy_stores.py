@@ -20,6 +20,7 @@ from app.models.pharmacy import (
 )
 from app.models.user import User, UserRole
 from app.services.audit_service import log_action
+from app.services.pharmacy_stock import net_sold_qty_for_batch, credit_batch_stock
 from app.services.pharmacy_store_service import (
     get_default_store,
     list_accessible_stores,
@@ -645,10 +646,14 @@ def confirm_transfer(
             PharmacyInventory.expiry_date == item.expiry_date,
             PharmacyInventory.store_id == tr.to_store_id,
             PharmacyInventory.hospital_id == current_user.hospital_id,
-            PharmacyInventory.is_active == True,  # noqa: E712
+        ).order_by(
+            PharmacyInventory.is_active.desc(),
+            PharmacyInventory.id.asc(),
         ).first()
         if dest:
             dest.quantity_in_stock = (dest.quantity_in_stock or 0) + item.quantity
+            if (dest.quantity_in_stock or 0) > 0:
+                dest.is_active = True
             dest.mrp = src.mrp or dest.mrp
             dest.purchase_rate = src.purchase_rate or dest.purchase_rate
             dest.cost_price = src.cost_price or dest.cost_price
@@ -744,11 +749,7 @@ def revoke_transfer(
         dest_batch_id = item.target_inventory_id
         sold = 0.0
         if dest_batch_id:
-            sold_total = db.query(sa_func.coalesce(sa_func.sum(PharmacyStockLedger.qty_delta), 0)).filter(
-                PharmacyStockLedger.batch_id == dest_batch_id,
-                PharmacyStockLedger.txn_type.in_(("sale", "rx_dispense")),
-            ).scalar() or 0
-            sold = abs(float(sold_total))
+            sold = net_sold_qty_for_batch(db, dest_batch_id)
         reversible = max(0.0, transferred - sold)
         med = db.query(Medicine).filter(Medicine.id == item.medicine_id).first()
         if sold > 0:

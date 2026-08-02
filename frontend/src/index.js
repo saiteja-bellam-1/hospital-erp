@@ -7,6 +7,9 @@ import './index.css';
 import App from './App';
 import { AuthProvider } from './contexts/AuthContext';
 import { FormNavProvider } from './components/FormNavProvider';
+import { installNumberInputWheelGuard } from './utils/numberInputWheelGuard';
+
+installNumberInputWheelGuard();
 
 const queryClient = new QueryClient({
   defaultOptions: {

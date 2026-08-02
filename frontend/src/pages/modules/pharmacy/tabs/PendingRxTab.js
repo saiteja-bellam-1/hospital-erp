@@ -175,9 +175,11 @@ export default function PendingRxTab() {
       </CardContent>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader><DialogTitle>Dispense — {target?.prescription_number}</DialogTitle></DialogHeader>
-          <div className="space-y-3">
+        <DialogContent className="max-w-4xl w-[96vw] max-h-[90vh] flex flex-col overflow-hidden gap-0 p-0">
+          <div className="shrink-0 border-b px-6 pt-5 pb-3 space-y-3">
+            <DialogHeader className="space-y-0">
+              <DialogTitle>Dispense — {target?.prescription_number}</DialogTitle>
+            </DialogHeader>
             {target?.admission_id && (
               <div className="grid grid-cols-2 gap-2">
                 <div>
@@ -205,8 +207,10 @@ export default function PendingRxTab() {
               </div>
             )}
             <p className="text-xs text-gray-500">FIFO batch picking is used. Leave qty 0 to skip a line.</p>
+          </div>
+          <div className="flex-1 min-h-0 max-h-[50vh] overflow-y-auto px-6 py-2">
             <table className="w-full text-sm">
-              <thead><tr className="border-b text-left text-gray-600">
+              <thead className="sticky top-0 bg-white"><tr className="border-b text-left text-gray-600">
                 <th className="py-2 pr-4">Medicine</th><th className="py-2 pr-4">Rate</th>
                 <th className="py-2 pr-4">Prescribed</th>
                 <th className="py-2 pr-4">Already</th><th className="py-2 pr-4">Remaining</th>
@@ -245,10 +249,10 @@ export default function PendingRxTab() {
               </tbody>
             </table>
           </div>
-          <DialogFooter>
+          <div className="shrink-0 border-t px-6 py-3 flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
             <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
             <Button onClick={submit}>Dispense</Button>
-          </DialogFooter>
+          </div>
         </DialogContent>
       </Dialog>
 

@@ -7,6 +7,19 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 
 import { displayPharmacyNumericInput, pharmacyNoSpinInputClass } from '../../utils/pharmacyUnits';
 
+export const SUPPLIER_FORM_STEPS = [
+  { key: 'basic', label: 'Basic' },
+  { key: 'contact', label: 'Contact & address' },
+  { key: 'gst', label: 'GST & misc' },
+];
+
+export function supplierStepCanProceed(form, stepIndex) {
+  if (stepIndex === 0) {
+    return !!form.name?.trim();
+  }
+  return true;
+}
+
 export const EMPTY_SUPPLIER_FORM = {
   name: '',
   station: '', account_group: 'Sundry Creditors', balancing_method: 'bill_by_bill',
@@ -47,13 +60,15 @@ export function prepareSupplierPayload(form) {
 }
 
 const Section = ({ title, children }) => (
-  <div className="border rounded p-3 mb-3 bg-gray-50/40">
+  <div className="border rounded p-3 bg-gray-50/40 h-full">
     <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-2">{title}</p>
     {children}
   </div>
 );
 
-const Grid = ({ children }) => <div className="grid grid-cols-2 md:grid-cols-4 gap-3">{children}</div>;
+const Grid = ({ children }) => (
+  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">{children}</div>
+);
 
 const F = ({ label, children, colSpan = 1 }) => (
   <div style={{ gridColumn: `span ${colSpan}` }}>
@@ -88,101 +103,109 @@ const Sel = ({ value, onChange, options }) => (
 );
 
 /** Full supplier form — shared by Suppliers tab and purchase-entry quick-add. */
-export default function SupplierFormFields({ form, onChange }) {
+export default function SupplierFormFields({ form, onChange, activeStep = 0 }) {
   const set = (k, v) => onChange({ ...form, [k]: v });
 
   return (
-    <FormNavContainer mode="grid">
-      <Section title="Basic">
-        <Grid>
-          <F label="Ledger Name *" colSpan={2}><Input value={form.name} onChange={(e) => set('name', e.target.value)} /></F>
-          <F label="Station"><Input value={form.station} onChange={(e) => set('station', e.target.value)} /></F>
-          <F label="Account Group"><Input value={form.account_group} onChange={(e) => set('account_group', e.target.value)} /></F>
-          <F label="Balancing Method">
-            <Sel value={form.balancing_method} onChange={(v) => set('balancing_method', v)}
-              options={[['bill_by_bill', 'Bill by Bill'], ['on_account', 'On Account']]} />
-          </F>
-          <F label="Opening Balance"><Num value={form.opening_balance} onChange={(v) => set('opening_balance', v)} /></F>
-          <F label="Dr / Cr">
-            <Sel value={form.opening_balance_dr_cr} onChange={(v) => set('opening_balance_dr_cr', v)}
-              options={[['Dr', 'Dr'], ['Cr', 'Cr']]} />
-          </F>
-          <F label="Hold Payment"><Check checked={form.hold_payment} onChange={(v) => set('hold_payment', v)} /></F>
-          <F label="% (if GSTR1 not uploaded)"><Num value={form.hold_payment_pct} onChange={(v) => set('hold_payment_pct', v)} /></F>
-          <F label="Ledger Date"><Input type="date" value={form.ledger_date || ''} onChange={(e) => set('ledger_date', e.target.value)} /></F>
-          <F label="Freeze Upto"><Input type="date" value={form.freeze_upto || ''} onChange={(e) => set('freeze_upto', e.target.value)} /></F>
-        </Grid>
-      </Section>
+    <FormNavContainer mode="grid" className="h-full">
+      {activeStep === 0 && (
+        <Section title="Basic">
+          <Grid>
+            <F label="Ledger Name *" colSpan={2}><Input value={form.name} onChange={(e) => set('name', e.target.value)} /></F>
+            <F label="Station"><Input value={form.station} onChange={(e) => set('station', e.target.value)} /></F>
+            <F label="Account Group"><Input value={form.account_group} onChange={(e) => set('account_group', e.target.value)} /></F>
+            <F label="Balancing Method">
+              <Sel value={form.balancing_method} onChange={(v) => set('balancing_method', v)}
+                options={[['bill_by_bill', 'Bill by Bill'], ['on_account', 'On Account']]} />
+            </F>
+            <F label="Opening Balance"><Num value={form.opening_balance} onChange={(v) => set('opening_balance', v)} /></F>
+            <F label="Dr / Cr">
+              <Sel value={form.opening_balance_dr_cr} onChange={(v) => set('opening_balance_dr_cr', v)}
+                options={[['Dr', 'Dr'], ['Cr', 'Cr']]} />
+            </F>
+            <F label="Hold Payment"><Check checked={form.hold_payment} onChange={(v) => set('hold_payment', v)} /></F>
+            <F label="% (if GSTR1 not uploaded)"><Num value={form.hold_payment_pct} onChange={(v) => set('hold_payment_pct', v)} /></F>
+            <F label="Ledger Date"><Input type="date" value={form.ledger_date || ''} onChange={(e) => set('ledger_date', e.target.value)} /></F>
+            <F label="Freeze Upto"><Input type="date" value={form.freeze_upto || ''} onChange={(e) => set('freeze_upto', e.target.value)} /></F>
+          </Grid>
+        </Section>
+      )}
 
-      <Section title="Contact">
-        <Grid>
-          <F label="Contact Person"><Input value={form.contact_person} onChange={(e) => set('contact_person', e.target.value)} /></F>
-          <F label="Designation"><Input value={form.designation} onChange={(e) => set('designation', e.target.value)} /></F>
-          <F label="Mobile"><Input value={form.mobile} onChange={(e) => set('mobile', e.target.value)} /></F>
-          <F label="Phone (Off.)"><Input value={form.phone_office} onChange={(e) => set('phone_office', e.target.value)} /></F>
-          <F label="Phone (Res.)"><Input value={form.phone_residence} onChange={(e) => set('phone_residence', e.target.value)} /></F>
-          <F label="Fax"><Input value={form.fax} onChange={(e) => set('fax', e.target.value)} /></F>
-          <F label="Email"><Input value={form.email} onChange={(e) => set('email', e.target.value)} /></F>
-          <F label="Web Site"><Input value={form.website} onChange={(e) => set('website', e.target.value)} /></F>
-        </Grid>
-      </Section>
+      {activeStep === 1 && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 h-full">
+          <Section title="Contact">
+            <Grid>
+              <F label="Contact Person"><Input value={form.contact_person} onChange={(e) => set('contact_person', e.target.value)} /></F>
+              <F label="Designation"><Input value={form.designation} onChange={(e) => set('designation', e.target.value)} /></F>
+              <F label="Mobile"><Input value={form.mobile} onChange={(e) => set('mobile', e.target.value)} /></F>
+              <F label="Phone (Off.)"><Input value={form.phone_office} onChange={(e) => set('phone_office', e.target.value)} /></F>
+              <F label="Phone (Res.)"><Input value={form.phone_residence} onChange={(e) => set('phone_residence', e.target.value)} /></F>
+              <F label="Fax"><Input value={form.fax} onChange={(e) => set('fax', e.target.value)} /></F>
+              <F label="Email" colSpan={2}><Input value={form.email} onChange={(e) => set('email', e.target.value)} /></F>
+              <F label="Web Site" colSpan={2}><Input value={form.website} onChange={(e) => set('website', e.target.value)} /></F>
+            </Grid>
+          </Section>
+          <Section title="Address">
+            <Grid>
+              <F label="Mail to" colSpan={2}><Input value={form.mail_to} onChange={(e) => set('mail_to', e.target.value)} /></F>
+              <F label="Address" colSpan={4}><Textarea rows={2} value={form.address} onChange={(e) => set('address', e.target.value)} /></F>
+              <F label="Pin Code"><Input value={form.pin_code} onChange={(e) => set('pin_code', e.target.value)} /></F>
+              <F label="State"><Input value={form.state} onChange={(e) => set('state', e.target.value)} placeholder="TELANGANA" /></F>
+              <F label="State Code"><Input value={form.state_code} onChange={(e) => set('state_code', e.target.value)} placeholder="36" /></F>
+              <F label="Country"><Input value={form.country} onChange={(e) => set('country', e.target.value)} /></F>
+            </Grid>
+          </Section>
+        </div>
+      )}
 
-      <Section title="Address">
-        <Grid>
-          <F label="Mail to" colSpan={2}><Input value={form.mail_to} onChange={(e) => set('mail_to', e.target.value)} /></F>
-          <F label="Address" colSpan={3}><Textarea rows={2} value={form.address} onChange={(e) => set('address', e.target.value)} /></F>
-          <F label="Pin Code"><Input value={form.pin_code} onChange={(e) => set('pin_code', e.target.value)} /></F>
-          <F label="State"><Input value={form.state} onChange={(e) => set('state', e.target.value)} placeholder="TELANGANA" /></F>
-          <F label="State Code"><Input value={form.state_code} onChange={(e) => set('state_code', e.target.value)} placeholder="36" /></F>
-          <F label="Country"><Input value={form.country} onChange={(e) => set('country', e.target.value)} /></F>
-        </Grid>
-      </Section>
-
-      <Section title="GST & Licenses">
-        <Grid>
-          <F label="GST Heading">
-            <Sel value={form.gst_heading} onChange={(v) => set('gst_heading', v)}
-              options={[['local', 'Local'], ['interstate', 'Interstate'], ['composition', 'Composition'], ['exempt', 'Exempt']]} />
-          </F>
-          <F label="Ledger Type">
-            <Sel value={form.ledger_type} onChange={(v) => set('ledger_type', v)}
-              options={[['registered', 'Registered'], ['unregistered', 'Unregistered'], ['composition', 'Composition']]} />
-          </F>
-          <F label="GSTIN No."><Input value={form.gstin_no} onChange={(e) => set('gstin_no', e.target.value)} /></F>
-          <F label="GSTIN Date"><Input type="date" value={form.gstin_date || ''} onChange={(e) => set('gstin_date', e.target.value)} /></F>
-          <F label="D.L. No."><Input value={form.dl_number} onChange={(e) => set('dl_number', e.target.value)} /></F>
-          <F label="D.L. Exp."><Input type="date" value={form.dl_expiry || ''} onChange={(e) => set('dl_expiry', e.target.value)} /></F>
-          <F label="VAT No."><Input value={form.vat_number} onChange={(e) => set('vat_number', e.target.value)} /></F>
-          <F label="VAT Exp."><Input type="date" value={form.vat_expiry || ''} onChange={(e) => set('vat_expiry', e.target.value)} /></F>
-          <F label="S.T. No."><Input value={form.st_number} onChange={(e) => set('st_number', e.target.value)} /></F>
-          <F label="S.T. Exp."><Input type="date" value={form.st_expiry || ''} onChange={(e) => set('st_expiry', e.target.value)} /></F>
-          <F label="Food Licence No."><Input value={form.food_license_no} onChange={(e) => set('food_license_no', e.target.value)} /></F>
-          <F label="Food Licence Exp."><Input type="date" value={form.food_license_expiry || ''} onChange={(e) => set('food_license_expiry', e.target.value)} /></F>
-          <F label="Extra Heading No."><Input value={form.extra_license_no} onChange={(e) => set('extra_license_no', e.target.value)} /></F>
-          <F label="Extra Heading Exp."><Input type="date" value={form.extra_license_expiry || ''} onChange={(e) => set('extra_license_expiry', e.target.value)} /></F>
-          <F label="I.T. PAN No."><Input value={form.pan_number} onChange={(e) => set('pan_number', e.target.value)} /></F>
-        </Grid>
-      </Section>
-
-      <Section title="Misc">
-        <Grid>
-          <F label="Narco / Sch-H Item Billing">
-            <Sel value={form.narco_sch_h_billing} onChange={(v) => set('narco_sch_h_billing', v)}
-              options={[['allow_all', 'Allow All'], ['restrict', 'Restrict'], ['block', 'Block']]} />
-          </F>
-          <F label="Bill Import">
-            <Sel value={form.bill_import} onChange={(v) => set('bill_import', v)}
-              options={[['mobile', 'Mobile'], ['erp', 'ERP to ERP'], ['manual', 'Manual']]} />
-          </F>
-          <F label="Ledger Category"><Input value={form.ledger_category} onChange={(e) => set('ledger_category', e.target.value)} /></F>
-          <F label="Color Tag">
-            <Sel value={form.color_tag} onChange={(v) => set('color_tag', v)}
-              options={[['normal', 'Normal'], ['red', 'Red'], ['yellow', 'Yellow'], ['green', 'Green']]} />
-          </F>
-          <F label="Active"><Check checked={form.is_active} onChange={(v) => set('is_active', v)} /></F>
-          <F label="Hide"><Check checked={form.is_hidden} onChange={(v) => set('is_hidden', v)} /></F>
-        </Grid>
-      </Section>
+      {activeStep === 2 && (
+        <div className="space-y-3">
+          <Section title="GST & Licenses">
+            <Grid>
+              <F label="GST Heading">
+                <Sel value={form.gst_heading} onChange={(v) => set('gst_heading', v)}
+                  options={[['local', 'Local'], ['interstate', 'Interstate'], ['composition', 'Composition'], ['exempt', 'Exempt']]} />
+              </F>
+              <F label="Ledger Type">
+                <Sel value={form.ledger_type} onChange={(v) => set('ledger_type', v)}
+                  options={[['registered', 'Registered'], ['unregistered', 'Unregistered'], ['composition', 'Composition']]} />
+              </F>
+              <F label="GSTIN No."><Input value={form.gstin_no} onChange={(e) => set('gstin_no', e.target.value)} /></F>
+              <F label="GSTIN Date"><Input type="date" value={form.gstin_date || ''} onChange={(e) => set('gstin_date', e.target.value)} /></F>
+              <F label="D.L. No."><Input value={form.dl_number} onChange={(e) => set('dl_number', e.target.value)} /></F>
+              <F label="D.L. Exp."><Input type="date" value={form.dl_expiry || ''} onChange={(e) => set('dl_expiry', e.target.value)} /></F>
+              <F label="VAT No."><Input value={form.vat_number} onChange={(e) => set('vat_number', e.target.value)} /></F>
+              <F label="VAT Exp."><Input type="date" value={form.vat_expiry || ''} onChange={(e) => set('vat_expiry', e.target.value)} /></F>
+              <F label="S.T. No."><Input value={form.st_number} onChange={(e) => set('st_number', e.target.value)} /></F>
+              <F label="S.T. Exp."><Input type="date" value={form.st_expiry || ''} onChange={(e) => set('st_expiry', e.target.value)} /></F>
+              <F label="Food Licence No."><Input value={form.food_license_no} onChange={(e) => set('food_license_no', e.target.value)} /></F>
+              <F label="Food Licence Exp."><Input type="date" value={form.food_license_expiry || ''} onChange={(e) => set('food_license_expiry', e.target.value)} /></F>
+              <F label="Extra Heading No."><Input value={form.extra_license_no} onChange={(e) => set('extra_license_no', e.target.value)} /></F>
+              <F label="Extra Heading Exp."><Input type="date" value={form.extra_license_expiry || ''} onChange={(e) => set('extra_license_expiry', e.target.value)} /></F>
+              <F label="I.T. PAN No."><Input value={form.pan_number} onChange={(e) => set('pan_number', e.target.value)} /></F>
+            </Grid>
+          </Section>
+          <Section title="Misc">
+            <Grid>
+              <F label="Narco / Sch-H Item Billing">
+                <Sel value={form.narco_sch_h_billing} onChange={(v) => set('narco_sch_h_billing', v)}
+                  options={[['allow_all', 'Allow All'], ['restrict', 'Restrict'], ['block', 'Block']]} />
+              </F>
+              <F label="Bill Import">
+                <Sel value={form.bill_import} onChange={(v) => set('bill_import', v)}
+                  options={[['mobile', 'Mobile'], ['erp', 'ERP to ERP'], ['manual', 'Manual']]} />
+              </F>
+              <F label="Ledger Category"><Input value={form.ledger_category} onChange={(e) => set('ledger_category', e.target.value)} /></F>
+              <F label="Color Tag">
+                <Sel value={form.color_tag} onChange={(v) => set('color_tag', v)}
+                  options={[['normal', 'Normal'], ['red', 'Red'], ['yellow', 'Yellow'], ['green', 'Green']]} />
+              </F>
+              <F label="Active"><Check checked={form.is_active} onChange={(v) => set('is_active', v)} /></F>
+              <F label="Hide"><Check checked={form.is_hidden} onChange={(v) => set('is_hidden', v)} /></F>
+            </Grid>
+          </Section>
+        </div>
+      )}
     </FormNavContainer>
   );
 }

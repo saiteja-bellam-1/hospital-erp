@@ -1,15 +1,13 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
-import {
-  Dialog, DialogContent, DialogHeader, DialogTitle,
-} from './ui/dialog';
-import { Button } from './ui/button';
-import { Loader2 } from 'lucide-react';
 import { useToast } from '../hooks/use-toast';
 import { errorDetail } from '../utils/apiErrors';
+import SteppedFormDialog from './SteppedFormDialog';
 import PatientRegisterFormFields, {
   EMPTY_PATIENT_FORM,
+  PATIENT_FORM_STEPS,
   buildPatientPayload,
+  patientStepCanProceed,
   validatePatientForm,
 } from './PatientRegisterFormFields';
 
@@ -22,21 +20,35 @@ export default function QuickPatientRegisterDialog({
   const { toast } = useToast();
   const [form, setForm] = useState(EMPTY_PATIENT_FORM);
   const [saving, setSaving] = useState(false);
+  const [activeStep, setActiveStep] = useState(0);
 
   useEffect(() => {
-    if (open) {
-      setForm({ ...EMPTY_PATIENT_FORM, ...initialValues });
-    }
+    if (!open) return;
+    setActiveStep(0);
+    setForm({ ...EMPTY_PATIENT_FORM, ...initialValues });
   }, [open, initialValues]);
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    const validationErr = validatePatientForm(form);
-    if (validationErr) {
-      toast({ variant: 'destructive', title: 'Missing fields', description: validationErr });
+  const steps = useMemo(
+    () => PATIENT_FORM_STEPS.map((s, i) => ({ ...s, completed: i < activeStep })),
+    [activeStep],
+  );
+
+  const handleNext = () => {
+    const err = validatePatientForm(form);
+    if (err) {
+      toast({ variant: 'destructive', title: 'Missing fields', description: err });
       return;
     }
+    setActiveStep((s) => Math.min(s + 1, PATIENT_FORM_STEPS.length - 1));
+  };
 
+  const handleSave = async () => {
+    const err = validatePatientForm(form);
+    if (err) {
+      toast({ variant: 'destructive', title: 'Missing fields', description: err });
+      setActiveStep(0);
+      return;
+    }
     setSaving(true);
     try {
       const payload = buildPatientPayload(form);
@@ -47,11 +59,11 @@ export default function QuickPatientRegisterDialog({
       });
       onCreated?.(res.data);
       onOpenChange(false);
-    } catch (err) {
+    } catch (e) {
       toast({
         variant: 'destructive',
         title: 'Registration failed',
-        description: errorDetail(err, 'Could not register patient'),
+        description: errorDetail(e, 'Could not register patient'),
       });
     } finally {
       setSaving(false);
@@ -59,27 +71,20 @@ export default function QuickPatientRegisterDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[98vw] max-w-7xl max-h-[95vh] flex flex-col gap-3 p-4 overflow-hidden">
-        <DialogHeader className="shrink-0">
-          <DialogTitle>Register New Patient</DialogTitle>
-        </DialogHeader>
-        <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0 gap-3">
-          <div className="flex-1 min-h-0 overflow-y-auto pr-1">
-            <PatientRegisterFormFields form={form} onChange={setForm} />
-          </div>
-          <div className="flex gap-2 pt-2 border-t shrink-0">
-            <Button type="button" variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" className="flex-1" disabled={saving}>
-              {saving
-                ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Saving…</>
-                : 'Register & select'}
-            </Button>
-          </div>
-        </form>
-      </DialogContent>
-    </Dialog>
+    <SteppedFormDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title="Register New Patient"
+      steps={steps}
+      activeStep={activeStep}
+      onStepChange={setActiveStep}
+      onNext={handleNext}
+      onSave={handleSave}
+      saving={saving}
+      canProceed={activeStep !== 0 || patientStepCanProceed(form, 0)}
+      saveLabel="Register & select"
+    >
+      <PatientRegisterFormFields form={form} onChange={setForm} activeStep={activeStep} />
+    </SteppedFormDialog>
   );
 }

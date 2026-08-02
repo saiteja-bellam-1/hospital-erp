@@ -1378,7 +1378,7 @@ def import_opening_stock(
             db.add(adj)
             db.flush()
             db.add(PharmacyStockLedger(
-                medicine_id=med.id, batch_id=existing.id, txn_type="adjustment",
+                medicine_id=med.id, batch_id=existing.id, txn_type="opening_stock",
                 qty_delta=delta, reference_type="opening_stock_import", reference_id=adj.id,
                 performed_by=user.id, store_id=store_id, hospital_id=hospital_id, notes=notes,
             ))
@@ -1405,7 +1405,7 @@ def import_opening_stock(
             db.add(adj)
             db.flush()
             db.add(PharmacyStockLedger(
-                medicine_id=med.id, batch_id=inv.id, txn_type="adjustment",
+                medicine_id=med.id, batch_id=inv.id, txn_type="opening_stock",
                 qty_delta=int(qty), reference_type="opening_stock_import", reference_id=adj.id,
                 performed_by=user.id, store_id=store_id, hospital_id=hospital_id, notes=notes,
             ))

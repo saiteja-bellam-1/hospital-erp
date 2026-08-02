@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Badge } from '../../../components/ui/badge';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '../../../components/ui/dialog';
 import { useToast } from '../../../hooks/use-toast';
-import { Search, Trash2, Receipt, Printer, Plus, ArrowLeftRight, AlertTriangle, ChevronDown, ChevronUp, User } from 'lucide-react';
+import { Search, Trash2, Receipt, Printer, Plus, ArrowLeftRight, AlertTriangle, ChevronDown, ChevronUp, User, Pencil } from 'lucide-react';
 import { errMsg } from '../PharmacyModule';
 import PdfPreviewDialog from '../../../components/PdfPreviewDialog';
 import PatientSearchPicker from '../../../components/PatientSearchPicker';
@@ -22,6 +22,7 @@ import {
   displayPharmacyNumericInput,
   formatBatchSummary,
   formatRatesHint,
+  lineGrossBeforeDiscount,
   linePricingSource,
   normalizeTabQtyToStrips,
   pharmacyNoSpinInputClass,
@@ -36,7 +37,7 @@ import { usePharmacyStore } from '../../../contexts/PharmacyStoreContext';
 import { usePharmacyPermissions } from '../../../hooks/usePharmacyPermissions';
 import FormNavContainer from '../../../components/FormNavContainer';
 import { NAV_SKIP_ATTR, navCellProps } from '../../../utils/formNavigation';
-import { groupSaleItemsForCart } from './saleEditUtils';
+import { groupSaleItemsForCart, lineHasStockIssue, lineEditStoreStock } from './saleEditUtils';
 
 const CART_KEY = 'pharmacy_pos_cart_v1';
 
@@ -95,11 +96,40 @@ export default function SalesCounter() {
   const [patientPrescriptions, setPatientPrescriptions] = useState([]);
   const [activePrescription, setActivePrescription] = useState(null);
   const [loadingPrescription, setLoadingPrescription] = useState(false);
+  const [posSettings, setPosSettings] = useState({
+    use_default_rate_tiers: false,
+    default_rate_tier_cash: 'A',
+    default_rate_tier_credit: 'A',
+  });
 
   const counterStoreId = editingSale?.store_id || activeStoreId;
+  const canSelectRateTier = hasPerm('select_rate_tier');
+  const useDefaultRates = !!posSettings.use_default_rate_tiers;
+  // Ask for Rate A/B after batch pick only when defaults are off and user may pick tiers.
+  const askRateOnBatchPick = canSelectRateTier && !useDefaultRates;
+
+  const defaultTierFor = useCallback((paymentType) => {
+    if (!posSettings.use_default_rate_tiers) return 'A';
+    const key = paymentType === 'credit' ? 'default_rate_tier_credit' : 'default_rate_tier_cash';
+    const tier = (posSettings[key] || 'A').toUpperCase();
+    return tier === 'B' ? 'B' : 'A';
+  }, [posSettings]);
 
   useEffect(() => {
     axios.get('/api/pharmacy/hsn').then((r) => setHsnList(r.data || [])).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    axios.get('/api/pharmacy/pos-settings')
+      .then((r) => {
+        const d = r.data || {};
+        setPosSettings({
+          use_default_rate_tiers: !!d.use_default_rate_tiers,
+          default_rate_tier_cash: d.default_rate_tier_cash === 'B' ? 'B' : 'A',
+          default_rate_tier_credit: d.default_rate_tier_credit === 'B' ? 'B' : 'A',
+        });
+      })
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -110,14 +140,18 @@ export default function SalesCounter() {
       if (saved && saved.storeId === activeStoreId && Array.isArray(saved.items)) {
         const refreshed = await Promise.all((saved.items || []).map(async (ln) => {
           const batches = await loadBatchesForMedicine(ln.medicine?.id);
+          const autoBatch = Boolean(ln.auto_batch) || !ln.batch_id;
+          const preview = batches[0] || ln.batch || null;
           const batch = ln.batch_id
-            ? (batches.find((b) => b.id === ln.batch_id) || null)
-            : (ln.batch || batches[0] || null);
+            ? (batches.find((b) => b.id === ln.batch_id) || ln.batch || null)
+            : (autoBatch ? preview : (ln.batch || preview));
           return {
             ...ln,
             batches,
             batch,
-            batch_id: batch?.id || null,
+            batch_id: autoBatch ? null : (batch?.id || null),
+            auto_batch: autoBatch,
+            batch_number: batch?.batch_number || ln.batch_number || null,
           };
         }));
         if (!cancelled) {
@@ -154,7 +188,11 @@ export default function SalesCounter() {
         });
         setBillingMode(sale.billing_mode || 'cash_at_pharmacy');
         setTaxMode(sale.tax_mode || 'inclusive');
-        setBillDiscountAmount('');
+        setBillDiscountAmount(
+          sale.bill_discount_amount != null && Number(sale.bill_discount_amount) > 0
+            ? String(sale.bill_discount_amount)
+            : '',
+        );
         if (sale.patient_ip_id) {
           const parts = (sale.patient_name || '').trim().split(/\s+/);
           setSelectedPatient({
@@ -192,14 +230,15 @@ export default function SalesCounter() {
               id: ln.batch_id,
               batch_number: ln.batch_number || `Batch #${ln.batch_id}`,
             })
-            : null;
-          if (batch && !batches.some((b) => b.id === batch.id)) {
+            : (batches[0] || (ln.batch_number ? { batch_number: ln.batch_number } : null));
+          if (batch && batch.id && !batches.some((b) => b.id === batch.id)) {
             batches = [batch, ...batches];
           }
+          const autoBatch = !ln.batch_id;
           const tempLine = {
             medicine,
             batch,
-            batch_id: batch?.id || null,
+            batch_id: autoBatch ? null : (batch?.id || null),
             rate_tier: ln.rate_tier || 'A',
           };
           const original_need_qty = combinedBaseQty(
@@ -213,9 +252,10 @@ export default function SalesCounter() {
             qty_strips: ln.qty_strips || '',
             rate_tier: ln.rate_tier || 'A',
             discount_pct: ln.discount_pct ?? '',
-            batch_id: batch?.id || null,
+            batch_id: autoBatch ? null : (batch?.id || null),
             batch,
             batches,
+            auto_batch: autoBatch,
             original_batch_id: ln.original_batch_id ?? batch?.id ?? null,
             original_batch_qty: ln.original_batch_qty || 0,
             batch_number: ln.batch_number || batch?.batch_number || null,
@@ -342,16 +382,19 @@ export default function SalesCounter() {
           const medR = await axios.get(`/api/pharmacy/medicines/${item.medicine_id}`);
           const medicine = medR.data;
           const batches = await loadBatchesForMedicine(item.medicine_id);
+          const nearest = batches[0] || null;
           return {
             medicine,
             prescription_item_id: item.item_id,
             qty_tabs: item.quantity_remaining,
             qty_strips: '',
-            rate_tier: 'A',
-            discount_pct: medicine.default_discount_pct || '',
+            rate_tier: defaultTierFor(customer.payment_type),
+            discount_pct: medicine.item_discount_pct || medicine.default_discount_pct || '',
             batch_id: null,
-            batch: null,
+            batch: nearest,
             batches,
+            auto_batch: true,
+            batch_number: nearest?.batch_number || null,
             barcode_scanned: false,
           };
         }));
@@ -401,20 +444,24 @@ export default function SalesCounter() {
 
   const addLine = async (med) => {
     const batches = await loadBatchesForMedicine(med.id);
+    const nearest = batches[0] || null;
     const lineIndex = items.length;
+    const defaultTier = defaultTierFor(customer.payment_type);
     setItems(s => [...s, {
       medicine: med,
       qty_tabs: 1,
       qty_strips: '',
-      rate_tier: 'A',
-      discount_pct: med.default_discount_pct || '',
+      rate_tier: defaultTier,
+      discount_pct: med.item_discount_pct || med.default_discount_pct || '',
       batch_id: null,
-      batch: null,
+      batch: nearest,
       batches,
+      auto_batch: true,
+      batch_number: nearest?.batch_number || null,
       barcode_scanned: false,
     }]);
     if (batches.length > 0) {
-      setBatchPick({ lineIndex, medicine: med, batches, loading: false });
+      setBatchPick({ lineIndex, medicine: med, batches, loading: false, rateOnly: false });
     }
     setLookupQ(''); setLookupResults([]);
   };
@@ -422,13 +469,13 @@ export default function SalesCounter() {
   const updateLine = (i, patch) => setItems(s => s.map((x, idx) => idx === i ? { ...x, ...patch } : x));
   const removeLine = (i) => setItems(s => s.filter((_, idx) => idx !== i));
 
-  const openBatchPick = async (lineIndex) => {
+  const openBatchPick = async (lineIndex, { rateOnly = false } = {}) => {
     const ln = items[lineIndex];
     if (!ln?.medicine?.id) return;
-    setBatchPick({ lineIndex, medicine: ln.medicine, batches: [], loading: true });
+    setBatchPick({ lineIndex, medicine: ln.medicine, batches: ln.batches || [], loading: true, rateOnly });
     const batches = await loadBatchesForMedicine(ln.medicine.id, { forLine: ln });
     updateLine(lineIndex, { batches });
-    setBatchPick({ lineIndex, medicine: ln.medicine, batches, loading: false });
+    setBatchPick({ lineIndex, medicine: ln.medicine, batches, loading: false, rateOnly });
   };
 
   const closeBatchPick = () => setBatchPick(null);
@@ -444,6 +491,7 @@ export default function SalesCounter() {
       batch_id: batch.id,
       batch,
       batch_number: batch.batch_number || null,
+      auto_batch: false,
       rate_tier: rateTier,
       batches: mergedBatches,
     });
@@ -452,8 +500,30 @@ export default function SalesCounter() {
 
   const applySaleAutoBatch = (rateTier = 'A') => {
     if (batchPick?.lineIndex == null) return;
-    updateLine(batchPick.lineIndex, { batch_id: null, batch: null, rate_tier: rateTier });
+    const i = batchPick.lineIndex;
+    const ln = items[i];
+    const nearest = (ln?.batches || batchPick?.batches || [])[0] || null;
+    updateLine(i, {
+      batch_id: null,
+      batch: nearest,
+      batch_number: nearest?.batch_number || null,
+      auto_batch: true,
+      rate_tier: rateTier,
+    });
     closeBatchPick();
+  };
+
+  const applyRateOnly = (rateTier) => {
+    if (batchPick?.lineIndex == null) return;
+    updateLine(batchPick.lineIndex, { rate_tier: rateTier });
+    closeBatchPick();
+  };
+
+  const setPaymentType = (v) => {
+    setCustomer((s) => ({ ...s, payment_type: v }));
+    if (!useDefaultRates) return;
+    const nextTier = defaultTierFor(v);
+    setItems((lines) => lines.map((ln) => ({ ...ln, rate_tier: nextTier })));
   };
 
   const handleQtyTabsChange = (i, raw) => {
@@ -470,14 +540,7 @@ export default function SalesCounter() {
     return hsnList.find((h) => h.id === medicine.hsn_id) || null;
   };
 
-  const saleLineGrossBeforeDisc = (ln) => {
-    const tabs = parseFloat(ln.qty_tabs) || 0;
-    const strips = parseFloat(ln.qty_strips) || 0;
-    const src = linePricingSource(ln);
-    const tabR = tabSaleRate(src, ln.rate_tier);
-    const stripR = stripSaleRate(src, ln.rate_tier);
-    return roundMoney(tabs * tabR + strips * stripR);
-  };
+  const saleLineGrossBeforeDisc = (ln) => lineGrossBeforeDiscount(ln);
 
   const calcSaleLine = (ln) => {
     const base = saleLineGrossBeforeDisc(ln);
@@ -490,10 +553,10 @@ export default function SalesCounter() {
   const lineTotals = items.reduce((acc, ln) => {
     const c = calcSaleLine(ln);
     return {
-      sub: acc.sub + c.base,
-      lineDisc: acc.lineDisc + (c.base - c.afterDisc),
-      tax: acc.tax + c.tax,
-      linesGrand: acc.linesGrand + c.total,
+      sub: roundMoney(acc.sub + c.base),
+      lineDisc: roundMoney(acc.lineDisc + (c.base - c.afterDisc)),
+      tax: roundMoney(acc.tax + c.tax),
+      linesGrand: roundMoney(acc.linesGrand + c.total),
     };
   }, { sub: 0, lineDisc: 0, tax: 0, linesGrand: 0 });
 
@@ -510,16 +573,15 @@ export default function SalesCounter() {
   const lineNeedQty = (ln) => combinedBaseQty(ln.qty_tabs, ln.qty_strips, linePricingSource(ln));
 
   const stockIssues = useMemo(() => {
-    if (isEditing) return [];
     return items.map((ln) => {
+      if (!lineHasStockIssue(ln, items, isEditing, lineNeedQty)) return null;
       const need = lineNeedQty(ln);
       let avail = 0;
       if (ln.batch_id && ln.batch) {
-        avail = ln.batch.quantity_in_stock ?? 0;
+        avail = lineEditStoreStock(ln, items, isEditing, lineNeedQty);
       } else {
         avail = ln.medicine?.store_stock_qty ?? 0;
       }
-      if (need <= 0 || avail >= need) return null;
       return { ln, need, avail, master: ln.medicine?.master_stock_qty ?? 0 };
     }).filter(Boolean);
   }, [items, isEditing]);
@@ -692,7 +754,7 @@ export default function SalesCounter() {
         </div>
       )}
 
-      {stockIssues.length > 0 && !isEditing && (
+      {stockIssues.length > 0 && (
         <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 space-y-2 shrink-0">
           <div className="flex items-center gap-2 text-sm font-medium text-red-900">
             <AlertTriangle className="h-4 w-4" /> Some lines exceed stock at {activeStore?.code || 'this store'}
@@ -703,7 +765,7 @@ export default function SalesCounter() {
                 {issue.ln.medicine.name}: need {issue.need}, have {issue.avail}
                 {issue.master > 0 ? ` (master has ${issue.master})` : ''}
               </span>
-              {canRequestTransfer && issue.master > 0 && (
+              {canRequestTransfer && issue.master > 0 && !isEditing && (
                 <Button size="sm" variant="outline" className="h-7" onClick={() => requestTransfer(issue)}>
                   <ArrowLeftRight className="h-3 w-3 mr-1" /> Request transfer
                 </Button>
@@ -818,10 +880,12 @@ export default function SalesCounter() {
                   {items.map((ln, i) => {
                     const pricing = linePricingSource(ln);
                     const batches = ln.batches || [];
+                    const isAuto = Boolean(ln.auto_batch) || !ln.batch_id;
                     const batchLabel = ln.batch?.batch_number
                       || ln.batch_number
                       || (ln.batch_id ? `Batch #${ln.batch_id}` : null);
                     const batchSummary = !isEditing && ln.batch ? formatBatchSummary(ln.batch) : null;
+                    const rateLabel = `Rate ${ln.rate_tier || 'A'}`;
                     return (
                     <tr key={i} className="border-b">
                       <td className="py-2 pr-1 align-top">
@@ -843,34 +907,52 @@ export default function SalesCounter() {
                       </td>
                       <td className="py-2 pl-0 pr-2 align-top">
                         {(batches.length > 0 || ln.batch || isEditing) ? (
-                          <button
-                            type="button"
-                            className="text-left text-xs leading-tight w-full hover:text-blue-700 focus:outline-none focus-visible:underline"
-                            onClick={() => openBatchPick(i)}
-                            {...navCellProps(i, 0)}
-                          >
-                            {isEditing ? (
-                              <span className="flex flex-col items-start gap-0.5 min-w-0">
-                                <span className="font-medium break-all text-gray-900">
-                                  {batchLabel || 'Pick batch'}
+                          <div className="flex items-start gap-1 min-w-0">
+                            <button
+                              type="button"
+                              className="text-left text-xs leading-tight flex-1 min-w-0 hover:text-blue-700 focus:outline-none focus-visible:underline"
+                              onClick={() => openBatchPick(i)}
+                              {...navCellProps(i, 0)}
+                            >
+                              {isEditing ? (
+                                <span className="flex flex-col items-start gap-0.5 min-w-0">
+                                  <span className="font-medium break-all text-gray-900">
+                                    {isAuto && batchLabel
+                                      ? `Auto · ${batchLabel}`
+                                      : (batchLabel || 'Pick batch')}
+                                  </span>
+                                  <span className="text-[10px] text-blue-700">{rateLabel}</span>
                                 </span>
-                                <span className="text-[10px] text-blue-700">Rate {ln.rate_tier || 'A'}</span>
-                              </span>
-                            ) : batchSummary ? (
-                              <span className="flex flex-col items-start gap-0.5 min-w-0">
-                                <span className="font-medium break-all text-gray-900">{batchSummary.title}</span>
-                                {batchSummary.meta && (
-                                  <span className="text-[10px] text-gray-500 break-words">{batchSummary.meta}</span>
-                                )}
-                                <span className="text-[10px] text-blue-700">Rate {ln.rate_tier || 'A'}</span>
-                              </span>
-                            ) : (
-                              <span className="flex flex-col items-start gap-0.5 text-gray-700">
-                                <span>Auto (nearest expiry)</span>
-                                <span className="text-[10px] text-blue-700">Rate {ln.rate_tier || 'A'}</span>
-                              </span>
+                              ) : batchSummary ? (
+                                <span className="flex flex-col items-start gap-0.5 min-w-0">
+                                  <span className="font-medium break-all text-gray-900">
+                                    {isAuto ? `Auto · ${batchSummary.title}` : batchSummary.title}
+                                  </span>
+                                  {batchSummary.meta && (
+                                    <span className="text-[10px] text-gray-500 break-words">{batchSummary.meta}</span>
+                                  )}
+                                  <span className="text-[10px] text-blue-700">{rateLabel}</span>
+                                </span>
+                              ) : (
+                                <span className="flex flex-col items-start gap-0.5 text-gray-700">
+                                  <span>{batchLabel ? `Auto · ${batchLabel}` : 'Auto (nearest expiry)'}</span>
+                                  <span className="text-[10px] text-blue-700">{rateLabel}</span>
+                                </span>
+                              )}
+                            </button>
+                            {canSelectRateTier && (
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 w-7 p-0 shrink-0 text-blue-700 hover:text-blue-900"
+                                title="Change rate tier"
+                                onClick={() => openBatchPick(i, { rateOnly: true })}
+                              >
+                                <Pencil className="h-3 w-3" />
+                              </Button>
                             )}
-                          </button>
+                          </div>
                         ) : (
                           <span className="text-xs text-gray-400">No stock batches</span>
                         )}
@@ -983,7 +1065,7 @@ export default function SalesCounter() {
             <div><Label className="text-xs">Doctor Name</Label><Input className={compactInput} value={customer.doctor_name} onChange={e => setC('doctor_name', e.target.value)} /></div>
             <div>
               <Label className="text-xs">Payment</Label>
-              <Select value={customer.payment_type} onValueChange={v => setC('payment_type', v)}>
+              <Select value={customer.payment_type} onValueChange={setPaymentType}>
                 <SelectTrigger className={compactInput}><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="cash">Cash</SelectItem>
@@ -1034,7 +1116,7 @@ export default function SalesCounter() {
             </div>
           )}
           <div className="flex items-center justify-between gap-2 text-sm text-gray-600">
-            <Label className="text-sm text-gray-600 shrink-0">Bill discount (₹)</Label>
+            <Label className="text-sm text-gray-600 shrink-0">Bill discount ₹ (after tax)</Label>
             <Input
               className={`h-9 w-28 text-right ${pharmacyNoSpinInputClass}`}
               type="number"
@@ -1108,10 +1190,18 @@ export default function SalesCounter() {
         loading={batchPick?.loading}
         includeAutoOption
         showNewBatchOption={false}
-        showRateTierStep
-        initialRateTier={batchPick?.lineIndex != null ? (items[batchPick.lineIndex]?.rate_tier || 'A') : 'A'}
+        showRateTierStep={askRateOnBatchPick}
+        rateOnly={!!batchPick?.rateOnly}
+        initialRateTier={batchPick?.lineIndex != null
+          ? (items[batchPick.lineIndex]?.rate_tier || defaultTierFor(customer.payment_type))
+          : defaultTierFor(customer.payment_type)}
+        initialAuto={batchPick?.lineIndex != null
+          ? Boolean(items[batchPick.lineIndex]?.auto_batch) || !items[batchPick.lineIndex]?.batch_id
+          : false}
+        initialBatch={batchPick?.lineIndex != null ? (items[batchPick.lineIndex]?.batch || null) : null}
         onSelectBatch={applySaleBatch}
         onSelectAuto={applySaleAutoBatch}
+        onSelectRateOnly={applyRateOnly}
         onCancel={closeBatchPick}
       />
 

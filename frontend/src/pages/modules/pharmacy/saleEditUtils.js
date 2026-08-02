@@ -23,10 +23,15 @@ export function batchEditPoolAvail(ln, items, isEditing) {
 /** Per-line available stock — shares batch pool across lines on the same batch. */
 export function lineEditStoreStock(ln, items, isEditing, lineNeedQty) {
   if (!ln.batch_id || !ln.batch) {
-    return parseFloat(ln.medicine?.store_stock_qty) || 0;
+    // Auto-FEFO: pool medicine store stock across lines without a batch.
+    const storeQty = parseFloat(ln.medicine?.store_stock_qty) || 0;
+    const otherNeed = (items || [])
+      .filter((other) => other !== ln && other.medicine?.id === ln.medicine?.id && !other.batch_id)
+      .reduce((sum, other) => sum + lineNeedQty(other), 0);
+    const credit = isEditing ? (parseFloat(ln.original_need_qty) || 0) : 0;
+    return Math.max(0, storeQty + credit - otherNeed);
   }
   const pool = batchEditPoolAvail(ln, items, isEditing);
-  if (!isEditing) return pool;
   const otherNeed = (items || [])
     .filter((other) => other !== ln && other.batch_id === ln.batch_id)
     .reduce((sum, other) => sum + lineNeedQty(other), 0);
@@ -84,6 +89,7 @@ export function groupSaleItemsForCart(apiItems) {
       discount_pct: head.discount_pct ?? '',
       batch_id: batchId,
       batch_number: head.batch_number || null,
+      auto_batch: !batchId,
       original_batch_id: batchId,
       original_batch_qty,
       barcode_scanned: !!head.barcode_scanned,

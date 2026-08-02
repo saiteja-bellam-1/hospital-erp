@@ -1,15 +1,20 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import axios from 'axios';
 import { Card, CardContent, CardHeader, CardTitle } from '../../../../components/ui/card';
 import { Button } from '../../../../components/ui/button';
 import { Input } from '../../../../components/ui/input';
 import { Badge } from '../../../../components/ui/badge';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../../../../components/ui/dialog';
 import { useToast } from '../../../../hooks/use-toast';
 import { Plus, Pencil, Trash2, RefreshCw, Search, Upload, Download, Loader2 } from 'lucide-react';
 import PharmacyImportDialog, { downloadPharmacyBlob } from '../../../../components/pharmacy/PharmacyImportDialog';
+import PharmacyFormDialog from '../../../../components/pharmacy/PharmacyFormDialog';
 import { errMsg } from '../../PharmacyModule';
-import SupplierFormFields, { EMPTY_SUPPLIER_FORM, prepareSupplierPayload } from '../../../../components/pharmacy/SupplierFormFields';
+import SupplierFormFields, {
+  EMPTY_SUPPLIER_FORM,
+  SUPPLIER_FORM_STEPS,
+  prepareSupplierPayload,
+  supplierStepCanProceed,
+} from '../../../../components/pharmacy/SupplierFormFields';
 
 export default function SuppliersTab() {
   const { toast } = useToast();
@@ -21,6 +26,8 @@ export default function SuppliersTab() {
   const [exporting, setExporting] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(EMPTY_SUPPLIER_FORM);
+  const [activeStep, setActiveStep] = useState(0);
+  const [saving, setSaving] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -34,7 +41,12 @@ export default function SuppliersTab() {
 
   useEffect(() => { load(); }, [load]);
 
-  const openCreate = () => { setEditing(null); setForm(EMPTY_SUPPLIER_FORM); setOpen(true); };
+  const openCreate = () => {
+    setEditing(null);
+    setForm(EMPTY_SUPPLIER_FORM);
+    setActiveStep(0);
+    setOpen(true);
+  };
   const openEdit = (row) => {
     setEditing(row);
     const f = { ...EMPTY_SUPPLIER_FORM };
@@ -43,10 +55,30 @@ export default function SuppliersTab() {
       f[k] = v === null || v === undefined ? EMPTY_SUPPLIER_FORM[k] : v;
     });
     setForm(f);
+    setActiveStep(0);
     setOpen(true);
   };
 
+  const steps = useMemo(
+    () => SUPPLIER_FORM_STEPS.map((s, i) => ({ ...s, completed: i < activeStep })),
+    [activeStep],
+  );
+
+  const handleNext = () => {
+    if (!supplierStepCanProceed(form, activeStep)) {
+      toast({ variant: 'destructive', title: 'Ledger name is required' });
+      return;
+    }
+    setActiveStep((s) => Math.min(s + 1, SUPPLIER_FORM_STEPS.length - 1));
+  };
+
   const save = async () => {
+    if (!supplierStepCanProceed(form, 0)) {
+      toast({ variant: 'destructive', title: 'Ledger name is required' });
+      setActiveStep(0);
+      return;
+    }
+    setSaving(true);
     try {
       const payload = prepareSupplierPayload(form);
       if (editing) {
@@ -59,6 +91,8 @@ export default function SuppliersTab() {
       setOpen(false); load();
     } catch (e) {
       toast({ variant: 'destructive', title: 'Save failed', description: errMsg(e) });
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -172,20 +206,21 @@ export default function SuppliersTab() {
         helpText="Fill supplier name, contact, GSTIN, drug licence, and address fields. Existing suppliers are matched by name or GSTIN."
       />
 
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-5xl max-h-[88vh] overflow-y-auto" formNav="grid">
-          <DialogHeader>
-            <DialogTitle>{editing ? `Edit Supplier — ${editing.name}` : 'New Supplier'}</DialogTitle>
-          </DialogHeader>
-
-          <SupplierFormFields form={form} onChange={setForm} />
-
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-            <Button onClick={save}>{editing ? 'Save' : 'Create'}</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <PharmacyFormDialog
+        open={open}
+        onOpenChange={setOpen}
+        title={editing ? `Edit Supplier — ${editing.name}` : 'New Supplier'}
+        steps={steps}
+        activeStep={activeStep}
+        onStepChange={setActiveStep}
+        onNext={handleNext}
+        onSave={save}
+        saving={saving}
+        canProceed={activeStep !== 0 || supplierStepCanProceed(form, 0)}
+        saveLabel={editing ? 'Save' : 'Create'}
+      >
+        <SupplierFormFields form={form} onChange={setForm} activeStep={activeStep} />
+      </PharmacyFormDialog>
     </Card>
   );
 }

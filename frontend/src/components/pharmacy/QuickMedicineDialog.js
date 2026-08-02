@@ -1,13 +1,13 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
-import { Loader2 } from 'lucide-react';
-import { Button } from '../ui/button';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../ui/dialog';
 import { useToast } from '../../hooks/use-toast';
 import { errorDetail } from '../../utils/apiErrors';
 import { usePharmacyMedicineMasters } from '../../hooks/usePharmacyMedicineMasters';
+import PharmacyFormDialog from './PharmacyFormDialog';
 import MedicineFormFields, {
   EMPTY_MEDICINE_FORM,
+  MEDICINE_FORM_STEPS,
+  medicineStepCanProceed,
   patchMedicineForm,
   prepareMedicinePayload,
 } from './MedicineFormFields';
@@ -27,24 +27,35 @@ export default function QuickMedicineDialog({
   const { toast } = useToast();
   const [form, setForm] = useState(EMPTY_MEDICINE_FORM);
   const [saving, setSaving] = useState(false);
+  const [activeStep, setActiveStep] = useState(0);
   const { masters, setMasters, loading } = usePharmacyMedicineMasters(open);
 
   useEffect(() => {
     if (!open) return;
+    setActiveStep(0);
     setForm(patchMedicineForm(EMPTY_MEDICINE_FORM, {
       medicine_code: prefill.medicine_code || '',
       name: prefill.name || '',
     }));
   }, [open, prefill]);
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (!form.medicine_code?.trim() || !form.name?.trim()) {
-      toast({ variant: 'destructive', title: 'Code and name are required' });
+  const steps = useMemo(
+    () => MEDICINE_FORM_STEPS.map((s, i) => ({ ...s, completed: i < activeStep })),
+    [activeStep],
+  );
+
+  const handleNext = () => {
+    if (!medicineStepCanProceed(form, activeStep)) {
+      toast({ variant: 'destructive', title: 'Code, name, and category are required' });
       return;
     }
-    if (!form.category_id) {
-      toast({ variant: 'destructive', title: 'Category is required' });
+    setActiveStep((s) => Math.min(s + 1, MEDICINE_FORM_STEPS.length - 1));
+  };
+
+  const handleSave = async () => {
+    if (!medicineStepCanProceed(form, 0)) {
+      toast({ variant: 'destructive', title: 'Code, name, and category are required' });
+      setActiveStep(0);
       return;
     }
     setSaving(true);
@@ -66,33 +77,27 @@ export default function QuickMedicineDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-4xl max-h-[85vh] overflow-y-auto" formNav="grid">
-        <DialogHeader>
-          <DialogTitle>Add Medicine</DialogTitle>
-        </DialogHeader>
-        {loading ? (
-          <div className="flex items-center justify-center gap-2 py-12 text-sm text-gray-500">
-            <Loader2 className="h-5 w-5 animate-spin" />
-            Loading form…
-          </div>
-        ) : (
-          <form onSubmit={handleSubmit} className="space-y-3">
-            <MedicineFormFields
-              form={form}
-              onChange={setForm}
-              masters={masters}
-              onMastersChange={setMasters}
-            />
-            <DialogFooter className="gap-2 sm:gap-0 pt-2">
-              <Button type="button" variant="outline" onClick={() => onOpenChange?.(false)}>Cancel</Button>
-              <Button type="submit" disabled={saving}>
-                {saving ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Saving…</> : 'Add & use'}
-              </Button>
-            </DialogFooter>
-          </form>
-        )}
-      </DialogContent>
-    </Dialog>
+    <PharmacyFormDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title="Add Medicine"
+      steps={steps}
+      activeStep={activeStep}
+      onStepChange={setActiveStep}
+      onNext={handleNext}
+      onSave={handleSave}
+      saving={saving}
+      loading={loading}
+      canProceed={activeStep !== 0 || medicineStepCanProceed(form, 0)}
+      saveLabel="Add & use"
+    >
+      <MedicineFormFields
+        form={form}
+        onChange={setForm}
+        masters={masters}
+        onMastersChange={setMasters}
+        activeStep={activeStep}
+      />
+    </PharmacyFormDialog>
   );
 }

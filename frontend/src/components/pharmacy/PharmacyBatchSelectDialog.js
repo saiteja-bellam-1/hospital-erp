@@ -15,6 +15,7 @@ import {
  * Keyboard-navigable batch picker.
  * ↑/↓ navigate · Enter select · Esc cancel (calls onCancel if provided).
  * When showRateTierStep is set, batch pick is followed by Rate A / B selection.
+ * When rateOnly is set, opens directly on the rate step for the current line.
  */
 export default function PharmacyBatchSelectDialog({
   open,
@@ -26,9 +27,13 @@ export default function PharmacyBatchSelectDialog({
   includeAutoOption = false,
   showNewBatchOption = false,
   showRateTierStep = false,
+  rateOnly = false,
   initialRateTier = 'A',
+  initialAuto = false,
+  initialBatch = null,
   onSelectBatch,
   onSelectAuto,
+  onSelectRateOnly,
   onNewBatch,
   onCancel,
 }) {
@@ -38,21 +43,37 @@ export default function PharmacyBatchSelectDialog({
   const [rateTier, setRateTier] = useState('A');
   const listRef = useRef(null);
 
+  const nearestBatch = batches[0] || null;
   const autoOffset = includeAutoOption ? 1 : 0;
   const newOffset = showNewBatchOption ? 1 : 0;
   const optionCount = autoOffset + batches.length + newOffset;
 
+  const buildPendingFromLine = () => {
+    if (initialAuto || (!initialBatch && includeAutoOption)) {
+      return { kind: 'auto' };
+    }
+    if (initialBatch) {
+      return { kind: 'batch', batch: initialBatch };
+    }
+    return nearestBatch ? { kind: 'batch', batch: nearestBatch } : { kind: 'auto' };
+  };
+
   const resetFlow = () => {
-    setStep('batch');
-    setPending(null);
     setRateTier(initialRateTier || 'A');
     setHighlight(0);
+    if (rateOnly) {
+      setPending(buildPendingFromLine());
+      setStep('rate');
+    } else {
+      setPending(null);
+      setStep('batch');
+    }
   };
 
   useEffect(() => {
     if (open) resetFlow();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, medicine?.id]);
+  }, [open, medicine?.id, rateOnly]);
 
   useEffect(() => {
     if (!open) return;
@@ -67,6 +88,11 @@ export default function PharmacyBatchSelectDialog({
   }, [highlight, open, loading, step]);
 
   const finishSelection = (tier) => {
+    if (rateOnly) {
+      onSelectRateOnly?.(tier);
+      onOpenChange?.(false);
+      return;
+    }
     if (!pending) return;
     if (pending.kind === 'auto') {
       onSelectAuto?.(tier);
@@ -83,8 +109,8 @@ export default function PharmacyBatchSelectDialog({
       setStep('rate');
       return;
     }
-    if (nextPending.kind === 'auto') onSelectAuto?.();
-    else if (nextPending.kind === 'batch') onSelectBatch?.(nextPending.batch);
+    if (nextPending.kind === 'auto') onSelectAuto?.(initialRateTier || 'A');
+    else if (nextPending.kind === 'batch') onSelectBatch?.(nextPending.batch, initialRateTier || 'A');
     onOpenChange?.(false);
   };
 
@@ -135,14 +161,19 @@ export default function PharmacyBatchSelectDialog({
       finishSelection(rateTier);
     } else if (e.key === 'Escape') {
       e.preventDefault();
-      setStep('batch');
-      setPending(null);
+      if (rateOnly) {
+        if (onCancel) onCancel();
+        else onOpenChange?.(false);
+      } else {
+        setStep('batch');
+        setPending(null);
+      }
     }
   };
 
   const rateSource = pending?.kind === 'batch'
     ? pricingSource(medicine, pending.batch)
-    : pricingSource(medicine, batches[0] || null);
+    : pricingSource(medicine, nearestBatch);
 
   const rateHint = (tier) => {
     const stripR = stripSaleRate(rateSource, tier);
@@ -154,8 +185,14 @@ export default function PharmacyBatchSelectDialog({
     return `₹${formatMoney(tabR)} each`;
   };
 
+  const autoBatchLabel = nearestBatch?.batch_number
+    ? `Auto · ${nearestBatch.batch_number}`
+    : 'Auto (nearest expiry)';
+
   const pendingLabel = pending?.kind === 'auto'
-    ? 'Auto (nearest expiry)'
+    ? (nearestBatch?.batch_number
+      ? `Auto · ${nearestBatch.batch_number}`
+      : 'Auto (nearest expiry)')
     : pending?.batch?.batch_number || '';
 
   return (
@@ -187,6 +224,9 @@ export default function PharmacyBatchSelectDialog({
               {pending?.kind === 'batch' && (
                 <div className="text-xs text-gray-500 mt-0.5">{formatBatchLabel(pending.batch)}</div>
               )}
+              {pending?.kind === 'auto' && nearestBatch && (
+                <div className="text-xs text-gray-500 mt-0.5">{formatBatchLabel(nearestBatch)}</div>
+              )}
             </div>
             <p className="text-xs text-gray-500">Choose selling rate for this line.</p>
             <div className="grid grid-cols-2 gap-2">
@@ -207,12 +247,19 @@ export default function PharmacyBatchSelectDialog({
               ))}
             </div>
             <p className="text-[11px] text-gray-400">
-              ←→ switch rate · Enter confirm · Esc back
+              ←→ switch rate · Enter confirm · Esc {rateOnly ? 'cancel' : 'back'}
             </p>
             <DialogFooter className="gap-2 sm:gap-0">
-              <Button type="button" variant="outline" onClick={() => { setStep('batch'); setPending(null); }}>
-                Back
-              </Button>
+              {!rateOnly && (
+                <Button type="button" variant="outline" onClick={() => { setStep('batch'); setPending(null); }}>
+                  Back
+                </Button>
+              )}
+              {rateOnly && (
+                <Button type="button" variant="outline" onClick={() => { if (onCancel) onCancel(); else onOpenChange?.(false); }}>
+                  Cancel
+                </Button>
+              )}
               <Button type="button" onClick={() => finishSelection(rateTier)}>
                 Confirm
               </Button>
@@ -248,7 +295,12 @@ export default function PharmacyBatchSelectDialog({
                   onClick={() => goToRateStep({ kind: 'auto' })}
                 >
                   <Sparkles className="h-4 w-4 text-amber-600 shrink-0" />
-                  <span className="font-medium">Auto (nearest expiry)</span>
+                  <span className="min-w-0">
+                    <span className="font-medium block">{autoBatchLabel}</span>
+                    {nearestBatch && (
+                      <span className="text-xs text-gray-500 block mt-0.5">{formatBatchLabel(nearestBatch)}</span>
+                    )}
+                  </span>
                 </button>
               )}
               {batches.map((batch, batchIdx) => {

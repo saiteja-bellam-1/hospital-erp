@@ -472,9 +472,10 @@ class PharmacySale(Base):
 
     subtotal = Column(Float, default=0.0)
     discount_total = Column(Float, default=0.0)
+    bill_discount_amount = Column(Float, default=0.0)  # flat ₹ off grand (after line tax)
     tax_total = Column(Float, default=0.0)
     grand_total = Column(Float, default=0.0)
-    tax_mode = Column(String(20), default="exclusive")  # exclusive | inclusive
+    tax_mode = Column(String(20), default="inclusive")  # exclusive | inclusive
 
     status = Column(String(20), default="completed", index=True)   # completed | voided
     voided_by = Column(Integer, ForeignKey("users.id"))

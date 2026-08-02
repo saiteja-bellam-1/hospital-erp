@@ -232,6 +232,7 @@ NEW_COLUMNS = [
     ("pharmacy_purchase_items", "igst_pct", "FLOAT DEFAULT 0.0"),
     ("pharmacy_purchases", "tax_mode", "VARCHAR(20) DEFAULT 'exclusive'"),
     ("pharmacy_sales", "tax_mode", "VARCHAR(20) DEFAULT 'exclusive'"),
+    ("pharmacy_sales", "bill_discount_amount", "FLOAT DEFAULT 0.0"),
     # Phase 3 pharmacy settings — per-hospital void window + tax-on-free toggle.
     ("hospitals", "pharmacy_void_window_days", "INTEGER DEFAULT 0"),
     ("hospitals", "pharmacy_tax_on_free", "BOOLEAN DEFAULT 0"),

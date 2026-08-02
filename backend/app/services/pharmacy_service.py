@@ -250,23 +250,40 @@ class PharmacyService:
         return prescription
     
     def _dispense_from_inventory(self, medicine_id: int, quantity: int):
-        # FIFO: Use earliest expiring batches first
+        """Deprecated: prefer /api/pharmacy dispense (FEFO + ledger).
+
+        Still writes ledger rows so on-hand and ledger stay consistent if anything
+        still calls PharmacyService.dispense_prescription.
+        """
+        from app.models.pharmacy import PharmacyStockLedger
+
         inventory_batches = self.get_medicine_inventory(medicine_id)
-        
-        remaining_quantity = quantity
+        remaining_quantity = float(quantity)
         for batch in inventory_batches:
             if remaining_quantity <= 0:
                 break
-            
-            if batch.quantity_in_stock >= remaining_quantity:
-                batch.quantity_in_stock -= remaining_quantity
-                remaining_quantity = 0
-            else:
-                remaining_quantity -= batch.quantity_in_stock
-                batch.quantity_in_stock = 0
-        
-        self.db.commit()
-    
+            take = min(remaining_quantity, float(batch.quantity_in_stock or 0))
+            if take <= 0:
+                continue
+            batch.quantity_in_stock = float(batch.quantity_in_stock or 0) - take
+            remaining_quantity -= take
+            self.db.add(PharmacyStockLedger(
+                medicine_id=medicine_id,
+                batch_id=batch.id,
+                txn_type="rx_dispense",
+                qty_delta=-take,
+                reference_type="legacy_pharmacy_service",
+                reference_id=None,
+                performed_by=None,
+                store_id=batch.store_id,
+                hospital_id=batch.hospital_id,
+                notes="Legacy PharmacyService._dispense_from_inventory",
+            ))
+        if remaining_quantity > 1e-9:
+            raise ValueError(
+                f"Insufficient stock for medicine {medicine_id}: short by {remaining_quantity:g}"
+            )
+        self.db.commit() 
     def get_prescriptions(self, hospital_id: int, status: Optional[str] = None) -> List[Prescription]:
         # Join with patient to filter by hospital
         query = self.db.query(Prescription).join(Prescription.patient).filter(

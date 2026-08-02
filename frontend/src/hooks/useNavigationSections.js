@@ -7,7 +7,7 @@ import {
   BarChart3, ClipboardList, Shield, Database, ScrollText, Activity, Stethoscope,
   DownloadCloud, Pill, ShoppingCart, Boxes, Truck, BookOpen, LayoutGrid, Plus,
   Warehouse, Tags, Layers, Ruler, Percent, Link2, ArrowLeftRight, Store, Droplets,
-  UtensilsCrossed, IndianRupee,
+  UtensilsCrossed, IndianRupee, Settings2,
 } from 'lucide-react';
 import { PHARMACY_ROLE_NAMES } from './usePharmacyPermissions';
 import { CANTEEN_ROLE_NAMES } from './useCanteenPermissions';
@@ -198,6 +198,7 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
     add(setup, hasPharmacyPerm('manage_racks') && make('Racks', LayoutGrid, '/dashboard/pharmacy/masters/racks'));
     add(setup, hasPharmacyPerm('manage_uoms') && make('Units of Measure', Ruler, '/dashboard/pharmacy/masters/uoms'));
     add(setup, hasPharmacyPerm('manage_stores') && make('Stores', Store, '/dashboard/pharmacy/masters/stores'));
+    add(setup, hasPharmacyPerm('set_rates') && make('Setup', Settings2, '/dashboard/pharmacy/setup'));
     add(setup, hasPharmacyPerm('view_reports') && make('Reports', BarChart3, '/dashboard/pharmacy/reports'));
     if (setup.length > 0) sections.push({ label: 'Pharmacy Setup', items: setup });
   }

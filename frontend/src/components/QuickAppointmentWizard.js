@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
@@ -7,16 +7,18 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
-import { Loader2, ChevronLeft, Receipt, Printer } from 'lucide-react';
+import { Loader2, Receipt, Printer } from 'lucide-react';
 import { useToast } from '../hooks/use-toast';
 import { errorDetail } from '../utils/apiErrors';
 import { printPdfFromUrl } from '../utils/printPdf';
 import { Badge } from './ui/badge';
 import PatientSearchPicker from './PatientSearchPicker';
 import ReferralSelectWithCreate from './ReferralSelectWithCreate';
+import SteppedFormDialog from './SteppedFormDialog';
 import PatientRegisterFormFields, {
   EMPTY_PATIENT_FORM,
   buildPatientPayload,
+  patientStepCanProceed,
   validatePatientForm,
 } from './PatientRegisterFormFields';
 import AppointmentAvailabilityOverride from './AppointmentAvailabilityOverride';
@@ -46,13 +48,24 @@ const EMPTY_APPOINTMENT = {
   ...APPOINTMENT_OVERRIDE_DEFAULTS,
 };
 
+const REGISTER_STEPS = [
+  { key: 'identity', label: 'Identity' },
+  { key: 'details', label: 'Address & contact' },
+  { key: 'appointment', label: 'Appointment' },
+];
+
+const SEARCH_STEPS = [
+  { key: 'patient', label: 'Patient' },
+  { key: 'appointment', label: 'Appointment' },
+];
+
 export default function QuickAppointmentWizard({ open, onOpenChange, onBooked }) {
   const { toast } = useToast();
-  const [step, setStep] = useState(1);
+  const [wizardStep, setWizardStep] = useState(0);
   const [patientForm, setPatientForm] = useState(EMPTY_PATIENT_FORM);
   const [selectedPatient, setSelectedPatient] = useState(null);
-  const [registerMode, setRegisterMode] = useState('register'); // default: new walk-in
-  const [step1Loading, setStep1Loading] = useState(false);
+  const [registerMode, setRegisterMode] = useState('register');
+  const [stepLoading, setStepLoading] = useState(false);
 
   const [doctors, setDoctors] = useState([]);
   const [referralList, setReferralList] = useState([]);
@@ -67,8 +80,16 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
   const [bookedAppointment, setBookedAppointment] = useState(null);
   const [billLoading, setBillLoading] = useState(false);
 
+  const baseSteps = registerMode === 'register' ? REGISTER_STEPS : SEARCH_STEPS;
+  const steps = useMemo(
+    () => baseSteps.map((s, i) => ({ ...s, completed: i < wizardStep })),
+    [baseSteps, wizardStep],
+  );
+  const isAppointmentStep = wizardStep === baseSteps.length - 1;
+  const patientFieldStep = registerMode === 'register' ? wizardStep : 0;
+
   const reset = () => {
-    setStep(1);
+    setWizardStep(0);
     setPatientForm(EMPTY_PATIENT_FORM);
     setSelectedPatient(null);
     setRegisterMode('register');
@@ -152,40 +173,46 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
     }
   };
 
-  const goToStep2 = async (patient) => {
+  const goToAppointment = async (patient) => {
     setSelectedPatient(patient);
     await fetchPatientFeeInfo(patient.patient_id);
-    setStep(2);
+    setWizardStep(baseSteps.length - 1);
     if (appointmentForm.doctor_id) {
       fetchAvailableSlots(appointmentForm.doctor_id, appointmentForm.appointment_date);
     }
   };
 
-  const handleStep1Next = async () => {
+  const handleNext = async () => {
     if (registerMode === 'search') {
       if (!selectedPatient) {
         toast({ variant: 'destructive', title: 'Select patient', description: 'Search and select a patient to continue.' });
         return;
       }
-      await goToStep2(selectedPatient);
+      await goToAppointment(selectedPatient);
       return;
     }
 
-    const err = validatePatientForm(patientForm);
-    if (err) {
-      toast({ variant: 'destructive', title: 'Missing fields', description: err });
+    if (wizardStep === 0) {
+      const err = validatePatientForm(patientForm);
+      if (err) {
+        toast({ variant: 'destructive', title: 'Missing fields', description: err });
+        return;
+      }
+      setWizardStep(1);
       return;
     }
 
-    setStep1Loading(true);
-    try {
-      const res = await axios.post('/api/patients/', buildPatientPayload(patientForm));
-      toast({ title: 'Patient registered', description: `${res.data.first_name} ${res.data.last_name} registered.` });
-      await goToStep2(res.data);
-    } catch (e) {
-      toast({ variant: 'destructive', title: 'Registration failed', description: errorDetail(e) });
-    } finally {
-      setStep1Loading(false);
+    if (wizardStep === 1) {
+      setStepLoading(true);
+      try {
+        const res = await axios.post('/api/patients/', buildPatientPayload(patientForm));
+        toast({ title: 'Patient registered', description: `${res.data.first_name} ${res.data.last_name} registered.` });
+        await goToAppointment(res.data);
+      } catch (e) {
+        toast({ variant: 'destructive', title: 'Registration failed', description: errorDetail(e) });
+      } finally {
+        setStepLoading(false);
+      }
     }
   };
 
@@ -279,6 +306,17 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
   const discount = parseFloat(appointmentForm.discount_amount) || 0;
   const feeTotal = consultFee + regFee - discount;
 
+  const canProceedPatient = registerMode === 'search'
+    ? !!selectedPatient
+    : (wizardStep === 0 ? patientStepCanProceed(patientForm, 0) : true);
+
+  const canProceed = isAppointmentStep
+    ? !isAppointmentSubmitDisabled(appointmentForm, {
+      loading: booking || billLoading,
+      selectedPatient: !!selectedPatient,
+    })
+    : canProceedPatient;
+
   if (showBillPreview) {
     return (
       <Dialog open={true} onOpenChange={closeBillPreview}>
@@ -337,223 +375,209 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[98vw] max-w-7xl max-h-[95vh] flex flex-col gap-3 p-4 overflow-hidden">
-        <DialogHeader className="shrink-0">
-          <DialogTitle>
-            Quick Appointment — Step {step} of 2: {step === 1 ? 'Patient' : 'Appointment'}
-          </DialogTitle>
-        </DialogHeader>
+    <SteppedFormDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title="Quick Appointment"
+      steps={steps}
+      activeStep={wizardStep}
+      onStepChange={setWizardStep}
+      onNext={handleNext}
+      onSave={handleBook}
+      saving={booking || billLoading || stepLoading}
+      canProceed={canProceed}
+      nextLabel={
+        registerMode === 'register' && wizardStep === 1
+          ? 'Register & continue'
+          : registerMode === 'search'
+            ? 'Next: Book appointment'
+            : 'Next'
+      }
+      saveLabel="Book appointment"
+    >
+      {!isAppointmentStep && (
+        <div className="space-y-3 h-full">
+          {registerMode === 'register' ? (
+            <button
+              type="button"
+              className="text-sm text-blue-600 hover:underline"
+              onClick={() => { setRegisterMode('search'); setWizardStep(0); setSelectedPatient(null); }}
+            >
+              Patient already registered? Search instead
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="text-sm text-blue-600 hover:underline"
+              onClick={() => { setRegisterMode('register'); setWizardStep(0); setSelectedPatient(null); }}
+            >
+              Register a new patient instead
+            </button>
+          )}
 
-        {step === 1 ? (
-          <>
-            <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-3">
-              {registerMode === 'register' ? (
-                <button
-                  type="button"
-                  className="text-sm text-blue-600 hover:underline"
-                  onClick={() => setRegisterMode('search')}
-                >
-                  Patient already registered? Search instead
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  className="text-sm text-blue-600 hover:underline"
-                  onClick={() => { setRegisterMode('register'); setSelectedPatient(null); }}
-                >
-                  Register a new patient instead
-                </button>
-              )}
+          {registerMode === 'register' ? (
+            <PatientRegisterFormFields
+              form={patientForm}
+              onChange={setPatientForm}
+              activeStep={patientFieldStep}
+            />
+          ) : (
+            <PatientSearchPicker
+              value={selectedPatient}
+              onChange={setSelectedPatient}
+              label="Find patient"
+              required
+            />
+          )}
+        </div>
+      )}
 
-              {registerMode === 'register' ? (
-                <PatientRegisterFormFields form={patientForm} onChange={setPatientForm} />
-              ) : (
-                <PatientSearchPicker
-                  value={selectedPatient}
-                  onChange={setSelectedPatient}
-                  label="Find patient"
-                  required
-                />
-              )}
+      {isAppointmentStep && (
+        <div className="space-y-3 h-full overflow-hidden">
+          <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-sm shrink-0">
+            <span className="font-medium text-green-900">
+              {selectedPatient?.first_name} {selectedPatient?.last_name}
+            </span>
+            <span className="text-green-700 ml-2">{selectedPatient?.primary_phone}</span>
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-x-3 gap-y-2">
+            <div>
+              <Label>Doctor *</Label>
+              <Select
+                value={appointmentForm.doctor_id}
+                onValueChange={(value) => {
+                  setAppointmentForm({ ...appointmentForm, doctor_id: value });
+                  fetchAvailableSlots(value, appointmentForm.appointment_date);
+                }}
+              >
+                <SelectTrigger><SelectValue placeholder="Select doctor" /></SelectTrigger>
+                <SelectContent>
+                  {doctors.map((d) => (
+                    <SelectItem key={d.id} value={d.id.toString()}>
+                      Dr. {d.first_name} {d.last_name} — {d.specialization || 'General'}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Date *</Label>
+              <Input
+                type="date"
+                value={appointmentForm.appointment_date}
+                min={localDateString()}
+                onChange={(e) => {
+                  setAppointmentForm({ ...appointmentForm, appointment_date: e.target.value });
+                  if (appointmentForm.doctor_id) {
+                    fetchAvailableSlots(appointmentForm.doctor_id, e.target.value);
+                  }
+                }}
+              />
+            </div>
+            <AppointmentTimeField
+              appointmentTime={appointmentForm.appointment_time}
+              overrideAvailability={appointmentForm.override_availability}
+              availableSlots={availableSlots}
+              availabilityChecking={availabilityChecking}
+              doctorId={appointmentForm.doctor_id}
+              appointmentDate={appointmentForm.appointment_date}
+              onTimeChange={(value) => setAppointmentForm({ ...appointmentForm, appointment_time: value })}
+            />
+            <div>
+              <Label>Type</Label>
+              <Select
+                value={isEmergency ? 'emergency' : appointmentForm.appointment_type}
+                onValueChange={(v) => {
+                  if (v === 'emergency') {
+                    setAppointmentForm({ ...appointmentForm, appointment_type: 'consultation', priority: 'emergency' });
+                  } else {
+                    setAppointmentForm({ ...appointmentForm, appointment_type: v, priority: 'normal' });
+                  }
+                }}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="consultation">Consultation</SelectItem>
+                  <SelectItem value="followup">Follow-up</SelectItem>
+                  <SelectItem value="checkup">Check-up</SelectItem>
+                  <SelectItem value="emergency">Emergency</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Payment method</Label>
+              <Select
+                value={appointmentForm.payment_method}
+                onValueChange={(v) => setAppointmentForm({ ...appointmentForm, payment_method: v })}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {['cash', 'card', 'upi', 'online', 'insurance', 'cheque'].map((m) => (
+                    <SelectItem key={m} value={m}>{m.charAt(0).toUpperCase() + m.slice(1)}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
 
-            <div className="flex gap-2 pt-2 border-t shrink-0">
-              <Button type="button" variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
-                Cancel
-              </Button>
-              <Button type="button" className="flex-1" disabled={step1Loading} onClick={handleStep1Next}>
-                {step1Loading ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Saving…</> : 'Next: Book appointment'}
-              </Button>
+            <AppointmentAvailabilityOverride
+              className="col-span-2 md:col-span-3 lg:col-span-4"
+              overrideAvailability={appointmentForm.override_availability}
+              overrideReason={appointmentForm.override_reason}
+              onChange={(patch) => setAppointmentForm({ ...appointmentForm, ...patch })}
+            />
+
+            <div className="col-span-2">
+              <Label>Reason for visit</Label>
+              <Input
+                value={appointmentForm.reason}
+                onChange={(e) => setAppointmentForm({ ...appointmentForm, reason: e.target.value })}
+                placeholder="Brief description"
+              />
             </div>
-          </>
-        ) : (
-          <>
-            <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-3">
-              <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-sm">
-                <span className="font-medium text-green-900">
-                  {selectedPatient?.first_name} {selectedPatient?.last_name}
-                </span>
-                <span className="text-green-700 ml-2">{selectedPatient?.primary_phone}</span>
-              </div>
 
-              <div className="grid grid-cols-4 gap-x-3 gap-y-1.5">
-                <div>
-                  <Label>Doctor *</Label>
-                  <Select
-                    value={appointmentForm.doctor_id}
-                    onValueChange={(value) => {
-                      setAppointmentForm({ ...appointmentForm, doctor_id: value });
-                      fetchAvailableSlots(value, appointmentForm.appointment_date);
-                    }}
-                  >
-                    <SelectTrigger><SelectValue placeholder="Select doctor" /></SelectTrigger>
-                    <SelectContent>
-                      {doctors.map((d) => (
-                        <SelectItem key={d.id} value={d.id.toString()}>
-                          Dr. {d.first_name} {d.last_name} — {d.specialization || 'General'}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div>
-                  <Label>Date *</Label>
-                  <Input
-                    type="date"
-                    value={appointmentForm.appointment_date}
-                    min={localDateString()}
-                    onChange={(e) => {
-                      setAppointmentForm({ ...appointmentForm, appointment_date: e.target.value });
-                      if (appointmentForm.doctor_id) {
-                        fetchAvailableSlots(appointmentForm.doctor_id, e.target.value);
-                      }
-                    }}
-                  />
-                </div>
-                <AppointmentTimeField
-                  appointmentTime={appointmentForm.appointment_time}
-                  overrideAvailability={appointmentForm.override_availability}
-                  availableSlots={availableSlots}
-                  availabilityChecking={availabilityChecking}
-                  doctorId={appointmentForm.doctor_id}
-                  appointmentDate={appointmentForm.appointment_date}
-                  onTimeChange={(value) => setAppointmentForm({ ...appointmentForm, appointment_time: value })}
-                />
-                <div>
-                  <Label>Type</Label>
-                  <Select
-                    value={isEmergency ? 'emergency' : appointmentForm.appointment_type}
-                    onValueChange={(v) => {
-                      if (v === 'emergency') {
-                        setAppointmentForm({ ...appointmentForm, appointment_type: 'consultation', priority: 'emergency' });
-                      } else {
-                        setAppointmentForm({ ...appointmentForm, appointment_type: v, priority: 'normal' });
-                      }
-                    }}
-                  >
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="consultation">Consultation</SelectItem>
-                      <SelectItem value="followup">Follow-up</SelectItem>
-                      <SelectItem value="checkup">Check-up</SelectItem>
-                      <SelectItem value="emergency">Emergency</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div>
-                  <Label>Payment method</Label>
-                  <Select
-                    value={appointmentForm.payment_method}
-                    onValueChange={(v) => setAppointmentForm({ ...appointmentForm, payment_method: v })}
-                  >
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {['cash', 'card', 'upi', 'online', 'insurance', 'cheque'].map((m) => (
-                        <SelectItem key={m} value={m}>{m.charAt(0).toUpperCase() + m.slice(1)}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+            <div className="col-span-2">
+              <ReferralSelectWithCreate
+                value={appointmentForm.referred_by}
+                onValueChange={(name) => setAppointmentForm({ ...appointmentForm, referred_by: name })}
+                referrals={referralList}
+                onReferralsChange={setReferralList}
+              />
+            </div>
 
-                <AppointmentAvailabilityOverride
-                  className="col-span-4"
-                  overrideAvailability={appointmentForm.override_availability}
-                  overrideReason={appointmentForm.override_reason}
-                  onChange={(patch) => setAppointmentForm({ ...appointmentForm, ...patch })}
-                />
-
-                <div className="col-span-2">
-                  <Label>Reason for visit</Label>
-                  <Input
-                    value={appointmentForm.reason}
-                    onChange={(e) => setAppointmentForm({ ...appointmentForm, reason: e.target.value })}
-                    placeholder="Brief description"
-                  />
-                </div>
-
-                <div className="col-span-2">
-                  <ReferralSelectWithCreate
-                    value={appointmentForm.referred_by}
-                    onValueChange={(name) => setAppointmentForm({ ...appointmentForm, referred_by: name })}
-                    referrals={referralList}
-                    onReferralsChange={setReferralList}
-                  />
-                </div>
-
-                {appointmentForm.doctor_id && (
-                  <div className="col-span-4 bg-gray-50 rounded-lg p-3 border text-sm space-y-1">
-                    <p className="font-medium">Fee summary</p>
-                    {regFee > 0 && <p>Registration fee: ₹{regFee.toFixed(2)}</p>}
-                    <p className={isEmergency ? 'text-red-700 font-medium' : ''}>
-                      {isEmergency ? 'Emergency consultation' : 'Consultation'}: ₹{consultFee.toFixed(2)}
-                    </p>
-                    {isEmergency && emergencyFee === 0 && baseFee > 0 && (
-                      <p className="text-xs text-amber-600">No emergency rate set for this doctor — regular fee applied.</p>
-                    )}
-                    <div className="flex items-center justify-between gap-2">
-                      <span>Discount</span>
-                      <div className="flex items-center gap-1">
-                        <span className="text-gray-400">₹</span>
-                        <Input
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          value={appointmentForm.discount_amount || ''}
-                          onChange={(e) => setAppointmentForm({
-                            ...appointmentForm,
-                            discount_amount: parseFloat(e.target.value) || 0,
-                          })}
-                          placeholder="0"
-                          className="w-24 h-7 text-right text-sm"
-                        />
-                      </div>
-                    </div>
-                    <p className="font-semibold pt-1 border-t">Total: ₹{feeTotal.toFixed(2)}</p>
+            {appointmentForm.doctor_id && (
+              <div className="col-span-2 md:col-span-3 lg:col-span-4 bg-gray-50 rounded-lg p-3 border text-sm space-y-1">
+                <p className="font-medium">Fee summary</p>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                  {regFee > 0 && <p>Registration: ₹{regFee.toFixed(2)}</p>}
+                  <p className={isEmergency ? 'text-red-700 font-medium' : ''}>
+                    {isEmergency ? 'Emergency' : 'Consultation'}: ₹{consultFee.toFixed(2)}
+                  </p>
+                  <div className="flex items-center gap-1">
+                    <span>Discount ₹</span>
+                    <Input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={appointmentForm.discount_amount || ''}
+                      onChange={(e) => setAppointmentForm({
+                        ...appointmentForm,
+                        discount_amount: parseFloat(e.target.value) || 0,
+                      })}
+                      placeholder="0"
+                      className="w-24 h-7 text-right text-sm"
+                    />
                   </div>
+                  <p className="font-semibold">Total: ₹{feeTotal.toFixed(2)}</p>
+                </div>
+                {isEmergency && emergencyFee === 0 && baseFee > 0 && (
+                  <p className="text-xs text-amber-600">No emergency rate set for this doctor — regular fee applied.</p>
                 )}
               </div>
-            </div>
-
-            <div className="flex gap-2 pt-2 border-t shrink-0">
-              <Button type="button" variant="outline" onClick={() => setStep(1)}>
-                <ChevronLeft className="h-4 w-4 mr-1" /> Back
-              </Button>
-              <Button type="button" variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
-                Cancel
-              </Button>
-              <Button
-                type="button"
-                className="flex-1"
-                disabled={isAppointmentSubmitDisabled(appointmentForm, { loading: booking || billLoading, selectedPatient: !!selectedPatient })}
-                onClick={handleBook}
-              >
-                {booking || billLoading ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Booking…</> : 'Book appointment'}
-              </Button>
-            </div>
-          </>
-        )}
-      </DialogContent>
-    </Dialog>
+            )}
+          </div>
+        </div>
+      )}
+    </SteppedFormDialog>
   );
 }

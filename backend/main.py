@@ -288,7 +288,7 @@ def _ensure_payer_schemes():
 
 
 _FACE_SHEET_PLACEHOLDER = """\
-FACE SHEET — ADMISSION IDENTIFICATION
+ADMISSION FORM — IDENTIFICATION
 
 Patient: {{patient_name}}              Age / Sex: {{age}} / {{gender}}
 Admission No: {{admission_number}}     Admission Date: {{admission_date}}
@@ -314,7 +314,7 @@ Signature of admitting officer:   __________________   Date: __________
 """
 
 _CASE_SHEET_PLACEHOLDER = """\
-CASE SHEET — DECLARATION & GENERAL CONSENT FOR TREATMENT
+CONSENT FORM — GENERAL CONSENT FOR TREATMENT
 
 I, ______________________________________________ (patient / guardian),
 admitted under Dr. ______________________________________ on
@@ -353,16 +353,29 @@ Counter-signed by admitting officer: __________________________
 
 
 def _ensure_admission_consent_templates():
-    """Seed the face-sheet and case-sheet declaration templates per hospital.
+    """Seed the admission-form and consent-form templates per hospital.
     Idempotent — only creates rows when matching consent_type is missing.
     Content is placeholder; admin updates via the existing templates UI."""
     from config.database import SessionLocal
     from app.models.inpatient import ConsentTemplate
     from app.models.hospital import Hospital
+    # consent_type keys stay stable; template_name is the display label.
     defaults = [
-        ("face_sheet", "Face Sheet — Admission Identification", _FACE_SHEET_PLACEHOLDER),
-        ("case_sheet_declaration", "Case Sheet — General Consent / Declaration", _CASE_SHEET_PLACEHOLDER),
+        ("face_sheet", "Admission Form — Identification", _FACE_SHEET_PLACEHOLDER),
+        ("case_sheet_declaration", "Consent Form — General Consent for Treatment", _CASE_SHEET_PLACEHOLDER),
     ]
+    # Old display names → new (idempotent rename for upgrades)
+    rename_map = {
+        "face_sheet": {
+            "Face Sheet — Admission Identification",
+            "Face Sheet",
+        },
+        "case_sheet_declaration": {
+            "Case Sheet — General Consent / Declaration",
+            "Case Sheet — Declaration & General Consent for Treatment",
+            "Case Sheet Declaration",
+        },
+    }
     db = SessionLocal()
     try:
         hospitals = db.query(Hospital).all()
@@ -381,19 +394,31 @@ def _ensure_admission_consent_templates():
                         language="english",
                         is_active=True,
                     ))
-                elif ctype == "face_sheet" and existing.content and "Name: ____________________________________________" in existing.content:
-                    # Upgrade legacy face-sheet attendant block to tokenized fields.
-                    existing.content = content
-                elif existing.content and "[PLACEHOLDER CONTENT" in existing.content:
-                    # One-shot cleanup of the bracketed placeholder banner
-                    # left over from previous seeds. Preserves any edits the
-                    # admin made to the rest of the template.
-                    import re as _re
-                    existing.content = _re.sub(
-                        r"\[PLACEHOLDER CONTENT[^\]]*\]\s*\n?",
-                        "",
-                        existing.content,
-                    )
+                else:
+                    if existing.template_name in rename_map.get(ctype, set()):
+                        existing.template_name = name
+                    # Upgrade stock title lines when admin has not customized body
+                    if ctype == "face_sheet" and existing.content and existing.content.lstrip().startswith(
+                        "FACE SHEET — ADMISSION IDENTIFICATION"
+                    ):
+                        existing.content = content
+                    elif ctype == "case_sheet_declaration" and existing.content and existing.content.lstrip().startswith(
+                        "CASE SHEET — DECLARATION"
+                    ):
+                        existing.content = content
+                    elif ctype == "face_sheet" and existing.content and "Name: ____________________________________________" in existing.content:
+                        # Upgrade legacy face-sheet attendant block to tokenized fields.
+                        existing.content = content
+                    elif existing.content and "[PLACEHOLDER CONTENT" in existing.content:
+                        # One-shot cleanup of the bracketed placeholder banner
+                        # left over from previous seeds. Preserves any edits the
+                        # admin made to the rest of the template.
+                        import re as _re
+                        existing.content = _re.sub(
+                            r"\[PLACEHOLDER CONTENT[^\]]*\]\s*\n?",
+                            "",
+                            existing.content,
+                        )
         db.commit()
     except Exception as e:
         print(f"Warning: Could not seed admission consent templates: {e}")

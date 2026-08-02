@@ -64,6 +64,7 @@ def _purchase_payload(setup, *, invoice_number=None, entry_date=None, qty=10, fr
         "items": [{
             "medicine_id": setup["medicine_id"],
             "batch_number": f"B-{uuid.uuid4().hex[:5]}",
+            "expiry_date": (date.today() + timedelta(days=365)).isoformat(),
             "mrp": mrp, "quantity": qty, "free_quantity": free,
             "purchase_rate": rate, "discount_pct": 0,
             "hsn_id": setup["hsn_id"],
@@ -342,3 +343,88 @@ def test_edit_confirmed_blocks_qty_below_sold(client, auth_headers, pharmacy_set
     r = client.put(f"/api/pharmacy/purchases/{p['id']}", headers=auth_headers, json=body)
     assert r.status_code == 400
     assert "sold" in r.json()["detail"].lower() or "dispensed" in r.json()["detail"].lower()
+
+
+# --------------------------------------------------------------------------
+# Strip conversion — purchase qty is strips; stock is base tablets
+# --------------------------------------------------------------------------
+
+def test_purchase_credits_stock_as_strips_times_tabs_per_strip(
+    client, auth_headers, pharmacy_setup, db_session,
+):
+    """Buying 10 strips × 10 tabs/strip must credit 100 tablets (Gabanist-style)."""
+    from app.models.pharmacy import PharmacyInventory, PharmacyStockLedger
+
+    body = _purchase_payload(
+        pharmacy_setup,
+        invoice_number=f"INV-{uuid.uuid4().hex[:6]}",
+        qty=10, free=0, rate=80.5, mrp=100.0,
+    )
+    body["items"][0]["strip_conversion_factor"] = 10
+    body["items"][0]["rate_a"] = 90.0
+    p = client.post("/api/pharmacy/purchases", headers=auth_headers, json=body).json()
+    assert client.post(
+        f"/api/pharmacy/purchases/{p['id']}/confirm", headers=auth_headers,
+    ).status_code == 200
+
+    db_session.expire_all()
+    inv = db_session.query(PharmacyInventory).filter(
+        PharmacyInventory.batch_number == body["items"][0]["batch_number"],
+    ).first()
+    assert inv is not None
+    assert inv.quantity_in_stock == 100
+    assert inv.strip_conversion_factor == 10
+    # P-Rate stays per-strip; cost_price is per tablet (80.5 / 10)
+    assert abs(inv.purchase_rate - 80.5) < 1e-6
+    assert abs(inv.cost_price - 8.05) < 1e-6
+
+    led = db_session.query(PharmacyStockLedger).filter(
+        PharmacyStockLedger.batch_id == inv.id,
+        PharmacyStockLedger.txn_type == "purchase",
+    ).one()
+    assert led.qty_delta == 100
+
+    # Sell 1 strip → 10 tabs remaining stock 90
+    sale = client.post("/api/pharmacy/sales", headers=auth_headers, json={
+        "payment_type": "cash",
+        "items": [{
+            "medicine_id": pharmacy_setup["medicine_id"],
+            "qty_tabs": 0, "qty_strips": 1, "rate_tier": "A",
+        }],
+    })
+    assert sale.status_code == 201, sale.text
+    db_session.expire_all()
+    inv = db_session.query(PharmacyInventory).filter(PharmacyInventory.id == inv.id).first()
+    assert inv.quantity_in_stock == 90
+
+
+def test_revoke_uses_strip_converted_received_qty(
+    client, auth_headers, pharmacy_setup, db_session,
+):
+    from app.models.pharmacy import PharmacyInventory
+
+    body = _purchase_payload(
+        pharmacy_setup,
+        invoice_number=f"INV-{uuid.uuid4().hex[:6]}",
+        qty=5, free=1, rate=20.0, mrp=30.0,
+    )
+    body["items"][0]["strip_conversion_factor"] = 10
+    p = client.post("/api/pharmacy/purchases", headers=auth_headers, json=body).json()
+    client.post(f"/api/pharmacy/purchases/{p['id']}/confirm", headers=auth_headers)
+
+    db_session.expire_all()
+    inv = db_session.query(PharmacyInventory).filter(
+        PharmacyInventory.batch_number == body["items"][0]["batch_number"],
+    ).first()
+    assert inv.quantity_in_stock == 60  # (5+1) × 10
+
+    r = client.post(
+        f"/api/pharmacy/purchases/{p['id']}/revoke",
+        headers=auth_headers, json={"reason": "wrong strip entry"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["items"][0]["received_qty"] == 60
+    assert r.json()["items"][0]["reversed_qty"] == 60
+    db_session.expire_all()
+    inv = db_session.query(PharmacyInventory).filter(PharmacyInventory.id == inv.id).first()
+    assert inv.quantity_in_stock == 0

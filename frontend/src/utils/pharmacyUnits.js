@@ -107,13 +107,20 @@ export function normalizeTabQtyToStrips(qtyTabs, qtyStrips, source) {
   return { qty_tabs: 0, qty_strips: strips + addedStrips };
 }
 
-export function calcLineSubtotal(line) {
-  const tabs = parseFloat(line.qty_tabs) || 0;
-  const strips = parseFloat(line.qty_strips) || 0;
+/** Gross before discount — strip-exact when tabs are full strips. */
+export function lineGrossBeforeDiscount(line) {
   const src = linePricingSource(line);
+  const normalized = normalizeTabQtyToStrips(line.qty_tabs, line.qty_strips, src);
   const tabR = tabSaleRate(src, line.rate_tier);
   const stripR = stripSaleRate(src, line.rate_tier);
-  const base = tabs * tabR + strips * stripR;
+  return roundMoney(
+    (parseFloat(normalized.qty_tabs) || 0) * tabR
+    + (parseFloat(normalized.qty_strips) || 0) * stripR,
+  );
+}
+
+export function calcLineSubtotal(line) {
+  const base = lineGrossBeforeDiscount(line);
   return roundMoney(base * (1 - (parseFloat(line.discount_pct) || 0) / 100));
 }
 

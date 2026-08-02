@@ -226,8 +226,9 @@ def test_void_window_blocks_old_sale(client, auth_headers, edge_setup,
 # P3.7 — discount stacking > 100% rejected
 # --------------------------------------------------------------------------
 
-def test_discount_stack_over_100_rejected(client, auth_headers, edge_setup,
-                                          db_session):
+def test_discount_over_100_rejected(client, auth_headers, edge_setup,
+                                    db_session):
+    """Line discount alone must be within 0–100; medicine item_discount is not stacked."""
     from app.models.pharmacy import Medicine
     med = db_session.query(Medicine).filter(Medicine.id == edge_setup["medicine_id"]).first()
     med.item_discount_pct = 60
@@ -237,12 +238,20 @@ def test_discount_stack_over_100_rejected(client, auth_headers, edge_setup,
     r = client.post("/api/pharmacy/sales", headers=auth_headers, json={
         "payment_type": "cash",
         "items": [{"medicine_id": edge_setup["medicine_id"], "quantity": 1,
-                   "rate": 20.0, "discount_pct": 50}],
+                   "rate": 20.0, "discount_pct": 101}],
     })
     assert r.status_code == 400
-    assert "Discount exceeds 100%" in r.json()["detail"]
+    assert "Discount must be between 0 and 100%" in r.json()["detail"]
 
-    # Reset for downstream tests
+    # item_discount_pct is NOT auto-stacked — 50% line alone should succeed
+    ok = client.post("/api/pharmacy/sales", headers=auth_headers, json={
+        "payment_type": "cash",
+        "items": [{"medicine_id": edge_setup["medicine_id"], "quantity": 1,
+                   "rate": 20.0, "discount_pct": 50}],
+    })
+    assert ok.status_code == 201, ok.text
+    assert float(ok.json()["discount_total"]) == pytest.approx(10.0, rel=0.01)
+
     med.item_discount_pct = 0
     db_session.commit()
 

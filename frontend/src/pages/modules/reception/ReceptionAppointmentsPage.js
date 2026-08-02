@@ -1335,11 +1335,13 @@ const ReceptionAppointmentsPage = () => {
 
       {/* Schedule Appointment Dialog */}
       <Dialog open={showAppointmentDialog} onOpenChange={setShowAppointmentDialog}>
-        <DialogContent className="max-w-3xl max-h-[92vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Schedule New Appointment</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4">
+        <DialogContent className="max-w-6xl w-[96vw] max-h-[90vh] flex flex-col overflow-hidden gap-0 p-0">
+          <div className="shrink-0 border-b px-6 pt-5 pb-3">
+            <DialogHeader className="space-y-0">
+              <DialogTitle>Schedule New Appointment</DialogTitle>
+            </DialogHeader>
+          </div>
+          <div className="flex-1 min-h-0 overflow-hidden px-6 py-4 space-y-3">
             <PatientSearchPicker
               value={selectedPatient}
               onChange={handlePatientSelected}
@@ -1348,7 +1350,7 @@ const ReceptionAppointmentsPage = () => {
               required
             />
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
               <div>
                 <Label htmlFor="doctor_id">Doctor *</Label>
                 <Select value={appointmentForm.doctor_id} onValueChange={(value) => {
@@ -1401,7 +1403,7 @@ const ReceptionAppointmentsPage = () => {
               />
 
               <AppointmentAvailabilityOverride
-                className="md:col-span-2"
+                className="col-span-2 md:col-span-3 lg:col-span-4"
                 overrideAvailability={appointmentForm.override_availability}
                 overrideReason={appointmentForm.override_reason}
                 onChange={(patch) => setAppointmentForm({ ...appointmentForm, ...patch })}
@@ -1447,52 +1449,33 @@ const ReceptionAppointmentsPage = () => {
                   </SelectContent>
                 </Select>
               </div>
-            </div>
 
-            {/* Fee Summary */}
-            {selectedPatient && appointmentForm.doctor_id && (
-              <div className="bg-gray-50 rounded-lg p-4 border">
-                <h4 className="font-medium mb-2">Fee Summary</h4>
-                <div className="space-y-1 text-sm">
-                  {(() => {
-                    const doctor = doctors.find(d => d.id.toString() === appointmentForm.doctor_id.toString());
-                    const isFollowup = appointmentForm.appointment_type === 'followup';
-                    const isEmergency = appointmentForm.priority === 'emergency';
-                    const parseFee = (v) => v ? parseFloat(String(v).replace('₹', '').replace(',', '').trim()) || 0 : 0;
-                    const baseFee = parseFee(doctor?.consultation_fee_inr);
-                    const emergencyFee = parseFee(doctor?.emergency_fee_inr);
-                    const consultFee = isEmergency ? (emergencyFee || baseFee) : (isFollowup ? 0 : baseFee);
-                    const regFee = patientFeeInfo.is_new_patient ? patientFeeInfo.registration_fee : 0;
-                    const total = consultFee + regFee - (parseFloat(appointmentForm.discount_amount) || 0);
-                    return (
-                      <>
-                        <div className={`flex justify-between ${isEmergency ? 'text-red-700 font-medium' : ''}`}>
-                          <span>
-                            {isEmergency
-                              ? 'Emergency Consultation Fee'
-                              : `Consultation Fee${isFollowup ? ' (Follow-up — free)' : ''}`}
-                          </span>
-                          <span>₹{consultFee.toFixed(2)}</span>
-                        </div>
-                        {isEmergency && emergencyFee === 0 && baseFee > 0 && (
-                          <p className="text-xs text-amber-600">No emergency rate set for this doctor — regular fee applied.</p>
-                        )}
-                        {patientFeeInfo.is_new_patient && regFee > 0 && (
-                          <div className="flex justify-between text-blue-600">
-                            <span>Registration Fee (New Patient)</span>
-                            <span>₹{regFee.toFixed(2)}</span>
+              {selectedPatient && appointmentForm.doctor_id && (
+                <div className="col-span-2 md:col-span-3 lg:col-span-4 bg-gray-50 rounded-lg p-3 border text-sm">
+                  <h4 className="font-medium mb-2">Fee Summary</h4>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                    {(() => {
+                      const doctor = doctors.find(d => d.id.toString() === appointmentForm.doctor_id.toString());
+                      const isFollowup = appointmentForm.appointment_type === 'followup';
+                      const isEmergency = appointmentForm.priority === 'emergency';
+                      const parseFee = (v) => v ? parseFloat(String(v).replace('₹', '').replace(',', '').trim()) || 0 : 0;
+                      const baseFee = parseFee(doctor?.consultation_fee_inr);
+                      const emergencyFee = parseFee(doctor?.emergency_fee_inr);
+                      const consultFee = isEmergency ? (emergencyFee || baseFee) : (isFollowup ? 0 : baseFee);
+                      const regFee = patientFeeInfo.is_new_patient ? patientFeeInfo.registration_fee : 0;
+                      const total = consultFee + regFee - (parseFloat(appointmentForm.discount_amount) || 0);
+                      return (
+                        <>
+                          <div className={isEmergency ? 'text-red-700 font-medium' : ''}>
+                            {isEmergency ? 'Emergency' : `Consultation${isFollowup ? ' (free)' : ''}`}: ₹{consultFee.toFixed(2)}
                           </div>
-                        )}
-                        {patientFeeInfo.is_new_patient && regFee === 0 && (
-                          <div className="flex justify-between text-gray-400">
-                            <span>Registration Fee (Not set)</span>
-                            <span>₹0.00</span>
-                          </div>
-                        )}
-                        <div className="flex items-center justify-between">
-                          <span>Discount</span>
+                          {patientFeeInfo.is_new_patient && (
+                            <div className={regFee > 0 ? 'text-blue-600' : 'text-gray-400'}>
+                              Registration: ₹{regFee.toFixed(2)}
+                            </div>
+                          )}
                           <div className="flex items-center gap-1">
-                            <span className="text-gray-400">₹</span>
+                            <span>Discount ₹</span>
                             <Input
                               type="number"
                               min="0"
@@ -1503,48 +1486,47 @@ const ReceptionAppointmentsPage = () => {
                               className="w-24 h-7 text-right text-sm"
                             />
                           </div>
-                        </div>
-                        <hr className="my-1" />
-                        <div className="flex justify-between font-semibold text-base">
-                          <span>Total</span>
-                          <span>₹{total.toFixed(2)}</span>
-                        </div>
-                      </>
-                    );
-                  })()}
+                          <div className="font-semibold">Total: ₹{total.toFixed(2)}</div>
+                          {isEmergency && emergencyFee === 0 && baseFee > 0 && (
+                            <p className="col-span-2 md:col-span-4 text-xs text-amber-600">No emergency rate set for this doctor — regular fee applied.</p>
+                          )}
+                        </>
+                      );
+                    })()}
+                  </div>
                 </div>
+              )}
+
+              <div className="col-span-2">
+                <Label htmlFor="reason">Reason for Visit</Label>
+                <Input
+                  id="reason"
+                  value={appointmentForm.reason}
+                  onChange={(e) => setAppointmentForm({...appointmentForm, reason: e.target.value})}
+                  placeholder="Brief description of the visit reason"
+                />
               </div>
-            )}
 
-            <div>
-              <Label htmlFor="reason">Reason for Visit</Label>
-              <Input
-                id="reason"
-                value={appointmentForm.reason}
-                onChange={(e) => setAppointmentForm({...appointmentForm, reason: e.target.value})}
-                placeholder="Brief description of the visit reason"
-              />
+              <div className="col-span-2">
+                <ReferralSelectWithCreate
+                  value={appointmentForm.referred_by}
+                  onValueChange={(name) => setAppointmentForm({ ...appointmentForm, referred_by: name })}
+                  referrals={referralList}
+                  onReferralsChange={setReferralList}
+                />
+              </div>
             </div>
-
-            <ReferralSelectWithCreate
-              value={appointmentForm.referred_by}
-              onValueChange={(name) => setAppointmentForm({ ...appointmentForm, referred_by: name })}
-              referrals={referralList}
-              onReferralsChange={setReferralList}
-            />
-
-            <div className="flex gap-2">
-              <Button variant="outline" onClick={() => setShowAppointmentDialog(false)} className="flex-1">
-                Cancel
-              </Button>
-              <Button
-                onClick={createAppointment}
-                disabled={isAppointmentSubmitDisabled(appointmentForm, { loading, selectedPatient: !!selectedPatient })}
-                className="flex-1"
-              >
-                {loading ? 'Booking...' : 'Book Appointment'}
-              </Button>
-            </div>
+          </div>
+          <div className="shrink-0 border-t px-6 py-3 flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+            <Button variant="outline" onClick={() => setShowAppointmentDialog(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={createAppointment}
+              disabled={isAppointmentSubmitDisabled(appointmentForm, { loading, selectedPatient: !!selectedPatient })}
+            >
+              {loading ? 'Booking...' : 'Book Appointment'}
+            </Button>
           </div>
         </DialogContent>
       </Dialog>

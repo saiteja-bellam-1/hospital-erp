@@ -48,6 +48,7 @@ from app.models.pharmacy import (
 )
 from app.models.patient import Patient
 from app.services.audit_service import log_action
+from app.services.pharmacy_stock import credit_batch_stock, sale_has_sale_ledger_rows
 
 
 # Statuses that mean the Rx can still be cancelled (idempotent cancel is not
@@ -102,6 +103,27 @@ def _reverse_dispensed_stock(
         )
         .all()
     )
+    # Skip if already cancelled (idempotent guard against double credit).
+    already = (
+        db.query(PharmacyStockLedger.id)
+        .filter(
+            PharmacyStockLedger.txn_type == "rx_cancel",
+            PharmacyStockLedger.reference_type == "prescription",
+            PharmacyStockLedger.reference_id == rx.id,
+        )
+        .first()
+    )
+    if already:
+        items = (
+            db.query(PrescriptionItem)
+            .filter(PrescriptionItem.prescription_id == rx.id)
+            .all()
+        )
+        for it in items:
+            it.quantity_dispensed = 0
+            it.status = "pending"
+        return 0
+
     written = 0
     for row in dispense_rows:
         # qty_delta on a rx_dispense is negative; the cancel re-credits that
@@ -117,7 +139,7 @@ def _reverse_dispensed_stock(
         )
         if not batch:
             continue
-        batch.quantity_in_stock = (batch.quantity_in_stock or 0) + give_back
+        credit_batch_stock(batch, give_back)
         db.add(PharmacyStockLedger(
             medicine_id=row.medicine_id,
             batch_id=batch.id,
@@ -126,6 +148,7 @@ def _reverse_dispensed_stock(
             reference_type="prescription",
             reference_id=rx.id,
             performed_by=user_id,
+            store_id=row.store_id or batch.store_id,
             hospital_id=hospital_id,
             notes=f"Cancel Rx {rx.prescription_number}: {reason}",
         ))
@@ -140,6 +163,13 @@ def _reverse_dispensed_stock(
         it.quantity_dispensed = 0
         it.status = "pending"
     return written
+
+
+def reverse_dispensed_stock_only(
+    db: Session, rx: Prescription, user_id: int, hospital_id: int, reason: str
+) -> int:
+    """Public wrapper used by void/edit of cash-dispense sales."""
+    return _reverse_dispensed_stock(db, rx, user_id, hospital_id, reason)
 
 
 def _unlocked_bill_inplace_reverse(db: Session, rx: Prescription, bill: Bill) -> int:
@@ -164,12 +194,18 @@ def _unlocked_bill_inplace_reverse(db: Session, rx: Prescription, bill: Bill) ->
     for bi in bill_items:
         removed_total += float(bi.total_price or 0)
         db.delete(bi)
+    db.flush()
     if removed_total > 0:
-        # Subtotal/total math on un-finalized bills is naive (no tax/discount
-        # baked in yet for pharmacy lines as of the current pricing flow), so
-        # subtract from both subtotal and total_amount directly.
-        bill.subtotal = max(0.0, float(bill.subtotal or 0) - removed_total)
-        bill.total_amount = max(0.0, float(bill.total_amount or 0) - removed_total)
+        # Prefer recomputing from remaining items so header stays consistent
+        # with line totals (incl. tax/discount already baked into BillItems).
+        remaining = (
+            db.query(BillItem)
+            .filter(BillItem.bill_id == bill.id)
+            .all()
+        )
+        new_sub = round(sum(float(bi.total_price or 0) for bi in remaining), 2)
+        bill.subtotal = max(0.0, new_sub)
+        bill.total_amount = max(0.0, new_sub)
     rx.inpatient_bill_id = None
     return len(bill_items)
 
@@ -195,15 +231,19 @@ def _emit_credit_note(
     )
     if not parent_lines:
         # No source_ref linkage (likely a bill emitted before the migration
-        # landed). Fall back to summing the Rx total; cashier-visible label
-        # makes the offset explicit.
-        total = float(rx.total_amount or 0)
+        # landed). Fall back to dispensed billable amount, not prescribed.
+        total = 0.0
+        for it in rx.items:
+            total += float(it.unit_price or 0) * float(it.quantity_dispensed or 0)
+        total = round(total, 2)
+        if total <= 0:
+            total = float(rx.total_amount or 0)
         if total <= 0:
             raise HTTPException(
                 status_code=400,
                 detail=(
                     "Cannot emit credit-note: parent bill has no source_ref "
-                    "linkage and Rx has no total_amount to offset against."
+                    "linkage and Rx has no dispensed amount to offset against."
                 ),
             )
         cn = Bill(
@@ -288,9 +328,16 @@ def _unlocked_bill_inplace_reverse_pos_sale(db: Session, sale: PharmacySale, bil
     for bi in bill_items:
         removed_total += float(bi.total_price or 0)
         db.delete(bi)
+    db.flush()
     if removed_total > 0:
-        bill.subtotal = max(0.0, float(bill.subtotal or 0) - removed_total)
-        bill.total_amount = max(0.0, float(bill.total_amount or 0) - removed_total)
+        remaining = (
+            db.query(BillItem)
+            .filter(BillItem.bill_id == bill.id)
+            .all()
+        )
+        new_sub = round(sum(float(bi.total_price or 0) for bi in remaining), 2)
+        bill.subtotal = max(0.0, new_sub)
+        bill.total_amount = max(0.0, new_sub)
     sale.inpatient_bill_id = None
     return len(bill_items)
 
@@ -448,10 +495,67 @@ def cancel_prescription(
             status_code=400, detail=f"Cannot cancel prescription in status '{rx.status}'"
         )
 
-    # Step 1 — stock reversal (always).
-    stock_rows_written = _reverse_dispensed_stock(
-        db, rx, user_id=user.id, hospital_id=user.hospital_id, reason=reason
-    )
+    # Step 1 — if a cash-dispense / POS-linked sale exists, void it without a
+    # second stock credit (stock is handled by rx_cancel below, or by sale
+    # ledger return_in when this was a normal POS Rx sale).
+    linked_sale = None
+    if rx.pharmacy_sale_id:
+        linked_sale = db.query(PharmacySale).filter(PharmacySale.id == rx.pharmacy_sale_id).first()
+
+    if linked_sale and linked_sale.status == "completed":
+        had_sale_ledger = sale_has_sale_ledger_rows(db, linked_sale.id)
+        if had_sale_ledger:
+            # POS Rx path: stock via sale ledger — restore return_in here; skip
+            # rx_dispense reverse (there should be none for pure POS Rx).
+            for it in list(linked_sale.items):
+                batch = (
+                    db.query(PharmacyInventory)
+                    .filter(PharmacyInventory.id == it.batch_id)
+                    .with_for_update()
+                    .first()
+                )
+                if not batch:
+                    continue
+                restore = float(it.quantity or 0) + float(it.free_quantity or 0)
+                credit_batch_stock(batch, restore)
+                db.add(PharmacyStockLedger(
+                    medicine_id=it.medicine_id,
+                    batch_id=batch.id,
+                    txn_type="return_in",
+                    qty_delta=restore,
+                    reference_type="sale_void",
+                    reference_id=linked_sale.id,
+                    performed_by=user.id,
+                    store_id=linked_sale.store_id or batch.store_id,
+                    hospital_id=user.hospital_id,
+                    notes=f"Cancel Rx {rx.prescription_number}: void linked sale",
+                ))
+            stock_rows_written = 0
+            # Still zero Rx counters.
+            for it in db.query(PrescriptionItem).filter(
+                PrescriptionItem.prescription_id == rx.id
+            ).all():
+                it.quantity_dispensed = 0
+                it.status = "pending"
+        else:
+            # Cash dispense: stock via rx_dispense only.
+            stock_rows_written = _reverse_dispensed_stock(
+                db, rx, user_id=user.id, hospital_id=user.hospital_id, reason=reason
+            )
+        if (getattr(linked_sale, "billing_mode", None) or "") == "inpatient_bill":
+            reverse_inpatient_pos_sale_bill(
+                db, linked_sale, user_id=user.id, reason=reason,
+            )
+        linked_sale.status = "voided"
+        linked_sale.voided_by = user.id
+        linked_sale.voided_at = datetime.now()
+        linked_sale.void_reason = f"Rx cancelled: {reason}"
+        rx.pharmacy_sale_id = None
+    else:
+        # Step 1 — stock reversal (always when no linked completed sale).
+        stock_rows_written = _reverse_dispensed_stock(
+            db, rx, user_id=user.id, hospital_id=user.hospital_id, reason=reason
+        )
 
     # Step 2 — bill handling.
     credit_note_id: Optional[int] = None

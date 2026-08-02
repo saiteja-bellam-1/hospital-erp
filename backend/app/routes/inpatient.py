@@ -717,6 +717,32 @@ class DischargeSummaryResponse(BaseModel):
         from_attributes = True
 
 
+class AdmissionCaseSheetUpsert(BaseModel):
+    """Clinical case-sheet fields captured at admission (Complaints & History subset)."""
+    chief_complaint: Optional[str] = None
+    present_medical_history: Optional[str] = None
+    past_history: Optional[str] = None
+    family_history: Optional[str] = None
+    provisional_diagnosis: Optional[str] = None
+    physical_examination_notes: Optional[str] = None
+    findings_at_admission: Optional[str] = None
+
+
+class AdmissionCaseSheetResponse(BaseModel):
+    admission_id: int
+    summary_id: Optional[int] = None
+    chief_complaint: Optional[str] = None
+    present_medical_history: Optional[str] = None
+    past_history: Optional[str] = None
+    family_history: Optional[str] = None
+    provisional_diagnosis: Optional[str] = None
+    physical_examination_notes: Optional[str] = None
+    findings_at_admission: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
 class DischargeCreate(BaseModel):
     discharge_type: str = Field(..., pattern="^(normal|against_advice|transfer|death)$")
     condition_on_discharge: Optional[str] = Field(default=None, pattern="^(stable|improved|unchanged|critical)$")
@@ -2054,13 +2080,232 @@ async def activate_admission_draft(
     return _load_admission_response(db, admission.id)
 
 
+_CASE_SHEET_FIELDS = (
+    "chief_complaint",
+    "present_medical_history",
+    "past_history",
+    "family_history",
+    "provisional_diagnosis",
+    "physical_examination_notes",
+    "findings_at_admission",
+)
+
+
+def _case_sheet_response(
+    admission: Admission,
+    summary: Optional[AdmissionDischargeSummary] = None,
+) -> AdmissionCaseSheetResponse:
+    if summary:
+        return AdmissionCaseSheetResponse(
+            admission_id=admission.id,
+            summary_id=summary.id,
+            chief_complaint=summary.chief_complaint,
+            present_medical_history=summary.present_medical_history,
+            past_history=summary.past_history,
+            family_history=summary.family_history,
+            provisional_diagnosis=summary.provisional_diagnosis,
+            physical_examination_notes=summary.physical_examination_notes,
+            findings_at_admission=summary.findings_at_admission,
+        )
+    # Prefill chief complaint from admission when no summary row yet
+    cc = (admission.chief_complaint or admission.admission_reason or "").strip() or None
+    return AdmissionCaseSheetResponse(
+        admission_id=admission.id,
+        summary_id=None,
+        chief_complaint=cc,
+    )
+
+
+@router.get("/admissions/{admission_id}/admission-case-sheet", response_model=AdmissionCaseSheetResponse)
+async def get_admission_case_sheet(
+    admission_id: int,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "admit_patients")),
+    db: Session = Depends(get_db),
+):
+    """Return clinical case-sheet fields for the admit wizard (or empty defaults)."""
+    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    if not admission:
+        raise HTTPException(status_code=404, detail="Admission not found")
+    summary = db.query(AdmissionDischargeSummary).filter(
+        AdmissionDischargeSummary.admission_id == admission_id,
+    ).first()
+    return _case_sheet_response(admission, summary)
+
+
+@router.put("/admissions/{admission_id}/admission-case-sheet", response_model=AdmissionCaseSheetResponse)
+async def upsert_admission_case_sheet(
+    admission_id: int,
+    data: AdmissionCaseSheetUpsert,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "admit_patients")),
+    db: Session = Depends(get_db),
+):
+    """Save Complaints & History at admit time onto AdmissionDischargeSummary.
+
+    Allowed while admission is still draft (post-activate) or already admitted.
+    Uses admit_patients so reception staff can fill the case sheet.
+    """
+    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    if not admission:
+        raise HTTPException(status_code=404, detail="Admission not found")
+    if admission.status not in ("draft", "admitted"):
+        raise HTTPException(
+            status_code=400,
+            detail="Case sheet can only be edited for draft or active admissions",
+        )
+
+    summary = _get_or_create_summary(db, admission_id)
+    if summary.status == "locked":
+        raise HTTPException(status_code=400, detail="Discharge summary is locked after discharge")
+
+    update_data = data.model_dump(exclude_unset=True)
+    for k in _CASE_SHEET_FIELDS:
+        if k in update_data:
+            setattr(summary, k, update_data[k])
+
+    if "chief_complaint" in update_data:
+        cc = (update_data["chief_complaint"] or "").strip() or None
+        admission.chief_complaint = cc
+
+    if not summary.written_by_id:
+        summary.written_by_id = current_user.id
+        summary.written_at = datetime.now()
+    # Keep as draft — full discharge summary finalize is separate
+    if summary.status != "locked":
+        summary.status = "draft"
+
+    db.commit()
+    db.refresh(summary)
+    log_action(
+        db, current_user, "update_admission_case_sheet", "inpatient",
+        "AdmissionDischargeSummary", summary.id,
+        f"Updated admission case sheet for {admission.admission_number}",
+    )
+    return _case_sheet_response(admission, summary)
+
+
+@router.get("/admissions/{admission_id}/admission-case-sheet/pdf")
+async def get_admission_case_sheet_pdf(
+    admission_id: int,
+    include_header: bool = True,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "admit_patients")),
+    db: Session = Depends(get_db),
+):
+    """Printable clinical case sheet for the admit wizard (step 5)."""
+    admission = db.query(Admission).options(
+        joinedload(Admission.patient),
+        joinedload(Admission.room),
+        joinedload(Admission.bed),
+        joinedload(Admission.admitting_doctor),
+    ).filter(Admission.id == admission_id).first()
+    if not admission:
+        raise HTTPException(status_code=404, detail="Admission not found")
+    if admission.status not in ("draft", "admitted"):
+        raise HTTPException(
+            status_code=400,
+            detail="Case sheet PDF is only available for draft or active admissions",
+        )
+
+    summary = db.query(AdmissionDischargeSummary).filter(
+        AdmissionDischargeSummary.admission_id == admission_id,
+    ).first()
+    patient = admission.patient
+    room = admission.room
+    doctor = admission.admitting_doctor
+
+    def _age_str(p):
+        if not p:
+            return ""
+        if getattr(p, "age", None):
+            return str(p.age)
+        if p.date_of_birth:
+            from datetime import date
+            today = date.today()
+            dob = p.date_of_birth
+            return str(today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day)))
+        return ""
+
+    ward_bits = []
+    if room:
+        if room.ward:
+            ward_bits.append(room.ward)
+        if room.room_number:
+            ward_bits.append(room.room_number)
+    bed_label = ""
+    if admission.bed:
+        bed_label = admission.bed.bed_label or ""
+    elif admission.bed_number:
+        bed_label = admission.bed_number
+    ward_bed = " / ".join([b for b in (*ward_bits, bed_label) if b]) or "—"
+
+    doctor_name = ""
+    if doctor:
+        doctor_name = f"Dr. {doctor.first_name} {doctor.last_name}".strip()
+
+    cc = None
+    present = past = family = provisional = pe = findings = None
+    if summary:
+        cc = summary.chief_complaint
+        present = summary.present_medical_history
+        past = summary.past_history
+        family = summary.family_history
+        provisional = summary.provisional_diagnosis
+        pe = summary.physical_examination_notes
+        findings = summary.findings_at_admission
+    if not (cc or "").strip():
+        cc = (admission.chief_complaint or admission.admission_reason or "").strip() or None
+
+    payload = {
+        "patient_name": (
+            f"{patient.first_name} {patient.last_name}".strip() if patient else "—"
+        ),
+        "mrn": (getattr(patient, "mrn", None) or getattr(patient, "patient_id", None) or "") if patient else "",
+        "age": _age_str(patient),
+        "gender": (patient.gender or "").title() if patient else "",
+        "primary_phone": (getattr(patient, "primary_phone", None) or "") if patient else "",
+        "admission_number": admission.admission_number or "",
+        "admission_date": (
+            admission.admission_date.strftime("%d/%m/%Y")
+            if admission.admission_date else datetime.now().strftime("%d/%m/%Y")
+        ),
+        "doctor_name": doctor_name,
+        "ward_bed": ward_bed,
+        "chief_complaint": cc,
+        "present_medical_history": present,
+        "past_history": past,
+        "family_history": family,
+        "provisional_diagnosis": provisional,
+        "physical_examination_notes": pe,
+        "findings_at_admission": findings,
+    }
+
+    hospital = _get_hospital(db, current_user)
+    hospital_info = {
+        "name": hospital.name,
+        "address": hospital.address or "",
+        "phone": hospital.phone or "",
+        "email": hospital.email or "",
+        "logo_url": getattr(hospital, "logo_url", "") or "",
+        "hospital_subname": getattr(hospital, "hospital_subname", "") or "",
+    }
+    pdf_buffer = pdf_service.generate_admission_case_sheet_pdf(
+        payload,
+        hospital_info,
+        **pdf_gen_kwargs(
+            db, current_user.hospital_id, "consent",
+            query_include_header=include_header,
+        ),
+    )
+    fname = f"case-sheet-{admission.admission_number or admission_id}.pdf"
+    return _inline_pdf_response(pdf_buffer, fname)
+
+
 @router.post("/admissions/{admission_id}/complete-admission", response_model=AdmissionResponse)
 async def complete_admission_draft(
     admission_id: int,
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "admit_patients")),
     db: Session = Depends(get_db),
 ):
-    """Wizard step 4 — after face/case sheets signed, promote draft to admitted."""
+    """Wizard final step — after admission/consent forms signed, promote draft to admitted."""
     admission = db.query(Admission).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
@@ -4461,14 +4706,53 @@ _PKG_CAT_ANCILLARY = "ancillary"
 
 
 def _pharmacy_rx_billable_amount(db: Session, rx: Prescription) -> float:
-    """Bill only what was actually dispensed (partial fills bill partial qty)."""
+    """Bill dispensed qty with HSN GST (exclusive) so Rx matches POS tax policy."""
+    from app.utils.pharmacy_pricing import compute_line_tax, round_money
+    from app.models.pharmacy import Medicine, PharmacyHSN
+
     items = db.query(PrescriptionItem).filter(
         PrescriptionItem.prescription_id == rx.id,
     ).all()
-    return round(
-        sum(float(i.unit_price or 0) * float(i.quantity_dispensed or 0) for i in items),
-        2,
-    )
+    total = 0.0
+    for i in items:
+        qty = float(i.quantity_dispensed or 0)
+        if qty <= 0:
+            continue
+        base = float(i.unit_price or 0) * qty
+        tax_pct = 0.0
+        med = db.query(Medicine).filter(Medicine.id == i.medicine_id).first()
+        if med and med.hsn_id:
+            hsn = db.query(PharmacyHSN).filter(PharmacyHSN.id == med.hsn_id).first()
+            if hsn:
+                tax_pct = float(hsn.sgst_pct or 0) + float(hsn.cgst_pct or 0)
+        _t, _tax, line_total = compute_line_tax(base, tax_pct, tax_mode="exclusive")
+        total += line_total
+    return round_money(total)
+
+
+def _allocate_pos_sale_line_totals(sale) -> list:
+    """Map sale items to amounts that sum exactly to sale.grand_total.
+
+    Line totals are pre–bill-discount; grand_total subtracts bill_discount_amount.
+    """
+    items = list(sale.items or [])
+    if not items:
+        return []
+    raw = [float(i.line_total or 0) for i in items]
+    raw_sum = round(sum(raw), 2)
+    target = round(float(sale.grand_total or 0), 2)
+    if raw_sum <= 0 or abs(raw_sum - target) < 0.005:
+        return [(it, amt) for it, amt in zip(items, raw)]
+    out = []
+    running = 0.0
+    for idx, (it, amt) in enumerate(zip(items, raw)):
+        if idx == len(items) - 1:
+            share = round(target - running, 2)
+        else:
+            share = round(target * (amt / raw_sum), 2) if raw_sum else 0.0
+            running += share
+        out.append((it, share))
+    return out
 
 
 def _pharmacy_pos_sale_entries(db: Session, sales: list) -> list:
@@ -4476,7 +4760,7 @@ def _pharmacy_pos_sale_entries(db: Session, sales: list) -> list:
     out = []
     for sale in sales:
         line_items = []
-        for item in (sale.items or []):
+        for item, total_price in _allocate_pos_sale_line_totals(sale):
             med = db.query(Medicine).filter(Medicine.id == item.medicine_id).first()
             line_items.append({
                 "id": item.id,
@@ -4484,7 +4768,7 @@ def _pharmacy_pos_sale_entries(db: Session, sales: list) -> list:
                 "name": med.name if med else "Medicine",
                 "quantity": float(item.quantity or 0),
                 "unit_price": float(item.rate or 0),
-                "total_price": float(item.line_total or 0),
+                "total_price": float(total_price),
             })
         out.append({
             "id": sale.id,
@@ -5765,8 +6049,17 @@ def _create_admission_bill_record_inner(
                 qty = float(item.quantity_dispensed or 0)
                 if qty <= 0:
                     continue
-                line_total = round(float(item.unit_price or 0) * qty, 2)
+                # Include HSN GST (exclusive) — same policy as _pharmacy_rx_billable_amount.
+                from app.utils.pharmacy_pricing import compute_line_tax
+                from app.models.pharmacy import PharmacyHSN
                 medicine = db.query(Medicine).filter(Medicine.id == item.medicine_id).first()
+                base = round(float(item.unit_price or 0) * qty, 2)
+                tax_pct = 0.0
+                if medicine and medicine.hsn_id:
+                    hsn = db.query(PharmacyHSN).filter(PharmacyHSN.id == medicine.hsn_id).first()
+                    if hsn:
+                        tax_pct = float(hsn.sgst_pct or 0) + float(hsn.cgst_pct or 0)
+                _t, _tax, line_total = compute_line_tax(base, tax_pct, tax_mode="exclusive")
                 label = f"Rx: {medicine.name if medicine else 'Medicine'} ({item.dosage or ''})"
                 if rx_type_in_pkg and not covers:
                     label += " (excess stay)"
@@ -5786,7 +6079,7 @@ def _create_admission_bill_record_inner(
         sale_dt = getattr(sale, "sale_date", None)
         covers = rx_type_in_pkg and _pkg_covers(pkg_boundary_dt, sale_dt)
         if not covers:
-            for item in (sale.items or []):
+            for item, allocated_total in _allocate_pos_sale_line_totals(sale):
                 med = db.query(Medicine).filter(Medicine.id == item.medicine_id).first()
                 label = f"POS: {med.name if med else 'Medicine'} ({sale.sale_number})"
                 if rx_type_in_pkg and not covers:
@@ -5797,7 +6090,7 @@ def _create_admission_bill_record_inner(
                     item_name=label,
                     quantity=float(item.quantity or 0),
                     unit_price=float(item.rate or 0),
-                    total_price=float(item.line_total or 0),
+                    total_price=float(allocated_total),
                     source_ref_type="pharmacy_sale_item",
                     source_ref_id=item.id,
                 ))
@@ -11227,6 +11520,7 @@ async def preview_consent_pdf(
     admission_reason: Optional[str] = None,
     doc_number: Optional[str] = None,
     admission_id: Optional[int] = None,
+    include_header: Optional[bool] = None,
     current_user: User = Depends(require_feature_permission_any(
         Modules.INPATIENT, "admit_patients", "record_consent"
     )),
@@ -11373,7 +11667,14 @@ async def preview_consent_pdf(
         "logo_url": getattr(hospital, "logo_url", "") or "",
         "hospital_subname": getattr(hospital, "hospital_subname", "") or "",
     }
-    pdf_buffer = pdf_service.generate_consent_pdf(consent_data, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'consent'))
+    pdf_buffer = pdf_service.generate_consent_pdf(
+        consent_data,
+        hospital_info,
+        **pdf_gen_kwargs(
+            db, current_user.hospital_id, 'consent',
+            query_include_header=include_header,
+        ),
+    )
     return _inline_pdf_response(pdf_buffer, f"consent-{template.consent_type}-preview.pdf")
 
 

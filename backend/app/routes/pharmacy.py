@@ -50,6 +50,18 @@ from app.models.pharmacy import (
 from sqlalchemy import func as sa_func
 from app.utils.auth import Modules
 from app.utils.dependencies import get_current_user, require_feature_permission, require_feature_permission_any
+from app.services.audit_service import log_action
+from app.services.pharmacy_store_service import (
+    resolve_store_id,
+    resolve_report_store_filter,
+    get_master_store_id,
+    sum_store_stock,
+)
+from app.services.pharmacy_stock import (
+    net_sold_qty_for_batch,
+    credit_batch_stock,
+    sale_has_sale_ledger_rows,
+)
 from app.utils.pharmacy_pricing import (
     medicine_sale_rate,
     is_free_text_medicine,
@@ -62,13 +74,10 @@ from app.utils.pharmacy_pricing import (
     apply_medicine_price_rounding,
     round_money,
     compute_line_tax,
-)
-from app.services.audit_service import log_action
-from app.services.pharmacy_store_service import (
-    resolve_store_id,
-    resolve_report_store_filter,
-    get_master_store_id,
-    sum_store_stock,
+    line_gross_before_discount,
+    line_subtotal_before_tax,
+    normalize_tabs_to_strips,
+    pricing_source,
 )
 
 
@@ -95,6 +104,115 @@ async def pharmacy_health(
         "status": "ok",
         "module": Modules.PHARMACY,
         "user": current_user.username,
+    }
+
+
+def _normalize_rate_tier(value: Optional[str], default: str = "A") -> str:
+    tier = (value or default).strip().upper()
+    return tier if tier in ("A", "B") else default
+
+
+def _as_bool(value: Optional[str], default: bool = False) -> bool:
+    if value is None or str(value).strip() == "":
+        return default
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+@router.get("/pos-settings")
+def get_pos_settings(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission_any(
+        Modules.PHARMACY, "create_sale", "edit_sale", "view_sales", "set_rates",
+    )),
+):
+    """POS defaults readable by counter staff.
+
+    When `use_default_rate_tiers` is true, POS applies cash/credit defaults and
+    skips the Rate A/B picker after batch select. Maintained under Pharmacy → Setup.
+    """
+    from app.models.permissions import HospitalSettings
+
+    rows = db.query(HospitalSettings).filter(
+        HospitalSettings.setting_category == "pharmacy_config",
+        HospitalSettings.setting_key.in_([
+            "use_default_rate_tiers",
+            "default_rate_tier_cash",
+            "default_rate_tier_credit",
+        ]),
+    ).all()
+    cfg = {s.setting_key: s.setting_value for s in rows}
+    return {
+        "use_default_rate_tiers": _as_bool(cfg.get("use_default_rate_tiers"), False),
+        "default_rate_tier_cash": _normalize_rate_tier(cfg.get("default_rate_tier_cash")),
+        "default_rate_tier_credit": _normalize_rate_tier(cfg.get("default_rate_tier_credit")),
+    }
+
+
+class PosSettingsUpdate(BaseModel):
+    use_default_rate_tiers: bool = False
+    default_rate_tier_cash: str = "A"
+    default_rate_tier_credit: str = "A"
+
+    @field_validator("default_rate_tier_cash", "default_rate_tier_credit")
+    @classmethod
+    def _tier_a_or_b(cls, v: str) -> str:
+        tier = (v or "A").strip().upper()
+        if tier not in ("A", "B"):
+            raise ValueError("Rate tier must be A or B")
+        return tier
+
+
+@router.put("/pos-settings")
+def update_pos_settings(
+    data: PosSettingsUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "set_rates")),
+):
+    """Update POS default rate settings (pharmacy admin / set_rates)."""
+    from app.models.permissions import HospitalSettings
+
+    updates = {
+        "use_default_rate_tiers": "true" if data.use_default_rate_tiers else "false",
+        "default_rate_tier_cash": data.default_rate_tier_cash,
+        "default_rate_tier_credit": data.default_rate_tier_credit,
+    }
+    for key, value in updates.items():
+        existing = db.query(HospitalSettings).filter(
+            HospitalSettings.setting_category == "pharmacy_config",
+            HospitalSettings.setting_key == key,
+        ).first()
+        if existing:
+            existing.setting_value = value
+        else:
+            db.add(HospitalSettings(
+                setting_category="pharmacy_config",
+                setting_key=key,
+                setting_value=value,
+                setting_type="string",
+                created_by=current_user.id,
+            ))
+    db.commit()
+    log_action(
+        db=db,
+        user=current_user,
+        action="update_pharmacy_pos_settings",
+        category="pharmacy",
+        resource_type="HospitalSettings",
+        description=(
+            f"POS defaults enabled={data.use_default_rate_tiers} "
+            f"cash={data.default_rate_tier_cash} credit={data.default_rate_tier_credit}"
+        ),
+        details={
+            "use_default_rate_tiers": data.use_default_rate_tiers,
+            "default_rate_tier_cash": data.default_rate_tier_cash,
+            "default_rate_tier_credit": data.default_rate_tier_credit,
+        },
+    )
+    return {
+        "message": "POS settings saved",
+        "use_default_rate_tiers": data.use_default_rate_tiers,
+        "default_rate_tier_cash": data.default_rate_tier_cash,
+        "default_rate_tier_credit": data.default_rate_tier_credit,
     }
 
 
@@ -1034,6 +1152,7 @@ class InventoryRowOut(BaseModel):
     rack_code: Optional[str] = None
     uom: Optional[str] = None
     total_stock: float
+    strip_conversion_factor: int = 1
     min_qty: int
     is_low_stock: bool
     batch_count: int
@@ -1105,7 +1224,9 @@ def list_inventory(
         out.append(InventoryRowOut(
             medicine_id=med.id, medicine_code=med.medicine_code, name=med.name,
             rack_code=rack_code, uom=uom_abbr,
-            total_stock=total, min_qty=med.min_qty or 0, is_low_stock=low,
+            total_stock=total,
+            strip_conversion_factor=max(1, int(med.strip_conversion_factor or 1)),
+            min_qty=med.min_qty or 0, is_low_stock=low,
             batch_count=int(batches or 0),
         ))
     return out
@@ -1341,11 +1462,13 @@ def writeoff_expired_batches(
         total_qty += qty
         total_value += qty * cost
         b.quantity_in_stock = 0
+        b.is_active = False
         db.add(PharmacyStockLedger(
             medicine_id=b.medicine_id, batch_id=b.id,
             txn_type="expiry_writeoff", qty_delta=-qty,
             reference_type="expiry", reference_id=b.id,
-            performed_by=current_user.id, hospital_id=current_user.hospital_id,
+            performed_by=current_user.id, store_id=b.store_id,
+            hospital_id=current_user.hospital_id,
             notes=f"Expiry write-off ({b.expiry_date}): {data.reason}",
         ))
         rows_written += 1
@@ -1551,18 +1674,31 @@ def _date_range(date_from: Optional[date], date_to: Optional[date]) -> tuple:
     return start, end
 
 
-def _effective_cost(qty: float, free: float, rate: float) -> float:
-    """Per-unit effective cost when `free` units come bundled at no charge.
+def _purchase_strip_factor(item) -> int:
+    """Tablets per strip on a purchase line (minimum 1)."""
+    return max(1, int(getattr(item, "strip_conversion_factor", 0) or 1))
 
-    Stock valuation should not include the free portion at its purchase rate,
-    so we spread the paid total across paid + free units. `purchase_rate` on
-    the inventory row keeps the gross rate (used as the master P-Rate);
-    `cost_price` carries this effective cost (used by stock_value_cost).
+
+def _purchase_received_base_qty(item) -> float:
+    """Purchase qty is in strips/packs; stock ledger tracks base tablets."""
+    strips = float(item.quantity or 0) + float(item.free_quantity or 0)
+    return strips * _purchase_strip_factor(item)
+
+
+def _effective_cost(qty: float, free: float, rate: float, strip_conversion_factor: int = 1) -> float:
+    """Per-tablet effective cost when `free` strips come bundled at no charge.
+
+    Purchase qty/free and `rate` are strip-based (same as MRP / Rate A).
+    Stock is stored in tablets, so cost is spread across
+    (paid + free strips) × tablets_per_strip. `purchase_rate` on the
+    inventory row keeps the gross strip rate (master P-Rate default);
+    `cost_price` carries this per-tablet cost (used by stock_value_cost).
     """
-    total = (qty or 0) + (free or 0)
-    if total <= 0:
+    total_strips = (qty or 0) + (free or 0)
+    if total_strips <= 0:
         return rate or 0.0
-    return round_money(((qty or 0) * (rate or 0)) / total)
+    scf = max(1, int(strip_conversion_factor or 1))
+    return round_money(((qty or 0) * (rate or 0)) / (total_strips * scf))
 
 
 def _hsn_row_for_purchase_item(db: Session, item) -> Optional[PharmacyHSN]:
@@ -1647,13 +1783,8 @@ def _validate_purchase_items(items: List[PurchaseItemIn]) -> None:
 
 
 def _sold_qty_for_batch(db: Session, batch_id: Optional[int]) -> float:
-    if not batch_id:
-        return 0.0
-    sold_total = db.query(sa_func.coalesce(sa_func.sum(PharmacyStockLedger.qty_delta), 0)).filter(
-        PharmacyStockLedger.batch_id == batch_id,
-        PharmacyStockLedger.txn_type.in_(("sale", "rx_dispense")),
-    ).scalar() or 0
-    return abs(float(sold_total))
+    """Net sold/dispensed qty after voids and Rx cancels."""
+    return net_sold_qty_for_batch(db, batch_id)
 
 
 def _validate_confirmed_purchase_edit(
@@ -1663,7 +1794,7 @@ def _validate_confirmed_purchase_edit(
     new_map: dict = {}
     for item in new_items:
         key = _batch_key(item.medicine_id, item.batch_number, item.expiry_date or _EXPIRY_SENTINEL)
-        recv = float((item.quantity or 0) + (item.free_quantity or 0))
+        recv = _purchase_received_base_qty(item)
         new_map[key] = new_map.get(key, 0.0) + recv
 
     for old in purchase.items:
@@ -1683,7 +1814,7 @@ def _validate_confirmed_purchase_edit(
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"Batch {old.batch_number} new quantity ({new_recv:g}) is below "
+                    f"Batch {old.batch_number} new quantity ({new_recv:g} tabs) is below "
                     f"already sold/dispensed ({sold:g})"
                 ),
             )
@@ -1694,7 +1825,7 @@ def _reverse_purchase_item_stock(
     user: User, reason: str,
 ) -> float:
     """Reverse the un-sold portion of a confirmed purchase line."""
-    received = float((item.quantity or 0) + (item.free_quantity or 0))
+    received = _purchase_received_base_qty(item)
     batch_id = item.inventory_id
     sold = _sold_qty_for_batch(db, batch_id)
     reversible = max(0.0, received - sold)
@@ -1732,16 +1863,23 @@ def _apply_purchase_item_to_inventory(
         PharmacyInventory.expiry_date == item_expiry,
         PharmacyInventory.store_id == purchase_store_id,
         PharmacyInventory.hospital_id == user.hospital_id,
-        PharmacyInventory.is_active == True,  # noqa: E712
+    ).order_by(
+        PharmacyInventory.is_active.desc(),
+        PharmacyInventory.id.asc(),
     ).first()
-    added_qty = (item.quantity or 0) + (item.free_quantity or 0)
-    eff_cost = _effective_cost(item.quantity, item.free_quantity, item.purchase_rate)
+    item_scf = _purchase_strip_factor(item)
+    added_qty = _purchase_received_base_qty(item)
+    free_base = float(item.free_quantity or 0) * item_scf
+    eff_cost = _effective_cost(
+        item.quantity, item.free_quantity, item.purchase_rate, item_scf,
+    )
     item_rate_a = float(getattr(item, "rate_a", 0) or 0)
     item_rate_b = float(getattr(item, "rate_b", 0) or 0)
-    item_scf = max(1, int(getattr(item, "strip_conversion_factor", 0) or 1))
     sell_price = item_rate_a or item.mrp or item.purchase_rate
     if existing:
         existing.quantity_in_stock = (existing.quantity_in_stock or 0) + added_qty
+        if (existing.quantity_in_stock or 0) > 0:
+            existing.is_active = True
         existing.mrp = item.mrp or existing.mrp
         existing.purchase_rate = item.purchase_rate or existing.purchase_rate
         if item_rate_a:
@@ -1758,7 +1896,7 @@ def _apply_purchase_item_to_inventory(
         existing.supplier_id = purchase.supplier_id
         existing.purchase_id = purchase.id
         existing.hsn_id = item.hsn_id or existing.hsn_id
-        existing.free_quantity = (existing.free_quantity or 0) + (item.free_quantity or 0)
+        existing.free_quantity = (existing.free_quantity or 0) + free_base
         existing.discount_pct = item.discount_pct
         inv = existing
     else:
@@ -1768,7 +1906,7 @@ def _apply_purchase_item_to_inventory(
             cost_price=eff_cost, selling_price=sell_price,
             mrp=item.mrp, purchase_rate=item.purchase_rate,
             rate_a=item_rate_a, rate_b=item_rate_b, strip_conversion_factor=item_scf,
-            free_quantity=item.free_quantity or 0, discount_pct=item.discount_pct,
+            free_quantity=free_base, discount_pct=item.discount_pct,
             hsn_id=item.hsn_id, supplier_id=purchase.supplier_id,
             purchase_id=purchase.id, purchase_date=purchase.entry_date,
             store_id=purchase_store_id,
@@ -2133,7 +2271,8 @@ def revoke_purchase(
     """Proportional revoke of a confirmed purchase.
 
     For each item we reverse only the un-sold portion:
-      received = item.quantity + item.free_quantity
+      received = (item.quantity + item.free_quantity) × strip_conversion_factor
+                 (purchase qty is strips; stock is base tablets)
       sold = sum of |qty_delta| for ledger entries of type sale / rx_dispense
              that reference this purchase's inventory batch
       reversed = max(0, received - sold)
@@ -2163,15 +2302,11 @@ def revoke_purchase(
     any_reversed = False
 
     for item in purchase.items:
-        received = float((item.quantity or 0) + (item.free_quantity or 0))
+        received = _purchase_received_base_qty(item)
         batch_id = item.inventory_id
         sold = 0.0
         if batch_id:
-            sold_total = db.query(sa_func.coalesce(sa_func.sum(PharmacyStockLedger.qty_delta), 0)).filter(
-                PharmacyStockLedger.batch_id == batch_id,
-                PharmacyStockLedger.txn_type.in_(("sale", "rx_dispense")),
-            ).scalar() or 0
-            sold = abs(float(sold_total))
+            sold = _sold_qty_for_batch(db, batch_id)
         reversible = max(0.0, received - sold)
         med = db.query(Medicine).filter(Medicine.id == item.medicine_id).first()
         med_name = med.name if med else None
@@ -2368,7 +2503,7 @@ class SaleIn(BaseModel):
     payment_type: str = Field("cash", pattern="^(cash|credit)$")
     prescription_id: Optional[int] = None
     store_id: Optional[int] = None
-    tax_mode: str = Field("exclusive", pattern="^(exclusive|inclusive)$")
+    tax_mode: str = Field("inclusive", pattern="^(exclusive|inclusive)$")
     billing_mode: str = Field(
         "cash_at_pharmacy",
         pattern="^(inpatient_bill|cash_at_pharmacy)$",
@@ -2408,13 +2543,15 @@ class SaleOut(BaseModel):
     doctor_name: Optional[str] = None
     subtotal: float
     discount_total: float
+    bill_discount_amount: float = 0.0
     tax_total: float
     grand_total: float
-    tax_mode: str = "exclusive"
+    tax_mode: str = "inclusive"
     status: str
     billing_mode: str = "cash_at_pharmacy"
     admission_id: Optional[int] = None
     inpatient_bill_id: Optional[int] = None
+    store_id: Optional[int] = None
     items: List[SaleItemOut] = Field(default_factory=list)
     created_at: datetime
 
@@ -2591,12 +2728,14 @@ def _shape_sale(s: PharmacySale, db: Session) -> SaleOut:
         patient_address=s.patient_address, doctor_number=s.doctor_number,
         doctor_name=s.doctor_name,
         subtotal=s.subtotal or 0.0, discount_total=s.discount_total or 0.0,
+        bill_discount_amount=float(getattr(s, "bill_discount_amount", None) or 0.0),
         tax_total=s.tax_total or 0.0, grand_total=s.grand_total or 0.0,
-        tax_mode=getattr(s, "tax_mode", None) or "exclusive",
+        tax_mode=getattr(s, "tax_mode", None) or "inclusive",
         status=s.status, items=items_out, created_at=s.created_at,
         billing_mode=getattr(s, "billing_mode", None) or "cash_at_pharmacy",
         admission_id=getattr(s, "admission_id", None),
         inpatient_bill_id=getattr(s, "inpatient_bill_id", None),
+        store_id=getattr(s, "store_id", None),
     )
 
 
@@ -2767,14 +2906,63 @@ def _restore_sale_items_stock(
         if not batch:
             continue
         restore = (it.quantity or 0) + (it.free_quantity or 0)
-        batch.quantity_in_stock = (batch.quantity_in_stock or 0) + restore
+        credit_batch_stock(batch, restore)
         db.add(PharmacyStockLedger(
             medicine_id=it.medicine_id, batch_id=batch.id, txn_type="return_in",
             qty_delta=restore, reference_type=reference_type, reference_id=sale.id,
-            performed_by=current_user.id, store_id=sale.store_id,
+            performed_by=current_user.id, store_id=sale.store_id or batch.store_id,
             hospital_id=current_user.hospital_id,
             notes=f"Edit sale {sale.sale_number}: {reason}",
         ))
+
+
+def _reverse_pos_prescription_qty(db: Session, sale: PharmacySale) -> Optional[Prescription]:
+    """Roll back quantity_dispensed advanced by a POS Rx-linked sale."""
+    rx = db.query(Prescription).filter(Prescription.pharmacy_sale_id == sale.id).first()
+    if not rx:
+        return None
+    by_med: dict[int, float] = {}
+    for it in list(sale.items):
+        mid = it.medicine_id
+        by_med[mid] = by_med.get(mid, 0.0) + float(it.quantity or 0)
+    items = db.query(PrescriptionItem).filter(PrescriptionItem.prescription_id == rx.id).all()
+    for rxi in items:
+        take = float(by_med.get(rxi.medicine_id, 0) or 0)
+        if take <= 0:
+            continue
+        rxi.quantity_dispensed = max(0.0, float(rxi.quantity_dispensed or 0) - take)
+        if rxi.quantity_dispensed <= 0:
+            rxi.quantity_dispensed = 0
+            rxi.status = "pending"
+        elif rxi.quantity_dispensed + 1e-9 < float(rxi.quantity_prescribed or 0):
+            rxi.status = "partial"
+        else:
+            rxi.status = "dispensed"
+    if all((it.status or "pending") == "pending" for it in items):
+        rx.status = "pending"
+        rx.dispensed_by_id = None
+        rx.dispensed_date = None
+        rx.pharmacy_sale_id = None
+    elif any((it.status or "") == "dispensed" for it in items) and all(
+        (it.status or "") == "dispensed" for it in items
+    ):
+        rx.status = "dispensed"
+    else:
+        rx.status = "partial"
+        rx.pharmacy_sale_id = None
+    return rx
+
+
+def _resolve_sale_line_hsn(db: Session, med: Optional[Medicine], batch: Optional[PharmacyInventory]):
+    """Batch HSN wins when set; else medicine HSN (same precedence as invoice display)."""
+    hsn_id = None
+    if batch and getattr(batch, "hsn_id", None):
+        hsn_id = batch.hsn_id
+    elif med and getattr(med, "hsn_id", None):
+        hsn_id = med.hsn_id
+    if not hsn_id:
+        return None
+    return db.query(PharmacyHSN).filter(PharmacyHSN.id == hsn_id).first()
 
 
 def _process_sale_lines(
@@ -2788,7 +2976,7 @@ def _process_sale_lines(
     bill_discount_amount: float,
     *,
     ledger_note: str,
-) -> tuple[float, float, float, float]:
+) -> tuple[float, float, float, float, float]:
     subtotal = 0.0
     disc_total = 0.0
     tax_total = 0.0
@@ -2835,27 +3023,24 @@ def _process_sale_lines(
             override_strip_rate=line.rate,
             batch=explicit_batch,
         )
-        if rate_per_tab <= 0:
+        if rate_per_tab <= 0 and strip_rate <= 0:
             raise HTTPException(status_code=400,
                                 detail=f"No MRP / rate set on medicine {med.name}")
 
-        line_disc = float(line.discount_pct or 0)
-        med_disc = float(med.item_discount_pct or 0)
-        disc = line_disc + med_disc
-        if disc > 100.0:
+        # Line discount is authoritative (UI pre-fills medicine defaults).
+        disc = float(line.discount_pct or 0)
+        if disc < 0 or disc > 100.0:
             raise HTTPException(
                 status_code=400,
-                detail=(
-                    f"Discount exceeds 100% on {med.name}: "
-                    f"line {line_disc}% + medicine default {med_disc}% = {disc}%. "
-                    "Lower the line discount or clear the medicine's default."
-                ),
+                detail=f"Discount must be between 0 and 100% on {med.name}",
             )
-        hsn_row = db.query(PharmacyHSN).filter(PharmacyHSN.id == med.hsn_id).first() if med.hsn_id else None
-        sgst_snap = (hsn_row.sgst_pct or 0) if hsn_row else 0.0
-        cgst_snap = (hsn_row.cgst_pct or 0) if hsn_row else 0.0
-        igst_snap = (hsn_row.igst_pct or (sgst_snap + cgst_snap)) if hsn_row else 0.0
-        tax_pct = _hsn_total_tax_pct(hsn_row)
+        price_src = pricing_source(med, explicit_batch)
+        line_gross = line_gross_before_discount(
+            qty_tabs=qty_tabs, qty_strips=qty_strips,
+            tab_rate=rate_per_tab, strip_rate=strip_rate, source=price_src,
+        )
+        line_after_disc = round_money(line_gross * (1 - disc / 100.0))
+        line_disc_amt = round_money(line_gross - line_after_disc)
 
         picks = []
         qty_needed = base_qty_needed
@@ -2885,11 +3070,15 @@ def _process_sale_lines(
             free_alloc = [0.0] * len(picks)
 
         first_batch_row = True
-        for (batch, take_qty), free_for_batch in zip(picks, free_alloc):
+        allocated_gross = 0.0
+        allocated_after = 0.0
+        for idx, ((batch, take_qty), free_for_batch) in enumerate(zip(picks, free_alloc)):
+            is_last = idx == len(picks) - 1
             if explicit_batch is not None:
                 batch_tab_rate = rate_per_tab
+                batch_strip_rate = strip_rate
             else:
-                _, batch_tab_rate, _, _, _ = resolve_pos_sale_line(
+                _, batch_tab_rate, batch_strip_rate, _, _ = resolve_pos_sale_line(
                     med,
                     qty_tabs=take_qty,
                     qty_strips=0,
@@ -2899,12 +3088,41 @@ def _process_sale_lines(
                 )
                 if batch_tab_rate <= 0:
                     batch_tab_rate = rate_per_tab
-            base = take_qty * batch_tab_rate
-            base_after_disc = base * (1 - disc / 100.0)
+                if batch_strip_rate <= 0:
+                    batch_strip_rate = strip_rate
+
+            # Allocate line money proportionally so FEFO splits match strip-exact gross.
+            if qty_needed > 0 and len(picks) > 1:
+                if is_last:
+                    portion_gross = round_money(line_gross - allocated_gross)
+                    portion_after = round_money(line_after_disc - allocated_after)
+                else:
+                    share = take_qty / qty_needed
+                    portion_gross = round_money(line_gross * share)
+                    portion_after = round_money(line_after_disc * share)
+                    allocated_gross += portion_gross
+                    allocated_after += portion_after
+            else:
+                portion_gross = line_gross
+                portion_after = line_after_disc
+
+            base = portion_gross
+            base_after_disc = portion_after
+            free_taxable_add = 0.0
             if tax_on_free and free_for_batch:
-                base_after_disc += free_for_batch * batch_tab_rate * (1 - disc / 100.0)
+                free_taxable_add = round_money(
+                    free_for_batch * batch_tab_rate * (1 - disc / 100.0)
+                )
+                base_after_disc = round_money(base_after_disc + free_taxable_add)
+
+            hsn_row = _resolve_sale_line_hsn(db, med, batch)
+            sgst_snap = (hsn_row.sgst_pct or 0) if hsn_row else 0.0
+            cgst_snap = (hsn_row.cgst_pct or 0) if hsn_row else 0.0
+            igst_snap = (hsn_row.igst_pct or (sgst_snap + cgst_snap)) if hsn_row else 0.0
+            tax_pct = _hsn_total_tax_pct(hsn_row)
+
             _taxable, tax_amt, line_total = compute_line_tax(
-                base_after_disc, tax_pct, tax_mode=tax_mode or "exclusive",
+                base_after_disc, tax_pct, tax_mode=tax_mode or "inclusive",
             )
 
             item_row = PharmacySaleItem(
@@ -2931,7 +3149,8 @@ def _process_sale_lines(
             ))
 
             subtotal += base
-            disc_total += base - base_after_disc
+            # Discount from paid qty only — free taxable add-on is not a discount.
+            disc_total += round_money(base - (base_after_disc - free_taxable_add))
             tax_total += tax_amt
             grand += line_total
 
@@ -2940,7 +3159,13 @@ def _process_sale_lines(
         grand = round_money(grand - bill_disc)
         disc_total = round_money(disc_total + bill_disc)
 
-    return subtotal, disc_total, tax_total, grand
+    return (
+        round_money(subtotal),
+        round_money(disc_total),
+        round_money(tax_total),
+        grand,
+        bill_disc,
+    )
 
 
 @router.post("/sales", response_model=SaleOut, status_code=201)
@@ -2984,7 +3209,7 @@ def create_sale(
         hospital_id=current_user.hospital_id,
         admission_id=ip_admission_id,
         billing_mode=billing_mode,
-        tax_mode=data.tax_mode or "exclusive",
+        tax_mode=data.tax_mode or "inclusive",
     )
     db.add(sale)
     # P3.3: two concurrent sales can compute the same MAX-seq and produce the
@@ -2996,15 +3221,16 @@ def create_sale(
         set_attr="sale_number",
     )
 
-    subtotal, disc_total, tax_total, grand = _process_sale_lines(
+    subtotal, disc_total, tax_total, grand, bill_disc = _process_sale_lines(
         db, sale, data.items, current_user, sale_store_id,
-        data.tax_mode or "exclusive", tax_on_free,
+        data.tax_mode or "inclusive", tax_on_free,
         float(data.bill_discount_amount or 0),
         ledger_note=f"Sale {sale.sale_number}",
     )
 
     sale.subtotal = round(subtotal, 2)
     sale.discount_total = round(disc_total, 2)
+    sale.bill_discount_amount = round(bill_disc, 2)
     sale.tax_total = round(tax_total, 2)
     sale.grand_total = round(grand, 2)
     if linked_rx:
@@ -3054,7 +3280,23 @@ def edit_sale(
             db, sale, user_id=current_user.id, reason=reason,
         )
 
-    _restore_sale_items_stock(db, sale, current_user, reason)
+    # POS Rx-linked sales advanced quantity_dispensed — roll that back before
+    # replacing lines. Cash-dispense sales (no sale ledger) reverse via Rx path.
+    had_sale_ledger = sale_has_sale_ledger_rows(db, sale.id)
+    linked_rx = db.query(Prescription).filter(Prescription.pharmacy_sale_id == sale.id).first()
+    if had_sale_ledger:
+        _reverse_pos_prescription_qty(db, sale)
+        _restore_sale_items_stock(db, sale, current_user, reason)
+    elif linked_rx:
+        from app.services.pharmacy_reversal import reverse_dispensed_stock_only
+        reverse_dispensed_stock_only(
+            db, linked_rx, user_id=current_user.id,
+            hospital_id=current_user.hospital_id, reason=reason,
+        )
+        linked_rx.pharmacy_sale_id = None
+    else:
+        _restore_sale_items_stock(db, sale, current_user, reason)
+
     for old in list(sale.items):
         db.delete(old)
     db.flush()
@@ -3066,19 +3308,20 @@ def edit_sale(
     sale.patient_address = data.patient_address
     sale.doctor_number = data.doctor_number
     sale.doctor_name = data.doctor_name
-    sale.tax_mode = data.tax_mode or "exclusive"
+    sale.tax_mode = data.tax_mode or "inclusive"
     sale.billing_mode = billing_mode
     sale.admission_id = ip_admission_id
 
-    subtotal, disc_total, tax_total, grand = _process_sale_lines(
+    subtotal, disc_total, tax_total, grand, bill_disc = _process_sale_lines(
         db, sale, data.items, current_user, sale_store_id,
-        data.tax_mode or "exclusive", tax_on_free,
+        data.tax_mode or "inclusive", tax_on_free,
         float(data.bill_discount_amount or 0),
         ledger_note=f"Edited sale {sale.sale_number}: {reason}",
     )
 
     sale.subtotal = round(subtotal, 2)
     sale.discount_total = round(disc_total, 2)
+    sale.bill_discount_amount = round(bill_disc, 2)
     sale.tax_total = round(tax_total, 2)
     sale.grand_total = round(grand, 2)
     db.commit(); db.refresh(sale)
@@ -3186,18 +3429,63 @@ def void_sale(
                     ),
                 )
 
-    for it in sale.items:
-        batch = db.query(PharmacyInventory).filter(PharmacyInventory.id == it.batch_id).first()
-        if not batch:
-            continue
-        restore = (it.quantity or 0) + (it.free_quantity or 0)
-        batch.quantity_in_stock = (batch.quantity_in_stock or 0) + restore
-        db.add(PharmacyStockLedger(
-            medicine_id=it.medicine_id, batch_id=batch.id, txn_type="return_in",
-            qty_delta=restore, reference_type="sale_void", reference_id=sale.id,
-            performed_by=current_user.id, hospital_id=current_user.hospital_id,
-            notes=f"Void sale {sale.sale_number}: {data.reason}",
-        ))
+    had_sale_ledger = sale_has_sale_ledger_rows(db, sale.id)
+    linked_rx = db.query(Prescription).filter(Prescription.pharmacy_sale_id == sale.id).first()
+
+    if had_sale_ledger:
+        # Normal POS (and POS Rx-linked): restore via return_in + roll back Rx qty.
+        _reverse_pos_prescription_qty(db, sale)
+        for it in sale.items:
+            batch = db.query(PharmacyInventory).filter(
+                PharmacyInventory.id == it.batch_id,
+            ).with_for_update().first()
+            if not batch:
+                continue
+            restore = (it.quantity or 0) + (it.free_quantity or 0)
+            credit_batch_stock(batch, restore)
+            db.add(PharmacyStockLedger(
+                medicine_id=it.medicine_id, batch_id=batch.id, txn_type="return_in",
+                qty_delta=restore, reference_type="sale_void", reference_id=sale.id,
+                performed_by=current_user.id,
+                store_id=sale.store_id or batch.store_id,
+                hospital_id=current_user.hospital_id,
+                notes=f"Void sale {sale.sale_number}: {data.reason}",
+            ))
+    elif linked_rx:
+        # Cash Rx dispense: stock was deducted via rx_dispense — reverse once
+        # through rx_cancel; do not also return_in (would double-restore).
+        from app.services.pharmacy_reversal import reverse_dispensed_stock_only
+        reverse_dispensed_stock_only(
+            db, linked_rx, user_id=current_user.id,
+            hospital_id=current_user.hospital_id, reason=data.reason,
+        )
+        linked_rx.pharmacy_sale_id = None
+        if linked_rx.status != "cancelled":
+            # Dispense undone; leave Rx re-openable unless already cancelled.
+            if all(
+                float(it.quantity_dispensed or 0) <= 0
+                for it in (linked_rx.items or [])
+            ):
+                linked_rx.status = "pending"
+                linked_rx.dispensed_by_id = None
+                linked_rx.dispensed_date = None
+    else:
+        for it in sale.items:
+            batch = db.query(PharmacyInventory).filter(
+                PharmacyInventory.id == it.batch_id,
+            ).with_for_update().first()
+            if not batch:
+                continue
+            restore = (it.quantity or 0) + (it.free_quantity or 0)
+            credit_batch_stock(batch, restore)
+            db.add(PharmacyStockLedger(
+                medicine_id=it.medicine_id, batch_id=batch.id, txn_type="return_in",
+                qty_delta=restore, reference_type="sale_void", reference_id=sale.id,
+                performed_by=current_user.id,
+                store_id=sale.store_id or batch.store_id,
+                hospital_id=current_user.hospital_id,
+                notes=f"Void sale {sale.sale_number}: {data.reason}",
+            ))
 
     bill_reversal = {}
     if (getattr(sale, "billing_mode", None) or "cash_at_pharmacy") == "inpatient_bill":
@@ -3333,6 +3621,7 @@ class DispenseIn(BaseModel):
         description="inpatient_bill: charge on admission bill; cash_at_pharmacy: collect payment now",
     )
     payment_type: str = Field("cash", pattern="^(cash|credit)$")
+    tax_mode: str = Field("exclusive", pattern="^(exclusive|inclusive)$")
 
 
 class DispenseLineOut(BaseModel):
@@ -3433,7 +3722,6 @@ def dispense_prescription(
                 ),
             )
         rxi.unit_price = unit_price
-        rxi.total_price = unit_price * float(rxi.quantity_prescribed or 0)
 
         if req.batch_id:
             batch = db.query(PharmacyInventory).filter(
@@ -3472,6 +3760,7 @@ def dispense_prescription(
             ))
 
         rxi.quantity_dispensed = (rxi.quantity_dispensed or 0) + base_qty
+        rxi.total_price = round_money(float(rxi.unit_price or 0) * float(rxi.quantity_dispensed or 0))
         if rxi.quantity_dispensed >= (rxi.quantity_prescribed or 0):
             rxi.status = "dispensed"
         else:
@@ -3479,7 +3768,9 @@ def dispense_prescription(
 
     db.flush()
     all_items = db.query(PrescriptionItem).filter(PrescriptionItem.prescription_id == rx.id).all()
-    rx.total_amount = sum(float(i.unit_price or 0) * float(i.quantity_prescribed or 0) for i in all_items)
+    rx.total_amount = round_money(
+        sum(float(i.unit_price or 0) * float(i.quantity_dispensed or 0) for i in all_items)
+    )
     if all(i.status == "dispensed" for i in all_items):
         rx.status = "dispensed"
         rx.dispensed_by_id = current_user.id
@@ -3493,6 +3784,7 @@ def dispense_prescription(
     if data.billing_mode == "cash_at_pharmacy" and lines_out:
         patient = db.query(_PatientForRx).filter(_PatientForRx.id == rx.patient_id).first()
         doctor = db.query(User).filter(User.id == rx.doctor_id).first()
+        tax_mode = data.tax_mode or "exclusive"
         sale = PharmacySale(
             sale_number=_next_sale_number(db, current_user.hospital_id),
             payment_type=data.payment_type,
@@ -3506,6 +3798,9 @@ def dispense_prescription(
             status="completed",
             created_by=current_user.id,
             hospital_id=current_user.hospital_id,
+            store_id=dispense_store_id,
+            tax_mode=tax_mode,
+            billing_mode="cash_at_pharmacy",
         )
         db.add(sale)
         _flush_with_number_retry(
@@ -3515,17 +3810,18 @@ def dispense_prescription(
         )
         subtotal = 0.0
         tax_total = 0.0
+        grand = 0.0
         for line in lines_out:
             med = db.query(Medicine).filter(Medicine.id == line.medicine_id).first()
-            hsn_row = (
-                db.query(PharmacyHSN).filter(PharmacyHSN.id == med.hsn_id).first()
-                if med and med.hsn_id else None
-            )
+            batch = db.query(PharmacyInventory).filter(PharmacyInventory.id == line.batch_id).first()
+            hsn_row = _resolve_sale_line_hsn(db, med, batch)
             tax_pct = _hsn_total_tax_pct(hsn_row)
-            line_total = line.line_total
-            tax_amt = line_total * tax_pct / 100.0
-            subtotal += line_total
+            _taxable, tax_amt, line_total = compute_line_tax(
+                float(line.line_total or 0), tax_pct, tax_mode=tax_mode,
+            )
+            subtotal += float(line.line_total or 0)
             tax_total += tax_amt
+            grand += line_total
             db.add(PharmacySaleItem(
                 sale_id=sale.id,
                 medicine_id=line.medicine_id,
@@ -3537,12 +3833,13 @@ def dispense_prescription(
                 sgst_pct=(hsn_row.sgst_pct or 0) if hsn_row else 0.0,
                 cgst_pct=(hsn_row.cgst_pct or 0) if hsn_row else 0.0,
                 igst_pct=(hsn_row.igst_pct or 0) if hsn_row else 0.0,
-                line_total=line_total + tax_amt,
+                line_total=line_total,
             ))
-        sale.subtotal = subtotal
-        sale.tax_total = tax_total
+        sale.subtotal = round_money(subtotal)
+        sale.tax_total = round_money(tax_total)
         sale.discount_total = 0.0
-        sale.grand_total = subtotal + tax_total
+        sale.bill_discount_amount = 0.0
+        sale.grand_total = round_money(grand)
         rx.pharmacy_sale_id = sale.id
         sale_id = sale.id
         sale_number = sale.sale_number
@@ -4488,7 +4785,7 @@ def _split_sale_sgst_cgst(shaped: dict) -> tuple:
     Uses the same taxable base as POS (`compute_line_tax`) so inclusive/exclusive
     modes stay consistent with stored tax_total.
     """
-    tax_mode = shaped.get("tax_mode") or "exclusive"
+    tax_mode = shaped.get("tax_mode") or "inclusive"
     sgst_total = 0.0
     cgst_total = 0.0
     for it in shaped.get("items") or []:

@@ -121,9 +121,10 @@ _PHARMACY_ALL = [
 ]
 
 # Pharmacist (counter operator) default permission set.
+# Stock adjust / opening-stock import stay on pharmacy_admin (+ hospital/super admin).
 _PHARMACIST_DEFAULT = [
     "view_catalog",
-    "view_inventory", "adjust_stock", "view_stock_ledger", "view_low_stock", "view_expiring",
+    "view_inventory", "view_stock_ledger", "view_low_stock", "view_expiring",
     "view_purchases",
     "create_sale", "view_sales", "apply_discount", "select_rate_tier",
     "dispense_rx", "view_dispense_queue",
@@ -193,7 +194,7 @@ def _seed_module_permissions(db, ModulePermission):
         {"module_name": "pharmacy", "permission_name": "view_narcotic_register", "permission_description": "View narcotic / Schedule H register", "category": "user"},
         # Inventory
         {"module_name": "pharmacy", "permission_name": "view_inventory", "permission_description": "View current stock levels and batch list", "category": "user"},
-        {"module_name": "pharmacy", "permission_name": "adjust_stock", "permission_description": "Make manual stock adjustments", "category": "user"},
+        {"module_name": "pharmacy", "permission_name": "adjust_stock", "permission_description": "Make manual stock adjustments and import opening stock (pharmacy admin)", "category": "admin"},
         {"module_name": "pharmacy", "permission_name": "view_stock_ledger", "permission_description": "View stock movement ledger", "category": "user"},
         {"module_name": "pharmacy", "permission_name": "view_low_stock", "permission_description": "View low-stock alerts", "category": "user"},
         {"module_name": "pharmacy", "permission_name": "view_expiring", "permission_description": "View expiring batches alert", "category": "user"},
@@ -332,6 +333,12 @@ def _seed_module_permissions(db, ModulePermission):
         ).first()
         if not existing:
             db.add(ModulePermission(**perm))
+        else:
+            # Keep catalog metadata in sync (e.g. adjust_stock → admin category).
+            if existing.category != perm["category"]:
+                existing.category = perm["category"]
+            if existing.permission_description != perm["permission_description"]:
+                existing.permission_description = perm["permission_description"]
 
 
 def _seed_role_permissions(db, UserRole, RoleModulePermission):

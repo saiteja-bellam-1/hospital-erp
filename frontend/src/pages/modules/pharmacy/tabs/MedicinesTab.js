@@ -1,18 +1,20 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import axios from 'axios';
 import { Card, CardContent, CardHeader, CardTitle } from '../../../../components/ui/card';
 import { Button } from '../../../../components/ui/button';
 import { Input } from '../../../../components/ui/input';
 import { Badge } from '../../../../components/ui/badge';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../../../../components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../../../components/ui/select';
 import { useToast } from '../../../../hooks/use-toast';
 import { Plus, Pencil, Trash2, RefreshCw, Search, Upload, Download, Loader2 } from 'lucide-react';
 import PharmacyImportDialog, { downloadPharmacyBlob } from '../../../../components/pharmacy/PharmacyImportDialog';
+import PharmacyFormDialog from '../../../../components/pharmacy/PharmacyFormDialog';
 import { errMsg } from '../../PharmacyModule';
 import { usePharmacyMedicineMasters } from '../../../../hooks/usePharmacyMedicineMasters';
 import MedicineFormFields, {
   EMPTY_MEDICINE_FORM,
+  MEDICINE_FORM_STEPS,
+  medicineStepCanProceed,
   prepareMedicinePayload,
 } from '../../../../components/pharmacy/MedicineFormFields';
 import { costPcsFromMrp, formatMoney } from '../../../../utils/pharmacyUnits';
@@ -29,6 +31,8 @@ export default function MedicinesTab() {
   const [exporting, setExporting] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(EMPTY_MEDICINE_FORM);
+  const [activeStep, setActiveStep] = useState(0);
+  const [saving, setSaving] = useState(false);
 
   const { masters, setMasters, reload: loadMasters } = usePharmacyMedicineMasters(true);
   const { categories } = masters;
@@ -50,7 +54,12 @@ export default function MedicinesTab() {
   useEffect(() => { loadMasters(); }, [loadMasters]);
   useEffect(() => { load(); }, [load]);
 
-  const openCreate = () => { setEditing(null); setForm(EMPTY_MEDICINE_FORM); setOpen(true); };
+  const openCreate = () => {
+    setEditing(null);
+    setForm(EMPTY_MEDICINE_FORM);
+    setActiveStep(0);
+    setOpen(true);
+  };
   const openEdit = (row) => {
     const merged = { ...EMPTY_MEDICINE_FORM, ...row };
     ['unit_price', 'mrp', 'purchase_rate', 'rate_a', 'rate_b', 'cost_pcs',
@@ -60,15 +69,32 @@ export default function MedicinesTab() {
     merged.cost_pcs = costPcsFromMrp(merged);
     setEditing(row);
     setForm(merged);
+    setActiveStep(0);
     setOpen(true);
   };
 
+  const steps = useMemo(
+    () => MEDICINE_FORM_STEPS.map((s, i) => ({ ...s, completed: i < activeStep })),
+    [activeStep],
+  );
+
+  const handleNext = () => {
+    if (!medicineStepCanProceed(form, activeStep)) {
+      toast({ variant: 'destructive', title: 'Code, name, and category are required' });
+      return;
+    }
+    setActiveStep((s) => Math.min(s + 1, MEDICINE_FORM_STEPS.length - 1));
+  };
+
   const save = async () => {
+    if (!medicineStepCanProceed(form, 0)) {
+      toast({ variant: 'destructive', title: 'Code, name, and category are required' });
+      setActiveStep(0);
+      return;
+    }
+    setSaving(true);
     try {
       const payload = prepareMedicinePayload(form);
-      if (!payload.category_id) {
-        toast({ variant: 'destructive', title: 'Category is required' }); return;
-      }
       if (editing) {
         await axios.put(`/api/pharmacy/medicines/${editing.id}`, payload);
         toast({ title: 'Medicine updated' });
@@ -79,6 +105,8 @@ export default function MedicinesTab() {
       setOpen(false); load();
     } catch (e) {
       toast({ variant: 'destructive', title: 'Save failed', description: errMsg(e) });
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -214,25 +242,27 @@ export default function MedicinesTab() {
         helpText="Fill the medicines sheet with medicine_code, name, category, and pricing fields. Related masters (category, company, salt, HSN, rack, UoM) are matched by code or name and created if missing."
       />
 
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-4xl max-h-[85vh] overflow-y-auto" formNav="grid">
-          <DialogHeader>
-            <DialogTitle>{editing ? `Edit Medicine — ${editing.name}` : 'New Medicine'}</DialogTitle>
-          </DialogHeader>
-
-          <MedicineFormFields
-            form={form}
-            onChange={setForm}
-            masters={masters}
-            onMastersChange={setMasters}
-          />
-
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-            <Button onClick={save}>{editing ? 'Save' : 'Create'}</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <PharmacyFormDialog
+        open={open}
+        onOpenChange={setOpen}
+        title={editing ? `Edit Medicine — ${editing.name}` : 'New Medicine'}
+        steps={steps}
+        activeStep={activeStep}
+        onStepChange={setActiveStep}
+        onNext={handleNext}
+        onSave={save}
+        saving={saving}
+        canProceed={activeStep !== 0 || medicineStepCanProceed(form, 0)}
+        saveLabel={editing ? 'Save' : 'Create'}
+      >
+        <MedicineFormFields
+          form={form}
+          onChange={setForm}
+          masters={masters}
+          onMastersChange={setMasters}
+          activeStep={activeStep}
+        />
+      </PharmacyFormDialog>
     </Card>
   );
 }

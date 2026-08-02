@@ -7,7 +7,7 @@ import { Input } from '../../../components/ui/input';
 import { Label } from '../../../components/ui/label';
 import { Textarea } from '../../../components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../../components/ui/select';
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '../../../components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../../components/ui/dialog';
 import { useToast } from '../../../hooks/use-toast';
 import { ArrowLeft, Plus, Trash2, Save, CheckCircle2, ScanLine, Pill, ChevronDown, ChevronUp, FileText, Pencil } from 'lucide-react';
 import { computeLineTax, hsnTotalTaxPct } from '../../../utils/pharmacyHsnTax';
@@ -42,6 +42,36 @@ const expiryToDisplay = (iso) => {
   const d = new Date(`${iso}T12:00:00`);
   if (Number.isNaN(d.getTime()) || d.getFullYear() >= 2099) return '';
   return `${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+};
+
+/** Auto-insert MM/YYYY (or MM/YY) slash while typing digits. */
+const formatExpiryInput = (raw) => {
+  const digits = String(raw || '').replace(/\D/g, '').slice(0, 6);
+  if (digits.length <= 2) return digits;
+  return `${digits.slice(0, 2)}/${digits.slice(2)}`;
+};
+
+/** True when expiry month/year is strictly after the current calendar month. */
+const isExpiryAfterCurrentMonth = (raw) => {
+  if (!raw) return false;
+  const s = String(raw).trim();
+  let m = s.match(/^(\d{1,2})\s*[/\-.]\s*(\d{2}|\d{4})$/);
+  if (!m) {
+    const digits = s.replace(/\D/g, '');
+    if (digits.length === 4 || digits.length === 6) {
+      m = ['', digits.slice(0, 2), digits.slice(2)];
+    } else {
+      return false;
+    }
+  }
+  const mo = parseInt(m[1], 10);
+  let yr = parseInt(m[2], 10);
+  if (yr < 100) yr += 2000;
+  if (mo < 1 || mo > 12) return false;
+  const now = new Date();
+  const curYm = now.getFullYear() * 12 + (now.getMonth() + 1);
+  const expYm = yr * 12 + mo;
+  return expYm > curYm;
 };
 
 export default function PurchaseEntry() {
@@ -178,8 +208,16 @@ export default function PurchaseEntry() {
   const expiryToISO = (raw) => {
     if (!raw) return null;
     const s = String(raw).trim();
-    const m = s.match(/^(\d{1,2})\s*[/\-.]\s*(\d{2}|\d{4})$/);
-    if (!m) return undefined;
+    let m = s.match(/^(\d{1,2})\s*[/\-.]\s*(\d{2}|\d{4})$/);
+    if (!m) {
+      // Accept bare digits: MMYY or MMYYYY (e.g. 1227 → 12/27)
+      const digits = s.replace(/\D/g, '');
+      if (digits.length === 4 || digits.length === 6) {
+        m = ['', digits.slice(0, 2), digits.slice(2)];
+      } else {
+        return undefined;
+      }
+    }
     const mo = parseInt(m[1], 10);
     let yr = parseInt(m[2], 10);
     if (yr < 100) yr += 2000;
@@ -214,6 +252,8 @@ export default function PurchaseEntry() {
       errors.push('Expiry is required (MM/YYYY).');
     } else if (exp === undefined || exp === null) {
       errors.push('Expiry must be MM/YYYY (e.g. 12/2027).');
+    } else if (!isExpiryAfterCurrentMonth(form.expiry_mm_yyyy)) {
+      errors.push('Expiry must be after the current month.');
     }
     if (!(parseFloat(form.quantity) > 0)) errors.push('Quantity must be > 0.');
     const pr = parseFloat(form.purchase_rate);
@@ -412,7 +452,11 @@ export default function PurchaseEntry() {
         errors.push(`Line ${n}: expiry is required (MM/YYYY).`);
       } else {
         const exp = expiryToISO(it.expiry_mm_yyyy);
-        if (exp === undefined || exp === null) errors.push(`Line ${n}: expiry must be MM/YYYY (e.g. 12/2027).`);
+        if (exp === undefined || exp === null) {
+          errors.push(`Line ${n}: expiry must be MM/YYYY (e.g. 12/2027).`);
+        } else if (!isExpiryAfterCurrentMonth(it.expiry_mm_yyyy)) {
+          errors.push(`Line ${n}: expiry must be after the current month.`);
+        }
       }
       const q = parseFloat(it.quantity);
       if (!q || q <= 0) errors.push(`Line ${n}: quantity must be > 0.`);
@@ -714,7 +758,7 @@ export default function PurchaseEntry() {
                     <th className="px-2 py-1.5">Medicine</th>
                     <th className="px-2 py-1.5">Batch</th>
                     <th className="px-2 py-1.5">Expiry</th>
-                    <th className="px-2 py-1.5">Qty</th>
+                    <th className="px-2 py-1.5">Strips</th>
                     <th className="px-2 py-1.5 text-right">P-Rate</th>
                     <th className="px-2 py-1.5 text-right">Total</th>
                     <th className="px-2 py-1.5" />
@@ -728,6 +772,7 @@ export default function PurchaseEntry() {
                       || !String(ln.batch_number || '').trim()
                       || !ln.expiry_mm_yyyy
                       || expiryToISO(ln.expiry_mm_yyyy) == null
+                      || !isExpiryAfterCurrentMonth(ln.expiry_mm_yyyy)
                       || !(parseFloat(ln.quantity) > 0);
                     const mfr = manufacturerOf(med);
                     const pRate = ln.purchase_rate === '' || ln.purchase_rate == null
@@ -763,6 +808,11 @@ export default function PurchaseEntry() {
                           {ln.quantity}
                           {ln.free_quantity ? (
                             <span className="text-gray-400 text-xs"> +{ln.free_quantity}f</span>
+                          ) : null}
+                          {(ln.strip_conversion_factor || 1) > 1 ? (
+                            <div className="text-[10px] text-gray-400">
+                              = {((ln.quantity || 0) + (parseFloat(ln.free_quantity) || 0)) * (ln.strip_conversion_factor || 1)} tabs
+                            </div>
                           ) : null}
                         </td>
                         <td className="px-2 py-2 align-middle text-right tabular-nums">{pRate}</td>
@@ -828,221 +878,226 @@ export default function PurchaseEntry() {
       />
 
       <Dialog open={!!lineDialog && !!lineForm} onOpenChange={(open) => { if (!open) closeLineDialog(); }}>
-        <DialogContent className="max-w-3xl w-[95vw] sm:w-full" formNav="grid">
-          <DialogHeader>
-            <DialogTitle>
-              {lineDialog?.mode === 'edit'
-                ? 'Edit line'
-                : lineDialog?.mode === 'batch'
-                  ? 'Add another batch'
-                  : 'Add line'}
-            </DialogTitle>
-          </DialogHeader>
+        <DialogContent className="max-w-6xl w-[96vw] max-h-[90vh] flex flex-col overflow-hidden gap-0 p-0" formNav="grid">
+          <div className="shrink-0 border-b px-6 pt-5 pb-3">
+            <DialogHeader className="space-y-0">
+              <DialogTitle>
+                {lineDialog?.mode === 'edit'
+                  ? 'Edit line'
+                  : lineDialog?.mode === 'batch'
+                    ? 'Add another batch'
+                    : 'Add line'}
+              </DialogTitle>
+            </DialogHeader>
+          </div>
           {lineForm && (() => {
             const selectedMed = medicineCache[lineForm.medicine_id];
             const mfr = manufacturerOf(selectedMed);
             const company = selectedMed?.company_id != null ? companyById[selectedMed.company_id] : null;
             const medicineLocked = lineDialog?.mode === 'batch';
             return (
-              <div className="space-y-3">
-                {medicineLocked ? (
-                  <div className="rounded-md border bg-gray-50 px-3 py-2 text-sm space-y-1">
-                    <div className="font-medium text-gray-900">{selectedMed?.name || 'Medicine'}</div>
-                    <div className="text-xs text-gray-600">
-                      {[selectedMed?.medicine_code, mfr].filter(Boolean).join(' · ')}
-                    </div>
-                  </div>
-                ) : (
-                  <div>
-                    <Label className="text-xs">Medicine *</Label>
-                    <PharmacyMedicinePicker
-                      value={lineForm.medicine_id}
-                      medicine={selectedMed}
-                      companyById={companyById}
-                      wideMenu
-                      onSelect={applyMedicineToForm}
-                      onCreateNew={(q) => openMedicineCreate({
-                        name: q || '',
-                        medicine_code: q || '',
-                        barcode: q || undefined,
-                      })}
-                    />
-                  </div>
-                )}
+              <div className="flex-1 min-h-0 overflow-hidden px-6 py-4">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 h-full">
+                  <div className="space-y-3 min-w-0">
+                    {medicineLocked ? (
+                      <div className="rounded-md border bg-gray-50 px-3 py-2 text-sm space-y-1">
+                        <div className="font-medium text-gray-900">{selectedMed?.name || 'Medicine'}</div>
+                        <div className="text-xs text-gray-600">
+                          {[selectedMed?.medicine_code, mfr].filter(Boolean).join(' · ')}
+                        </div>
+                      </div>
+                    ) : (
+                      <div>
+                        <Label className="text-xs">Medicine *</Label>
+                        <PharmacyMedicinePicker
+                          value={lineForm.medicine_id}
+                          medicine={selectedMed}
+                          companyById={companyById}
+                          wideMenu
+                          onSelect={applyMedicineToForm}
+                          onCreateNew={(q) => openMedicineCreate({
+                            name: q || '',
+                            medicine_code: q || '',
+                            barcode: q || undefined,
+                          })}
+                        />
+                      </div>
+                    )}
 
-                {selectedMed && (
-                  <div className="rounded-md border border-blue-100 bg-blue-50/60 px-3 py-2 text-xs space-y-1">
-                    <div className="font-medium text-blue-900">Manufacturer / catalog check</div>
-                    <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-blue-900/90">
-                      <span className="text-blue-700/80">Manufacturer</span>
-                      <span className="font-medium">{mfr || '—'}</span>
-                      {company?.contact && (
-                        <>
-                          <span className="text-blue-700/80">Contact</span>
-                          <span>{company.contact}</span>
-                        </>
-                      )}
-                      <span className="text-blue-700/80">Code</span>
-                      <span>{selectedMed.medicine_code || '—'}</span>
-                      <span className="text-blue-700/80">Generic</span>
-                      <span>{selectedMed.generic_name || '—'}</span>
-                      <span className="text-blue-700/80">Strength</span>
-                      <span>{selectedMed.strength || '—'}</span>
-                      <span className="text-blue-700/80">Packaging</span>
-                      <span>{selectedMed.packaging || '—'}</span>
-                      <span className="text-blue-700/80">Catalog MRP</span>
-                      <span>₹{Number(selectedMed.mrp || 0).toFixed(2)}</span>
-                      <span className="text-blue-700/80">Catalog P-Rate</span>
-                      <span>₹{Number(selectedMed.purchase_rate || 0).toFixed(2)}</span>
-                      <span className="text-blue-700/80">Catalog Rate A</span>
-                      <span>₹{Number(selectedMed.rate_a || selectedMed.unit_price || 0).toFixed(2)}</span>
-                      <span className="text-blue-700/80">Catalog Rate B</span>
-                      <span>₹{Number(selectedMed.rate_b || 0).toFixed(2)}</span>
-                    </div>
-                  </div>
-                )}
+                    {lineForm.medicine_id && lineBatches.length > 0 && (
+                      <div>
+                        <Label className="text-xs">Stock batch (optional)</Label>
+                        <Select value={purchaseBatchSelectValue()} onValueChange={onPurchaseBatchSelect}>
+                          <SelectTrigger className={compactInput}>
+                            <SelectValue placeholder="New batch — type below" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="__new__">New batch — type below</SelectItem>
+                            {lineBatches.map((b) => (
+                              <SelectItem key={b.id} value={String(b.id)}>
+                                {formatBatchLabel(b)}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <p className="text-[11px] text-gray-400 mt-1">
+                          Pick an existing batch to prefill, or type a new batch number below.
+                        </p>
+                      </div>
+                    )}
 
-                <div className="grid grid-cols-2 gap-3">
-                  {lineForm.medicine_id && lineBatches.length > 0 && (
-                    <div className="col-span-2">
-                      <Label className="text-xs">Stock batch (optional)</Label>
-                      <Select value={purchaseBatchSelectValue()} onValueChange={onPurchaseBatchSelect}>
-                        <SelectTrigger className={compactInput}>
-                          <SelectValue placeholder="New batch — type below" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="__new__">New batch — type below</SelectItem>
-                          {lineBatches.map((b) => (
-                            <SelectItem key={b.id} value={String(b.id)}>
-                              {formatBatchLabel(b)}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <p className="text-[11px] text-gray-400 mt-1">
-                        Pick an existing batch to prefill, or type a new batch number below.
-                      </p>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <Label className="text-xs">Batch # *</Label>
+                        <Input
+                          className={`${compactInput} ${!String(lineForm.batch_number || '').trim() ? 'border-red-300' : ''}`}
+                          placeholder="Batch number"
+                          value={lineForm.batch_number}
+                          onChange={(e) => setLineField('batch_number', e.target.value)}
+                          autoFocus={!!lineForm.medicine_id}
+                        />
+                      </div>
+                      <div>
+                        <Label className="text-xs">Expiry *</Label>
+                        <Input
+                          className={`${compactInput} ${(!lineForm.expiry_mm_yyyy || expiryToISO(lineForm.expiry_mm_yyyy) == null || !isExpiryAfterCurrentMonth(lineForm.expiry_mm_yyyy)) ? 'border-red-300' : ''}`}
+                          placeholder="MM/YYYY"
+                          inputMode="numeric"
+                          maxLength={7}
+                          value={lineForm.expiry_mm_yyyy || ''}
+                          onChange={(e) => setLineField('expiry_mm_yyyy', formatExpiryInput(e.target.value))}
+                        />
+                      </div>
+                      <div>
+                        <Label className="text-xs">Qty (strips) *</Label>
+                        <Input
+                          className={numInput}
+                          type="number"
+                          min="0"
+                          step="0.5"
+                          value={displayPharmacyNumericInput(lineForm.quantity)}
+                          onChange={(e) => setLineField('quantity', parseFloat(e.target.value) || 0)}
+                        />
+                      </div>
+                      <div>
+                        <Label className="text-xs">Free (strips)</Label>
+                        <Input
+                          className={numInput}
+                          type="number"
+                          min="0"
+                          step="0.5"
+                          value={displayPharmacyNumericInput(lineForm.free_quantity)}
+                          onChange={(e) => setLineField('free_quantity', e.target.value)}
+                        />
+                      </div>
                     </div>
-                  )}
-                  <div className="col-span-2 sm:col-span-1">
-                    <Label className="text-xs">Batch # *</Label>
-                    <Input
-                      className={`${compactInput} ${!String(lineForm.batch_number || '').trim() ? 'border-red-300' : ''}`}
-                      placeholder="Batch number"
-                      value={lineForm.batch_number}
-                      onChange={(e) => setLineField('batch_number', e.target.value)}
-                      autoFocus={!!lineForm.medicine_id}
-                    />
                   </div>
-                  <div>
-                    <Label className="text-xs">Expiry *</Label>
-                    <Input
-                      className={`${compactInput} ${(!lineForm.expiry_mm_yyyy || expiryToISO(lineForm.expiry_mm_yyyy) == null) ? 'border-red-300' : ''}`}
-                      placeholder="MM/YYYY"
-                      value={lineForm.expiry_mm_yyyy || ''}
-                      onChange={(e) => setLineField('expiry_mm_yyyy', e.target.value)}
-                    />
-                  </div>
-                  <div>
-                    <Label className="text-xs">Qty *</Label>
-                    <Input
-                      className={numInput}
-                      type="number"
-                      min="0"
-                      step="0.5"
-                      value={displayPharmacyNumericInput(lineForm.quantity)}
-                      onChange={(e) => setLineField('quantity', parseFloat(e.target.value) || 0)}
-                    />
-                  </div>
-                  <div>
-                    <Label className="text-xs">Free</Label>
-                    <Input
-                      className={numInput}
-                      type="number"
-                      min="0"
-                      step="0.5"
-                      value={displayPharmacyNumericInput(lineForm.free_quantity)}
-                      onChange={(e) => setLineField('free_quantity', e.target.value)}
-                    />
-                  </div>
-                  <div>
-                    <Label className="text-xs">MRP</Label>
-                    <Input
-                      className={numInput}
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      value={displayPharmacyNumericInput(lineForm.mrp)}
-                      onChange={(e) => setLineField('mrp', e.target.value === '' ? '' : roundMoney(e.target.value))}
-                    />
-                  </div>
-                  <div>
-                    <Label className="text-xs">P-Rate</Label>
-                    <Input
-                      className={numInput}
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      value={displayPharmacyNumericInput(lineForm.purchase_rate)}
-                      onChange={(e) => setLineField('purchase_rate', e.target.value === '' ? '' : roundMoney(e.target.value))}
-                    />
-                  </div>
-                  <div>
-                    <Label className="text-xs">Rate A</Label>
-                    <Input
-                      className={numInput}
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      value={displayPharmacyNumericInput(lineForm.rate_a)}
-                      onChange={(e) => setLineField('rate_a', e.target.value === '' ? '' : roundMoney(e.target.value))}
-                    />
-                  </div>
-                  <div>
-                    <Label className="text-xs">Rate B</Label>
-                    <Input
-                      className={numInput}
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      value={displayPharmacyNumericInput(lineForm.rate_b)}
-                      onChange={(e) => setLineField('rate_b', e.target.value === '' ? '' : roundMoney(e.target.value))}
-                    />
-                  </div>
-                  <div>
-                    <Label className="text-xs">Qty/Strip</Label>
-                    <Input
-                      className={numInput}
-                      type="number"
-                      min="1"
-                      step="1"
-                      value={lineForm.strip_conversion_factor ?? 1}
-                      onChange={(e) => setLineField('strip_conversion_factor', Math.max(1, parseInt(e.target.value, 10) || 1))}
-                    />
-                  </div>
-                  <div>
-                    <Label className="text-xs">Disc %</Label>
-                    <Input
-                      className={numInput}
-                      type="number"
-                      min="0"
-                      max="100"
-                      step="0.01"
-                      value={displayPharmacyNumericInput(lineForm.discount_pct)}
-                      onChange={(e) => setLineField('discount_pct', e.target.value === '' ? '' : roundMoney(e.target.value))}
-                    />
-                  </div>
-                  <div className="flex flex-col justify-end">
-                    <Label className="text-xs">Line total</Label>
-                    <div className="h-8 flex items-center text-sm font-semibold tabular-nums">
-                      ₹{calcLine(lineForm, hsnForMedicine(lineForm.medicine_id)).total.toFixed(2)}
+
+                  <div className="space-y-3 min-w-0">
+                    {selectedMed && (
+                      <div className="rounded-md border border-blue-100 bg-blue-50/60 px-3 py-2 text-xs">
+                        <div className="font-medium text-blue-900 mb-1">Catalog</div>
+                        <div className="flex flex-wrap gap-x-4 gap-y-1 text-blue-900/90">
+                          <span><span className="text-blue-700/80">Mfr </span>{mfr || '—'}</span>
+                          {company?.contact && (
+                            <span><span className="text-blue-700/80">Contact </span>{company.contact}</span>
+                          )}
+                          <span><span className="text-blue-700/80">Code </span>{selectedMed.medicine_code || '—'}</span>
+                          <span><span className="text-blue-700/80">Generic </span>{selectedMed.generic_name || '—'}</span>
+                          <span><span className="text-blue-700/80">Strength </span>{selectedMed.strength || '—'}</span>
+                          <span><span className="text-blue-700/80">Pack </span>{selectedMed.packaging || '—'}</span>
+                          <span><span className="text-blue-700/80">MRP </span>₹{Number(selectedMed.mrp || 0).toFixed(2)}</span>
+                          <span><span className="text-blue-700/80">P-Rate </span>₹{Number(selectedMed.purchase_rate || 0).toFixed(2)}</span>
+                          <span><span className="text-blue-700/80">Rate A </span>₹{Number(selectedMed.rate_a || selectedMed.unit_price || 0).toFixed(2)}</span>
+                          <span><span className="text-blue-700/80">Rate B </span>₹{Number(selectedMed.rate_b || 0).toFixed(2)}</span>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                      <div>
+                        <Label className="text-xs">MRP</Label>
+                        <Input
+                          className={numInput}
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          value={displayPharmacyNumericInput(lineForm.mrp)}
+                          onChange={(e) => setLineField('mrp', e.target.value === '' ? '' : roundMoney(e.target.value))}
+                        />
+                      </div>
+                      <div>
+                        <Label className="text-xs">P-Rate / strip</Label>
+                        <Input
+                          className={numInput}
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          value={displayPharmacyNumericInput(lineForm.purchase_rate)}
+                          onChange={(e) => setLineField('purchase_rate', e.target.value === '' ? '' : roundMoney(e.target.value))}
+                        />
+                      </div>
+                      <div>
+                        <Label className="text-xs">Rate A</Label>
+                        <Input
+                          className={numInput}
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          value={displayPharmacyNumericInput(lineForm.rate_a)}
+                          onChange={(e) => setLineField('rate_a', e.target.value === '' ? '' : roundMoney(e.target.value))}
+                        />
+                      </div>
+                      <div>
+                        <Label className="text-xs">Rate B</Label>
+                        <Input
+                          className={numInput}
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          value={displayPharmacyNumericInput(lineForm.rate_b)}
+                          onChange={(e) => setLineField('rate_b', e.target.value === '' ? '' : roundMoney(e.target.value))}
+                        />
+                      </div>
+                      <div>
+                        <Label className="text-xs">Tabs / strip</Label>
+                        <Input
+                          className={numInput}
+                          type="number"
+                          min="1"
+                          step="1"
+                          value={lineForm.strip_conversion_factor ?? 1}
+                          onChange={(e) => setLineField('strip_conversion_factor', Math.max(1, parseInt(e.target.value, 10) || 1))}
+                        />
+                        <p className="text-[10px] text-gray-500 mt-0.5">
+                          Stock +{((parseFloat(lineForm.quantity) || 0) + (parseFloat(lineForm.free_quantity) || 0)) * Math.max(1, parseInt(lineForm.strip_conversion_factor, 10) || 1)} tabs
+                        </p>
+                      </div>
+                      <div>
+                        <Label className="text-xs">Disc %</Label>
+                        <Input
+                          className={numInput}
+                          type="number"
+                          min="0"
+                          max="100"
+                          step="0.01"
+                          value={displayPharmacyNumericInput(lineForm.discount_pct)}
+                          onChange={(e) => setLineField('discount_pct', e.target.value === '' ? '' : roundMoney(e.target.value))}
+                        />
+                      </div>
+                      <div className="flex flex-col justify-end sm:col-span-3">
+                        <Label className="text-xs">Line total</Label>
+                        <div className="h-8 flex items-center text-sm font-semibold tabular-nums">
+                          ₹{calcLine(lineForm, hsnForMedicine(lineForm.medicine_id)).total.toFixed(2)}
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
               </div>
             );
           })()}
-          <DialogFooter>
+          <div className="shrink-0 border-t px-6 py-3 flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
             <Button type="button" variant="outline" onClick={closeLineDialog}>Cancel</Button>
             <Button type="button" onClick={submitLineDialog}>
               {lineDialog?.mode === 'edit' ? (
@@ -1053,7 +1108,7 @@ export default function PurchaseEntry() {
                 <><Plus className="h-4 w-4 mr-1.5" /> Add line</>
               )}
             </Button>
-          </DialogFooter>
+          </div>
         </DialogContent>
       </Dialog>
     </div>
