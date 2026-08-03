@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../../components/ui/dialog';
 import { useToast } from '../../../hooks/use-toast';
 import { ArrowLeft, Plus, Trash2, Save, CheckCircle2, ScanLine, Pill, ChevronDown, ChevronUp, FileText, Pencil } from 'lucide-react';
-import { computeLineTax, hsnTotalTaxPct } from '../../../utils/pharmacyHsnTax';
+import { computeLineTax, formatHsnOption, hsnTotalTaxPct } from '../../../utils/pharmacyHsnTax';
 import PharmacyMasterSelectWithCreate from '../../../components/pharmacy/PharmacyMasterSelectWithCreate';
 import PharmacyMedicinePicker from '../../../components/pharmacy/PharmacyMedicinePicker';
 import QuickMedicineDialog from '../../../components/pharmacy/QuickMedicineDialog';
@@ -33,6 +33,7 @@ const emptyLine = () => ({
   rate_b: '',
   strip_conversion_factor: 1,
   discount_pct: '',
+  hsn_id: null,
 });
 
 const TODAY = localDateString();
@@ -145,6 +146,16 @@ export default function PurchaseEntry() {
   }, []);
 
   useEffect(() => {
+    if (routeId) return; // edit mode loads tax_mode from the purchase
+    axios.get('/api/pharmacy/pos-settings')
+      .then((r) => {
+        const mode = r.data?.default_tax_mode_purchase === 'inclusive' ? 'inclusive' : 'exclusive';
+        setHeader((h) => ({ ...h, tax_mode: mode }));
+      })
+      .catch(() => {});
+  }, [routeId]);
+
+  useEffect(() => {
     if (!routeId) return;
     setLoadingPurchase(true);
     axios.get(`/api/pharmacy/purchases/${routeId}`)
@@ -184,6 +195,7 @@ export default function PurchaseEntry() {
           rate_b: it.rate_b || '',
           strip_conversion_factor: it.strip_conversion_factor || 1,
           discount_pct: it.discount_pct || '',
+          hsn_id: it.hsn_id ?? null,
         }));
         setItems(loaded);
         await loadMedicinesByIds(loaded.map((it) => it.medicine_id));
@@ -195,15 +207,19 @@ export default function PurchaseEntry() {
       .finally(() => setLoadingPurchase(false));
   }, [routeId, navigate, toast, loadMedicinesByIds]);
 
-  const lineFromMed = (m) => ({
-    ...emptyLine(),
-    medicine_id: m.id,
-    mrp: m.mrp || '',
-    purchase_rate: m.purchase_rate || '',
-    rate_a: m.rate_a || m.unit_price || '',
-    rate_b: m.rate_b || '',
-    strip_conversion_factor: m.strip_conversion_factor || 1,
-  });
+  const lineFromMed = (m) => {
+    const mrp = m.mrp || '';
+    return {
+      ...emptyLine(),
+      medicine_id: m.id,
+      mrp,
+      purchase_rate: m.purchase_rate || '',
+      rate_a: mrp,
+      rate_b: mrp,
+      strip_conversion_factor: m.strip_conversion_factor || 1,
+      hsn_id: m.hsn_id ?? null,
+    };
+  };
 
   const expiryToISO = (raw) => {
     if (!raw) return null;
@@ -229,7 +245,11 @@ export default function PurchaseEntry() {
     return `${yyyy}-${mm}-${dd}`;
   };
 
-  const remove = (i) => setItems(s => s.filter((_, idx) => idx !== i));
+  const remove = (i) => {
+    const next = items.filter((_, idx) => idx !== i);
+    setItems(next);
+    if (!isConfirmed) enqueueDraftSave({ nextItems: next, quiet: true });
+  };
 
   const normalizeLine = (form) => ({
     ...form,
@@ -269,8 +289,12 @@ export default function PurchaseEntry() {
   const openEditLineDialog = (i) => {
     const src = items[i];
     if (!src) return;
+    const med = medicineCache[src.medicine_id];
     setLineDialog({ mode: 'edit', index: i });
-    setLineForm({ ...src });
+    setLineForm({
+      ...src,
+      hsn_id: src.hsn_id ?? med?.hsn_id ?? null,
+    });
   };
 
   const openBatchDialog = (i) => {
@@ -278,18 +302,20 @@ export default function PurchaseEntry() {
     if (!src?.medicine_id) return;
     const med = medicineCache[src.medicine_id];
     setLineDialog({ mode: 'batch', index: i });
+    const mrp = src.mrp ?? med?.mrp ?? '';
     setLineForm({
       medicine_id: src.medicine_id,
       batch_number: '',
       expiry_mm_yyyy: '',
-      mrp: src.mrp ?? med?.mrp ?? '',
+      mrp,
       quantity: 1,
       free_quantity: '',
       purchase_rate: src.purchase_rate ?? med?.purchase_rate ?? '',
-      rate_a: src.rate_a ?? med?.rate_a ?? '',
-      rate_b: src.rate_b ?? med?.rate_b ?? '',
+      rate_a: mrp,
+      rate_b: mrp,
       strip_conversion_factor: src.strip_conversion_factor || med?.strip_conversion_factor || 1,
       discount_pct: '',
+      hsn_id: src.hsn_id ?? med?.hsn_id ?? null,
     });
   };
 
@@ -299,7 +325,13 @@ export default function PurchaseEntry() {
     setLineBatches([]);
   };
 
-  const setLineField = (k, v) => setLineForm((s) => (s ? { ...s, [k]: v } : s));
+  const setLineField = (k, v) => setLineForm((s) => {
+    if (!s) return s;
+    if (k === 'mrp') {
+      return { ...s, mrp: v, rate_a: v, rate_b: v };
+    }
+    return { ...s, [k]: v };
+  });
 
   const loadBatchesForMedicine = useCallback(async (medicineId) => {
     if (!medicineId || !masterStore?.id) return [];
@@ -338,30 +370,34 @@ export default function PurchaseEntry() {
     }
     const batch = lineBatches.find((b) => String(b.id) === v);
     if (!batch) return;
+    const mrp = batch.mrp ?? '';
     setLineForm((s) => ({
       ...(s || emptyLine()),
       batch_number: batch.batch_number || '',
       expiry_mm_yyyy: expiryToDisplay(batch.expiry_date),
-      mrp: batch.mrp ?? '',
+      mrp,
       purchase_rate: batch.purchase_rate ?? '',
-      rate_a: batch.rate_a ?? '',
-      rate_b: batch.rate_b ?? '',
+      rate_a: mrp,
+      rate_b: mrp,
       strip_conversion_factor: batch.strip_conversion_factor || 1,
+      hsn_id: batch.hsn_id ?? s?.hsn_id ?? null,
     }));
   };
 
   const applyMedicineToForm = (med) => {
     cacheMedicine(med);
+    const mrp = med.mrp || 0;
     setLineForm((s) => ({
       ...(s || emptyLine()),
       medicine_id: med.id,
       batch_number: '',
       expiry_mm_yyyy: '',
       purchase_rate: med.purchase_rate || 0,
-      mrp: med.mrp || 0,
-      rate_a: med.rate_a || med.unit_price || 0,
-      rate_b: med.rate_b || 0,
+      mrp,
+      rate_a: mrp,
+      rate_b: mrp,
       strip_conversion_factor: med.strip_conversion_factor || 1,
+      hsn_id: med.hsn_id ?? null,
     }));
   };
 
@@ -378,22 +414,22 @@ export default function PurchaseEntry() {
     }
     const row = normalizeLine(lineForm);
     const medName = medicineCache[row.medicine_id]?.name || 'medicine';
+    let nextItems;
     if (lineDialog.mode === 'edit') {
-      setItems((s) => s.map((x, idx) => (idx === lineDialog.index ? row : x)));
+      nextItems = items.map((x, idx) => (idx === lineDialog.index ? row : x));
       toast({ title: 'Line updated', description: medName });
     } else if (lineDialog.mode === 'batch') {
       const insertAt = (lineDialog.index ?? 0) + 1;
-      setItems((s) => {
-        const next = [...s];
-        next.splice(insertAt, 0, row);
-        return next;
-      });
+      nextItems = [...items];
+      nextItems.splice(insertAt, 0, row);
       toast({ title: `Batch ${row.batch_number} added`, description: medName });
     } else {
-      setItems((s) => [...s, row]);
+      nextItems = [...items, row];
       toast({ title: 'Line added', description: medName });
     }
+    setItems(nextItems);
     closeLineDialog();
+    if (!isConfirmed) enqueueDraftSave({ nextItems, quiet: true });
   };
 
   const handleScan = async (e) => {
@@ -422,10 +458,10 @@ export default function PurchaseEntry() {
     scanRef.current?.focus();
   };
 
-  const hsnForMedicine = (medicineId) => {
-    const med = medicineCache[medicineId];
-    if (!med?.hsn_id) return null;
-    return hsnList.find((h) => h.id === med.hsn_id) || null;
+  const hsnForLine = (ln) => {
+    const hsnId = ln?.hsn_id ?? medicineCache[ln?.medicine_id]?.hsn_id;
+    if (!hsnId) return null;
+    return hsnList.find((h) => h.id === hsnId) || null;
   };
 
   const calcLine = (ln, hsn) => {
@@ -436,15 +472,15 @@ export default function PurchaseEntry() {
     return { base, afterDisc, tax, total };
   };
   const totals = items.reduce((acc, ln) => {
-    const c = calcLine(ln, hsnForMedicine(ln.medicine_id));
+    const c = calcLine(ln, hsnForLine(ln));
     return { sub: acc.sub + c.base, disc: acc.disc + (c.base - c.afterDisc), tax: acc.tax + c.tax, grand: acc.grand + c.total };
   }, { sub: 0, disc: 0, tax: 0, grand: 0 });
 
-  const buildPayload = () => {
+  const buildPayload = ({ lines = items, headerState = header, allowEmpty = false } = {}) => {
     const errors = [];
-    if (!header.supplier_id) errors.push('Pick a supplier.');
-    if (items.length === 0) errors.push('Add at least one item.');
-    items.forEach((it, idx) => {
+    if (!headerState.supplier_id) errors.push('Pick a supplier.');
+    if (!allowEmpty && lines.length === 0) errors.push('Add at least one item.');
+    lines.forEach((it, idx) => {
       const n = idx + 1;
       if (!it.medicine_id) errors.push(`Line ${n}: pick or create a medicine.`);
       if (!it.batch_number || !String(it.batch_number).trim()) errors.push(`Line ${n}: batch number is required.`);
@@ -469,17 +505,17 @@ export default function PurchaseEntry() {
     return {
       errors,
       payload: {
-        entry_date: header.entry_date,
-        supplier_id: header.supplier_id,
+        entry_date: headerState.entry_date,
+        supplier_id: headerState.supplier_id,
         store_id: masterStore?.id || null,
-        invoice_number: header.invoice_number || null,
-        bill_date: header.bill_date || null,
-        payment_type: header.payment_type,
-        purchase_type: header.purchase_type || null,
-        tax_mode: header.tax_mode || 'exclusive',
-        notes: header.notes || null,
+        invoice_number: headerState.invoice_number || null,
+        bill_date: headerState.bill_date || null,
+        payment_type: headerState.payment_type,
+        purchase_type: headerState.purchase_type || null,
+        tax_mode: headerState.tax_mode || 'exclusive',
+        notes: headerState.notes || null,
         ...(isConfirmed ? { reason: editReason.trim() } : {}),
-        items: items.map(it => ({
+        items: lines.map(it => ({
           medicine_id: it.medicine_id,
           batch_number: String(it.batch_number || '').trim(),
           expiry_date: expiryToISO(it.expiry_mm_yyyy) || null,
@@ -491,6 +527,7 @@ export default function PurchaseEntry() {
           rate_b: roundMoney(it.rate_b),
           strip_conversion_factor: Math.max(1, parseInt(it.strip_conversion_factor, 10) || 1),
           discount_pct: roundMoney(it.discount_pct),
+          hsn_id: it.hsn_id || null,
         })),
       },
     };
@@ -504,21 +541,113 @@ export default function PurchaseEntry() {
     });
   };
 
-  const saveDraft = async () => {
-    const { errors, payload } = buildPayload();
-    if (errors.length) { showValidationErrors(errors); return; }
-    setSubmitting(true);
+  const draftIdRef = useRef(draftId);
+  useEffect(() => { draftIdRef.current = draftId; }, [draftId]);
+  const pendingSaveRef = useRef(null);
+  const savingRef = useRef(false);
+
+  /** Persist draft to the server. Quiet mode is used for auto-save after line changes. */
+  const persistDraft = async ({
+    nextItems,
+    headerOverride,
+    quiet = false,
+  } = {}) => {
+    if (isConfirmed) return false;
+    const lines = nextItems ?? items;
+    const headerState = headerOverride ?? header;
+    if (!headerState.supplier_id) {
+      if (quiet) {
+        toast({
+          title: 'Select a supplier to auto-save',
+          description: 'Lines stay on this page until a supplier is chosen.',
+        });
+      }
+      return false;
+    }
+    const id = draftIdRef.current;
+    if (lines.length === 0 && !id) return false;
+
+    const { errors, payload } = buildPayload({
+      lines,
+      headerState,
+      allowEmpty: Boolean(id),
+    });
+    if (errors.length) {
+      if (!quiet) showValidationErrors(errors);
+      else {
+        toast({
+          variant: 'destructive',
+          title: 'Could not auto-save draft',
+          description: errors[0],
+        });
+      }
+      return false;
+    }
+
     try {
-      const r = draftId
-        ? await axios.put(`/api/pharmacy/purchases/${draftId}`, payload)
+      const r = id
+        ? await axios.put(`/api/pharmacy/purchases/${id}`, payload)
         : await axios.post('/api/pharmacy/purchases', payload);
+      draftIdRef.current = r.data.id;
       setDraftId(r.data.id);
       setPurchaseStatus(r.data.status);
       setPurchaseNumber(r.data.purchase_number || '');
-      toast({ title: `Draft saved: ${r.data.purchase_number}` });
+      // Wait until coalesced queue is idle before leaving /new, so a follow-up
+      // line save can PUT instead of racing a remounted load.
+      if (!routeId && r.data.id && !pendingSaveRef.current) {
+        navigate(`/dashboard/pharmacy/purchases/${r.data.id}/edit`, { replace: true });
+      }
+      if (quiet) {
+        toast({ title: 'Draft auto-saved', description: r.data.purchase_number });
+      } else {
+        toast({ title: `Draft saved: ${r.data.purchase_number}` });
+      }
+      return true;
     } catch (e) {
-      toast({ variant: 'destructive', title: 'Save failed', description: errMsg(e) });
-    } finally { setSubmitting(false); }
+      toast({
+        variant: 'destructive',
+        title: quiet ? 'Auto-save failed' : 'Save failed',
+        description: errMsg(e),
+      });
+      return false;
+    }
+  };
+
+  const pumpDraftSaves = async () => {
+    if (savingRef.current) return;
+    savingRef.current = true;
+    try {
+      while (pendingSaveRef.current) {
+        const opts = pendingSaveRef.current;
+        pendingSaveRef.current = null;
+        await persistDraft(opts);
+      }
+    } finally {
+      savingRef.current = false;
+      // If a create finished while another save was pending, URL may still be /new.
+      if (!routeId && draftIdRef.current && !pendingSaveRef.current) {
+        navigate(`/dashboard/pharmacy/purchases/${draftIdRef.current}/edit`, { replace: true });
+      }
+    }
+  };
+
+  const enqueueDraftSave = (opts) => {
+    pendingSaveRef.current = opts;
+    return pumpDraftSaves();
+  };
+
+  const saveDraft = async () => {
+    const { errors } = buildPayload();
+    if (errors.length) { showValidationErrors(errors); return; }
+    setSubmitting(true);
+    try {
+      await persistDraft({ quiet: false });
+      if (!routeId && draftIdRef.current) {
+        navigate(`/dashboard/pharmacy/purchases/${draftIdRef.current}/edit`, { replace: true });
+      }
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const saveConfirmedEdit = async () => {
@@ -555,7 +684,24 @@ export default function PurchaseEntry() {
     } finally { setSubmitting(false); }
   };
 
-  const setH = (k, v) => setHeader(s => ({ ...s, [k]: v }));
+  const setH = (k, v) => {
+    setHeader((s) => {
+      const next = { ...s, [k]: v };
+      if (
+        k === 'supplier_id'
+        && v
+        && !isConfirmed
+        && items.length > 0
+      ) {
+        enqueueDraftSave({
+          nextItems: items,
+          headerOverride: next,
+          quiet: true,
+        });
+      }
+      return next;
+    });
+  };
 
   const openMedicineCreate = (prefill = {}) => {
     setMedicinePrefill(prefill);
@@ -587,6 +733,9 @@ export default function PurchaseEntry() {
 
   const compactInput = 'h-8 text-sm';
   const numInput = `${compactInput} ${pharmacyNoSpinInputClass}`;
+  const dialogInput = 'h-10 text-base';
+  const dialogNumInput = `${dialogInput} ${pharmacyNoSpinInputClass}`;
+  const dialogLabel = 'text-sm font-medium';
 
   if (loadingPurchase) {
     return <p className="text-center py-12 text-sm text-gray-500">Loading purchase…</p>;
@@ -767,7 +916,7 @@ export default function PurchaseEntry() {
                 <tbody>
                   {items.map((ln, i) => {
                     const med = medicineCache[ln.medicine_id];
-                    const c = calcLine(ln, hsnForMedicine(ln.medicine_id));
+                    const c = calcLine(ln, hsnForLine(ln));
                     const lineInvalid = !ln.medicine_id
                       || !String(ln.batch_number || '').trim()
                       || !ln.expiry_mm_yyyy
@@ -878,10 +1027,10 @@ export default function PurchaseEntry() {
       />
 
       <Dialog open={!!lineDialog && !!lineForm} onOpenChange={(open) => { if (!open) closeLineDialog(); }}>
-        <DialogContent className="max-w-6xl w-[96vw] max-h-[90vh] flex flex-col overflow-hidden gap-0 p-0" formNav="grid">
-          <div className="shrink-0 border-b px-6 pt-5 pb-3">
+        <DialogContent className="max-w-6xl w-[96vw] h-[92vh] max-h-[95vh] flex flex-col overflow-hidden gap-0 p-0 text-base" formNav="grid">
+          <div className="shrink-0 border-b px-6 pt-5 pb-4">
             <DialogHeader className="space-y-0">
-              <DialogTitle>
+              <DialogTitle className="text-xl">
                 {lineDialog?.mode === 'edit'
                   ? 'Edit line'
                   : lineDialog?.mode === 'batch'
@@ -896,24 +1045,25 @@ export default function PurchaseEntry() {
             const company = selectedMed?.company_id != null ? companyById[selectedMed.company_id] : null;
             const medicineLocked = lineDialog?.mode === 'batch';
             return (
-              <div className="flex-1 min-h-0 overflow-hidden px-6 py-4">
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 h-full">
-                  <div className="space-y-3 min-w-0">
+              <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5 flex flex-col gap-5">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                  <div className="space-y-4 min-w-0">
                     {medicineLocked ? (
-                      <div className="rounded-md border bg-gray-50 px-3 py-2 text-sm space-y-1">
+                      <div className="rounded-md border bg-gray-50 px-3 py-2.5 text-base space-y-1">
                         <div className="font-medium text-gray-900">{selectedMed?.name || 'Medicine'}</div>
-                        <div className="text-xs text-gray-600">
+                        <div className="text-sm text-gray-600">
                           {[selectedMed?.medicine_code, mfr].filter(Boolean).join(' · ')}
                         </div>
                       </div>
                     ) : (
                       <div>
-                        <Label className="text-xs">Medicine *</Label>
+                        <Label className={dialogLabel}>Medicine *</Label>
                         <PharmacyMedicinePicker
                           value={lineForm.medicine_id}
                           medicine={selectedMed}
                           companyById={companyById}
                           wideMenu
+                          className="[&_input]:h-10 [&_input]:text-base [&_button]:h-10 [&_.font-medium]:text-base"
                           onSelect={applyMedicineToForm}
                           onCreateNew={(q) => openMedicineCreate({
                             name: q || '',
@@ -926,9 +1076,9 @@ export default function PurchaseEntry() {
 
                     {lineForm.medicine_id && lineBatches.length > 0 && (
                       <div>
-                        <Label className="text-xs">Stock batch (optional)</Label>
+                        <Label className={dialogLabel}>Stock batch (optional)</Label>
                         <Select value={purchaseBatchSelectValue()} onValueChange={onPurchaseBatchSelect}>
-                          <SelectTrigger className={compactInput}>
+                          <SelectTrigger className={dialogInput}>
                             <SelectValue placeholder="New batch — type below" />
                           </SelectTrigger>
                           <SelectContent>
@@ -940,17 +1090,17 @@ export default function PurchaseEntry() {
                             ))}
                           </SelectContent>
                         </Select>
-                        <p className="text-[11px] text-gray-400 mt-1">
+                        <p className="text-sm text-gray-400 mt-1">
                           Pick an existing batch to prefill, or type a new batch number below.
                         </p>
                       </div>
                     )}
 
-                    <div className="grid grid-cols-2 gap-3">
+                    <div className="grid grid-cols-2 gap-4">
                       <div>
-                        <Label className="text-xs">Batch # *</Label>
+                        <Label className={dialogLabel}>Batch # *</Label>
                         <Input
-                          className={`${compactInput} ${!String(lineForm.batch_number || '').trim() ? 'border-red-300' : ''}`}
+                          className={`${dialogInput} ${!String(lineForm.batch_number || '').trim() ? 'border-red-300' : ''}`}
                           placeholder="Batch number"
                           value={lineForm.batch_number}
                           onChange={(e) => setLineField('batch_number', e.target.value)}
@@ -958,9 +1108,9 @@ export default function PurchaseEntry() {
                         />
                       </div>
                       <div>
-                        <Label className="text-xs">Expiry *</Label>
+                        <Label className={dialogLabel}>Expiry *</Label>
                         <Input
-                          className={`${compactInput} ${(!lineForm.expiry_mm_yyyy || expiryToISO(lineForm.expiry_mm_yyyy) == null || !isExpiryAfterCurrentMonth(lineForm.expiry_mm_yyyy)) ? 'border-red-300' : ''}`}
+                          className={`${dialogInput} ${(!lineForm.expiry_mm_yyyy || expiryToISO(lineForm.expiry_mm_yyyy) == null || !isExpiryAfterCurrentMonth(lineForm.expiry_mm_yyyy)) ? 'border-red-300' : ''}`}
                           placeholder="MM/YYYY"
                           inputMode="numeric"
                           maxLength={7}
@@ -969,9 +1119,9 @@ export default function PurchaseEntry() {
                         />
                       </div>
                       <div>
-                        <Label className="text-xs">Qty (strips) *</Label>
+                        <Label className={dialogLabel}>Qty (strips) *</Label>
                         <Input
-                          className={numInput}
+                          className={dialogNumInput}
                           type="number"
                           min="0"
                           step="0.5"
@@ -980,9 +1130,9 @@ export default function PurchaseEntry() {
                         />
                       </div>
                       <div>
-                        <Label className="text-xs">Free (strips)</Label>
+                        <Label className={dialogLabel}>Free (strips)</Label>
                         <Input
-                          className={numInput}
+                          className={dialogNumInput}
                           type="number"
                           min="0"
                           step="0.5"
@@ -993,43 +1143,12 @@ export default function PurchaseEntry() {
                     </div>
                   </div>
 
-                  <div className="space-y-3 min-w-0">
-                    {selectedMed && (
-                      <div className="rounded-md border border-blue-100 bg-blue-50/60 px-3 py-2 text-xs">
-                        <div className="font-medium text-blue-900 mb-1">Catalog</div>
-                        <div className="flex flex-wrap gap-x-4 gap-y-1 text-blue-900/90">
-                          <span><span className="text-blue-700/80">Mfr </span>{mfr || '—'}</span>
-                          {company?.contact && (
-                            <span><span className="text-blue-700/80">Contact </span>{company.contact}</span>
-                          )}
-                          <span><span className="text-blue-700/80">Code </span>{selectedMed.medicine_code || '—'}</span>
-                          <span><span className="text-blue-700/80">Generic </span>{selectedMed.generic_name || '—'}</span>
-                          <span><span className="text-blue-700/80">Strength </span>{selectedMed.strength || '—'}</span>
-                          <span><span className="text-blue-700/80">Pack </span>{selectedMed.packaging || '—'}</span>
-                          <span><span className="text-blue-700/80">MRP </span>₹{Number(selectedMed.mrp || 0).toFixed(2)}</span>
-                          <span><span className="text-blue-700/80">P-Rate </span>₹{Number(selectedMed.purchase_rate || 0).toFixed(2)}</span>
-                          <span><span className="text-blue-700/80">Rate A </span>₹{Number(selectedMed.rate_a || selectedMed.unit_price || 0).toFixed(2)}</span>
-                          <span><span className="text-blue-700/80">Rate B </span>₹{Number(selectedMed.rate_b || 0).toFixed(2)}</span>
-                        </div>
-                      </div>
-                    )}
-
-                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                  <div className="space-y-4 min-w-0">
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
                       <div>
-                        <Label className="text-xs">MRP</Label>
+                        <Label className={dialogLabel}>P-Rate / strip *</Label>
                         <Input
-                          className={numInput}
-                          type="number"
-                          step="0.01"
-                          min="0"
-                          value={displayPharmacyNumericInput(lineForm.mrp)}
-                          onChange={(e) => setLineField('mrp', e.target.value === '' ? '' : roundMoney(e.target.value))}
-                        />
-                      </div>
-                      <div>
-                        <Label className="text-xs">P-Rate / strip</Label>
-                        <Input
-                          className={numInput}
+                          className={dialogNumInput}
                           type="number"
                           step="0.01"
                           min="0"
@@ -1038,45 +1157,23 @@ export default function PurchaseEntry() {
                         />
                       </div>
                       <div>
-                        <Label className="text-xs">Rate A</Label>
+                        <Label className={dialogLabel}>Tabs / strip</Label>
                         <Input
-                          className={numInput}
-                          type="number"
-                          step="0.01"
-                          min="0"
-                          value={displayPharmacyNumericInput(lineForm.rate_a)}
-                          onChange={(e) => setLineField('rate_a', e.target.value === '' ? '' : roundMoney(e.target.value))}
-                        />
-                      </div>
-                      <div>
-                        <Label className="text-xs">Rate B</Label>
-                        <Input
-                          className={numInput}
-                          type="number"
-                          step="0.01"
-                          min="0"
-                          value={displayPharmacyNumericInput(lineForm.rate_b)}
-                          onChange={(e) => setLineField('rate_b', e.target.value === '' ? '' : roundMoney(e.target.value))}
-                        />
-                      </div>
-                      <div>
-                        <Label className="text-xs">Tabs / strip</Label>
-                        <Input
-                          className={numInput}
+                          className={dialogNumInput}
                           type="number"
                           min="1"
                           step="1"
                           value={lineForm.strip_conversion_factor ?? 1}
                           onChange={(e) => setLineField('strip_conversion_factor', Math.max(1, parseInt(e.target.value, 10) || 1))}
                         />
-                        <p className="text-[10px] text-gray-500 mt-0.5">
+                        <p className="text-xs text-gray-500 mt-0.5">
                           Stock +{((parseFloat(lineForm.quantity) || 0) + (parseFloat(lineForm.free_quantity) || 0)) * Math.max(1, parseInt(lineForm.strip_conversion_factor, 10) || 1)} tabs
                         </p>
                       </div>
                       <div>
-                        <Label className="text-xs">Disc %</Label>
+                        <Label className={dialogLabel}>Disc %</Label>
                         <Input
-                          className={numInput}
+                          className={dialogNumInput}
                           type="number"
                           min="0"
                           max="100"
@@ -1085,21 +1182,95 @@ export default function PurchaseEntry() {
                           onChange={(e) => setLineField('discount_pct', e.target.value === '' ? '' : roundMoney(e.target.value))}
                         />
                       </div>
-                      <div className="flex flex-col justify-end sm:col-span-3">
-                        <Label className="text-xs">Line total</Label>
-                        <div className="h-8 flex items-center text-sm font-semibold tabular-nums">
-                          ₹{calcLine(lineForm, hsnForMedicine(lineForm.medicine_id)).total.toFixed(2)}
+                      <div>
+                        <Label className={dialogLabel}>MRP</Label>
+                        <Input
+                          className={dialogNumInput}
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          value={displayPharmacyNumericInput(lineForm.mrp)}
+                          onChange={(e) => setLineField('mrp', e.target.value === '' ? '' : roundMoney(e.target.value))}
+                        />
+                      </div>
+                      <div>
+                        <Label className={dialogLabel}>Rate A</Label>
+                        <Input
+                          className={dialogNumInput}
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          value={displayPharmacyNumericInput(lineForm.rate_a)}
+                          onChange={(e) => setLineField('rate_a', e.target.value === '' ? '' : roundMoney(e.target.value))}
+                        />
+                      </div>
+                      <div>
+                        <Label className={dialogLabel}>Rate B</Label>
+                        <Input
+                          className={dialogNumInput}
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          value={displayPharmacyNumericInput(lineForm.rate_b)}
+                          onChange={(e) => setLineField('rate_b', e.target.value === '' ? '' : roundMoney(e.target.value))}
+                        />
+                      </div>
+                      <div className="sm:col-span-2">
+                        <Label className={dialogLabel}>HSN / Tax</Label>
+                        <PharmacyMasterSelectWithCreate
+                          path="hsn"
+                          value={lineForm.hsn_id}
+                          onChange={(v) => setLineField('hsn_id', v)}
+                          options={hsnList}
+                          onOptionsChange={setHsnList}
+                          placeholder="(none)"
+                          allowEmpty
+                          labelKey="code"
+                          format={formatHsnOption}
+                          className="[&_button]:h-10 [&_button]:text-base"
+                        />
+                      </div>
+                      <div className="flex flex-col justify-end">
+                        <Label className={dialogLabel}>Line total</Label>
+                        <div className="h-10 flex items-center text-base font-semibold tabular-nums">
+                          ₹{calcLine(lineForm, hsnForLine(lineForm)).total.toFixed(2)}
                         </div>
                       </div>
                     </div>
                   </div>
                 </div>
+
+                {selectedMed && (
+                  <div className="mt-auto rounded-md border border-blue-100 bg-blue-50/60 px-4 py-3">
+                    <div className="font-medium text-blue-900 text-base mb-3">Catalog</div>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-x-4 gap-y-3 text-sm">
+                      {[
+                        { label: 'Name', value: selectedMed.name || '—' },
+                        { label: 'Code', value: selectedMed.medicine_code || '—' },
+                        { label: 'Manufacturer', value: mfr || '—' },
+                        ...(company?.contact ? [{ label: 'Contact', value: company.contact }] : []),
+                        { label: 'Generic', value: selectedMed.generic_name || '—' },
+                        { label: 'Strength', value: selectedMed.strength || '—' },
+                        { label: 'Pack', value: selectedMed.packaging || '—' },
+                        { label: 'MRP', value: `₹${Number(selectedMed.mrp || 0).toFixed(2)}` },
+                        { label: 'P-Rate', value: `₹${Number(selectedMed.purchase_rate || 0).toFixed(2)}` },
+                        { label: 'Rate A', value: `₹${Number(selectedMed.rate_a || selectedMed.unit_price || 0).toFixed(2)}` },
+                        { label: 'Rate B', value: `₹${Number(selectedMed.rate_b || 0).toFixed(2)}` },
+                      ].map((row) => (
+                        <div key={row.label} className="min-w-0">
+                          <div className="text-xs text-blue-700/80 mb-0.5">{row.label}</div>
+                          <div className="text-blue-950 font-medium truncate" title={String(row.value)}>{row.value}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             );
           })()}
-          <div className="shrink-0 border-t px-6 py-3 flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
-            <Button type="button" variant="outline" onClick={closeLineDialog}>Cancel</Button>
-            <Button type="button" onClick={submitLineDialog}>
+          <div className="shrink-0 border-t px-6 py-4 flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+            <Button type="button" variant="outline" className="h-10 text-base" onClick={closeLineDialog}>Cancel</Button>
+            <Button type="button" className="h-10 text-base" onClick={submitLineDialog}>
               {lineDialog?.mode === 'edit' ? (
                 <><Save className="h-4 w-4 mr-1.5" /> Save line</>
               ) : lineDialog?.mode === 'batch' ? (

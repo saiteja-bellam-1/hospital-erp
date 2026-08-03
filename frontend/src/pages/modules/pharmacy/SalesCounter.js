@@ -100,6 +100,7 @@ export default function SalesCounter() {
     use_default_rate_tiers: false,
     default_rate_tier_cash: 'A',
     default_rate_tier_credit: 'A',
+    default_tax_mode_sales: 'inclusive',
   });
 
   const counterStoreId = editingSale?.store_id || activeStoreId;
@@ -107,6 +108,9 @@ export default function SalesCounter() {
   const useDefaultRates = !!posSettings.use_default_rate_tiers;
   // Ask for Rate A/B after batch pick only when defaults are off and user may pick tiers.
   const askRateOnBatchPick = canSelectRateTier && !useDefaultRates;
+  const defaultSalesTaxMode = posSettings.default_tax_mode_sales === 'exclusive'
+    ? 'exclusive'
+    : 'inclusive';
 
   const defaultTierFor = useCallback((paymentType) => {
     if (!posSettings.use_default_rate_tiers) return 'A';
@@ -123,14 +127,18 @@ export default function SalesCounter() {
     axios.get('/api/pharmacy/pos-settings')
       .then((r) => {
         const d = r.data || {};
+        const salesTax = d.default_tax_mode_sales === 'exclusive' ? 'exclusive' : 'inclusive';
         setPosSettings({
           use_default_rate_tiers: !!d.use_default_rate_tiers,
           default_rate_tier_cash: d.default_rate_tier_cash === 'B' ? 'B' : 'A',
           default_rate_tier_credit: d.default_rate_tier_credit === 'B' ? 'B' : 'A',
+          default_tax_mode_sales: salesTax,
         });
+        // Apply to new bills only — edit mode loads tax_mode from the sale.
+        if (!isEditing) setTaxMode(salesTax);
       })
       .catch(() => {});
-  }, []);
+  }, [isEditing]);
 
   useEffect(() => {
     if (isEditing || cartRestored || !activeStoreId) return;
@@ -698,7 +706,7 @@ export default function SalesCounter() {
       setPatientPrescriptions([]);
       setActivePrescription(null);
       setBillingMode('cash_at_pharmacy');
-      setTaxMode('inclusive');
+      setTaxMode(defaultSalesTaxMode);
       setBillDiscountAmount('');
       setCustomer({ patient_phone: '', patient_ip_id: '', patient_name: '', patient_address: '', doctor_number: '', doctor_name: '', payment_type: 'cash' });
     } catch (e) {
@@ -728,7 +736,7 @@ export default function SalesCounter() {
     setPatientPrescriptions([]);
     setActivePrescription(null);
     setBillingMode('cash_at_pharmacy');
-    setTaxMode('inclusive');
+    setTaxMode(defaultSalesTaxMode);
     setBillDiscountAmount('');
     clearCartStorage();
     setCustomer({
@@ -1186,6 +1194,11 @@ export default function SalesCounter() {
         open={!!batchPick}
         onOpenChange={(open) => { if (!open) closeBatchPick(); }}
         medicine={batchPick?.medicine}
+        manufacturer={
+          batchPick?.medicine?.company_name
+          || batchPick?.medicine?.manufacturer
+          || ''
+        }
         batches={batchPick?.batches || []}
         loading={batchPick?.loading}
         includeAutoOption

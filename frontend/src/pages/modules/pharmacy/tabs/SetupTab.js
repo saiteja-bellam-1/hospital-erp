@@ -13,6 +13,15 @@ const RATE_OPTIONS = [
   { value: 'B', label: 'Rate B' },
 ];
 
+const TAX_OPTIONS = [
+  { value: 'inclusive', label: 'Tax Include' },
+  { value: 'exclusive', label: 'Tax Exclude' },
+];
+
+function normalizeTaxMode(value, fallback) {
+  return value === 'inclusive' || value === 'exclusive' ? value : fallback;
+}
+
 export default function SetupTab() {
   const { toast } = useToast();
   const [loading, setLoading] = useState(true);
@@ -21,6 +30,8 @@ export default function SetupTab() {
     use_default_rate_tiers: false,
     default_rate_tier_cash: 'A',
     default_rate_tier_credit: 'A',
+    default_tax_mode_sales: 'inclusive',
+    default_tax_mode_purchase: 'exclusive',
   });
 
   useEffect(() => {
@@ -35,6 +46,8 @@ export default function SetupTab() {
             use_default_rate_tiers: !!d.use_default_rate_tiers,
             default_rate_tier_cash: d.default_rate_tier_cash === 'B' ? 'B' : 'A',
             default_rate_tier_credit: d.default_rate_tier_credit === 'B' ? 'B' : 'A',
+            default_tax_mode_sales: normalizeTaxMode(d.default_tax_mode_sales, 'inclusive'),
+            default_tax_mode_purchase: normalizeTaxMode(d.default_tax_mode_purchase, 'exclusive'),
           });
         }
       } catch (e) {
@@ -55,12 +68,7 @@ export default function SetupTab() {
     setSaving(true);
     try {
       await axios.put('/api/pharmacy/pos-settings', form);
-      toast({
-        title: 'Saved',
-        description: form.use_default_rate_tiers
-          ? 'Default rates enabled — POS will skip the rate picker'
-          : 'Default rates disabled — POS will ask for Rate A/B per line',
-      });
+      toast({ title: 'Saved', description: 'Pharmacy setup defaults updated' });
     } catch (err) {
       toast({ variant: 'destructive', title: 'Save failed', description: errMsg(err) });
     } finally {
@@ -134,13 +142,59 @@ export default function SetupTab() {
               </Select>
             </div>
           </div>
-
-          <Button type="submit" disabled={saving}>
-            <Save className="h-4 w-4 mr-2" />
-            {saving ? 'Saving…' : 'Save settings'}
-          </Button>
         </CardContent>
       </Card>
+
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">Default Tax Mode</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-sm text-gray-600">
+            Pre-selects Tax Include / Tax Exclude on new sales and purchases.
+            Staff can still change the dropdown on each bill.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <Label>Sales (POS)</Label>
+              <Select
+                value={form.default_tax_mode_sales}
+                onValueChange={(v) => setField('default_tax_mode_sales', v)}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {TAX_OPTIONS.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Purchases</Label>
+              <Select
+                value={form.default_tax_mode_purchase}
+                onValueChange={(v) => setField('default_tax_mode_purchase', v)}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {TAX_OPTIONS.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Button type="submit" disabled={saving}>
+        <Save className="h-4 w-4 mr-2" />
+        {saving ? 'Saving…' : 'Save settings'}
+      </Button>
     </form>
   );
 }

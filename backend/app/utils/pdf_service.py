@@ -13,6 +13,9 @@ import os
 from app.utils.patient_age import age_display_from_data
 
 DEFAULT_LETTERHEAD_GAP_PT = 100.0
+# No extra empty band above the hospital letterhead. Pre-printed stationery
+# spacing uses letterhead_gap_pt (Spacer) when include_header is False.
+PDF_TOP_MARGIN_PT = 0.0
 
 
 def _to_system_local(val):
@@ -34,6 +37,27 @@ def _fmt_system_dt(val, fmt="%d/%m/%Y %I:%M %p", empty="-"):
         return _to_system_local(val).strftime(fmt)
     except Exception:
         return str(val)
+
+
+def _fmt_bill_date(val, empty=""):
+    """Date-only (dd/mm/yyyy) for bills, invoices, and receipts — never include time."""
+    if val is None or val == "":
+        return empty
+    s = str(val).strip()
+    # Already display-formatted: "26/07/2026" or "26/07/2026 19:48:22"
+    if len(s) >= 10 and s[2:3] == "/" and s[5:6] == "/":
+        return s[:10]
+    try:
+        return _to_system_local(val).strftime("%d/%m/%Y")
+    except Exception:
+        pass
+    # ISO date prefix: "2026-07-26T19:48:22"
+    if len(s) >= 10 and s[4:5] == "-" and s[7:8] == "-":
+        try:
+            return datetime.strptime(s[:10], "%Y-%m-%d").strftime("%d/%m/%Y")
+        except Exception:
+            pass
+    return s.split()[0] if s else empty
 
 
 def _age_gender_str(data: dict, *, gender: str = "", age_key: str = "patient_age") -> str:
@@ -478,7 +502,7 @@ class PDFService:
         buffer = BytesIO()
         doc = SimpleDocTemplate(
             buffer, pagesize=A4,
-            rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=20,
+            rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=20,
         )
         elements = []
         page_width = A4[0] - 60
@@ -509,11 +533,7 @@ class PDFService:
             return Paragraph(f"<b>{label}</b> :  {value}", cell_value_sm)
 
         # --- Parse dates ---
-        try:
-            bd = datetime.fromisoformat(bill_data.get('bill_date', ''))
-            bill_date_str = bd.strftime('%d/%m/%Y')
-        except Exception:
-            bill_date_str = bill_data.get('bill_date') or datetime.now().strftime('%d/%m/%Y')
+        bill_date_str = _fmt_bill_date(bill_data.get('bill_date'), empty="") or datetime.now().strftime('%d/%m/%Y')
 
         # ============================================================
         # HEADER — identical pattern to OPD generate_bill_pdf
@@ -630,8 +650,8 @@ class PDFService:
         adm_data = [
             [lv('Admission No', a.get('admission_number', '')),
              lv('Ward / Room / Bed', ward_room_bed)],
-            [lv('Admitted', a.get('admitted_at') or '—'),
-             lv('Discharged', a.get('discharged_at') or '—')],
+            [lv('Admitted', _fmt_bill_date(a.get('admitted_at'), empty="—")),
+             lv('Discharged', _fmt_bill_date(a.get('discharged_at'), empty="—"))],
             [lv('Length of Stay', f"{a.get('length_of_stay') or 0} day(s)"),
              lv('Admitting / Attending', doctors_line)],
         ]
@@ -928,7 +948,7 @@ class PDFService:
             pagesize=A4,
             rightMargin=30,
             leftMargin=30,
-            topMargin=30,
+            topMargin=PDF_TOP_MARGIN_PT,
             bottomMargin=20
         )
 
@@ -968,12 +988,7 @@ class PDFService:
             return Paragraph(f"<b>{label}</b> :  {value}", cell_value_sm)
 
         # --- Parse dates ---
-        bill_date_str = ""
-        try:
-            bd = datetime.fromisoformat(bill_data.get('bill_date', ''))
-            bill_date_str = bd.strftime('%d/%m/%Y')
-        except Exception:
-            bill_date_str = datetime.now().strftime('%d/%m/%Y')
+        bill_date_str = _fmt_bill_date(bill_data.get('bill_date'), empty="") or datetime.now().strftime('%d/%m/%Y')
 
         # ============================================================
         # HEADER: Hospital Name + Address + Receipt Title
@@ -1365,7 +1380,7 @@ class PDFService:
 
         doc = SimpleDocTemplate(
             buffer, pagesize=A4,
-            rightMargin=40, leftMargin=40, topMargin=30, bottomMargin=30
+            rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=30
         )
 
         elements = []
@@ -1910,7 +1925,7 @@ class PDFService:
 
         doc = SimpleDocTemplate(
             buffer, pagesize=A4,
-            rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=20
+            rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=20
         )
 
         elements = []
@@ -2229,10 +2244,10 @@ class PDFService:
             lab_config = {}
 
         buffer = BytesIO()
-        # Reserve top margin for the header drawn via onPage callback
+        # Reserve top margin only for the onPage header / letterhead gap (no extra pad)
         header_height = 100 if include_header else letterhead_gap_pt
         doc = SimpleDocTemplate(buffer, pagesize=A4,
-            rightMargin=30, leftMargin=30, topMargin=30 + header_height, bottomMargin=20)
+            rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT + header_height, bottomMargin=20)
 
         elements = []
         page_width = A4[0] - 60
@@ -2287,7 +2302,7 @@ class PDFService:
             """Draw hospital header or blank space on every page."""
             c.saveState()
             pg_w, pg_h = A4
-            top_y = pg_h - 25  # start drawing from near top
+            top_y = pg_h - PDF_TOP_MARGIN_PT  # flush with page top (no header pad)
 
             if include_header:
                 # Draw logo if available
@@ -2537,7 +2552,7 @@ class PDFService:
             pagesize=A4,
             rightMargin=30,
             leftMargin=30,
-            topMargin=30,
+            topMargin=PDF_TOP_MARGIN_PT,
             bottomMargin=20
         )
 
@@ -2932,7 +2947,7 @@ class PDFService:
             pagesize=A4,
             rightMargin=30,
             leftMargin=30,
-            topMargin=30,
+            topMargin=PDF_TOP_MARGIN_PT,
             bottomMargin=20,
         )
         elements = []
@@ -3238,7 +3253,7 @@ class PDFService:
         buffer = BytesIO()
         doc = SimpleDocTemplate(
             buffer, pagesize=A4,
-            rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=20,
+            rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=20,
         )
         elements = []
         page_width = A4[0] - 60
@@ -3269,7 +3284,7 @@ class PDFService:
         is_refund = deposit_data.get('deposit_type') == 'refund'
         amount = float(deposit_data.get('amount', 0))
         receipt_no = deposit_data.get('deposit_number', '')
-        receipt_date = deposit_data.get('received_at', '') or datetime.now().strftime('%d/%m/%Y %H:%M')
+        receipt_date = _fmt_bill_date(deposit_data.get('received_at'), empty="") or datetime.now().strftime('%d/%m/%Y')
 
         # ============================================================
         # HEADER — identical to generate_bill_pdf
@@ -3508,7 +3523,7 @@ class PDFService:
         buffer = BytesIO()
         doc = SimpleDocTemplate(
             buffer, pagesize=A4,
-            rightMargin=40, leftMargin=40, topMargin=30, bottomMargin=30,
+            rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=30,
         )
         elements = []
         page_width = A4[0] - 80
@@ -3549,7 +3564,7 @@ class PDFService:
 
         rows = [
             [Paragraph("Refund No:", label_style), Paragraph(str(refund_data.get('refund_number', '')), value_style),
-             Paragraph("Date:", label_style), Paragraph(str(refund_data.get('refund_date', '')), value_style)],
+             Paragraph("Date:", label_style), Paragraph(_fmt_bill_date(refund_data.get('refund_date'), empty=""), value_style)],
             [Paragraph("Patient:", label_style), Paragraph(str(refund_data.get('patient_name', '')), value_style),
              Paragraph("Phone:", label_style), Paragraph(str(refund_data.get('patient_phone', '')), value_style)],
             [Paragraph("Bill No:", label_style), Paragraph(str(refund_data.get('bill_number', '')), value_style),
@@ -3605,7 +3620,7 @@ class PDFService:
         buffer = BytesIO()
         doc = SimpleDocTemplate(
             buffer, pagesize=A4,
-            rightMargin=40, leftMargin=40, topMargin=30, bottomMargin=30,
+            rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=30,
         )
         elements = []
         page_width = A4[0] - 80
@@ -3646,7 +3661,7 @@ class PDFService:
 
         rows = [
             [Paragraph("Credit Note No:", label_style), Paragraph(str(cn_data.get('credit_note_number', '')), value_style),
-             Paragraph("Date:", label_style), Paragraph(str(cn_data.get('credit_note_date', '')), value_style)],
+             Paragraph("Date:", label_style), Paragraph(_fmt_bill_date(cn_data.get('credit_note_date'), empty=""), value_style)],
             [Paragraph("Patient:", label_style), Paragraph(str(cn_data.get('patient_name', '')), value_style),
              Paragraph("Phone:", label_style), Paragraph(str(cn_data.get('patient_phone', '')), value_style)],
             [Paragraph("Original Bill:", label_style), Paragraph(str(cn_data.get('parent_bill_number', '')), value_style),
@@ -3721,7 +3736,7 @@ class PDFService:
     def generate_consent_pdf(self, consent_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
         """Signed consent form PDF."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=30, bottomMargin=30)
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=30)
         elements = []
         page_width = A4[0] - 80
 
@@ -3914,7 +3929,7 @@ class PDFService:
     ):
         """Clinical case sheet printed at admission (Complaints & History)."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=30, bottomMargin=30)
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=30)
         elements = []
         page_width = A4[0] - 80
 
@@ -4100,7 +4115,7 @@ class PDFService:
     def generate_death_certificate_pdf(self, cert_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
         """Death certificate / mortality record."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=30, bottomMargin=30)
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=30)
         elements = []
         page_width = A4[0] - 80
 
@@ -4200,7 +4215,7 @@ class PDFService:
         Indian context: invokes Section 88/92 IPC ('act done in good faith for
         the benefit of a person, with consent') in the absolves clause."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=30, bottomMargin=30)
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=30)
         elements = []
         page_width = A4[0] - 80
 
@@ -4326,7 +4341,7 @@ class PDFService:
         line plus a 'Generated on' timestamp."""
         buffer = BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=A4,
-            rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=20)
+            rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=20)
         elements = []
         page_width = A4[0] - 60
 
@@ -4513,7 +4528,7 @@ class PDFService:
         # Landscape — many columns
         from reportlab.lib.pagesizes import landscape
         doc = SimpleDocTemplate(buffer, pagesize=landscape(A4),
-            rightMargin=20, leftMargin=20, topMargin=24, bottomMargin=24)
+            rightMargin=20, leftMargin=20, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=24)
         elements = []
         page_width = landscape(A4)[0] - 40
 
@@ -4602,7 +4617,7 @@ class PDFService:
     def generate_monthly_outcomes_pdf(self, payload, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
         """Monthly outcomes — mortality + readmission + LOS + occupancy."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=30)
         elements = []
         page_width = A4[0] - 60
 
@@ -4734,7 +4749,7 @@ class PDFService:
     def generate_handover_pdf(self, payload, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
         """Nurse-to-nurse shift handover sheet."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=30, bottomMargin=30)
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=30)
         elements = []
         page_width = A4[0] - 80
 
@@ -4820,7 +4835,7 @@ class PDFService:
     def generate_census_pdf(self, payload, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
         """Daily census report — totals + per-ward + per-room-type breakdown."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=30)
         elements = []
         page_width = A4[0] - 60
 
@@ -4949,7 +4964,7 @@ class PDFService:
         intimation copy and hospital MLC register. India: required for RTA,
         assault, poisoning, burns, sexual assault, attempted suicide cases."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=30, bottomMargin=30)
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=30)
         elements = []
         page_width = A4[0] - 80
 
@@ -5043,7 +5058,7 @@ class PDFService:
         """B6 — Body release / mortuary handover form. Signed receipt for the
         family member receiving the body, witnessed by another adult."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=30, bottomMargin=30)
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=30)
         elements = []
         page_width = A4[0] - 80
 
@@ -5242,7 +5257,7 @@ class PDFService:
         """
         buffer = BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=A4,
-            rightMargin=22, leftMargin=22, topMargin=22, bottomMargin=18)
+            rightMargin=22, leftMargin=22, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=18)
         elements = []
         page_width = A4[0] - 44
 
@@ -5296,11 +5311,7 @@ class PDFService:
         elements.append(Spacer(1, 4))
 
         # ── Meta: Patient / UHID / Bill No ────────────────────────────────
-        sd = sale_data.get('sale_date')
-        try:
-            sd_str = datetime.fromisoformat(str(sd).replace('Z', '+00:00')).strftime('%d/%m/%Y %H:%M:%S') if sd else ''
-        except Exception:
-            sd_str = str(sd or '')
+        sd_str = _fmt_bill_date(sale_data.get('sale_date'), empty="")
 
         left_w = page_width * 0.38
         mid_w = page_width * 0.24
@@ -5508,7 +5519,7 @@ class PDFService:
         """
         buffer = BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=A4,
-            rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=20)
+            rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=20)
         elements = []
         page_width = A4[0] - 60
 
@@ -5616,7 +5627,7 @@ class PDFService:
         """Stock transfer receipt for master → satellite moves."""
         buffer = BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=A4,
-            rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=20)
+            rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=20)
         elements = []
         page_width = A4[0] - 60
 
@@ -5686,7 +5697,7 @@ class PDFService:
         """
         buffer = BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=A4,
-            rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=20)
+            rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=20)
         elements = []
         page_width = A4[0] - 60
 
@@ -5767,7 +5778,7 @@ class PDFService:
         """
         buffer = BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=A4,
-            rightMargin=20, leftMargin=20, topMargin=30, bottomMargin=20)
+            rightMargin=20, leftMargin=20, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=20)
         elements = []
         page_width = A4[0] - 40
 
@@ -5792,11 +5803,7 @@ class PDFService:
             Paragraph("Doctor", header_p),
         ]]
         for r in rows or []:
-            try:
-                d = datetime.fromisoformat(str(r.get('sale_date')))
-                d_str = d.strftime('%d/%m/%Y %H:%M')
-            except Exception:
-                d_str = str(r.get('sale_date') or '')
+            d_str = _fmt_bill_date(r.get('sale_date'), empty="")
             out.append([
                 Paragraph(d_str, cell),
                 Paragraph(str(r.get('sale_number') or ''), cell),
@@ -5848,7 +5855,7 @@ class PDFService:
         buffer = BytesIO()
         doc = SimpleDocTemplate(
             buffer, pagesize=landscape(_A4),
-            rightMargin=20, leftMargin=20, topMargin=30, bottomMargin=20,
+            rightMargin=20, leftMargin=20, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=20,
         )
         elements = []
         page_width = landscape(_A4)[0] - 40
@@ -5921,7 +5928,7 @@ class PDFService:
         buffer = BytesIO()
         doc = SimpleDocTemplate(
             buffer, pagesize=A4,
-            rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=20,
+            rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=20,
         )
         elements = []
         page_width = A4[0] - 60
@@ -5940,11 +5947,7 @@ class PDFService:
         def lv(label, value):
             return Paragraph(f"<b>{label}:</b> {value}", cell)
 
-        sd = sale_data.get("sale_date")
-        try:
-            sd_str = datetime.fromisoformat(str(sd)).strftime("%d/%m/%Y %I:%M%p") if sd else ""
-        except Exception:
-            sd_str = str(sd or "")
+        sd_str = _fmt_bill_date(sale_data.get("sale_date"), empty="")
 
         meta = Table(
             [
@@ -6052,7 +6055,7 @@ class PDFService:
         buffer = BytesIO()
         doc = SimpleDocTemplate(
             buffer, pagesize=A4,
-            rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=20,
+            rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=20,
         )
         elements = []
         page_width = A4[0] - 60
@@ -6081,7 +6084,7 @@ class PDFService:
                  lv("Bills covered", statement.get("bill_count", 0))],
                 [lv("Payment Mode", str(statement.get("payment_method") or "—").replace("_", " ").title()),
                  lv("Reference", statement.get("payment_reference") or "—")],
-                [lv("Payment Date", statement.get("payment_date") or "—"),
+                [lv("Payment Date", _fmt_bill_date(statement.get("payment_date"), empty="—") or "—"),
                  lv("", "")],
             ],
             colWidths=[col_w, col_w],

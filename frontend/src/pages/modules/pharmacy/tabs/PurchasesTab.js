@@ -9,11 +9,12 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter,
   DialogHeader, DialogTitle,
 } from '../../../../components/ui/dialog';
-import { Plus, RefreshCw, Printer, Undo2, Pencil } from 'lucide-react';
+import { Plus, RefreshCw, Printer, Undo2, Pencil, Upload } from 'lucide-react';
 import { printPdfFromUrl } from '../../../../utils/printPdf';
 import { useToast } from '../../../../hooks/use-toast';
 import { errMsg } from '../../PharmacyModule';
 import { usePharmacyStore } from '../../../../contexts/PharmacyStoreContext';
+import PharmacyImportDialog from '../../../../components/pharmacy/PharmacyImportDialog';
 
 export default function PurchasesTab() {
   const navigate = useNavigate();
@@ -24,6 +25,7 @@ export default function PurchasesTab() {
   const [revokeTarget, setRevokeTarget] = useState(null);
   const [revokeReason, setRevokeReason] = useState('');
   const [revoking, setRevoking] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -73,6 +75,9 @@ export default function PurchasesTab() {
           <span>Purchases ({rows.length})</span>
           <div className="flex gap-2">
             <Button size="sm" variant="outline" onClick={load}><RefreshCw className="h-3 w-3" /></Button>
+            <Button size="sm" variant="outline" onClick={() => setImportOpen(true)}>
+              <Upload className="h-3 w-3 mr-1" /> Import
+            </Button>
             <Button size="sm" onClick={() => navigate('/dashboard/pharmacy/purchases/new')}>
               <Plus className="h-3 w-3 mr-1" /> New Purchase
             </Button>
@@ -156,6 +161,18 @@ export default function PurchasesTab() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <PharmacyImportDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        onImported={load}
+        title="Import Purchases"
+        entityLabel="purchases"
+        importUrl="/api/pharmacy/purchases/import"
+        templateUrl="/api/pharmacy/purchases/import/template"
+        duplicateLabel="If invoice already exists:"
+        helpText="Upload a vendor tax-invoice CSV (H/T/F, CL1–CL31) or the named template. Creates draft purchases — review and Confirm to add stock. Supplier and medicines must already exist (matched by name or medicine_code)."
+      />
     </Card>
   );
 }

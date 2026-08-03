@@ -1,8 +1,9 @@
-"""Pharmacy bulk import/export — medicines, suppliers, masters, opening stock."""
+"""Pharmacy bulk import/export — medicines, suppliers, masters, opening stock, purchases."""
 from __future__ import annotations
 
 import csv
 import io
+import re
 from datetime import date, datetime
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -17,6 +18,8 @@ from app.models.pharmacy import (
     PharmacyCompany,
     PharmacyHSN,
     PharmacyInventory,
+    PharmacyPurchase,
+    PharmacyPurchaseItem,
     PharmacyRack,
     PharmacySalt,
     PharmacyStockAdjustment,
@@ -27,7 +30,12 @@ from app.models.pharmacy import (
 )
 from app.models.user import User
 from app.services.pharmacy_store_service import get_master_store_id
-from app.utils.pharmacy_pricing import apply_cost_pcs_from_mrp, apply_medicine_price_rounding
+from app.utils.pharmacy_pricing import (
+    apply_cost_pcs_from_mrp,
+    apply_medicine_price_rounding,
+    compute_line_tax,
+    round_money,
+)
 
 # ---------------------------------------------------------------------------
 # Column headers (import / export shape)
@@ -71,6 +79,17 @@ OPENING_STOCK_HEADERS = [
     "mrp", "purchase_rate", "rate_a", "rate_b", "cost_price", "selling_price",
     "supplier_name", "hsn_code", "strip_conversion_factor", "free_quantity",
     "discount_pct", "notes",
+]
+
+# Flat named-header template (one row per line item; header fields repeat).
+# Vendor distributor CSVs (H/T/F + CL1..CL31) are also accepted — see
+# `_parse_vendor_purchase_blocks`.
+PURCHASE_HEADERS = [
+    "supplier_name", "invoice_number", "entry_date", "bill_date",
+    "payment_type", "purchase_type", "tax_mode", "store_code", "notes",
+    "medicine_code", "medicine_name", "batch_number", "expiry_date",
+    "quantity", "free_quantity", "mrp", "purchase_rate", "rate_a", "rate_b",
+    "strip_conversion_factor", "discount_pct", "pack_size", "hsn_code",
 ]
 
 # ---------------------------------------------------------------------------
@@ -1472,6 +1491,788 @@ def build_opening_stock_template() -> bytes:
             "store_code optional — defaults to master store",
             "on_duplicate=update sets quantity_in_stock to the NEW absolute value (not a delta)",
             "Ledger records the difference between old and new quantity",
+        ])
+
+    return _workbook_bytes(build)
+
+
+# ---------------------------------------------------------------------------
+# Purchases (vendor H/T/F CSV or named-header template)
+# ---------------------------------------------------------------------------
+
+# Vendor tax-invoice CSV column map (CL1..CL31), aligned to PDF line headers:
+# Item Name, Pack Size, Batch No., Expiry, QTY, Package, MRP, PTR, Rate,
+# Taxable, CGST%/Amt, IGST%/Amt, SGST%/Amt, HSN Code.
+#
+# Pricing policy for vendor imports:
+#   PTR (CL11) → purchase_rate
+#   MRP (CL13) → mrp, rate_a, and rate_b
+#   Rate (CL12) is ignored (distributor net rate; not used for our purchase entry)
+_VENDOR_T_MAP = {
+    "record_type": "cl1",
+    "supplier_name": "cl3",
+    "item_code": "cl5",
+    "item_name": "cl6",
+    "pack_size": "cl7",
+    "manufacturer": "cl8",
+    "batch_number": "cl9",
+    "expiry_raw": "cl10",
+    "ptr": "cl11",
+    "distributor_rate": "cl12",
+    "mrp": "cl13",
+    "quantity": "cl16",
+    "free_quantity": "cl17",
+    "discount_raw": "cl19",
+    "taxable": "cl22",
+    "cgst_pct": "cl23",
+    "cgst_amt": "cl24",
+    "igst_pct": "cl25",
+    "igst_amt": "cl26",
+    "sgst_pct": "cl27",
+    "sgst_amt": "cl28",
+    "hsn_code": "cl31",
+}
+
+
+def _strip_excel_formula(v) -> Optional[str]:
+    """Normalize Excel-exported cells like `=\"000008\"` or `=\"3338.06\"`."""
+    s = _cell_str(v)
+    if s is None:
+        return None
+    if s.startswith("="):
+        s = s[1:].strip()
+        if len(s) >= 2 and s[0] == s[-1] and s[0] in ("\"", "'"):
+            s = s[1:-1]
+    return s.strip() if s.strip() else None
+
+
+def _parse_ddmmyyyy(v) -> Optional[date]:
+    """Parse DDMMYYYY (vendor CSV) or fall back to ISO / MM/YYYY."""
+    if isinstance(v, datetime):
+        return v.date()
+    if isinstance(v, date):
+        return v
+    s = _strip_excel_formula(v)
+    if not s:
+        return None
+    digits = re.sub(r"\D", "", s)
+    if len(digits) == 8:
+        dd, mm, yyyy = int(digits[0:2]), int(digits[2:4]), int(digits[4:8])
+        return date(yyyy, mm, dd)
+    if len(digits) == 6:
+        # MMYYYY → last day of month is unknown; use day 1
+        mm, yyyy = int(digits[0:2]), int(digits[2:6])
+        return date(yyyy, mm, 1)
+    try:
+        return date.fromisoformat(s[:10])
+    except ValueError:
+        pass
+    # MM/YYYY or MM-YYYY
+    m = re.match(r"^(\d{1,2})[/-](\d{4})$", s)
+    if m:
+        return date(int(m.group(2)), int(m.group(1)), 1)
+    raise ValueError(f"'{s}' is not a valid date")
+
+
+def _parse_pack_scf(pack: Optional[str]) -> Optional[int]:
+    """`1*10` → 10, `5*1` → 1. Non-numeric pack units (e.g. 30ML) → None."""
+    if not pack:
+        return None
+    parts = re.split(r"[*xX×]", pack.strip())
+    if len(parts) < 2:
+        return None
+    m = re.match(r"^(\d+)", parts[-1].strip())
+    if not m:
+        return None
+    n = int(m.group(1))
+    return n if n >= 1 else None
+
+
+def _looks_like_vendor_purchase(rows: List[dict]) -> bool:
+    if not rows:
+        return False
+    keys = {k for k in rows[0].keys() if k != "_row"}
+    if "cl1" in keys and "cl6" in keys:
+        return True
+    for row in rows[:5]:
+        typ = (_strip_excel_formula(row.get("cl1")) or "").upper()
+        if typ in ("H", "T", "F"):
+            return True
+    return False
+
+
+def _vendor_cell(row: dict, key: str):
+    col = _VENDOR_T_MAP.get(key, key)
+    return row.get(col)
+
+
+def _parse_vendor_purchase_blocks(rows: List[dict]) -> List[dict]:
+    """Group H / T / F rows into one block per invoice."""
+    blocks: List[dict] = []
+    current: Optional[dict] = None
+
+    def _finish():
+        nonlocal current
+        if current is not None:
+            blocks.append(current)
+            current = None
+
+    for row in rows:
+        typ = (_strip_excel_formula(row.get("cl1")) or "").upper()
+        rownum = row.get("_row", 0)
+        if typ == "H":
+            _finish()
+            inv = _strip_excel_formula(row.get("cl3"))
+            bill_date = None
+            try:
+                bill_date = _parse_ddmmyyyy(row.get("cl4"))
+            except ValueError:
+                bill_date = None
+            current = {
+                "invoice_number": inv,
+                "bill_date": bill_date,
+                "entry_date": bill_date or date.today(),
+                "purchase_type": _strip_excel_formula(row.get("cl7")),
+                "transporter": _strip_excel_formula(row.get("cl11")),
+                "place_of_supply": _strip_excel_formula(row.get("cl14")),
+                "supplier_name": None,
+                "payment_type": "credit",
+                "tax_mode": "exclusive",
+                "store_code": None,
+                "notes": None,
+                "footer": None,
+                "items": [],
+                "_header_row": rownum,
+            }
+        elif typ == "T":
+            if current is None:
+                # Orphan T without H — start an implicit block
+                current = {
+                    "invoice_number": None,
+                    "bill_date": None,
+                    "entry_date": date.today(),
+                    "purchase_type": None,
+                    "transporter": None,
+                    "place_of_supply": None,
+                    "supplier_name": None,
+                    "payment_type": "credit",
+                    "tax_mode": "exclusive",
+                    "store_code": None,
+                    "notes": None,
+                    "footer": None,
+                    "items": [],
+                    "_header_row": rownum,
+                }
+            supplier = _strip_excel_formula(_vendor_cell(row, "supplier_name"))
+            if supplier and not current.get("supplier_name"):
+                current["supplier_name"] = supplier
+            item_name = _strip_excel_formula(_vendor_cell(row, "item_name"))
+            batch = _strip_excel_formula(_vendor_cell(row, "batch_number"))
+            if not item_name and not batch:
+                continue
+            expiry = None
+            try:
+                expiry = _parse_ddmmyyyy(_vendor_cell(row, "expiry_raw"))
+            except ValueError:
+                expiry = None
+            qty = _cell_float(_strip_excel_formula(_vendor_cell(row, "quantity")) or _vendor_cell(row, "quantity"))
+            free = _cell_float(
+                _strip_excel_formula(_vendor_cell(row, "free_quantity")) or _vendor_cell(row, "free_quantity")
+            ) or 0.0
+            ptr = _cell_float(_strip_excel_formula(_vendor_cell(row, "ptr")) or _vendor_cell(row, "ptr"))
+            mrp = _cell_float(_strip_excel_formula(_vendor_cell(row, "mrp")) or _vendor_cell(row, "mrp"))
+            disc_raw = _cell_float(
+                _strip_excel_formula(_vendor_cell(row, "discount_raw")) or _vendor_cell(row, "discount_raw")
+            ) or 0.0
+            # Vendor Disc column is an amount (PDF "Disc."); convert to % of PTR×qty
+            discount_pct = 0.0
+            if disc_raw and qty and ptr:
+                base = qty * ptr
+                if base > 0:
+                    discount_pct = round((disc_raw / base) * 100.0, 4)
+            pack = _strip_excel_formula(_vendor_cell(row, "pack_size"))
+            current["items"].append({
+                "_row": rownum,
+                "medicine_code": _strip_excel_formula(_vendor_cell(row, "item_code")),
+                "medicine_name": item_name,
+                "pack_size": pack,
+                "manufacturer": _strip_excel_formula(_vendor_cell(row, "manufacturer")),
+                "batch_number": batch,
+                "expiry_date": expiry,
+                "quantity": qty,
+                "free_quantity": free,
+                "mrp": mrp,
+                "purchase_rate": ptr,
+                "rate_a": mrp,
+                "rate_b": mrp,
+                "strip_conversion_factor": _parse_pack_scf(pack),
+                "discount_pct": discount_pct,
+                "hsn_code": _strip_excel_formula(_vendor_cell(row, "hsn_code")),
+            })
+        elif typ == "F":
+            if current is None:
+                continue
+            taxable = _cell_float(_strip_excel_formula(row.get("cl2")) or row.get("cl2"))
+            cgst = _cell_float(_strip_excel_formula(row.get("cl5")) or row.get("cl5"))
+            sgst = _cell_float(_strip_excel_formula(row.get("cl7")) or row.get("cl7"))
+            round_off = _cell_float(_strip_excel_formula(row.get("cl21")) or row.get("cl21"))
+            invoice_value = _cell_float(_strip_excel_formula(row.get("cl22")) or row.get("cl22"))
+            current["footer"] = {
+                "taxable": taxable,
+                "cgst": cgst,
+                "sgst": sgst,
+                "round_off": round_off,
+                "invoice_value": invoice_value,
+            }
+            note_bits = []
+            if invoice_value is not None:
+                note_bits.append(f"Invoice value ₹{invoice_value:.2f}")
+            if taxable is not None:
+                note_bits.append(f"taxable ₹{taxable:.2f}")
+            if cgst is not None or sgst is not None:
+                note_bits.append(f"CGST ₹{(cgst or 0):.2f} / SGST ₹{(sgst or 0):.2f}")
+            if round_off:
+                note_bits.append(f"round-off {round_off}")
+            if current.get("transporter"):
+                note_bits.append(f"transporter {current['transporter']}")
+            if current.get("place_of_supply"):
+                note_bits.append(f"place of supply {current['place_of_supply']}")
+            if note_bits:
+                current["notes"] = "Imported from vendor CSV — " + "; ".join(note_bits)
+            _finish()
+        else:
+            continue
+
+    _finish()
+    return blocks
+
+
+def _group_named_purchase_rows(rows: List[dict]) -> List[dict]:
+    """Group flat named-header rows by (supplier_name, invoice_number)."""
+    groups: Dict[Tuple[str, str], dict] = {}
+    order: List[Tuple[str, str]] = []
+    for row in rows:
+        supplier = _cell_str(row.get("supplier_name"))
+        invoice = _cell_str(row.get("invoice_number"))
+        med_code = _cell_str(row.get("medicine_code"))
+        med_name = _cell_str(row.get("medicine_name") or row.get("item_name"))
+        if _key_skipped(med_code) and _key_skipped(med_name):
+            # Allow skip only when both empty; treat #-prefixed as skip
+            if (med_code and med_code.startswith("#")) or (med_name and med_name.startswith("#")):
+                continue
+            if not med_code and not med_name:
+                continue
+        key = ((supplier or "").lower(), (invoice or "").lower())
+        if key not in groups:
+            bill_date = None
+            entry_date = None
+            try:
+                bill_date = _cell_date(row.get("bill_date"))
+            except ValueError:
+                bill_date = None
+            try:
+                entry_date = _cell_date(row.get("entry_date"))
+            except ValueError:
+                entry_date = None
+            groups[key] = {
+                "invoice_number": invoice,
+                "bill_date": bill_date,
+                "entry_date": entry_date or bill_date or date.today(),
+                "purchase_type": _cell_str(row.get("purchase_type")),
+                "supplier_name": supplier,
+                "payment_type": (_cell_str(row.get("payment_type")) or "credit").lower(),
+                "tax_mode": (_cell_str(row.get("tax_mode")) or "exclusive").lower(),
+                "store_code": _cell_str(row.get("store_code")),
+                "notes": _cell_str(row.get("notes")),
+                "footer": None,
+                "items": [],
+                "_header_row": row.get("_row", 0),
+            }
+            order.append(key)
+        try:
+            expiry = _cell_date(row.get("expiry_date"))
+        except ValueError:
+            try:
+                expiry = _parse_ddmmyyyy(row.get("expiry_date"))
+            except ValueError:
+                expiry = None
+        pack = _cell_str(row.get("pack_size"))
+        scf = _cell_int(row.get("strip_conversion_factor"))
+        if scf is None:
+            scf = _parse_pack_scf(pack)
+        groups[key]["items"].append({
+            "_row": row.get("_row", 0),
+            "medicine_code": med_code,
+            "medicine_name": med_name,
+            "pack_size": pack,
+            "manufacturer": _cell_str(row.get("manufacturer")),
+            "batch_number": _cell_str(row.get("batch_number")),
+            "expiry_date": expiry,
+            "quantity": _cell_float(row.get("quantity")),
+            "free_quantity": _cell_float(row.get("free_quantity")) or 0.0,
+            "mrp": _cell_float(row.get("mrp")),
+            "purchase_rate": _cell_float(row.get("purchase_rate")),
+            "rate_a": _cell_float(row.get("rate_a")),
+            "rate_b": _cell_float(row.get("rate_b")),
+            "strip_conversion_factor": scf,
+            "discount_pct": _cell_float(row.get("discount_pct")) or 0.0,
+            "hsn_code": _cell_str(row.get("hsn_code")),
+        })
+    return [groups[k] for k in order]
+
+
+def _resolve_purchase_store_id(
+    db: Session, hospital_id: int, store_code: Optional[str], store_cache: dict,
+) -> Optional[int]:
+    if store_code:
+        return _resolve_store_id(db, hospital_id, store_code, store_cache)
+    # Prefer a purchase-capable store, then master.
+    purchase_store = db.query(PharmacyStore).filter(
+        PharmacyStore.hospital_id == hospital_id,
+        PharmacyStore.is_active == True,  # noqa: E712
+        PharmacyStore.can_receive_supplier_purchase == True,  # noqa: E712
+    ).order_by(PharmacyStore.is_default.desc(), PharmacyStore.id.asc()).first()
+    if purchase_store:
+        return purchase_store.id
+    return get_master_store_id(db, hospital_id)
+
+
+def _find_supplier_by_name(db: Session, hospital_id: int, name: str) -> Optional[PharmacySupplier]:
+    return db.query(PharmacySupplier).filter(
+        PharmacySupplier.hospital_id == hospital_id,
+        sa_func.lower(PharmacySupplier.name) == name.strip().lower(),
+        PharmacySupplier.is_active == True,  # noqa: E712
+    ).first()
+
+
+def _find_medicine_for_purchase(
+    db: Session, hospital_id: int, *,
+    medicine_code: Optional[str], medicine_name: Optional[str], pack_size: Optional[str],
+    cache: dict,
+) -> Tuple[Optional[Medicine], Optional[str]]:
+    """Return (medicine, error_message). Match code first, then name (+ pack)."""
+    if medicine_code:
+        key = f"code:{medicine_code.lower()}"
+        if key in cache:
+            return cache[key], None
+        med = db.query(Medicine).filter(
+            Medicine.hospital_id == hospital_id,
+            Medicine.medicine_code == medicine_code,
+            Medicine.is_active == True,  # noqa: E712
+        ).first()
+        if med:
+            cache[key] = med
+            return med, None
+        # Vendor item codes rarely match our medicine_code — fall through to name.
+
+    if not medicine_name:
+        return None, "Missing medicine_code / medicine_name"
+
+    key = f"name:{medicine_name.lower()}"
+    if key in cache and cache[key] is not None and not isinstance(cache[key], list):
+        return cache[key], None
+
+    matches = db.query(Medicine).filter(
+        Medicine.hospital_id == hospital_id,
+        sa_func.lower(Medicine.name) == medicine_name.strip().lower(),
+        Medicine.is_active == True,  # noqa: E712
+    ).all()
+    if not matches:
+        return None, f"Medicine '{medicine_name}' not found — import medicines first"
+    if len(matches) == 1:
+        cache[key] = matches[0]
+        return matches[0], None
+
+    if pack_size:
+        pack_norm = pack_size.replace(" ", "").lower()
+        narrowed = [
+            m for m in matches
+            if (m.packaging or "").replace(" ", "").lower() == pack_norm
+            or pack_norm in (m.packaging or "").replace(" ", "").lower()
+            or pack_norm in (m.strength or "").replace(" ", "").lower()
+        ]
+        if len(narrowed) == 1:
+            cache[key] = narrowed[0]
+            return narrowed[0], None
+
+    codes = ", ".join(m.medicine_code for m in matches[:5])
+    return None, (
+        f"Ambiguous medicine name '{medicine_name}' "
+        f"({len(matches)} matches: {codes}). Set medicine_code or packaging."
+    )
+
+
+def _next_purchase_number_import(db: Session, hospital_id: int) -> str:
+    today = date.today()
+    prefix = f"PURCH-{today.strftime('%y%m%d')}-"
+    last = db.query(PharmacyPurchase).filter(
+        PharmacyPurchase.purchase_number.like(prefix + "%"),
+        PharmacyPurchase.hospital_id == hospital_id,
+    ).order_by(PharmacyPurchase.purchase_number.desc()).first()
+    seq = 1
+    if last:
+        try:
+            seq = int(last.purchase_number.rsplit("-", 1)[-1]) + 1
+        except Exception:
+            seq = 1
+    return f"{prefix}{seq:04d}"
+
+
+def _recompute_purchase_totals_import(purchase: PharmacyPurchase, db: Session) -> None:
+    subtotal = 0.0
+    disc = 0.0
+    tax = 0.0
+    grand = 0.0
+    tax_mode = getattr(purchase, "tax_mode", None) or "exclusive"
+    for it in purchase.items:
+        hsn_row = None
+        if it.hsn_id:
+            hsn_row = db.query(PharmacyHSN).filter(PharmacyHSN.id == it.hsn_id).first()
+        elif it.medicine_id:
+            med = db.query(Medicine).filter(Medicine.id == it.medicine_id).first()
+            if med and med.hsn_id:
+                it.hsn_id = med.hsn_id
+                hsn_row = db.query(PharmacyHSN).filter(PharmacyHSN.id == med.hsn_id).first()
+        qty = float(it.quantity or 0)
+        rate = float(it.purchase_rate or 0)
+        disc_pct = float(it.discount_pct or 0)
+        base = qty * rate
+        base_after = base * (1 - disc_pct / 100.0)
+        tax_pct = 0.0
+        if hsn_row:
+            tax_pct = float(hsn_row.sgst_pct or 0) + float(hsn_row.cgst_pct or 0)
+            if not tax_pct:
+                tax_pct = float(hsn_row.igst_pct or 0)
+        _taxable, tax_amt, line_total = compute_line_tax(base_after, tax_pct, tax_mode=tax_mode)
+        it.tax_amount = tax_amt
+        it.line_total = line_total
+        it.sgst_pct = (hsn_row.sgst_pct or 0) if hsn_row else 0.0
+        it.cgst_pct = (hsn_row.cgst_pct or 0) if hsn_row else 0.0
+        it.igst_pct = (hsn_row.igst_pct if hsn_row else 0.0) or (it.sgst_pct + it.cgst_pct)
+        subtotal += base
+        disc += round(base - base_after, 2)
+        tax += tax_amt
+        grand += line_total
+    purchase.subtotal = round(subtotal, 2)
+    purchase.total_discount = round(disc, 2)
+    purchase.total_tax = round(tax, 2)
+    purchase.grand_total = round(grand, 2)
+
+
+def _find_existing_purchase(
+    db: Session, hospital_id: int, supplier_id: int, invoice_number: Optional[str],
+) -> Optional[PharmacyPurchase]:
+    inv = (invoice_number or "").strip()
+    if not inv:
+        return None
+    return db.query(PharmacyPurchase).filter(
+        PharmacyPurchase.hospital_id == hospital_id,
+        PharmacyPurchase.supplier_id == supplier_id,
+        PharmacyPurchase.invoice_number == inv,
+    ).first()
+
+
+def import_purchases(
+    db: Session, user: User, content: bytes, filename: str,
+    *, dry_run: bool, on_duplicate: str,
+) -> dict:
+    """Import purchase invoices as **draft** purchases.
+
+    Accepts:
+    - Vendor distributor CSV (H/T/F rows, CL1..CL31 headers) — e.g. Vasu Pharma export
+    - Named-header .xlsx/.csv matching PURCHASE_HEADERS
+    """
+    summary = _empty_summary(dry_run=dry_run)
+    rows = _parse_upload(content, filename, ["Purchases", "Purchase"])
+    hospital_id = user.hospital_id
+
+    if _looks_like_vendor_purchase(rows):
+        blocks = _parse_vendor_purchase_blocks(rows)
+    else:
+        blocks = _group_named_purchase_rows(rows)
+
+    if not blocks:
+        summary["errors"].append({
+            "sheet": "Purchases", "row": 0,
+            "message": "No purchase rows found. Use vendor H/T/F CSV or the purchases template.",
+        })
+        summary["error_count"] = 1
+        return summary
+
+    store_cache: Dict[str, PharmacyStore] = {
+        s.code.strip().lower(): s
+        for s in db.query(PharmacyStore).filter(PharmacyStore.hospital_id == hospital_id).all()
+    }
+    medicine_cache: dict = {}
+    supplier_cache: Dict[str, PharmacySupplier] = {}
+
+    for block in blocks:
+        items = block.get("items") or []
+        if not items:
+            continue
+
+        # Count each line toward total_rows for preview parity with other imports
+        for _ in items:
+            summary["total_rows"] += 1
+
+        supplier_name = block.get("supplier_name")
+        invoice_number = block.get("invoice_number")
+        header_row = block.get("_header_row") or (items[0].get("_row") if items else 0)
+        preview_key = invoice_number or f"row-{header_row}"
+
+        if not supplier_name:
+            msg = "Missing supplier_name (vendor CSV CL3 / template supplier_name)"
+            summary["errors"].append({"sheet": "Purchases", "row": header_row, "message": msg})
+            summary["preview"].append({
+                "row": header_row, "key": preview_key, "name": "",
+                "status": "error", "message": msg, "sheet": "Purchases",
+            })
+            continue
+
+        sup_key = supplier_name.lower()
+        supplier = supplier_cache.get(sup_key)
+        if not supplier:
+            supplier = _find_supplier_by_name(db, hospital_id, supplier_name)
+            if supplier:
+                supplier_cache[sup_key] = supplier
+        if not supplier:
+            msg = f"Supplier '{supplier_name}' not found — import suppliers first"
+            summary["errors"].append({"sheet": "Purchases", "row": header_row, "message": msg})
+            summary["preview"].append({
+                "row": header_row, "key": preview_key, "name": supplier_name,
+                "status": "error", "message": msg, "sheet": "Purchases",
+            })
+            continue
+
+        payment_type = (block.get("payment_type") or "credit").lower()
+        if payment_type not in ("cash", "credit"):
+            payment_type = "credit"
+        tax_mode = (block.get("tax_mode") or "exclusive").lower()
+        if tax_mode not in ("exclusive", "inclusive"):
+            tax_mode = "exclusive"
+
+        store_id = _resolve_purchase_store_id(db, hospital_id, block.get("store_code"), store_cache)
+        if not store_id:
+            msg = f"Store not found: '{block.get('store_code') or '(purchase/master store)'}'"
+            summary["errors"].append({"sheet": "Purchases", "row": header_row, "message": msg})
+            summary["preview"].append({
+                "row": header_row, "key": preview_key, "name": supplier_name,
+                "status": "error", "message": msg, "sheet": "Purchases",
+            })
+            continue
+
+        existing = _find_existing_purchase(db, hospital_id, supplier.id, invoice_number)
+        if existing and on_duplicate == "skip":
+            summary["skipped"] += 1
+            summary["preview"].append({
+                "row": header_row, "key": preview_key, "name": supplier_name,
+                "status": "skip",
+                "message": f"Invoice already exists as {existing.purchase_number}",
+                "sheet": "Purchases",
+            })
+            continue
+        if existing and existing.status != "draft":
+            msg = (
+                f"Invoice #{invoice_number} already exists as {existing.purchase_number} "
+                f"({existing.status}) — only draft purchases can be updated"
+            )
+            summary["errors"].append({"sheet": "Purchases", "row": header_row, "message": msg})
+            summary["preview"].append({
+                "row": header_row, "key": preview_key, "name": supplier_name,
+                "status": "error", "message": msg, "sheet": "Purchases",
+            })
+            continue
+
+        # Resolve all line items first; fail the whole invoice if any line errors
+        resolved: List[dict] = []
+        line_errors: List[str] = []
+        for item in items:
+            rownum = item.get("_row") or header_row
+            batch = (item.get("batch_number") or "").strip()
+            qty = item.get("quantity")
+            expiry = item.get("expiry_date")
+            rate = item.get("purchase_rate")
+            errs: List[str] = []
+            if not batch:
+                errs.append("Missing batch_number")
+            if not expiry:
+                errs.append("Missing or invalid expiry_date")
+            if qty is None or qty <= 0:
+                errs.append("quantity must be > 0")
+            if rate is None or rate < 0:
+                errs.append("Missing purchase_rate (vendor CSV PTR / CL11)")
+
+            med, med_err = _find_medicine_for_purchase(
+                db, hospital_id,
+                medicine_code=item.get("medicine_code"),
+                medicine_name=item.get("medicine_name"),
+                pack_size=item.get("pack_size"),
+                cache=medicine_cache,
+            )
+            # If code miss but name hit inside helper — ok. If code provided but
+            # only name works, helper already fell through. If both fail:
+            if med_err and not med:
+                # Retry name-only when vendor code didn't match
+                if item.get("medicine_code") and item.get("medicine_name"):
+                    med, med_err = _find_medicine_for_purchase(
+                        db, hospital_id,
+                        medicine_code=None,
+                        medicine_name=item.get("medicine_name"),
+                        pack_size=item.get("pack_size"),
+                        cache=medicine_cache,
+                    )
+            if not med:
+                errs.append(med_err or "Medicine not found")
+
+            if errs:
+                msg = f"Line {rownum}: " + "; ".join(errs)
+                line_errors.append(msg)
+                summary["errors"].append({"sheet": "Purchases", "row": rownum, "message": msg})
+                summary["preview"].append({
+                    "row": rownum,
+                    "key": item.get("medicine_code") or item.get("medicine_name") or "",
+                    "name": batch or "",
+                    "status": "error", "message": msg, "sheet": "Purchases",
+                })
+                continue
+
+            scf = item.get("strip_conversion_factor") or med.strip_conversion_factor or 1
+            scf = max(1, int(scf))
+            resolved.append({
+                "row": rownum,
+                "medicine": med,
+                "batch_number": batch,
+                "expiry_date": expiry,
+                "quantity": float(qty),
+                "free_quantity": float(item.get("free_quantity") or 0),
+                "mrp": round_money(item.get("mrp") or med.mrp or 0),
+                "purchase_rate": round_money(rate),
+                "rate_a": round_money(
+                    item.get("rate_a") if item.get("rate_a") is not None else (med.rate_a or 0)
+                ),
+                "rate_b": round_money(
+                    item.get("rate_b") if item.get("rate_b") is not None else (med.rate_b or 0)
+                ),
+                "strip_conversion_factor": scf,
+                "discount_pct": float(item.get("discount_pct") or 0),
+            })
+
+        if line_errors:
+            # Don't create a partial purchase for this invoice
+            continue
+        if not resolved:
+            continue
+
+        if existing and on_duplicate == "update":
+            for old in list(existing.items):
+                db.delete(old)
+            db.flush()
+            purchase = existing
+            purchase.entry_date = block.get("entry_date") or purchase.entry_date
+            purchase.bill_date = block.get("bill_date") or purchase.bill_date
+            purchase.payment_type = payment_type
+            purchase.purchase_type = block.get("purchase_type") or purchase.purchase_type
+            purchase.tax_mode = tax_mode
+            purchase.notes = block.get("notes") or purchase.notes
+            purchase.store_id = store_id
+            status = "update"
+        else:
+            purchase = PharmacyPurchase(
+                purchase_number=_next_purchase_number_import(db, hospital_id),
+                entry_date=block.get("entry_date") or date.today(),
+                supplier_id=supplier.id,
+                invoice_number=invoice_number,
+                bill_date=block.get("bill_date"),
+                payment_type=payment_type,
+                purchase_type=block.get("purchase_type"),
+                tax_mode=tax_mode,
+                status="draft",
+                notes=block.get("notes"),
+                created_by=user.id,
+                store_id=store_id,
+                hospital_id=hospital_id,
+            )
+            db.add(purchase)
+            db.flush()
+            # Avoid unique collisions on concurrent imports
+            for _attempt in range(3):
+                clash = db.query(PharmacyPurchase).filter(
+                    PharmacyPurchase.purchase_number == purchase.purchase_number,
+                    PharmacyPurchase.id != purchase.id,
+                ).first()
+                if not clash:
+                    break
+                purchase.purchase_number = _next_purchase_number_import(db, hospital_id)
+                db.flush()
+            status = "new"
+
+        for r in resolved:
+            db.add(PharmacyPurchaseItem(
+                purchase_id=purchase.id,
+                medicine_id=r["medicine"].id,
+                batch_number=r["batch_number"],
+                expiry_date=r["expiry_date"],
+                mrp=r["mrp"],
+                quantity=r["quantity"],
+                free_quantity=r["free_quantity"],
+                purchase_rate=r["purchase_rate"],
+                rate_a=r["rate_a"],
+                rate_b=r["rate_b"],
+                strip_conversion_factor=r["strip_conversion_factor"],
+                discount_pct=r["discount_pct"],
+                hsn_id=r["medicine"].hsn_id,
+            ))
+        db.flush()
+        db.refresh(purchase)
+        _recompute_purchase_totals_import(purchase, db)
+
+        if status == "new":
+            summary["created"] += 1
+        else:
+            summary["updated"] += 1
+        summary["preview"].append({
+            "row": header_row,
+            "key": preview_key,
+            "name": f"{supplier_name} — {len(resolved)} items — ₹{purchase.grand_total:.2f}",
+            "status": status,
+            "message": f"Draft {purchase.purchase_number}",
+            "sheet": "Purchases",
+        })
+
+    summary["error_count"] = len(summary["errors"])
+    return summary
+
+
+def build_purchases_template() -> bytes:
+    def build(wb: openpyxl.Workbook) -> None:
+        ws = wb.active
+        ws.title = "Purchases"
+        ws.append(PURCHASE_HEADERS)
+        ws.append([
+            "VASU PHARMA", "2026-27/TAX/1808", "2026-08-01", "2026-08-01",
+            "credit", "Direct", "exclusive", "", "Sample import row",
+            "AF200", "AF-200", "HAH022603", "2028-01-31",
+            20, 0, 77.20, 58.82, 77.20, 77.20, 1, 0, "5*1", "30049029",
+        ])
+        _append_instructions(wb, [
+            "KT HEALTH ERP — Purchase Import",
+            "",
+            "Creates DRAFT purchases (review then Confirm in Purchases).",
+            "Supplier and medicines must already exist.",
+            "",
+            "Option A — Named template (this sheet):",
+            "  Required: supplier_name, medicine_code OR medicine_name, batch_number,",
+            "  expiry_date (YYYY-MM-DD), quantity, purchase_rate",
+            "  Rows with the same supplier_name + invoice_number become one purchase.",
+            "",
+            "Option B — Vendor distributor CSV (e.g. Vasu Pharma tax-invoice export):",
+            "  Upload the H/T/F CSV as-is (CL1..CL31). Header (H) has invoice # + date;",
+            "  detail (T) rows map: Item Name→medicine, Pack Size, Batch, Expiry,",
+            "  QTY, Package(free), MRP→mrp/rate_a/rate_b, PTR→purchase_rate, HSN.",
+            "  Footer (F) invoice value is stored in purchase notes for reconciliation.",
+            "",
+            "Tax % is taken from each medicine's HSN master (not from the CSV GST columns).",
+            "on_duplicate=skip leaves existing invoices alone; update replaces draft lines only.",
         ])
 
     return _workbook_bytes(build)

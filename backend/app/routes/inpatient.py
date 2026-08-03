@@ -5586,7 +5586,7 @@ async def get_admission_bill(
     deposits_list = [
         {
             "deposit_number": d.deposit_number or "",
-            "date": d.received_at.strftime("%d/%m/%Y %H:%M") if d.received_at else "",
+            "date": d.received_at.strftime("%d/%m/%Y") if d.received_at else "",
             "deposit_type": d.deposit_type or "initial",
             "method": d.payment_method or "cash",
             "reference": d.reference_number or "",
@@ -6809,7 +6809,7 @@ async def get_bill_pdf(
     deposits_list = [
         {
             "deposit_number": d.deposit_number or "",
-            "date": d.received_at.strftime("%d/%m/%Y %H:%M") if d.received_at else "",
+            "date": d.received_at.strftime("%d/%m/%Y") if d.received_at else "",
             "deposit_type": d.deposit_type or "initial",
             "method": d.payment_method or "cash",
             "reference": d.reference_number or "",
@@ -6881,9 +6881,9 @@ async def get_bill_pdf(
             "ward": room.department if room else None,
             "room_number": room.room_number if room else None,
             "bed_label": (bed.bed_label if bed else admission.bed_number),
-            "admitted_at": admission.admission_date.strftime("%d/%m/%Y %H:%M")
+            "admitted_at": admission.admission_date.strftime("%d/%m/%Y")
                 if admission.admission_date else None,
-            "discharged_at": (discharge.discharge_date.strftime("%d/%m/%Y %H:%M")
+            "discharged_at": (discharge.discharge_date.strftime("%d/%m/%Y")
                 if discharge and discharge.discharge_date else None),
             "length_of_stay": breakdown.get("stay_days", 0),
             "admitting_doctor": admitting_doctor,
@@ -10259,7 +10259,7 @@ async def get_deposit_receipt_pdf(
         "payment_method": d.payment_method,
         "reference_number": d.reference_number,
         "notes": d.notes,
-        "received_at": d.received_at.strftime("%d/%m/%Y %H:%M") if d.received_at else "",
+        "received_at": d.received_at.strftime("%d/%m/%Y") if d.received_at else "",
         "received_by_name": received_by_name,
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "—",
         "mrn": (patient.mrn or "") if patient else "",

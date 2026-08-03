@@ -118,17 +118,26 @@ def _as_bool(value: Optional[str], default: bool = False) -> bool:
     return str(value).strip().lower() in ("1", "true", "yes", "on")
 
 
+def _normalize_tax_mode(value: Optional[str], default: str = "inclusive") -> str:
+    mode = (value or default).strip().lower()
+    return mode if mode in ("inclusive", "exclusive") else default
+
+
 @router.get("/pos-settings")
 def get_pos_settings(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission_any(
-        Modules.PHARMACY, "create_sale", "edit_sale", "view_sales", "set_rates",
+        Modules.PHARMACY,
+        "create_sale", "edit_sale", "view_sales",
+        "create_purchase", "edit_purchase", "view_purchases",
+        "set_rates",
     )),
 ):
-    """POS defaults readable by counter staff.
+    """Pharmacy counter defaults (rates + tax modes).
 
     When `use_default_rate_tiers` is true, POS applies cash/credit defaults and
-    skips the Rate A/B picker after batch select. Maintained under Pharmacy → Setup.
+    skips the Rate A/B picker after batch select. Tax mode defaults seed the
+    Sales / Purchase dropdowns. Maintained under Pharmacy → Setup.
     """
     from app.models.permissions import HospitalSettings
 
@@ -138,6 +147,8 @@ def get_pos_settings(
             "use_default_rate_tiers",
             "default_rate_tier_cash",
             "default_rate_tier_credit",
+            "default_tax_mode_sales",
+            "default_tax_mode_purchase",
         ]),
     ).all()
     cfg = {s.setting_key: s.setting_value for s in rows}
@@ -145,6 +156,9 @@ def get_pos_settings(
         "use_default_rate_tiers": _as_bool(cfg.get("use_default_rate_tiers"), False),
         "default_rate_tier_cash": _normalize_rate_tier(cfg.get("default_rate_tier_cash")),
         "default_rate_tier_credit": _normalize_rate_tier(cfg.get("default_rate_tier_credit")),
+        # Preserve historical hardcodes when unset
+        "default_tax_mode_sales": _normalize_tax_mode(cfg.get("default_tax_mode_sales"), "inclusive"),
+        "default_tax_mode_purchase": _normalize_tax_mode(cfg.get("default_tax_mode_purchase"), "exclusive"),
     }
 
 
@@ -152,6 +166,8 @@ class PosSettingsUpdate(BaseModel):
     use_default_rate_tiers: bool = False
     default_rate_tier_cash: str = "A"
     default_rate_tier_credit: str = "A"
+    default_tax_mode_sales: str = "inclusive"
+    default_tax_mode_purchase: str = "exclusive"
 
     @field_validator("default_rate_tier_cash", "default_rate_tier_credit")
     @classmethod
@@ -161,6 +177,14 @@ class PosSettingsUpdate(BaseModel):
             raise ValueError("Rate tier must be A or B")
         return tier
 
+    @field_validator("default_tax_mode_sales", "default_tax_mode_purchase")
+    @classmethod
+    def _tax_incl_or_excl(cls, v: str) -> str:
+        mode = (v or "").strip().lower()
+        if mode not in ("inclusive", "exclusive"):
+            raise ValueError("Tax mode must be inclusive or exclusive")
+        return mode
+
 
 @router.put("/pos-settings")
 def update_pos_settings(
@@ -168,13 +192,15 @@ def update_pos_settings(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "set_rates")),
 ):
-    """Update POS default rate settings (pharmacy admin / set_rates)."""
+    """Update pharmacy POS / purchase defaults (pharmacy admin / set_rates)."""
     from app.models.permissions import HospitalSettings
 
     updates = {
         "use_default_rate_tiers": "true" if data.use_default_rate_tiers else "false",
         "default_rate_tier_cash": data.default_rate_tier_cash,
         "default_rate_tier_credit": data.default_rate_tier_credit,
+        "default_tax_mode_sales": data.default_tax_mode_sales,
+        "default_tax_mode_purchase": data.default_tax_mode_purchase,
     }
     for key, value in updates.items():
         existing = db.query(HospitalSettings).filter(
@@ -200,12 +226,15 @@ def update_pos_settings(
         resource_type="HospitalSettings",
         description=(
             f"POS defaults enabled={data.use_default_rate_tiers} "
-            f"cash={data.default_rate_tier_cash} credit={data.default_rate_tier_credit}"
+            f"cash={data.default_rate_tier_cash} credit={data.default_rate_tier_credit} "
+            f"sales_tax={data.default_tax_mode_sales} purchase_tax={data.default_tax_mode_purchase}"
         ),
         details={
             "use_default_rate_tiers": data.use_default_rate_tiers,
             "default_rate_tier_cash": data.default_rate_tier_cash,
             "default_rate_tier_credit": data.default_rate_tier_credit,
+            "default_tax_mode_sales": data.default_tax_mode_sales,
+            "default_tax_mode_purchase": data.default_tax_mode_purchase,
         },
     )
     return {
@@ -213,6 +242,8 @@ def update_pos_settings(
         "use_default_rate_tiers": data.use_default_rate_tiers,
         "default_rate_tier_cash": data.default_rate_tier_cash,
         "default_rate_tier_credit": data.default_rate_tier_credit,
+        "default_tax_mode_sales": data.default_tax_mode_sales,
+        "default_tax_mode_purchase": data.default_tax_mode_purchase,
     }
 
 
@@ -1145,17 +1176,21 @@ def update_medicine_pricing(
 # ============================================================================
 
 class InventoryRowOut(BaseModel):
-    """Per-medicine aggregated stock with low-stock flag."""
+    """Per-medicine aggregated stock."""
     medicine_id: int
     medicine_code: str
     name: str
     rack_code: Optional[str] = None
     uom: Optional[str] = None
     total_stock: float
+    free_quantity: float = 0
     strip_conversion_factor: int = 1
-    min_qty: int
-    is_low_stock: bool
+    manufacturer: Optional[str] = None
+    supplier_name: Optional[str] = None
     batch_count: int
+    # Kept for low-stock endpoint / older clients; stock UI no longer uses these.
+    min_qty: int = 0
+    is_low_stock: bool = False
 
 
 class BatchOut(BaseModel):
@@ -1172,6 +1207,7 @@ class BatchOut(BaseModel):
     strip_conversion_factor: int = 1
     selling_price: float
     free_quantity: int
+    manufacturer: Optional[str] = None
     supplier_id: Optional[int] = None
     supplier_name: Optional[str] = None
     purchase_id: Optional[int] = None
@@ -1179,6 +1215,17 @@ class BatchOut(BaseModel):
     is_active: bool
 
     class Config: from_attributes = True
+
+
+def _dedupe_joined_names(raw: Optional[str]) -> Optional[str]:
+    if not raw:
+        return None
+    seen = []
+    for part in str(raw).split(","):
+        name = part.strip()
+        if name and name not in seen:
+            seen.append(name)
+    return ", ".join(seen) if seen else None
 
 
 @router.get("/inventory", response_model=List[InventoryRowOut])
@@ -1189,23 +1236,38 @@ def list_inventory(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_inventory")),
 ):
-    """Per-medicine stock summary across batches with low-stock flag."""
+    """Per-medicine stock summary across batches."""
     sid = resolve_store_id(db, current_user, store_id)
-    # Aggregate stock + nearest expiry per medicine
-    agg = db.query(
-        PharmacyInventory.medicine_id,
-        sa_func.sum(PharmacyInventory.quantity_in_stock).label("total"),
-        sa_func.count(PharmacyInventory.id).label("batches"),
-    ).filter(
+    inv_filter = (
         PharmacyInventory.hospital_id == current_user.hospital_id,
         PharmacyInventory.store_id == sid,
         PharmacyInventory.is_active == True,  # noqa: E712
-    ).group_by(PharmacyInventory.medicine_id).subquery()
+    )
+    agg = db.query(
+        PharmacyInventory.medicine_id,
+        sa_func.sum(PharmacyInventory.quantity_in_stock).label("total"),
+        sa_func.sum(PharmacyInventory.free_quantity).label("free_total"),
+        sa_func.count(PharmacyInventory.id).label("batches"),
+    ).filter(*inv_filter).group_by(PharmacyInventory.medicine_id).subquery()
 
-    rows = db.query(Medicine, agg.c.total, agg.c.batches, PharmacyRack.code, PharmacyUoM.abbreviation).outerjoin(
+    supplier_agg = db.query(
+        PharmacyInventory.medicine_id,
+        sa_func.group_concat(PharmacySupplier.name).label("supplier_names"),
+    ).outerjoin(
+        PharmacySupplier, PharmacySupplier.id == PharmacyInventory.supplier_id,
+    ).filter(*inv_filter).group_by(PharmacyInventory.medicine_id).subquery()
+
+    rows = db.query(
+        Medicine, agg.c.total, agg.c.free_total, agg.c.batches,
+        PharmacyRack.code, PharmacyUoM.abbreviation, PharmacyCompany.name,
+        supplier_agg.c.supplier_names,
+    ).outerjoin(
         agg, agg.c.medicine_id == Medicine.id,
+    ).outerjoin(
+        supplier_agg, supplier_agg.c.medicine_id == Medicine.id,
     ).outerjoin(PharmacyRack, Medicine.rack_id == PharmacyRack.id) \
      .outerjoin(PharmacyUoM, Medicine.uom_id == PharmacyUoM.id) \
+     .outerjoin(PharmacyCompany, Medicine.company_id == PharmacyCompany.id) \
      .filter(
         Medicine.hospital_id == current_user.hospital_id,
         Medicine.is_active == True,  # noqa: E712
@@ -1216,7 +1278,7 @@ def list_inventory(
         rows = rows.filter(or_(Medicine.name.ilike(like), Medicine.medicine_code.ilike(like), Medicine.barcode.ilike(like)))
 
     out = []
-    for med, total, batches, rack_code, uom_abbr in rows.order_by(Medicine.name).all():
+    for med, total, free_total, batches, rack_code, uom_abbr, company_name, supplier_names in rows.order_by(Medicine.name).all():
         total = float(total or 0)
         low = (med.min_qty or 0) > 0 and total <= (med.min_qty or 0)
         if low_only and not low:
@@ -1225,7 +1287,10 @@ def list_inventory(
             medicine_id=med.id, medicine_code=med.medicine_code, name=med.name,
             rack_code=rack_code, uom=uom_abbr,
             total_stock=total,
+            free_quantity=float(free_total or 0),
             strip_conversion_factor=max(1, int(med.strip_conversion_factor or 1)),
+            manufacturer=(company_name or med.manufacturer or None),
+            supplier_name=_dedupe_joined_names(supplier_names),
             min_qty=med.min_qty or 0, is_low_stock=low,
             batch_count=int(batches or 0),
         ))
@@ -1244,9 +1309,11 @@ def list_batches(
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_inventory")),
 ):
     sid = resolve_store_id(db, current_user, store_id)
-    q = db.query(PharmacyInventory, Medicine, PharmacySupplier).join(
+    q = db.query(PharmacyInventory, Medicine, PharmacySupplier, PharmacyCompany).join(
         Medicine, Medicine.id == PharmacyInventory.medicine_id,
-    ).outerjoin(PharmacySupplier, PharmacySupplier.id == PharmacyInventory.supplier_id).filter(
+    ).outerjoin(PharmacySupplier, PharmacySupplier.id == PharmacyInventory.supplier_id).outerjoin(
+        PharmacyCompany, PharmacyCompany.id == Medicine.company_id,
+    ).filter(
         PharmacyInventory.hospital_id == current_user.hospital_id,
         PharmacyInventory.store_id == sid,
     )
@@ -1260,11 +1327,13 @@ def list_batches(
         PharmacyInventory.expiry_date.asc(),
         PharmacyInventory.id.asc(),
     ).limit(limit).all()
-    if include_batch_id and not any(inv.id == include_batch_id for inv, _, _ in rows):
-        extra = db.query(PharmacyInventory, Medicine, PharmacySupplier).join(
+    if include_batch_id and not any(inv.id == include_batch_id for inv, _, _, _ in rows):
+        extra = db.query(PharmacyInventory, Medicine, PharmacySupplier, PharmacyCompany).join(
             Medicine, Medicine.id == PharmacyInventory.medicine_id,
         ).outerjoin(
             PharmacySupplier, PharmacySupplier.id == PharmacyInventory.supplier_id,
+        ).outerjoin(
+            PharmacyCompany, PharmacyCompany.id == Medicine.company_id,
         ).filter(
             PharmacyInventory.id == include_batch_id,
             PharmacyInventory.hospital_id == current_user.hospital_id,
@@ -1287,9 +1356,10 @@ def list_batches(
             strip_conversion_factor=max(1, int(inv.strip_conversion_factor or 0) or int(med.strip_conversion_factor or 1) or 1),
             selling_price=inv.selling_price or 0.0,
             free_quantity=inv.free_quantity or 0,
+            manufacturer=(co.name if co else None) or (med.manufacturer or None),
             supplier_id=inv.supplier_id, supplier_name=sup.name if sup else None,
             purchase_id=inv.purchase_id, hsn_id=inv.hsn_id, is_active=inv.is_active,
-        ) for inv, med, sup in rows
+        ) for inv, med, sup, co in rows
     ]
 
 
@@ -1568,7 +1638,7 @@ class PurchaseItemIn(BaseModel):
     rate_b: float = 0.0
     strip_conversion_factor: int = Field(1, ge=1)
     discount_pct: float = 0.0
-    # Ignored if sent — tax is always taken from the medicine's HSN at save time.
+    # Prefer line HSN when provided; otherwise inherit from the medicine catalog.
     hsn_id: Optional[int] = None
     expiry_date: Optional[date] = None
 
@@ -2064,7 +2134,7 @@ def create_purchase(
             rate_b=item.rate_b or med.rate_b or 0.0,
             strip_conversion_factor=item.strip_conversion_factor or med.strip_conversion_factor or 1,
             discount_pct=item.discount_pct,
-            hsn_id=med.hsn_id,
+            hsn_id=item.hsn_id or med.hsn_id,
         )
         db.add(row)
     db.flush()
@@ -2161,7 +2231,7 @@ def edit_purchase(
             rate_b=item.rate_b or med.rate_b or 0.0,
             strip_conversion_factor=item.strip_conversion_factor or med.strip_conversion_factor or 1,
             discount_pct=item.discount_pct,
-            hsn_id=med.hsn_id,
+            hsn_id=item.hsn_id or med.hsn_id,
         ))
     db.flush(); db.refresh(purchase)
     _recompute_purchase_totals(purchase, db)

@@ -370,7 +370,7 @@ export const PHARMACY_PAGE_META = {
   'sales': { title: 'Sales History', blurb: 'Completed counter sales and voids' },
   'purchases': { title: 'Purchases', blurb: 'Confirmed and draft goods received' },
   'transfers': { title: 'Stock Transfers', blurb: 'Move stock from master to satellite pharmacies' },
-  'inventory': { title: 'Stock', blurb: 'Live stock, batches, low-stock alerts, and ledger' },
+  'inventory': { title: 'Stock', blurb: 'Live stock, batches, and stock ledger' },
   'medicines': { title: 'Medicines', blurb: 'Drug catalog — pricing, flags, and barcodes' },
   'suppliers': { title: 'Suppliers', blurb: 'Vendor directory and GST details' },
   'masters/categories': { title: 'Categories', blurb: 'Medicine category master' },

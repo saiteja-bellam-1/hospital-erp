@@ -11,6 +11,7 @@ All money fields (rates, prices, line totals) are rounded to 2 decimal places.
 
 from __future__ import annotations
 
+import math
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Optional, Tuple
 
@@ -101,17 +102,24 @@ def tab_sale_rate(source: Any, *, tier: str = "A", strip_rate: float | None = No
 
 
 def normalize_tabs_to_strips(qty_tabs: float, qty_strips: float, source: Any) -> Tuple[float, float]:
-    """Roll exact strip-multiples of tabs into strips so strip rate applies exactly."""
+    """Roll whole strips out of tab qty; keep leftover tabs.
+
+    Prefer strip-rate pricing for full strips (avoids round(strip/scf)*scf ≠ strip).
+    e.g. 12 tabs with 10 tabs/strip → 1 strip + 2 tabs.
+    """
     scf = units_per_strip(source)
     tabs = float(qty_tabs or 0)
     strips = float(qty_strips or 0)
     if scf <= 1 or tabs <= 0:
         return tabs, strips
-    # Exact multiple → prefer strip pricing (avoids round(strip/scf)*scf ≠ strip).
-    whole, rem = divmod(tabs, scf)
-    if abs(rem) < 1e-9 and whole > 0:
-        return 0.0, strips + whole
-    return tabs, strips
+    # Float-safe whole strips: near-exact counts (e.g. 9.9999999/10) still roll up.
+    whole = int(math.floor(tabs / scf + 1e-9))
+    if whole <= 0:
+        return tabs, strips
+    rem = tabs - whole * scf
+    leftover = 0.0 if abs(rem) <= scf * 1e-9 else rem
+    return leftover, strips + whole
+
 
 
 def line_gross_before_discount(

@@ -12,6 +12,7 @@ from app.services.pharmacy_import import (
     build_masters_template,
     build_medicines_template,
     build_opening_stock_template,
+    build_purchases_template,
     build_suppliers_template,
     export_masters_xlsx,
     export_medicines_xlsx,
@@ -20,6 +21,7 @@ from app.services.pharmacy_import import (
     import_masters,
     import_medicines,
     import_opening_stock,
+    import_purchases,
     import_suppliers,
 )
 from app.utils.auth import Modules
@@ -272,3 +274,36 @@ def opening_stock_export_xlsx(
 ):
     data = export_opening_stock_xlsx(db, current_user.hospital_id)
     return _xlsx_response(data, "pharmacy_opening_stock_export.xlsx")
+
+
+# ---------------------------------------------------------------------------
+# Purchases
+# ---------------------------------------------------------------------------
+
+@router.get("/purchases/import/template")
+def purchases_import_template(
+    current_user: User = Depends(require_feature_permission_any(
+        Modules.PHARMACY, "view_purchases", "create_purchase",
+    )),
+):
+    return _xlsx_response(build_purchases_template(), "pharmacy_purchases_import_template.xlsx")
+
+
+@router.post("/purchases/import", response_model=PharmacyImportSummary)
+async def purchases_import(
+    file: UploadFile = File(...),
+    dry_run: bool = Form(False),
+    on_duplicate: str = Form("skip"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "create_purchase")),
+):
+    content, filename = await _read_upload(file)
+    on_duplicate = _normalize_on_duplicate(on_duplicate)
+    summary = import_purchases(
+        db, current_user, content, filename, dry_run=dry_run, on_duplicate=on_duplicate,
+    )
+    summary["dry_run"] = dry_run
+    return _finalize_import(
+        db, current_user, summary,
+        action="import_pharmacy_purchases", resource_type="pharmacy_purchase",
+    )

@@ -87,24 +87,23 @@ export function combinedBaseQty(qtyTabs, qtyStrips, source) {
   return (parseFloat(qtyTabs) || 0) + (parseFloat(qtyStrips) || 0) * unitsPerStrip(source);
 }
 
-/** When tab qty is an exact multiple of strip size, roll into strips and clear remainder tabs. */
+/** When tab qty ≥ strip size, roll whole strips into qty_strips and keep leftover tabs.
+ *  e.g. 12 tabs with 10 tabs/strip → 1 strip + 2 tabs (exact multiples clear tabs). */
 export function normalizeTabQtyToStrips(qtyTabs, qtyStrips, source) {
   const scf = unitsPerStrip(source);
   const tabs = parseFloat(qtyTabs) || 0;
   const strips = parseFloat(qtyStrips) || 0;
-  if (scf <= 1) {
+  if (scf <= 1 || tabs <= 0) {
     return { qty_tabs: tabs, qty_strips: strips };
   }
-  if (tabs <= 0) {
+  // Float-safe whole strips: 10.0000001 / 10 should still count as 1.
+  const whole = Math.floor(tabs / scf + 1e-9);
+  if (whole <= 0) {
     return { qty_tabs: tabs, qty_strips: strips };
   }
-  const remainder = tabs % scf;
-  const isExactMultiple = Math.abs(remainder) < 1e-9;
-  if (!isExactMultiple) {
-    return { qty_tabs: tabs, qty_strips: strips };
-  }
-  const addedStrips = tabs / scf;
-  return { qty_tabs: 0, qty_strips: strips + addedStrips };
+  const rem = tabs - whole * scf;
+  const leftover = Math.abs(rem) <= scf * 1e-9 ? 0 : rem;
+  return { qty_tabs: leftover, qty_strips: strips + whole };
 }
 
 /** Gross before discount — strip-exact when tabs are full strips. */

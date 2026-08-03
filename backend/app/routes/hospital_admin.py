@@ -2959,7 +2959,7 @@ async def refund_receipt_pdf(
     }
     refund_data = {
         "refund_number": refund.payment_number,
-        "refund_date": refund.payment_date.strftime("%d/%m/%Y %H:%M") if refund.payment_date else "",
+        "refund_date": refund.payment_date.strftime("%d/%m/%Y") if refund.payment_date else "",
         "amount": abs(float(refund.amount_paid or 0)),
         "payment_method": refund.payment_method_name or "cash",
         "reason": (refund.notes or "").split(":", 1)[-1].strip() if refund.notes else "",
@@ -3590,7 +3590,7 @@ async def credit_note_pdf(
     }
     cn_data = {
         "credit_note_number": cn.bill_number,
-        "credit_note_date": cn.bill_date.strftime("%d/%m/%Y %H:%M") if cn.bill_date else "",
+        "credit_note_date": cn.bill_date.strftime("%d/%m/%Y") if cn.bill_date else "",
         "amount": abs(float(cn.total_amount or 0)),
         "reason": (cn.notes or "").split(":", 1)[-1].strip() if cn.notes else "",
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "Unknown",
