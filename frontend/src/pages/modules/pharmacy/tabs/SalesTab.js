@@ -9,9 +9,10 @@ import { Label } from '../../../../components/ui/label';
 import { Textarea } from '../../../../components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../../../../components/ui/dialog';
 import { useToast } from '../../../../hooks/use-toast';
-import { Plus, RefreshCw, Ban, Printer, Pencil } from 'lucide-react';
+import { Plus, RefreshCw, Ban, Printer, Pencil, Upload } from 'lucide-react';
 import { errMsg } from '../../PharmacyModule';
 import PdfPreviewDialog from '../../../../components/PdfPreviewDialog';
+import PharmacyImportDialog from '../../../../components/pharmacy/PharmacyImportDialog';
 import { usePharmacyStore } from '../../../../contexts/PharmacyStoreContext';
 import { usePharmacyPermissions } from '../../../../hooks/usePharmacyPermissions';
 
@@ -27,6 +28,7 @@ export default function SalesTab() {
   const [voidTarget, setVoidTarget] = useState(null);
   const [voidReason, setVoidReason] = useState('');
   const [previewSaleId, setPreviewSaleId] = useState(null);
+  const [importOpen, setImportOpen] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -61,6 +63,11 @@ export default function SalesTab() {
               onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); load(); } }}
               data-nav-skip />
             <Button size="sm" variant="outline" onClick={load}><RefreshCw className="h-3 w-3" /></Button>
+            {hasPerm('create_sale') && (
+              <Button size="sm" variant="outline" onClick={() => setImportOpen(true)}>
+                <Upload className="h-3 w-3 mr-1" /> Import
+              </Button>
+            )}
             <Button size="sm" onClick={() => navigate('/dashboard/pharmacy/sales-counter')}>
               <Plus className="h-3 w-3 mr-1" /> Sales Counter
             </Button>
@@ -127,7 +134,11 @@ export default function SalesTab() {
           <div>
             <Label>Reason</Label>
             <Textarea value={voidReason} onChange={e => setVoidReason(e.target.value)} placeholder="Customer cancelled, wrong meds, etc." />
-            <p className="text-xs text-gray-500 mt-2">Voiding will restore stock to each batch and reverse the sale.</p>
+            <p className="text-xs text-gray-500 mt-2">
+              {voidTarget?.stock_affected === false
+                ? 'This sale was imported without stock changes — voiding will not adjust inventory.'
+                : 'Voiding will restore stock to each batch and reverse the sale.'}
+            </p>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setVoidOpen(false)}>Cancel</Button>
@@ -141,6 +152,27 @@ export default function SalesTab() {
         onClose={() => setPreviewSaleId(null)}
         title="Sale Invoice Preview"
         path={previewSaleId ? `/api/pharmacy/sales/${previewSaleId}/invoice/pdf` : null}
+      />
+
+      <PharmacyImportDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        onImported={load}
+        title="Import previous sales"
+        entityLabel="sales"
+        importUrl="/api/pharmacy/sales/import"
+        templateUrl="/api/pharmacy/sales/import/template"
+        showDuplicateSelect={false}
+        showAffectStock
+        defaultAffectStock={false}
+        helpText={(
+          <>
+            Download the Excel template, fill one row per line item (same <code className="text-[11px]">sale_number</code> groups
+            lines into one bill), then preview and confirm. Choose <strong>Record only</strong> when migrating history
+            from another system so inventory is not changed, or <strong>Deduct stock</strong> when batches still have
+            stock to remove. Medicines must already exist in the catalog.
+          </>
+        )}
       />
     </Card>
   );

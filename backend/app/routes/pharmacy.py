@@ -1890,35 +1890,192 @@ def _validate_confirmed_purchase_edit(
             )
 
 
-def _reverse_purchase_item_stock(
-    db: Session, item: PharmacyPurchaseItem, purchase: PharmacyPurchase,
-    user: User, reason: str,
-) -> float:
-    """Reverse the un-sold portion of a confirmed purchase line."""
-    received = _purchase_received_base_qty(item)
-    batch_id = item.inventory_id
-    sold = _sold_qty_for_batch(db, batch_id)
-    reversible = max(0.0, received - sold)
-    if reversible <= 0 or not batch_id:
-        return 0.0
-    batch = db.query(PharmacyInventory).filter(PharmacyInventory.id == batch_id).first()
-    if not batch:
-        return 0.0
-    take = min(reversible, float(batch.quantity_in_stock or 0))
-    batch.quantity_in_stock = float(batch.quantity_in_stock or 0) - take
+def _purchase_ledger_rows_for_batch(
+    db: Session, purchase_id: int, batch_id: int,
+) -> List[PharmacyStockLedger]:
+    """Purchase credit + any legacy purchase_edit_reverse rows for one batch."""
+    return (
+        db.query(PharmacyStockLedger)
+        .filter(
+            PharmacyStockLedger.reference_type == "purchase",
+            PharmacyStockLedger.reference_id == purchase_id,
+            PharmacyStockLedger.batch_id == batch_id,
+            PharmacyStockLedger.txn_type.in_(("purchase", "purchase_edit_reverse")),
+        )
+        .order_by(PharmacyStockLedger.created_at.asc(), PharmacyStockLedger.id.asc())
+        .all()
+    )
+
+
+def _adjust_batch_stock(batch: PharmacyInventory, delta: float) -> None:
+    """Apply a signed stock delta; deactivate when on-hand hits zero."""
+    batch.quantity_in_stock = float(batch.quantity_in_stock or 0) + float(delta or 0)
     if (batch.quantity_in_stock or 0) <= 0:
         batch.quantity_in_stock = 0
         batch.is_active = False
-    if take > 0:
-        db.add(PharmacyStockLedger(
-            medicine_id=item.medicine_id, batch_id=batch.id,
-            txn_type="purchase_edit_reverse", qty_delta=-take,
-            reference_type="purchase", reference_id=purchase.id,
-            performed_by=user.id, store_id=purchase.store_id,
-            hospital_id=purchase.hospital_id,
-            notes=f"Edit purchase {purchase.purchase_number}: {reason}",
-        ))
-    return take
+    else:
+        batch.is_active = True
+
+
+def _set_purchase_ledger_qty(
+    db: Session, *, purchase: PharmacyPurchase, batch: PharmacyInventory,
+    medicine_id: int, qty_delta: float, user: User, notes: str,
+) -> PharmacyStockLedger:
+    """Keep a single `purchase` ledger row for this purchase+batch.
+
+    Updates qty in place so edits do not show reverse/−old and +new rows.
+    Also collapses legacy purchase_edit_reverse / duplicate purchase rows
+    left by the old reverse-then-recreate edit path.
+    """
+    rows = _purchase_ledger_rows_for_batch(db, purchase.id, batch.id)
+    keep: Optional[PharmacyStockLedger] = None
+    for row in rows:
+        if row.txn_type == "purchase" and keep is None:
+            keep = row
+        else:
+            db.delete(row)
+    if keep is not None:
+        keep.qty_delta = float(qty_delta)
+        keep.medicine_id = medicine_id
+        keep.performed_by = user.id
+        keep.store_id = purchase.store_id
+        keep.notes = notes
+        return keep
+    led = PharmacyStockLedger(
+        medicine_id=medicine_id, batch_id=batch.id, txn_type="purchase",
+        qty_delta=float(qty_delta), reference_type="purchase",
+        reference_id=purchase.id, performed_by=user.id,
+        store_id=purchase.store_id, hospital_id=purchase.hospital_id,
+        notes=notes,
+    )
+    db.add(led)
+    return led
+
+
+def _delete_purchase_ledger_for_batch(
+    db: Session, purchase_id: int, batch_id: int,
+) -> None:
+    for row in _purchase_ledger_rows_for_batch(db, purchase_id, batch_id):
+        db.delete(row)
+
+
+def _apply_purchase_pricing_to_batch(
+    inv: PharmacyInventory, item: PharmacyPurchaseItem, purchase: PharmacyPurchase,
+    *, free_base: float, free_mode: str = "add",
+) -> None:
+    """Overwrite batch commercial fields from a purchase line.
+
+    free_mode:
+      - "add": accumulate free tabs (confirm / new line merge)
+      - "set_delta": adjust free tabs by (new_free - old_free) via free_base as the delta
+    """
+    item_scf = _purchase_strip_factor(item)
+    eff_cost = _effective_cost(
+        item.quantity, item.free_quantity, item.purchase_rate, item_scf,
+    )
+    item_rate_a = float(getattr(item, "rate_a", 0) or 0)
+    item_rate_b = float(getattr(item, "rate_b", 0) or 0)
+    inv.mrp = item.mrp or inv.mrp
+    inv.purchase_rate = item.purchase_rate or inv.purchase_rate
+    if item_rate_a:
+        inv.rate_a = item_rate_a
+        inv.selling_price = item_rate_a
+    elif item.mrp:
+        inv.selling_price = item.mrp
+    if item_rate_b:
+        inv.rate_b = item_rate_b
+    if item_scf:
+        inv.strip_conversion_factor = item_scf
+    if item.purchase_rate:
+        inv.cost_price = eff_cost
+    inv.supplier_id = purchase.supplier_id
+    inv.purchase_id = purchase.id
+    inv.hsn_id = item.hsn_id or inv.hsn_id
+    inv.discount_pct = item.discount_pct
+    if free_mode == "add":
+        inv.free_quantity = (inv.free_quantity or 0) + free_base
+    else:
+        inv.free_quantity = max(0.0, float(inv.free_quantity or 0) + float(free_base))
+
+
+def _propagate_purchase_rates_to_medicine(
+    db: Session, item: PharmacyPurchaseItem, purchase: PharmacyPurchase,
+) -> None:
+    """Update medicine master rates when this purchase is the latest for the drug."""
+    med = db.query(Medicine).filter(Medicine.id == item.medicine_id).first()
+    if not med:
+        return
+    item_scf = _purchase_strip_factor(item)
+    item_rate_a = float(getattr(item, "rate_a", 0) or 0)
+    item_rate_b = float(getattr(item, "rate_b", 0) or 0)
+    last = med.last_purchase_date
+    if last is None or purchase.entry_date >= last:
+        if item.purchase_rate:
+            med.purchase_rate = item.purchase_rate
+        if item.mrp:
+            med.mrp = item.mrp
+        if item_rate_a:
+            med.rate_a = item_rate_a
+            med.unit_price = item_rate_a
+        if item_rate_b:
+            med.rate_b = item_rate_b
+        if item_scf > 1 or not med.strip_conversion_factor:
+            med.strip_conversion_factor = item_scf
+        med.last_purchase_date = purchase.entry_date
+
+
+def _sync_existing_purchase_line_on_edit(
+    db: Session, item: PharmacyPurchaseItem, purchase: PharmacyPurchase,
+    user: User, purchase_store_id: int, *, old_inventory_id: Optional[int],
+    old_received: float, old_free_base: float, ledger_notes: str,
+) -> PharmacyInventory:
+    """Adjust stock by qty delta and update the existing purchase ledger row in place."""
+    new_recv = _purchase_received_base_qty(item)
+    item_scf = _purchase_strip_factor(item)
+    new_free_base = float(item.free_quantity or 0) * item_scf
+    delta = float(new_recv) - float(old_received or 0)
+
+    batch = None
+    if old_inventory_id:
+        batch = db.query(PharmacyInventory).filter(
+            PharmacyInventory.id == old_inventory_id,
+        ).first()
+    if not batch:
+        # Batch missing — fall back to create/merge + full credit.
+        return _apply_purchase_item_to_inventory(
+            db, item, purchase, user, purchase_store_id, ledger_notes,
+        )
+
+    _adjust_batch_stock(batch, delta)
+    _apply_purchase_pricing_to_batch(
+        batch, item, purchase,
+        free_base=new_free_base - float(old_free_base or 0),
+        free_mode="set_delta",
+    )
+    _set_purchase_ledger_qty(
+        db, purchase=purchase, batch=batch, medicine_id=item.medicine_id,
+        qty_delta=new_recv, user=user, notes=ledger_notes,
+    )
+    _propagate_purchase_rates_to_medicine(db, item, purchase)
+    return batch
+
+
+def _drop_purchase_line_stock_on_edit(
+    db: Session, purchase: PharmacyPurchase, old_snap: dict,
+) -> None:
+    """Remove a purchase line from stock without writing a reverse ledger row."""
+    batch_id = old_snap.get("inventory_id")
+    received = float(old_snap.get("received") or 0)
+    if not batch_id:
+        return
+    batch = db.query(PharmacyInventory).filter(PharmacyInventory.id == batch_id).first()
+    if batch:
+        take = min(received, float(batch.quantity_in_stock or 0))
+        _adjust_batch_stock(batch, -take)
+        free_base = float(old_snap.get("free_base") or 0)
+        if free_base:
+            batch.free_quantity = max(0.0, float(batch.free_quantity or 0) - free_base)
+    _delete_purchase_ledger_for_batch(db, purchase.id, batch_id)
 
 
 def _apply_purchase_item_to_inventory(
@@ -1944,30 +2101,12 @@ def _apply_purchase_item_to_inventory(
         item.quantity, item.free_quantity, item.purchase_rate, item_scf,
     )
     item_rate_a = float(getattr(item, "rate_a", 0) or 0)
-    item_rate_b = float(getattr(item, "rate_b", 0) or 0)
     sell_price = item_rate_a or item.mrp or item.purchase_rate
     if existing:
-        existing.quantity_in_stock = (existing.quantity_in_stock or 0) + added_qty
-        if (existing.quantity_in_stock or 0) > 0:
-            existing.is_active = True
-        existing.mrp = item.mrp or existing.mrp
-        existing.purchase_rate = item.purchase_rate or existing.purchase_rate
-        if item_rate_a:
-            existing.rate_a = item_rate_a
-            existing.selling_price = item_rate_a
-        elif item.mrp:
-            existing.selling_price = item.mrp
-        if item_rate_b:
-            existing.rate_b = item_rate_b
-        if item_scf:
-            existing.strip_conversion_factor = item_scf
-        if item.purchase_rate:
-            existing.cost_price = eff_cost
-        existing.supplier_id = purchase.supplier_id
-        existing.purchase_id = purchase.id
-        existing.hsn_id = item.hsn_id or existing.hsn_id
-        existing.free_quantity = (existing.free_quantity or 0) + free_base
-        existing.discount_pct = item.discount_pct
+        _adjust_batch_stock(existing, added_qty)
+        _apply_purchase_pricing_to_batch(
+            existing, item, purchase, free_base=free_base, free_mode="add",
+        )
         inv = existing
     else:
         inv = PharmacyInventory(
@@ -1975,7 +2114,9 @@ def _apply_purchase_item_to_inventory(
             expiry_date=item_expiry, quantity_in_stock=added_qty,
             cost_price=eff_cost, selling_price=sell_price,
             mrp=item.mrp, purchase_rate=item.purchase_rate,
-            rate_a=item_rate_a, rate_b=item_rate_b, strip_conversion_factor=item_scf,
+            rate_a=item_rate_a,
+            rate_b=float(getattr(item, "rate_b", 0) or 0),
+            strip_conversion_factor=item_scf,
             free_quantity=free_base, discount_pct=item.discount_pct,
             hsn_id=item.hsn_id, supplier_id=purchase.supplier_id,
             purchase_id=purchase.id, purchase_date=purchase.entry_date,
@@ -1992,24 +2133,7 @@ def _apply_purchase_item_to_inventory(
         hospital_id=user.hospital_id,
         notes=ledger_notes,
     ))
-
-    med = db.query(Medicine).filter(Medicine.id == item.medicine_id).first()
-    if med:
-        last = med.last_purchase_date
-        if last is None or purchase.entry_date >= last:
-            if item.purchase_rate:
-                med.purchase_rate = item.purchase_rate
-            if item.mrp:
-                med.mrp = item.mrp
-            if item_rate_a:
-                med.rate_a = item_rate_a
-                med.unit_price = item_rate_a
-            if item_rate_b:
-                med.rate_b = item_rate_b
-            if item_scf > 1 or not med.strip_conversion_factor:
-                med.strip_conversion_factor = item_scf
-            med.last_purchase_date = purchase.entry_date
-
+    _propagate_purchase_rates_to_medicine(db, item, purchase)
     return inv
 
 
@@ -2185,6 +2309,7 @@ def edit_purchase(
         exclude_purchase_id=purchase.id,
     )
 
+    old_lines: List[dict] = []
     if is_confirmed:
         _validate_confirmed_purchase_edit(db, purchase, data.items)
         if data.store_id is not None:
@@ -2196,8 +2321,19 @@ def edit_purchase(
                     status_code=400,
                     detail="Cannot change store on a confirmed purchase",
                 )
+        # Snapshot pre-edit lines so we can delta stock and update ledger in place.
         for old in list(purchase.items):
-            _reverse_purchase_item_stock(db, old, purchase, current_user, reason)
+            old_lines.append({
+                "key": _batch_key(
+                    old.medicine_id, old.batch_number,
+                    old.expiry_date or _EXPIRY_SENTINEL,
+                ),
+                "received": _purchase_received_base_qty(old),
+                "free_base": (
+                    float(old.free_quantity or 0) * _purchase_strip_factor(old)
+                ),
+                "inventory_id": old.inventory_id,
+            })
 
     purchase.entry_date = data.entry_date
     purchase.supplier_id = data.supplier_id
@@ -2241,12 +2377,33 @@ def edit_purchase(
             db, current_user, None, require_purchase_store=True,
         )
         purchase.store_id = purchase_store_id
+        old_map = {snap["key"]: snap for snap in old_lines}
+        matched_keys = set()
+        ledger_notes = f"Edited purchase {purchase.purchase_number}: {reason}"
         for item in purchase.items:
-            inv = _apply_purchase_item_to_inventory(
-                db, item, purchase, current_user, purchase_store_id,
-                ledger_notes=f"Edited purchase {purchase.purchase_number}: {reason}",
+            key = _batch_key(
+                item.medicine_id, item.batch_number,
+                item.expiry_date or _EXPIRY_SENTINEL,
             )
+            if key in old_map:
+                matched_keys.add(key)
+                snap = old_map[key]
+                inv = _sync_existing_purchase_line_on_edit(
+                    db, item, purchase, current_user, purchase_store_id,
+                    old_inventory_id=snap["inventory_id"],
+                    old_received=snap["received"],
+                    old_free_base=snap["free_base"],
+                    ledger_notes=ledger_notes,
+                )
+            else:
+                inv = _apply_purchase_item_to_inventory(
+                    db, item, purchase, current_user, purchase_store_id,
+                    ledger_notes=ledger_notes,
+                )
             item.inventory_id = inv.id
+        for key, snap in old_map.items():
+            if key not in matched_keys:
+                _drop_purchase_line_stock_on_edit(db, purchase, snap)
         purchase.edited_by = current_user.id
         purchase.edited_at = datetime.now()
         purchase.edit_reason = reason
@@ -2622,6 +2779,7 @@ class SaleOut(BaseModel):
     admission_id: Optional[int] = None
     inpatient_bill_id: Optional[int] = None
     store_id: Optional[int] = None
+    stock_affected: bool = True
     items: List[SaleItemOut] = Field(default_factory=list)
     created_at: datetime
 
@@ -2806,6 +2964,7 @@ def _shape_sale(s: PharmacySale, db: Session) -> SaleOut:
         admission_id=getattr(s, "admission_id", None),
         inpatient_bill_id=getattr(s, "inpatient_bill_id", None),
         store_id=getattr(s, "store_id", None),
+        stock_affected=bool(getattr(s, "stock_affected", True)),
     )
 
 
@@ -3035,6 +3194,44 @@ def _resolve_sale_line_hsn(db: Session, med: Optional[Medicine], batch: Optional
     return db.query(PharmacyHSN).filter(PharmacyHSN.id == hsn_id).first()
 
 
+def _get_or_create_history_batch(
+    db: Session, *, medicine: Medicine, hospital_id: int, store_id: int,
+) -> PharmacyInventory:
+    """Placeholder batch for historical sales recorded without stock movement."""
+    hist_number = "HIST-IMPORT"
+    batch = db.query(PharmacyInventory).filter(
+        PharmacyInventory.medicine_id == medicine.id,
+        PharmacyInventory.batch_number == hist_number,
+        PharmacyInventory.hospital_id == hospital_id,
+        PharmacyInventory.store_id == store_id,
+    ).first()
+    if batch:
+        return batch
+    mrp = float(medicine.mrp or medicine.unit_price or 0)
+    cost = float(medicine.purchase_rate or 0) or mrp
+    sell = float(medicine.unit_price or medicine.rate_a or mrp or 0) or cost
+    batch = PharmacyInventory(
+        medicine_id=medicine.id,
+        batch_number=hist_number,
+        expiry_date=date(2099, 12, 31),
+        quantity_in_stock=0,
+        cost_price=cost,
+        selling_price=sell,
+        mrp=mrp,
+        purchase_rate=cost,
+        rate_a=float(medicine.rate_a or mrp or 0),
+        rate_b=float(medicine.rate_b or mrp or 0),
+        strip_conversion_factor=int(getattr(medicine, "strip_conversion_factor", None) or 1) or 1,
+        hsn_id=getattr(medicine, "hsn_id", None),
+        store_id=store_id,
+        is_active=True,
+        hospital_id=hospital_id,
+    )
+    db.add(batch)
+    db.flush()
+    return batch
+
+
 def _process_sale_lines(
     db: Session,
     sale: PharmacySale,
@@ -3046,6 +3243,7 @@ def _process_sale_lines(
     bill_discount_amount: float,
     *,
     ledger_note: str,
+    affect_stock: bool = True,
 ) -> tuple[float, float, float, float, float]:
     subtotal = 0.0
     disc_total = 0.0
@@ -3115,15 +3313,20 @@ def _process_sale_lines(
         picks = []
         qty_needed = base_qty_needed
         if explicit_batch is not None:
-            if (explicit_batch.quantity_in_stock or 0) < qty_needed:
+            if affect_stock and (explicit_batch.quantity_in_stock or 0) < qty_needed:
                 raise HTTPException(status_code=400,
                                     detail=f"Batch {explicit_batch.batch_number} has only {explicit_batch.quantity_in_stock}, need {qty_needed}")
             picks.append((explicit_batch, qty_needed))
-        else:
+        elif affect_stock:
             picks = _pick_fifo_batches(
                 db, medicine_id=med.id, qty_needed=qty_needed,
                 hospital_id=current_user.hospital_id, store_id=sale_store_id,
             )
+        else:
+            hist = _get_or_create_history_batch(
+                db, medicine=med, hospital_id=current_user.hospital_id, store_id=sale_store_id,
+            )
+            picks.append((hist, qty_needed))
 
         free_total = float(line.free_quantity or 0)
         free_alloc = []
@@ -3208,15 +3411,16 @@ def _process_sale_lines(
             db.add(item_row)
             first_batch_row = False
 
-            batch.quantity_in_stock = (batch.quantity_in_stock or 0) - take_qty - free_for_batch
-            db.add(PharmacyStockLedger(
-                medicine_id=med.id, batch_id=batch.id, txn_type="sale",
-                qty_delta=-(take_qty + free_for_batch),
-                reference_type="sale", reference_id=sale.id,
-                performed_by=current_user.id, store_id=sale_store_id,
-                hospital_id=current_user.hospital_id,
-                notes=ledger_note,
-            ))
+            if affect_stock:
+                batch.quantity_in_stock = (batch.quantity_in_stock or 0) - take_qty - free_for_batch
+                db.add(PharmacyStockLedger(
+                    medicine_id=med.id, batch_id=batch.id, txn_type="sale",
+                    qty_delta=-(take_qty + free_for_batch),
+                    reference_type="sale", reference_id=sale.id,
+                    performed_by=current_user.id, store_id=sale_store_id,
+                    hospital_id=current_user.hospital_id,
+                    notes=ledger_note,
+                ))
 
             subtotal += base
             # Discount from paid qty only — free taxable add-on is not a discount.
@@ -3280,6 +3484,7 @@ def create_sale(
         admission_id=ip_admission_id,
         billing_mode=billing_mode,
         tax_mode=data.tax_mode or "inclusive",
+        stock_affected=True,
     )
     db.add(sale)
     # P3.3: two concurrent sales can compute the same MAX-seq and produce the
@@ -3364,7 +3569,7 @@ def edit_sale(
             hospital_id=current_user.hospital_id, reason=reason,
         )
         linked_rx.pharmacy_sale_id = None
-    else:
+    elif getattr(sale, "stock_affected", True):
         _restore_sale_items_stock(db, sale, current_user, reason)
 
     for old in list(sale.items):
@@ -3382,11 +3587,13 @@ def edit_sale(
     sale.billing_mode = billing_mode
     sale.admission_id = ip_admission_id
 
+    re_affect_stock = bool(getattr(sale, "stock_affected", True))
     subtotal, disc_total, tax_total, grand, bill_disc = _process_sale_lines(
         db, sale, data.items, current_user, sale_store_id,
         data.tax_mode or "inclusive", tax_on_free,
         float(data.bill_discount_amount or 0),
         ledger_note=f"Edited sale {sale.sale_number}: {reason}",
+        affect_stock=re_affect_stock,
     )
 
     sale.subtotal = round(subtotal, 2)
@@ -3501,6 +3708,7 @@ def void_sale(
 
     had_sale_ledger = sale_has_sale_ledger_rows(db, sale.id)
     linked_rx = db.query(Prescription).filter(Prescription.pharmacy_sale_id == sale.id).first()
+    stock_affected = bool(getattr(sale, "stock_affected", True))
 
     if had_sale_ledger:
         # Normal POS (and POS Rx-linked): restore via return_in + roll back Rx qty.
@@ -3539,7 +3747,7 @@ def void_sale(
                 linked_rx.status = "pending"
                 linked_rx.dispensed_by_id = None
                 linked_rx.dispensed_date = None
-    else:
+    elif stock_affected:
         for it in sale.items:
             batch = db.query(PharmacyInventory).filter(
                 PharmacyInventory.id == it.batch_id,
@@ -3598,6 +3806,7 @@ class PendingRxItemOut(BaseModel):
     is_unmapped: bool = False
     dosage: Optional[str] = None
     duration: Optional[str] = None
+    instructions: Optional[str] = None
     status: str
 
 
@@ -3653,7 +3862,8 @@ def list_pending_prescriptions(
                 unit_price=float(it.unit_price or 0),
                 strip_conversion_factor=int(med.strip_conversion_factor or 1) if med else 1,
                 is_unmapped=bool(med and is_free_text_medicine(med)),
-                dosage=it.dosage, duration=it.duration, status=it.status or "pending",
+                dosage=it.dosage, duration=it.duration,
+                instructions=it.instructions, status=it.status or "pending",
             ))
         out.append(PendingRxOut(
             id=rx.id, prescription_number=rx.prescription_number,
@@ -3670,6 +3880,247 @@ def list_pending_prescriptions(
             items=items,
         ))
     return out
+
+
+def _shape_pending_rx(rx: Prescription, db: Session) -> PendingRxOut:
+    """Build PendingRxOut for a single prescription (shared by list + edit)."""
+    from app.models.patient import Patient
+
+    patient = db.query(Patient).filter(Patient.id == rx.patient_id).first()
+    doctor = db.query(User).filter(User.id == rx.doctor_id).first()
+    items = []
+    for it in rx.items:
+        med = db.query(Medicine).filter(Medicine.id == it.medicine_id).first()
+        rem = float((it.quantity_prescribed or 0) - (it.quantity_dispensed or 0))
+        items.append(PendingRxItemOut(
+            item_id=it.id, medicine_id=it.medicine_id,
+            medicine_name=med.name if med else None,
+            quantity_prescribed=float(it.quantity_prescribed or 0),
+            quantity_dispensed=float(it.quantity_dispensed or 0),
+            quantity_remaining=rem,
+            unit_price=float(it.unit_price or 0),
+            strip_conversion_factor=int(med.strip_conversion_factor or 1) if med else 1,
+            is_unmapped=bool(med and is_free_text_medicine(med)),
+            dosage=it.dosage, duration=it.duration,
+            instructions=it.instructions, status=it.status or "pending",
+        ))
+    return PendingRxOut(
+        id=rx.id, prescription_number=rx.prescription_number,
+        prescription_date=rx.prescription_date, status=rx.status,
+        notes=rx.notes,
+        admission_id=rx.admission_id,
+        patient_id=patient.patient_id if patient else None,
+        patient_name=(
+            f"{patient.first_name} {patient.last_name}" if patient else None
+        ),
+        doctor_name=(
+            f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else None
+        ),
+        items=items,
+    )
+
+
+class EditRxItemIn(BaseModel):
+    """One medicine line on a pending / partial Rx.
+
+    Omit `item_id` (or pass null) to add a new line. Lines already on the Rx
+    that are omitted from the payload are removed — but only if nothing has
+    been dispensed against them.
+    """
+    item_id: Optional[int] = None
+    medicine_id: int
+    quantity_prescribed: float = Field(..., gt=0)
+    dosage: Optional[str] = None
+    duration: Optional[str] = None
+    instructions: Optional[str] = None
+
+
+class EditRxItemsIn(BaseModel):
+    items: List[EditRxItemIn] = Field(..., min_length=1)
+    notes: Optional[str] = None
+
+
+@router.put("/prescriptions/{rx_id}/items", response_model=PendingRxOut)
+def edit_prescription_items(
+    rx_id: int,
+    data: EditRxItemsIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "dispense_rx")),
+):
+    """Edit medicines on a pending / partial prescription before (further) dispense.
+
+    Rules:
+      * Fully dispensed / cancelled Rxs cannot be edited.
+      * Lines with quantity_dispensed > 0 cannot change medicine or be removed;
+        quantity_prescribed may only increase (must stay >= dispensed).
+      * Undispensed lines may be replaced, updated, or removed.
+      * New lines may be added.
+    """
+    from app.models.patient import Patient as _PatientForRx
+
+    rx = (
+        db.query(Prescription)
+        .join(_PatientForRx, _PatientForRx.id == Prescription.patient_id)
+        .filter(
+            Prescription.id == rx_id,
+            _PatientForRx.hospital_id == current_user.hospital_id,
+        )
+        .first()
+    )
+    if not rx:
+        raise HTTPException(status_code=404, detail="Prescription not found")
+    if rx.status in ("dispensed", "cancelled"):
+        raise HTTPException(status_code=400, detail=f"Cannot edit a {rx.status} prescription")
+
+    existing = {
+        it.id: it
+        for it in db.query(PrescriptionItem).filter(
+            PrescriptionItem.prescription_id == rx.id
+        ).all()
+    }
+    kept_ids: set[int] = set()
+
+    for idx, req in enumerate(data.items):
+        med = db.query(Medicine).filter(
+            Medicine.id == req.medicine_id,
+            Medicine.hospital_id == current_user.hospital_id,
+            Medicine.is_active == True,  # noqa: E712
+        ).first()
+        if not med:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Item {idx + 1}: medicine {req.medicine_id} not found",
+            )
+        unit_price = medicine_sale_rate(med)
+        qty = float(req.quantity_prescribed)
+        dosage = (req.dosage or "").strip() or None
+        duration = (req.duration or "").strip() or None
+        instructions = (req.instructions or "").strip() or None
+
+        if req.item_id is not None:
+            rxi = existing.get(req.item_id)
+            if not rxi:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Item {req.item_id} is not on this prescription",
+                )
+            dispensed = float(rxi.quantity_dispensed or 0)
+            if dispensed > 0:
+                if int(req.medicine_id) != int(rxi.medicine_id):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Cannot change medicine on item {rxi.id} — "
+                            f"{dispensed:g} already dispensed"
+                        ),
+                    )
+                if qty < dispensed:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Item {rxi.id}: quantity cannot be below "
+                            f"already-dispensed amount ({dispensed:g})"
+                        ),
+                    )
+                # Keep existing unit_price once anything has left the shelf so
+                # the billed / ledgered rate stays consistent.
+                unit_price = float(rxi.unit_price or unit_price)
+            else:
+                rxi.medicine_id = med.id
+                rxi.unit_price = unit_price
+
+            rxi.quantity_prescribed = qty
+            rxi.dosage = dosage
+            rxi.duration = duration
+            rxi.instructions = instructions
+            if dispensed <= 0:
+                rxi.status = "pending"
+                rxi.total_price = round_money(unit_price * qty)
+            elif dispensed >= qty:
+                rxi.status = "dispensed"
+                rxi.total_price = round_money(float(rxi.unit_price or 0) * dispensed)
+            else:
+                rxi.status = "partial"
+                rxi.total_price = round_money(float(rxi.unit_price or 0) * dispensed)
+            kept_ids.add(rxi.id)
+        else:
+            new_item = PrescriptionItem(
+                prescription_id=rx.id,
+                medicine_id=med.id,
+                quantity_prescribed=qty,
+                quantity_dispensed=0,
+                dosage=dosage,
+                duration=duration,
+                instructions=instructions,
+                unit_price=unit_price,
+                total_price=round_money(unit_price * qty),
+                status="pending",
+            )
+            db.add(new_item)
+            db.flush()
+            kept_ids.add(new_item.id)
+
+    for item_id, rxi in existing.items():
+        if item_id in kept_ids:
+            continue
+        if float(rxi.quantity_dispensed or 0) > 0:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Cannot remove item {item_id} — "
+                    f"{float(rxi.quantity_dispensed or 0):g} already dispensed"
+                ),
+            )
+        db.delete(rxi)
+
+    if data.notes is not None:
+        rx.notes = data.notes
+
+    db.flush()
+    all_items = db.query(PrescriptionItem).filter(
+        PrescriptionItem.prescription_id == rx.id
+    ).all()
+    if not all_items:
+        raise HTTPException(status_code=400, detail="Prescription must keep at least one medicine")
+
+    rx.total_amount = round_money(
+        sum(float(i.total_price or 0) for i in all_items)
+    )
+    if all(i.status == "dispensed" for i in all_items):
+        rx.status = "dispensed"
+    elif any(float(i.quantity_dispensed or 0) > 0 for i in all_items):
+        rx.status = "partial"
+    else:
+        rx.status = "pending"
+
+    # Keep the linked OP simple-prescription JSON in sync when still editable.
+    from app.models.prescriptions_simple import SimplePrescription
+    simple = db.query(SimplePrescription).filter(
+        SimplePrescription.pharmacy_prescription_id == rx.id,
+    ).first()
+    if simple is not None:
+        mirrored = []
+        for i in all_items:
+            med = db.query(Medicine).filter(Medicine.id == i.medicine_id).first()
+            mirrored.append({
+                "medicine_id": i.medicine_id,
+                "name": med.name if med else "",
+                "dosage": i.dosage or "",
+                "duration": i.duration or "",
+                "instructions": i.instructions or "",
+                "quantity": int(i.quantity_prescribed or 0) or None,
+            })
+        simple.medicines = mirrored
+        if data.notes is not None:
+            simple.notes = data.notes
+
+    db.commit()
+    db.refresh(rx)
+    _audit(
+        db, current_user, "edit_rx_items", "prescription", rx.id,
+        f"Edited medicines on Rx {rx.prescription_number} ({len(all_items)} line(s))",
+    )
+    return _shape_pending_rx(rx, db)
 
 
 class DispenseItemIn(BaseModel):

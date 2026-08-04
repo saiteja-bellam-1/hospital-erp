@@ -1508,30 +1508,72 @@ def build_opening_stock_template() -> bytes:
 #   PTR (CL11) → purchase_rate
 #   MRP (CL13) → mrp, rate_a, and rate_b
 #   Rate (CL12) is ignored (distributor net rate; not used for our purchase entry)
-_VENDOR_T_MAP = {
+_VENDOR_DEFAULT_COLS = {
     "record_type": "cl1",
-    "supplier_name": "cl3",
-    "item_code": "cl5",
-    "item_name": "cl6",
-    "pack_size": "cl7",
+    # CL3 is invoice # on H rows and supplier name on T rows
+    "supplier_or_invoice": "cl3",
+    "bill_date": "cl4",
+    "purchase_type": "cl7",
+    "medicine_code": "cl5",
+    "medicine_name": "cl6",
+    "pack_size": "cl7",  # T rows; on H CL7 is purchase_type (resolved by record type)
     "manufacturer": "cl8",
     "batch_number": "cl9",
-    "expiry_raw": "cl10",
-    "ptr": "cl11",
-    "distributor_rate": "cl12",
+    "expiry_date": "cl10",
+    "purchase_rate": "cl11",  # PTR on T rows
     "mrp": "cl13",
     "quantity": "cl16",
     "free_quantity": "cl17",
-    "discount_raw": "cl19",
-    "taxable": "cl22",
-    "cgst_pct": "cl23",
-    "cgst_amt": "cl24",
-    "igst_pct": "cl25",
-    "igst_amt": "cl26",
-    "sgst_pct": "cl27",
-    "sgst_amt": "cl28",
+    "discount_pct": "cl19",
     "hsn_code": "cl31",
+    "cgst_pct": "cl23",
+    "sgst_pct": "cl27",
+    # Footer (F row) — positional defaults
+    "footer_taxable": "cl2",
+    "footer_cgst": "cl5",
+    "footer_sgst": "cl7",
+    "footer_round_off": "cl21",
+    "footer_invoice_value": "cl22",
+    "transporter": "cl11",  # H rows only
+    "place_of_supply": "cl14",
 }
+
+# Target fields shown in the import column-mapper UI.
+PURCHASE_IMPORT_TARGETS = [
+    {"key": "ignore", "label": "— Ignore —", "group": ""},
+    {"key": "record_type", "label": "Record type (H / T / F)", "group": "Vendor format"},
+    {"key": "supplier_or_invoice", "label": "Supplier (T) / Invoice # (H)", "group": "Vendor format"},
+    {"key": "supplier_name", "label": "Supplier name", "group": "Purchase header"},
+    {"key": "invoice_number", "label": "Invoice number", "group": "Purchase header"},
+    {"key": "entry_date", "label": "Entry date", "group": "Purchase header"},
+    {"key": "bill_date", "label": "Bill / invoice date", "group": "Purchase header"},
+    {"key": "payment_type", "label": "Payment type (cash/credit)", "group": "Purchase header"},
+    {"key": "purchase_type", "label": "Purchase type", "group": "Purchase header"},
+    {"key": "tax_mode", "label": "Tax mode", "group": "Purchase header"},
+    {"key": "store_code", "label": "Store code", "group": "Purchase header"},
+    {"key": "notes", "label": "Notes", "group": "Purchase header"},
+    {"key": "medicine_code", "label": "Medicine code", "group": "Line item"},
+    {"key": "medicine_name", "label": "Medicine / item name", "group": "Line item"},
+    {"key": "batch_number", "label": "Batch number", "group": "Line item"},
+    {"key": "expiry_date", "label": "Expiry date", "group": "Line item"},
+    {"key": "quantity", "label": "Quantity", "group": "Line item"},
+    {"key": "free_quantity", "label": "Free quantity", "group": "Line item"},
+    {"key": "mrp", "label": "MRP", "group": "Line item"},
+    {"key": "purchase_rate", "label": "Purchase rate (PTR)", "group": "Line item"},
+    {"key": "rate_a", "label": "Rate A (sale)", "group": "Line item"},
+    {"key": "rate_b", "label": "Rate B (sale)", "group": "Line item"},
+    {"key": "strip_conversion_factor", "label": "Strip conversion factor", "group": "Line item"},
+    {"key": "discount_pct", "label": "Discount % / amount", "group": "Line item"},
+    {"key": "pack_size", "label": "Pack size", "group": "Line item"},
+    {"key": "hsn_code", "label": "HSN code", "group": "Line item"},
+    {"key": "cgst_pct", "label": "CGST %", "group": "Line item"},
+    {"key": "sgst_pct", "label": "SGST %", "group": "Line item"},
+    {"key": "manufacturer", "label": "Manufacturer", "group": "Line item"},
+    {"key": "transporter", "label": "Transporter", "group": "Optional"},
+    {"key": "place_of_supply", "label": "Place of supply", "group": "Optional"},
+]
+
+_VALID_PURCHASE_TARGETS = {t["key"] for t in PURCHASE_IMPORT_TARGETS}
 
 
 def _strip_excel_formula(v) -> Optional[str]:
@@ -1588,6 +1630,138 @@ def _parse_pack_scf(pack: Optional[str]) -> Optional[int]:
     return n if n >= 1 else None
 
 
+def _normalize_column_mapping(raw: Optional[dict]) -> Dict[str, str]:
+    """Convert {source_header: target_field} → {target_field: normalized_source}."""
+    if not raw:
+        return {}
+    out: Dict[str, str] = {}
+    for src, tgt in raw.items():
+        if src is None or tgt is None:
+            continue
+        target = str(tgt).strip()
+        if not target or target == "ignore" or target not in _VALID_PURCHASE_TARGETS:
+            continue
+        out[target] = _norm_header(src)
+    return out
+
+
+def _suggest_purchase_mapping(headers: List[str]) -> Dict[str, str]:
+    """Return {original_header: target_field} suggestions for the mapper UI."""
+    norms = {_norm_header(h): h for h in headers}
+    # Alias lists: first match wins per target
+    aliases: List[Tuple[str, List[str]]] = [
+        ("record_type", ["record_type", "type", "row_type", "cl1"]),
+        ("supplier_or_invoice", ["supplier_or_invoice", "cl3"]),
+        ("supplier_name", ["supplier_name", "supplier", "party", "party_name"]),
+        ("invoice_number", ["invoice_number", "invoice_no", "invoice", "bill_no", "bill_number"]),
+        ("entry_date", ["entry_date"]),
+        ("bill_date", ["bill_date", "invoice_date", "date", "cl4"]),
+        ("payment_type", ["payment_type", "payment"]),
+        ("purchase_type", ["purchase_type"]),
+        ("tax_mode", ["tax_mode"]),
+        ("store_code", ["store_code", "store"]),
+        ("notes", ["notes", "remark", "remarks"]),
+        ("medicine_code", ["medicine_code", "item_code", "product_code", "sku", "cl5"]),
+        ("medicine_name", ["medicine_name", "item_name", "item", "product", "product_name", "cl6"]),
+        ("pack_size", ["pack_size", "pack", "packing", "cl7"]),
+        ("manufacturer", ["manufacturer", "mfg", "company", "cl8"]),
+        ("batch_number", ["batch_number", "batch", "batch_no", "lot", "cl9"]),
+        ("expiry_date", ["expiry_date", "expiry", "exp", "exp_date", "cl10"]),
+        ("purchase_rate", ["purchase_rate", "ptr", "p_rate", "prate", "cl11"]),
+        ("mrp", ["mrp", "cl13"]),
+        ("rate_a", ["rate_a", "sale_rate", "selling_rate"]),
+        ("rate_b", ["rate_b"]),
+        ("quantity", ["quantity", "qty", "cl16"]),
+        ("free_quantity", ["free_quantity", "free_qty", "free", "package", "cl17"]),
+        ("discount_pct", ["discount_pct", "discount", "disc", "cl19"]),
+        ("strip_conversion_factor", ["strip_conversion_factor", "scf", "conversion"]),
+        ("hsn_code", ["hsn_code", "hsn", "cl31"]),
+        ("cgst_pct", ["cgst_pct", "cgst", "cl23"]),
+        ("sgst_pct", ["sgst_pct", "sgst", "cl27"]),
+        ("transporter", ["transporter", "transport"]),
+        ("place_of_supply", ["place_of_supply", "place"]),
+    ]
+    used_sources: set = set()
+    mapping: Dict[str, str] = {h: "ignore" for h in headers}
+
+    # Strong vendor CL* preset when headers look like that format
+    is_vendor = all(re.fullmatch(r"cl\d+", _norm_header(h) or "") for h in headers if h) and len(headers) >= 10
+    if is_vendor or ("cl1" in norms and "cl6" in norms and "cl11" in norms):
+        for field, src in _VENDOR_DEFAULT_COLS.items():
+            if field.startswith("footer_"):
+                continue
+            orig = norms.get(src)
+            if orig and orig not in used_sources:
+                # Prefer purchase_rate over transporter for CL11 in suggestions
+                if field == "transporter" and mapping.get(orig) == "purchase_rate":
+                    continue
+                if field == "pack_size" and mapping.get(orig) == "purchase_type":
+                    # CL7: show as pack_size (dominant on T rows); purchase_type still defaulted in parser
+                    pass
+                mapping[orig] = field
+                used_sources.add(orig)
+        # Ensure CL7 marked pack_size (T) — purchase_type resolved from H via same col in parser default
+        if "cl7" in norms:
+            mapping[norms["cl7"]] = "pack_size"
+        if "cl11" in norms:
+            mapping[norms["cl11"]] = "purchase_rate"
+        if "cl3" in norms:
+            mapping[norms["cl3"]] = "supplier_or_invoice"
+        return mapping
+
+    for field, names in aliases:
+        for name in names:
+            if name in norms and norms[name] not in used_sources:
+                mapping[norms[name]] = field
+                used_sources.add(norms[name])
+                break
+    return mapping
+
+
+def inspect_purchase_import(content: bytes, filename: str) -> dict:
+    """Return headers, sample values, suggested mapping, and target field catalog."""
+    rows = _parse_upload(content, filename, ["Purchases", "Purchase"])
+    if not rows:
+        return {
+            "headers": [],
+            "samples": {},
+            "suggested_mapping": {},
+            "format_hint": "empty",
+            "targets": PURCHASE_IMPORT_TARGETS,
+            "row_count": 0,
+        }
+    # Preserve header order from first data dict (insertion order from parser)
+    headers = [k for k in rows[0].keys() if k != "_row"]
+    # Prefer original-cased labels from CSV/xlsx when available via first-row keys;
+    # _parse_* stores normalized keys — display those uppercased for CL* niceness.
+    display_headers = []
+    for h in headers:
+        if re.fullmatch(r"cl\d+", h or ""):
+            display_headers.append(h.upper())
+        else:
+            display_headers.append(h)
+    samples: Dict[str, List[str]] = {dh: [] for dh in display_headers}
+    for row in rows[:5]:
+        for nh, dh in zip(headers, display_headers):
+            val = row.get(nh)
+            s = _strip_excel_formula(val) if val is not None else None
+            if s is None:
+                s = "" if val is None else str(val)
+            if len(samples[dh]) < 3:
+                samples[dh].append(s[:80])
+    # Suggest against display headers but keys must match what client will send
+    suggested = _suggest_purchase_mapping(display_headers)
+    format_hint = "vendor_htf" if _looks_like_vendor_purchase(rows) else "flat"
+    return {
+        "headers": display_headers,
+        "samples": samples,
+        "suggested_mapping": suggested,
+        "format_hint": format_hint,
+        "targets": PURCHASE_IMPORT_TARGETS,
+        "row_count": len(rows),
+    }
+
+
 def _looks_like_vendor_purchase(rows: List[dict]) -> bool:
     if not rows:
         return False
@@ -1601,13 +1775,39 @@ def _looks_like_vendor_purchase(rows: List[dict]) -> bool:
     return False
 
 
-def _vendor_cell(row: dict, key: str):
-    col = _VENDOR_T_MAP.get(key, key)
-    return row.get(col)
+def _colmap_get(row: dict, colmap: Dict[str, str], *fields: str, default_key: Optional[str] = None):
+    """Read a cell via user/default column map. `fields` tried in order."""
+    for f in fields:
+        src = colmap.get(f)
+        if src and src in row:
+            return row.get(src)
+    if default_key:
+        src = _VENDOR_DEFAULT_COLS.get(default_key) or default_key
+        return row.get(src)
+    # Fall back to first field's default
+    for f in fields:
+        src = _VENDOR_DEFAULT_COLS.get(f)
+        if src:
+            return row.get(src)
+    return None
 
 
-def _parse_vendor_purchase_blocks(rows: List[dict]) -> List[dict]:
-    """Group H / T / F rows into one block per invoice."""
+def _parse_vendor_purchase_blocks(
+    rows: List[dict], column_mapping: Optional[dict] = None,
+) -> List[dict]:
+    """Group H / T / F rows into one block per invoice.
+
+    `column_mapping` is {source_header: target_field} from the UI.
+    """
+    field_cols = dict(_VENDOR_DEFAULT_COLS)
+    # User overrides (target → source)
+    user_cols = _normalize_column_mapping(column_mapping)
+    field_cols.update(user_cols)
+    # If user mapped purchase_rate onto CL11, don't also treat it as transporter default
+    # unless they explicitly mapped transporter elsewhere.
+    if "purchase_rate" in user_cols and user_cols.get("transporter") == user_cols.get("purchase_rate"):
+        pass
+
     blocks: List[dict] = []
     current: Optional[dict] = None
 
@@ -1618,37 +1818,63 @@ def _parse_vendor_purchase_blocks(rows: List[dict]) -> List[dict]:
             current = None
 
     for row in rows:
-        typ = (_strip_excel_formula(row.get("cl1")) or "").upper()
+        typ = (_strip_excel_formula(
+            _colmap_get(row, field_cols, "record_type", default_key="record_type")
+        ) or "").upper()
         rownum = row.get("_row", 0)
         if typ == "H":
             _finish()
-            inv = _strip_excel_formula(row.get("cl3"))
+            inv = _strip_excel_formula(
+                _colmap_get(row, field_cols, "invoice_number", "supplier_or_invoice", default_key="supplier_or_invoice")
+            )
             bill_date = None
             try:
-                bill_date = _parse_ddmmyyyy(row.get("cl4"))
+                bill_date = _parse_ddmmyyyy(
+                    _colmap_get(row, field_cols, "bill_date", "entry_date", default_key="bill_date")
+                )
             except ValueError:
                 bill_date = None
+            # purchase_type: prefer dedicated mapping; else default CL7 on H
+            ptype = _strip_excel_formula(
+                _colmap_get(row, field_cols, "purchase_type", default_key="purchase_type")
+            )
+            if not ptype and not user_cols.get("purchase_type"):
+                ptype = _strip_excel_formula(row.get("cl7"))
+            transporter = _strip_excel_formula(
+                _colmap_get(row, field_cols, "transporter")
+            )
+            if transporter is None and "transporter" not in user_cols and "purchase_rate" not in user_cols:
+                transporter = _strip_excel_formula(row.get("cl11"))
             current = {
                 "invoice_number": inv,
                 "bill_date": bill_date,
                 "entry_date": bill_date or date.today(),
-                "purchase_type": _strip_excel_formula(row.get("cl7")),
-                "transporter": _strip_excel_formula(row.get("cl11")),
-                "place_of_supply": _strip_excel_formula(row.get("cl14")),
-                "supplier_name": None,
-                "payment_type": "credit",
-                "tax_mode": "exclusive",
-                "store_code": None,
-                "notes": None,
+                "purchase_type": ptype,
+                "transporter": transporter,
+                "place_of_supply": _strip_excel_formula(
+                    _colmap_get(row, field_cols, "place_of_supply", default_key="place_of_supply")
+                ),
+                "supplier_name": _strip_excel_formula(
+                    _colmap_get(row, field_cols, "supplier_name")
+                ),
+                "payment_type": (
+                    _strip_excel_formula(_colmap_get(row, field_cols, "payment_type")) or "credit"
+                ),
+                "tax_mode": (
+                    _strip_excel_formula(_colmap_get(row, field_cols, "tax_mode")) or "exclusive"
+                ),
+                "store_code": _strip_excel_formula(_colmap_get(row, field_cols, "store_code")),
+                "notes": _strip_excel_formula(_colmap_get(row, field_cols, "notes")),
                 "footer": None,
                 "items": [],
                 "_header_row": rownum,
             }
         elif typ == "T":
             if current is None:
-                # Orphan T without H — start an implicit block
                 current = {
-                    "invoice_number": None,
+                    "invoice_number": _strip_excel_formula(
+                        _colmap_get(row, field_cols, "invoice_number")
+                    ),
                     "bill_date": None,
                     "entry_date": date.today(),
                     "purchase_type": None,
@@ -1663,60 +1889,106 @@ def _parse_vendor_purchase_blocks(rows: List[dict]) -> List[dict]:
                     "items": [],
                     "_header_row": rownum,
                 }
-            supplier = _strip_excel_formula(_vendor_cell(row, "supplier_name"))
+            supplier = _strip_excel_formula(
+                _colmap_get(row, field_cols, "supplier_name", "supplier_or_invoice", default_key="supplier_or_invoice")
+            )
             if supplier and not current.get("supplier_name"):
                 current["supplier_name"] = supplier
-            item_name = _strip_excel_formula(_vendor_cell(row, "item_name"))
-            batch = _strip_excel_formula(_vendor_cell(row, "batch_number"))
+            item_name = _strip_excel_formula(
+                _colmap_get(row, field_cols, "medicine_name", default_key="medicine_name")
+            )
+            batch = _strip_excel_formula(
+                _colmap_get(row, field_cols, "batch_number", default_key="batch_number")
+            )
             if not item_name and not batch:
                 continue
             expiry = None
             try:
-                expiry = _parse_ddmmyyyy(_vendor_cell(row, "expiry_raw"))
+                expiry = _parse_ddmmyyyy(
+                    _colmap_get(row, field_cols, "expiry_date", default_key="expiry_date")
+                )
             except ValueError:
                 expiry = None
-            qty = _cell_float(_strip_excel_formula(_vendor_cell(row, "quantity")) or _vendor_cell(row, "quantity"))
-            free = _cell_float(
-                _strip_excel_formula(_vendor_cell(row, "free_quantity")) or _vendor_cell(row, "free_quantity")
-            ) or 0.0
-            ptr = _cell_float(_strip_excel_formula(_vendor_cell(row, "ptr")) or _vendor_cell(row, "ptr"))
-            mrp = _cell_float(_strip_excel_formula(_vendor_cell(row, "mrp")) or _vendor_cell(row, "mrp"))
-            disc_raw = _cell_float(
-                _strip_excel_formula(_vendor_cell(row, "discount_raw")) or _vendor_cell(row, "discount_raw")
-            ) or 0.0
-            # Vendor Disc column is an amount (PDF "Disc."); convert to % of PTR×qty
+            qty_raw = _colmap_get(row, field_cols, "quantity", default_key="quantity")
+            qty = _cell_float(_strip_excel_formula(qty_raw) or qty_raw)
+            free_raw = _colmap_get(row, field_cols, "free_quantity", default_key="free_quantity")
+            free = _cell_float(_strip_excel_formula(free_raw) or free_raw) or 0.0
+            rate_raw = _colmap_get(row, field_cols, "purchase_rate", default_key="purchase_rate")
+            purchase_rate = _cell_float(_strip_excel_formula(rate_raw) or rate_raw)
+            mrp_raw = _colmap_get(row, field_cols, "mrp", default_key="mrp")
+            mrp = _cell_float(_strip_excel_formula(mrp_raw) or mrp_raw)
+            rate_a_raw = _colmap_get(row, field_cols, "rate_a")
+            rate_b_raw = _colmap_get(row, field_cols, "rate_b")
+            rate_a = _cell_float(_strip_excel_formula(rate_a_raw) or rate_a_raw) if rate_a_raw is not None else None
+            rate_b = _cell_float(_strip_excel_formula(rate_b_raw) or rate_b_raw) if rate_b_raw is not None else None
+            if rate_a is None:
+                rate_a = mrp
+            if rate_b is None:
+                rate_b = mrp
+            disc_raw = _colmap_get(row, field_cols, "discount_pct", default_key="discount_pct")
+            disc_val = _cell_float(_strip_excel_formula(disc_raw) or disc_raw) or 0.0
             discount_pct = 0.0
-            if disc_raw and qty and ptr:
-                base = qty * ptr
-                if base > 0:
-                    discount_pct = round((disc_raw / base) * 100.0, 4)
-            pack = _strip_excel_formula(_vendor_cell(row, "pack_size"))
+            if disc_val and qty and purchase_rate:
+                base = qty * purchase_rate
+                src = field_cols.get("discount_pct") or ""
+                # Vendor CL19 stores amount; named-template discount_pct is already a percent
+                if src == "cl19" or disc_val > 100:
+                    discount_pct = round((disc_val / base) * 100.0, 4) if base else 0.0
+                else:
+                    discount_pct = disc_val
+            pack = _strip_excel_formula(
+                _colmap_get(row, field_cols, "pack_size", default_key="pack_size")
+            )
+            scf_raw = _colmap_get(row, field_cols, "strip_conversion_factor")
+            scf = _cell_int(_strip_excel_formula(scf_raw) or scf_raw) if scf_raw is not None else None
+            if scf is None:
+                scf = _parse_pack_scf(pack)
+            cgst_raw = _colmap_get(row, field_cols, "cgst_pct", default_key="cgst_pct")
+            sgst_raw = _colmap_get(row, field_cols, "sgst_pct", default_key="sgst_pct")
             current["items"].append({
                 "_row": rownum,
-                "medicine_code": _strip_excel_formula(_vendor_cell(row, "item_code")),
+                "medicine_code": _strip_excel_formula(
+                    _colmap_get(row, field_cols, "medicine_code", default_key="medicine_code")
+                ),
                 "medicine_name": item_name,
                 "pack_size": pack,
-                "manufacturer": _strip_excel_formula(_vendor_cell(row, "manufacturer")),
+                "manufacturer": _strip_excel_formula(
+                    _colmap_get(row, field_cols, "manufacturer", default_key="manufacturer")
+                ),
                 "batch_number": batch,
                 "expiry_date": expiry,
                 "quantity": qty,
                 "free_quantity": free,
                 "mrp": mrp,
-                "purchase_rate": ptr,
-                "rate_a": mrp,
-                "rate_b": mrp,
-                "strip_conversion_factor": _parse_pack_scf(pack),
+                "purchase_rate": purchase_rate,
+                "rate_a": rate_a,
+                "rate_b": rate_b,
+                "strip_conversion_factor": scf,
                 "discount_pct": discount_pct,
-                "hsn_code": _strip_excel_formula(_vendor_cell(row, "hsn_code")),
+                "hsn_code": _strip_excel_formula(
+                    _colmap_get(row, field_cols, "hsn_code", default_key="hsn_code")
+                ),
+                "cgst_pct": _cell_float(_strip_excel_formula(cgst_raw) or cgst_raw),
+                "sgst_pct": _cell_float(_strip_excel_formula(sgst_raw) or sgst_raw),
             })
         elif typ == "F":
             if current is None:
                 continue
-            taxable = _cell_float(_strip_excel_formula(row.get("cl2")) or row.get("cl2"))
-            cgst = _cell_float(_strip_excel_formula(row.get("cl5")) or row.get("cl5"))
-            sgst = _cell_float(_strip_excel_formula(row.get("cl7")) or row.get("cl7"))
-            round_off = _cell_float(_strip_excel_formula(row.get("cl21")) or row.get("cl21"))
-            invoice_value = _cell_float(_strip_excel_formula(row.get("cl22")) or row.get("cl22"))
+            taxable = _cell_float(_strip_excel_formula(
+                _colmap_get(row, field_cols, "footer_taxable", default_key="footer_taxable")
+            ) or _colmap_get(row, field_cols, "footer_taxable", default_key="footer_taxable"))
+            cgst = _cell_float(_strip_excel_formula(
+                _colmap_get(row, field_cols, "footer_cgst", default_key="footer_cgst")
+            ) or _colmap_get(row, field_cols, "footer_cgst", default_key="footer_cgst"))
+            sgst = _cell_float(_strip_excel_formula(
+                _colmap_get(row, field_cols, "footer_sgst", default_key="footer_sgst")
+            ) or _colmap_get(row, field_cols, "footer_sgst", default_key="footer_sgst"))
+            round_off = _cell_float(_strip_excel_formula(
+                _colmap_get(row, field_cols, "footer_round_off", default_key="footer_round_off")
+            ) or _colmap_get(row, field_cols, "footer_round_off", default_key="footer_round_off"))
+            invoice_value = _cell_float(_strip_excel_formula(
+                _colmap_get(row, field_cols, "footer_invoice_value", default_key="footer_invoice_value")
+            ) or _colmap_get(row, field_cols, "footer_invoice_value", default_key="footer_invoice_value"))
             current["footer"] = {
                 "taxable": taxable,
                 "cgst": cgst,
@@ -1737,7 +2009,7 @@ def _parse_vendor_purchase_blocks(rows: List[dict]) -> List[dict]:
                 note_bits.append(f"transporter {current['transporter']}")
             if current.get("place_of_supply"):
                 note_bits.append(f"place of supply {current['place_of_supply']}")
-            if note_bits:
+            if note_bits and not current.get("notes"):
                 current["notes"] = "Imported from vendor CSV — " + "; ".join(note_bits)
             _finish()
         else:
@@ -1817,8 +2089,37 @@ def _group_named_purchase_rows(rows: List[dict]) -> List[dict]:
             "strip_conversion_factor": scf,
             "discount_pct": _cell_float(row.get("discount_pct")) or 0.0,
             "hsn_code": _cell_str(row.get("hsn_code")),
+            "cgst_pct": _cell_float(row.get("cgst_pct")),
+            "sgst_pct": _cell_float(row.get("sgst_pct")),
         })
     return [groups[k] for k in order]
+
+
+def _remap_flat_purchase_rows(rows: List[dict], column_mapping: Optional[dict]) -> List[dict]:
+    """Rewrite row keys from source headers → ERP field names using the UI mapping."""
+    field_cols = _normalize_column_mapping(column_mapping)
+    if not field_cols:
+        return rows
+    remapped: List[dict] = []
+    for row in rows:
+        out: dict = {"_row": row.get("_row")}
+        for field, src in field_cols.items():
+            if field in ("record_type", "supplier_or_invoice"):
+                continue
+            out[field] = row.get(src)
+        # supplier_or_invoice with no separate supplier → treat as supplier on flat rows
+        if "supplier_name" not in out and "supplier_or_invoice" in field_cols:
+            out["supplier_name"] = row.get(field_cols["supplier_or_invoice"])
+        if "invoice_number" not in out and "supplier_or_invoice" in field_cols:
+            # Flat files shouldn't use supplier_or_invoice for both — leave invoice empty
+            pass
+        mrp = out.get("mrp")
+        if out.get("rate_a") in (None, "") and mrp not in (None, ""):
+            out["rate_a"] = mrp
+        if out.get("rate_b") in (None, "") and mrp not in (None, ""):
+            out["rate_b"] = mrp
+        remapped.append(out)
+    return remapped
 
 
 def _resolve_purchase_store_id(
@@ -1878,7 +2179,7 @@ def _find_medicine_for_purchase(
         Medicine.is_active == True,  # noqa: E712
     ).all()
     if not matches:
-        return None, f"Medicine '{medicine_name}' not found — import medicines first"
+        return None, f"Medicine '{medicine_name}' not found"
     if len(matches) == 1:
         cache[key] = matches[0]
         return matches[0], None
@@ -1900,6 +2201,133 @@ def _find_medicine_for_purchase(
         f"Ambiguous medicine name '{medicine_name}' "
         f"({len(matches)} matches: {codes}). Set medicine_code or packaging."
     )
+
+
+def _allocate_purchase_medicine_code(
+    db: Session, hospital_id: int, preferred: Optional[str], name: str,
+) -> str:
+    """Pick an unused medicine_code (≤20 chars). Prefer vendor code when free."""
+    preferred = (preferred or "").strip()
+    if preferred and len(preferred) <= 20:
+        clash = db.query(Medicine.id).filter(
+            Medicine.hospital_id == hospital_id,
+            Medicine.medicine_code == preferred,
+        ).first()
+        if not clash:
+            return preferred
+
+    base = re.sub(r"[^A-Za-z0-9]", "", (name or "MED").upper())[:12] or "MED"
+    candidate = base[:20]
+    if not db.query(Medicine.id).filter(
+        Medicine.hospital_id == hospital_id, Medicine.medicine_code == candidate,
+    ).first():
+        return candidate
+    for n in range(2, 1000):
+        suffix = str(n)
+        cand = (base[: max(1, 20 - len(suffix))] + suffix)[:20]
+        if not db.query(Medicine.id).filter(
+            Medicine.hospital_id == hospital_id, Medicine.medicine_code == cand,
+        ).first():
+            return cand
+    return f"M{int(datetime.now().timestamp()) % 10_000_000_000}"[:20]
+
+
+def _get_or_create_medicine_for_purchase(
+    db: Session, hospital_id: int, item: dict, *,
+    resolver: _MasterResolver, cache: dict,
+) -> Tuple[Optional[Medicine], bool, Optional[str]]:
+    """Find medicine or auto-create from purchase line details.
+
+    Returns (medicine, created, error_message).
+    Auto-creates company / HSN / category "General" as needed.
+    """
+    med, err = _find_medicine_for_purchase(
+        db, hospital_id,
+        medicine_code=item.get("medicine_code"),
+        medicine_name=item.get("medicine_name"),
+        pack_size=item.get("pack_size"),
+        cache=cache,
+    )
+    if not med and item.get("medicine_code") and item.get("medicine_name"):
+        med, err = _find_medicine_for_purchase(
+            db, hospital_id,
+            medicine_code=None,
+            medicine_name=item.get("medicine_name"),
+            pack_size=item.get("pack_size"),
+            cache=cache,
+        )
+
+    hsn_code = _cell_str(item.get("hsn_code"))
+    cgst = item.get("cgst_pct")
+    sgst = item.get("sgst_pct")
+    if cgst is not None and not isinstance(cgst, (int, float)):
+        cgst = _cell_float(cgst)
+    if sgst is not None and not isinstance(sgst, (int, float)):
+        sgst = _cell_float(sgst)
+
+    if med:
+        if hsn_code and not med.hsn_id:
+            med.hsn_id = resolver.hsn(hsn_code, sgst, cgst).id
+            db.flush()
+        return med, False, None
+
+    if err and "Ambiguous" in err:
+        return None, False, err
+
+    name = _cell_str(item.get("medicine_name"))
+    if not name:
+        return None, False, err or "Missing medicine_name — cannot auto-create"
+
+    mrp = item.get("mrp") or 0.0
+    purchase_rate = item.get("purchase_rate") or 0.0
+    rate_a = item.get("rate_a") if item.get("rate_a") is not None else mrp
+    rate_b = item.get("rate_b") if item.get("rate_b") is not None else mrp
+    pack = _cell_str(item.get("pack_size"))
+    scf = item.get("strip_conversion_factor") or _parse_pack_scf(pack) or 1
+    scf = max(1, int(scf))
+    manufacturer = _cell_str(item.get("manufacturer"))
+
+    cat = resolver.category("General")
+    code = _allocate_purchase_medicine_code(
+        db, hospital_id, item.get("medicine_code"), name,
+    )
+    unit_price = float(rate_a or mrp or purchase_rate or 0)
+
+    med = Medicine(
+        medicine_code=code,
+        name=name,
+        category_id=cat.id,
+        hospital_id=hospital_id,
+        unit_price=unit_price,
+        mrp=float(mrp or 0),
+        purchase_rate=float(purchase_rate or 0),
+        rate_a=float(rate_a or 0),
+        rate_b=float(rate_b or 0),
+        packaging=pack,
+        strip_conversion_factor=scf,
+        manufacturer=manufacturer,
+        is_active=True,
+        requires_prescription=True,
+    )
+    if manufacturer:
+        med.company_id = resolver.company(manufacturer).id
+    if hsn_code:
+        med.hsn_id = resolver.hsn(hsn_code, sgst, cgst).id
+
+    apply_medicine_price_rounding(med)
+    apply_cost_pcs_from_mrp(med)
+    db.add(med)
+    db.flush()
+    resolver._track("medicine", f"{code} ({name})")
+
+    cache[f"code:{code.lower()}"] = med
+    cache[f"name:{name.lower()}"] = med
+    if item.get("medicine_code"):
+        vendor_code = str(item["medicine_code"]).strip().lower()
+        if vendor_code == code.lower():
+            cache[f"code:{vendor_code}"] = med
+
+    return med, True, None
 
 
 def _next_purchase_number_import(db: Session, hospital_id: int) -> str:
@@ -1975,26 +2403,36 @@ def _find_existing_purchase(
 def import_purchases(
     db: Session, user: User, content: bytes, filename: str,
     *, dry_run: bool, on_duplicate: str,
+    column_mapping: Optional[dict] = None,
 ) -> dict:
     """Import purchase invoices as **draft** purchases.
 
     Accepts:
     - Vendor distributor CSV (H/T/F rows, CL1..CL31 headers) — e.g. Vasu Pharma export
     - Named-header .xlsx/.csv matching PURCHASE_HEADERS
+    - Either format with a UI `column_mapping` of {source_header: erp_field}
     """
     summary = _empty_summary(dry_run=dry_run)
     rows = _parse_upload(content, filename, ["Purchases", "Purchase"])
     hospital_id = user.hospital_id
+    mapping = column_mapping or {}
+    field_cols = _normalize_column_mapping(mapping)
 
-    if _looks_like_vendor_purchase(rows):
-        blocks = _parse_vendor_purchase_blocks(rows)
+    use_vendor = (
+        _looks_like_vendor_purchase(rows)
+        or "record_type" in field_cols
+        or "supplier_or_invoice" in field_cols
+    )
+    if use_vendor:
+        blocks = _parse_vendor_purchase_blocks(rows, column_mapping=mapping or None)
     else:
-        blocks = _group_named_purchase_rows(rows)
+        remapped = _remap_flat_purchase_rows(rows, mapping or None)
+        blocks = _group_named_purchase_rows(remapped)
 
     if not blocks:
         summary["errors"].append({
             "sheet": "Purchases", "row": 0,
-            "message": "No purchase rows found. Use vendor H/T/F CSV or the purchases template.",
+            "message": "No purchase rows found. Map columns and retry, or use the purchases template.",
         })
         summary["error_count"] = 1
         return summary
@@ -2005,6 +2443,7 @@ def import_purchases(
     }
     medicine_cache: dict = {}
     supplier_cache: Dict[str, PharmacySupplier] = {}
+    resolver = _MasterResolver(db, hospital_id)
 
     for block in blocks:
         items = block.get("items") or []
@@ -2086,6 +2525,9 @@ def import_purchases(
         # Resolve all line items first; fail the whole invoice if any line errors
         resolved: List[dict] = []
         line_errors: List[str] = []
+        medicines_created = 0
+
+        # Pass 1 — structural validation (no catalog writes yet)
         for item in items:
             rownum = item.get("_row") or header_row
             batch = (item.get("batch_number") or "").strip()
@@ -2101,29 +2543,8 @@ def import_purchases(
                 errs.append("quantity must be > 0")
             if rate is None or rate < 0:
                 errs.append("Missing purchase_rate (vendor CSV PTR / CL11)")
-
-            med, med_err = _find_medicine_for_purchase(
-                db, hospital_id,
-                medicine_code=item.get("medicine_code"),
-                medicine_name=item.get("medicine_name"),
-                pack_size=item.get("pack_size"),
-                cache=medicine_cache,
-            )
-            # If code miss but name hit inside helper — ok. If code provided but
-            # only name works, helper already fell through. If both fail:
-            if med_err and not med:
-                # Retry name-only when vendor code didn't match
-                if item.get("medicine_code") and item.get("medicine_name"):
-                    med, med_err = _find_medicine_for_purchase(
-                        db, hospital_id,
-                        medicine_code=None,
-                        medicine_name=item.get("medicine_name"),
-                        pack_size=item.get("pack_size"),
-                        cache=medicine_cache,
-                    )
-            if not med:
-                errs.append(med_err or "Medicine not found")
-
+            if not _cell_str(item.get("medicine_name")) and not _cell_str(item.get("medicine_code")):
+                errs.append("Missing medicine_name / medicine_code")
             if errs:
                 msg = f"Line {rownum}: " + "; ".join(errs)
                 line_errors.append(msg)
@@ -2134,7 +2555,43 @@ def import_purchases(
                     "name": batch or "",
                     "status": "error", "message": msg, "sheet": "Purchases",
                 })
+
+        if line_errors:
+            continue
+
+        # Pass 2 — resolve / auto-create medicines
+        for item in items:
+            rownum = item.get("_row") or header_row
+            batch = (item.get("batch_number") or "").strip()
+            qty = item.get("quantity")
+            expiry = item.get("expiry_date")
+            rate = item.get("purchase_rate")
+
+            med, med_created, med_err = _get_or_create_medicine_for_purchase(
+                db, hospital_id, item, resolver=resolver, cache=medicine_cache,
+            )
+            if not med:
+                msg = f"Line {rownum}: {med_err or 'Medicine not found'}"
+                line_errors.append(msg)
+                summary["errors"].append({"sheet": "Purchases", "row": rownum, "message": msg})
+                summary["preview"].append({
+                    "row": rownum,
+                    "key": item.get("medicine_code") or item.get("medicine_name") or "",
+                    "name": batch or "",
+                    "status": "error", "message": msg, "sheet": "Purchases",
+                })
                 continue
+
+            if med_created:
+                medicines_created += 1
+                summary["preview"].append({
+                    "row": rownum,
+                    "key": med.medicine_code,
+                    "name": med.name,
+                    "status": "new",
+                    "message": "Medicine auto-created from purchase line",
+                    "sheet": "Purchases",
+                })
 
             scf = item.get("strip_conversion_factor") or med.strip_conversion_factor or 1
             scf = max(1, int(scf))
@@ -2158,7 +2615,7 @@ def import_purchases(
             })
 
         if line_errors:
-            # Don't create a partial purchase for this invoice
+            # Ambiguous names etc. — do not create a partial purchase
             continue
         if not resolved:
             continue
@@ -2230,15 +2687,19 @@ def import_purchases(
             summary["created"] += 1
         else:
             summary["updated"] += 1
+        msg_bits = [f"Draft {purchase.purchase_number}"]
+        if medicines_created:
+            msg_bits.append(f"{medicines_created} medicine(s) auto-created")
         summary["preview"].append({
             "row": header_row,
             "key": preview_key,
             "name": f"{supplier_name} — {len(resolved)} items — ₹{purchase.grand_total:.2f}",
             "status": status,
-            "message": f"Draft {purchase.purchase_number}",
+            "message": " · ".join(msg_bits),
             "sheet": "Purchases",
         })
 
+    summary["masters_created"] = resolver.masters_created
     summary["error_count"] = len(summary["errors"])
     return summary
 
@@ -2258,7 +2719,11 @@ def build_purchases_template() -> bytes:
             "KT HEALTH ERP — Purchase Import",
             "",
             "Creates DRAFT purchases (review then Confirm in Purchases).",
-            "Supplier and medicines must already exist.",
+            "Supplier must already exist.",
+            "Missing medicines are auto-created (category General) from name, manufacturer,",
+            "MRP, PTR/purchase_rate, pack, and HSN (+ CGST/SGST % when present).",
+            "Missing HSN codes are auto-created and linked to the medicine.",
+            "Ambiguous medicine names (multiple catalog matches) still error.",
             "",
             "Option A — Named template (this sheet):",
             "  Required: supplier_name, medicine_code OR medicine_name, batch_number,",

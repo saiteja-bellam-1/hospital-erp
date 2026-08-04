@@ -149,7 +149,7 @@ def create_bill_with_payment(
             item_type=it.get("item_type") or bill_type,
             item_name=it["item_name"],
             item_code=it.get("item_code"),
-            quantity=int(it.get("quantity") or 1),
+            quantity=float(it.get("quantity") or 1),
             unit_price=float(it.get("unit_price") or 0),
             total_price=float(it.get("total_price") or 0),
         ))

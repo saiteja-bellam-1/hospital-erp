@@ -67,12 +67,16 @@ export default function PharmacyImportDialog({
   exportUrl,
   helpText,
   duplicateLabel = 'If a record already exists:',
+  showDuplicateSelect = true,
+  showAffectStock = false,
+  defaultAffectStock = false,
   showFeedback,
 }) {
   const { toast } = useToast();
   const fileInputRef = useRef(null);
   const [file, setFile] = useState(null);
   const [onDuplicate, setOnDuplicate] = useState('skip');
+  const [affectStock, setAffectStock] = useState(defaultAffectStock);
   const [analyzing, setAnalyzing] = useState(false);
   const [importing, setImporting] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -94,6 +98,7 @@ export default function PharmacyImportDialog({
     setSummary(null);
     setDone(null);
     setOnDuplicate('skip');
+    setAffectStock(defaultAffectStock);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -112,6 +117,9 @@ export default function PharmacyImportDialog({
       fd.append('file', file);
       fd.append('dry_run', dryRun ? 'true' : 'false');
       fd.append('on_duplicate', onDuplicate);
+      if (showAffectStock) {
+        fd.append('affect_stock', affectStock ? 'true' : 'false');
+      }
       const res = await axios.post(importUrl, fd, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
@@ -239,20 +247,41 @@ export default function PharmacyImportDialog({
 
           {file && !done && (
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-slate-600">{duplicateLabel}</span>
-                <Select
-                  value={onDuplicate}
-                  onValueChange={(v) => { setOnDuplicate(v); setSummary(null); }}
-                >
-                  <SelectTrigger className="h-8 w-36 text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="skip">Skip it</SelectItem>
-                    <SelectItem value="update">Update it</SelectItem>
-                  </SelectContent>
-                </Select>
+              <div className="flex flex-wrap items-center gap-3">
+                {showDuplicateSelect && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-slate-600">{duplicateLabel}</span>
+                    <Select
+                      value={onDuplicate}
+                      onValueChange={(v) => { setOnDuplicate(v); setSummary(null); }}
+                    >
+                      <SelectTrigger className="h-8 w-36 text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="skip">Skip it</SelectItem>
+                        <SelectItem value="update">Update it</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+                {showAffectStock && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-slate-600">Stock:</span>
+                    <Select
+                      value={affectStock ? 'deduct' : 'record'}
+                      onValueChange={(v) => { setAffectStock(v === 'deduct'); setSummary(null); }}
+                    >
+                      <SelectTrigger className="h-8 w-44 text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="record">Record only (no stock)</SelectItem>
+                        <SelectItem value="deduct">Deduct stock</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
               </div>
               <Button size="sm" variant="outline" onClick={() => runImport(true)} disabled={analyzing}>
                 {analyzing

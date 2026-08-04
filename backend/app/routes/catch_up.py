@@ -705,12 +705,13 @@ async def catch_up_pharmacy_sale(
     bill_items = []
     subtotal = 0.0
     for li in data.items:
-        line_total = round(float(li.quantity) * float(li.unit_price), 2)
+        qty = float(li.quantity)
+        line_total = round(qty * float(li.unit_price), 2)
         subtotal += line_total
         bill_items.append({
             "item_type": "medicine",
             "item_name": li.item_name,
-            "quantity": int(li.quantity) if float(li.quantity).is_integer() else 1,
+            "quantity": qty,
             "unit_price": float(li.unit_price),
             "total_price": line_total,
         })
@@ -871,16 +872,19 @@ async def catch_up_pharmacy_preview(
         )
     items = []
     for li in data.items:
-        line_total = round(float(li.quantity) * float(li.unit_price), 2)
+        qty = float(li.quantity)
+        line_total = round(qty * float(li.unit_price), 2)
         items.append({
             "item_type": "medicine",
             "item_name": li.item_name,
-            "quantity": int(li.quantity) if float(li.quantity).is_integer() else float(li.quantity),
+            "quantity": qty,
             "unit_price": float(li.unit_price),
             "total_price": line_total,
         })
     if data.affect_stock:
         warnings.append("Stock will be deducted from selected batches on confirm.")
+    else:
+        warnings.append("Financial-only: stock will not be changed.")
     creates_bill = bool(patient)
     if not creates_bill:
         warnings.append("No patient selected — pharmacy sale only (no central bill).")

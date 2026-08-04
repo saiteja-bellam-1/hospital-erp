@@ -23,7 +23,9 @@ from app.services.pharmacy_import import (
     import_opening_stock,
     import_purchases,
     import_suppliers,
+    inspect_purchase_import,
 )
+from app.services.pharmacy_sales_import import build_sales_template, import_sales
 from app.utils.auth import Modules
 from app.utils.dependencies import require_feature_permission, require_feature_permission_any
 from config.database import get_db
@@ -289,21 +291,77 @@ def purchases_import_template(
     return _xlsx_response(build_purchases_template(), "pharmacy_purchases_import_template.xlsx")
 
 
+@router.post("/purchases/import/inspect")
+async def purchases_import_inspect(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "create_purchase")),
+):
+    """Return file headers, samples, and suggested ERP field mapping for the mapper UI."""
+    content, filename = await _read_upload(file)
+    return inspect_purchase_import(content, filename)
+
+
 @router.post("/purchases/import", response_model=PharmacyImportSummary)
 async def purchases_import(
     file: UploadFile = File(...),
     dry_run: bool = Form(False),
     on_duplicate: str = Form("skip"),
+    column_mapping: str = Form(""),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "create_purchase")),
 ):
+    import json
     content, filename = await _read_upload(file)
     on_duplicate = _normalize_on_duplicate(on_duplicate)
+    mapping = None
+    if column_mapping and column_mapping.strip():
+        try:
+            mapping = json.loads(column_mapping)
+            if not isinstance(mapping, dict):
+                raise ValueError("column_mapping must be a JSON object")
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid column_mapping: {exc}") from exc
     summary = import_purchases(
-        db, current_user, content, filename, dry_run=dry_run, on_duplicate=on_duplicate,
+        db, current_user, content, filename,
+        dry_run=dry_run, on_duplicate=on_duplicate, column_mapping=mapping,
     )
     summary["dry_run"] = dry_run
     return _finalize_import(
         db, current_user, summary,
         action="import_pharmacy_purchases", resource_type="pharmacy_purchase",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Historical sales
+# ---------------------------------------------------------------------------
+
+@router.get("/sales/import/template")
+def sales_import_template(
+    current_user: User = Depends(require_feature_permission_any(
+        Modules.PHARMACY, "view_sales", "create_sale",
+    )),
+):
+    return _xlsx_response(build_sales_template(), "pharmacy_sales_import_template.xlsx")
+
+
+@router.post("/sales/import", response_model=PharmacyImportSummary)
+async def sales_import(
+    file: UploadFile = File(...),
+    dry_run: bool = Form(False),
+    on_duplicate: str = Form("skip"),
+    affect_stock: bool = Form(False),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "create_sale")),
+):
+    content, filename = await _read_upload(file)
+    on_duplicate = _normalize_on_duplicate(on_duplicate)
+    summary = import_sales(
+        db, current_user, content, filename,
+        dry_run=dry_run, on_duplicate=on_duplicate, affect_stock=affect_stock,
+    )
+    summary["dry_run"] = dry_run
+    return _finalize_import(
+        db, current_user, summary,
+        action="import_pharmacy_sales", resource_type="pharmacy_sale",
     )

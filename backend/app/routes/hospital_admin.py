@@ -3499,7 +3499,11 @@ async def get_bill_pdf(
     db: Session = Depends(get_db),
 ):
     """Generic PDF for any Bill row (procedure / consolidated / etc.).
-    Uses the standard OPD bill template via `generate_bill_pdf`."""
+
+    Pharmacy catch-up (and any central Bill with bill_type='pharmacy') uses the
+    same retail invoice layout as the pharmacy module so qty / price / total
+    columns match POS prints. Other bill types use the OPD `generate_bill_pdf`.
+    """
     if not any(r in current_user.role_names for r in ['super_admin', 'hospital_admin', 'receptionist', 'doctor']):
         raise HTTPException(status_code=403, detail="Not authorized")
 
@@ -3515,6 +3519,82 @@ async def get_bill_pdf(
     created_by = db.query(User).filter(User.id == bill.created_by_id).first() if bill.created_by_id else None
     prepared_by = (f"{created_by.first_name} {created_by.last_name}".strip()
                    or created_by.username) if created_by else ""
+
+    from app.utils.pdf_service import pdf_service
+    from fastapi.responses import Response
+
+    # Pharmacy central bills (incl. financial catch-up): retail invoice layout.
+    if (bill.bill_type or "").lower() == "pharmacy":
+        from app.routes.pharmacy import _pharmacy_hospital_info_for_pdf
+
+        def _qty_display(q) -> str:
+            try:
+                qf = float(q or 0)
+            except (TypeError, ValueError):
+                return str(q or 0)
+            if qf.is_integer():
+                return f"{int(qf)}"
+            return f"{qf:g}"
+
+        payment_type = (payments[0].payment_method_name if payments else "cash") or "cash"
+        sale_items = []
+        for it in items:
+            qty = float(it.quantity or 0) or 1.0
+            rate = float(it.unit_price or 0)
+            line_total = float(it.total_price or 0)
+            if not rate and qty:
+                rate = round(line_total / qty, 2)
+            sale_items.append({
+                "medicine_name": it.item_name or "",
+                "manufacturer": "",
+                "schedule": "",
+                "batch_number": "",
+                "expiry_date": None,
+                "hsn_code": it.item_code or "",
+                "sgst_pct": 0,
+                "cgst_pct": 0,
+                "quantity": qty,
+                "qty_display": _qty_display(qty),
+                "rate": rate,
+                "line_total": line_total,
+            })
+        grand = float(bill.total_amount or 0)
+        sale_data = {
+            "sale_number": bill.bill_number,
+            "sale_date": bill.bill_date,
+            "payment_type": payment_type,
+            "status": "completed",
+            "sales_type": "OP Sales",
+            "category": payment_type.upper(),
+            "patient_name": (
+                f"{patient.first_name} {patient.last_name}".strip() if patient else "Unknown"
+            ),
+            "doctor_name": "",
+            "uhid": (patient.mrn or "") if patient else "",
+            "opno": "0",
+            "ipno": "0",
+            "items": sale_items,
+            "subtotal": float(bill.subtotal or 0),
+            "discount_total": float(bill.discount_amount or 0),
+            "tax_total": float(bill.tax_amount or 0),
+            "grand_total": grand,
+            "sgst_tax": 0.0,
+            "cgst_tax": 0.0,
+            "total_amt": round(sum(float(i["line_total"]) for i in sale_items), 2) or grand,
+            "net_amt": grand,
+            "paid_amt": paid if paid > 0.01 else grand,
+            "prepared_by": (prepared_by or "PHARMACY").upper(),
+            "printed_by": (prepared_by or "PHARMACY").upper(),
+        }
+        hi = _pharmacy_hospital_info_for_pdf(db, bill.hospital_id or current_user.hospital_id)
+        buf = pdf_service.generate_pharmacy_sale_invoice_pdf(
+            sale_data, hi,
+            **pdf_gen_kwargs(db, current_user.hospital_id, 'pharmacy_sale_invoice'),
+        )
+        return Response(
+            content=buf.getvalue(), media_type="application/pdf",
+            headers={"Content-Disposition": f'inline; filename="{bill.bill_number}.pdf"'},
+        )
 
     # Hide Paid/Balance for fresh unpaid bills (procedure / consolidated /
     # any bill that has no payments yet) — the printed bill should read as
@@ -3555,12 +3635,9 @@ async def get_bill_pdf(
         "logo_url": getattr(hospital, "logo_url", "") if hospital else "",
         "hospital_subname": getattr(hospital, "hospital_subname", "") if hospital else "",
     }
-    from app.utils.pdf_service import pdf_service
     buf = pdf_service.generate_bill_pdf(bill_data, hospital_info, **bill_pdf_gen_kwargs(db, current_user.hospital_id, 'opd_bill'))
-    from fastapi.responses import Response
     return Response(content=buf.getvalue(), media_type="application/pdf",
                     headers={"Content-Disposition": f'inline; filename="{bill.bill_number}.pdf"'})
-
 
 @router.get("/billing/bills/{bill_id}/credit-note/pdf")
 async def credit_note_pdf(

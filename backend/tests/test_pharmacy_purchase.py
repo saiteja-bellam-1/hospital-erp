@@ -323,6 +323,112 @@ def test_edit_confirmed_updates_header_and_totals(client, auth_headers, pharmacy
     assert row.edited_by is not None
 
 
+def test_edit_confirmed_updates_purchase_ledger_in_place(
+    client, auth_headers, pharmacy_setup, db_session,
+):
+    """Qty edit updates the single purchase ledger row — no reverse/−old +new."""
+    from app.models.pharmacy import PharmacyInventory, PharmacyStockLedger
+
+    inv_no = f"INV-{uuid.uuid4().hex[:6]}"
+    p = client.post("/api/pharmacy/purchases", headers=auth_headers,
+                    json=_purchase_payload(pharmacy_setup, invoice_number=inv_no, qty=10)).json()
+    batch = p["items"][0]["batch_number"]
+    assert client.post(
+        f"/api/pharmacy/purchases/{p['id']}/confirm", headers=auth_headers,
+    ).status_code == 200
+
+    body = _purchase_payload(pharmacy_setup, invoice_number=inv_no, qty=12)
+    body["items"][0]["batch_number"] = batch
+    body["items"][0]["expiry_date"] = p["items"][0]["expiry_date"]
+    body["reason"] = "invoice qty correction"
+    r = client.put(f"/api/pharmacy/purchases/{p['id']}", headers=auth_headers, json=body)
+    assert r.status_code == 200, r.text
+
+    db_session.expire_all()
+    inv = db_session.query(PharmacyInventory).filter(
+        PharmacyInventory.batch_number == batch,
+    ).first()
+    assert inv is not None
+    assert inv.quantity_in_stock == 12
+
+    ledgers = db_session.query(PharmacyStockLedger).filter(
+        PharmacyStockLedger.batch_id == inv.id,
+        PharmacyStockLedger.reference_type == "purchase",
+        PharmacyStockLedger.reference_id == p["id"],
+    ).all()
+    assert len(ledgers) == 1
+    assert ledgers[0].txn_type == "purchase"
+    assert ledgers[0].qty_delta == 12
+    assert "invoice qty correction" in (ledgers[0].notes or "").lower()
+
+    reverse_rows = db_session.query(PharmacyStockLedger).filter(
+        PharmacyStockLedger.batch_id == inv.id,
+        PharmacyStockLedger.txn_type == "purchase_edit_reverse",
+    ).count()
+    assert reverse_rows == 0
+
+
+def test_edit_confirmed_collapses_legacy_reverse_recreate(
+    client, auth_headers, pharmacy_setup, db_session,
+):
+    """Re-editing a purchase that still has legacy reverse rows collapses them."""
+    from app.models.pharmacy import PharmacyInventory, PharmacyStockLedger
+
+    inv_no = f"INV-{uuid.uuid4().hex[:6]}"
+    p = client.post("/api/pharmacy/purchases", headers=auth_headers,
+                    json=_purchase_payload(pharmacy_setup, invoice_number=inv_no, qty=10)).json()
+    batch = p["items"][0]["batch_number"]
+    assert client.post(
+        f"/api/pharmacy/purchases/{p['id']}/confirm", headers=auth_headers,
+    ).status_code == 200
+
+    db_session.expire_all()
+    inv = db_session.query(PharmacyInventory).filter(
+        PharmacyInventory.batch_number == batch,
+    ).first()
+    # Simulate legacy reverse-then-recreate leftover rows.
+    db_session.add(PharmacyStockLedger(
+        medicine_id=pharmacy_setup["medicine_id"], batch_id=inv.id,
+        txn_type="purchase_edit_reverse", qty_delta=-10,
+        reference_type="purchase", reference_id=p["id"],
+        hospital_id=inv.hospital_id, store_id=inv.store_id,
+        notes="legacy reverse",
+    ))
+    db_session.add(PharmacyStockLedger(
+        medicine_id=pharmacy_setup["medicine_id"], batch_id=inv.id,
+        txn_type="purchase", qty_delta=10,
+        reference_type="purchase", reference_id=p["id"],
+        hospital_id=inv.hospital_id, store_id=inv.store_id,
+        notes="legacy re-credit",
+    ))
+    db_session.commit()
+
+    body = _purchase_payload(pharmacy_setup, invoice_number=inv_no, qty=12)
+    body["items"][0]["batch_number"] = batch
+    body["items"][0]["expiry_date"] = p["items"][0]["expiry_date"]
+    body["reason"] = "cleanup after legacy edits"
+    r = client.put(f"/api/pharmacy/purchases/{p['id']}", headers=auth_headers, json=body)
+    assert r.status_code == 200, r.text
+
+    db_session.expire_all()
+    inv = db_session.query(PharmacyInventory).filter(PharmacyInventory.id == inv.id).first()
+    assert inv.quantity_in_stock == 12
+
+    ledgers = (
+        db_session.query(PharmacyStockLedger)
+        .filter(
+            PharmacyStockLedger.batch_id == inv.id,
+            PharmacyStockLedger.reference_type == "purchase",
+            PharmacyStockLedger.reference_id == p["id"],
+        )
+        .order_by(PharmacyStockLedger.id.asc())
+        .all()
+    )
+    assert len(ledgers) == 1
+    assert ledgers[0].txn_type == "purchase"
+    assert ledgers[0].qty_delta == 12
+
+
 def test_edit_confirmed_blocks_qty_below_sold(client, auth_headers, pharmacy_setup):
     p = client.post("/api/pharmacy/purchases", headers=auth_headers,
                     json=_purchase_payload(pharmacy_setup,

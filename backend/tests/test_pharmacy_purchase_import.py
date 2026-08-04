@@ -11,6 +11,8 @@ from app.services.pharmacy_import import (
     _parse_pack_scf,
     _parse_vendor_purchase_blocks,
     _strip_excel_formula,
+    _suggest_purchase_mapping,
+    inspect_purchase_import,
 )
 
 
@@ -43,7 +45,6 @@ def test_parse_vasu_pharma_csv():
     assert block["invoice_number"] == "2026-27/TAX/1808"
     assert block["bill_date"] == date(2026, 8, 1)
     assert block["purchase_type"] == "Direct"
-    assert block["transporter"] == "SRMT"
     assert block["place_of_supply"] == "KHAMMAM"
     assert block["supplier_name"] == "VASU PHARMA"
     assert len(block["items"]) == 47
@@ -61,8 +62,9 @@ def test_parse_vasu_pharma_csv():
     assert first["quantity"] == pytest.approx(20.0)
     assert first["hsn_code"] == "30049029"
     assert first["strip_conversion_factor"] == 1
+    assert first["cgst_pct"] == pytest.approx(2.5)
+    assert first["sgst_pct"] == pytest.approx(2.5)
 
-    # Two NORMAXIN TAB batches both present
     normaxin = [i for i in block["items"] if i["medicine_name"] == "NORMAXIN TAB"]
     assert len(normaxin) == 2
     assert {i["batch_number"] for i in normaxin} == {"HNX042680", "HNX042682"}
@@ -74,6 +76,38 @@ def test_parse_vasu_pharma_csv():
     assert footer["sgst"] == pytest.approx(3338.06)
     assert footer["invoice_value"] == pytest.approx(127896.0)
     assert "Invoice value" in (block["notes"] or "")
+
+
+@pytest.mark.skipif(not SAMPLE_VENDOR.exists(), reason="sample 1808.csv not present")
+def test_inspect_and_mapped_vendor_csv():
+    content = SAMPLE_VENDOR.read_bytes()
+    info = inspect_purchase_import(content, "1808.csv")
+    assert info["format_hint"] == "vendor_htf"
+    assert any(h.lower() == "cl1" for h in info["headers"])
+    suggested = info["suggested_mapping"]
+    by_lower = {k.lower(): v for k, v in suggested.items()}
+    assert by_lower.get("cl1") == "record_type"
+    assert by_lower.get("cl3") == "supplier_or_invoice"
+    assert by_lower.get("cl11") == "purchase_rate"
+    assert by_lower.get("cl13") == "mrp"
+
+    rows = _parse_csv_rows(content)
+    blocks = _parse_vendor_purchase_blocks(rows, column_mapping=suggested)
+    assert len(blocks) == 1
+    assert blocks[0]["items"][0]["purchase_rate"] == pytest.approx(58.82)
+    assert blocks[0]["items"][0]["rate_a"] == pytest.approx(77.2)
+
+
+def test_suggest_flat_headers():
+    mapping = _suggest_purchase_mapping([
+        "Supplier", "Invoice", "Item Name", "Batch", "Expiry", "Qty", "PTR", "MRP",
+    ])
+    assert mapping["Supplier"] == "supplier_name"
+    assert mapping["Invoice"] == "invoice_number"
+    assert mapping["Item Name"] == "medicine_name"
+    assert mapping["Batch"] == "batch_number"
+    assert mapping["PTR"] == "purchase_rate"
+    assert mapping["MRP"] == "mrp"
 
 
 def test_named_template_grouping():
@@ -122,3 +156,70 @@ def test_named_template_grouping():
     assert len(blocks[0]["items"]) == 2
     assert blocks[1]["invoice_number"] == "INV-2"
     assert len(blocks[1]["items"]) == 1
+
+
+def test_get_or_create_medicine_autocreates_with_hsn(db_session, seed_data):
+    from app.models.pharmacy import Medicine, PharmacyHSN, MedicineCategory, PharmacyCompany
+    from app.services.pharmacy_import import _MasterResolver, _get_or_create_medicine_for_purchase
+
+    hid = seed_data["hospital_id"]
+    resolver = _MasterResolver(db_session, hid)
+    cache = {}
+    item = {
+        "medicine_code": "NEW001",
+        "medicine_name": "BrandNewTablet",
+        "pack_size": "1*10",
+        "manufacturer": "Acme Labs Pvt Ltd",
+        "mrp": 100.0,
+        "purchase_rate": 80.0,
+        "rate_a": 100.0,
+        "rate_b": 100.0,
+        "strip_conversion_factor": 10,
+        "hsn_code": "30049099",
+        "cgst_pct": 2.5,
+        "sgst_pct": 2.5,
+    }
+    # Ensure medicine does not already exist
+    assert not db_session.query(Medicine).filter(
+        Medicine.hospital_id == hid, Medicine.name == "BrandNewTablet",
+    ).first()
+
+    med, created, err = _get_or_create_medicine_for_purchase(
+        db_session, hid, item, resolver=resolver, cache=cache,
+    )
+    assert err is None
+    assert created is True
+    assert med is not None
+    assert med.name == "BrandNewTablet"
+    assert med.medicine_code == "NEW001"
+    assert med.mrp == pytest.approx(100.0)
+    assert med.purchase_rate == pytest.approx(80.0)
+    assert med.rate_a == pytest.approx(100.0)
+    assert med.rate_b == pytest.approx(100.0)
+    assert med.strip_conversion_factor == 10
+    assert med.packaging == "1*10"
+    assert med.hsn_id is not None
+    assert med.company_id is not None
+    assert med.category_id is not None
+
+    cat = db_session.query(MedicineCategory).filter(MedicineCategory.id == med.category_id).first()
+    assert cat.name == "General"
+
+    hsn = db_session.query(PharmacyHSN).filter(PharmacyHSN.id == med.hsn_id).first()
+    assert hsn.code == "30049099"
+    assert hsn.cgst_pct == pytest.approx(2.5)
+    assert hsn.sgst_pct == pytest.approx(2.5)
+
+    co = db_session.query(PharmacyCompany).filter(PharmacyCompany.id == med.company_id).first()
+    assert co.name == "Acme Labs Pvt Ltd"
+
+    # Second call finds existing — not recreated
+    med2, created2, err2 = _get_or_create_medicine_for_purchase(
+        db_session, hid, item, resolver=resolver, cache={},
+    )
+    assert err2 is None
+    assert created2 is False
+    assert med2.id == med.id
+
+    assert any(m.startswith("medicine:") for m in resolver.masters_created)
+    assert any(m.startswith("hsn:") for m in resolver.masters_created)

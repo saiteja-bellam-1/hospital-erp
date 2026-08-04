@@ -784,9 +784,9 @@ const CatchUpBills = () => {
                 </div>
               ))}
               {type === 'pharmacy' && (
-                <label className="flex items-center gap-2 text-sm">
+                <label className="flex items-center gap-2 text-sm text-muted-foreground">
                   <input type="checkbox" checked={affectStock} onChange={(e) => setAffectStock(e.target.checked)} />
-                  Deduct pharmacy stock (requires batch ids via API — leave off for financial-only catch-up)
+                  Deduct pharmacy stock (off by default — financial catch-up only; requires medicine/batch ids via API)
                 </label>
               )}
             </div>

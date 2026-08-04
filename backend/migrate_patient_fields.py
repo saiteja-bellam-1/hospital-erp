@@ -261,6 +261,8 @@ NEW_COLUMNS = [
     ("admissions", "is_catch_up", "BOOLEAN DEFAULT 0"),
     # Doctor IP visit billing mode: per_day (default) | per_visit
     ("users", "inpatient_fee_charge_mode", "VARCHAR(20) DEFAULT 'per_day'"),
+    # Historical pharmacy sales import — False skips stock restore on void/edit
+    ("pharmacy_sales", "stock_affected", "BOOLEAN DEFAULT 1"),
 ]
 
 # B6 — body release table is created via create_all on startup; no column adds.

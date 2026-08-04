@@ -14,7 +14,7 @@ import { printPdfFromUrl } from '../../../../utils/printPdf';
 import { useToast } from '../../../../hooks/use-toast';
 import { errMsg } from '../../PharmacyModule';
 import { usePharmacyStore } from '../../../../contexts/PharmacyStoreContext';
-import PharmacyImportDialog from '../../../../components/pharmacy/PharmacyImportDialog';
+import PurchaseImportDialog from '../../../../components/pharmacy/PurchaseImportDialog';
 
 export default function PurchasesTab() {
   const navigate = useNavigate();
@@ -162,16 +162,10 @@ export default function PurchasesTab() {
         </DialogContent>
       </Dialog>
 
-      <PharmacyImportDialog
+      <PurchaseImportDialog
         open={importOpen}
         onOpenChange={setImportOpen}
         onImported={load}
-        title="Import Purchases"
-        entityLabel="purchases"
-        importUrl="/api/pharmacy/purchases/import"
-        templateUrl="/api/pharmacy/purchases/import/template"
-        duplicateLabel="If invoice already exists:"
-        helpText="Upload a vendor tax-invoice CSV (H/T/F, CL1–CL31) or the named template. Creates draft purchases — review and Confirm to add stock. Supplier and medicines must already exist (matched by name or medicine_code)."
       />
     </Card>
   );
