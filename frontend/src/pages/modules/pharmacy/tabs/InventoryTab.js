@@ -9,7 +9,7 @@ import { Badge } from '../../../../components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../../../../components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../../../components/ui/select';
 import { useToast } from '../../../../hooks/use-toast';
-import { Search, RefreshCw, Sliders, ScrollText, Upload, Download, Loader2, X } from 'lucide-react';
+import { Search, RefreshCw, Sliders, ScrollText, Upload, Download, Loader2, X, Trash2 } from 'lucide-react';
 import PharmacyImportDialog, { downloadPharmacyBlob } from '../../../../components/pharmacy/PharmacyImportDialog';
 import PharmacyMedicinePicker from '../../../../components/pharmacy/PharmacyMedicinePicker';
 import { errMsg } from '../../PharmacyModule';
@@ -134,6 +134,23 @@ export default function InventoryTab() {
     }
   };
 
+  const deleteLegacyLedger = async (row) => {
+    if (!canAdjustStock || !row?.can_delete) return;
+    const label = `${row.txn_type} ${row.qty_delta >= 0 ? '+' : ''}${row.qty_delta}`;
+    if (!window.confirm(
+      `Delete ledger entry ${label}?\n\n`
+      + 'This only removes the ledger row. Current stock is not changed.\n'
+      + 'Use this to clean up leftover rows from the old purchase-edit reverse path.',
+    )) return;
+    try {
+      await axios.delete(`/api/pharmacy/inventory/ledger/${row.id}`);
+      toast({ title: 'Ledger entry deleted', description: 'Stock unchanged' });
+      load();
+    } catch (e) {
+      toast({ variant: 'destructive', title: 'Delete failed', description: errMsg(e) });
+    }
+  };
+
   const showStockImportExport = view === 'stock' || view === 'batches';
 
   const tabBtn = (v, label, Icon) => (
@@ -178,7 +195,8 @@ export default function InventoryTab() {
         </CardHeader>
         <CardContent>
           {view === 'ledger' && (
-            <div className="mb-4 flex flex-wrap items-end gap-3 rounded-md border bg-gray-50/80 p-3">
+            <div className="mb-4 space-y-2">
+            <div className="flex flex-wrap items-end gap-3 rounded-md border bg-gray-50/80 p-3">
               <div className="min-w-[14rem] flex-1 space-y-1">
                 <Label className="text-xs text-gray-600">Medicine</Label>
                 <div className="flex items-center gap-1">
@@ -260,6 +278,13 @@ export default function InventoryTab() {
                 />
               </div>
             </div>
+            {canAdjustStock ? (
+              <p className="text-xs text-gray-500">
+                Delete is available on leftover <span className="font-mono">purchase_edit_reverse</span> rows
+                and duplicate purchase credits from the old purchase-edit path. Stock on hand is not changed.
+              </p>
+            ) : null}
+            </div>
           )}
           {loading ? <p className="text-center py-6 text-sm text-gray-500">Loading…</p>
             : data.length === 0 ? <p className="text-center py-6 text-sm text-gray-500">No records</p>
@@ -269,6 +294,7 @@ export default function InventoryTab() {
                 data={data}
                 onAdjust={canAdjustStock ? openAdjust : null}
                 canAdjust={canAdjustStock}
+                onDeleteLedger={canAdjustStock ? deleteLegacyLedger : null}
               />
             )}
         </CardContent>
@@ -318,7 +344,7 @@ export default function InventoryTab() {
   );
 }
 
-function TableForView({ view, data, onAdjust, canAdjust }) {
+function TableForView({ view, data, onAdjust, canAdjust, onDeleteLedger }) {
   if (view === 'stock') {
     return (
       <table className="w-full text-sm">
@@ -415,6 +441,7 @@ function TableForView({ view, data, onAdjust, canAdjust }) {
     );
   }
   // ledger
+  const showLedgerActions = Boolean(onDeleteLedger);
   return (
     <table className="w-full text-sm">
       <thead><tr className="border-b text-left text-gray-600">
@@ -422,6 +449,7 @@ function TableForView({ view, data, onAdjust, canAdjust }) {
         <th className="py-2 pr-4">Medicine</th><th className="py-2 pr-4">Batch</th>
         <th className="py-2 pr-4">Qty Δ</th><th className="py-2 pr-4">By</th>
         <th className="py-2 pr-4">Reference</th><th className="py-2 pr-4">Notes</th>
+        {showLedgerActions ? <th className="py-2 text-right">Actions</th> : null}
       </tr></thead>
       <tbody>
         {data.map(l => (
@@ -436,6 +464,23 @@ function TableForView({ view, data, onAdjust, canAdjust }) {
             <td className="py-2 pr-4 text-xs">{l.performed_by_name || '—'}</td>
             <td className="py-2 pr-4 text-xs">{l.reference_type}#{l.reference_id}</td>
             <td className="py-2 pr-4 text-xs">{l.notes || '—'}</td>
+            {showLedgerActions ? (
+              <td className="py-2 text-right">
+                {l.can_delete ? (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-8 w-8 p-0"
+                    title="Delete legacy ledger row (stock unchanged)"
+                    onClick={() => onDeleteLedger(l)}
+                  >
+                    <Trash2 className="h-3.5 w-3.5 text-red-500" />
+                  </Button>
+                ) : (
+                  <span className="text-xs text-gray-300">—</span>
+                )}
+              </td>
+            ) : null}
           </tr>
         ))}
       </tbody>

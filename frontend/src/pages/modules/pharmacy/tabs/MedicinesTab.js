@@ -40,7 +40,7 @@ export default function MedicinesTab() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const params = { include_hidden: true, active_only: false };
+      const params = { include_hidden: true, active_only: true };
       if (search) params.search = search;
       if (scheduleFilter) params.schedule = scheduleFilter;
       if (categoryFilter) params.category_id = categoryFilter;
@@ -111,10 +111,17 @@ export default function MedicinesTab() {
   };
 
   const remove = async (row) => {
-    if (!window.confirm(`Delete ${row.name}?`)) return;
+    const permanent = !row.is_active;
+    const msg = permanent
+      ? `Permanently delete ${row.name}? This removes it from the catalog and cannot be undone.`
+      : `Delete ${row.name}? It will be hidden from the catalog (can be permanently purged later).`;
+    if (!window.confirm(msg)) return;
     try {
-      await axios.delete(`/api/pharmacy/medicines/${row.id}`);
-      toast({ title: 'Deleted' }); load();
+      await axios.delete(`/api/pharmacy/medicines/${row.id}`, {
+        params: permanent ? { permanent: true } : undefined,
+      });
+      toast({ title: permanent ? 'Permanently deleted' : 'Deleted' });
+      load();
     } catch (e) {
       toast({ variant: 'destructive', title: 'Delete failed', description: errMsg(e) });
     }
@@ -218,8 +225,18 @@ export default function MedicinesTab() {
                       {m.is_active && !m.is_hidden && <Badge variant="outline" className="text-xs">Active</Badge>}
                     </td>
                     <td className="py-2 text-right">
-                      <Button size="sm" variant="ghost" onClick={() => openEdit(m)}><Pencil className="h-3 w-3" /></Button>
-                      <Button size="sm" variant="ghost" onClick={() => remove(m)}><Trash2 className="h-3 w-3 text-red-500" /></Button>
+                      {m.is_active && (
+                        <Button size="sm" variant="ghost" title="Edit"
+                          onClick={() => openEdit(m)}><Pencil className="h-3 w-3" /></Button>
+                      )}
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        title={m.is_active ? 'Delete' : 'Permanently delete'}
+                        onClick={() => remove(m)}
+                      >
+                        <Trash2 className="h-3 w-3 text-red-500" />
+                      </Button>
                     </td>
                   </tr>
                 ))}

@@ -108,7 +108,8 @@ _PHARMACY_ALL = [
     # Inventory
     "view_inventory", "adjust_stock", "view_stock_ledger", "view_low_stock", "view_expiring",
     # Procurement
-    "create_purchase", "edit_purchase", "confirm_purchase", "revoke_purchase", "view_purchases",
+    "create_purchase", "edit_purchase", "confirm_purchase", "revoke_purchase",
+    "delete_purchase", "view_purchases",
     # Sales — POS
     "create_sale", "edit_sale", "void_sale", "void_sale_legacy", "view_sales", "apply_discount", "select_rate_tier",
     # Sales — Rx
@@ -178,7 +179,7 @@ def _seed_module_permissions(db, ModulePermission):
         # Pharmacy — granular per-feature keys (mirror inpatient style)
         # Catalog
         {"module_name": "pharmacy", "permission_name": "view_catalog", "permission_description": "View medicine catalog and master tables", "category": "user"},
-        {"module_name": "pharmacy", "permission_name": "manage_medicines", "permission_description": "Create, edit, and delete medicines", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "manage_medicines", "permission_description": "Create, edit, soft-delete, and permanently purge medicines", "category": "admin"},
         {"module_name": "pharmacy", "permission_name": "manage_companies", "permission_description": "Maintain pharmacy company / manufacturer master", "category": "admin"},
         {"module_name": "pharmacy", "permission_name": "manage_suppliers", "permission_description": "Maintain pharmacy supplier / party master", "category": "admin"},
         {"module_name": "pharmacy", "permission_name": "manage_salts", "permission_description": "Maintain salt / composition master", "category": "admin"},
@@ -203,6 +204,7 @@ def _seed_module_permissions(db, ModulePermission):
         {"module_name": "pharmacy", "permission_name": "edit_purchase", "permission_description": "Edit purchase drafts and confirmed purchases (with reason)", "category": "user"},
         {"module_name": "pharmacy", "permission_name": "confirm_purchase", "permission_description": "Confirm a purchase and commit batches to inventory", "category": "admin"},
         {"module_name": "pharmacy", "permission_name": "revoke_purchase", "permission_description": "Revoke a confirmed purchase (proportional reversal of un-sold qty)", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "delete_purchase", "permission_description": "Permanently delete a revoked purchase from the system", "category": "admin"},
         {"module_name": "pharmacy", "permission_name": "view_purchases", "permission_description": "View purchases list and detail", "category": "user"},
         # Sales — POS
         {"module_name": "pharmacy", "permission_name": "create_sale", "permission_description": "Create POS counter sales", "category": "user"},

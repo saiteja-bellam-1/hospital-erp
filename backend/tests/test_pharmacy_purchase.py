@@ -429,6 +429,97 @@ def test_edit_confirmed_collapses_legacy_reverse_recreate(
     assert ledgers[0].qty_delta == 12
 
 
+def test_delete_legacy_ledger_reverse_and_duplicate_purchase(
+    client, auth_headers, pharmacy_setup, db_session,
+):
+    """Operators can delete reverse / duplicate purchase credits without touching stock."""
+    from app.models.pharmacy import PharmacyInventory, PharmacyStockLedger
+
+    inv_no = f"INV-{uuid.uuid4().hex[:6]}"
+    p = client.post("/api/pharmacy/purchases", headers=auth_headers,
+                    json=_purchase_payload(pharmacy_setup, invoice_number=inv_no, qty=10)).json()
+    batch = p["items"][0]["batch_number"]
+    assert client.post(
+        f"/api/pharmacy/purchases/{p['id']}/confirm", headers=auth_headers,
+    ).status_code == 200
+
+    db_session.expire_all()
+    inv = db_session.query(PharmacyInventory).filter(
+        PharmacyInventory.batch_number == batch,
+    ).first()
+    stock_before = float(inv.quantity_in_stock)
+
+    reverse = PharmacyStockLedger(
+        medicine_id=pharmacy_setup["medicine_id"], batch_id=inv.id,
+        txn_type="purchase_edit_reverse", qty_delta=-10,
+        reference_type="purchase", reference_id=p["id"],
+        hospital_id=inv.hospital_id, store_id=inv.store_id,
+        notes="legacy reverse",
+    )
+    dup = PharmacyStockLedger(
+        medicine_id=pharmacy_setup["medicine_id"], batch_id=inv.id,
+        txn_type="purchase", qty_delta=10,
+        reference_type="purchase", reference_id=p["id"],
+        hospital_id=inv.hospital_id, store_id=inv.store_id,
+        notes="legacy re-credit",
+    )
+    db_session.add(reverse)
+    db_session.add(dup)
+    db_session.commit()
+    reverse_id, dup_id = reverse.id, dup.id
+
+    listed = client.get(
+        "/api/pharmacy/inventory/ledger",
+        headers=auth_headers,
+        params={"medicine_id": pharmacy_setup["medicine_id"], "batch_id": inv.id},
+    ).json()
+    by_id = {row["id"]: row for row in listed}
+    assert by_id[reverse_id]["can_delete"] is True
+    assert by_id[dup_id]["can_delete"] is True
+    # Only one purchase credit would not be deletable — with a duplicate both are.
+    purchase_only = [
+        row for row in listed
+        if row["txn_type"] == "purchase" and row["reference_id"] == p["id"]
+    ]
+    assert len(purchase_only) == 2
+    assert all(row["can_delete"] for row in purchase_only)
+
+    r = client.delete(f"/api/pharmacy/inventory/ledger/{reverse_id}", headers=auth_headers)
+    assert r.status_code == 200, r.text
+    r = client.delete(f"/api/pharmacy/inventory/ledger/{dup_id}", headers=auth_headers)
+    assert r.status_code == 200, r.text
+
+    db_session.expire_all()
+    inv = db_session.query(PharmacyInventory).filter(PharmacyInventory.id == inv.id).first()
+    assert float(inv.quantity_in_stock) == stock_before
+
+    remaining = db_session.query(PharmacyStockLedger).filter(
+        PharmacyStockLedger.batch_id == inv.id,
+        PharmacyStockLedger.reference_type == "purchase",
+        PharmacyStockLedger.reference_id == p["id"],
+    ).all()
+    assert len(remaining) == 1
+    assert remaining[0].txn_type == "purchase"
+    assert remaining[0].qty_delta == 10
+
+    # Sole remaining purchase credit cannot be deleted.
+    r = client.delete(f"/api/pharmacy/inventory/ledger/{remaining[0].id}", headers=auth_headers)
+    assert r.status_code == 400
+    assert "only purchase credit" in r.json()["detail"].lower()
+
+    # Sales / other txn types cannot be deleted.
+    sale_led = PharmacyStockLedger(
+        medicine_id=pharmacy_setup["medicine_id"], batch_id=inv.id,
+        txn_type="sale", qty_delta=-1,
+        reference_type="sale", reference_id=1,
+        hospital_id=inv.hospital_id, store_id=inv.store_id,
+    )
+    db_session.add(sale_led)
+    db_session.commit()
+    r = client.delete(f"/api/pharmacy/inventory/ledger/{sale_led.id}", headers=auth_headers)
+    assert r.status_code == 400
+
+
 def test_edit_confirmed_blocks_qty_below_sold(client, auth_headers, pharmacy_setup):
     p = client.post("/api/pharmacy/purchases", headers=auth_headers,
                     json=_purchase_payload(pharmacy_setup,
@@ -534,3 +625,103 @@ def test_revoke_uses_strip_converted_received_qty(
     db_session.expire_all()
     inv = db_session.query(PharmacyInventory).filter(PharmacyInventory.id == inv.id).first()
     assert inv.quantity_in_stock == 0
+
+
+# --------------------------------------------------------------------------
+# Delete revoked purchases
+# --------------------------------------------------------------------------
+
+def test_delete_revoked_purchase(client, auth_headers, pharmacy_setup, db_session):
+    from app.models.pharmacy import PharmacyPurchase, PharmacyInventory
+
+    p = client.post("/api/pharmacy/purchases", headers=auth_headers,
+                    json=_purchase_payload(pharmacy_setup,
+                                           invoice_number=f"INV-{uuid.uuid4().hex[:6]}",
+                                           qty=10)).json()
+    client.post(f"/api/pharmacy/purchases/{p['id']}/confirm", headers=auth_headers)
+    client.post(f"/api/pharmacy/purchases/{p['id']}/revoke", headers=auth_headers,
+                json={"reason": "cleanup"})
+
+    r = client.delete(f"/api/pharmacy/purchases/{p['id']}", headers=auth_headers)
+    assert r.status_code == 204, r.text
+
+    db_session.expire_all()
+    assert db_session.query(PharmacyPurchase).filter(PharmacyPurchase.id == p["id"]).first() is None
+    # Batches remain (purchase_id cleared); stock was already reversed to 0.
+    inv = db_session.query(PharmacyInventory).filter(
+        PharmacyInventory.medicine_id == pharmacy_setup["medicine_id"],
+    ).first()
+    assert inv is not None
+    assert inv.purchase_id is None
+    assert float(inv.quantity_in_stock or 0) == 0
+
+
+def test_delete_revoked_partial_keeps_sale_batch(client, auth_headers, pharmacy_setup, db_session):
+    from app.models.pharmacy import PharmacyPurchase, PharmacySaleItem
+
+    p = client.post("/api/pharmacy/purchases", headers=auth_headers,
+                    json=_purchase_payload(pharmacy_setup,
+                                           invoice_number=f"INV-{uuid.uuid4().hex[:6]}",
+                                           qty=10)).json()
+    client.post(f"/api/pharmacy/purchases/{p['id']}/confirm", headers=auth_headers)
+    sale = client.post("/api/pharmacy/sales", headers=auth_headers, json={
+        "payment_type": "cash",
+        "items": [{"medicine_id": pharmacy_setup["medicine_id"], "quantity": 3, "rate": 25.0}],
+    })
+    assert sale.status_code == 201, sale.text
+    client.post(f"/api/pharmacy/purchases/{p['id']}/revoke", headers=auth_headers,
+                json={"reason": "partial cleanup"})
+
+    r = client.delete(f"/api/pharmacy/purchases/{p['id']}", headers=auth_headers)
+    assert r.status_code == 204, r.text
+
+    db_session.expire_all()
+    assert db_session.query(PharmacyPurchase).filter(PharmacyPurchase.id == p["id"]).first() is None
+    assert db_session.query(PharmacySaleItem).filter(
+        PharmacySaleItem.medicine_id == pharmacy_setup["medicine_id"],
+    ).count() == 1
+
+
+def test_delete_confirmed_purchase_rejected(client, auth_headers, pharmacy_setup):
+    p = client.post("/api/pharmacy/purchases", headers=auth_headers,
+                    json=_purchase_payload(pharmacy_setup,
+                                           invoice_number=f"INV-{uuid.uuid4().hex[:6]}")).json()
+    client.post(f"/api/pharmacy/purchases/{p['id']}/confirm", headers=auth_headers)
+
+    r = client.delete(f"/api/pharmacy/purchases/{p['id']}", headers=auth_headers)
+    assert r.status_code == 400
+    assert "revoked" in r.json()["detail"].lower()
+
+
+def test_purge_soft_deleted_medicine(client, auth_headers, pharmacy_setup, db_session):
+    from app.models.pharmacy import Medicine
+
+    mid = pharmacy_setup["medicine_id"]
+    # Soft-delete first
+    r = client.delete(f"/api/pharmacy/medicines/{mid}", headers=auth_headers)
+    assert r.status_code == 204, r.text
+    db_session.expire_all()
+    assert db_session.query(Medicine).filter(Medicine.id == mid).first().is_active is False
+
+    # Permanent purge (no stock/sales — medicine never purchased)
+    r = client.delete(f"/api/pharmacy/medicines/{mid}", headers=auth_headers,
+                      params={"permanent": True})
+    assert r.status_code == 204, r.text
+    db_session.expire_all()
+    assert db_session.query(Medicine).filter(Medicine.id == mid).first() is None
+
+
+def test_purge_medicine_blocked_when_stock_remains(client, auth_headers, pharmacy_setup):
+    mid = pharmacy_setup["medicine_id"]
+    p = client.post("/api/pharmacy/purchases", headers=auth_headers,
+                    json=_purchase_payload(pharmacy_setup,
+                                           invoice_number=f"INV-{uuid.uuid4().hex[:6]}",
+                                           qty=5)).json()
+    client.post(f"/api/pharmacy/purchases/{p['id']}/confirm", headers=auth_headers)
+
+    assert client.delete(f"/api/pharmacy/medicines/{mid}", headers=auth_headers).status_code == 204
+    r = client.delete(f"/api/pharmacy/medicines/{mid}", headers=auth_headers,
+                      params={"permanent": True})
+    assert r.status_code == 400
+    detail = r.json()["detail"].lower()
+    assert "stock" in detail or "purchase" in detail

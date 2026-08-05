@@ -44,6 +44,7 @@ from app.models.pharmacy import (
     PharmacySale,
     PharmacySaleItem,
     PharmacyStore,
+    PharmacyTransferItem,
     Prescription,
     PrescriptionItem,
 )
@@ -964,9 +965,55 @@ def update_medicine(
     return row
 
 
+def _medicine_purge_blockers(db: Session, mid: int, hospital_id: int) -> List[str]:
+    """Return human-readable reasons a medicine cannot be permanently purged."""
+    blockers: List[str] = []
+    stock = (
+        db.query(sa_func.coalesce(sa_func.sum(PharmacyInventory.quantity_in_stock), 0))
+        .filter(
+            PharmacyInventory.medicine_id == mid,
+            PharmacyInventory.hospital_id == hospital_id,
+        )
+        .scalar()
+    )
+    if float(stock or 0) > 0:
+        blockers.append(f"{float(stock):g} units still in stock")
+    if db.query(PharmacySaleItem.id).filter(PharmacySaleItem.medicine_id == mid).first():
+        blockers.append("sale history exists")
+    if (
+        db.query(PharmacyPurchaseItem.id)
+        .join(PharmacyPurchase, PharmacyPurchaseItem.purchase_id == PharmacyPurchase.id)
+        .filter(
+            PharmacyPurchaseItem.medicine_id == mid,
+            PharmacyPurchase.hospital_id == hospital_id,
+        )
+        .first()
+    ):
+        blockers.append("purchase history exists — delete related revoked purchases first")
+    if db.query(PharmacyTransferItem.id).filter(PharmacyTransferItem.medicine_id == mid).first():
+        blockers.append("transfer history exists")
+    if db.query(PrescriptionItem.id).filter(PrescriptionItem.medicine_id == mid).first():
+        blockers.append("prescription history exists")
+    try:
+        from app.models.inpatient import MedicationAdministration
+        if (
+            db.query(MedicationAdministration.id)
+            .filter(
+                MedicationAdministration.medicine_id == mid,
+                MedicationAdministration.hospital_id == hospital_id,
+            )
+            .first()
+        ):
+            blockers.append("inpatient MAR history exists")
+    except Exception:
+        pass
+    return blockers
+
+
 @router.delete("/medicines/{mid}", status_code=204)
 def delete_medicine(
     mid: int,
+    permanent: bool = Query(False, description="Permanently purge a soft-deleted medicine with no stock/sales refs"),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "manage_medicines")),
 ):
@@ -974,6 +1021,45 @@ def delete_medicine(
         Medicine.id == mid, Medicine.hospital_id == current_user.hospital_id,
     ).first()
     _ensure_active_or_404(row, "Medicine")
+
+    if permanent:
+        if row.is_active:
+            raise HTTPException(
+                status_code=400,
+                detail="Soft-delete the medicine first, then permanently purge it",
+            )
+        blockers = _medicine_purge_blockers(db, mid, current_user.hospital_id)
+        if blockers:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot permanently delete medicine: " + "; ".join(blockers),
+            )
+        # Clear empty inventory artefacts (qty already verified zero) then the medicine row.
+        db.query(PharmacyStockAdjustment).filter(
+            PharmacyStockAdjustment.medicine_id == mid,
+            PharmacyStockAdjustment.hospital_id == current_user.hospital_id,
+        ).delete(synchronize_session=False)
+        db.query(PharmacyStockLedger).filter(
+            PharmacyStockLedger.medicine_id == mid,
+            PharmacyStockLedger.hospital_id == current_user.hospital_id,
+        ).delete(synchronize_session=False)
+        db.query(PharmacyInventory).filter(
+            PharmacyInventory.medicine_id == mid,
+            PharmacyInventory.hospital_id == current_user.hospital_id,
+        ).delete(synchronize_session=False)
+        name = row.name
+        code = row.medicine_code
+        db.delete(row)
+        db.commit()
+        _audit(db, current_user, "purge_medicine", "medicine", mid,
+               f"Permanently deleted medicine '{name}' ({code})")
+        return None
+
+    if not row.is_active:
+        raise HTTPException(
+            status_code=400,
+            detail="Medicine is already deleted — pass permanent=true to purge it",
+        )
     row.is_active = False
     db.commit()
     _audit(db, current_user, "delete_medicine", "medicine", row.id,
@@ -1568,6 +1654,54 @@ class LedgerOut(BaseModel):
     performed_by_name: Optional[str] = None
     notes: Optional[str] = None
     created_at: datetime
+    # True for legacy purchase-edit cleanup rows the operator may delete
+    # without changing on-hand stock (purchase_edit_reverse, or a duplicate
+    # purchase credit when another purchase credit remains for the same batch).
+    can_delete: bool = False
+
+
+def _purchase_credit_sibling_counts(
+    db: Session, hospital_id: int, keys: set,
+) -> dict:
+    """Map (purchase_id, batch_id) → count of txn_type=purchase rows."""
+    if not keys:
+        return {}
+    ref_ids = {k[0] for k in keys if k[0] is not None}
+    batch_ids = {k[1] for k in keys if k[1] is not None}
+    if not ref_ids or not batch_ids:
+        return {}
+    rows = (
+        db.query(
+            PharmacyStockLedger.reference_id,
+            PharmacyStockLedger.batch_id,
+            sa_func.count(PharmacyStockLedger.id),
+        )
+        .filter(
+            PharmacyStockLedger.hospital_id == hospital_id,
+            PharmacyStockLedger.txn_type == "purchase",
+            PharmacyStockLedger.reference_type == "purchase",
+            PharmacyStockLedger.reference_id.in_(ref_ids),
+            PharmacyStockLedger.batch_id.in_(batch_ids),
+        )
+        .group_by(PharmacyStockLedger.reference_id, PharmacyStockLedger.batch_id)
+        .all()
+    )
+    return {(ref_id, batch_id): int(cnt) for ref_id, batch_id, cnt in rows}
+
+
+def _ledger_can_delete(
+    led: PharmacyStockLedger, purchase_credit_counts: dict,
+) -> bool:
+    if led.txn_type == "purchase_edit_reverse":
+        return True
+    if (
+        led.txn_type == "purchase"
+        and led.reference_type == "purchase"
+        and led.reference_id
+        and led.batch_id
+    ):
+        return purchase_credit_counts.get((led.reference_id, led.batch_id), 0) > 1
+    return False
 
 
 @router.get("/inventory/ledger", response_model=List[LedgerOut])
@@ -1603,6 +1737,21 @@ def list_ledger(
     if date_to:
         q = q.filter(PharmacyStockLedger.created_at <= datetime.combine(date_to, datetime.max.time()))
     rows = q.order_by(PharmacyStockLedger.created_at.desc()).limit(limit).all()
+
+    purchase_keys = {
+        (led.reference_id, led.batch_id)
+        for led, _, _, _ in rows
+        if (
+            led.txn_type == "purchase"
+            and led.reference_type == "purchase"
+            and led.reference_id
+            and led.batch_id
+        )
+    }
+    purchase_credit_counts = _purchase_credit_sibling_counts(
+        db, current_user.hospital_id, purchase_keys,
+    )
+
     return [
         LedgerOut(
             id=led.id, medicine_id=led.medicine_id, medicine_name=med.name,
@@ -1611,8 +1760,113 @@ def list_ledger(
             reference_type=led.reference_type, reference_id=led.reference_id,
             performed_by_name=(f"{u.first_name} {u.last_name}" if u else None),
             notes=led.notes, created_at=led.created_at,
+            can_delete=_ledger_can_delete(led, purchase_credit_counts),
         ) for led, med, inv, u in rows
     ]
+
+
+class LedgerDeleteOut(BaseModel):
+    id: int
+    txn_type: str
+    qty_delta: float
+    message: str
+
+
+@router.delete("/inventory/ledger/{ledger_id}", response_model=LedgerDeleteOut)
+def delete_legacy_ledger_entry(
+    ledger_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "adjust_stock")),
+):
+    """Delete a legacy purchase-edit ledger row without changing on-hand stock.
+
+    Allowed:
+      - txn_type = purchase_edit_reverse (always)
+      - txn_type = purchase, only when another purchase credit remains for the
+        same purchase + batch (so the real receipt row is never removed)
+
+    Used to clean noise left by the old reverse-then-recreate purchase edit
+    path. Does not adjust PharmacyInventory.quantity_in_stock.
+    """
+    led = db.query(PharmacyStockLedger).filter(
+        PharmacyStockLedger.id == ledger_id,
+        PharmacyStockLedger.hospital_id == current_user.hospital_id,
+    ).first()
+    if not led:
+        raise HTTPException(status_code=404, detail="Ledger entry not found")
+
+    if led.txn_type == "purchase_edit_reverse":
+        pass
+    elif (
+        led.txn_type == "purchase"
+        and led.reference_type == "purchase"
+        and led.reference_id
+        and led.batch_id
+    ):
+        other_credits = (
+            db.query(sa_func.count(PharmacyStockLedger.id))
+            .filter(
+                PharmacyStockLedger.hospital_id == current_user.hospital_id,
+                PharmacyStockLedger.txn_type == "purchase",
+                PharmacyStockLedger.reference_type == "purchase",
+                PharmacyStockLedger.reference_id == led.reference_id,
+                PharmacyStockLedger.batch_id == led.batch_id,
+                PharmacyStockLedger.id != led.id,
+            )
+            .scalar()
+            or 0
+        )
+        if int(other_credits) < 1:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Cannot delete the only purchase credit for this purchase "
+                    "and batch. Delete purchase_edit_reverse / duplicate "
+                    "purchase rows instead."
+                ),
+            )
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Only legacy purchase_edit_reverse rows, or duplicate purchase "
+                "credits, can be deleted from the stock ledger"
+            ),
+        )
+
+    txn_type = led.txn_type
+    qty_delta = float(led.qty_delta or 0)
+    notes = led.notes
+    reference_type = led.reference_type
+    reference_id = led.reference_id
+    batch_id = led.batch_id
+    medicine_id = led.medicine_id
+    ref = f"{reference_type}#{reference_id}" if reference_type else None
+    db.delete(led)
+    db.commit()
+    _audit(
+        db, current_user, "delete_ledger_entry", "pharmacy_stock_ledger", ledger_id,
+        (
+            f"Deleted legacy ledger {txn_type} qty_delta={qty_delta:g}"
+            + (f" ({ref})" if ref else "")
+            + " without stock change"
+        ),
+        details={
+            "txn_type": txn_type,
+            "qty_delta": qty_delta,
+            "notes": notes,
+            "reference_type": reference_type,
+            "reference_id": reference_id,
+            "batch_id": batch_id,
+            "medicine_id": medicine_id,
+        },
+    )
+    return LedgerDeleteOut(
+        id=ledger_id,
+        txn_type=txn_type,
+        qty_delta=qty_delta,
+        message="Ledger entry deleted (stock unchanged)",
+    )
 
 
 # ============================================================================
@@ -2625,6 +2879,56 @@ def revoke_purchase(
         id=purchase.id, purchase_number=purchase.purchase_number,
         status=purchase.status, fully_reversed=not any_sold, items=results,
     )
+
+
+@router.delete("/purchases/{pid}", status_code=204)
+def delete_purchase(
+    pid: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "delete_purchase")),
+):
+    """Permanently remove a revoked purchase header and its line items.
+
+    Allowed only for `revoked` / `revoked_partial`. Inventory batches and sale
+    history are left intact (purchase_id on batches is cleared); purchase
+    ledger rows for this document are removed.
+    """
+    purchase = db.query(PharmacyPurchase).filter(
+        PharmacyPurchase.id == pid,
+        PharmacyPurchase.hospital_id == current_user.hospital_id,
+    ).first()
+    if not purchase:
+        raise HTTPException(status_code=404, detail="Purchase not found")
+    if purchase.status not in ("revoked", "revoked_partial"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Only revoked purchases can be deleted "
+                f"(current status is '{purchase.status}')"
+            ),
+        )
+
+    purchase_number = purchase.purchase_number
+    status_was = purchase.status
+
+    db.query(PharmacyInventory).filter(
+        PharmacyInventory.purchase_id == purchase.id,
+        PharmacyInventory.hospital_id == current_user.hospital_id,
+    ).update({PharmacyInventory.purchase_id: None}, synchronize_session=False)
+
+    db.query(PharmacyStockLedger).filter(
+        PharmacyStockLedger.reference_type == "purchase",
+        PharmacyStockLedger.reference_id == purchase.id,
+        PharmacyStockLedger.hospital_id == current_user.hospital_id,
+    ).delete(synchronize_session=False)
+
+    db.delete(purchase)
+    db.commit()
+    _audit(
+        db, current_user, "delete_purchase", "pharmacy_purchase", pid,
+        f"Deleted {status_was} purchase {purchase_number}",
+    )
+    return None
 
 
 @router.get("/purchases", response_model=List[PurchaseOut])
@@ -4436,6 +4740,11 @@ def cancel_prescription_route(
 class DashboardSummaryOut(BaseModel):
     today_sales_total: float
     today_sales_count: int
+    # Billing split — POS cash-at-counter vs medicines charged to admission bills.
+    today_pos_sales_total: float = 0.0
+    today_pos_sales_count: int = 0
+    today_ip_medicines_total: float = 0.0
+    today_ip_medicines_count: int = 0
     today_purchases_total: float
     today_purchases_count: int
     low_stock_count: int
@@ -4444,6 +4753,40 @@ class DashboardSummaryOut(BaseModel):
     # within the next 90 days (or already past). Drives the dashboard tile.
     expiring_soon_count: int = 0
     already_expired_count: int = 0
+
+
+def _sale_totals_today(
+    db: Session,
+    hid: int,
+    today_start: datetime,
+    today_end: datetime,
+    report_store: Optional[int],
+    billing_mode: Optional[str] = None,
+):
+    """Sum completed PharmacySale.grand_total for today, optionally by billing_mode.
+
+    Legacy rows may have NULL billing_mode — those are treated as cash_at_pharmacy.
+    """
+    q = db.query(
+        sa_func.coalesce(sa_func.sum(PharmacySale.grand_total), 0),
+        sa_func.count(PharmacySale.id),
+    ).filter(
+        PharmacySale.hospital_id == hid,
+        PharmacySale.status == "completed",
+        PharmacySale.sale_date >= today_start,
+        PharmacySale.sale_date <= today_end,
+    )
+    if billing_mode == "cash_at_pharmacy":
+        q = q.filter(or_(
+            PharmacySale.billing_mode == "cash_at_pharmacy",
+            PharmacySale.billing_mode.is_(None),
+        ))
+    elif billing_mode is not None:
+        q = q.filter(PharmacySale.billing_mode == billing_mode)
+    if report_store is not None:
+        q = q.filter(PharmacySale.store_id == report_store)
+    row = q.one()
+    return float(row[0] or 0), int(row[1] or 0)
 
 
 @router.get("/dashboard", response_model=DashboardSummaryOut)
@@ -4457,16 +4800,39 @@ def dashboard_summary(
     hid = current_user.hospital_id
     report_store = resolve_report_store_filter(db, current_user, store_id)
 
-    sales_filter = db.query(
-        sa_func.coalesce(sa_func.sum(PharmacySale.grand_total), 0),
-        sa_func.count(PharmacySale.id),
-    ).filter(
-        PharmacySale.hospital_id == hid, PharmacySale.status == "completed",
-        PharmacySale.sale_date >= today_start, PharmacySale.sale_date <= today_end,
+    sales_total, sales_count = _sale_totals_today(
+        db, hid, today_start, today_end, report_store,
+    )
+    pos_total, pos_count = _sale_totals_today(
+        db, hid, today_start, today_end, report_store, billing_mode="cash_at_pharmacy",
+    )
+    ip_pos_total, ip_pos_count = _sale_totals_today(
+        db, hid, today_start, today_end, report_store, billing_mode="inpatient_bill",
+    )
+
+    # IP Rx dispensed to the admission bill (no PharmacySale row). Amounts match
+    # admission bill logic in inpatient._pharmacy_rx_billable_amount.
+    from app.models.patient import Patient
+    from app.routes.inpatient import _pharmacy_rx_billable_amount
+
+    ip_rx_q = (
+        db.query(Prescription)
+        .join(Patient, Patient.id == Prescription.patient_id)
+        .filter(
+            Patient.hospital_id == hid,
+            Prescription.admission_id.isnot(None),
+            Prescription.pharmacy_sale_id.is_(None),
+            Prescription.status.in_(["dispensed", "partial"]),
+            Prescription.dispensed_date >= today_start,
+            Prescription.dispensed_date <= today_end,
+        )
     )
     if report_store is not None:
-        sales_filter = sales_filter.filter(PharmacySale.store_id == report_store)
-    sales_q = sales_filter.one()
+        ip_rx_q = ip_rx_q.filter(Prescription.dispense_store_id == report_store)
+    ip_rxs = ip_rx_q.all()
+    ip_rx_total = sum(_pharmacy_rx_billable_amount(db, rx) for rx in ip_rxs)
+    ip_medicines_total = round_money(ip_pos_total + ip_rx_total)
+    ip_medicines_count = ip_pos_count + len(ip_rxs)
 
     purchases_filter = db.query(
         sa_func.coalesce(sa_func.sum(PharmacyPurchase.grand_total), 0),
@@ -4505,8 +4871,12 @@ def dashboard_summary(
     ).scalar() or 0
 
     return DashboardSummaryOut(
-        today_sales_total=float(sales_q[0] or 0),
-        today_sales_count=int(sales_q[1] or 0),
+        today_sales_total=sales_total,
+        today_sales_count=sales_count,
+        today_pos_sales_total=pos_total,
+        today_pos_sales_count=pos_count,
+        today_ip_medicines_total=float(ip_medicines_total),
+        today_ip_medicines_count=ip_medicines_count,
         today_purchases_total=float(purchases_q[0] or 0),
         today_purchases_count=int(purchases_q[1] or 0),
         low_stock_count=low,

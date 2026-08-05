@@ -9,17 +9,19 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter,
   DialogHeader, DialogTitle,
 } from '../../../../components/ui/dialog';
-import { Plus, RefreshCw, Printer, Undo2, Pencil, Upload } from 'lucide-react';
+import { Plus, RefreshCw, Printer, Undo2, Pencil, Upload, Trash2 } from 'lucide-react';
 import { printPdfFromUrl } from '../../../../utils/printPdf';
 import { useToast } from '../../../../hooks/use-toast';
 import { errMsg } from '../../PharmacyModule';
 import { usePharmacyStore } from '../../../../contexts/PharmacyStoreContext';
+import { usePharmacyPermissions } from '../../../../hooks/usePharmacyPermissions';
 import PurchaseImportDialog from '../../../../components/pharmacy/PurchaseImportDialog';
 
 export default function PurchasesTab() {
   const navigate = useNavigate();
   const { toast } = useToast();
   const { storeParams } = usePharmacyStore();
+  const { hasPerm } = usePharmacyPermissions();
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [revokeTarget, setRevokeTarget] = useState(null);
@@ -59,6 +61,19 @@ export default function PurchasesTab() {
     } catch (e) {
       toast({ variant: 'destructive', title: 'Revoke failed', description: errMsg(e) });
     } finally { setRevoking(false); }
+  };
+
+  const remove = async (p) => {
+    if (!window.confirm(
+      `Permanently delete purchase ${p.purchase_number}? This cannot be undone.`,
+    )) return;
+    try {
+      await axios.delete(`/api/pharmacy/purchases/${p.id}`);
+      toast({ title: `Deleted ${p.purchase_number}` });
+      load();
+    } catch (e) {
+      toast({ variant: 'destructive', title: 'Delete failed', description: errMsg(e) });
+    }
   };
 
   const statusColor = (s) => (
@@ -119,10 +134,16 @@ export default function PurchasesTab() {
                         onClick={() => printPdfFromUrl(`/api/pharmacy/purchases/${p.id}/pdf`)}>
                         <Printer className="h-3 w-3" />
                       </Button>
-                      {p.status === 'confirmed' && (
+                      {p.status === 'confirmed' && hasPerm('revoke_purchase') && (
                         <Button size="sm" variant="ghost" title="Revoke purchase"
                           onClick={() => { setRevokeTarget(p); setRevokeReason(''); }}>
                           <Undo2 className="h-3 w-3 text-red-500" />
+                        </Button>
+                      )}
+                      {(p.status === 'revoked' || p.status === 'revoked_partial') && hasPerm('delete_purchase') && (
+                        <Button size="sm" variant="ghost" title="Delete revoked purchase"
+                          onClick={() => remove(p)}>
+                          <Trash2 className="h-3 w-3 text-red-500" />
                         </Button>
                       )}
                     </td>

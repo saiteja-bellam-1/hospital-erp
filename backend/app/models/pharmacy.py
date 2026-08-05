@@ -379,6 +379,7 @@ class PharmacyPurchase(Base):
 
     Lifecycle: `draft` (editable) → `confirmed` (editable with reason + inventory
     sync) → optionally `revoked` / `revoked_partial` via POST /purchases/{id}/revoke.
+    Revoked rows may be permanently removed via DELETE /purchases/{id}.
     """
     __tablename__ = "pharmacy_purchases"
 

@@ -183,6 +183,10 @@ const BillingModule = () => {
         if (bill.lab_bill_group_id) return `/api/lab/bills/${bill.lab_bill_group_id}/pdf`;
         return bill.bill_id ? `/api/lab/orders/${bill.bill_id}/bill` : null;
       case 'pharmacy':
+        // Catch-up pharmacy bills use central Bill ids, not PharmacySale ids.
+        if (bill.is_catch_up || String(bill.id || '').startsWith('CU-')) {
+          return bill.bill_id ? `/api/hospital/billing/bills/${bill.bill_id}/pdf` : null;
+        }
         return bill.bill_id ? `/api/pharmacy/sales/${bill.bill_id}/invoice/pdf` : null;
       case 'admission':
         return bill.admission_id ? `/api/inpatient/admissions/${bill.admission_id}/bill/pdf` : null;
