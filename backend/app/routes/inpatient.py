@@ -2186,11 +2186,13 @@ async def upsert_admission_case_sheet(
 @router.get("/admissions/{admission_id}/admission-case-sheet/pdf")
 async def get_admission_case_sheet_pdf(
     admission_id: int,
-    include_header: bool = True,
-    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "admit_patients")),
+    include_header: Optional[bool] = Query(None),
+    current_user: User = Depends(require_feature_permission_any(
+        Modules.INPATIENT, "view_documents", "view_occupancy", "admit_patients",
+    )),
     db: Session = Depends(get_db),
 ):
-    """Printable clinical case sheet for the admit wizard (step 5)."""
+    """Printable clinical case sheet (admit wizard + Docs tab)."""
     admission = db.query(Admission).options(
         joinedload(Admission.patient),
         joinedload(Admission.room),
@@ -2199,11 +2201,6 @@ async def get_admission_case_sheet_pdf(
     ).filter(Admission.id == admission_id).first()
     if not admission:
         raise HTTPException(status_code=404, detail="Admission not found")
-    if admission.status not in ("draft", "admitted"):
-        raise HTTPException(
-            status_code=400,
-            detail="Case sheet PDF is only available for draft or active admissions",
-        )
 
     summary = db.query(AdmissionDischargeSummary).filter(
         AdmissionDischargeSummary.admission_id == admission_id,
@@ -11681,6 +11678,7 @@ async def preview_consent_pdf(
 @router.get("/consents/{consent_id}/pdf")
 async def get_consent_pdf(
     consent_id: int,
+    include_header: Optional[bool] = Query(None),
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
     db: Session = Depends(get_db),
 ):
@@ -11758,8 +11756,8 @@ async def get_consent_pdf(
         "patient_signature": c.patient_signature or "",
         "patient_signature_type": c.patient_signature_type,
         "witness_name": c.witness_name or "",
-        "signed_at": c.signed_at.strftime("%d/%m/%Y %H:%M") if c.signed_at else "",
-        "withdrawn_at": c.withdrawn_at.strftime("%d/%m/%Y %H:%M") if c.withdrawn_at else "",
+        "signed_at": c.signed_at.strftime("%d/%m/%Y") if c.signed_at else "",
+        "withdrawn_at": c.withdrawn_at.strftime("%d/%m/%Y") if c.withdrawn_at else "",
         "withdrawal_reason": c.withdrawal_reason or "",
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "",
         "mrn": getattr(patient, "mrn", None) or (patient.patient_id if patient else ""),
@@ -11785,7 +11783,14 @@ async def get_consent_pdf(
         "logo_url": getattr(hospital, "logo_url", "") or "",
         "hospital_subname": getattr(hospital, "hospital_subname", "") or "",
     }
-    pdf_buffer = pdf_service.generate_consent_pdf(consent_data, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'consent'))
+    pdf_buffer = pdf_service.generate_consent_pdf(
+        consent_data,
+        hospital_info,
+        **pdf_gen_kwargs(
+            db, current_user.hospital_id, 'consent',
+            query_include_header=include_header,
+        ),
+    )
     return _inline_pdf_response(pdf_buffer, f"consent-{c.id}.pdf")
 
 

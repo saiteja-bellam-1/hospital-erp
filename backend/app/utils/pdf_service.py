@@ -3919,7 +3919,7 @@ class PDFService:
             elements.append(Paragraph(f"Reason: {consent_data.get('withdrawal_reason', '')}", body))
 
         elements.append(Spacer(1, 18))
-        elements.append(Paragraph(f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M:%S')}", footer_style))
+        elements.append(Paragraph(f"Generated on {datetime.now().strftime('%d/%m/%Y')}", footer_style))
         _finalize(doc, elements, hospital_info)
         buffer.seek(0)
         return buffer
@@ -4107,7 +4107,7 @@ class PDFService:
         elements.append(sig_table)
 
         elements.append(Spacer(1, 18))
-        elements.append(Paragraph(f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M:%S')}", footer_style))
+        elements.append(Paragraph(f"Generated on {datetime.now().strftime('%d/%m/%Y')}", footer_style))
         _finalize(doc, elements, hospital_info)
         buffer.seek(0)
         return buffer

@@ -15,6 +15,7 @@ import { useToast } from '../../hooks/use-toast';
 import { useAuth } from '../../contexts/AuthContext';
 import { printPdfFromUrl } from '../../utils/printPdf';
 import { errorDetail } from '../../utils/apiErrors';
+import PdfPreviewDialog from '../../components/PdfPreviewDialog';
 import AdmitPatientWizard from './inpatient/AdmitPatientWizard';
 import PatientSearchPicker from '../../components/PatientSearchPicker';
 import PendingAcceptanceList from './inpatient/PendingAcceptanceList';
@@ -311,6 +312,7 @@ const InpatientModule = () => {
   const [admissionBeds, setAdmissionBeds] = useState([]);  // beds for selected room in admission form
   const [admissionDocs, setAdmissionDocs] = useState([]);
   const [docUploading, setDocUploading] = useState(false);
+  const [pdfPreview, setPdfPreview] = useState(null);
   const [billDiscount, setBillDiscount] = useState({ type: 'flat', value: '' });
   const [billTaxPct, setBillTaxPct] = useState('');
   // Review & Edit Final Bill — operator-editable line items + discount/tax.
@@ -2917,11 +2919,22 @@ const InpatientModule = () => {
     } finally { setLoading(false); }
   };
 
-  const handlePrintConsent = async (consentId) => {
-    const ok = await printPdfFromUrl(`/api/inpatient/consents/${consentId}/pdf`);
-    if (!ok) {
-      toast({ variant: 'destructive', title: 'Print failed', description: 'Could not load or print the consent PDF.' });
-    }
+  const handlePrintConsent = (consentId, title = 'Consent') => {
+    setPdfPreview({
+      title,
+      path: `/api/inpatient/consents/${consentId}/pdf`,
+      filename: `consent-${consentId}.pdf`,
+      letterheadReportType: 'consent',
+    });
+  };
+
+  const handlePrintAdmissionCaseSheet = (admissionId) => {
+    setPdfPreview({
+      title: 'Case Sheet',
+      path: `/api/inpatient/admissions/${admissionId}/admission-case-sheet/pdf`,
+      filename: 'case-sheet.pdf',
+      letterheadReportType: 'consent',
+    });
   };
 
   const handleSubmitConsentTemplate = async (e) => {
@@ -4641,13 +4654,17 @@ const InpatientModule = () => {
                                       {c.doctor_name && <> · Dr: {c.doctor_name}</>}
                                       {c.witness_name && <> · Witness: {c.witness_name}</>}
                                     </div>
-                                    <p className="text-xs text-gray-400 mt-1">Signed {new Date(c.signed_at).toLocaleString()}</p>
-                                    {c.withdrawn_at && (
-                                      <p className="text-xs text-orange-700 mt-1">Withdrawn {new Date(c.withdrawn_at).toLocaleString()} — {c.withdrawal_reason}</p>
+                                    <p className="text-xs text-gray-400 mt-1">Signed {new Date(c.signed_at).toLocaleDateString()}</p>
+                                      {c.withdrawn_at && (
+                                      <p className="text-xs text-orange-700 mt-1">Withdrawn {new Date(c.withdrawn_at).toLocaleDateString()} — {c.withdrawal_reason}</p>
                                     )}
                                   </div>
                                   <div className="flex gap-1">
-                                    <Button size="sm" variant="ghost" className="h-7" onClick={() => handlePrintConsent(c.id)}>
+                                    <Button size="sm" variant="ghost" className="h-7" onClick={() => handlePrintConsent(
+                                      c.id,
+                                      (c.template_name
+                                        || c.consent_type.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())),
+                                    )}>
                                       <FileText className="h-4 w-4" />
                                     </Button>
                                     {!c.withdrawn_at && (
@@ -4897,6 +4914,94 @@ const InpatientModule = () => {
 
                       {/* Documents sub-tab */}
                       <TabsContent value="docs" className="space-y-3 mt-3">
+                        {/* System printable admission forms */}
+                        {(() => {
+                          const pickConsent = (type) => {
+                            const ofType = (consents || []).filter(c => c.consent_type === type);
+                            return ofType.find(c => !c.withdrawn_at) || ofType[0] || null;
+                          };
+                          const faceConsent = pickConsent('face_sheet');
+                          const generalConsent = pickConsent('case_sheet_declaration');
+                          const forms = [
+                            {
+                              key: 'admission_form',
+                              title: 'Admission Form',
+                              subtitle: 'Patient identification + responsible person',
+                              consent: faceConsent,
+                              onPrint: faceConsent
+                                ? () => handlePrintConsent(faceConsent.id, 'Admission Form')
+                                : null,
+                            },
+                            {
+                              key: 'consent_form',
+                              title: 'Consent Form',
+                              subtitle: 'General consent for treatment',
+                              consent: generalConsent,
+                              onPrint: generalConsent
+                                ? () => handlePrintConsent(generalConsent.id, 'Consent Form')
+                                : null,
+                            },
+                            {
+                              key: 'case_sheet',
+                              title: 'Case Sheet',
+                              subtitle: 'Clinical complaints & history at admission',
+                              consent: null,
+                              alwaysAvailable: true,
+                              onPrint: () => handlePrintAdmissionCaseSheet(activityAdmission.id),
+                            },
+                          ];
+                          return (
+                            <div className="space-y-2">
+                              <h3 className="text-sm font-semibold text-gray-800">Admission forms</h3>
+                              <div className="space-y-2">
+                                {forms.map(f => {
+                                  const available = f.alwaysAvailable || !!f.consent;
+                                  const withdrawn = f.consent?.withdrawn_at;
+                                  return (
+                                    <div key={f.key} className="border rounded-lg p-3 text-sm flex items-center justify-between gap-2">
+                                      <div className="flex items-center gap-2 min-w-0">
+                                        <FileText className="h-4 w-4 text-gray-400 shrink-0" />
+                                        <div className="min-w-0">
+                                          <p className="font-medium truncate">{f.title}</p>
+                                          <div className="flex items-center gap-2 text-xs text-gray-500 flex-wrap">
+                                            <span>{f.subtitle}</span>
+                                            {f.consent?.doc_number && (
+                                              <Badge className="bg-gray-100 text-gray-700 text-xs">{f.consent.doc_number}</Badge>
+                                            )}
+                                            {available && !withdrawn && (
+                                              <Badge className="bg-green-100 text-green-800 text-xs">
+                                                {f.alwaysAvailable ? 'printable' : 'signed'}
+                                              </Badge>
+                                            )}
+                                            {withdrawn && (
+                                              <Badge className="bg-orange-100 text-orange-800 text-xs">withdrawn</Badge>
+                                            )}
+                                            {!available && (
+                                              <Badge className="bg-gray-100 text-gray-600 text-xs">not recorded</Badge>
+                                            )}
+                                            {f.consent?.signed_at && (
+                                              <span>{new Date(f.consent.signed_at).toLocaleDateString()}</span>
+                                            )}
+                                          </div>
+                                        </div>
+                                      </div>
+                                      <div className="shrink-0">
+                                        {available ? (
+                                          <Button variant="outline" size="sm" onClick={f.onPrint} title="Print / Preview">
+                                            <Printer className="h-4 w-4 mr-1" /> Print
+                                          </Button>
+                                        ) : (
+                                          <span className="text-xs text-gray-400 px-2">Not recorded</span>
+                                        )}
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          );
+                        })()}
+
                         {/* Upload area */}
                         <div className="border-2 border-dashed rounded-lg p-4 text-center">
                           <input type="file" id="doc-upload-input" className="hidden"
@@ -4916,44 +5021,47 @@ const InpatientModule = () => {
                           <p className="text-xs text-gray-400 mt-1">PDF, images, Word docs (max 10MB)</p>
                         </div>
 
-                        {admissionDocs.length === 0 ? (
-                          <p className="text-sm text-gray-500 text-center py-4">No documents attached.</p>
-                        ) : (
-                          <div className="space-y-2">
-                            {admissionDocs.map(doc => (
-                              <div key={doc.id} className="border rounded-lg p-3 text-sm flex items-center justify-between">
-                                <div className="flex items-center gap-2 min-w-0">
-                                  <Paperclip className="h-4 w-4 text-gray-400 shrink-0" />
-                                  <div className="min-w-0">
-                                    <p className="font-medium truncate">{doc.document_name}</p>
-                                    <div className="flex items-center gap-2 text-xs text-gray-500">
-                                      <Badge className="bg-gray-100 text-gray-700 text-xs">{doc.document_type.replace('_', ' ')}</Badge>
-                                      <span>{doc.file_size ? `${(doc.file_size / 1024).toFixed(0)} KB` : ''}</span>
-                                      <span>{doc.uploaded_by_name || ''}</span>
-                                      <span>{doc.created_at ? new Date(doc.created_at).toLocaleDateString() : ''}</span>
+                        <div className="space-y-2">
+                          <h3 className="text-sm font-semibold text-gray-800">Uploaded files</h3>
+                          {admissionDocs.length === 0 ? (
+                            <p className="text-sm text-gray-500 text-center py-4">No documents attached.</p>
+                          ) : (
+                            <div className="space-y-2">
+                              {admissionDocs.map(doc => (
+                                <div key={doc.id} className="border rounded-lg p-3 text-sm flex items-center justify-between">
+                                  <div className="flex items-center gap-2 min-w-0">
+                                    <Paperclip className="h-4 w-4 text-gray-400 shrink-0" />
+                                    <div className="min-w-0">
+                                      <p className="font-medium truncate">{doc.document_name}</p>
+                                      <div className="flex items-center gap-2 text-xs text-gray-500">
+                                        <Badge className="bg-gray-100 text-gray-700 text-xs">{doc.document_type.replace('_', ' ')}</Badge>
+                                        <span>{doc.file_size ? `${(doc.file_size / 1024).toFixed(0)} KB` : ''}</span>
+                                        <span>{doc.uploaded_by_name || ''}</span>
+                                        <span>{doc.created_at ? new Date(doc.created_at).toLocaleDateString() : ''}</span>
+                                      </div>
+                                      {doc.notes && <p className="text-xs text-gray-400 mt-1">{doc.notes}</p>}
                                     </div>
-                                    {doc.notes && <p className="text-xs text-gray-400 mt-1">{doc.notes}</p>}
+                                  </div>
+                                  <div className="flex gap-1 shrink-0">
+                                    <Button variant="ghost" size="sm" onClick={() => {
+                                      window.open(`/api/inpatient/documents/${doc.id}/download`, '_blank');
+                                    }} title="Download">
+                                      <Download className="h-4 w-4" />
+                                    </Button>
+                                    <Button variant="ghost" size="sm" className="text-red-500"
+                                      onClick={() => setConfirmState({
+                                        open: true, title: 'Delete Document',
+                                        message: `Delete "${doc.document_name}"?`,
+                                        onConfirm: () => { setConfirmState({ open: false }); handleDocDelete(doc.id); }
+                                      })} title="Delete">
+                                      <Trash2 className="h-3 w-3" />
+                                    </Button>
                                   </div>
                                 </div>
-                                <div className="flex gap-1 shrink-0">
-                                  <Button variant="ghost" size="sm" onClick={() => {
-                                    window.open(`/api/inpatient/documents/${doc.id}/download`, '_blank');
-                                  }} title="Download">
-                                    <Download className="h-4 w-4" />
-                                  </Button>
-                                  <Button variant="ghost" size="sm" className="text-red-500"
-                                    onClick={() => setConfirmState({
-                                      open: true, title: 'Delete Document',
-                                      message: `Delete "${doc.document_name}"?`,
-                                      onConfirm: () => { setConfirmState({ open: false }); handleDocDelete(doc.id); }
-                                    })} title="Delete">
-                                    <Trash2 className="h-3 w-3" />
-                                  </Button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        )}
+                              ))}
+                            </div>
+                          )}
+                        </div>
                       </TabsContent>
 
                       {/* Vitals sub-tab */}
@@ -9962,6 +10070,15 @@ const InpatientModule = () => {
           if (data) setActivitySummary(data);
           else refreshActivitySummary(activityAdmission?.id);
         }}
+      />
+
+      <PdfPreviewDialog
+        open={!!pdfPreview}
+        onClose={() => setPdfPreview(null)}
+        title={pdfPreview?.title || 'PDF Preview'}
+        path={pdfPreview?.path || null}
+        filename={pdfPreview?.filename || 'document.pdf'}
+        letterheadReportType={pdfPreview?.letterheadReportType || null}
       />
 
       {/* Confirm Dialog */}

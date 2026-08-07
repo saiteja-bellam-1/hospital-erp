@@ -35,23 +35,28 @@ const PdfPreviewDialog = ({
 }) => {
   const [pdfUrl, setPdfUrl] = useState(null);
   const [loading, setLoading] = useState(false);
-  const { settings } = usePdfPrintSettings();
+  const { settings, isLoading: settingsLoading } = usePdfPrintSettings();
   const [includeHeader, setIncludeHeader] = useState(true);
   const [headerInitialized, setHeaderInitialized] = useState(false);
 
+  // Seed the letterhead checkbox once per open from Print Settings — do not
+  // reset if settings cache identity changes after the user toggles.
   useEffect(() => {
     if (!open || !letterheadReportType) {
       setHeaderInitialized(false);
       return;
     }
+    if (headerInitialized) return;
+    if (settings == null && settingsLoading) return;
     setIncludeHeader(resolveIncludeHeaderForReport(settings, letterheadReportType));
     setHeaderInitialized(true);
-  }, [open, letterheadReportType, settings]);
+  }, [open, letterheadReportType, settings, settingsLoading, headerInitialized]);
 
   const requestParams = {
     ...params,
     ...(letterheadReportType && headerInitialized
-      ? { include_header: includeHeader }
+      // Explicit strings — some serializers drop boolean `false` from query strings.
+      ? { include_header: includeHeader ? 'true' : 'false' }
       : {}),
   };
 
@@ -151,6 +156,7 @@ const PdfPreviewDialog = ({
           <div className="flex-1 min-h-[500px] border rounded-lg overflow-hidden bg-gray-50">
             {pdfUrl ? (
               <iframe
+                key={pdfUrl}
                 src={pdfUrl}
                 className="w-full h-full min-h-[500px] border-0"
                 title={title}
