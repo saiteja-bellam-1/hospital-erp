@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, JSON
-from sqlalchemy.sql import func
 from config.database import Base
+from app.utils.time import system_now
 
 
 class License(Base):
@@ -19,5 +19,5 @@ class License(Base):
     seller_info = Column(JSON, nullable=True)  # 3rd party vendor details: {name, address, phone}
     gdrive_config = Column(JSON, nullable=True)  # {enabled, service_account, folder_id}
     raw_license_data = Column(Text, nullable=False)  # The full .lic file content
-    uploaded_at = Column(DateTime(timezone=True), server_default=func.now())
+    uploaded_at = Column(DateTime(timezone=True), default=system_now)
     uploaded_by = Column(Integer, nullable=True)

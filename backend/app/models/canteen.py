@@ -8,8 +8,8 @@ from sqlalchemy import (
     Numeric, Date, UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
-from sqlalchemy.sql import func
 from config.database import Base
+from app.utils.time import system_now
 
 
 class CanteenCategory(Base):
@@ -21,8 +21,8 @@ class CanteenCategory(Base):
     name = Column(String(100), nullable=False)
     sort_order = Column(Integer, default=0, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
     items = relationship("CanteenItem", back_populates="category")
 
@@ -44,8 +44,8 @@ class CanteenItem(Base):
     is_veg = Column(Boolean, default=True, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
     sort_order = Column(Integer, default=0, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
     category = relationship("CanteenCategory", back_populates="items")
 
@@ -66,7 +66,7 @@ class CanteenOrder(Base):
     status = Column(String(20), default="pending", nullable=False, index=True)
     notes = Column(Text, nullable=True)
     serve_date = Column(Date, nullable=True, index=True)
-    ordered_at = Column(DateTime(timezone=True), server_default=func.now())
+    ordered_at = Column(DateTime(timezone=True), default=system_now)
     ordered_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     status_updated_at = Column(DateTime(timezone=True), nullable=True)
     status_updated_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
@@ -107,7 +107,7 @@ class CanteenSale(Base):
     id = Column(Integer, primary_key=True, index=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False, index=True)
     sale_number = Column(String(40), unique=True, nullable=False, index=True)
-    sale_date = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    sale_date = Column(DateTime(timezone=True), default=system_now, nullable=False)
     status = Column(String(20), default="completed", nullable=False)  # completed | voided
     payment_type = Column(String(20), default="cash", nullable=False)  # cash | upi | card
     customer_name = Column(String(150), nullable=True)
@@ -120,7 +120,7 @@ class CanteenSale(Base):
     voided_at = Column(DateTime(timezone=True), nullable=True)
     voided_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     void_reason = Column(String(200), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
 
     items = relationship(
         "CanteenSaleItem",

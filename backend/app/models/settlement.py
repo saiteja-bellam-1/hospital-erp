@@ -10,8 +10,8 @@ from sqlalchemy import (
     Column, Integer, String, Float, DateTime, Date, ForeignKey, Text,
     UniqueConstraint,
 )
-from sqlalchemy.sql import func
 from config.database import Base
+from app.utils.time import system_now
 
 # Fixed business units the hospital settles revenue to. "hospital" is the
 # residual bucket kept in-house and is intentionally not settleable.
@@ -32,7 +32,7 @@ class SettlementConfig(Base):
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False, index=True)
     unit = Column(String(20), nullable=False)  # lab | pharmacy | canteen
     payout_percentage = Column(Float, nullable=False, default=DEFAULT_PAYOUT_PERCENTAGE)
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_at = Column(DateTime(timezone=True), default=system_now, onupdate=system_now)
     updated_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
     __table_args__ = (
@@ -71,7 +71,7 @@ class Settlement(Base):
     notes = Column(Text, nullable=True)
 
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
 
     cancelled_at = Column(DateTime(timezone=True), nullable=True)
     cancelled_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)

@@ -44,11 +44,11 @@ def date_to_datetime(d: date, at: time = time.min) -> datetime:
 
 
 def as_naive(dt: Optional[datetime]) -> Optional[datetime]:
-    """Strip tzinfo so SQLite-backed inpatient math stays consistent."""
+    """Normalize to naive local wall clock for catch-up / SQLite storage."""
     if dt is None:
         return None
     if getattr(dt, "tzinfo", None) is not None:
-        return dt.replace(tzinfo=None)
+        return dt.astimezone().replace(tzinfo=None)
     return dt
 
 

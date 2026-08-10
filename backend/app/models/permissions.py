@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, JSON
 from sqlalchemy.orm import relationship
-from sqlalchemy.sql import func
 from config.database import Base
+from app.utils.time import system_now
 
 class ModulePermission(Base):
     """
@@ -14,7 +14,7 @@ class ModulePermission(Base):
     permission_name = Column(String(100), nullable=False)
     permission_description = Column(Text)
     category = Column(String(50))  # admin, user, view_only
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
     
     # Make combination of module and permission unique
     __table_args__ = (
@@ -31,8 +31,8 @@ class RoleModulePermission(Base):
     role_id = Column(Integer, ForeignKey("user_roles.id"), nullable=False)
     module_name = Column(String(50), nullable=False)
     permissions = Column(JSON)  # List of permission names this role has for this module
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
     
     role = relationship("UserRole")
 
@@ -49,8 +49,8 @@ class HospitalSettings(Base):
     setting_type = Column(String(20), default='string')  # string, json, number, boolean
     description = Column(Text)
     created_by = Column(Integer, ForeignKey("users.id"))
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
     
     creator = relationship("User")
 
@@ -67,8 +67,8 @@ class ModuleTemplate(Base):
     template_data = Column(JSON)  # Template structure/content
     is_active = Column(Boolean, default=True)
     created_by = Column(Integer, ForeignKey("users.id"))
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
     
     creator = relationship("User")
 
@@ -87,7 +87,7 @@ class ModuleRates(Base):
     description = Column(Text)
     is_active = Column(Boolean, default=True)
     created_by = Column(Integer, ForeignKey("users.id"))
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
     
     creator = relationship("User")

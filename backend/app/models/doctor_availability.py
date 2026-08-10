@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Time, Date, JSON
 from sqlalchemy.orm import relationship
-from sqlalchemy.sql import func
 from config.database import Base
+from app.utils.time import system_now
 
 class DoctorAvailability(Base):
     """Model for managing doctor availability schedules"""
@@ -36,8 +36,8 @@ class DoctorAvailability(Base):
     # Maximum advance booking days
     max_advance_booking_days = Column(Integer, default=30)
     
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
     
     # Relationships
     doctor = relationship("User", back_populates="availability_settings")
@@ -72,8 +72,8 @@ class DoctorSpecialSchedule(Base):
     # Whether to notify patients about changes
     notify_patients = Column(Boolean, default=True)
     
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
     
     # Relationships
     availability = relationship("DoctorAvailability", back_populates="special_schedules")
@@ -97,7 +97,7 @@ class DoctorAvailabilityStatus(Base):
     expected_return_time = Column(DateTime)
     
     # Last updated timestamp
-    last_updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    last_updated_at = Column(DateTime(timezone=True), default=system_now, onupdate=system_now)
     
     # Relationships
     doctor = relationship("User")

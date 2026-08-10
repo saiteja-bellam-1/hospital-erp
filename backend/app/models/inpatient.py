@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, Date, ForeignKey, Text, Float, Numeric, JSON, UniqueConstraint
 from sqlalchemy.orm import relationship
-from sqlalchemy.sql import func
 from config.database import Base
+from app.utils.time import system_now
 
 class RoomType(Base):
     """User-manageable room type catalog per hospital.
@@ -14,8 +14,8 @@ class RoomType(Base):
     label = Column(String(100), nullable=False)  # display name
     is_active = Column(Boolean, default=True)
     is_default = Column(Boolean, default=False)  # True for built-in seed entries
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
     __table_args__ = (
         UniqueConstraint("hospital_id", "key", name="uq_room_type_key_per_hospital"),
@@ -44,8 +44,8 @@ class RoomManagement(Base):
     is_active = Column(Boolean, default=True)
     is_occupied = Column(Boolean, default=False)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
     admissions = relationship("Admission", back_populates="room")
     beds = relationship("Bed", back_populates="room")
@@ -60,8 +60,8 @@ class Bed(Base):
     bed_label = Column(String(20), nullable=False)  # e.g. "A", "B", "1", "2"
     status = Column(String(20), default="available")  # available, occupied, maintenance
     current_admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
     room = relationship("RoomManagement", back_populates="beds")
     admission = relationship("Admission", foreign_keys=[current_admission_id])
@@ -75,7 +75,7 @@ class Admission(Base):
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
     admitting_doctor_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     room_id = Column(Integer, ForeignKey("room_management.id"), nullable=False)
-    admission_date = Column(DateTime(timezone=True), server_default=func.now())
+    admission_date = Column(DateTime(timezone=True), default=system_now)
     admission_type = Column(String(20), nullable=False)  # emergency, elective, transfer
     admission_reason = Column(Text)
     condition_on_admission = Column(String(20))  # stable, critical, serious
@@ -146,8 +146,8 @@ class Admission(Base):
     accepted_by_doctor_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     accepted_at = Column(DateTime(timezone=True), nullable=True)
     rejection_reason = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
     cancelled_at = Column(DateTime(timezone=True), nullable=True)
     cancelled_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     cancellation_reason = Column(Text, nullable=True)
@@ -226,8 +226,8 @@ class AdmissionDischargeSummary(Base):
     finalized_at = Column(DateTime(timezone=True), nullable=True)
     locked_at = Column(DateTime(timezone=True), nullable=True)
 
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
     admission = relationship("Admission", back_populates="discharge_summary_doc")
     primary_doctor = relationship("User", foreign_keys=[primary_doctor_id])
@@ -240,7 +240,7 @@ class DischargeRecord(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=False)
-    discharge_date = Column(DateTime(timezone=True), server_default=func.now())
+    discharge_date = Column(DateTime(timezone=True), default=system_now)
     discharge_type = Column(String(20), nullable=False)  # normal, against_advice, transfer, death
     condition_on_discharge = Column(String(20))  # stable, improved, unchanged, critical
     discharge_summary = Column(Text)
@@ -270,7 +270,7 @@ class DischargeRecord(Base):
     body_handover_relationship = Column(String(100), nullable=True)
     body_handover_time = Column(DateTime(timezone=True), nullable=True)
     body_handover_id_proof = Column(String(200), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
 
     admission = relationship("Admission", back_populates="discharge")
 
@@ -314,7 +314,7 @@ class DAMARecord(Base):
 
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
 
     discharge = relationship("DischargeRecord", foreign_keys=[discharge_id])
     admission = relationship("Admission", foreign_keys=[admission_id])
@@ -331,8 +331,8 @@ class InpatientRateConfig(Base):
     duty_visit_rate = Column(Numeric(10, 2), default=0.00)
     nurse_visit_rate = Column(Numeric(10, 2), default=0.00)
     procedure_rate = Column(Numeric(10, 2), default=0.00)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
 
 class PatientVisit(Base):
@@ -343,7 +343,7 @@ class PatientVisit(Base):
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
     visitor_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     visit_type = Column(String(20), nullable=False)  # doctor_visit, nurse_visit, procedure
-    visit_datetime = Column(DateTime(timezone=True), server_default=func.now())
+    visit_datetime = Column(DateTime(timezone=True), default=system_now)
     notes = Column(Text, nullable=True)
     charge_amount = Column(Numeric(10, 2), default=0.00)
     billed = Column(Boolean, default=False)            # legacy: kept for backwards compat with existing rows
@@ -360,8 +360,8 @@ class PatientVisit(Base):
     family_updated = Column(Boolean, default=False)
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
     admission = relationship("Admission", back_populates="visits")
     visitor = relationship("User", foreign_keys=[visitor_id])
@@ -397,8 +397,8 @@ class OTSchedule(Base):
 
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
     admission = relationship("Admission", back_populates="ot_schedules")
     patient = relationship("Patient", foreign_keys=[patient_id])
@@ -427,7 +427,7 @@ class AdmissionDocument(Base):
     mime_type = Column(String(100))
     uploaded_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     notes = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
 
     admission = relationship("Admission", back_populates="documents")
     uploaded_by = relationship("User", foreign_keys=[uploaded_by_id])
@@ -444,8 +444,8 @@ class NursingNote(Base):
     note_type = Column(String(30), nullable=False)  # observation, medication, vitals, procedure, handover, general
     content = Column(Text, nullable=False)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
     admission = relationship("Admission", back_populates="nursing_notes")
     nurse = relationship("User", foreign_keys=[nurse_id])
@@ -471,8 +471,8 @@ class CodeBlueEvent(Base):
 
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
     admission = relationship("Admission", foreign_keys=[admission_id])
     patient = relationship("Patient", foreign_keys=[patient_id])
@@ -501,8 +501,8 @@ class ShiftHandover(Base):
     notes = Column(Text, nullable=True)
 
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
     admission = relationship("Admission", foreign_keys=[admission_id])
     from_nurse = relationship("User", foreign_keys=[from_nurse_id])
@@ -529,8 +529,8 @@ class LeaveOfAbsence(Base):
 
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
     admission = relationship("Admission", foreign_keys=[admission_id])
     approved_by_doctor = relationship("User", foreign_keys=[approved_by_doctor_id])
@@ -543,7 +543,7 @@ class VitalSigns(Base):
     admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=False)
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
     recorded_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    recorded_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    recorded_at = Column(DateTime(timezone=True), default=system_now, nullable=False)
     shift = Column(String(20), nullable=True)  # morning, afternoon, night
 
     bp_systolic = Column(Integer, nullable=True)        # mmHg
@@ -564,8 +564,8 @@ class VitalSigns(Base):
     abnormal_flags = Column(JSON, nullable=True)        # list of flagged field names
 
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
     admission = relationship("Admission", back_populates="vital_signs")
     recorded_by = relationship("User", foreign_keys=[recorded_by_id])
@@ -597,8 +597,8 @@ class MedicationAdministration(Base):
     prn_indication = Column(Text, nullable=True)      # why PRN dose was given
 
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
     admission = relationship("Admission", back_populates="medication_administrations")
     prescription_item = relationship("PrescriptionItem", foreign_keys=[prescription_item_id])
@@ -622,10 +622,10 @@ class AdmissionDeposit(Base):
     payment_method = Column(String(30), default="cash", nullable=False)   # cash, card, upi, cheque, online
     reference_number = Column(String(100), nullable=True)  # transaction ref / cheque #
     received_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    received_at = Column(DateTime(timezone=True), server_default=func.now())
+    received_at = Column(DateTime(timezone=True), default=system_now)
     notes = Column(Text, nullable=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
 
     admission = relationship("Admission", back_populates="deposits")
     received_by = relationship("User", foreign_keys=[received_by_id])
@@ -643,8 +643,8 @@ class AncillaryServiceCatalog(Base):
     charge_unit = Column(String(20), default="per_session")  # per_session, per_hour, per_day, per_unit
     description = Column(Text, nullable=True)
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
 
 class Procedure(Base):
@@ -656,8 +656,8 @@ class Procedure(Base):
     default_rate = Column(Float, nullable=False, default=0.0)
     description = Column(Text, nullable=True)
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
     __table_args__ = (UniqueConstraint("hospital_id", "name", name="uq_procedure_hospital_name"),)
 
@@ -671,14 +671,14 @@ class AdmissionAncillaryCharge(Base):
     quantity = Column(Float, default=1.0)
     unit_price = Column(Float, nullable=False)
     total_amount = Column(Float, nullable=False)
-    charged_at = Column(DateTime(timezone=True), server_default=func.now())
+    charged_at = Column(DateTime(timezone=True), default=system_now)
     performed_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     notes = Column(Text, nullable=True)
     billed = Column(Boolean, default=False)
     bill_id = Column(Integer, ForeignKey("bills.id"), nullable=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
 
     admission = relationship("Admission", back_populates="ancillary_charges")
     service = relationship("AncillaryServiceCatalog", foreign_keys=[service_id])
@@ -704,8 +704,8 @@ class SurgeryPackage(Base):
     excess_per_day_charge = Column(Float, default=0.0)
     description = Column(Text, nullable=True)
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
 
 class AdmissionPackage(Base):
@@ -715,7 +715,7 @@ class AdmissionPackage(Base):
     admission_id = Column(Integer, ForeignKey("admissions.id"), unique=True, nullable=False)
     package_id = Column(Integer, ForeignKey("surgery_packages.id"), nullable=False)
     agreed_price = Column(Float, nullable=False)
-    applied_at = Column(DateTime(timezone=True), server_default=func.now())
+    applied_at = Column(DateTime(timezone=True), default=system_now)
     applied_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     notes = Column(Text, nullable=True)
 
@@ -736,7 +736,7 @@ class InsurancePreAuth(Base):
     approved_amount = Column(Float, default=0.0)
     status = Column(String(30), default="requested")
     # requested, approved, rejected, expansion_requested, expanded, expired
-    request_date = Column(DateTime(timezone=True), server_default=func.now())
+    request_date = Column(DateTime(timezone=True), default=system_now)
     approval_date = Column(DateTime(timezone=True), nullable=True)
     validity_days = Column(Integer, nullable=True)
     approval_document_path = Column(String(500), nullable=True)
@@ -744,8 +744,8 @@ class InsurancePreAuth(Base):
     notes = Column(Text, nullable=True)
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
     admission = relationship("Admission", back_populates="preauth_requests")
     patient = relationship("Patient", foreign_keys=[patient_id])
@@ -761,7 +761,7 @@ class InsurancePreAuthExpansion(Base):
     requested_amount = Column(Float, nullable=False)
     approved_amount = Column(Float, default=0.0)
     status = Column(String(30), default="requested")  # requested, approved, rejected
-    requested_at = Column(DateTime(timezone=True), server_default=func.now())
+    requested_at = Column(DateTime(timezone=True), default=system_now)
     decided_at = Column(DateTime(timezone=True), nullable=True)
     document_path = Column(String(500), nullable=True)
     reason = Column(Text, nullable=True)
@@ -783,8 +783,8 @@ class TPACompany(Base):
     default_discount_percent = Column(Float, default=0.0)
     contract_details = Column(Text, nullable=True)
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
 
 # ======================================================================
@@ -798,7 +798,7 @@ class FluidBalance(Base):
     admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=False)
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
     recorded_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    recorded_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    recorded_at = Column(DateTime(timezone=True), default=system_now, nullable=False)
     shift = Column(String(20), nullable=False)  # morning, afternoon, night
     io_type = Column(String(10), nullable=False)  # intake, output
     category = Column(String(30), nullable=False)
@@ -807,7 +807,7 @@ class FluidBalance(Base):
     amount_ml = Column(Float, nullable=False)  # stored positive for both intake and output; sign inferred from io_type
     notes = Column(Text, nullable=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
 
     admission = relationship("Admission", foreign_keys=[admission_id])
     recorded_by = relationship("User", foreign_keys=[recorded_by_id])
@@ -834,8 +834,8 @@ class CriticalLabAlert(Base):
     addressed_notes = Column(Text, nullable=True)
 
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
 
 # ======================================================================
@@ -853,8 +853,8 @@ class ConsentTemplate(Base):
     content = Column(Text, nullable=False)
     language = Column(String(30), default="english")
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
 
 class Consent(Base):
@@ -880,14 +880,14 @@ class Consent(Base):
     witness_name = Column(String(200), nullable=True)
     witness_signature = Column(Text, nullable=True)
 
-    signed_at = Column(DateTime(timezone=True), server_default=func.now())
+    signed_at = Column(DateTime(timezone=True), default=system_now)
     withdrawn_at = Column(DateTime(timezone=True), nullable=True)
     withdrawal_reason = Column(Text, nullable=True)
     notes = Column(Text, nullable=True)
 
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
 
     admission = relationship("Admission", foreign_keys=[admission_id])
     patient = relationship("Patient", foreign_keys=[patient_id])
@@ -910,7 +910,7 @@ class ConsentDocReservation(Base):
     template_id = Column(Integer, ForeignKey("consent_templates.id"), nullable=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
     reserved_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    reserved_at = Column(DateTime(timezone=True), server_default=func.now())
+    reserved_at = Column(DateTime(timezone=True), default=system_now)
     consumed_at = Column(DateTime(timezone=True), nullable=True)
     consumed_consent_id = Column(Integer, ForeignKey("consents.id"), nullable=True)
 
@@ -932,7 +932,7 @@ class BedTransferHistory(Base):
     # bed_change, room_change, ward_change
     reason = Column(Text, nullable=False)
     transfer_note = Column(Text, nullable=True)  # clinical handover note for ward_change
-    transferred_at = Column(DateTime(timezone=True), server_default=func.now())
+    transferred_at = Column(DateTime(timezone=True), default=system_now)
     transferred_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
 
     # Inter-ward transfer accept flow
@@ -948,7 +948,7 @@ class BedTransferHistory(Base):
     to_room_charge_per_day = Column(Float, nullable=True)
 
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
 
     admission = relationship("Admission", foreign_keys=[admission_id])
     from_room = relationship("RoomManagement", foreign_keys=[from_room_id])
@@ -965,7 +965,7 @@ class BedTurnoverLog(Base):
     bed_id = Column(Integer, ForeignKey("beds.id"), nullable=False)
     status_from = Column(String(20), nullable=False)
     status_to = Column(String(20), nullable=False)
-    changed_at = Column(DateTime(timezone=True), server_default=func.now())
+    changed_at = Column(DateTime(timezone=True), default=system_now)
     changed_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     notes = Column(Text, nullable=True)
 
@@ -995,8 +995,8 @@ class RoomMaintenance(Base):
     reported_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     updated_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
     room = relationship("RoomManagement", back_populates="maintenance_requests", foreign_keys=[room_id])
     bed = relationship("Bed", foreign_keys=[bed_id])
@@ -1022,8 +1022,8 @@ class BedReservation(Base):
     related_admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=True)
     reserved_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
     bed = relationship("Bed", foreign_keys=[bed_id])
     room = relationship("RoomManagement", foreign_keys=[room_id])
@@ -1043,7 +1043,7 @@ class NurseAssignment(Base):
     notes = Column(Text, nullable=True)
     assigned_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
 
     admission = relationship("Admission", foreign_keys=[admission_id])
     nurse = relationship("User", foreign_keys=[nurse_id])
@@ -1068,8 +1068,8 @@ class NurseShiftRoster(Base):
     notes = Column(Text, nullable=True)
     assigned_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
     nurse = relationship("User", foreign_keys=[nurse_id])
     assigned_by = relationship("User", foreign_keys=[assigned_by_id])
@@ -1092,8 +1092,8 @@ class BillSplit(Base):
     payment_date = Column(DateTime(timezone=True), nullable=True)
     payment_reference = Column(String(100), nullable=True)
     notes = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
     bill = relationship("Bill", back_populates="splits")
     tpa = relationship("TPACompany", foreign_keys=[tpa_id])
@@ -1153,8 +1153,8 @@ class BodyReleaseRecord(Base):
     notes = Column(Text, nullable=True)
     released_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
     admission = relationship("Admission", foreign_keys=[admission_id])
     discharge = relationship("DischargeRecord", foreign_keys=[discharge_id])
@@ -1178,8 +1178,8 @@ class PayerScheme(Base):
     # cash, private_insurance, tpa, govt_scheme
     active = Column(Boolean, default=True, nullable=False)
     notes = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
     __table_args__ = (
         UniqueConstraint("hospital_id", "code", name="uq_payer_scheme_code_per_hospital"),
@@ -1199,7 +1199,7 @@ class AdmissionPayerChange(Base):
     to_payer_type = Column(String(30), nullable=False)
     reason = Column(Text, nullable=False)
     changed_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    changed_at = Column(DateTime(timezone=True), server_default=func.now())
+    changed_at = Column(DateTime(timezone=True), default=system_now)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
 
     admission = relationship("Admission", foreign_keys=[admission_id])
@@ -1222,7 +1222,7 @@ class GatePass(Base):
     id = Column(Integer, primary_key=True, index=True)
     admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=False)
     pass_number = Column(String(50), nullable=False)
-    generated_at = Column(DateTime(timezone=True), server_default=func.now())
+    generated_at = Column(DateTime(timezone=True), default=system_now)
     generated_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     vehicle_no = Column(String(40), nullable=True)
     attendant_name = Column(String(200), nullable=True)
@@ -1267,8 +1267,8 @@ class DoctorDutyRoster(Base):
     notes = Column(Text, nullable=True)
     assigned_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
     doctor = relationship("User", foreign_keys=[doctor_id])
     assigned_by = relationship("User", foreign_keys=[assigned_by_id])
@@ -1290,8 +1290,8 @@ class RoomTypeRateConfig(Base):
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
     room_type = Column(String(30), nullable=False)
     nursing_charge_per_visit = Column(Numeric(10, 2), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
     __table_args__ = (
         UniqueConstraint("hospital_id", "room_type", name="uq_room_type_rate_per_hospital"),
@@ -1309,8 +1309,8 @@ class DoctorRoomTypeRate(Base):
     doctor_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     room_type = Column(String(30), nullable=False)
     visit_rate = Column(Numeric(10, 2), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
     doctor = relationship("User", foreign_keys=[doctor_id])
 
@@ -1330,8 +1330,8 @@ class MealPlan(Base):
     price = Column(Numeric(10, 2), nullable=False, default=0)
     description = Column(String(200), nullable=True)
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
     __table_args__ = (
         UniqueConstraint("hospital_id", "room_type", "meal_type", name="uq_meal_plan_room_meal"),
@@ -1353,7 +1353,7 @@ class FoodOrder(Base):
     price = Column(Numeric(10, 2), nullable=False)  # snapshot at order time
     diet_preference = Column(String(50), nullable=True)  # veg/non-veg/diabetic/soft/liquid/custom
     notes = Column(Text, nullable=True)
-    ordered_at = Column(DateTime(timezone=True), server_default=func.now())
+    ordered_at = Column(DateTime(timezone=True), default=system_now)
     ordered_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     delivered_at = Column(DateTime(timezone=True), nullable=True)
     delivered_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)

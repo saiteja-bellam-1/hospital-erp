@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text
 from sqlalchemy.orm import relationship
-from sqlalchemy.sql import func
 from config.database import Base
+from app.utils.time import system_now
 
 class Hospital(Base):
     __tablename__ = "hospitals"
@@ -39,8 +39,8 @@ class Hospital(Base):
     # When True (and multi-store enabled), staff must be explicitly assigned to a
     # store; unassigned users cannot fall back to the default master store.
     pharmacy_require_store_assignment = Column(Boolean, default=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
     users = relationship("User", back_populates="hospital")
     modules = relationship("HospitalModule", back_populates="hospital")
@@ -53,7 +53,7 @@ class HospitalModule(Base):
     module_name = Column(String(50), nullable=False)
     is_enabled = Column(Boolean, default=False)
     configuration = Column(Text)  # JSON configuration for module
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
     
     hospital = relationship("Hospital", back_populates="modules")

@@ -85,6 +85,7 @@ class InpatientService:
             patient_id=admission_data["patient_id"],
             admitting_doctor_id=admission_data["admitting_doctor_id"],
             room_id=admission_data["room_id"],
+            admission_date=datetime.now(),
             admission_type=admission_data["admission_type"],
             admission_reason=admission_data.get("admission_reason"),
             condition_on_admission=admission_data.get("condition_on_admission"),

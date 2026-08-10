@@ -63,7 +63,7 @@ def _reject_rapid_repeat_booking(db: Session, patient_id: int, test_ids: list) -
         return
     # created_at uses the DB server clock (UTC on SQLite); keep the cutoff in
     # the same frame so IST-vs-UTC skew cannot miss a just-inserted row.
-    cutoff = datetime.utcnow() - timedelta(seconds=_RAPID_BOOK_WINDOW_SECONDS)
+    cutoff = datetime.now() - timedelta(seconds=_RAPID_BOOK_WINDOW_SECONDS)
     recent = (
         db.query(PatientLabOrder)
         .filter(

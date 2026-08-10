@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Table
 from sqlalchemy.orm import relationship
-from sqlalchemy.sql import func
 from config.database import Base
+from app.utils.time import system_now
 import uuid
 
 # Many-to-many association table for User <-> UserRole
@@ -19,7 +19,7 @@ class UserRole(Base):
     name = Column(String(50), unique=True, nullable=False)
     description = Column(Text)
     is_system_role = Column(Boolean, default=False)  # Predefined system roles
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
 
     users = relationship("User", back_populates="role")
     assigned_users = relationship("User", secondary=user_role_association, back_populates="roles")
@@ -51,8 +51,8 @@ class User(Base):
     must_change_password = Column(Boolean, default=False, nullable=False)
     role_id = Column(Integer, ForeignKey("user_roles.id"), nullable=False)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"))
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
     
     role = relationship("UserRole", back_populates="users")
     roles = relationship("UserRole", secondary=user_role_association, back_populates="assigned_users", lazy="joined")
@@ -82,6 +82,6 @@ class UserPermission(Base):
     can_write = Column(Boolean, default=False)
     can_delete = Column(Boolean, default=False)
     can_admin = Column(Boolean, default=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
     
     user = relationship("User", back_populates="permissions")

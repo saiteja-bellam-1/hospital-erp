@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Float
 from sqlalchemy.orm import relationship
-from sqlalchemy.sql import func
 from config.database import Base
+from app.utils.time import system_now
 
 class Consultation(Base):
     __tablename__ = "consultations"
@@ -11,7 +11,7 @@ class Consultation(Base):
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
     doctor_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     appointment_id = Column(Integer, ForeignKey("appointments.id"), nullable=True)
-    consultation_date = Column(DateTime(timezone=True), server_default=func.now())
+    consultation_date = Column(DateTime(timezone=True), default=system_now)
     consultation_type = Column(String(20), nullable=False)  # outpatient, inpatient, emergency, followup
     chief_complaint = Column(Text)
     present_history = Column(Text)
@@ -21,8 +21,8 @@ class Consultation(Base):
     consultation_fee = Column(Float, default=0.0)
     follow_up_date = Column(DateTime)
     notes = Column(Text)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
     
     patient = relationship("Patient", back_populates="consultations")
     diagnoses = relationship("Diagnosis", back_populates="consultation")
@@ -43,7 +43,7 @@ class Diagnosis(Base):
     severity = Column(String(20))  # mild, moderate, severe
     status = Column(String(20), default="active")  # active, resolved, chronic
     notes = Column(Text)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
     
     consultation = relationship("Consultation", back_populates="diagnoses")
 
@@ -59,7 +59,7 @@ class TreatmentPlan(Base):
     end_date = Column(DateTime)
     frequency = Column(String(100))
     status = Column(String(20), default="active")  # active, completed, discontinued
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
     
     consultation = relationship("Consultation", back_populates="treatment_plans")
 
@@ -73,6 +73,6 @@ class MedicalNote(Base):
     content = Column(Text, nullable=False)
     is_confidential = Column(Boolean, default=False)
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
     
     consultation = relationship("Consultation", back_populates="medical_notes")

@@ -1,13 +1,13 @@
 from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey
-from datetime import datetime
 from config.database import Base
+from app.utils.time import system_now
 
 
 class AuditLog(Base):
     __tablename__ = "audit_logs"
 
     id = Column(Integer, primary_key=True, index=True)
-    timestamp = Column(DateTime, default=datetime.now, index=True)  # Local system time
+    timestamp = Column(DateTime, default=system_now, index=True)  # Local system time via system_now
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     user_name = Column(String(100))
     user_role = Column(String(50))

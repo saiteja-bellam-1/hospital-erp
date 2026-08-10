@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Float, JSON
 from sqlalchemy.orm import relationship
-from sqlalchemy.sql import func
 from config.database import Base
+from app.utils.time import system_now
 
 class SampleType(Base):
     __tablename__ = "sample_types"
@@ -11,7 +11,7 @@ class SampleType(Base):
     description = Column(Text)
     is_active = Column(Boolean, default=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
 
     tests = relationship("LabTest", back_populates="sample_type_ref")
 
@@ -24,7 +24,7 @@ class LabTestCategory(Base):
     description = Column(Text)
     is_active = Column(Boolean, default=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
 
     tests = relationship("LabTest", back_populates="category")
 
@@ -45,8 +45,8 @@ class LabTest(Base):
     unit = Column(String(20))
     is_active = Column(Boolean, default=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
     category = relationship("LabTestCategory", back_populates="tests")
     sample_type_ref = relationship("SampleType", back_populates="tests")
@@ -81,7 +81,7 @@ class LabTestParameter(Base):
     notes = Column(String(500), nullable=True)
     display_order = Column(Integer, default=0)
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
 
     test = relationship("LabTest", back_populates="parameters")
 
@@ -94,7 +94,7 @@ class LabTestPackageCategory(Base):
     description = Column(Text)
     is_active = Column(Boolean, default=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
 
     packages = relationship("LabTestPackage", back_populates="category")
 
@@ -111,8 +111,8 @@ class LabTestPackage(Base):
     actual_price = Column(Float, nullable=False)
     is_active = Column(Boolean, default=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
     category = relationship("LabTestPackageCategory", back_populates="packages")
     items = relationship("LabTestPackageItem", back_populates="package", cascade="all, delete-orphan")
@@ -139,7 +139,7 @@ class LabReportTemplate(Base):
     template_fields = Column(JSON)  # Dynamic template fields
     is_active = Column(Boolean, default=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
     
     reports = relationship("LabReport", back_populates="template")
 
@@ -155,7 +155,7 @@ class PatientLabOrder(Base):
     appointment_id = Column(Integer, ForeignKey("appointments.id"), nullable=True)  # Link to appointment
     admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=True)  # Link to inpatient admission
     status = Column(String(20), default="ordered")  # ordered, collected, processing, completed, cancelled
-    order_date = Column(DateTime(timezone=True), server_default=func.now())
+    order_date = Column(DateTime(timezone=True), default=system_now)
     collection_date = Column(DateTime)
     completion_date = Column(DateTime)
     priority = Column(String(10), default="normal")  # normal, urgent, stat
@@ -184,7 +184,7 @@ class PatientLabOrder(Base):
     # endpoint reconstruct the original combined PDF.
     lab_bill_group_id = Column(String(64), nullable=True, index=True)
     lab_bill_number = Column(String(64), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
 
     patient = relationship("Patient", back_populates="lab_orders")
     test = relationship("LabTest", back_populates="orders")
@@ -203,7 +203,7 @@ class LabReport(Base):
     interpretation = Column(Text)
     technician_id = Column(Integer, ForeignKey("users.id"))
     verified_by_id = Column(Integer, ForeignKey("users.id"))
-    report_date = Column(DateTime(timezone=True), server_default=func.now())
+    report_date = Column(DateTime(timezone=True), default=system_now)
     is_verified = Column(Boolean, default=False)
     verification_date = Column(DateTime)
     

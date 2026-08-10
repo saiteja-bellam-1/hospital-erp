@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Float
 from sqlalchemy.orm import relationship
-from sqlalchemy.sql import func
 from config.database import Base
+from app.utils.time import system_now
 
 class PaymentMethod(Base):
     __tablename__ = "payment_methods"
@@ -11,7 +11,7 @@ class PaymentMethod(Base):
     description = Column(Text)
     is_active = Column(Boolean, default=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
     
     payments = relationship("Payment", back_populates="payment_method")
 
@@ -29,7 +29,7 @@ class Bill(Base):
     discount_amount = Column(Float, default=0.0)
     total_amount = Column(Float, nullable=False)
     status = Column(String(20), default="pending")  # pending, paid, partial, cancelled
-    bill_date = Column(DateTime(timezone=True), server_default=func.now())
+    bill_date = Column(DateTime(timezone=True), default=system_now)
     due_date = Column(DateTime)
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     notes = Column(Text)
@@ -77,7 +77,7 @@ class Payment(Base):
     amount_paid = Column(Float, nullable=False)
     payment_method_id = Column(Integer, ForeignKey("payment_methods.id"), nullable=True)
     payment_method_name = Column(String(50), default="cash")
-    payment_date = Column(DateTime(timezone=True), server_default=func.now())
+    payment_date = Column(DateTime(timezone=True), default=system_now)
     transaction_reference = Column(String(100))
     notes = Column(Text)
     received_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)

@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, JSON
-from sqlalchemy.sql import func
 from config.database import Base
+from app.utils.time import system_now
 
 class SystemModule(Base):
     """
@@ -15,8 +15,8 @@ class SystemModule(Base):
     is_enabled = Column(Boolean, default=False)
     is_always_enabled = Column(Boolean, default=False)  # For EHR and Admin modules
     configuration = Column(JSON)  # Module-specific configuration
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
 class SystemSettings(Base):
     """
@@ -29,5 +29,5 @@ class SystemSettings(Base):
     setting_value = Column(Text)
     setting_type = Column(String(20), default='string')  # string, json, boolean, integer
     description = Column(Text)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)

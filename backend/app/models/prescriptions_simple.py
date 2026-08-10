@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, String, DateTime, Text, JSON, ForeignKey
-from sqlalchemy.sql import func
 from config.database import Base
+from app.utils.time import system_now
 
 class SimplePrescription(Base):
     """
@@ -41,9 +41,9 @@ class SimplePrescription(Base):
     status = Column(String(20), default="active")  # active, cancelled, completed
     
     # Timestamps
-    prescription_date = Column(DateTime(timezone=True), server_default=func.now())
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    prescription_date = Column(DateTime(timezone=True), default=system_now)
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
     
     # Hospital ID for multi-tenancy
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)

@@ -6,18 +6,24 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Any
 from datetime import datetime, date
 
+from app.utils.time import system_now
+
 
 def _now() -> datetime:
     """Naive system-local 'now'. Use for all inpatient business timestamps."""
-    return datetime.now()
+    return system_now()
 
 
 def _as_naive(dt: Optional[datetime]) -> Optional[datetime]:
-    """Drop tzinfo so stay-day math never mixes aware/naive (SQLite roundtrips)."""
+    """Normalize to naive local wall clock for stay-day math / SQLite storage.
+
+    Aware values are converted with astimezone(); naive values are kept as-is
+    (this app stores local wall clock, not UTC).
+    """
     if dt is None:
         return None
     if getattr(dt, "tzinfo", None) is not None:
-        return dt.replace(tzinfo=None)
+        return dt.astimezone().replace(tzinfo=None)
     return dt
 
 
@@ -1703,12 +1709,14 @@ def _build_admission_from_payload(db: Session, payload: dict, require_acceptance
             raise HTTPException(status_code=400, detail="Unknown payer_scheme_id")
         clean["payer_type"] = scheme.scheme_type
     acceptance_status = "pending" if require_acceptance else "accepted"
+    if not clean.get("admission_date"):
+        clean["admission_date"] = _now()
     admission = Admission(**clean, acceptance_status=acceptance_status)
     if acceptance_status == "accepted":
         admission.accepted_by_doctor_id = (
             clean.get("attending_physician_id") or clean.get("admitting_doctor_id")
         )
-        admission.accepted_at = datetime.now()
+        admission.accepted_at = _now()
     return admission
 
 
@@ -1911,6 +1919,7 @@ async def create_admission(
     admission = Admission(
         **_strip_admission_api_fields(payload),
         admission_number=admission_number,
+        admission_date=_now(),
         is_readmission=is_readmission,
         previous_admission_id=previous_admission_id,
         days_since_last_discharge=days_since,
@@ -1921,10 +1930,10 @@ async def create_admission(
         admission.accepted_by_doctor_id = (
             payload.get("attending_physician_id") or payload.get("admitting_doctor_id")
         )
-        admission.accepted_at = datetime.now()
+        admission.accepted_at = _now()
     if payload.get("deposit_waived"):
         admission.deposit_waived_by_id = current_user.id
-        admission.deposit_waived_at = datetime.now()
+        admission.deposit_waived_at = _now()
 
     db.add(admission)
     db.flush()
@@ -10861,6 +10870,7 @@ async def convert_reservation_to_admission(
         admitting_doctor_id=data.admitting_doctor_id,
         room_id=room.id,
         bed_id=bed.id if bed else None,
+        admission_date=_now(),
         admission_type=data.admission_type,
         admission_reason=data.admission_reason,
         condition_on_admission=data.condition_on_admission,

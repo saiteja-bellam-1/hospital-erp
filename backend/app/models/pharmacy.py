@@ -1,14 +1,7 @@
-from datetime import datetime
-
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Float, Date, JSON
 from sqlalchemy.orm import relationship
-from sqlalchemy.sql import func
 from config.database import Base
-
-
-def _system_now():
-    """Host local wall clock for ORM defaults (not SQLite UTC CURRENT_TIMESTAMP)."""
-    return datetime.now()
+from app.utils.time import system_now
 
 
 # ============================================================================
@@ -24,7 +17,7 @@ class PharmacyCompany(Base):
     contact = Column(String(200))
     is_active = Column(Boolean, default=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), default=_system_now, server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
 
 
 class PharmacySupplier(Base):
@@ -108,7 +101,7 @@ class PharmacySupplier(Base):
 
     is_active = Column(Boolean, default=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), default=_system_now, server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
 
 
 class PharmacySalt(Base):
@@ -120,7 +113,7 @@ class PharmacySalt(Base):
     description = Column(Text)
     is_active = Column(Boolean, default=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), default=_system_now, server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
 
 
 class PharmacyStore(Base):
@@ -138,7 +131,7 @@ class PharmacyStore(Base):
     is_active = Column(Boolean, default=True)
     is_default = Column(Boolean, default=False)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), default=_system_now, server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
 
     parent_store = relationship("PharmacyStore", remote_side=[id], foreign_keys=[parent_store_id])
 
@@ -151,7 +144,7 @@ class PharmacyUserStore(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     store_id = Column(Integer, ForeignKey("pharmacy_stores.id"), nullable=False, index=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), default=_system_now, server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
 
     store = relationship("PharmacyStore")
 
@@ -166,7 +159,7 @@ class PharmacyRack(Base):
     description = Column(Text)
     is_active = Column(Boolean, default=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), default=_system_now, server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
 
 
 class PharmacyUoM(Base):
@@ -183,7 +176,7 @@ class PharmacyUoM(Base):
     decimal_supported = Column(Boolean, default=False)
     is_active = Column(Boolean, default=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), default=_system_now, server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
 
 
 class PharmacyHSN(Base):
@@ -203,7 +196,7 @@ class PharmacyHSN(Base):
     igst_pct = Column(Float, default=0.0)
     is_active = Column(Boolean, default=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), default=_system_now, server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
 
 
 class MedicineCategory(Base):
@@ -214,7 +207,7 @@ class MedicineCategory(Base):
     description = Column(Text)
     is_active = Column(Boolean, default=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), default=_system_now, server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
 
     medicines = relationship("Medicine", back_populates="category")
 
@@ -283,8 +276,8 @@ class Medicine(Base):
     reorder_qty = Column(Integer, default=0)   # suggested order qty when low
 
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), default=_system_now, server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=_system_now)
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
     # Entry date of the most recent confirmed purchase that updated this
     # medicine's mrp / purchase_rate. Used to stop older back-dated purchases
@@ -334,8 +327,8 @@ class PharmacyInventory(Base):
     store_id = Column(Integer, ForeignKey("pharmacy_stores.id"), nullable=True, index=True)
     is_active = Column(Boolean, default=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), default=_system_now, server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=_system_now)
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
     medicine = relationship("Medicine", back_populates="inventory")
     hsn = relationship("PharmacyHSN")
@@ -366,7 +359,7 @@ class PharmacyStockLedger(Base):
     notes = Column(Text)
     store_id = Column(Integer, ForeignKey("pharmacy_stores.id"), nullable=True, index=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), default=_system_now, server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
 
     medicine = relationship("Medicine")
     batch = relationship("PharmacyInventory")
@@ -415,8 +408,8 @@ class PharmacyPurchase(Base):
     edit_reason = Column(Text)
     store_id = Column(Integer, ForeignKey("pharmacy_stores.id"), nullable=True, index=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), default=_system_now, server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=_system_now)
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
     items = relationship("PharmacyPurchaseItem", back_populates="purchase", cascade="all, delete-orphan")
     supplier = relationship("PharmacySupplier")
@@ -467,7 +460,7 @@ class PharmacySale(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     sale_number = Column(String(30), unique=True, nullable=False, index=True)
-    sale_date = Column(DateTime, nullable=False, default=_system_now, server_default=func.now())
+    sale_date = Column(DateTime, nullable=False, default=system_now)
     payment_type = Column(String(20), default="cash")  # cash | credit
 
     # Patient info (free text, not FK-linked)
@@ -505,7 +498,7 @@ class PharmacySale(Base):
     created_by = Column(Integer, ForeignKey("users.id"))
     store_id = Column(Integer, ForeignKey("pharmacy_stores.id"), nullable=True, index=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), default=_system_now, server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
 
     items = relationship("PharmacySaleItem", back_populates="sale", cascade="all, delete-orphan")
     store = relationship("PharmacyStore")
@@ -558,7 +551,7 @@ class PharmacyStockAdjustment(Base):
     performed_by = Column(Integer, ForeignKey("users.id"), nullable=False)
     store_id = Column(Integer, ForeignKey("pharmacy_stores.id"), nullable=True, index=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), default=_system_now, server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
 
     medicine = relationship("Medicine")
     batch = relationship("PharmacyInventory")
@@ -586,8 +579,8 @@ class PharmacyTransfer(Base):
     revoked_at = Column(DateTime)
     revoke_reason = Column(Text)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), default=_system_now, server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=_system_now)
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
     from_store = relationship("PharmacyStore", foreign_keys=[from_store_id])
     to_store = relationship("PharmacyStore", foreign_keys=[to_store_id])
@@ -621,7 +614,7 @@ class Prescription(Base):
     doctor_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     consultation_id = Column(Integer, ForeignKey("consultations.id"))
     admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=True)
-    prescription_date = Column(DateTime(timezone=True), default=_system_now, server_default=func.now())
+    prescription_date = Column(DateTime(timezone=True), default=system_now)
     status = Column(String(20), default="pending")  # pending, dispensed, partial, cancelled
     notes = Column(Text)
     total_amount = Column(Float, default=0.0)

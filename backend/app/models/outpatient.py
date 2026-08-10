@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Time, Float
 from sqlalchemy.orm import relationship
-from sqlalchemy.sql import func
 from config.database import Base
+from app.utils.time import system_now
 
 class Appointment(Base):
     __tablename__ = "appointments"
@@ -57,8 +57,8 @@ class Appointment(Base):
     override_availability = Column(Boolean, default=False)
     override_reason = Column(Text, nullable=True)
     
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
     
     patient = relationship("Patient", back_populates="appointments")
     doctor = relationship("User", foreign_keys=[doctor_id])
@@ -73,7 +73,7 @@ class OutpatientVisit(Base):
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
     appointment_id = Column(Integer, ForeignKey("appointments.id"))
     doctor_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    visit_date = Column(DateTime(timezone=True), server_default=func.now())
+    visit_date = Column(DateTime(timezone=True), default=system_now)
     visit_type = Column(String(20), default="scheduled")  # scheduled, walk_in, emergency
     department = Column(String(50))
     chief_complaint = Column(Text)
@@ -85,8 +85,8 @@ class OutpatientVisit(Base):
     follow_up_required = Column(Boolean, default=False)
     follow_up_date = Column(DateTime)
     total_charges = Column(String(10), default="0.0")
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
     
     appointment = relationship("Appointment", back_populates="visits")
 
@@ -105,5 +105,5 @@ class OutpatientProcedure(Base):
     is_active = Column(Boolean, default=True, nullable=False)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)

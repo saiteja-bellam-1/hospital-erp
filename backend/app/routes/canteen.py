@@ -618,7 +618,7 @@ async def update_order_status(
     if order.status == "delivered" and data.status != "delivered":
         raise HTTPException(status_code=400, detail="Delivered order is locked")
     order.status = data.status
-    order.status_updated_at = datetime.utcnow()
+    order.status_updated_at = datetime.now()
     order.status_updated_by_id = current_user.id
     db.commit()
     db.refresh(order)
@@ -663,7 +663,7 @@ async def cancel_order(
             detail=f"Cannot cancel an order in status '{order.status}'",
         )
     order.status = "cancelled"
-    order.cancelled_at = datetime.utcnow()
+    order.cancelled_at = datetime.now()
     order.cancelled_by_id = current_user.id
     order.cancelled_reason = data.reason
     order.status_updated_at = order.cancelled_at
@@ -916,7 +916,7 @@ async def void_sale(
     if sale.status == "voided":
         raise HTTPException(status_code=400, detail="Sale already voided")
     sale.status = "voided"
-    sale.voided_at = datetime.utcnow()
+    sale.voided_at = datetime.now()
     sale.voided_by_id = current_user.id
     sale.void_reason = data.reason
     db.commit()
