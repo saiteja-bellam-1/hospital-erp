@@ -9,7 +9,7 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter,
   DialogHeader, DialogTitle,
 } from '../../../../components/ui/dialog';
-import { Plus, RefreshCw, Printer, Undo2, Pencil, Upload, Trash2 } from 'lucide-react';
+import { Plus, RefreshCw, Printer, Undo2, Pencil, Upload, Trash2, RotateCcw } from 'lucide-react';
 import { printPdfFromUrl } from '../../../../utils/printPdf';
 import { useToast } from '../../../../hooks/use-toast';
 import { errMsg } from '../../PharmacyModule';
@@ -128,6 +128,12 @@ export default function PurchasesTab() {
                         <Button size="sm" variant="ghost" title="Edit purchase"
                           onClick={() => navigate(`/dashboard/pharmacy/purchases/${p.id}/edit`)}>
                           <Pencil className="h-3 w-3" />
+                        </Button>
+                      )}
+                      {p.status === 'confirmed' && hasPerm('create_purchase_return') && (
+                        <Button size="sm" variant="ghost" title="Purchase return"
+                          onClick={() => navigate(`/dashboard/pharmacy/purchase-returns/new?purchaseId=${p.id}`)}>
+                          <RotateCcw className="h-3 w-3 text-amber-600" />
                         </Button>
                       )}
                       <Button size="sm" variant="ghost" title="Print purchase"

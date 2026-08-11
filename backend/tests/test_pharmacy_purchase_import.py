@@ -223,3 +223,23 @@ def test_get_or_create_medicine_autocreates_with_hsn(db_session, seed_data):
 
     assert any(m.startswith("medicine:") for m in resolver.masters_created)
     assert any(m.startswith("hsn:") for m in resolver.masters_created)
+
+
+def test_filter_rows_by_line():
+    from app.services.pharmacy_import import _filter_rows_by_line
+    rows = [{"_row": 2}, {"_row": 5}, {"_row": 9}]
+    assert [r["_row"] for r in _filter_rows_by_line(rows, 5, 9)] == [5, 9]
+    assert [r["_row"] for r in _filter_rows_by_line(rows, None, 5)] == [2, 5]
+    assert [r["_row"] for r in _filter_rows_by_line(rows, 9, None)] == [9]
+
+
+def test_inspect_returns_row_bounds():
+    from pathlib import Path
+    from app.services.pharmacy_import import inspect_purchase_import
+    sample = Path("/Users/saiteja/Downloads/1808.csv")
+    if not sample.exists():
+        pytest.skip("sample 1808.csv not present")
+    info = inspect_purchase_import(sample.read_bytes(), "1808.csv")
+    assert info["min_row"] >= 2
+    assert info["max_row"] >= info["min_row"]
+    assert info["row_count"] > 0

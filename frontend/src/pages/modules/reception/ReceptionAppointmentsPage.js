@@ -23,6 +23,7 @@ import {
 } from '../../../utils/appointmentBooking';
 import { localDateString } from '../../../utils/localDate';
 import { printPdfFromUrl } from '../../../utils/printPdf';
+import PdfPreviewDialog from '../../../components/PdfPreviewDialog';
 import {
   Calendar,
   Clock,
@@ -60,6 +61,7 @@ const ReceptionAppointmentsPage = () => {
   const [loading, setLoading] = useState(false);
   const [availableSlots, setAvailableSlots] = useState([]);
   const [availabilityChecking, setAvailabilityChecking] = useState(false);
+  const [appointmentsPdfPreview, setAppointmentsPdfPreview] = useState(null);
 
   // Patient search state
 
@@ -988,6 +990,35 @@ const ReceptionAppointmentsPage = () => {
     setFilterDate(localDateString());
   };
 
+  const openPrintAppointments = () => {
+    if (!filterDoctor || filterDoctor === 'all') {
+      toast({
+        variant: 'destructive',
+        title: 'Select a doctor',
+        description: 'Choose a doctor from the filter to print appointments.',
+      });
+      return;
+    }
+    if (!filterDate) {
+      toast({
+        variant: 'destructive',
+        title: 'Select a date',
+        description: 'Choose a date to print appointments.',
+      });
+      return;
+    }
+    const doctor = doctors.find((d) => d.id.toString() === filterDoctor.toString());
+    const doctorLabel = doctor
+      ? `Dr. ${doctor.first_name} ${doctor.last_name}`
+      : 'Doctor';
+    setAppointmentsPdfPreview({
+      title: `Appointments — ${doctorLabel}`,
+      path: `/api/appointments/doctors/${filterDoctor}/appointments/pdf`,
+      params: { appointment_date: filterDate },
+      filename: `appointments_${filterDoctor}_${filterDate}.pdf`,
+    });
+  };
+
   // Check doctor availability and fetch available slots
   const fetchAvailableSlots = async (doctorId, date) => {
     if (!doctorId || !date) {
@@ -1146,9 +1177,23 @@ const ReceptionAppointmentsPage = () => {
                 </SelectContent>
               </Select>
             </div>
-            <div className="flex items-end">
-              <Button variant="outline" onClick={clearFilters} className="w-full">
+            <div className="flex items-end gap-2">
+              <Button variant="outline" onClick={clearFilters} className="flex-1">
                 Clear Filters
+              </Button>
+              <Button
+                variant="outline"
+                onClick={openPrintAppointments}
+                disabled={!filterDoctor || filterDoctor === 'all' || !filterDate}
+                className="flex-1"
+                title={
+                  !filterDoctor || filterDoctor === 'all'
+                    ? 'Select a doctor to print appointments'
+                    : 'Print active appointments for this doctor on the selected date'
+                }
+              >
+                <Printer className="h-4 w-4 mr-1" />
+                Print Appointments
               </Button>
             </div>
           </div>
@@ -2117,6 +2162,16 @@ const ReceptionAppointmentsPage = () => {
       </Dialog>
 
       {/* Blank Rx is available from each appointment row only — not after booking */}
+
+      <PdfPreviewDialog
+        open={!!appointmentsPdfPreview}
+        onClose={() => setAppointmentsPdfPreview(null)}
+        title={appointmentsPdfPreview?.title || 'Appointments'}
+        path={appointmentsPdfPreview?.path || null}
+        params={appointmentsPdfPreview?.params || {}}
+        filename={appointmentsPdfPreview?.filename || 'appointments.pdf'}
+        letterheadReportType="doctor_appointments"
+      />
     </div>
   );
 };

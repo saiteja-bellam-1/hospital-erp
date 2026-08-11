@@ -19,11 +19,16 @@ import PharmacyImportDialog, { downloadPharmacyBlob } from '../../components/pha
 import SalesCounter from './pharmacy/SalesCounter';
 import PurchaseEntry from './pharmacy/PurchaseEntry';
 import TransferEntry from './pharmacy/TransferEntry';
+import SaleReturnEntry from './pharmacy/SaleReturnEntry';
+import PurchaseReturnEntry from './pharmacy/PurchaseReturnEntry';
 import DashboardTabImpl from './pharmacy/tabs/DashboardTab';
 import MedicinesTabImpl from './pharmacy/tabs/MedicinesTab';
 import InventoryTabImpl from './pharmacy/tabs/InventoryTab';
 import PurchasesTabImpl from './pharmacy/tabs/PurchasesTab';
 import SalesTabImpl from './pharmacy/tabs/SalesTab';
+import SaleReturnsTabImpl from './pharmacy/tabs/SaleReturnsTab';
+import PurchaseReturnsTabImpl from './pharmacy/tabs/PurchaseReturnsTab';
+import SupplierPaymentsTabImpl from './pharmacy/tabs/SupplierPaymentsTab';
 import PendingRxTabImpl from './pharmacy/tabs/PendingRxTab';
 import UnmappedMedicinesTabImpl from './pharmacy/tabs/UnmappedMedicinesTab';
 import ReportsTabImpl from './pharmacy/tabs/ReportsTab';
@@ -368,7 +373,10 @@ export const PHARMACY_PAGE_META = {
   'pending-rx': { title: 'Pending Rx', blurb: 'Prescriptions awaiting dispensing' },
   'unmapped-medicines': { title: 'Unmapped Medicines', blurb: 'Free-text inpatient orders awaiting catalog mapping' },
   'sales': { title: 'Sales History', blurb: 'Completed counter sales and voids' },
+  'sale-returns': { title: 'Sales Returns', blurb: 'Customer returns, restock, and credit notes' },
   'purchases': { title: 'Purchases', blurb: 'Confirmed and draft goods received' },
+  'purchase-returns': { title: 'Purchase Returns', blurb: 'Returns · Challan · Supplier CN · Debit Note · Allocate' },
+  'supplier-payments': { title: 'Supplier Payments', blurb: 'Payables ledger and bill allocations' },
   'transfers': { title: 'Stock Transfers', blurb: 'Move stock from master to satellite pharmacies' },
   'inventory': { title: 'Stock', blurb: 'Live stock, batches, and stock ledger' },
   'medicines': { title: 'Medicines', blurb: 'Drug catalog — pricing, flags, and barcodes' },
@@ -439,6 +447,18 @@ const PharmacyModule = () => (
       <Route path="purchases/:id/edit" element={
         <PharmacyPermGate permission="edit_purchase"><PurchaseEntry /></PharmacyPermGate>
       } />
+      <Route path="sale-returns/new" element={
+        <PharmacyPermGate permission="create_sale_return"><SaleReturnEntry /></PharmacyPermGate>
+      } />
+      <Route path="sale-returns/:id" element={
+        <PharmacyPermGate anyOf={['view_sale_returns', 'create_sale_return']}><SaleReturnEntry /></PharmacyPermGate>
+      } />
+      <Route path="purchase-returns/new" element={
+        <PharmacyPermGate permission="create_purchase_return"><PurchaseReturnEntry /></PharmacyPermGate>
+      } />
+      <Route path="purchase-returns/:id" element={
+        <PharmacyPermGate anyOf={['view_purchase_returns', 'create_purchase_return']}><PurchaseReturnEntry /></PharmacyPermGate>
+      } />
       <Route path="transfers/new" element={
         <PharmacyPermGate permission="create_transfer"><TransferEntry /></PharmacyPermGate>
       } />
@@ -456,8 +476,17 @@ const PharmacyModule = () => (
         <Route path="sales" element={
           <PharmacyPermGate permission="view_sales"><SalesTabImpl /></PharmacyPermGate>
         } />
+        <Route path="sale-returns" element={
+          <PharmacyPermGate permission="view_sale_returns"><SaleReturnsTabImpl /></PharmacyPermGate>
+        } />
         <Route path="purchases" element={
           <PharmacyPermGate permission="view_purchases"><PurchasesTabImpl /></PharmacyPermGate>
+        } />
+        <Route path="purchase-returns" element={
+          <PharmacyPermGate permission="view_purchase_returns"><PurchaseReturnsTabImpl /></PharmacyPermGate>
+        } />
+        <Route path="supplier-payments" element={
+          <PharmacyPermGate permission="view_supplier_payments"><SupplierPaymentsTabImpl /></PharmacyPermGate>
         } />
         <Route path="transfers" element={
           <PharmacyPermGate permission="view_transfers"><TransfersTabImpl /></PharmacyPermGate>

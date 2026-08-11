@@ -63,6 +63,23 @@ def setup_module_permissions():
         {"module_name": "pharmacy", "permission_name": "view_sales", "permission_description": "View sales list and detail", "category": "user"},
         {"module_name": "pharmacy", "permission_name": "apply_discount", "permission_description": "Apply line or sale-level discounts", "category": "user"},
         {"module_name": "pharmacy", "permission_name": "select_rate_tier", "permission_description": "Choose between Rate-A and Rate-B on a sale line", "category": "user"},
+        # Sales returns
+        {"module_name": "pharmacy", "permission_name": "create_sale_return", "permission_description": "Create sales return drafts", "category": "user"},
+        {"module_name": "pharmacy", "permission_name": "confirm_sale_return", "permission_description": "Confirm a sales return (restock + settlement)", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "view_sale_returns", "permission_description": "View sales returns list and detail", "category": "user"},
+        {"module_name": "pharmacy", "permission_name": "cancel_sale_return", "permission_description": "Cancel a draft sales return", "category": "admin"},
+        # Purchase returns
+        {"module_name": "pharmacy", "permission_name": "create_purchase_return", "permission_description": "Create purchase return drafts", "category": "user"},
+        {"module_name": "pharmacy", "permission_name": "confirm_purchase_return", "permission_description": "Confirm a purchase return (before challan)", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "view_purchase_returns", "permission_description": "View purchase returns, challans, and debit notes", "category": "user"},
+        {"module_name": "pharmacy", "permission_name": "create_return_challan", "permission_description": "Create return challan and remove stock", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "record_supplier_credit_note", "permission_description": "Record supplier credit note reference on a purchase return", "category": "user"},
+        {"module_name": "pharmacy", "permission_name": "issue_debit_note", "permission_description": "Issue debit note after supplier credit note", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "allocate_debit_note", "permission_description": "Allocate debit note amount against supplier purchases", "category": "admin"},
+        # Supplier payments
+        {"module_name": "pharmacy", "permission_name": "create_supplier_payment", "permission_description": "Record supplier payments and allocate to purchases", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "view_supplier_payments", "permission_description": "View supplier payments and payables ledger", "category": "user"},
+        {"module_name": "pharmacy", "permission_name": "delete_supplier_payment", "permission_description": "Void / delete a supplier payment", "category": "admin"},
         # Sales — Rx
         {"module_name": "pharmacy", "permission_name": "dispense_rx", "permission_description": "Dispense items against a doctor's prescription", "category": "user"},
         {"module_name": "pharmacy", "permission_name": "view_dispense_queue", "permission_description": "View pending prescriptions awaiting dispensing", "category": "user"},

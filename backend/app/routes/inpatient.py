@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Any
 from datetime import datetime, date
 
-from app.utils.time import system_now
+from app.utils.time import format_bill_date, format_system_dt, system_now
 
 
 def _now() -> datetime:
@@ -2269,10 +2269,7 @@ async def get_admission_case_sheet_pdf(
         "gender": (patient.gender or "").title() if patient else "",
         "primary_phone": (getattr(patient, "primary_phone", None) or "") if patient else "",
         "admission_number": admission.admission_number or "",
-        "admission_date": (
-            admission.admission_date.strftime("%d/%m/%Y")
-            if admission.admission_date else datetime.now().strftime("%d/%m/%Y")
-        ),
+        "admission_date": format_bill_date(admission.admission_date, empty="") or format_bill_date(system_now()),
         "doctor_name": doctor_name,
         "ward_bed": ward_bed,
         "chief_complaint": cc,
@@ -3133,10 +3130,10 @@ async def get_handover_pdf(
         "room": room.room_number if room else "",
         "bed": (admission.bed.bed_label if admission and admission.bed else admission.bed_number) if admission else "",
         "from_shift": rec.from_shift,
-        "handover_date": rec.handover_date.strftime("%d/%m/%Y %H:%M") if rec.handover_date else "",
+        "handover_date": format_system_dt(rec.handover_date, fmt="%d/%m/%Y %H:%M", empty=""),
         "from_nurse": f"{fn.first_name} {fn.last_name}" if fn else "",
         "to_nurse": f"{tn.first_name} {tn.last_name}" if tn else "",
-        "acknowledged_at": rec.acknowledged_at.strftime("%d/%m/%Y %H:%M") if rec.acknowledged_at else "",
+        "acknowledged_at": format_system_dt(rec.acknowledged_at, fmt="%d/%m/%Y %H:%M", empty=""),
         "patient_status_summary": rec.patient_status_summary or "",
         "pending_tasks": rec.pending_tasks or "",
         "alerts_to_watch": rec.alerts_to_watch or "",
@@ -3621,7 +3618,7 @@ def _summary_to_response(db: Session, summary: AdmissionDischargeSummary, admiss
         "finalized_by_name": _doctor_display_name(finalized) or (f"{finalized.first_name} {finalized.last_name}" if finalized else None),
         "payer_label": _payer_label_for_admission(admission) if admission else None,
         "department_name": _department_name_for_admission(admission) if admission else None,
-        "surgery_date": surgery_dt.strftime("%d-%b-%Y") if surgery_dt else None,
+        "surgery_date": format_system_dt(surgery_dt, fmt="%d-%b-%Y", empty="") or None,
         "allergies_summary": _allergies_summary_line(db, admission.patient_id) if admission else None,
     }
 
@@ -3860,9 +3857,9 @@ def _build_summary_pdf_payload(db: Session, admission: Admission, summary: Admis
         "secondary_doctor_name": _doctor_display_name(secondary) or "",
         "secondary_doctor_department": getattr(secondary, "specialization", None) if secondary else "",
         "consultants": consultants,
-        "admission_date": admission.admission_date.strftime("%d-%b-%Y %H:%M") if admission.admission_date else "",
-        "discharge_date": discharge_date.strftime("%d-%b-%Y %H:%M") if discharge_date else "",
-        "surgery_date": surgery_dt.strftime("%d-%b-%Y") if surgery_dt else "",
+        "admission_date": format_system_dt(admission.admission_date, fmt="%d-%b-%Y %H:%M", empty=""),
+        "discharge_date": format_system_dt(discharge_date, fmt="%d-%b-%Y %H:%M", empty=""),
+        "surgery_date": format_system_dt(surgery_dt, fmt="%d-%b-%Y", empty=""),
         "discharge_type": summary.discharge_type or (discharge.discharge_type if discharge else "normal"),
         "condition_on_admission": admission.condition_on_admission or "",
         "condition_on_discharge": summary.condition_on_discharge or (discharge.condition_on_discharge if discharge else ""),
@@ -3885,7 +3882,7 @@ def _build_summary_pdf_payload(db: Session, admission: Admission, summary: Admis
         "treatment": summary.course_in_hospital or "",
         "discharge_summary": summary.course_in_hospital or "",
         "take_home_medications": summary.take_home_medications or [],
-        "follow_up_date": summary.follow_up_date.strftime("%d/%m/%Y") if summary.follow_up_date else "",
+        "follow_up_date": format_bill_date(summary.follow_up_date, empty=""),
         "diet_instructions": summary.diet_instructions or "",
         "activity_restrictions": summary.activity_restrictions or "",
         "consultant_name": _doctor_display_name(primary) or _doctor_display_name(summary.written_by) or "",
@@ -4064,7 +4061,7 @@ async def get_discharge_summary_ot_import(
     surgery_dt = _surgery_date_from_ot(db, admission_id)
     return {
         "text": text,
-        "surgery_date": surgery_dt.strftime("%d-%b-%Y") if surgery_dt else None,
+        "surgery_date": format_system_dt(surgery_dt, fmt="%d-%b-%Y", empty="") or None,
     }
 
 
@@ -4506,9 +4503,9 @@ async def get_discharge_pdf(
             "payer_label": _payer_label_for_admission(admission),
             "doctor_name": f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else "N/A",
             "consultants": [_doctor_consultant_detail(doctor)] if doctor else [],
-            "admission_date": admission.admission_date.strftime("%d-%b-%Y %H:%M") if admission.admission_date else "",
-            "discharge_date": discharge.discharge_date.strftime("%d-%b-%Y %H:%M") if discharge.discharge_date else "",
-            "surgery_date": surgery_dt.strftime("%d-%b-%Y") if surgery_dt else "",
+            "admission_date": format_system_dt(admission.admission_date, fmt="%d-%b-%Y %H:%M", empty=""),
+            "discharge_date": format_system_dt(discharge.discharge_date, fmt="%d-%b-%Y %H:%M", empty=""),
+            "surgery_date": format_system_dt(surgery_dt, fmt="%d-%b-%Y", empty=""),
             "discharge_type": discharge.discharge_type,
             "allergies_summary": _allergies_summary_line(db, admission.patient_id),
             "physical_examination": _admission_vitals_for_summary(db, admission_id),
@@ -4518,7 +4515,7 @@ async def get_discharge_pdf(
             "take_home_medications": discharge.take_home_medications or [],
             "medications": discharge.medications_prescribed or "",
             "follow_up": discharge.follow_up_instructions or "",
-            "follow_up_date": discharge.follow_up_date.strftime("%d/%m/%Y") if discharge.follow_up_date else "",
+            "follow_up_date": format_bill_date(discharge.follow_up_date, empty=""),
             "diet_instructions": discharge.diet_instructions or "",
             "activity_restrictions": discharge.activity_restrictions or "",
             "condition_on_discharge": discharge.condition_on_discharge or "",
@@ -5592,7 +5589,7 @@ async def get_admission_bill(
     deposits_list = [
         {
             "deposit_number": d.deposit_number or "",
-            "date": d.received_at.strftime("%d/%m/%Y") if d.received_at else "",
+            "date": format_bill_date(d.received_at, empty=""),
             "deposit_type": d.deposit_type or "initial",
             "method": d.payment_method or "cash",
             "reference": d.reference_number or "",
@@ -6783,7 +6780,7 @@ async def get_bill_pdf(
         tax = float(bill.tax_amount or 0)
         total = float(bill.total_amount or 0)
         bill_number = bill.bill_number
-        bill_date = bill.bill_date.strftime("%d/%m/%Y") if bill.bill_date else datetime.now().strftime("%d/%m/%Y")
+        bill_date = format_bill_date(bill.bill_date, empty="") or format_bill_date(system_now())
         bill_subtype = bill.bill_subtype or 'final'
         status = bill.status or 'active'
     else:
@@ -6791,7 +6788,7 @@ async def get_bill_pdf(
         discount = 0.0
         tax = 0.0
         total = subtotal
-        bill_date = datetime.now().strftime("%d/%m/%Y")
+        bill_date = format_bill_date(system_now())
         if as_interim:
             bill_number = f"INTERIM-PREVIEW-{admission.admission_number}"
             bill_subtype = 'interim'
@@ -6815,7 +6812,7 @@ async def get_bill_pdf(
     deposits_list = [
         {
             "deposit_number": d.deposit_number or "",
-            "date": d.received_at.strftime("%d/%m/%Y") if d.received_at else "",
+            "date": format_bill_date(d.received_at, empty=""),
             "deposit_type": d.deposit_type or "initial",
             "method": d.payment_method or "cash",
             "reference": d.reference_number or "",
@@ -6887,10 +6884,11 @@ async def get_bill_pdf(
             "ward": room.department if room else None,
             "room_number": room.room_number if room else None,
             "bed_label": (bed.bed_label if bed else admission.bed_number),
-            "admitted_at": admission.admission_date.strftime("%d/%m/%Y")
+            "admitted_at": format_bill_date(admission.admission_date, empty="")
                 if admission.admission_date else None,
-            "discharged_at": (discharge.discharge_date.strftime("%d/%m/%Y")
-                if discharge and discharge.discharge_date else None),
+            "discharged_at": format_bill_date(
+                discharge.discharge_date if discharge else None, empty=""
+            ) or None,
             "length_of_stay": breakdown.get("stay_days", 0),
             "admitting_doctor": admitting_doctor,
             "attending_doctor": attending_doctor,
@@ -9116,7 +9114,7 @@ async def gate_pass_pdf(
     }
     payload = {
         "pass_number": gp.pass_number,
-        "issued_at": gp.generated_at.strftime("%d/%m/%Y %H:%M") if gp.generated_at else "",
+        "issued_at": format_system_dt(gp.generated_at, fmt="%d/%m/%Y %H:%M", empty=""),
         "admission_number": admission.admission_number if admission else "",
         "patient_name": (f"{patient.first_name} {patient.last_name}" if patient else "-"),
         "mrn": (patient.mrn or "") if patient else "",
@@ -10265,7 +10263,7 @@ async def get_deposit_receipt_pdf(
         "payment_method": d.payment_method,
         "reference_number": d.reference_number,
         "notes": d.notes,
-        "received_at": d.received_at.strftime("%d/%m/%Y") if d.received_at else "",
+        "received_at": format_bill_date(d.received_at, empty=""),
         "received_by_name": received_by_name,
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "—",
         "mrn": (patient.mrn or "") if patient else "",
@@ -11600,9 +11598,9 @@ async def preview_consent_pdf(
             bed_label = bed_obj.bed_label if bed_obj else ""
     admission_number = admission.admission_number if admission else ""
     admission_date_str = (
-        admission.admission_date.strftime("%d/%m/%Y")
+        format_bill_date(admission.admission_date, empty="")
         if admission and admission.admission_date
-        else datetime.now().strftime("%d/%m/%Y")
+        else format_bill_date(system_now())
     )
     token_ctx = {
         "patient_name": patient_name,
@@ -11735,7 +11733,7 @@ async def get_consent_pdf(
         "primary_phone": (getattr(patient, "primary_phone", None) or "") if patient else "",
         "phone": (getattr(patient, "primary_phone", None) or "") if patient else "",
         "admission_number": admission.admission_number if admission else "",
-        "admission_date": admission.admission_date.strftime("%d/%m/%Y") if admission and admission.admission_date else "",
+        "admission_date": format_bill_date(admission.admission_date if admission else None, empty=""),
         "ward": getattr(room, "ward", "") if room else "",
         "room": room.room_number if room else "",
         "room_name": room.room_number if room else "",
@@ -11766,8 +11764,8 @@ async def get_consent_pdf(
         "patient_signature": c.patient_signature or "",
         "patient_signature_type": c.patient_signature_type,
         "witness_name": c.witness_name or "",
-        "signed_at": c.signed_at.strftime("%d/%m/%Y") if c.signed_at else "",
-        "withdrawn_at": c.withdrawn_at.strftime("%d/%m/%Y") if c.withdrawn_at else "",
+        "signed_at": format_bill_date(c.signed_at, empty=""),
+        "withdrawn_at": format_bill_date(c.withdrawn_at, empty=""),
         "withdrawal_reason": c.withdrawal_reason or "",
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "",
         "mrn": getattr(patient, "mrn", None) or (patient.patient_id if patient else ""),
@@ -11781,7 +11779,7 @@ async def get_consent_pdf(
         "emergency_contact_relation": getattr(patient, "emergency_contact_relation", None) or "",
         "emergency_contact_phone": getattr(patient, "emergency_contact_phone", None) or "",
         "admission_number": admission.admission_number if admission else "",
-        "admission_date": admission.admission_date.strftime("%d/%m/%Y") if admission and admission.admission_date else "",
+        "admission_date": format_bill_date(admission.admission_date if admission else None, empty=""),
         "room_name": room.room_number if room else "",
         "room_type": room.room_type if room else "",
     }
@@ -11993,8 +11991,8 @@ async def get_dama_pdf(
         "village": (patient.village or "") if patient else "",
         "district": (patient.district or "") if patient else "",
         "doctor_name": f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else "",
-        "admission_date": admission.admission_date.strftime("%d/%m/%Y") if admission and admission.admission_date else "",
-        "discharge_date": discharge.discharge_date.strftime("%d/%m/%Y %H:%M") if discharge and discharge.discharge_date else "",
+        "admission_date": format_bill_date(admission.admission_date if admission else None, empty=""),
+        "discharge_date": format_system_dt(discharge.discharge_date if discharge else None, fmt="%d/%m/%Y %H:%M", empty=""),
         "medical_advice_given": rec.medical_advice_given,
         "risks_explained": rec.risks_explained,
         "language_used": rec.language_used,
@@ -12008,7 +12006,7 @@ async def get_dama_pdf(
         "witness_signature": rec.witness_signature,
         "witness_signature_type": rec.witness_signature_type,
         "notes": rec.notes or "",
-        "signed_at": rec.created_at.strftime("%d/%m/%Y %H:%M") if rec.created_at else "",
+        "signed_at": format_system_dt(rec.created_at, fmt="%d/%m/%Y %H:%M", empty=""),
     }
     pdf_buffer = pdf_service.generate_dama_pdf(dama_data, hospital_info, **pdf_gen_kwargs(db, current_user.hospital_id, 'dama'))
     return StreamingResponse(
@@ -12048,9 +12046,9 @@ async def get_mlc_register_pdf(
         "mlc_number": admission.mlc_number,
         "mlc_type": admission.mlc_type,
         "police_station_informed": admission.police_station_informed,
-        "mlc_informed_at": admission.mlc_informed_at.strftime("%d/%m/%Y %H:%M") if admission.mlc_informed_at else "",
+        "mlc_informed_at": format_system_dt(admission.mlc_informed_at, fmt="%d/%m/%Y %H:%M", empty=""),
         "admission_number": admission.admission_number,
-        "admission_date": admission.admission_date.strftime("%d/%m/%Y %H:%M") if admission.admission_date else "",
+        "admission_date": format_system_dt(admission.admission_date, fmt="%d/%m/%Y %H:%M", empty=""),
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "",
         "age": _patient_age(patient) or "",
         "age_display": _patient_age_display(patient),
@@ -12662,9 +12660,9 @@ async def death_certificate_pdf(
         "village": (patient.village or "") if patient else "",
         "district": (patient.district or "") if patient else "",
         "admission_number": admission.admission_number,
-        "admission_date": admission.admission_date.strftime("%d/%m/%Y") if admission.admission_date else "",
-        "discharge_date": d.discharge_date.strftime("%d/%m/%Y") if d.discharge_date else "",
-        "time_of_death": d.time_of_death.strftime("%d/%m/%Y %H:%M") if d.time_of_death else "",
+        "admission_date": format_bill_date(admission.admission_date, empty=""),
+        "discharge_date": format_bill_date(d.discharge_date, empty=""),
+        "time_of_death": format_system_dt(d.time_of_death, fmt="%d/%m/%Y %H:%M", empty=""),
         "cause_of_death": d.cause_of_death or "",
         "death_certificate_number": d.death_certificate_number or "",
         "mlc_required": d.mlc_required,
@@ -12672,7 +12670,7 @@ async def death_certificate_pdf(
         "autopsy_done": d.autopsy_done,
         "body_handed_over_to": d.body_handed_over_to or "",
         "body_handover_relationship": d.body_handover_relationship or "",
-        "body_handover_time": d.body_handover_time.strftime("%d/%m/%Y %H:%M") if d.body_handover_time else "",
+        "body_handover_time": format_system_dt(d.body_handover_time, fmt="%d/%m/%Y %H:%M", empty=""),
         "body_handover_id_proof": d.body_handover_id_proof or "",
         "treating_doctor": f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else "",
     }
@@ -13835,24 +13833,24 @@ async def get_body_release_pdf(
         "age_display": _patient_age_display(patient),
         "gender": patient.gender if patient else "",
         "doctor_name": f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else "",
-        "death_date": discharge.discharge_date.strftime("%d/%m/%Y %H:%M") if discharge and discharge.discharge_date else "",
+        "death_date": format_system_dt(discharge.discharge_date if discharge else None, fmt="%d/%m/%Y %H:%M", empty=""),
         "is_mlc": admission.is_mlc,
         "mlc_number": admission.mlc_number or "",
         "mortuary_slot": rec.mortuary_slot or "",
-        "body_in_at": rec.body_in_mortuary_at.strftime("%d/%m/%Y %H:%M") if rec.body_in_mortuary_at else "",
-        "body_out_at": rec.body_out_mortuary_at.strftime("%d/%m/%Y %H:%M") if rec.body_out_mortuary_at else "",
+        "body_in_at": format_system_dt(rec.body_in_mortuary_at, fmt="%d/%m/%Y %H:%M", empty=""),
+        "body_out_at": format_system_dt(rec.body_out_mortuary_at, fmt="%d/%m/%Y %H:%M", empty=""),
         "embalming_done": rec.embalming_done,
         "embalmed_by": rec.embalmed_by or "",
-        "embalming_at": rec.embalming_at.strftime("%d/%m/%Y %H:%M") if rec.embalming_at else "",
+        "embalming_at": format_system_dt(rec.embalming_at, fmt="%d/%m/%Y %H:%M", empty=""),
         "post_mortem_required": rec.post_mortem_required,
         "pm_hospital": rec.pm_hospital or "",
         "pm_doctor": rec.pm_doctor or "",
-        "pm_completed_at": rec.pm_completed_at.strftime("%d/%m/%Y %H:%M") if rec.pm_completed_at else "",
+        "pm_completed_at": format_system_dt(rec.pm_completed_at, fmt="%d/%m/%Y %H:%M", empty=""),
         "pm_report_number": rec.pm_report_number or "",
         "police_noc_received": rec.police_noc_received,
         "police_noc_number": rec.police_noc_number or "",
-        "police_noc_received_at": rec.police_noc_received_at.strftime("%d/%m/%Y %H:%M") if rec.police_noc_received_at else "",
-        "body_released_at": rec.body_released_at.strftime("%d/%m/%Y %H:%M") if rec.body_released_at else "",
+        "police_noc_received_at": format_system_dt(rec.police_noc_received_at, fmt="%d/%m/%Y %H:%M", empty=""),
+        "body_released_at": format_system_dt(rec.body_released_at, fmt="%d/%m/%Y %H:%M", empty=""),
         "released_to_name": rec.released_to_name or "",
         "released_to_relationship": rec.released_to_relationship or "",
         "released_to_phone": rec.released_to_phone or "",

@@ -1,11 +1,13 @@
 """Pharmacy bulk import/export routes (included under /api/pharmacy)."""
-from typing import List
+from datetime import date
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.models.pharmacy import PharmacyPurchaseImportMapping
 from app.models.user import User
 from app.services.audit_service import log_action
 from app.services.pharmacy_import import (
@@ -58,6 +60,26 @@ class PharmacyImportSummary(BaseModel):
     masters_created: List[str] = []
     errors: List[PharmacyImportRowError] = []
     preview: List[PharmacyImportPreviewRow] = []
+
+
+class PurchaseImportMappingIn(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    column_mapping: dict
+    format_hint: Optional[str] = None
+    default_row_start: Optional[int] = None
+    default_row_end: Optional[int] = None
+
+
+class PurchaseImportMappingOut(BaseModel):
+    id: int
+    name: str
+    column_mapping: dict
+    format_hint: Optional[str] = None
+    default_row_start: Optional[int] = None
+    default_row_end: Optional[int] = None
+
+    class Config:
+        from_attributes = True
 
 
 def _xlsx_response(data: bytes, filename: str) -> StreamingResponse:
@@ -301,12 +323,89 @@ async def purchases_import_inspect(
     return inspect_purchase_import(content, filename)
 
 
+@router.get("/purchases/import/mappings", response_model=List[PurchaseImportMappingOut])
+def list_purchase_import_mappings(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission_any(
+        Modules.PHARMACY, "view_purchases", "create_purchase",
+    )),
+):
+    rows = (
+        db.query(PharmacyPurchaseImportMapping)
+        .filter(PharmacyPurchaseImportMapping.hospital_id == current_user.hospital_id)
+        .order_by(PharmacyPurchaseImportMapping.name.asc())
+        .all()
+    )
+    return rows
+
+
+@router.post("/purchases/import/mappings", response_model=PurchaseImportMappingOut, status_code=201)
+def save_purchase_import_mapping(
+    data: PurchaseImportMappingIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "create_purchase")),
+):
+    name = (data.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Mapping name is required")
+    if not isinstance(data.column_mapping, dict) or not data.column_mapping:
+        raise HTTPException(status_code=400, detail="column_mapping is required")
+
+    existing = db.query(PharmacyPurchaseImportMapping).filter(
+        PharmacyPurchaseImportMapping.hospital_id == current_user.hospital_id,
+        PharmacyPurchaseImportMapping.name == name,
+    ).first()
+    if existing:
+        existing.column_mapping = data.column_mapping
+        existing.format_hint = data.format_hint
+        existing.default_row_start = data.default_row_start
+        existing.default_row_end = data.default_row_end
+        row = existing
+    else:
+        row = PharmacyPurchaseImportMapping(
+            name=name,
+            column_mapping=data.column_mapping,
+            format_hint=data.format_hint,
+            default_row_start=data.default_row_start,
+            default_row_end=data.default_row_end,
+            hospital_id=current_user.hospital_id,
+            created_by=current_user.id,
+        )
+        db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@router.delete("/purchases/import/mappings/{mapping_id}", status_code=204)
+def delete_purchase_import_mapping(
+    mapping_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "create_purchase")),
+):
+    row = db.query(PharmacyPurchaseImportMapping).filter(
+        PharmacyPurchaseImportMapping.id == mapping_id,
+        PharmacyPurchaseImportMapping.hospital_id == current_user.hospital_id,
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Mapping not found")
+    db.delete(row)
+    db.commit()
+    return None
+
+
 @router.post("/purchases/import", response_model=PharmacyImportSummary)
 async def purchases_import(
     file: UploadFile = File(...),
     dry_run: bool = Form(False),
     on_duplicate: str = Form("skip"),
     column_mapping: str = Form(""),
+    supplier_id: Optional[int] = Form(None),
+    invoice_number: str = Form(""),
+    entry_date: Optional[str] = Form(None),
+    bill_date: Optional[str] = Form(None),
+    row_start: Optional[int] = Form(None),
+    row_end: Optional[int] = Form(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "create_purchase")),
 ):
@@ -321,9 +420,29 @@ async def purchases_import(
                 raise ValueError("column_mapping must be a JSON object")
         except (json.JSONDecodeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=f"Invalid column_mapping: {exc}") from exc
+
+    def _parse_opt_date(raw: Optional[str]) -> Optional[date]:
+        if not raw or not str(raw).strip():
+            return None
+        try:
+            return date.fromisoformat(str(raw).strip()[:10])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid date '{raw}' (use YYYY-MM-DD)") from exc
+
+    parsed_entry = _parse_opt_date(entry_date)
+    parsed_bill = _parse_opt_date(bill_date)
+    if row_start is not None and row_end is not None and int(row_start) > int(row_end):
+        raise HTTPException(status_code=400, detail="row_start cannot be greater than row_end")
+
     summary = import_purchases(
         db, current_user, content, filename,
         dry_run=dry_run, on_duplicate=on_duplicate, column_mapping=mapping,
+        supplier_id=supplier_id,
+        invoice_number=(invoice_number or "").strip() or None,
+        entry_date=parsed_entry,
+        bill_date=parsed_bill,
+        row_start=row_start,
+        row_end=row_end,
     )
     summary["dry_run"] = dry_run
     return _finalize_import(

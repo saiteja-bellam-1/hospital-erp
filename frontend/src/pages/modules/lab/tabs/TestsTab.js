@@ -114,15 +114,19 @@ export default function TestsTab() {
   };
 
   const handleDelete = (id) => {
-    confirm('Delete this test? This will deactivate the test.', async () => {
-      try {
-        await axios.delete(`/api/lab/tests/${id}`);
-        showFeedback('Test deleted');
-        fetchTests();
-      } catch (err) {
-        showFeedback(err.response?.data?.detail || 'Failed to delete test', 'error');
-      }
-    }, 'Delete Test');
+    confirm(
+      'Delete this test? Unused tests are permanently removed. Tests with order history are deactivated instead.',
+      async () => {
+        try {
+          const res = await axios.delete(`/api/lab/tests/${id}`);
+          showFeedback(res.data?.message || 'Test deleted');
+          fetchTests();
+        } catch (err) {
+          showFeedback(err.response?.data?.detail || 'Failed to delete test', 'error');
+        }
+      },
+      'Delete Test',
+    );
   };
 
   const handleExport = async () => {

@@ -9,7 +9,7 @@ import { Label } from '../../../../components/ui/label';
 import { Textarea } from '../../../../components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../../../../components/ui/dialog';
 import { useToast } from '../../../../hooks/use-toast';
-import { Plus, RefreshCw, Ban, Printer, Pencil, Upload } from 'lucide-react';
+import { Plus, RefreshCw, Ban, Printer, Pencil, Upload, RotateCcw } from 'lucide-react';
 import { errMsg } from '../../PharmacyModule';
 import PdfPreviewDialog from '../../../../components/PdfPreviewDialog';
 import PharmacyImportDialog from '../../../../components/pharmacy/PharmacyImportDialog';
@@ -109,6 +109,12 @@ export default function SalesTab() {
                         onClick={() => setPreviewSaleId(s.id)}>
                         <Printer className="h-3 w-3" />
                       </Button>
+                      {s.status === 'completed' && hasPerm('create_sale_return') && (
+                        <Button size="sm" variant="ghost" title="Sales return"
+                          onClick={() => navigate(`/dashboard/pharmacy/sale-returns/new?saleId=${s.id}`)}>
+                          <RotateCcw className="h-3 w-3 text-amber-600" />
+                        </Button>
+                      )}
                       {s.status === 'completed' && hasPerm('edit_sale') && (
                         <Button size="sm" variant="ghost" title="Edit sale"
                           onClick={() => navigate(`/dashboard/pharmacy/sales-counter/${s.id}/edit`)}>

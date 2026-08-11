@@ -72,6 +72,7 @@ DEFAULT_PRESCRIPTION_VITAL_FIELDS: list[str] = [
 
 REPORT_CATALOG: list[dict[str, str]] = [
     {"key": "opd_bill", "label": "OPD Bill", "module": "outpatient"},
+    {"key": "doctor_appointments", "label": "Doctor Appointments List", "module": "outpatient"},
     {"key": "prescription", "label": "Prescription", "module": "outpatient"},
     {"key": "lab_report", "label": "Lab Report", "module": "laboratory"},
     {"key": "lab_bill", "label": "Lab Bill", "module": "laboratory"},

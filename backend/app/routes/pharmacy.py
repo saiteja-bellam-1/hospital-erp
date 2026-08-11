@@ -90,6 +90,9 @@ router.include_router(_stores_router)
 from app.routes.pharmacy_import import router as _import_router  # noqa: E402
 router.include_router(_import_router)
 
+from app.routes.pharmacy_returns import router as _returns_router  # noqa: E402
+router.include_router(_returns_router)
+
 
 # ============================================================================
 # Health
@@ -2938,6 +2941,7 @@ def list_purchases(
     store_id: Optional[int] = None,
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
+    search: Optional[str] = None,
     limit: int = 200,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_purchases")),
@@ -2954,20 +2958,35 @@ def list_purchases(
         q = q.filter(PharmacyPurchase.entry_date >= date_from)
     if date_to:
         q = q.filter(PharmacyPurchase.entry_date <= date_to)
+    if search:
+        like = f"%{search.strip()}%"
+        q = q.filter(or_(
+            PharmacyPurchase.purchase_number.ilike(like),
+            PharmacyPurchase.invoice_number.ilike(like),
+            PharmacyPurchase.supplier.has(PharmacySupplier.name.ilike(like)),
+        ))
     rows = q.order_by(PharmacyPurchase.entry_date.desc(), PharmacyPurchase.id.desc()).limit(limit).all()
     return [_shape_purchase(p, db) for p in rows]
 
 
 @router.get("/purchases/{pid}", response_model=PurchaseOut)
 def get_purchase(
-    pid: int,
+    pid: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_purchases")),
 ):
-    p = db.query(PharmacyPurchase).filter(
-        PharmacyPurchase.id == pid,
+    """Resolve by numeric id, purchase_number, or supplier invoice_number."""
+    q = db.query(PharmacyPurchase).filter(
         PharmacyPurchase.hospital_id == current_user.hospital_id,
-    ).first()
+    )
+    key = (pid or "").strip()
+    p = None
+    if key.isdigit():
+        p = q.filter(PharmacyPurchase.id == int(key)).first()
+    if not p and key:
+        p = q.filter(PharmacyPurchase.purchase_number == key).first()
+    if not p and key:
+        p = q.filter(PharmacyPurchase.invoice_number == key).first()
     if not p:
         raise HTTPException(status_code=404, detail="Purchase not found")
     return _shape_purchase(p, db)
@@ -3951,14 +3970,20 @@ def list_sales(
 
 @router.get("/sales/{sid}", response_model=SaleOut)
 def get_sale(
-    sid: int,
+    sid: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_sales")),
 ):
-    s = db.query(PharmacySale).filter(
-        PharmacySale.id == sid,
+    """Resolve by numeric id or sale_number."""
+    q = db.query(PharmacySale).filter(
         PharmacySale.hospital_id == current_user.hospital_id,
-    ).first()
+    )
+    key = (sid or "").strip()
+    s = None
+    if key.isdigit():
+        s = q.filter(PharmacySale.id == int(key)).first()
+    if not s and key:
+        s = q.filter(PharmacySale.sale_number == key).first()
     if not s:
         raise HTTPException(status_code=404, detail="Sale not found")
     return _shape_sale(s, db)
@@ -5423,11 +5448,13 @@ def supplier_aging_report(
 ):
     """Creditor aging by age bucket for confirmed credit purchases.
 
-    INTERIM: until P4.2 ships a `PharmacySupplierPayment` table, every confirmed
-    credit purchase is treated as fully outstanding. Cash purchases are
-    excluded. Revoked purchases are excluded.
+    Outstanding per bill = grand_total − supplier payment allocations − debit note
+    allocations. Cash / revoked purchases are excluded. Opening balances are not
+    aged here (see supplier payables ledger).
     """
     from datetime import date as _date_cls
+    from app.routes.pharmacy_returns import _purchase_allocated_total
+
     today = as_of or _date_cls.today()
 
     rows = db.query(PharmacyPurchase, PharmacySupplier).join(
@@ -5440,8 +5467,11 @@ def supplier_aging_report(
 
     by_sup: dict = {}
     for p, sup in rows:
+        outstanding = max(0.0, float(p.grand_total or 0) - _purchase_allocated_total(db, p.id))
+        if outstanding <= 0.009:
+            continue
         days = (today - p.entry_date).days if p.entry_date else 0
-        amount = float(p.grand_total or 0)
+        amount = outstanding
         entry = by_sup.setdefault(sup.id, {
             "name": sup.name, "b0": 0.0, "b1": 0.0, "b2": 0.0, "b3": 0.0,
         })

@@ -351,7 +351,8 @@ class PharmacyStockLedger(Base):
     medicine_id = Column(Integer, ForeignKey("medicines.id"), nullable=False, index=True)
     batch_id = Column(Integer, ForeignKey("pharmacy_inventory.id"), nullable=True, index=True)
     txn_type = Column(String(30), nullable=False)
-    # One of: purchase, sale, rx_dispense, adjustment, return_in, return_out, expiry_write_off
+    # One of: purchase, sale, rx_dispense, adjustment, return_in, return_out,
+    # sale_return, expiry_write_off, purchase_revoke, rx_cancel, transfer_*
     qty_delta = Column(Float, nullable=False)
     reference_type = Column(String(30))  # e.g. "purchase", "sale", "prescription", "adjustment"
     reference_id = Column(Integer)        # FK-by-convention to the source row
@@ -535,6 +536,280 @@ class PharmacySaleItem(Base):
     batch = relationship("PharmacyInventory")
 
 
+class PharmacySaleReturn(Base):
+    """POS / open sales return header. Confirm restocks (optional) and records settlement."""
+    __tablename__ = "pharmacy_sale_returns"
+
+    id = Column(Integer, primary_key=True, index=True)
+    return_number = Column(String(30), unique=True, nullable=False, index=True)
+    return_date = Column(Date, nullable=False)
+    sale_id = Column(Integer, ForeignKey("pharmacy_sales.id"), nullable=True, index=True)
+    patient_phone = Column(String(20))
+    patient_ip_id = Column(String(50))
+    patient_name = Column(String(150))
+    patient_address = Column(Text)
+    doctor_name = Column(String(150))
+    store_id = Column(Integer, ForeignKey("pharmacy_stores.id"), nullable=True, index=True)
+    subtotal = Column(Float, default=0.0)
+    discount_total = Column(Float, default=0.0)
+    tax_total = Column(Float, default=0.0)
+    grand_total = Column(Float, default=0.0)
+    tax_mode = Column(String(20), default="inclusive")
+    status = Column(String(20), default="draft", index=True)  # draft | confirmed | cancelled
+    reason = Column(Text)
+    settlement_method = Column(String(20), default="none")  # cash | upi | card | adjust | none
+    settlement_amount = Column(Float, default=0.0)
+    settlement_reference = Column(String(100))
+    settled_at = Column(DateTime)
+    confirmed_by = Column(Integer, ForeignKey("users.id"))
+    confirmed_at = Column(DateTime)
+    cancelled_by = Column(Integer, ForeignKey("users.id"))
+    cancelled_at = Column(DateTime)
+    cancel_reason = Column(Text)
+    created_by = Column(Integer, ForeignKey("users.id"))
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
+
+    items = relationship("PharmacySaleReturnItem", back_populates="sale_return", cascade="all, delete-orphan")
+    sale = relationship("PharmacySale")
+    store = relationship("PharmacyStore")
+
+
+class PharmacySaleReturnItem(Base):
+    __tablename__ = "pharmacy_sale_return_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    sale_return_id = Column(Integer, ForeignKey("pharmacy_sale_returns.id"), nullable=False)
+    sale_item_id = Column(Integer, ForeignKey("pharmacy_sale_items.id"), nullable=True)
+    medicine_id = Column(Integer, ForeignKey("medicines.id"), nullable=False)
+    batch_id = Column(Integer, ForeignKey("pharmacy_inventory.id"), nullable=False)
+    quantity = Column(Float, nullable=False)
+    rate = Column(Float, nullable=False, default=0.0)
+    discount_pct = Column(Float, default=0.0)
+    tax_pct = Column(Float, default=0.0)
+    sgst_pct = Column(Float, default=0.0)
+    cgst_pct = Column(Float, default=0.0)
+    igst_pct = Column(Float, default=0.0)
+    line_total = Column(Float, default=0.0)
+    restock = Column(Boolean, default=True, nullable=False)
+
+    sale_return = relationship("PharmacySaleReturn", back_populates="items")
+    medicine = relationship("Medicine")
+    batch = relationship("PharmacyInventory")
+
+
+class PharmacyPurchaseReturn(Base):
+    """Purchase return intent. Stock leaves only when a return challan is created."""
+    __tablename__ = "pharmacy_purchase_returns"
+
+    id = Column(Integer, primary_key=True, index=True)
+    return_number = Column(String(30), unique=True, nullable=False, index=True)
+    return_date = Column(Date, nullable=False)
+    supplier_id = Column(Integer, ForeignKey("pharmacy_suppliers.id"), nullable=False)
+    purchase_id = Column(Integer, ForeignKey("pharmacy_purchases.id"), nullable=True, index=True)
+    store_id = Column(Integer, ForeignKey("pharmacy_stores.id"), nullable=True, index=True)
+    subtotal = Column(Float, default=0.0)
+    total_discount = Column(Float, default=0.0)
+    total_tax = Column(Float, default=0.0)
+    grand_total = Column(Float, default=0.0)
+    tax_mode = Column(String(20), default="exclusive")
+    # draft → confirmed → challan_created → cn_recorded → debit_note_issued → completed | cancelled
+    status = Column(String(40), default="draft", index=True)
+    reason = Column(Text)
+    supplier_credit_note_number = Column(String(50))
+    supplier_credit_note_date = Column(Date)
+    supplier_credit_note_amount = Column(Float)
+    supplier_credit_note_recorded_at = Column(DateTime)
+    confirmed_by = Column(Integer, ForeignKey("users.id"))
+    confirmed_at = Column(DateTime)
+    cancelled_by = Column(Integer, ForeignKey("users.id"))
+    cancelled_at = Column(DateTime)
+    cancel_reason = Column(Text)
+    created_by = Column(Integer, ForeignKey("users.id"))
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
+
+    items = relationship("PharmacyPurchaseReturnItem", back_populates="purchase_return", cascade="all, delete-orphan")
+    supplier = relationship("PharmacySupplier")
+    purchase = relationship("PharmacyPurchase")
+    store = relationship("PharmacyStore")
+    challans = relationship(
+        "PharmacyReturnChallan",
+        back_populates="purchase_return",
+        foreign_keys="PharmacyReturnChallan.purchase_return_id",
+    )
+    credit_notes = relationship(
+        "PharmacySupplierCreditNote",
+        back_populates="purchase_return",
+        foreign_keys="PharmacySupplierCreditNote.purchase_return_id",
+    )
+    debit_notes = relationship(
+        "PharmacyDebitNote",
+        back_populates="purchase_return",
+        foreign_keys="PharmacyDebitNote.purchase_return_id",
+    )
+
+
+class PharmacyPurchaseReturnItem(Base):
+    __tablename__ = "pharmacy_purchase_return_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    purchase_return_id = Column(Integer, ForeignKey("pharmacy_purchase_returns.id"), nullable=False)
+    purchase_item_id = Column(Integer, ForeignKey("pharmacy_purchase_items.id"), nullable=True)
+    medicine_id = Column(Integer, ForeignKey("medicines.id"), nullable=False)
+    batch_id = Column(Integer, ForeignKey("pharmacy_inventory.id"), nullable=False)
+    quantity = Column(Float, nullable=False)
+    purchase_rate = Column(Float, nullable=False, default=0.0)
+    discount_pct = Column(Float, default=0.0)
+    sgst_pct = Column(Float, default=0.0)
+    cgst_pct = Column(Float, default=0.0)
+    igst_pct = Column(Float, default=0.0)
+    tax_amount = Column(Float, default=0.0)
+    line_total = Column(Float, default=0.0)
+
+    purchase_return = relationship("PharmacyPurchaseReturn", back_populates="items")
+    medicine = relationship("Medicine")
+    batch = relationship("PharmacyInventory")
+
+
+class PharmacyReturnChallan(Base):
+    """Goods-outward challan for a purchase return. Creating it reduces stock."""
+    __tablename__ = "pharmacy_return_challans"
+
+    id = Column(Integer, primary_key=True, index=True)
+    challan_number = Column(String(30), unique=True, nullable=False, index=True)
+    challan_date = Column(Date, nullable=False)
+    purchase_return_id = Column(Integer, ForeignKey("pharmacy_purchase_returns.id"), nullable=False, index=True)
+    store_id = Column(Integer, ForeignKey("pharmacy_stores.id"), nullable=True, index=True)
+    status = Column(String(20), default="confirmed", index=True)
+    transporter = Column(String(150))
+    vehicle = Column(String(50))
+    notes = Column(Text)
+    created_by = Column(Integer, ForeignKey("users.id"))
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=system_now)
+
+    items = relationship("PharmacyReturnChallanItem", back_populates="challan", cascade="all, delete-orphan")
+    purchase_return = relationship(
+        "PharmacyPurchaseReturn",
+        back_populates="challans",
+        foreign_keys=[purchase_return_id],
+    )
+    store = relationship("PharmacyStore")
+
+
+class PharmacyReturnChallanItem(Base):
+    __tablename__ = "pharmacy_return_challan_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    challan_id = Column(Integer, ForeignKey("pharmacy_return_challans.id"), nullable=False)
+    purchase_return_item_id = Column(Integer, ForeignKey("pharmacy_purchase_return_items.id"), nullable=True)
+    medicine_id = Column(Integer, ForeignKey("medicines.id"), nullable=False)
+    batch_id = Column(Integer, ForeignKey("pharmacy_inventory.id"), nullable=False)
+    quantity = Column(Float, nullable=False)
+
+    challan = relationship("PharmacyReturnChallan", back_populates="items")
+    medicine = relationship("Medicine")
+    batch = relationship("PharmacyInventory")
+
+
+class PharmacySupplierCreditNote(Base):
+    """External supplier credit note recorded against a purchase return.
+
+    Multiple CNs may be recorded until their amounts cover the return total.
+    """
+    __tablename__ = "pharmacy_supplier_credit_notes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    purchase_return_id = Column(Integer, ForeignKey("pharmacy_purchase_returns.id"), nullable=False, index=True)
+    credit_note_number = Column(String(50), nullable=False)
+    credit_note_date = Column(Date)
+    amount = Column(Float, nullable=False, default=0.0)
+    notes = Column(Text)
+    recorded_at = Column(DateTime)
+    created_by = Column(Integer, ForeignKey("users.id"))
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=system_now)
+
+    purchase_return = relationship(
+        "PharmacyPurchaseReturn",
+        back_populates="credit_notes",
+        foreign_keys=[purchase_return_id],
+    )
+
+
+class PharmacyDebitNote(Base):
+    """Debit note issued to supplier after their credit note is received."""
+    __tablename__ = "pharmacy_debit_notes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    debit_note_number = Column(String(30), unique=True, nullable=False, index=True)
+    debit_note_date = Column(Date, nullable=False)
+    supplier_id = Column(Integer, ForeignKey("pharmacy_suppliers.id"), nullable=False)
+    purchase_return_id = Column(Integer, ForeignKey("pharmacy_purchase_returns.id"), nullable=False, index=True)
+    amount = Column(Float, nullable=False, default=0.0)
+    status = Column(String(20), default="issued", index=True)  # issued | cancelled
+    notes = Column(Text)
+    created_by = Column(Integer, ForeignKey("users.id"))
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=system_now)
+
+    allocations = relationship("PharmacyDebitNoteAllocation", back_populates="debit_note", cascade="all, delete-orphan")
+    supplier = relationship("PharmacySupplier")
+    purchase_return = relationship(
+        "PharmacyPurchaseReturn",
+        back_populates="debit_notes",
+        foreign_keys=[purchase_return_id],
+    )
+
+
+class PharmacyDebitNoteAllocation(Base):
+    __tablename__ = "pharmacy_debit_note_allocations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    debit_note_id = Column(Integer, ForeignKey("pharmacy_debit_notes.id"), nullable=False, index=True)
+    purchase_id = Column(Integer, ForeignKey("pharmacy_purchases.id"), nullable=False, index=True)
+    amount = Column(Float, nullable=False)
+
+    debit_note = relationship("PharmacyDebitNote", back_populates="allocations")
+    purchase = relationship("PharmacyPurchase")
+
+
+class PharmacySupplierPayment(Base):
+    """Cash/bank payment to a supplier; allocatable against credit purchases."""
+    __tablename__ = "pharmacy_supplier_payments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    payment_number = Column(String(30), unique=True, nullable=False, index=True)
+    supplier_id = Column(Integer, ForeignKey("pharmacy_suppliers.id"), nullable=False, index=True)
+    paid_on = Column(Date, nullable=False)
+    amount = Column(Float, nullable=False)
+    mode = Column(String(20), default="neft")  # cash | upi | neft | cheque | other
+    reference = Column(String(100))
+    notes = Column(Text)
+    status = Column(String(20), default="recorded", index=True)  # recorded | voided
+    created_by = Column(Integer, ForeignKey("users.id"))
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=system_now)
+
+    allocations = relationship("PharmacySupplierPaymentAllocation", back_populates="payment", cascade="all, delete-orphan")
+    supplier = relationship("PharmacySupplier")
+
+
+class PharmacySupplierPaymentAllocation(Base):
+    __tablename__ = "pharmacy_supplier_payment_allocations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    payment_id = Column(Integer, ForeignKey("pharmacy_supplier_payments.id"), nullable=False, index=True)
+    purchase_id = Column(Integer, ForeignKey("pharmacy_purchases.id"), nullable=False, index=True)
+    amount = Column(Float, nullable=False)
+
+    payment = relationship("PharmacySupplierPayment", back_populates="allocations")
+    purchase = relationship("PharmacyPurchase")
+
+
 class PharmacyStockAdjustment(Base):
     """Manual stock adjustment requests (admin-initiated).
 
@@ -657,3 +932,19 @@ class PrescriptionItem(Base):
 
     prescription = relationship("Prescription", back_populates="items")
     medicine = relationship("Medicine", back_populates="prescription_items")
+
+
+class PharmacyPurchaseImportMapping(Base):
+    """Saved column-mapping presets for reusable purchase CSV/Excel imports."""
+    __tablename__ = "pharmacy_purchase_import_mappings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), nullable=False)
+    column_mapping = Column(JSON, nullable=False)  # {source_header: erp_field}
+    format_hint = Column(String(30))  # vendor_htf | flat
+    default_row_start = Column(Integer, nullable=True)
+    default_row_end = Column(Integer, nullable=True)
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False, index=True)
+    created_by = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)

@@ -16,8 +16,8 @@ from app.models.pharmacy import PharmacyInventory, PharmacyStockLedger
 
 # Ledger types that remove sellable stock from a batch.
 _OUTBOUND_TXNS = ("sale", "rx_dispense")
-# Ledger types that put stock back (void/edit/cancel). Not purchase/transfer.
-_INBOUND_TXNS = ("return_in", "rx_cancel")
+# Ledger types that put stock back (void/edit/cancel/sale return). Not purchase/transfer.
+_INBOUND_TXNS = ("return_in", "rx_cancel", "sale_return")
 
 
 def net_sold_qty_for_batch(db: Session, batch_id: Optional[int]) -> float:
@@ -53,6 +53,56 @@ def credit_batch_stock(batch: PharmacyInventory, qty: float) -> float:
     if (batch.quantity_in_stock or 0) > 0:
         batch.is_active = True
     return give
+
+
+def debit_batch_stock(batch: PharmacyInventory, qty: float) -> float:
+    """Remove qty from a batch. Raises ValueError if insufficient stock.
+
+    Returns the debited amount.
+    """
+    take = float(qty or 0)
+    if take <= 0 or batch is None:
+        return 0.0
+    have = float(batch.quantity_in_stock or 0)
+    if have + 1e-9 < take:
+        raise ValueError(
+            f"Insufficient stock on batch {batch.id}: need {take}, have {have}"
+        )
+    batch.quantity_in_stock = have - take
+    if (batch.quantity_in_stock or 0) <= 0:
+        batch.quantity_in_stock = 0.0
+        batch.is_active = False
+    return take
+
+
+def append_stock_ledger(
+    db: Session,
+    *,
+    medicine_id: int,
+    batch_id: int,
+    txn_type: str,
+    qty_delta: float,
+    reference_type: str,
+    reference_id: int,
+    performed_by: Optional[int],
+    hospital_id: int,
+    store_id: Optional[int] = None,
+    notes: Optional[str] = None,
+) -> PharmacyStockLedger:
+    row = PharmacyStockLedger(
+        medicine_id=medicine_id,
+        batch_id=batch_id,
+        txn_type=txn_type,
+        qty_delta=float(qty_delta),
+        reference_type=reference_type,
+        reference_id=reference_id,
+        performed_by=performed_by,
+        notes=notes,
+        store_id=store_id,
+        hospital_id=hospital_id,
+    )
+    db.add(row)
+    return row
 
 
 def sale_has_sale_ledger_rows(db: Session, sale_id: int) -> bool:

@@ -7,7 +7,7 @@ import {
   BarChart3, ClipboardList, Shield, Database, ScrollText, Activity, Stethoscope,
   DownloadCloud, Pill, ShoppingCart, Boxes, Truck, BookOpen, LayoutGrid, Plus,
   Warehouse, Tags, Layers, Ruler, Percent, Link2, ArrowLeftRight, Store, Droplets,
-  UtensilsCrossed, IndianRupee, Settings2,
+  UtensilsCrossed, IndianRupee, Settings2, Undo2,
 } from 'lucide-react';
 import { PHARMACY_ROLE_NAMES } from './usePharmacyPermissions';
 import { CANTEEN_ROLE_NAMES } from './useCanteenPermissions';
@@ -182,8 +182,11 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
     add(ops, hasPharmacyPerm('dispense_rx') && make('Pending Rx', Pill, '/dashboard/pharmacy/pending-rx'));
     add(ops, hasPharmacyPerm('dispense_rx') && make('Unmapped Medicines', Link2, '/dashboard/pharmacy/unmapped-medicines'));
     add(ops, hasPharmacyPerm('view_sales') && make('Sales History', Receipt, '/dashboard/pharmacy/sales'));
+    add(ops, hasPharmacyPerm('view_sale_returns') && make('Sales Returns', RotateCcw, '/dashboard/pharmacy/sale-returns'));
     add(ops, hasPharmacyPerm('create_purchase') && make('New Purchase', Plus, '/dashboard/pharmacy/purchases/new'));
     add(ops, hasPharmacyPerm('view_purchases') && make('Purchases', Truck, '/dashboard/pharmacy/purchases'));
+    add(ops, hasPharmacyPerm('view_purchase_returns') && make('Purchase Returns', Undo2, '/dashboard/pharmacy/purchase-returns'));
+    add(ops, hasPharmacyPerm('view_supplier_payments') && make('Supplier Payments', IndianRupee, '/dashboard/pharmacy/supplier-payments'));
     add(ops, hasPharmacyPerm('view_transfers') && make('Stock Transfers', ArrowLeftRight, '/dashboard/pharmacy/transfers'));
     add(ops, hasPharmacyPerm('view_inventory') && make('Stock', Boxes, '/dashboard/pharmacy/inventory'));
     if (ops.length > 0) sections.push({ label: 'Pharmacy', items: ops });

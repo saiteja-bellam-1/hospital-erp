@@ -17,6 +17,7 @@ from app.models.outpatient import Appointment
 from app.utils.dependencies import get_current_user, require_permission
 from app.utils.auth import Modules
 from app.utils.pdf_service import pdf_service
+from app.utils.time import format_bill_date, format_system_dt
 
 router = APIRouter()
 
@@ -495,7 +496,7 @@ def _fetch_lab_tests_for_appointment(
             "test_name": test.name,
             "test_code": test.test_code,
             "status": order.status,
-            "order_date": order.order_date.strftime('%d/%m/%Y') if order.order_date else '',
+            "order_date": format_bill_date(order.order_date, empty=""),
         }
         for order, test in lab_orders
     ]
@@ -566,7 +567,7 @@ def _fetch_vitals_for_prescription(
         return None
 
     return {
-        "recorded_at": vitals_consultation.created_at.strftime('%d/%m/%Y %I:%M %p') if vitals_consultation.created_at else '',
+        "recorded_at": format_system_dt(vitals_consultation.created_at, fmt="%d/%m/%Y %I:%M %p", empty=""),
         "vital_signs": vital_signs,
     }
 
@@ -1005,7 +1006,7 @@ async def download_prescription_pdf(
             "chief_complaint": consultation.chief_complaint,
             "present_history": consultation.present_history,
             "examination_findings": consultation.examination_findings,
-            "follow_up_date": consultation.follow_up_date.strftime('%d/%m/%Y') if consultation.follow_up_date else None
+            "follow_up_date": format_bill_date(consultation.follow_up_date, empty="") or None
         }
 
     # --- Fetch vitals (check multiple sources) ---
@@ -1017,7 +1018,7 @@ async def download_prescription_pdf(
             vital_signs = json_lib.loads(consultation.vital_signs)
             if vital_signs and any(vital_signs.values()):
                 vitals_data = {
-                    "recorded_at": consultation.created_at.strftime('%d/%m/%Y %I:%M %p') if consultation.created_at else '',
+                    "recorded_at": format_system_dt(consultation.created_at, fmt="%d/%m/%Y %I:%M %p", empty=""),
                     "vital_signs": vital_signs
                 }
         except Exception:
@@ -1055,7 +1056,7 @@ async def download_prescription_pdf(
                 "test_name": test.name,
                 "test_code": test.test_code,
                 "status": order.status,
-                "order_date": order.order_date.strftime('%d/%m/%Y') if order.order_date else ''
+                "order_date": format_bill_date(order.order_date, empty="")
             })
 
     # Patient details

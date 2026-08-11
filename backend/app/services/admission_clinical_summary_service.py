@@ -22,20 +22,16 @@ from app.models.pharmacy import Medicine, Prescription, PrescriptionItem
 from app.models.prescriptions_simple import SimplePrescription
 from app.models.user import User
 from app.utils.patient_age import format_patient_age, patient_age_years_int
+from app.utils.time import format_system_dt, to_system_local
 
 
 def _as_naive_local(dt: datetime) -> datetime:
     """Normalize to naive system-local wall clock for display/math."""
-    if dt.tzinfo is not None:
-        return dt.astimezone().replace(tzinfo=None)
-    return dt
+    return to_system_local(dt) or dt
 
 
 def _fmt_dt(dt: Optional[datetime]) -> str:
-    if not dt:
-        return ""
-    return _as_naive_local(dt).strftime("%d/%m/%Y %H:%M")
-
+    return format_system_dt(dt, fmt="%d/%m/%Y %H:%M", empty="")
 
 def _mar_row(m: MedicationAdministration, db: Session) -> dict:
     pi = m.prescription_item

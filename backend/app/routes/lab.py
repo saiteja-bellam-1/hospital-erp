@@ -16,7 +16,7 @@ from app.models.hospital import Hospital
 from app.models.permissions import HospitalSettings
 from app.models.lab import (
     SampleType, LabTestCategory, LabTest, LabTestParameter,
-    PatientLabOrder, LabReport,
+    PatientLabOrder, LabReport, LabReportTemplate,
     LabTestPackageCategory, LabTestPackage, LabTestPackageItem
 )
 from app.utils.dependencies import get_current_user, require_permission
@@ -411,6 +411,60 @@ def _require_lab_admin(current_user: User):
 def _require_lab_access(current_user: User):
     if not any(r in current_user.role_names for r in ['super_admin', 'hospital_admin', 'lab_admin', 'lab_technician', 'doctor']):
         raise HTTPException(status_code=403, detail="Lab access required")
+
+
+def _purge_lab_test_catalog_refs(db: Session, test_id: int) -> None:
+    """Drop catalog-only references so a lab test row can be hard-deleted."""
+    db.query(LabTestPackageItem).filter(LabTestPackageItem.test_id == test_id).delete(
+        synchronize_session=False
+    )
+    db.query(LabReportTemplate).filter(LabReportTemplate.test_id == test_id).delete(
+        synchronize_session=False
+    )
+    param_ids = [
+        p.id for p in db.query(LabTestParameter.id).filter(LabTestParameter.test_id == test_id).all()
+    ]
+    if param_ids:
+        try:
+            from app.models.inpatient import CriticalLabAlert
+            db.query(CriticalLabAlert).filter(
+                CriticalLabAlert.parameter_id.in_(param_ids)
+            ).delete(synchronize_session=False)
+        except Exception:
+            pass
+    db.query(LabTestParameter).filter(LabTestParameter.test_id == test_id).delete(
+        synchronize_session=False
+    )
+
+
+def _delete_or_deactivate_lab_test(db: Session, test: LabTest) -> dict:
+    """Hard-delete unused tests; soft-delete tests that still have order history.
+
+    Always strips package membership so deactivated tests don't stay bookable
+    via packages.
+    """
+    order_count = db.query(PatientLabOrder).filter(PatientLabOrder.test_id == test.id).count()
+    if order_count == 0:
+        _purge_lab_test_catalog_refs(db, test.id)
+        db.delete(test)
+        db.commit()
+        return {
+            "message": "Test permanently deleted",
+            "deleted": True,
+            "soft_deleted": False,
+        }
+
+    db.query(LabTestPackageItem).filter(LabTestPackageItem.test_id == test.id).delete(
+        synchronize_session=False
+    )
+    test.is_active = False
+    db.commit()
+    return {
+        "message": "Test deactivated (kept for order history)",
+        "deleted": False,
+        "soft_deleted": True,
+        "order_count": order_count,
+    }
 
 from app.utils.patient_age import format_patient_age, patient_age_years_float, patient_age_years_int
 
@@ -891,13 +945,41 @@ async def create_test(
     if not cat:
         raise HTTPException(status_code=404, detail="Category not found")
 
-    # Check duplicate code
+    # Active duplicate codes stay blocked; inactive ones are reactivated.
     existing = db.query(LabTest).filter(
         LabTest.test_code == data.test_code,
         LabTest.hospital_id == current_user.hospital_id
     ).first()
-    if existing:
+    if existing and existing.is_active:
         raise HTTPException(status_code=400, detail=f"Test code '{data.test_code}' already exists")
+
+    if existing and not existing.is_active:
+        existing.is_active = True
+        existing.name = data.name
+        existing.description = data.description
+        existing.category_id = data.category_id
+        existing.cost = data.cost
+        existing.sample_type = data.sample_type
+        existing.sample_type_id = data.sample_type_id
+        existing.method = data.method
+        existing.preparation_instructions = data.preparation_instructions
+        if data.parameters is not None:
+            db.query(LabTestParameter).filter(LabTestParameter.test_id == existing.id).delete(
+                synchronize_session=False
+            )
+            for i, p in enumerate(data.parameters):
+                param = LabTestParameter(
+                    test_id=existing.id, parameter_name=p.parameter_name, unit=p.unit,
+                    field_type=p.field_type,
+                    reference_min_male=p.reference_min_male, reference_max_male=p.reference_max_male,
+                    reference_min_female=p.reference_min_female, reference_max_female=p.reference_max_female,
+                    reference_min_default=p.reference_min_default, reference_max_default=p.reference_max_default,
+                    possible_values=p.possible_values, display_order=p.display_order or i
+                )
+                db.add(param)
+        db.commit()
+        db.refresh(existing)
+        return _build_test_response(existing, db)
 
     test = LabTest(
         test_code=data.test_code, name=data.name, description=data.description,
@@ -960,9 +1042,7 @@ async def delete_test(
     ).first()
     if not test:
         raise HTTPException(status_code=404, detail="Test not found")
-    test.is_active = False
-    db.commit()
-    return {"message": "Test deleted"}
+    return _delete_or_deactivate_lab_test(db, test)
 
 # ============================================================
 # Parameter Endpoints
@@ -3468,7 +3548,9 @@ async def import_tests(
             LabTest.test_code == test_code,
             LabTest.hospital_id == hospital_id,
         ).first()
-        if existing and on_duplicate == "skip":
+        # Active duplicates honor on_duplicate=skip. Inactive rows are always
+        # eligible for reactivation/update so delete+reimport works.
+        if existing and existing.is_active and on_duplicate == "skip":
             skipped += 1
             preview.append(ImportPreviewRow(
                 row=rownum, test_code=test_code, name=name, category=cat_name,
@@ -3499,7 +3581,8 @@ async def import_tests(
 
         p_list = _build_params_for_test(params_by_test.get(test_code.lower(), []), errors)
 
-        if existing:  # on_duplicate == "update"
+        if existing:  # active+update, or inactive reactivation
+            existing.is_active = True
             existing.name = name
             existing.description = _cell_str(tr.get("description"))
             existing.category_id = cat.id
@@ -3726,20 +3809,54 @@ async def seed_default_tests(
     _require_lab_admin(current_user)
     hospital_id = current_user.hospital_id
 
-    # Check if already seeded
-    existing = db.query(LabTest).filter(LabTest.hospital_id == hospital_id).count()
-    if existing > 0:
+    # Block only when an active catalog already exists. Soft-deleted leftovers
+    # are reactivated / refreshed by code instead of blocked or duplicated.
+    existing_active = db.query(LabTest).filter(
+        LabTest.hospital_id == hospital_id,
+        LabTest.is_active == True,
+    ).count()
+    if existing_active > 0:
         raise HTTPException(status_code=400, detail="Lab tests already exist for this hospital. Delete existing tests first or add manually.")
 
     seed_data = _get_seed_data()
     created_tests = 0
+    reactivated_tests = 0
 
     for cat_name, tests in seed_data.items():
-        cat = LabTestCategory(name=cat_name, hospital_id=hospital_id)
-        db.add(cat)
-        db.flush()
+        cat = db.query(LabTestCategory).filter(
+            LabTestCategory.hospital_id == hospital_id,
+            LabTestCategory.name == cat_name,
+        ).first()
+        if not cat:
+            cat = LabTestCategory(name=cat_name, hospital_id=hospital_id)
+            db.add(cat)
+            db.flush()
+        elif not cat.is_active:
+            cat.is_active = True
 
         for test_info in tests:
+            existing = db.query(LabTest).filter(
+                LabTest.hospital_id == hospital_id,
+                LabTest.test_code == test_info["code"],
+            ).first()
+            if existing:
+                existing.is_active = True
+                existing.name = test_info["name"]
+                existing.description = test_info.get("description", "")
+                existing.category_id = cat.id
+                existing.cost = test_info.get("cost", 0)
+                existing.sample_type = test_info.get("sample_type", "Blood")
+                existing.method = test_info.get("method")
+                existing.preparation_instructions = test_info.get("instructions", "")
+                db.query(LabTestParameter).filter(LabTestParameter.test_id == existing.id).delete(
+                    synchronize_session=False
+                )
+                db.flush()
+                for i, param in enumerate(test_info.get("parameters", [])):
+                    db.add(_create_seed_parameter(existing.id, param, i))
+                reactivated_tests += 1
+                continue
+
             test = LabTest(
                 test_code=test_info["code"], name=test_info["name"],
                 description=test_info.get("description", ""),
@@ -3757,7 +3874,13 @@ async def seed_default_tests(
             created_tests += 1
 
     db.commit()
-    return {"message": f"Seeded {created_tests} lab tests with parameters"}
+    parts = []
+    if created_tests:
+        parts.append(f"created {created_tests}")
+    if reactivated_tests:
+        parts.append(f"reactivated {reactivated_tests}")
+    summary = ", ".join(parts) if parts else "no changes"
+    return {"message": f"Seeded default lab tests ({summary})"}
 
 
 def _get_seed_data():

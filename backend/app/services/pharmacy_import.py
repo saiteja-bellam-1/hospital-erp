@@ -19,6 +19,7 @@ from app.models.pharmacy import (
     PharmacyHSN,
     PharmacyInventory,
     PharmacyPurchase,
+    PharmacyPurchaseImportMapping,
     PharmacyPurchaseItem,
     PharmacyRack,
     PharmacySalt,
@@ -1729,6 +1730,8 @@ def inspect_purchase_import(content: bytes, filename: str) -> dict:
             "format_hint": "empty",
             "targets": PURCHASE_IMPORT_TARGETS,
             "row_count": 0,
+            "min_row": 0,
+            "max_row": 0,
         }
     # Preserve header order from first data dict (insertion order from parser)
     headers = [k for k in rows[0].keys() if k != "_row"]
@@ -1752,6 +1755,7 @@ def inspect_purchase_import(content: bytes, filename: str) -> dict:
     # Suggest against display headers but keys must match what client will send
     suggested = _suggest_purchase_mapping(display_headers)
     format_hint = "vendor_htf" if _looks_like_vendor_purchase(rows) else "flat"
+    row_nums = [int(r.get("_row") or 0) for r in rows]
     return {
         "headers": display_headers,
         "samples": samples,
@@ -1759,6 +1763,8 @@ def inspect_purchase_import(content: bytes, filename: str) -> dict:
         "format_hint": format_hint,
         "targets": PURCHASE_IMPORT_TARGETS,
         "row_count": len(rows),
+        "min_row": min(row_nums) if row_nums else 0,
+        "max_row": max(row_nums) if row_nums else 0,
     }
 
 
@@ -2400,10 +2406,35 @@ def _find_existing_purchase(
     ).first()
 
 
+def _filter_rows_by_line(
+    rows: List[dict],
+    row_start: Optional[int],
+    row_end: Optional[int],
+) -> List[dict]:
+    """Keep rows whose `_row` (1-based file line) is within [row_start, row_end]."""
+    if row_start is None and row_end is None:
+        return rows
+    out: List[dict] = []
+    for r in rows:
+        n = int(r.get("_row") or 0)
+        if row_start is not None and n < int(row_start):
+            continue
+        if row_end is not None and n > int(row_end):
+            continue
+        out.append(r)
+    return out
+
+
 def import_purchases(
     db: Session, user: User, content: bytes, filename: str,
     *, dry_run: bool, on_duplicate: str,
     column_mapping: Optional[dict] = None,
+    supplier_id: Optional[int] = None,
+    invoice_number: Optional[str] = None,
+    entry_date: Optional[date] = None,
+    bill_date: Optional[date] = None,
+    row_start: Optional[int] = None,
+    row_end: Optional[int] = None,
 ) -> dict:
     """Import purchase invoices as **draft** purchases.
 
@@ -2411,12 +2442,30 @@ def import_purchases(
     - Vendor distributor CSV (H/T/F rows, CL1..CL31 headers) — e.g. Vasu Pharma export
     - Named-header .xlsx/.csv matching PURCHASE_HEADERS
     - Either format with a UI `column_mapping` of {source_header: erp_field}
+    - Optional UI overrides: supplier_id, invoice_number, entry/bill dates
+    - Optional row_start / row_end (1-based file line numbers, inclusive)
     """
     summary = _empty_summary(dry_run=dry_run)
     rows = _parse_upload(content, filename, ["Purchases", "Purchase"])
+    rows = _filter_rows_by_line(rows, row_start, row_end)
     hospital_id = user.hospital_id
     mapping = column_mapping or {}
     field_cols = _normalize_column_mapping(mapping)
+
+    override_supplier = None
+    if supplier_id is not None:
+        override_supplier = db.query(PharmacySupplier).filter(
+            PharmacySupplier.id == supplier_id,
+            PharmacySupplier.hospital_id == hospital_id,
+            PharmacySupplier.is_active == True,  # noqa: E712
+        ).first()
+        if not override_supplier:
+            summary["errors"].append({
+                "sheet": "Purchases", "row": 0,
+                "message": f"Invalid supplier_id {supplier_id}",
+            })
+            summary["error_count"] = 1
+            return summary
 
     use_vendor = (
         _looks_like_vendor_purchase(rows)
@@ -2429,10 +2478,25 @@ def import_purchases(
         remapped = _remap_flat_purchase_rows(rows, mapping or None)
         blocks = _group_named_purchase_rows(remapped)
 
+    # Apply header overrides from the wizard (take precedence over file values)
+    inv_override = (invoice_number or "").strip() or None
+    for block in blocks:
+        if override_supplier is not None:
+            block["supplier_name"] = override_supplier.name
+            block["_supplier_id"] = override_supplier.id
+        if inv_override is not None:
+            block["invoice_number"] = inv_override
+        if entry_date is not None:
+            block["entry_date"] = entry_date
+        if bill_date is not None:
+            block["bill_date"] = bill_date
+        elif entry_date is not None and not block.get("bill_date"):
+            block["bill_date"] = entry_date
+
     if not blocks:
         summary["errors"].append({
             "sheet": "Purchases", "row": 0,
-            "message": "No purchase rows found. Map columns and retry, or use the purchases template.",
+            "message": "No purchase rows found in the selected range. Adjust start/end rows or column mapping.",
         })
         summary["error_count"] = 1
         return summary
@@ -2455,33 +2519,36 @@ def import_purchases(
             summary["total_rows"] += 1
 
         supplier_name = block.get("supplier_name")
-        invoice_number = block.get("invoice_number")
+        invoice_number_b = block.get("invoice_number")
         header_row = block.get("_header_row") or (items[0].get("_row") if items else 0)
-        preview_key = invoice_number or f"row-{header_row}"
+        preview_key = invoice_number_b or f"row-{header_row}"
 
-        if not supplier_name:
-            msg = "Missing supplier_name (vendor CSV CL3 / template supplier_name)"
-            summary["errors"].append({"sheet": "Purchases", "row": header_row, "message": msg})
-            summary["preview"].append({
-                "row": header_row, "key": preview_key, "name": "",
-                "status": "error", "message": msg, "sheet": "Purchases",
-            })
-            continue
+        if block.get("_supplier_id"):
+            supplier = override_supplier
+        else:
+            if not supplier_name:
+                msg = "Missing supplier — select a supplier in the import wizard"
+                summary["errors"].append({"sheet": "Purchases", "row": header_row, "message": msg})
+                summary["preview"].append({
+                    "row": header_row, "key": preview_key, "name": "",
+                    "status": "error", "message": msg, "sheet": "Purchases",
+                })
+                continue
 
-        sup_key = supplier_name.lower()
-        supplier = supplier_cache.get(sup_key)
-        if not supplier:
-            supplier = _find_supplier_by_name(db, hospital_id, supplier_name)
-            if supplier:
-                supplier_cache[sup_key] = supplier
-        if not supplier:
-            msg = f"Supplier '{supplier_name}' not found — import suppliers first"
-            summary["errors"].append({"sheet": "Purchases", "row": header_row, "message": msg})
-            summary["preview"].append({
-                "row": header_row, "key": preview_key, "name": supplier_name,
-                "status": "error", "message": msg, "sheet": "Purchases",
-            })
-            continue
+            sup_key = supplier_name.lower()
+            supplier = supplier_cache.get(sup_key)
+            if not supplier:
+                supplier = _find_supplier_by_name(db, hospital_id, supplier_name)
+                if supplier:
+                    supplier_cache[sup_key] = supplier
+            if not supplier:
+                msg = f"Supplier '{supplier_name}' not found — import suppliers first"
+                summary["errors"].append({"sheet": "Purchases", "row": header_row, "message": msg})
+                summary["preview"].append({
+                    "row": header_row, "key": preview_key, "name": supplier_name,
+                    "status": "error", "message": msg, "sheet": "Purchases",
+                })
+                continue
 
         payment_type = (block.get("payment_type") or "credit").lower()
         if payment_type not in ("cash", "credit"):
@@ -2495,16 +2562,16 @@ def import_purchases(
             msg = f"Store not found: '{block.get('store_code') or '(purchase/master store)'}'"
             summary["errors"].append({"sheet": "Purchases", "row": header_row, "message": msg})
             summary["preview"].append({
-                "row": header_row, "key": preview_key, "name": supplier_name,
+                "row": header_row, "key": preview_key, "name": supplier_name or "",
                 "status": "error", "message": msg, "sheet": "Purchases",
             })
             continue
 
-        existing = _find_existing_purchase(db, hospital_id, supplier.id, invoice_number)
+        existing = _find_existing_purchase(db, hospital_id, supplier.id, invoice_number_b)
         if existing and on_duplicate == "skip":
             summary["skipped"] += 1
             summary["preview"].append({
-                "row": header_row, "key": preview_key, "name": supplier_name,
+                "row": header_row, "key": preview_key, "name": supplier.name,
                 "status": "skip",
                 "message": f"Invoice already exists as {existing.purchase_number}",
                 "sheet": "Purchases",
@@ -2512,12 +2579,12 @@ def import_purchases(
             continue
         if existing and existing.status != "draft":
             msg = (
-                f"Invoice #{invoice_number} already exists as {existing.purchase_number} "
+                f"Invoice #{invoice_number_b} already exists as {existing.purchase_number} "
                 f"({existing.status}) — only draft purchases can be updated"
             )
             summary["errors"].append({"sheet": "Purchases", "row": header_row, "message": msg})
             summary["preview"].append({
-                "row": header_row, "key": preview_key, "name": supplier_name,
+                "row": header_row, "key": preview_key, "name": supplier.name,
                 "status": "error", "message": msg, "sheet": "Purchases",
             })
             continue
@@ -2615,17 +2682,17 @@ def import_purchases(
             })
 
         if line_errors:
-            # Ambiguous names etc. — do not create a partial purchase
             continue
         if not resolved:
             continue
 
+        entry = block.get("entry_date") or date.today()
         if existing and on_duplicate == "update":
             for old in list(existing.items):
                 db.delete(old)
             db.flush()
             purchase = existing
-            purchase.entry_date = block.get("entry_date") or purchase.entry_date
+            purchase.entry_date = entry
             purchase.bill_date = block.get("bill_date") or purchase.bill_date
             purchase.payment_type = payment_type
             purchase.purchase_type = block.get("purchase_type") or purchase.purchase_type
@@ -2636,9 +2703,9 @@ def import_purchases(
         else:
             purchase = PharmacyPurchase(
                 purchase_number=_next_purchase_number_import(db, hospital_id),
-                entry_date=block.get("entry_date") or date.today(),
+                entry_date=entry,
                 supplier_id=supplier.id,
-                invoice_number=invoice_number,
+                invoice_number=invoice_number_b,
                 bill_date=block.get("bill_date"),
                 payment_type=payment_type,
                 purchase_type=block.get("purchase_type"),
@@ -2651,7 +2718,6 @@ def import_purchases(
             )
             db.add(purchase)
             db.flush()
-            # Avoid unique collisions on concurrent imports
             for _attempt in range(3):
                 clash = db.query(PharmacyPurchase).filter(
                     PharmacyPurchase.purchase_number == purchase.purchase_number,
@@ -2693,7 +2759,7 @@ def import_purchases(
         summary["preview"].append({
             "row": header_row,
             "key": preview_key,
-            "name": f"{supplier_name} — {len(resolved)} items — ₹{purchase.grand_total:.2f}",
+            "name": f"{supplier.name} — {len(resolved)} items — ₹{purchase.grand_total:.2f}",
             "status": status,
             "message": " · ".join(msg_bits),
             "sheet": "Purchases",

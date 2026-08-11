@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -8,7 +8,7 @@ from datetime import datetime, date, time, timedelta
 import io
 
 from config.database import get_db
-from app.utils.pdf_settings import bill_pdf_gen_kwargs
+from app.utils.pdf_settings import bill_pdf_gen_kwargs, pdf_gen_kwargs
 from app.models.user import User
 from app.models.patient import Patient
 from app.models.outpatient import Appointment
@@ -257,6 +257,101 @@ async def get_doctor_available_slots(
         "schedule_info": schedule_info,
         "default_consultation_duration": configured_duration,
     }
+
+
+@router.get("/doctors/{doctor_id}/appointments/pdf")
+async def download_doctor_appointments_pdf(
+    doctor_id: int,
+    appointment_date: date = Query(...),
+    include_header: Optional[bool] = Query(None),
+    current_user: User = Depends(require_permission(Modules.OUTPATIENT, "read")),
+    db: Session = Depends(get_db),
+):
+    """Printable PDF of active appointments for a doctor on a given date.
+
+    Active = scheduled, confirmed, or in_progress (excludes completed/cancelled/no_show).
+    """
+    doctor = db.query(User).filter(User.id == doctor_id).first()
+    if not doctor or not doctor.role or doctor.role.name != "doctor":
+        raise HTTPException(status_code=404, detail="Doctor not found")
+    if doctor.hospital_id != current_user.hospital_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    active_statuses = ("scheduled", "confirmed", "in_progress")
+    appointments = (
+        db.query(Appointment)
+        .join(Patient)
+        .filter(
+            Appointment.doctor_id == doctor_id,
+            Patient.hospital_id == current_user.hospital_id,
+            func.date(Appointment.appointment_date) == appointment_date,
+            Appointment.status.in_(active_statuses),
+        )
+        .order_by(Appointment.appointment_time, Appointment.token_number)
+        .all()
+    )
+
+    rows = []
+    for apt in appointments:
+        patient = apt.patient
+        apt_time = apt.appointment_time
+        if apt_time is None:
+            time_str = ""
+        elif hasattr(apt_time, "strftime"):
+            time_str = apt_time.strftime("%H:%M")
+        else:
+            time_str = str(apt_time)[:5]
+        rows.append({
+            "token_number": apt.token_number,
+            "appointment_number": apt.appointment_number,
+            "time": time_str,
+            "patient_name": (
+                f"{patient.first_name} {patient.last_name}" if patient else "—"
+            ),
+            "patient_phone": (patient.primary_phone if patient else None) or "",
+            "appointment_type": apt.appointment_type or "",
+            "status": apt.status or "",
+            "priority": apt.priority or "normal",
+            "reason": apt.reason or "",
+        })
+
+    payload = {
+        "doctor_id": doctor_id,
+        "doctor_name": f"Dr. {doctor.first_name} {doctor.last_name}",
+        "specialization": doctor.specialization or "",
+        "appointment_date": appointment_date.isoformat(),
+        "appointments": rows,
+        "total": len(rows),
+    }
+
+    hospital = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
+    hospital_info = {
+        "name": hospital.name if hospital else "Hospital",
+        "address": hospital.address if hospital else "",
+        "phone": hospital.phone if hospital else "",
+        "email": hospital.email if hospital else "",
+        "website": getattr(hospital, "website", "") or "",
+        "logo_url": getattr(hospital, "logo_url", "") or "",
+        "hospital_subname": getattr(hospital, "hospital_subname", "") or "",
+    }
+
+    pdf_buffer = pdf_service.generate_doctor_appointments_pdf(
+        payload,
+        hospital_info,
+        **pdf_gen_kwargs(
+            db,
+            current_user.hospital_id,
+            "doctor_appointments",
+            query_include_header=include_header,
+        ),
+    )
+    filename = f"appointments_{doctor_id}_{appointment_date.isoformat()}.pdf"
+    return StreamingResponse(
+        pdf_buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"inline; filename={filename}"},
+    )
+
 
 def generate_appointment_number() -> str:
     """Generate unique appointment number"""

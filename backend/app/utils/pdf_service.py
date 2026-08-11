@@ -11,6 +11,7 @@ import json
 import os
 
 from app.utils.patient_age import age_display_from_data
+from app.utils.time import format_bill_date, format_system_dt, system_now, to_system_local
 
 DEFAULT_LETTERHEAD_GAP_PT = 100.0
 # No extra empty band above the hospital letterhead. Pre-printed stationery
@@ -20,45 +21,22 @@ PDF_TOP_MARGIN_PT = 0.0
 
 def _to_system_local(val):
     """Parse/normalize a datetime to naive system-local wall clock."""
-    if val is None or val == "":
-        return None
-    if isinstance(val, str):
-        val = datetime.fromisoformat(val.replace("Z", "+00:00"))
-    if getattr(val, "tzinfo", None) is not None:
-        val = val.astimezone().replace(tzinfo=None)
-    return val
+    return to_system_local(val)
 
 
 def _fmt_system_dt(val, fmt="%d/%m/%Y %I:%M %p", empty="-"):
     """Format a date/datetime for PDF display in system local time."""
-    if not val:
-        return empty
-    try:
-        return _to_system_local(val).strftime(fmt)
-    except Exception:
-        return str(val)
+    return format_system_dt(val, fmt=fmt, empty=empty)
 
 
 def _fmt_bill_date(val, empty=""):
     """Date-only (dd/mm/yyyy) for bills, invoices, and receipts — never include time."""
-    if val is None or val == "":
-        return empty
-    s = str(val).strip()
-    # Already display-formatted: "26/07/2026" or "26/07/2026 19:48:22"
-    if len(s) >= 10 and s[2:3] == "/" and s[5:6] == "/":
-        return s[:10]
-    try:
-        return _to_system_local(val).strftime("%d/%m/%Y")
-    except Exception:
-        pass
-    # ISO date prefix: "2026-07-26T19:48:22"
-    if len(s) >= 10 and s[4:5] == "-" and s[7:8] == "-":
-        try:
-            return datetime.strptime(s[:10], "%Y-%m-%d").strftime("%d/%m/%Y")
-        except Exception:
-            pass
-    return s.split()[0] if s else empty
+    return format_bill_date(val, empty=empty)
 
+
+def _generated_on(fmt="%d/%m/%Y at %H:%M:%S") -> str:
+    """Footer 'Generated on …' stamp in local wall clock."""
+    return system_now().strftime(fmt)
 
 def _age_gender_str(data: dict, *, gender: str = "", age_key: str = "patient_age") -> str:
     """Build 'Age / Gender' display line for PDF headers."""
@@ -533,7 +511,7 @@ class PDFService:
             return Paragraph(f"<b>{label}</b> :  {value}", cell_value_sm)
 
         # --- Parse dates ---
-        bill_date_str = _fmt_bill_date(bill_data.get('bill_date'), empty="") or datetime.now().strftime('%d/%m/%Y')
+        bill_date_str = _fmt_bill_date(bill_data.get('bill_date'), empty="") or _fmt_bill_date(system_now())
 
         # ============================================================
         # HEADER — identical pattern to OPD generate_bill_pdf
@@ -988,7 +966,7 @@ class PDFService:
             return Paragraph(f"<b>{label}</b> :  {value}", cell_value_sm)
 
         # --- Parse dates ---
-        bill_date_str = _fmt_bill_date(bill_data.get('bill_date'), empty="") or datetime.now().strftime('%d/%m/%Y')
+        bill_date_str = _fmt_bill_date(bill_data.get('bill_date'), empty="") or _fmt_bill_date(system_now())
 
         # ============================================================
         # HEADER: Hospital Name + Address + Receipt Title
@@ -1430,11 +1408,8 @@ class PDFService:
         def val(text):
             return Paragraph(str(text) if text else '', cell_val)
 
-        # --- Parse dates ---
-        try:
-            rx_date = datetime.fromisoformat(prescription_data.get('prescription_date', '')).strftime('%d/%m/%Y')
-        except Exception:
-            rx_date = datetime.now().strftime('%d/%m/%Y')
+        # --- Parse dates (local wall clock; convert aware/Z ISO) ---
+        rx_date = _fmt_bill_date(prescription_data.get('prescription_date'), empty="") or _fmt_bill_date(system_now())
 
         # ============================================================
         # HEADER — Logo (left) + Hospital Name + Address (center)
@@ -1910,7 +1885,7 @@ class PDFService:
 
         # Footer
         elements.append(Spacer(1, 15))
-        elements.append(Paragraph(f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M:%S')}", footer_style))
+        elements.append(Paragraph(f"Generated on {_generated_on()}", footer_style))
 
         _finalize(doc, elements, hospital_info)
         buffer.seek(0)
@@ -2230,7 +2205,7 @@ class PDFService:
 
             # Footer timestamp
             elements.append(Spacer(1, 20))
-            elements.append(Paragraph(f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M:%S')}", footer_style))
+            elements.append(Paragraph(f"Generated on {_generated_on()}", footer_style))
 
         _finalize(doc, elements, hospital_info)
         buffer.seek(0)
@@ -2515,7 +2490,7 @@ class PDFService:
             elements.append(sig_table)
 
             elements.append(Spacer(1, 20))
-            elements.append(Paragraph(f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M:%S')}", footer_style))
+            elements.append(Paragraph(f"Generated on {_generated_on()}", footer_style))
 
         _finalize(doc, elements, hospital_info, header_cb=_draw_header)
         buffer.seek(0)
@@ -2702,11 +2677,23 @@ class PDFService:
                     [lv('Age / Sex', age_gender),
                      lv('Phone No.', discharge_data.get('patient_phone', ''))],
                     [lv('Admission No.', discharge_data.get('admission_number', '')),
-                     lv('Admission Date', discharge_data.get('admission_date', ''))],
+                     lv('Admission Date', _fmt_system_dt(
+                         discharge_data.get('admission_date', ''),
+                         fmt="%d-%b-%Y %H:%M",
+                         empty="",
+                     ))],
                     [lv('Bed / Room No.', bed_room),
                      lv('Ward Type', discharge_data.get('ward_type', ''))],
-                    [lv('Discharge Date', discharge_data.get('discharge_date', '') or '—'),
-                     lv('Date of Surgery', discharge_data.get('surgery_date', '') or '—')],
+                    [lv('Discharge Date', _fmt_system_dt(
+                         discharge_data.get('discharge_date', ''),
+                         fmt="%d-%b-%Y %H:%M",
+                         empty="—",
+                     ) or '—'),
+                     lv('Date of Surgery', _fmt_system_dt(
+                         discharge_data.get('surgery_date', ''),
+                         fmt="%d-%b-%Y",
+                         empty="—",
+                     ) or '—')],
                     [lv('Payer / Scheme', payer_label),
                      lv('Discharge Type', discharge_type_label)],
                 ]
@@ -2830,7 +2817,7 @@ class PDFService:
                         elements.append(Paragraph(_escape_pdf_inline(follow_up), cell_value))
                     if follow_up_date:
                         elements.append(Paragraph(
-                            f"<b>Follow-up Date:</b> {_escape_pdf_inline(follow_up_date)}",
+                            f"<b>Follow-up Date:</b> {_escape_pdf_inline(_fmt_bill_date(follow_up_date, empty='') or follow_up_date)}",
                             cell_value))
                     if emergency:
                         elements.append(Paragraph(
@@ -2927,7 +2914,7 @@ class PDFService:
 
         elements.append(Spacer(1, 20))
         elements.append(Paragraph(
-            f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M:%S')}",
+            f"Generated on {_generated_on()}",
             footer_style
         ))
 
@@ -3064,8 +3051,8 @@ class PDFService:
              lv('Doctor', meta.get('doctor_name', ''))],
             [lv('Admission No', meta.get('admission_number', '')),
              lv('Stay', f"{meta.get('stay_days', 0)} days")],
-            [lv('Admitted', meta.get('admission_date', '')),
-             lv('Discharged', meta.get('discharge_date', '') or '— (in progress)')],
+            [lv('Admitted', _fmt_system_dt(meta.get('admission_date', ''), fmt="%d/%m/%Y %H:%M", empty="")),
+             lv('Discharged', _fmt_system_dt(meta.get('discharge_date', ''), fmt="%d/%m/%Y %H:%M", empty="") or '— (in progress)')],
             [lv('Room / Bed', f"{meta.get('room_number', '')} / {meta.get('bed_label', '')}"),
              lv('Status', meta.get('status', ''))],
         ]
@@ -3239,7 +3226,7 @@ class PDFService:
 
         elements.append(Spacer(1, 16))
         elements.append(Paragraph(
-            f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M:%S')}",
+            f"Generated on {_generated_on()}",
             footer_style,
         ))
         _finalize(doc, elements, hospital_info)
@@ -3284,7 +3271,7 @@ class PDFService:
         is_refund = deposit_data.get('deposit_type') == 'refund'
         amount = float(deposit_data.get('amount', 0))
         receipt_no = deposit_data.get('deposit_number', '')
-        receipt_date = _fmt_bill_date(deposit_data.get('received_at'), empty="") or datetime.now().strftime('%d/%m/%Y')
+        receipt_date = _fmt_bill_date(deposit_data.get('received_at'), empty="") or _fmt_bill_date(system_now())
 
         # ============================================================
         # HEADER — identical to generate_bill_pdf
@@ -3509,7 +3496,7 @@ class PDFService:
         elements.append(footer_table)
         elements.append(Spacer(1, 4))
         elements.append(Paragraph(
-            f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M:%S')}",
+            f"Generated on {_generated_on()}",
             ParagraphStyle('DRFootMeta', parent=self.styles['Normal'],
                 fontSize=7, fontName='Helvetica-Oblique', alignment=1, textColor=colors.grey),
         ))
@@ -3607,7 +3594,7 @@ class PDFService:
         elements.append(sig_table)
         elements.append(Spacer(1, 16))
         elements.append(Paragraph(
-            f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M:%S')}",
+            f"Generated on {_generated_on()}",
             footer_style,
         ))
 
@@ -3725,7 +3712,7 @@ class PDFService:
         elements.append(sig)
         elements.append(Spacer(1, 16))
         elements.append(Paragraph(
-            f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M:%S')}",
+            f"Generated on {_generated_on()}",
             footer_style,
         ))
 
@@ -3838,7 +3825,7 @@ class PDFService:
         # In wizard preview mode the admission row doesn't exist yet, but the
         # form is being filled today — fall back to today's date so the
         # printed form has a meaningful "Date" on it.
-        admission_date = consent_data.get('admission_date') or datetime.now().strftime("%d/%m/%Y")
+        admission_date = _fmt_bill_date(consent_data.get('admission_date'), empty="") or _fmt_bill_date(system_now())
         date_label = "Admitted on:" if admission_number else "Date:"
         meta_rows = [
             [Paragraph("Patient:", label_small), Paragraph(str(consent_data.get('patient_name', '')), body),
@@ -3909,7 +3896,7 @@ class PDFService:
         ]))
         elements.append(sig_table)
         elements.append(Spacer(1, 6))
-        elements.append(Paragraph(f"Signed at: {consent_data.get('signed_at', '')}", body))
+        elements.append(Paragraph(f"Signed at: {_fmt_system_dt(consent_data.get('signed_at', ''), fmt='%d/%m/%Y', empty='')}", body))
 
         if consent_data.get('withdrawn_at'):
             elements.append(Spacer(1, 10))
@@ -3919,7 +3906,7 @@ class PDFService:
             elements.append(Paragraph(f"Reason: {consent_data.get('withdrawal_reason', '')}", body))
 
         elements.append(Spacer(1, 18))
-        elements.append(Paragraph(f"Generated on {datetime.now().strftime('%d/%m/%Y')}", footer_style))
+        elements.append(Paragraph(f"Generated on {_generated_on('%d/%m/%Y')}", footer_style))
         _finalize(doc, elements, hospital_info)
         buffer.seek(0)
         return buffer
@@ -4029,7 +4016,7 @@ class PDFService:
             ],
             [
                 Paragraph("Admitted on:", label_small),
-                Paragraph(str(payload.get('admission_date') or '—'), body),
+                Paragraph(_fmt_bill_date(payload.get('admission_date'), empty="") or '—', body),
                 Paragraph("Ward / Bed:", label_small),
                 Paragraph(str(payload.get('ward_bed') or '—'), body),
             ],
@@ -4107,7 +4094,7 @@ class PDFService:
         elements.append(sig_table)
 
         elements.append(Spacer(1, 18))
-        elements.append(Paragraph(f"Generated on {datetime.now().strftime('%d/%m/%Y')}", footer_style))
+        elements.append(Paragraph(f"Generated on {_generated_on('%d/%m/%Y')}", footer_style))
         _finalize(doc, elements, hospital_info)
         buffer.seek(0)
         return buffer
@@ -4155,9 +4142,9 @@ class PDFService:
             [Paragraph("Age / Gender:", label), Paragraph(_age_gender_str(cert_data, gender=cert_data.get('gender', ''), age_key='age') or str(cert_data.get('gender', '')), value)],
             [Paragraph("MRN:", label), Paragraph(str(cert_data.get('mrn', '')), value)],
             [Paragraph("Admission No:", label), Paragraph(str(cert_data.get('admission_number', '')), value)],
-            [Paragraph("Admitted On:", label), Paragraph(str(cert_data.get('admission_date', '')), value)],
-            [Paragraph("Date of Death:", label), Paragraph(str(cert_data.get('discharge_date', '')), value)],
-            [Paragraph("Time of Death:", label), Paragraph(str(cert_data.get('time_of_death', '')), value)],
+            [Paragraph("Admitted On:", label), Paragraph(_fmt_system_dt(cert_data.get('admission_date', ''), fmt="%d/%m/%Y", empty=""), value)],
+            [Paragraph("Date of Death:", label), Paragraph(_fmt_system_dt(cert_data.get('discharge_date', ''), fmt="%d/%m/%Y", empty=""), value)],
+            [Paragraph("Time of Death:", label), Paragraph(_fmt_system_dt(cert_data.get('time_of_death', ''), fmt="%d/%m/%Y %H:%M", empty=""), value)],
             [Paragraph("Cause of Death:", label), Paragraph(str(cert_data.get('cause_of_death', '')), value)],
             [Paragraph("Treating Doctor:", label), Paragraph(str(cert_data.get('treating_doctor', '')), value)],
             [Paragraph("MLC Required:", label), Paragraph("Yes" if cert_data.get('mlc_required') else "No", value)],
@@ -4183,7 +4170,7 @@ class PDFService:
             handover_rows = [
                 [Paragraph("Handed over to:", label), Paragraph(str(cert_data.get('body_handed_over_to', '')), value)],
                 [Paragraph("Relationship:", label), Paragraph(str(cert_data.get('body_handover_relationship', '')), value)],
-                [Paragraph("Date/Time:", label), Paragraph(str(cert_data.get('body_handover_time', '')), value)],
+                [Paragraph("Date/Time:", label), Paragraph(_fmt_system_dt(cert_data.get('body_handover_time', ''), fmt="%d/%m/%Y %H:%M", empty=""), value)],
                 [Paragraph("ID Proof:", label), Paragraph(str(cert_data.get('body_handover_id_proof', '')), value)],
             ]
             h_table = Table(handover_rows, colWidths=[page_width * 0.3, page_width * 0.7])
@@ -4205,7 +4192,7 @@ class PDFService:
         ]))
         elements.append(sig_table)
         elements.append(Spacer(1, 14))
-        elements.append(Paragraph(f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M:%S')}", footer_style))
+        elements.append(Paragraph(f"Generated on {_generated_on()}", footer_style))
         _finalize(doc, elements, hospital_info)
         buffer.seek(0)
         return buffer
@@ -4257,8 +4244,8 @@ class PDFService:
              Paragraph(f"{dama_data.get('age', '')} / {dama_data.get('gender', '')}", value)],
             [Paragraph("Admission No:", label), Paragraph(str(dama_data.get('admission_number', '')), value)],
             [Paragraph("Attending Doctor:", label), Paragraph(str(dama_data.get('doctor_name', '')), value)],
-            [Paragraph("Admission Date:", label), Paragraph(str(dama_data.get('admission_date', '')), value)],
-            [Paragraph("Discharge Date/Time:", label), Paragraph(str(dama_data.get('discharge_date', '')), value)],
+            [Paragraph("Admission Date:", label), Paragraph(_fmt_system_dt(dama_data.get('admission_date', ''), fmt="%d/%m/%Y", empty=""), value)],
+            [Paragraph("Discharge Date/Time:", label), Paragraph(_fmt_system_dt(dama_data.get('discharge_date', ''), fmt="%d/%m/%Y %H:%M", empty=""), value)],
             [Paragraph("Language Used:", label), Paragraph(str(dama_data.get('language_used', '')).title(), value)],
         ]
         _dama_addr = _patient_address_line(dama_data)
@@ -4327,7 +4314,7 @@ class PDFService:
 
         elements.append(Spacer(1, 14))
         elements.append(Paragraph(
-            f"Form signed on {dama_data.get('signed_at', '')} | Generated {datetime.now().strftime('%d/%m/%Y at %H:%M')}",
+            f"Form signed on {_fmt_system_dt(dama_data.get('signed_at', ''), fmt='%d/%m/%Y %H:%M', empty='')} | Generated {_generated_on('%d/%m/%Y at %H:%M')}",
             footer_style))
         _finalize(doc, elements, hospital_info)
         buffer.seek(0)
@@ -4437,7 +4424,7 @@ class PDFService:
         # Detail table
         rows = [
             [Paragraph("Pass Number", label), Paragraph(payload.get('pass_number', '-'), value),
-             Paragraph("Issued at", label), Paragraph(payload.get('issued_at', '-'), value)],
+             Paragraph("Issued at", label), Paragraph(_fmt_system_dt(payload.get('issued_at', '-'), fmt="%d/%m/%Y %H:%M", empty="-"), value)],
             [Paragraph("Admission No", label), Paragraph(payload.get('admission_number', '-'), value),
              Paragraph("MRN", label), Paragraph(payload.get('mrn', '-'), value)],
             [Paragraph("Patient Name", label), Paragraph(payload.get('patient_name', '-'), value),
@@ -4513,7 +4500,7 @@ class PDFService:
         elements.append(footer_table)
         elements.append(Spacer(1, 4))
         elements.append(Paragraph(
-            f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M:%S')}",
+            f"Generated on {_generated_on()}",
             footer_meta,
         ))
 
@@ -4608,7 +4595,7 @@ class PDFService:
             ParagraphStyle('NF', parent=self.styles['Normal'], fontSize=7, alignment=0,
                 fontName='Helvetica-Oblique', textColor=colors.HexColor('#555555'))))
         elements.append(Paragraph(
-            f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M')}",
+            f"Generated on {_generated_on('%d/%m/%Y at %H:%M')}",
             ParagraphStyle('F', parent=self.styles['Normal'], fontSize=8, alignment=1)))
         _finalize(doc, elements, hospital_info)
         buffer.seek(0)
@@ -4740,7 +4727,7 @@ class PDFService:
 
         elements.append(Spacer(1, 14))
         elements.append(Paragraph(
-            f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M')}",
+            f"Generated on {_generated_on('%d/%m/%Y at %H:%M')}",
             ParagraphStyle('F', parent=self.styles['Normal'], fontSize=8, alignment=1)))
         _finalize(doc, elements, hospital_info)
         buffer.seek(0)
@@ -4789,7 +4776,7 @@ class PDFService:
             [Paragraph("Room / Bed:", label),
              Paragraph(f"{payload.get('room', '')} / {payload.get('bed', '')}", value)],
             [Paragraph("Shift Ending:", label), Paragraph(str(payload.get('from_shift', '')).title(), value)],
-            [Paragraph("Handover At:", label), Paragraph(str(payload.get('handover_date', '')), value)],
+            [Paragraph("Handover At:", label), Paragraph(_fmt_system_dt(payload.get('handover_date', ''), fmt="%d/%m/%Y %H:%M", empty=""), value)],
             [Paragraph("From Nurse:", label), Paragraph(str(payload.get('from_nurse', '')), value)],
             [Paragraph("To Nurse:", label), Paragraph(str(payload.get('to_nurse', '') or '— (unassigned)'), value)],
             [Paragraph("Acknowledged:", label), Paragraph(str(payload.get('acknowledged_at', '') or '— pending'), value)],
@@ -4826,7 +4813,7 @@ class PDFService:
 
         elements.append(Spacer(1, 14))
         elements.append(Paragraph(
-            f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M')}",
+            f"Generated on {_generated_on('%d/%m/%Y at %H:%M')}",
             ParagraphStyle('F', parent=self.styles['Normal'], fontSize=8, alignment=1)))
         _finalize(doc, elements, hospital_info)
         buffer.seek(0)
@@ -4953,7 +4940,7 @@ class PDFService:
 
         elements.append(Spacer(1, 14))
         elements.append(Paragraph(
-            f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M')}",
+            f"Generated on {_generated_on('%d/%m/%Y at %H:%M')}",
             ParagraphStyle('F', parent=self.styles['Normal'], fontSize=8, alignment=1)))
         _finalize(doc, elements, hospital_info)
         buffer.seek(0)
@@ -5004,9 +4991,9 @@ class PDFService:
             [Paragraph("MLC Number:", label), Paragraph(str(mlc_data.get('mlc_number') or '—'), value),
              Paragraph("MLC Type:", label), Paragraph(mlc_type_labels.get(mlc_data.get('mlc_type'), mlc_data.get('mlc_type') or '—'), value)],
             [Paragraph("Admission No:", label), Paragraph(str(mlc_data.get('admission_number', '')), value),
-             Paragraph("Admission Date:", label), Paragraph(str(mlc_data.get('admission_date', '')), value)],
+             Paragraph("Admission Date:", label), Paragraph(_fmt_system_dt(mlc_data.get('admission_date', ''), fmt="%d/%m/%Y %H:%M", empty=""), value)],
             [Paragraph("Police Informed:", label), Paragraph(str(mlc_data.get('police_station_informed') or '—'), value),
-             Paragraph("Informed At:", label), Paragraph(str(mlc_data.get('mlc_informed_at') or '—'), value)],
+             Paragraph("Informed At:", label), Paragraph(_fmt_system_dt(mlc_data.get('mlc_informed_at') or '', fmt="%d/%m/%Y %H:%M", empty="—"), value)],
         ]
         t = Table(mlc_meta, colWidths=[page_width*0.18, page_width*0.32, page_width*0.18, page_width*0.32])
         t.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'TOP'), ('BOTTOMPADDING', (0,0), (-1,-1), 4)]))
@@ -5047,7 +5034,7 @@ class PDFService:
 
         elements.append(Spacer(1, 14))
         elements.append(Paragraph(
-            f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M')}",
+            f"Generated on {_generated_on('%d/%m/%Y at %H:%M')}",
             ParagraphStyle('F', parent=self.styles['Normal'], fontSize=8, alignment=1)))
         _finalize(doc, elements, hospital_info)
         buffer.seek(0)
@@ -5093,7 +5080,7 @@ class PDFService:
              Paragraph("MRN:", label), Paragraph(str(rel.get('mrn', '')), value)],
             [Paragraph("Age / Gender:", label), Paragraph(f"{rel.get('age', '')} / {rel.get('gender', '')}", value),
              Paragraph("Admission No:", label), Paragraph(str(rel.get('admission_number', '')), value)],
-            [Paragraph("Date / Time of Death:", label), Paragraph(str(rel.get('death_date', '')), value),
+            [Paragraph("Date / Time of Death:", label), Paragraph(_fmt_system_dt(rel.get('death_date', ''), fmt="%d/%m/%Y %H:%M", empty=""), value),
              Paragraph("Attending Doctor:", label), Paragraph(str(rel.get('doctor_name', '')), value)],
             [Paragraph("MLC:", label), Paragraph(("Yes — " + rel.get('mlc_number', '')) if rel.get('is_mlc') else "No", value),
              Paragraph("Mortuary Slot:", label), Paragraph(str(rel.get('mortuary_slot') or '—'), value)],
@@ -5104,18 +5091,18 @@ class PDFService:
 
         elements.append(Paragraph("MORTUARY / EMBALMING / POST-MORTEM", heading))
         m = [
-            [Paragraph("Body in mortuary:", label), Paragraph(str(rel.get('body_in_at') or '—'), value),
-             Paragraph("Body out:", label), Paragraph(str(rel.get('body_out_at') or '—'), value)],
+            [Paragraph("Body in mortuary:", label), Paragraph(_fmt_system_dt(rel.get('body_in_at') or '', fmt="%d/%m/%Y %H:%M", empty="—"), value),
+             Paragraph("Body out:", label), Paragraph(_fmt_system_dt(rel.get('body_out_at') or '', fmt="%d/%m/%Y %H:%M", empty="—"), value)],
             [Paragraph("Embalming:", label), Paragraph("Done — " + (rel.get('embalmed_by') or '') if rel.get('embalming_done') else "Not done", value),
-             Paragraph("Embalmed at:", label), Paragraph(str(rel.get('embalming_at') or '—'), value)],
+             Paragraph("Embalmed at:", label), Paragraph(_fmt_system_dt(rel.get('embalming_at') or '', fmt="%d/%m/%Y %H:%M", empty="—"), value)],
             [Paragraph("Post-mortem:", label),
              Paragraph(("Required @ " + (rel.get('pm_hospital') or '—')) if rel.get('post_mortem_required') else "Not required", value),
-             Paragraph("PM completed:", label), Paragraph(str(rel.get('pm_completed_at') or '—'), value)],
+             Paragraph("PM completed:", label), Paragraph(_fmt_system_dt(rel.get('pm_completed_at') or '', fmt="%d/%m/%Y %H:%M", empty="—"), value)],
             [Paragraph("PM Doctor:", label), Paragraph(str(rel.get('pm_doctor') or '—'), value),
              Paragraph("PM Report No.:", label), Paragraph(str(rel.get('pm_report_number') or '—'), value)],
             [Paragraph("Police NOC:", label),
              Paragraph(("Received #" + (rel.get('police_noc_number') or '')) if rel.get('police_noc_received') else "Not received", value),
-             Paragraph("NOC at:", label), Paragraph(str(rel.get('police_noc_received_at') or '—'), value)],
+             Paragraph("NOC at:", label), Paragraph(_fmt_system_dt(rel.get('police_noc_received_at') or '', fmt="%d/%m/%Y %H:%M", empty="—"), value)],
         ]
         tm = Table(m, colWidths=[page_width*0.18, page_width*0.32, page_width*0.18, page_width*0.32])
         tm.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'TOP'), ('BOTTOMPADDING', (0,0), (-1,-1), 4)]))
@@ -5129,7 +5116,7 @@ class PDFService:
              Paragraph("ID Proof:", label),
              Paragraph(f"{rel.get('released_to_id_proof_type', '').title()} — {rel.get('released_to_id_proof_number', '')}", value)],
             [Paragraph("Address:", label), Paragraph(str(rel.get('released_to_address') or '—'), value),
-             Paragraph("Released at:", label), Paragraph(str(rel.get('body_released_at') or '—'), value)],
+             Paragraph("Released at:", label), Paragraph(_fmt_system_dt(rel.get('body_released_at') or '', fmt="%d/%m/%Y %H:%M", empty="—"), value)],
         ]
         tr = Table(r, colWidths=[page_width*0.18, page_width*0.32, page_width*0.18, page_width*0.32])
         tr.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'TOP'), ('BOTTOMPADDING', (0,0), (-1,-1), 4)]))
@@ -5158,7 +5145,7 @@ class PDFService:
 
         elements.append(Spacer(1, 12))
         elements.append(Paragraph(
-            f"Generated on {datetime.now().strftime('%d/%m/%Y at %H:%M')}",
+            f"Generated on {_generated_on('%d/%m/%Y at %H:%M')}",
             ParagraphStyle('F', parent=self.styles['Normal'], fontSize=8, alignment=1)))
         _finalize(doc, elements, hospital_info)
         buffer.seek(0)
@@ -6077,7 +6064,7 @@ class PDFService:
         meta = Table(
             [
                 [lv("Settlement #", statement.get("settlement_number", "")),
-                 lv("Generated", statement.get("generated_at", ""))],
+                 lv("Generated", _fmt_system_dt(statement.get("generated_at", ""), fmt="%d/%m/%Y %H:%M", empty=""))],
                 [lv("Business Unit", statement.get("unit_label", "")),
                  lv("Status", str(statement.get("status") or "paid").upper())],
                 [lv("Period", f"{statement.get('period_from', '')} to {statement.get('period_to', '')}"),
@@ -6190,6 +6177,293 @@ class PDFService:
 
         _finalize(doc, elements, hospital_info,
                   watermark="CANCELLED" if str(statement.get("status")) == "cancelled" else None)
+        buffer.seek(0)
+        return buffer
+
+    def generate_pharmacy_document_pdf(self, doc_data, hospital_info, include_header=True,
+                                       letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, **_kwargs):
+        """Generic pharmacy document (sales return CN, purchase return, challan, DN).
+
+        Expected keys:
+          document_title, doc_number / return_number / debit_note_number / challan_number,
+          return_date / debit_note_date / challan_date, status,
+          patient_name / supplier_name, sale_number / purchase_number,
+          settlement_method, settlement_amount, supplier_credit_note_number,
+          items: [{medicine_name, batch_number, quantity, rate/purchase_rate, line_total}],
+          grand_total, reason/notes
+        """
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4,
+            rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=20)
+        elements = []
+        page_width = A4[0] - 60
+        title = doc_data.get("document_title") or "PHARMACY DOCUMENT"
+        self._pharmacy_header(elements, hospital_info, include_header, title, page_width, letterhead_gap_pt)
+
+        cell = ParagraphStyle('PhDocC', parent=self.styles['Normal'], fontSize=8,
+            fontName='Helvetica', textColor=colors.black, leading=11)
+        header_p = ParagraphStyle('PhDocH', parent=cell, fontName='Helvetica-Bold')
+
+        def esc(v):
+            return _escape_pdf_inline(v if v is not None else '')
+
+        def lv(label, value):
+            return Paragraph(f"<b>{esc(label)}:</b> {esc(value)}", cell)
+
+        doc_no = (
+            doc_data.get("doc_number")
+            or doc_data.get("return_number")
+            or doc_data.get("debit_note_number")
+            or doc_data.get("challan_number")
+            or ""
+        )
+        doc_date = (
+            doc_data.get("return_date")
+            or doc_data.get("debit_note_date")
+            or doc_data.get("challan_date")
+            or ""
+        )
+        doc_date_str = _fmt_bill_date(doc_date, empty="") or str(doc_date or "")
+        meta = [
+            [lv("Document #", doc_no), lv("Date", doc_date_str),
+             lv("Status", (doc_data.get("status") or "—").upper())],
+        ]
+        party = doc_data.get("patient_name") or doc_data.get("supplier_name") or "—"
+        party_label = "Patient" if doc_data.get("patient_name") else "Supplier"
+        meta.append([
+            lv(party_label, party),
+            lv("Ref", doc_data.get("sale_number") or doc_data.get("purchase_number")
+               or doc_data.get("return_number") or "—"),
+            lv("Amount", f"{float(doc_data.get('grand_total') or doc_data.get('amount') or 0):.2f}"),
+        ])
+        if doc_data.get("settlement_method"):
+            meta.append([
+                lv("Settlement", doc_data.get("settlement_method")),
+                lv("Settled amt", f"{float(doc_data.get('settlement_amount') or 0):.2f}"),
+                lv("Settle ref", doc_data.get("settlement_reference") or "—"),
+            ])
+        if doc_data.get("supplier_credit_note_number"):
+            meta.append([
+                lv("Supplier CN #", doc_data.get("supplier_credit_note_number")),
+                lv("CN date", _fmt_bill_date(doc_data.get("supplier_credit_note_date"), empty="") or ""),
+                lv("CN amount", f"{float(doc_data.get('supplier_credit_note_amount') or 0):.2f}"),
+            ])
+        t = Table(meta, colWidths=[page_width / 3.0] * 3)
+        t.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("TOPPADDING", (0, 0), (-1, -1), 2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ]))
+        elements.append(t)
+        elements.append(Spacer(1, 8))
+
+        items = doc_data.get("items") or []
+        # items may be pydantic dump dicts or nested
+        rows = [[
+            Paragraph("#", header_p),
+            Paragraph("Medicine", header_p),
+            Paragraph("Batch", header_p),
+            Paragraph("Qty", header_p),
+            Paragraph("Rate", header_p),
+            Paragraph("Amount", header_p),
+        ]]
+        for idx, it in enumerate(items, 1):
+            if hasattr(it, "model_dump"):
+                it = it.model_dump()
+            rate = it.get("rate")
+            if rate is None:
+                rate = it.get("purchase_rate", 0)
+            rows.append([
+                Paragraph(str(idx), cell),
+                Paragraph(esc(it.get("medicine_name") or it.get("medicine_id") or ""), cell),
+                Paragraph(esc(it.get("batch_number") or ""), cell),
+                Paragraph(f"{float(it.get('quantity') or 0):g}", cell),
+                Paragraph(f"{float(rate or 0):.2f}", cell),
+                Paragraph(f"{float(it.get('line_total') or 0):.2f}", cell),
+            ])
+        if len(rows) == 1:
+            rows.append([Paragraph("—", cell), Paragraph("No line items", cell),
+                         "", "", "", ""])
+        it_table = Table(rows, colWidths=[28, page_width - 220, 70, 40, 50, 50])
+        it_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.Color(0.92, 0.92, 0.92)),
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("ALIGN", (3, 1), (-1, -1), "RIGHT"),
+        ]))
+        elements.append(it_table)
+        elements.append(Spacer(1, 8))
+        total = float(doc_data.get("grand_total") or doc_data.get("amount") or 0)
+        elements.append(Paragraph(f"<b>Grand Total: {total:.2f}</b>", cell))
+        reason = doc_data.get("reason") or doc_data.get("notes")
+        if reason:
+            elements.append(Spacer(1, 4))
+            elements.append(Paragraph(f"<b>Notes:</b> {esc(reason)}", cell))
+
+        _finalize(doc, elements, hospital_info)
+        buffer.seek(0)
+        return buffer
+
+    def generate_doctor_appointments_pdf(
+        self, payload, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT
+    ):
+        """Printable list of active appointments for a doctor on a given date."""
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(
+            buffer, pagesize=A4,
+            rightMargin=28, leftMargin=28, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=30,
+        )
+        elements = []
+        page_width = A4[0] - 56
+
+        title_style = ParagraphStyle(
+            'Title', parent=self.styles['Title'],
+            fontSize=14, alignment=1, fontName='Helvetica-Bold',
+            textColor=colors.black, spaceAfter=4,
+        )
+        sub_style = ParagraphStyle(
+            'Sub', parent=self.styles['Normal'],
+            fontSize=9, alignment=1, fontName='Helvetica',
+            textColor=colors.black, spaceAfter=2,
+        )
+        cell = ParagraphStyle(
+            'Cell', parent=self.styles['Normal'],
+            fontSize=8, fontName='Helvetica', textColor=colors.black, leading=10,
+        )
+        cell_b = ParagraphStyle(
+            'CellB', parent=self.styles['Normal'],
+            fontSize=8, fontName='Helvetica-Bold', textColor=colors.black, leading=10,
+        )
+        note = ParagraphStyle(
+            'Note', parent=self.styles['Normal'],
+            fontSize=9, fontName='Helvetica', textColor=colors.HexColor('#555555'),
+            alignment=1, spaceAfter=4,
+        )
+
+        def _fmt_t(t):
+            if not t:
+                return "—"
+            try:
+                parts = str(t).split(":")
+                h, m = int(parts[0]), int(parts[1])
+                ampm = "PM" if h >= 12 else "AM"
+                h12 = h % 12 or 12
+                return f"{h12}:{m:02d} {ampm}"
+            except Exception:
+                return str(t)
+
+        def _fmt_d(d):
+            if not d:
+                return ""
+            try:
+                return datetime.strptime(str(d)[:10], "%Y-%m-%d").strftime("%d/%m/%Y")
+            except Exception:
+                return str(d)
+
+        def _esc(s):
+            return (
+                str(s or "")
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+            )
+
+        if include_header:
+            elements.append(Paragraph(hospital_info.get('name', 'HOSPITAL').upper(), title_style))
+            if hospital_info.get('address'):
+                elements.append(Paragraph(hospital_info['address'], sub_style))
+            elements.append(Spacer(1, 6))
+            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+        else:
+            elements.append(Spacer(1, letterhead_gap_pt or 60))
+
+        elements.append(Spacer(1, 6))
+        elements.append(Paragraph(
+            "DOCTOR APPOINTMENTS",
+            ParagraphStyle(
+                'H', parent=self.styles['Normal'], fontSize=13, alignment=1,
+                fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4,
+            ),
+        ))
+        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
+        elements.append(Spacer(1, 8))
+
+        doctor_name = payload.get("doctor_name") or "Doctor"
+        specialization = payload.get("specialization") or ""
+        apt_date = payload.get("appointment_date") or ""
+        meta_bits = [doctor_name]
+        if specialization:
+            meta_bits.append(specialization)
+        elements.append(Paragraph(" · ".join(meta_bits), sub_style))
+        elements.append(Paragraph(f"Date: {_fmt_d(apt_date)}", sub_style))
+        elements.append(Paragraph(
+            f"Active appointments: {payload.get('total', 0)} "
+            f"(scheduled / confirmed / in progress)",
+            note,
+        ))
+
+        appointments = payload.get("appointments") or []
+        if not appointments:
+            elements.append(Spacer(1, 12))
+            elements.append(Paragraph(
+                "No active appointments for this doctor on the selected date.",
+                ParagraphStyle('N', parent=self.styles['Normal'], fontSize=10, alignment=1),
+            ))
+        else:
+            rows = [[
+                Paragraph("Tok", cell_b),
+                Paragraph("Time", cell_b),
+                Paragraph("Patient", cell_b),
+                Paragraph("Phone", cell_b),
+                Paragraph("Type", cell_b),
+                Paragraph("Status", cell_b),
+                Paragraph("Priority", cell_b),
+                Paragraph("Reason", cell_b),
+            ]]
+            for apt in appointments:
+                token = apt.get("token_number")
+                rows.append([
+                    Paragraph(str(token) if token is not None else "—", cell),
+                    Paragraph(_fmt_t(apt.get("time")), cell),
+                    Paragraph(_esc(apt.get("patient_name")), cell),
+                    Paragraph(_esc(apt.get("patient_phone")), cell),
+                    Paragraph(_esc(apt.get("appointment_type")), cell),
+                    Paragraph(_esc(apt.get("status")), cell),
+                    Paragraph(_esc(apt.get("priority")), cell),
+                    Paragraph(_esc(apt.get("reason")), cell),
+                ])
+            table = Table(
+                rows,
+                colWidths=[
+                    page_width * 0.07,
+                    page_width * 0.10,
+                    page_width * 0.18,
+                    page_width * 0.13,
+                    page_width * 0.11,
+                    page_width * 0.12,
+                    page_width * 0.10,
+                    page_width * 0.19,
+                ],
+                repeatRows=1,
+            )
+            table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#e0e0e0')),
+                ('GRID', (0, 0), (-1, -1), 0.4, colors.grey),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('TOPPADDING', (0, 0), (-1, -1), 3),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                ('ALIGN', (0, 0), (1, -1), 'CENTER'),
+            ]))
+            elements.append(table)
+
+        elements.append(Spacer(1, 14))
+        elements.append(Paragraph(
+            f"Generated on {_generated_on('%d/%m/%Y at %H:%M')}",
+            ParagraphStyle('F', parent=self.styles['Normal'], fontSize=8, alignment=1),
+        ))
+        _finalize(doc, elements, hospital_info)
         buffer.seek(0)
         return buffer
 
