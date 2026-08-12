@@ -16,28 +16,79 @@ import PatientSearchPicker from '../../../components/PatientSearchPicker';
 import PharmacyBatchSelectDialog from '../../../components/pharmacy/PharmacyBatchSelectDialog';
 import PharmacyStoreSelector from '../../../components/pharmacy/PharmacyStoreSelector';
 import {
+  combinedBaseQty,
   displayPharmacyNumericInput,
   formatBatchSummary,
   formatMoney,
+  formatRatesHint,
+  lineGrossBeforeDiscount,
+  linePricingSource,
+  normalizeTabQtyToStrips,
   pharmacyNoSpinInputClass,
+  pricingSource,
   roundMoney,
+  supportsStripSale,
+  tabSaleRate,
+  unitsPerStrip,
 } from '../../../utils/pharmacyUnits';
 import { computeLineTax } from '../../../utils/pharmacyHsnTax';
 import { Search, Trash2, Save, Check, Printer, User } from 'lucide-react';
 
-const numberInputClass = `h-8 text-sm ${pharmacyNoSpinInputClass}`;
+const numberInputClass = `h-8 w-full min-w-0 text-center px-1 text-sm ${pharmacyNoSpinInputClass}`;
 const compactInput = 'h-8 text-sm';
 
+/** Split a base (tablet) qty into strip + leftover tab fields for the UI. */
+function splitBaseQtyToTabsStrips(quantity, medicine, batch) {
+  const qty = parseFloat(quantity) || 0;
+  const scf = unitsPerStrip(pricingSource(medicine, batch));
+  if (scf > 1 && qty > 0) {
+    const strips = Math.floor(qty / scf + 1e-9);
+    const tabs = Math.round((qty - strips * scf) * 1000) / 1000;
+    return {
+      qty_tabs: tabs > 0 ? tabs : '',
+      qty_strips: strips > 0 ? strips : '',
+    };
+  }
+  return { qty_tabs: qty > 0 ? qty : '', qty_strips: '' };
+}
+
+function qtyFieldsFromSaleItem(it, medicine, batch) {
+  if (it.sale_qty_tabs != null || it.sale_qty_strips != null) {
+    return {
+      qty_tabs: (parseFloat(it.sale_qty_tabs) || 0) > 0 ? it.sale_qty_tabs : '',
+      qty_strips: (parseFloat(it.sale_qty_strips) || 0) > 0 ? it.sale_qty_strips : '',
+      rate_tier: it.rate_tier || 'A',
+    };
+  }
+  return {
+    ...splitBaseQtyToTabsStrips(it.quantity, medicine, batch),
+    rate_tier: it.rate_tier || 'A',
+  };
+}
+
+function lineBaseQty(ln) {
+  return combinedBaseQty(ln.qty_tabs, ln.qty_strips, linePricingSource(ln));
+}
+
+function linePerTabRate(ln) {
+  const locked = parseFloat(ln.unit_rate);
+  if (Number.isFinite(locked) && locked > 0) return locked;
+  return tabSaleRate(linePricingSource(ln), ln.rate_tier || 'A');
+}
+
 function calcSrLine(ln, taxMode = 'inclusive') {
-  const qty = parseFloat(ln.quantity) || 0;
-  const rate = parseFloat(ln.rate) || 0;
+  const qty = lineBaseQty(ln);
+  const locked = parseFloat(ln.unit_rate);
+  const base = (Number.isFinite(locked) && locked > 0)
+    ? roundMoney(qty * locked)
+    : lineGrossBeforeDiscount(ln);
   const disc = parseFloat(ln.discount_pct) || 0;
   const taxPct = (parseFloat(ln.sgst_pct) || 0) + (parseFloat(ln.cgst_pct) || 0) + (parseFloat(ln.igst_pct) || 0);
-  const gross = qty * rate * (1 - disc / 100);
-  const { tax, total } = computeLineTax(gross, taxPct, taxMode);
+  const afterDisc = roundMoney(base * (1 - disc / 100));
+  const { tax, total } = computeLineTax(afterDisc, taxPct, taxMode);
   return {
-    sub: roundMoney(qty * rate),
-    disc: roundMoney(qty * rate * disc / 100),
+    sub: base,
+    disc: roundMoney(base - afterDisc),
     tax,
     total,
   };
@@ -128,11 +179,14 @@ export default function SaleReturnEntry() {
     if (!editable) return;
     const batches = await loadBatchesForMedicine(med.id);
     const nearest = batches[0] || null;
-    const rate = nearest?.rate_a ?? med.rate_a ?? med.unit_price ?? 0;
+    const src = pricingSource(med, nearest);
+    const perTab = tabSaleRate(src, 'A');
     const line = {
       medicine: med,
-      quantity: '1',
-      rate: String(rate),
+      qty_tabs: 1,
+      qty_strips: '',
+      rate_tier: 'A',
+      unit_rate: String(perTab || ''),
       discount_pct: '0',
       sgst_pct: '0',
       cgst_pct: '0',
@@ -159,6 +213,15 @@ export default function SaleReturnEntry() {
   };
   const removeLine = (i) => setItems((prev) => prev.filter((_, idx) => idx !== i));
 
+  const handleQtyTabsChange = (i, raw) => {
+    const ln = items[i];
+    if (!ln) return;
+    const parsed = raw === '' ? 0 : parseFloat(raw);
+    const tabs = Number.isNaN(parsed) ? 0 : parsed;
+    const src = linePricingSource(ln);
+    updateLine(i, normalizeTabQtyToStrips(tabs, ln.qty_strips, src));
+  };
+
   const openBatchPick = async (i) => {
     const ln = items[i];
     if (!ln?.medicine) return;
@@ -171,12 +234,16 @@ export default function SaleReturnEntry() {
   const applyBatch = (batch) => {
     if (batchPick?.lineIndex == null) return;
     const i = batchPick.lineIndex;
+    const ln = items[i];
+    const src = pricingSource(ln?.medicine, batch);
+    const perTab = tabSaleRate(src, ln?.rate_tier || 'A');
     updateLine(i, {
       batch,
       batch_id: batch?.id || null,
       auto_batch: false,
       batch_number: batch?.batch_number || null,
-      rate: String(batch?.rate_a ?? items[i]?.rate ?? 0),
+      // Keep locked sale rate if present; else refresh from batch pricing
+      unit_rate: ln?.sale_item_id ? ln.unit_rate : String(perTab || ''),
     });
     setBatchPick(null);
   };
@@ -184,13 +251,16 @@ export default function SaleReturnEntry() {
   const applyAutoBatch = () => {
     if (batchPick?.lineIndex == null) return;
     const i = batchPick.lineIndex;
-    const nearest = (items[i]?.batches || batchPick.batches || [])[0] || null;
+    const ln = items[i];
+    const nearest = (ln?.batches || batchPick.batches || [])[0] || null;
+    const src = pricingSource(ln?.medicine, nearest);
+    const perTab = tabSaleRate(src, ln?.rate_tier || 'A');
     updateLine(i, {
       batch: nearest,
       batch_id: null,
       auto_batch: true,
       batch_number: nearest?.batch_number || null,
-      rate: String(nearest?.rate_a ?? items[i]?.rate ?? 0),
+      unit_rate: ln?.sale_item_id ? ln.unit_rate : String(perTab || ''),
     });
     setBatchPick(null);
   };
@@ -202,11 +272,21 @@ export default function SaleReturnEntry() {
       disc: roundMoney(acc.disc + c.disc),
       tax: roundMoney(acc.tax + c.tax),
       grand: roundMoney(acc.grand + c.total),
-      qty: acc.qty + (parseFloat(ln.quantity) || 0),
+      qty: roundMoney(acc.qty + lineBaseQty(ln)),
     };
   }, { sub: 0, disc: 0, tax: 0, grand: 0, qty: 0 }), [items]);
 
   const resolveBatchId = (ln) => ln.batch_id || ln.batch?.id || null;
+
+  const clearSale = () => {
+    if (!editable) return;
+    setHeader((h) => ({ ...h, sale_id: '', sale_ref: '' }));
+    setSaleHits([]);
+    setItems((prev) => prev.map((ln) => ({
+      ...ln,
+      sale_item_id: null,
+    })));
+  };
 
   const payload = () => ({
     return_date: header.return_date,
@@ -218,18 +298,22 @@ export default function SaleReturnEntry() {
     reason: header.reason || null,
     store_id: activeStoreId || null,
     tax_mode: taxMode,
-    items: items.map((ln) => ({
-      sale_item_id: ln.sale_item_id || null,
-      medicine_id: ln.medicine.id,
-      batch_id: Number(resolveBatchId(ln)),
-      quantity: Number(ln.quantity),
-      rate: Number(ln.rate || 0),
-      discount_pct: Number(ln.discount_pct || 0),
-      sgst_pct: Number(ln.sgst_pct || 0),
-      cgst_pct: Number(ln.cgst_pct || 0),
-      igst_pct: Number(ln.igst_pct || 0),
-      restock: !!ln.restock,
-    })).filter((it) => it.medicine_id && it.batch_id && it.quantity > 0),
+    items: items.map((ln) => {
+      const quantity = lineBaseQty(ln);
+      const linkedSale = !!header.sale_id;
+      return {
+        sale_item_id: linkedSale ? (ln.sale_item_id || null) : null,
+        medicine_id: ln.medicine.id,
+        batch_id: Number(resolveBatchId(ln)),
+        quantity,
+        rate: linePerTabRate(ln),
+        discount_pct: Number(ln.discount_pct || 0),
+        sgst_pct: Number(ln.sgst_pct || 0),
+        cgst_pct: Number(ln.cgst_pct || 0),
+        igst_pct: Number(ln.igst_pct || 0),
+        restock: !!ln.restock,
+      };
+    }).filter((it) => it.medicine_id && it.batch_id && it.quantity > 0),
   });
 
   const handlePatientChange = (patient) => {
@@ -340,10 +424,11 @@ export default function SaleReturnEntry() {
           batch: batchStub,
         });
         const batch = batches.find((b) => b.id === it.batch_id) || batchStub;
+        const qtyFields = qtyFieldsFromSaleItem(it, medicine, batch);
         return {
           medicine,
-          quantity: String(it.quantity),
-          rate: String(it.rate || 0),
+          ...qtyFields,
+          unit_rate: String(it.rate || tabSaleRate(pricingSource(medicine, batch), qtyFields.rate_tier) || 0),
           discount_pct: String(it.discount_pct || 0),
           sgst_pct: String(it.sgst_pct || 0),
           cgst_pct: String(it.cgst_pct || 0),
@@ -417,10 +502,12 @@ export default function SaleReturnEntry() {
             batch_id: it.batch_id,
             batch: batchStub,
           });
+          const batch = batches.find((b) => b.id === it.batch_id) || batchStub;
           return {
             medicine,
-            quantity: String(it.quantity),
-            rate: String(it.rate || 0),
+            ...splitBaseQtyToTabsStrips(it.quantity, medicine, batch),
+            rate_tier: 'A',
+            unit_rate: String(it.rate || 0),
             discount_pct: String(it.discount_pct || 0),
             sgst_pct: String(it.sgst_pct || 0),
             cgst_pct: String(it.cgst_pct || 0),
@@ -428,7 +515,7 @@ export default function SaleReturnEntry() {
             restock: it.restock !== false,
             sale_item_id: it.sale_item_id,
             batch_id: it.batch_id,
-            batch: batches.find((b) => b.id === it.batch_id) || batchStub,
+            batch,
             batches,
             auto_batch: false,
             batch_number: it.batch_number,
@@ -450,7 +537,7 @@ export default function SaleReturnEntry() {
   const save = async () => {
     const body = payload();
     if (!body.items.length) {
-      toast({ variant: 'destructive', title: 'Add at least one line with a batch' });
+      toast({ variant: 'destructive', title: 'Add at least one line with tab/strip qty and a batch' });
       return;
     }
     setSaving(true);
@@ -507,7 +594,7 @@ export default function SaleReturnEntry() {
           </div>
           <div className="px-3 pb-3 pt-0 space-y-2">
             <div className="relative">
-              <Label className="text-xs">Sale (optional)</Label>
+              <Label className="text-xs">Sale bill (optional)</Label>
               <div className="flex gap-1">
                 <Input
                   className={compactInput}
@@ -515,7 +602,13 @@ export default function SaleReturnEntry() {
                   value={header.sale_ref}
                   onChange={(e) => {
                     const v = e.target.value;
-                    setHeader({ ...header, sale_ref: v, sale_id: /^\d+$/.test(v.trim()) ? v.trim() : header.sale_id });
+                    const trimmed = v.trim();
+                    setHeader({
+                      ...header,
+                      sale_ref: v,
+                      // Clear linked sale when the field is emptied; only set numeric ID from typing digits
+                      sale_id: !trimmed ? '' : (/^\d+$/.test(trimmed) ? trimmed : header.sale_id),
+                    });
                     searchSales(v);
                   }}
                   onKeyDown={(e) => {
@@ -524,15 +617,25 @@ export default function SaleReturnEntry() {
                       applySale(header.sale_ref);
                     }
                   }}
-                  placeholder="Sale # or ID…"
+                  placeholder="Leave blank for no-sale return…"
                 />
-                {editable && (
+                {editable && header.sale_ref && (
                   <Button type="button" size="sm" variant="outline" className="h-8"
                     onClick={() => applySale(header.sale_ref)}>
                     Load
                   </Button>
                 )}
+                {editable && (header.sale_id || header.sale_ref) && (
+                  <Button type="button" size="sm" variant="ghost" className="h-8" onClick={clearSale}>
+                    Clear
+                  </Button>
+                )}
               </div>
+              <p className="text-[10px] text-gray-500 mt-0.5">
+                {header.sale_id
+                  ? `Linked to sale #${header.sale_ref || header.sale_id}`
+                  : 'No sale linked — search & add tablets below'}
+              </p>
               {saleHits.length > 0 && editable && (
                 <div className="absolute z-10 left-0 right-0 mt-1 border bg-white rounded shadow-lg max-h-48 overflow-y-auto">
                   {saleHits.map((s) => (
@@ -723,7 +826,7 @@ export default function SaleReturnEntry() {
             <div className="flex-1 min-h-0 overflow-y-auto overflow-x-auto">
               {items.length === 0 ? (
                 <p className="text-center py-8 text-sm text-gray-500">
-                  No items yet — search above or load a sale.
+                  Search medicines above to add return lines — a sale bill is not required.
                 </p>
               ) : (
                 <table className="w-full text-sm">
@@ -731,8 +834,9 @@ export default function SaleReturnEntry() {
                     <tr className="border-b text-left text-gray-600">
                       <th className="py-2 pr-2">Medicine</th>
                       <th className="py-2 pr-2">Batch</th>
-                      <th className="py-2 pr-2 w-20">Qty</th>
-                      <th className="py-2 pr-2 w-24">Rate</th>
+                      <th className="py-2 px-1 text-center w-20">Qty Tab</th>
+                      <th className="py-2 px-1 text-center w-20">Qty Strip</th>
+                      <th className="py-2 px-1 text-center w-16">Disc %</th>
                       <th className="py-2 pr-2 w-16">Restock</th>
                       <th className="py-2 pl-2 text-right">Amount</th>
                       <th className="py-2 w-8" />
@@ -740,13 +844,16 @@ export default function SaleReturnEntry() {
                   </thead>
                   <tbody>
                     {items.map((ln, i) => {
+                      const pricing = linePricingSource(ln);
                       const batchSummary = formatBatchSummary(ln.batch || { batch_number: ln.batch_number });
                       const lineTot = calcSrLine(ln, taxMode).total;
+                      const ratesHint = formatRatesHint(pricing, ln.rate_tier || 'A');
                       return (
                         <tr key={i} className="border-b align-top">
                           <td className="py-2 pr-2">
                             <div className="font-medium leading-tight">{ln.medicine?.name}</div>
                             <div className="text-xs text-gray-500">{ln.medicine?.medicine_code}</div>
+                            <div className="text-[10px] text-blue-700">{ratesHint}</div>
                           </td>
                           <td className="py-2 pr-2">
                             <button
@@ -761,28 +868,45 @@ export default function SaleReturnEntry() {
                               )}
                             </button>
                           </td>
-                          <td className="py-2 pr-2">
+                          <td className="py-2 px-1">
                             <Input
                               className={numberInputClass}
                               type="number"
                               min="0"
+                              step={ln.medicine?.decimal_supported ? '0.5' : '1'}
                               disabled={!editable}
-                              value={displayPharmacyNumericInput(ln.quantity)}
-                              onChange={(e) => updateLine(i, { quantity: e.target.value })}
+                              value={displayPharmacyNumericInput(ln.qty_tabs)}
+                              onChange={(e) => handleQtyTabsChange(i, e.target.value)}
                             />
                           </td>
-                          <td className="py-2 pr-2">
+                          <td className="py-2 px-1">
+                            {supportsStripSale(pricing) ? (
+                              <Input
+                                className={numberInputClass}
+                                type="number"
+                                min="0"
+                                step="1"
+                                disabled={!editable}
+                                value={displayPharmacyNumericInput(ln.qty_strips)}
+                                onChange={(e) => updateLine(i, { qty_strips: e.target.value })}
+                              />
+                            ) : (
+                              <span className="text-xs text-gray-400 block text-center">—</span>
+                            )}
+                          </td>
+                          <td className="py-2 px-1">
                             <Input
                               className={numberInputClass}
                               type="number"
                               min="0"
+                              max="100"
                               step="0.01"
                               disabled={!editable}
-                              value={displayPharmacyNumericInput(ln.rate)}
-                              onChange={(e) => updateLine(i, { rate: e.target.value })}
+                              value={displayPharmacyNumericInput(ln.discount_pct)}
+                              onChange={(e) => updateLine(i, { discount_pct: e.target.value })}
                             />
                           </td>
-                          <td className="py-2 pr-2">
+                          <td className="py-2 pr-2 text-center">
                             <input
                               type="checkbox"
                               disabled={!editable}

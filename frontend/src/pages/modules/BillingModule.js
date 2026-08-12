@@ -12,8 +12,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/ta
 import axios from 'axios';
 import {
   Receipt, Search, Download, DollarSign, TrendingUp, Clock,
-  CheckCircle2, Loader2, XCircle, Ban, CreditCard, Eye,
-  Building2, Stethoscope, FlaskConical, BedDouble, Pill, Printer, FileText, ChevronDown
+  CheckCircle2, Loader2, XCircle,   Ban, CreditCard, Eye,
+  Building2, Stethoscope, FlaskConical, BedDouble, Pill, Printer, FileText, ChevronDown, Trash2
 } from 'lucide-react';
 import { printPdfFromUrl } from '../../utils/printPdf';
 import PdfPreviewDialog from '../../components/PdfPreviewDialog';
@@ -48,6 +48,10 @@ const BillingModule = () => {
   const [cancelBill, setCancelBill] = useState(null);
   const [cancelReason, setCancelReason] = useState('');
   const [cancelling, setCancelling] = useState(false);
+
+  // Delete cancelled bill dialog
+  const [deleteBill, setDeleteBill] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   // Bill detail dialog
   const [detailBill, setDetailBill] = useState(null);
@@ -243,6 +247,26 @@ const BillingModule = () => {
       }
     } finally {
       setCancelling(false);
+    }
+  };
+
+  const handleDeleteCancelledBill = async () => {
+    if (!deleteBill) return;
+    setDeleting(true);
+    try {
+      const params = new URLSearchParams();
+      if (deleteBill.type === 'lab' && deleteBill.lab_bill_group_id) {
+        params.set('lab_bill_group_id', deleteBill.lab_bill_group_id);
+      }
+      const qs = params.toString() ? `?${params.toString()}` : '';
+      await axios.delete(`/api/hospital/billing/${deleteBill.type}/${deleteBill.bill_id}${qs}`);
+      setDeleteBill(null);
+      fetchBills();
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      alert(typeof detail === 'string' ? detail : 'Delete failed');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -1090,6 +1114,13 @@ const BillingModule = () => {
                                     <Ban className="w-3 h-3" />
                                   </Button>
                                 )}
+                                {bill.payment_status === 'cancelled' && bill.bill_id && (
+                                  <Button size="sm" variant="ghost" className="h-6 text-[10px] text-red-600 hover:text-red-800 hover:bg-red-50 px-2"
+                                    onClick={() => setDeleteBill(bill)}
+                                    title="Delete cancelled bill">
+                                    <Trash2 className="w-3 h-3" />
+                                  </Button>
+                                )}
                               </div>
                             </td>
                           </tr>
@@ -1440,6 +1471,38 @@ const BillingModule = () => {
               <Button variant="outline" onClick={() => setCancelBill(null)}>Close</Button>
               <Button variant="destructive" disabled={cancelling || !cancelReason.trim()} onClick={handleCancelBill}>
                 {cancelling ? 'Cancelling...' : 'Cancel Bill'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Cancelled Bill Dialog */}
+      <Dialog open={!!deleteBill} onOpenChange={(open) => { if (!open) setDeleteBill(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Trash2 className="h-5 w-5 text-red-600" /> Delete Cancelled Bill
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            {deleteBill && (
+              <div className="bg-gray-50 rounded-lg p-3 space-y-1">
+                <p className="text-sm font-semibold">{deleteBill.patient_name}</p>
+                <p className="text-xs text-gray-500">{deleteBill.reference} — {deleteBill.items}</p>
+                <p className="text-sm font-semibold text-red-600">{formatCurrency(deleteBill.amount)}</p>
+                {deleteBill.cancel_reason && (
+                  <p className="text-xs text-gray-500 mt-1">Cancel reason: {deleteBill.cancel_reason}</p>
+                )}
+              </div>
+            )}
+            <p className="text-sm text-gray-600">
+              This permanently removes the cancelled bill from billing management. This cannot be undone.
+            </p>
+            <div className="flex justify-end gap-2 pt-2 border-t">
+              <Button variant="outline" onClick={() => setDeleteBill(null)} disabled={deleting}>Close</Button>
+              <Button variant="destructive" disabled={deleting} onClick={handleDeleteCancelledBill}>
+                {deleting ? 'Deleting...' : 'Delete Bill'}
               </Button>
             </div>
           </div>

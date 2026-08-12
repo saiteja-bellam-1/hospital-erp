@@ -167,15 +167,16 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
     }
   };
 
-  const setColumnTarget = (header, target) => {
+  /** Assign a file column name to an ERP field (keeps {header → target} for the API). */
+  const setTargetColumn = (target, header) => {
     setMapping((prev) => {
       const next = { ...prev };
-      if (target && target !== 'ignore') {
-        Object.keys(next).forEach((h) => {
-          if (h !== header && next[h] === target) next[h] = 'ignore';
-        });
+      Object.keys(next).forEach((h) => {
+        if (next[h] === target) next[h] = 'ignore';
+      });
+      if (header && header !== '__none__') {
+        next[header] = target;
       }
-      next[header] = target;
       return next;
     });
     setSummary(null);
@@ -183,8 +184,22 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
     setMappingSaved(false);
   };
 
+  const columnForTarget = (target) => {
+    const entry = Object.entries(mapping).find(([, t]) => t === target);
+    return entry ? entry[0] : '__none__';
+  };
+
   const mappedTargets = useMemo(
     () => new Set(Object.values(mapping).filter((v) => v && v !== 'ignore')),
+    [mapping],
+  );
+
+  const usedColumns = useMemo(
+    () => new Set(
+      Object.entries(mapping)
+        .filter(([, t]) => t && t !== 'ignore')
+        .map(([h]) => h),
+    ),
     [mapping],
   );
 
@@ -300,6 +315,7 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
     const groups = [];
     let current = null;
     targets.forEach((t) => {
+      if (t.key === 'ignore') return;
       const g = t.group || '';
       if (!current || current.label !== g) {
         current = { label: g, items: [] };
@@ -540,64 +556,110 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
               {inspect && headers.length > 0 && (
                 <div className="border border-slate-200 rounded-lg overflow-hidden">
                   <div className="grid grid-cols-[1fr_auto_1fr] gap-2 px-3 py-2 text-[10px] uppercase tracking-wider text-slate-400 border-b bg-slate-50">
-                    <div>File column</div>
-                    <div className="w-6" />
                     <div>ERP purchase field</div>
+                    <div className="w-6" />
+                    <div>File column</div>
                   </div>
-                  <div className="max-h-64 overflow-y-auto divide-y divide-slate-50">
-                    {headers.map((header) => {
-                      const samples = (inspect.samples?.[header] || []).filter(Boolean);
-                      const value = mapping[header] || 'ignore';
-                      return (
-                        <div
-                          key={header}
-                          className="grid grid-cols-[1fr_auto_1fr] gap-2 items-center px-3 py-2 hover:bg-slate-50/80"
-                        >
-                          <div className="min-w-0">
-                            <div className="text-sm font-mono font-medium text-slate-800 truncate">{header}</div>
-                            {samples.length > 0 && (
-                              <div className="text-[11px] text-slate-400 truncate mt-0.5" title={samples.join(' · ')}>
-                                e.g. {samples.slice(0, 2).join(' · ')}
-                              </div>
-                            )}
+                  <div className="max-h-72 overflow-y-auto">
+                    {targetsByGroup.map((group) => (
+                      <div key={group.label || 'root'}>
+                        {group.label ? (
+                          <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400 bg-slate-50/80 border-y border-slate-100 sticky top-0">
+                            {group.label}
                           </div>
-                          <ArrowRight className="h-3.5 w-3.5 text-slate-300" />
-                          <Select value={value} onValueChange={(v) => setColumnTarget(header, v)}>
-                            <SelectTrigger className={`h-8 text-xs ${value !== 'ignore' ? 'border-indigo-200 bg-indigo-50/40' : ''}`}>
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent className="max-h-72">
-                              {targetsByGroup.map((group) => (
-                                <React.Fragment key={group.label || 'root'}>
-                                  {group.label ? (
-                                    <div className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                                      {group.label}
-                                    </div>
-                                  ) : null}
-                                  {group.items.map((t) => {
-                                    const taken = mappedTargets.has(t.key) && mapping[header] !== t.key && t.key !== 'ignore';
-                                    return (
-                                      <SelectItem key={t.key} value={t.key} disabled={taken} className="text-xs">
-                                        {t.label}{taken ? ' (mapped)' : ''}
-                                      </SelectItem>
-                                    );
-                                  })}
-                                </React.Fragment>
-                              ))}
-                            </SelectContent>
-                          </Select>
+                        ) : null}
+                        <div className="divide-y divide-slate-50">
+                          {group.items.map((t) => {
+                            const selectedCol = columnForTarget(t.key);
+                            const mapped = selectedCol !== '__none__';
+                            return (
+                              <div
+                                key={t.key}
+                                className="grid grid-cols-[1fr_auto_1fr] gap-2 items-center px-3 py-2 hover:bg-slate-50/80"
+                              >
+                                <div className="min-w-0 text-sm text-slate-800 truncate" title={t.label}>
+                                  {t.label}
+                                </div>
+                                <ArrowRight className="h-3.5 w-3.5 text-slate-300" />
+                                <Select
+                                  value={selectedCol}
+                                  onValueChange={(v) => setTargetColumn(t.key, v)}
+                                >
+                                  <SelectTrigger className={`h-8 text-xs font-mono ${mapped ? 'border-indigo-200 bg-indigo-50/40' : ''}`}>
+                                    <SelectValue placeholder="Select column…" />
+                                  </SelectTrigger>
+                                  <SelectContent className="max-h-72">
+                                    <SelectItem value="__none__" className="text-xs">
+                                      — Not mapped —
+                                    </SelectItem>
+                                    {headers.map((header) => {
+                                      const taken = usedColumns.has(header) && selectedCol !== header;
+                                      return (
+                                        <SelectItem
+                                          key={header}
+                                          value={header}
+                                          disabled={taken}
+                                          className="text-xs font-mono"
+                                        >
+                                          {header}{taken ? ' (used)' : ''}
+                                        </SelectItem>
+                                      );
+                                    })}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                            );
+                          })}
                         </div>
-                      );
-                    })}
+                      </div>
+                    ))}
                   </div>
                   <div className="px-3 py-2 bg-slate-50 border-t text-[11px] text-slate-500">
                     {mappedTargets.size} field{mappedTargets.size !== 1 ? 's' : ''} mapped
+                    {headers.length > 0 && (
+                      <span> · {headers.length} columns in file</span>
+                    )}
                     {mappedTargets.has('mrp') && !mappedTargets.has('rate_a') && (
                       <span> · Rate A/B will use MRP when not mapped separately</span>
                     )}
                   </div>
                 </div>
               )}
+
+              <div className="border border-slate-200 rounded-lg p-3 space-y-2">
+                <div className="text-xs font-medium text-slate-700">Save this mapping</div>
+                <div className="text-[11px] text-slate-500">
+                  Name and save the current column map (and row range) to reuse on similar purchases.
+                </div>
+                <div className="flex flex-wrap items-end gap-2">
+                  <div className="flex-1 min-w-[180px] space-y-1">
+                    <Label className="text-xs">Mapping name</Label>
+                    <Input
+                      className="h-9 text-sm"
+                      value={mappingName}
+                      onChange={(e) => { setMappingName(e.target.value); setMappingSaved(false); }}
+                      placeholder="e.g. Vasu Pharma CSV"
+                    />
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={saveMappingPreset}
+                    disabled={savingMapping || mappedTargets.size === 0 || !mappingName.trim()}
+                  >
+                    {savingMapping
+                      ? <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      : <Save className="h-4 w-4 mr-2" />}
+                    {mappingSaved ? 'Saved' : 'Save mapping'}
+                  </Button>
+                </div>
+                {mappingSaved && (
+                  <div className="text-[11px] text-emerald-700 flex items-center gap-1">
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                    Mapping “{mappingName}” saved — load it from the dropdown above next time.
+                  </div>
+                )}
+              </div>
 
               <div className="flex justify-between pt-2 border-t">
                 <Button variant="outline" size="sm" onClick={() => setStep('rows')}>Back</Button>
@@ -729,32 +791,10 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
               )}
 
               {done && (
-                <div className="border border-emerald-100 bg-emerald-50/40 rounded-lg p-3 space-y-3">
-                  <div className="flex items-center gap-1.5 text-sm text-emerald-700">
-                    <CheckCircle2 className="h-4 w-4" /> Import complete — save this column mapping for next time?
-                  </div>
-                  {!mappingSaved ? (
-                    <div className="flex flex-wrap items-end gap-2">
-                      <div className="flex-1 min-w-[180px] space-y-1">
-                        <Label className="text-xs">Mapping name</Label>
-                        <Input
-                          className="h-9 text-sm"
-                          value={mappingName}
-                          onChange={(e) => setMappingName(e.target.value)}
-                          placeholder="e.g. Vasu Pharma CSV"
-                        />
-                      </div>
-                      <Button size="sm" onClick={saveMappingPreset} disabled={savingMapping}>
-                        {savingMapping
-                          ? <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                          : <Save className="h-4 w-4 mr-2" />}
-                        Save mapping
-                      </Button>
-                    </div>
-                  ) : (
-                    <div className="text-xs text-emerald-700">
-                      Mapping “{mappingName}” saved. You can load it on step 3 next time.
-                    </div>
+                <div className="border border-emerald-100 bg-emerald-50/40 rounded-lg px-3 py-2 text-sm text-emerald-700 flex items-center gap-1.5">
+                  <CheckCircle2 className="h-4 w-4" /> Import complete.
+                  {mappingSaved && mappingName.trim() && (
+                    <span className="text-emerald-600/80"> Mapping “{mappingName}” is saved for next time.</span>
                   )}
                 </div>
               )}

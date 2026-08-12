@@ -6309,7 +6309,7 @@ class PDFService:
     def generate_doctor_appointments_pdf(
         self, payload, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT
     ):
-        """Printable list of active appointments for a doctor on a given date."""
+        """Printable list of active appointments for a doctor (single day or range)."""
         buffer = BytesIO()
         doc = SimpleDocTemplate(
             buffer, pagesize=A4,
@@ -6327,6 +6327,11 @@ class PDFService:
             'Sub', parent=self.styles['Normal'],
             fontSize=9, alignment=1, fontName='Helvetica',
             textColor=colors.black, spaceAfter=2,
+        )
+        section = ParagraphStyle(
+            'Section', parent=self.styles['Normal'],
+            fontSize=10, fontName='Helvetica-Bold',
+            textColor=colors.black, spaceBefore=10, spaceAfter=4,
         )
         cell = ParagraphStyle(
             'Cell', parent=self.styles['Normal'],
@@ -6370,48 +6375,14 @@ class PDFService:
                 .replace(">", "&gt;")
             )
 
-        if include_header:
-            elements.append(Paragraph(hospital_info.get('name', 'HOSPITAL').upper(), title_style))
-            if hospital_info.get('address'):
-                elements.append(Paragraph(hospital_info['address'], sub_style))
-            elements.append(Spacer(1, 6))
-            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
-        else:
-            elements.append(Spacer(1, letterhead_gap_pt or 60))
+        def _day_header(d):
+            try:
+                dt = datetime.strptime(str(d)[:10], "%Y-%m-%d")
+                return dt.strftime("%A, %d/%m/%Y")
+            except Exception:
+                return _fmt_d(d)
 
-        elements.append(Spacer(1, 6))
-        elements.append(Paragraph(
-            "DOCTOR APPOINTMENTS",
-            ParagraphStyle(
-                'H', parent=self.styles['Normal'], fontSize=13, alignment=1,
-                fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4,
-            ),
-        ))
-        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
-        elements.append(Spacer(1, 8))
-
-        doctor_name = payload.get("doctor_name") or "Doctor"
-        specialization = payload.get("specialization") or ""
-        apt_date = payload.get("appointment_date") or ""
-        meta_bits = [doctor_name]
-        if specialization:
-            meta_bits.append(specialization)
-        elements.append(Paragraph(" · ".join(meta_bits), sub_style))
-        elements.append(Paragraph(f"Date: {_fmt_d(apt_date)}", sub_style))
-        elements.append(Paragraph(
-            f"Active appointments: {payload.get('total', 0)} "
-            f"(scheduled / confirmed / in progress)",
-            note,
-        ))
-
-        appointments = payload.get("appointments") or []
-        if not appointments:
-            elements.append(Spacer(1, 12))
-            elements.append(Paragraph(
-                "No active appointments for this doctor on the selected date.",
-                ParagraphStyle('N', parent=self.styles['Normal'], fontSize=10, alignment=1),
-            ))
-        else:
+        def _apt_table(apts):
             rows = [[
                 Paragraph("Tok", cell_b),
                 Paragraph("Time", cell_b),
@@ -6422,7 +6393,7 @@ class PDFService:
                 Paragraph("Priority", cell_b),
                 Paragraph("Reason", cell_b),
             ]]
-            for apt in appointments:
+            for apt in apts:
                 token = apt.get("token_number")
                 rows.append([
                     Paragraph(str(token) if token is not None else "—", cell),
@@ -6456,7 +6427,70 @@ class PDFService:
                 ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
                 ('ALIGN', (0, 0), (1, -1), 'CENTER'),
             ]))
-            elements.append(table)
+            return table
+
+        if include_header:
+            elements.append(Paragraph(hospital_info.get('name', 'HOSPITAL').upper(), title_style))
+            if hospital_info.get('address'):
+                elements.append(Paragraph(hospital_info['address'], sub_style))
+            elements.append(Spacer(1, 6))
+            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+        else:
+            elements.append(Spacer(1, letterhead_gap_pt or 60))
+
+        elements.append(Spacer(1, 6))
+        elements.append(Paragraph(
+            "DOCTOR APPOINTMENTS",
+            ParagraphStyle(
+                'H', parent=self.styles['Normal'], fontSize=13, alignment=1,
+                fontName='Helvetica-Bold', textColor=colors.black, spaceAfter=4,
+            ),
+        ))
+        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
+        elements.append(Spacer(1, 8))
+
+        doctor_name = payload.get("doctor_name") or "Doctor"
+        specialization = payload.get("specialization") or ""
+        date_from = payload.get("date_from") or payload.get("appointment_date") or ""
+        date_to = payload.get("date_to") or date_from
+        meta_bits = [doctor_name]
+        if specialization:
+            meta_bits.append(specialization)
+        elements.append(Paragraph(" · ".join(meta_bits), sub_style))
+        if date_from and date_to and date_from != date_to:
+            elements.append(Paragraph(
+                f"Period: {_fmt_d(date_from)} – {_fmt_d(date_to)}", sub_style,
+            ))
+        else:
+            elements.append(Paragraph(f"Date: {_fmt_d(date_from or date_to)}", sub_style))
+        elements.append(Paragraph(
+            f"Active appointments: {payload.get('total', 0)} "
+            f"(scheduled / confirmed / in progress)",
+            note,
+        ))
+
+        appointments = payload.get("appointments") or []
+        if not appointments:
+            elements.append(Spacer(1, 12))
+            empty_msg = (
+                "No active appointments for this doctor in the selected period."
+                if date_from != date_to
+                else "No active appointments for this doctor on the selected date."
+            )
+            elements.append(Paragraph(
+                empty_msg,
+                ParagraphStyle('N', parent=self.styles['Normal'], fontSize=10, alignment=1),
+            ))
+        elif date_from and date_to and date_from != date_to:
+            by_day = {}
+            for apt in appointments:
+                day_key = str(apt.get("date") or "")[:10]
+                by_day.setdefault(day_key, []).append(apt)
+            for day_key in sorted(by_day.keys()):
+                elements.append(Paragraph(_day_header(day_key), section))
+                elements.append(_apt_table(by_day[day_key]))
+        else:
+            elements.append(_apt_table(appointments))
 
         elements.append(Spacer(1, 14))
         elements.append(Paragraph(

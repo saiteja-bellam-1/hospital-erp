@@ -388,6 +388,11 @@ def _validate_sale_return_items(db: Session, data: SaleReturnIn, hospital_id: in
             raise HTTPException(status_code=400, detail=f"Batch {it.batch_id} not found")
         if batch.medicine_id != it.medicine_id:
             raise HTTPException(status_code=400, detail="Batch does not match medicine")
+        if it.sale_item_id and not sale:
+            raise HTTPException(
+                status_code=400,
+                detail="sale_item_id requires a sale_id (or omit both for a walk-in return)",
+            )
         if it.sale_item_id and sale:
             si = db.query(PharmacySaleItem).filter(
                 PharmacySaleItem.id == it.sale_item_id,

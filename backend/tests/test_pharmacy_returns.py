@@ -152,27 +152,64 @@ def test_sales_return_restock_and_credit_note_pdf(client, auth_headers, returns_
     assert pdf.headers["content-type"].startswith("application/pdf")
 
 
-def test_sales_return_open_without_sale(client, auth_headers, returns_setup):
+def test_sales_return_open_without_sale(client, auth_headers, returns_setup, db_session):
+    from app.models.pharmacy import PharmacyInventory, PharmacyStockLedger
+
     H = auth_headers
     purchase = _confirm_purchase(client, H, returns_setup, qty=20, invoice=f"INV-{uuid.uuid4().hex[:5]}")
     batch_id = purchase["items"][0]["inventory_id"]
+    before = db_session.query(PharmacyInventory).filter(PharmacyInventory.id == batch_id).one()
+    stock_before = float(before.quantity_in_stock)
+
     draft = client.post("/api/pharmacy/sale-returns", headers=H, json={
         "patient_name": "Walk-in",
         "store_id": returns_setup["store_id"],
+        "reason": "No bill — unused tablets",
         "items": [{
+            "medicine_id": returns_setup["medicine_id"],
+            "batch_id": batch_id,
+            "quantity": 3,
+            "rate": 20.0,
+            "restock": True,
+        }],
+    })
+    assert draft.status_code == 201, draft.text
+    body = draft.json()
+    assert body.get("sale_id") in (None, 0)
+    rid = body["id"]
+    conf = client.post(f"/api/pharmacy/sale-returns/{rid}/confirm", headers=H, json={
+        "settlement_method": "cash",
+        "settlement_amount": body["grand_total"],
+    })
+    assert conf.status_code == 200, conf.text
+    assert conf.json()["status"] == "confirmed"
+
+    db_session.expire_all()
+    after = db_session.query(PharmacyInventory).filter(PharmacyInventory.id == batch_id).one()
+    assert abs(float(after.quantity_in_stock) - (stock_before + 3)) < 0.001
+    led = db_session.query(PharmacyStockLedger).filter(
+        PharmacyStockLedger.reference_type == "sale_return",
+        PharmacyStockLedger.reference_id == rid,
+    ).all()
+    assert len(led) == 1
+    assert float(led[0].qty_delta) == 3.0
+
+
+def test_sales_return_rejects_sale_item_without_sale(client, auth_headers, returns_setup):
+    H = auth_headers
+    purchase = _confirm_purchase(client, H, returns_setup, qty=10, invoice=f"INV-{uuid.uuid4().hex[:5]}")
+    batch_id = purchase["items"][0]["inventory_id"]
+    draft = client.post("/api/pharmacy/sale-returns", headers=H, json={
+        "store_id": returns_setup["store_id"],
+        "items": [{
+            "sale_item_id": 999999,
             "medicine_id": returns_setup["medicine_id"],
             "batch_id": batch_id,
             "quantity": 1,
             "rate": 20.0,
-            "restock": False,
         }],
     })
-    assert draft.status_code == 201, draft.text
-    rid = draft.json()["id"]
-    conf = client.post(f"/api/pharmacy/sale-returns/{rid}/confirm", headers=H, json={
-        "settlement_method": "none",
-    })
-    assert conf.status_code == 200, conf.text
+    assert draft.status_code == 400, draft.text
 
 
 def test_purchase_return_challan_stock_out_and_debit_note_allocate(

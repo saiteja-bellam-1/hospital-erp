@@ -128,6 +128,7 @@ const ReceptionAppointmentsPage = () => {
   // Search and filter states
   const [searchTerm, setSearchTerm] = useState('');
   const [filterDate, setFilterDate] = useState(localDateString());
+  const [filterDateTo, setFilterDateTo] = useState(localDateString());
   const [filterDoctor, setFilterDoctor] = useState('all');
   const [filterStatus, setFilterStatus] = useState('all');
 
@@ -193,12 +194,12 @@ const ReceptionAppointmentsPage = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
-  // Fetch appointments when filter date changes
+  // Fetch appointments when date range changes
   useEffect(() => {
-    if (filterDate) {
-      fetchAppointmentsByDate(filterDate);
+    if (filterDate && filterDateTo) {
+      fetchAppointmentsByRange(filterDate, filterDateTo);
     }
-  }, [filterDate]);
+  }, [filterDate, filterDateTo]);
 
   const fetchDoctors = async () => {
     try {
@@ -219,13 +220,18 @@ const ReceptionAppointmentsPage = () => {
   };
 
   const fetchTodayAppointments = () => {
-    fetchAppointmentsByDate(localDateString());
+    const today = localDateString();
+    setFilterDate(today);
+    setFilterDateTo(today);
+    fetchAppointmentsByRange(today, today);
   };
 
-  const fetchAppointmentsByDate = async (date) => {
+  const fetchAppointmentsByRange = async (dateFrom, dateTo) => {
+    const from = dateFrom || localDateString();
+    const to = dateTo || from;
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch(`/api/appointments/?date_from=${date}&date_to=${date}`, {
+      const response = await fetch(`/api/appointments/?date_from=${from}&date_to=${to}`, {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
@@ -242,6 +248,10 @@ const ReceptionAppointmentsPage = () => {
       console.error('Error fetching appointments:', error);
       setAllAppointments([]);
     }
+  };
+
+  const fetchAppointmentsByDate = async (date) => {
+    await fetchAppointmentsByRange(date, date);
   };
 
   const displayedAppointments = useMemo(() => {
@@ -265,10 +275,11 @@ const ReceptionAppointmentsPage = () => {
 
   const refreshAfterBooking = async (bookedDate) => {
     setFilterDate(bookedDate);
+    setFilterDateTo(bookedDate);
     setSearchTerm('');
     setFilterDoctor('all');
     setFilterStatus('all');
-    await fetchAppointmentsByDate(bookedDate);
+    await fetchAppointmentsByRange(bookedDate, bookedDate);
   };
 
   const searchPatientByPhone = async (phone) => {
@@ -723,7 +734,7 @@ const ReceptionAppointmentsPage = () => {
       if (response.ok) {
         const data = await response.json();
         toast({ title: 'Success', description: `Patient checked in! Token #${data.token_number}` });
-        fetchAppointmentsByDate(filterDate);
+        fetchAppointmentsByRange(filterDate, filterDateTo);
       } else {
         const err = await response.json();
         toast({ variant: 'destructive', title: 'Error', description: err.detail || 'Check-in failed' });
@@ -745,7 +756,7 @@ const ReceptionAppointmentsPage = () => {
       const data = await response.json().catch(() => ({}));
       if (response.ok) {
         toast({ title: 'Queue updated', description: data.message || `${action} complete` });
-        fetchAppointmentsByDate(filterDate);
+        fetchAppointmentsByRange(filterDate, filterDateTo);
       } else {
         const msg = typeof data.detail === 'string' ? data.detail : `Failed to ${action}`;
         toast({ variant: 'destructive', title: 'Error', description: msg });
@@ -766,7 +777,7 @@ const ReceptionAppointmentsPage = () => {
       });
       if (response.ok) {
         toast({ title: 'Success', description: 'Patient checked out successfully' });
-        fetchAppointmentsByDate(filterDate);
+        fetchAppointmentsByRange(filterDate, filterDateTo);
       } else {
         const err = await response.json();
         toast({ variant: 'destructive', title: 'Error', description: err.detail || 'Check-out failed' });
@@ -799,7 +810,7 @@ const ReceptionAppointmentsPage = () => {
       if (response.ok) {
         toast({ title: 'Success', description: 'Appointment cancelled' });
         setShowCancelDialog(false);
-        fetchAppointmentsByDate(filterDate);
+        fetchAppointmentsByRange(filterDate, filterDateTo);
       } else {
         const err = await response.json();
         toast({ variant: 'destructive', title: 'Error', description: err.detail || 'Cancel failed' });
@@ -862,7 +873,7 @@ const ReceptionAppointmentsPage = () => {
         const data = await response.json();
         toast({ title: 'Success', description: `Appointment rescheduled! New appointment: ${data.new_appointment.appointment_number}` });
         setShowRescheduleDialog(false);
-        fetchAppointmentsByDate(filterDate);
+        fetchAppointmentsByRange(filterDate, filterDateTo);
       } else {
         const err = await response.json();
         toast({ variant: 'destructive', title: 'Error', description: err.detail || 'Reschedule failed' });
@@ -882,7 +893,7 @@ const ReceptionAppointmentsPage = () => {
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
       });
       if (response.ok) {
-        fetchAppointmentsByDate(filterDate);
+        fetchAppointmentsByRange(filterDate, filterDateTo);
       } else {
         const err = await response.json();
         toast({ variant: 'destructive', title: 'Error', description: err.detail || 'Failed to start consultation' });
@@ -907,7 +918,7 @@ const ReceptionAppointmentsPage = () => {
             headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
           });
           if (response.ok) {
-            fetchAppointmentsByDate(filterDate);
+            fetchAppointmentsByRange(filterDate, filterDateTo);
           } else {
             const err = await response.json();
             toast({ variant: 'destructive', title: 'Error', description: err.detail || 'Failed to mark no-show' });
@@ -948,7 +959,7 @@ const ReceptionAppointmentsPage = () => {
       });
       if (response.ok) {
         setShowNotesDialog(false);
-        fetchAppointmentsByDate(filterDate);
+        fetchAppointmentsByRange(filterDate, filterDateTo);
       } else {
         const err = await response.json();
         toast({ variant: 'destructive', title: 'Error', description: err.detail || 'Failed to save notes' });
@@ -984,10 +995,26 @@ const ReceptionAppointmentsPage = () => {
   };
 
   const clearFilters = () => {
+    const today = localDateString();
     setSearchTerm('');
     setFilterDoctor('all');
     setFilterStatus('all');
-    setFilterDate(localDateString());
+    setFilterDate(today);
+    setFilterDateTo(today);
+  };
+
+  const handleFilterDateFromChange = (value) => {
+    setFilterDate(value);
+    if (filterDateTo && value && filterDateTo < value) {
+      setFilterDateTo(value);
+    }
+  };
+
+  const handleFilterDateToChange = (value) => {
+    setFilterDateTo(value);
+    if (filterDate && value && value < filterDate) {
+      setFilterDate(value);
+    }
   };
 
   const openPrintAppointments = () => {
@@ -999,11 +1026,30 @@ const ReceptionAppointmentsPage = () => {
       });
       return;
     }
-    if (!filterDate) {
+    if (!filterDate || !filterDateTo) {
       toast({
         variant: 'destructive',
-        title: 'Select a date',
-        description: 'Choose a date to print appointments.',
+        title: 'Select a date range',
+        description: 'Choose From and To dates to print appointments.',
+      });
+      return;
+    }
+    if (filterDateTo < filterDate) {
+      toast({
+        variant: 'destructive',
+        title: 'Invalid date range',
+        description: 'To date must be on or after From date.',
+      });
+      return;
+    }
+    const fromMs = new Date(`${filterDate}T00:00:00`).getTime();
+    const toMs = new Date(`${filterDateTo}T00:00:00`).getTime();
+    const daySpan = Math.round((toMs - fromMs) / (24 * 60 * 60 * 1000));
+    if (daySpan > 61) {
+      toast({
+        variant: 'destructive',
+        title: 'Date range too long',
+        description: 'Print range cannot exceed 62 days. Narrow the From/To dates.',
       });
       return;
     }
@@ -1011,11 +1057,14 @@ const ReceptionAppointmentsPage = () => {
     const doctorLabel = doctor
       ? `Dr. ${doctor.first_name} ${doctor.last_name}`
       : 'Doctor';
+    const sameDay = filterDate === filterDateTo;
     setAppointmentsPdfPreview({
       title: `Appointments — ${doctorLabel}`,
       path: `/api/appointments/doctors/${filterDoctor}/appointments/pdf`,
-      params: { appointment_date: filterDate },
-      filename: `appointments_${filterDoctor}_${filterDate}.pdf`,
+      params: { date_from: filterDate, date_to: filterDateTo },
+      filename: sameDay
+        ? `appointments_${filterDoctor}_${filterDate}.pdf`
+        : `appointments_${filterDoctor}_${filterDate}_${filterDateTo}.pdf`,
     });
   };
 
@@ -1123,7 +1172,7 @@ const ReceptionAppointmentsPage = () => {
       {/* Filters */}
       <Card>
         <CardContent className="p-6">
-          <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-4">
             <div>
               <Label>Search</Label>
               <div className="relative">
@@ -1137,11 +1186,20 @@ const ReceptionAppointmentsPage = () => {
               </div>
             </div>
             <div>
-              <Label>Date</Label>
+              <Label>From</Label>
               <Input
                 type="date"
                 value={filterDate}
-                onChange={(e) => setFilterDate(e.target.value)}
+                onChange={(e) => handleFilterDateFromChange(e.target.value)}
+              />
+            </div>
+            <div>
+              <Label>To</Label>
+              <Input
+                type="date"
+                value={filterDateTo}
+                min={filterDate || undefined}
+                onChange={(e) => handleFilterDateToChange(e.target.value)}
               />
             </div>
             <div>
@@ -1184,12 +1242,12 @@ const ReceptionAppointmentsPage = () => {
               <Button
                 variant="outline"
                 onClick={openPrintAppointments}
-                disabled={!filterDoctor || filterDoctor === 'all' || !filterDate}
+                disabled={!filterDoctor || filterDoctor === 'all' || !filterDate || !filterDateTo}
                 className="flex-1"
                 title={
                   !filterDoctor || filterDoctor === 'all'
                     ? 'Select a doctor to print appointments'
-                    : 'Print active appointments for this doctor on the selected date'
+                    : 'Print active appointments for this doctor in the selected date range'
                 }
               >
                 <Printer className="h-4 w-4 mr-1" />
@@ -1204,7 +1262,9 @@ const ReceptionAppointmentsPage = () => {
       <Card>
         <CardHeader>
           <CardTitle>
-            Appointments for {new Date(filterDate).toLocaleDateString()} ({displayedAppointments.length})
+            {filterDate === filterDateTo
+              ? `Appointments for ${new Date(filterDate).toLocaleDateString()} (${displayedAppointments.length})`
+              : `Appointments from ${new Date(filterDate).toLocaleDateString()} to ${new Date(filterDateTo).toLocaleDateString()} (${displayedAppointments.length})`}
           </CardTitle>
         </CardHeader>
         <CardContent>

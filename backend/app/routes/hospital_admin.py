@@ -1539,6 +1539,158 @@ async def cancel_bill(
     return {"message": f"Bill cancelled: {label}"}
 
 
+def _hard_delete_bill_row(db: Session, bill: Bill) -> None:
+    """Permanently remove a Bill and its dependent payment / item / split rows."""
+    from app.models.inpatient import BillSplit
+
+    # Delete credit notes that reference this bill first.
+    for child in db.query(Bill).filter(Bill.parent_bill_id == bill.id).all():
+        _hard_delete_bill_row(db, child)
+
+    db.query(Payment).filter(Payment.bill_id == bill.id).delete(synchronize_session=False)
+    db.query(BillItem).filter(BillItem.bill_id == bill.id).delete(synchronize_session=False)
+    db.query(BillSplit).filter(BillSplit.bill_id == bill.id).delete(synchronize_session=False)
+    db.delete(bill)
+
+
+@router.delete("/billing/{bill_type}/{bill_id}")
+async def delete_cancelled_bill(
+    bill_type: str,
+    bill_id: int,
+    lab_bill_group_id: Optional[str] = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Permanently remove a cancelled (or voided) bill from the billing ledger.
+
+    Consultation / lab rows are soft-purged (``payment_status='deleted'``) so
+    clinical history is preserved. Pharmacy voided sales and cancelled Bill
+    table rows (day-care, consolidated, admission, catch-up, etc.) are hard
+    deleted. Only admins may purge.
+    """
+    if not any(r in current_user.role_names for r in ['super_admin', 'hospital_admin']):
+        raise HTTPException(status_code=403, detail="Only admins can delete cancelled bills")
+
+    hospital_id = current_user.hospital_id
+    label = None
+
+    if bill_type == "consultation":
+        # Catch-up consultation bills (CU-*) live on the Bill table; normal
+        # OPD consults are Appointment payment rows.
+        bill = db.query(Bill).join(Patient, Bill.patient_id == Patient.id).filter(
+            Bill.id == bill_id,
+            Patient.hospital_id == hospital_id,
+            Bill.bill_type == "consultation",
+        ).first()
+        if bill:
+            if bill.status != "cancelled":
+                raise HTTPException(status_code=400, detail="Only cancelled bills can be deleted")
+            label = f"Bill {bill.bill_number}"
+            _hard_delete_bill_row(db, bill)
+        else:
+            record = db.query(Appointment).join(Patient).filter(
+                Appointment.id == bill_id,
+                Patient.hospital_id == hospital_id,
+            ).first()
+            if not record:
+                raise HTTPException(status_code=404, detail="Appointment bill not found")
+            if record.payment_status != "cancelled":
+                raise HTTPException(status_code=400, detail="Only cancelled bills can be deleted")
+            label = f"Appointment {record.appointment_number}"
+            record.payment_status = "deleted"
+
+    elif bill_type == "lab":
+        if lab_bill_group_id:
+            orders = db.query(PatientLabOrder).join(Patient).filter(
+                PatientLabOrder.lab_bill_group_id == lab_bill_group_id,
+                Patient.hospital_id == hospital_id,
+            ).all()
+            if not orders:
+                raise HTTPException(status_code=404, detail="Lab bill group not found")
+            if any((o.payment_status or "") != "cancelled" for o in orders):
+                raise HTTPException(status_code=400, detail="Only cancelled bills can be deleted")
+            for o in orders:
+                o.payment_status = "deleted"
+            label = f"Lab bill group {lab_bill_group_id}"
+        else:
+            record = db.query(PatientLabOrder).join(Patient).filter(
+                PatientLabOrder.id == bill_id,
+                Patient.hospital_id == hospital_id,
+            ).first()
+            if not record:
+                raise HTTPException(status_code=404, detail="Lab order bill not found")
+            if record.payment_status != "cancelled":
+                raise HTTPException(status_code=400, detail="Only cancelled bills can be deleted")
+            label = f"Lab order {record.order_number}"
+            record.payment_status = "deleted"
+
+    elif bill_type == "pharmacy":
+        # Catch-up / ledger pharmacy bills live on the Bill table; counter
+        # sales live on PharmacySale. Prefer the Bill row when present.
+        bill = db.query(Bill).join(Patient, Bill.patient_id == Patient.id).filter(
+            Bill.id == bill_id,
+            Patient.hospital_id == hospital_id,
+            Bill.bill_type.in_(("pharmacy", "catch_up")),
+        ).first()
+        if bill:
+            if bill.status != "cancelled":
+                raise HTTPException(status_code=400, detail="Only cancelled bills can be deleted")
+            label = f"Bill {bill.bill_number}"
+            _hard_delete_bill_row(db, bill)
+        else:
+            sale = db.query(PharmacySale).filter(
+                PharmacySale.id == bill_id,
+                PharmacySale.hospital_id == hospital_id,
+            ).first()
+            if not sale:
+                raise HTTPException(status_code=404, detail="Pharmacy sale not found")
+            if sale.status != "voided":
+                raise HTTPException(status_code=400, detail="Only voided / cancelled pharmacy bills can be deleted")
+            label = f"Pharmacy sale {sale.sale_number}"
+            # Soft-purge so any sale-return FK rows stay valid.
+            sale.status = "deleted"
+
+    elif bill_type in ("day_care", "consolidated", "admission", "catch_up", "canteen", "consultation_ledger"):
+        mapped_type = "consultation" if bill_type == "consultation_ledger" else bill_type
+        bill = db.query(Bill).join(Patient, Bill.patient_id == Patient.id).filter(
+            Bill.id == bill_id,
+            Patient.hospital_id == hospital_id,
+            Bill.bill_type == mapped_type,
+        ).first()
+        if not bill:
+            # Catch-up pharmacy/canteen/misc may arrive with their real bill_type.
+            bill = db.query(Bill).join(Patient, Bill.patient_id == Patient.id).filter(
+                Bill.id == bill_id,
+                Patient.hospital_id == hospital_id,
+            ).first()
+        if not bill:
+            raise HTTPException(status_code=404, detail="Bill not found")
+        if bill.status != "cancelled":
+            raise HTTPException(status_code=400, detail="Only cancelled bills can be deleted")
+        label = f"Bill {bill.bill_number}"
+        _hard_delete_bill_row(db, bill)
+
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid bill type. Use consultation, lab, pharmacy, day_care, consolidated, admission, or catch_up.",
+        )
+
+    db.commit()
+
+    try:
+        from app.services.audit_service import log_action
+        log_action(
+            db, current_user, "delete_cancelled_bill", "billing", bill_type, bill_id,
+            f"Deleted cancelled bill {label}",
+            details={"bill_type": bill_type, "bill_id": bill_id, "lab_bill_group_id": lab_bill_group_id},
+        )
+    except Exception:
+        pass
+
+    return {"message": f"Cancelled bill deleted: {label}"}
+
+
 @router.get("/billing")
 async def get_all_bills(
     date_from: Optional[str] = None,
@@ -1571,6 +1723,7 @@ async def get_all_bills(
         sql_func.date(Appointment.created_at) >= d_from,
         sql_func.date(Appointment.created_at) <= d_to,
         Appointment.payment_status != "consolidated",
+        Appointment.payment_status != "deleted",
     )
     if payment_status:
         apt_query = apt_query.filter(Appointment.payment_status == payment_status)
@@ -1632,6 +1785,7 @@ async def get_all_bills(
         sql_func.date(PatientLabOrder.order_date) <= d_to,
         PatientLabOrder.admission_id.is_(None),
         PatientLabOrder.payment_status != "consolidated",
+        PatientLabOrder.payment_status != "deleted",
     )
     if payment_status:
         lab_query = lab_query.filter(PatientLabOrder.payment_status == payment_status)
@@ -1768,6 +1922,7 @@ async def get_all_bills(
         pharmacy_query = db.query(PharmacySale).filter(
             PharmacySale.hospital_id == hospital_id,
             PharmacySale.billing_mode == "cash_at_pharmacy",
+            PharmacySale.status != "deleted",
             sql_func.date(PharmacySale.sale_date) >= d_from,
             sql_func.date(PharmacySale.sale_date) <= d_to,
         )
@@ -2103,7 +2258,6 @@ async def get_all_bills(
                 Bill.bill_type.in_(ledger_types),
                 sql_func.date(Bill.bill_date) >= d_from,
                 sql_func.date(Bill.bill_date) <= d_to,
-                Bill.status != "cancelled",
             )
             # Consultation ledger: only CU-* catch-up bills (normal consults stay on Appointment)
             if "consultation" in ledger_types and bill_type != "consultation":

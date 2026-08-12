@@ -262,12 +262,14 @@ async def get_doctor_available_slots(
 @router.get("/doctors/{doctor_id}/appointments/pdf")
 async def download_doctor_appointments_pdf(
     doctor_id: int,
-    appointment_date: date = Query(...),
+    appointment_date: Optional[date] = Query(None),
+    date_from: Optional[date] = Query(None),
+    date_to: Optional[date] = Query(None),
     include_header: Optional[bool] = Query(None),
     current_user: User = Depends(require_permission(Modules.OUTPATIENT, "read")),
     db: Session = Depends(get_db),
 ):
-    """Printable PDF of active appointments for a doctor on a given date.
+    """Printable PDF of active appointments for a doctor (single day or date range).
 
     Active = scheduled, confirmed, or in_progress (excludes completed/cancelled/no_show).
     """
@@ -277,6 +279,25 @@ async def download_doctor_appointments_pdf(
     if doctor.hospital_id != current_user.hospital_id:
         raise HTTPException(status_code=403, detail="Access denied")
 
+    if appointment_date is not None:
+        start = end = appointment_date
+    elif date_from is not None and date_to is not None:
+        start, end = date_from, date_to
+    elif date_from is not None:
+        start = end = date_from
+    elif date_to is not None:
+        start = end = date_to
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide appointment_date or date_from/date_to",
+        )
+
+    if end < start:
+        raise HTTPException(status_code=400, detail="date_to must be on or after date_from")
+    if (end - start).days > 61:
+        raise HTTPException(status_code=400, detail="Date range cannot exceed 62 days")
+
     active_statuses = ("scheduled", "confirmed", "in_progress")
     appointments = (
         db.query(Appointment)
@@ -284,10 +305,15 @@ async def download_doctor_appointments_pdf(
         .filter(
             Appointment.doctor_id == doctor_id,
             Patient.hospital_id == current_user.hospital_id,
-            func.date(Appointment.appointment_date) == appointment_date,
+            func.date(Appointment.appointment_date) >= start,
+            func.date(Appointment.appointment_date) <= end,
             Appointment.status.in_(active_statuses),
         )
-        .order_by(Appointment.appointment_time, Appointment.token_number)
+        .order_by(
+            Appointment.appointment_date,
+            Appointment.appointment_time,
+            Appointment.token_number,
+        )
         .all()
     )
 
@@ -301,7 +327,17 @@ async def download_doctor_appointments_pdf(
             time_str = apt_time.strftime("%H:%M")
         else:
             time_str = str(apt_time)[:5]
+
+        apt_date = apt.appointment_date
+        if isinstance(apt_date, datetime):
+            apt_date_value = apt_date.date().isoformat()
+        elif hasattr(apt_date, "isoformat"):
+            apt_date_value = apt_date.isoformat()
+        else:
+            apt_date_value = str(apt_date)[:10]
+
         rows.append({
+            "date": apt_date_value,
             "token_number": apt.token_number,
             "appointment_number": apt.appointment_number,
             "time": time_str,
@@ -319,7 +355,10 @@ async def download_doctor_appointments_pdf(
         "doctor_id": doctor_id,
         "doctor_name": f"Dr. {doctor.first_name} {doctor.last_name}",
         "specialization": doctor.specialization or "",
-        "appointment_date": appointment_date.isoformat(),
+        "date_from": start.isoformat(),
+        "date_to": end.isoformat(),
+        # Keep legacy key for single-day callers / PDF header fallback
+        "appointment_date": start.isoformat() if start == end else None,
         "appointments": rows,
         "total": len(rows),
     }
@@ -345,7 +384,11 @@ async def download_doctor_appointments_pdf(
             query_include_header=include_header,
         ),
     )
-    filename = f"appointments_{doctor_id}_{appointment_date.isoformat()}.pdf"
+    filename = (
+        f"appointments_{doctor_id}_{start.isoformat()}.pdf"
+        if start == end
+        else f"appointments_{doctor_id}_{start.isoformat()}_{end.isoformat()}.pdf"
+    )
     return StreamingResponse(
         pdf_buffer,
         media_type="application/pdf",
