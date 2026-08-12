@@ -158,7 +158,12 @@ def _key_skipped(key: Optional[str]) -> bool:
     return not key or key.startswith("#")
 
 
-def _read_xlsx_sheet(wb, preferred_names: List[str], *, fallback_first: bool = False) -> List[dict]:
+def _read_xlsx_sheet(
+    wb, preferred_names: List[str], *,
+    fallback_first: bool = False,
+    header_row: Optional[int] = None,
+    row_end: Optional[int] = None,
+) -> List[dict]:
     lower_map = {name.lower(): name for name in wb.sheetnames}
     ws = None
     for pn in preferred_names:
@@ -171,12 +176,23 @@ def _read_xlsx_sheet(wb, preferred_names: List[str], *, fallback_first: bool = F
         else:
             return []
     rows = list(ws.iter_rows(values_only=True))
-    header_idx = next((i for i, r in enumerate(rows) if not _row_is_empty(r)), None)
+    if header_row is not None:
+        header_idx = int(header_row) - 1
+        if header_idx < 0 or header_idx >= len(rows) or _row_is_empty(rows[header_idx]):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Start row {header_row} is not a valid header line in this file",
+            )
+    else:
+        header_idx = next((i for i, r in enumerate(rows) if not _row_is_empty(r)), None)
     if header_idx is None:
         return []
     headers = [_norm_header(c) for c in rows[header_idx]]
     out: List[dict] = []
-    for j in range(header_idx + 1, len(rows)):
+    end_idx = len(rows) - 1
+    if row_end is not None:
+        end_idx = min(end_idx, int(row_end) - 1)
+    for j in range(header_idx + 1, end_idx + 1):
         r = rows[j]
         if _row_is_empty(r):
             continue
@@ -190,9 +206,19 @@ def _read_xlsx_sheet(wb, preferred_names: List[str], *, fallback_first: bool = F
     return out
 
 
-def _parse_xlsx_sheet(content: bytes, sheet_names: List[str], *, fallback_first: bool = False) -> List[dict]:
+def _parse_xlsx_sheet(
+    content: bytes, sheet_names: List[str], *,
+    fallback_first: bool = False,
+    header_row: Optional[int] = None,
+    row_end: Optional[int] = None,
+) -> List[dict]:
     wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True, read_only=True)
-    return _read_xlsx_sheet(wb, sheet_names, fallback_first=fallback_first)
+    return _read_xlsx_sheet(
+        wb, sheet_names,
+        fallback_first=fallback_first,
+        header_row=header_row,
+        row_end=row_end,
+    )
 
 
 def _parse_xlsx_multi(content: bytes, sheet_name_list: List[str]) -> Dict[str, List[dict]]:
@@ -200,29 +226,85 @@ def _parse_xlsx_multi(content: bytes, sheet_name_list: List[str]) -> Dict[str, L
     return {name: _read_xlsx_sheet(wb, [name]) for name in sheet_name_list}
 
 
-def _parse_csv_rows(content: bytes) -> List[dict]:
+def _parse_csv_rows(
+    content: bytes, *,
+    header_row: Optional[int] = None,
+    row_end: Optional[int] = None,
+) -> List[dict]:
+    """Parse CSV. `header_row` is 1-based file line of column names (default: 1).
+    `row_end` is optional 1-based last data line to include (inclusive).
+    Each row dict includes `_row` = 1-based file line number.
+    """
     text = content.decode("utf-8-sig", errors="replace")
-    reader = csv.DictReader(io.StringIO(text))
-    rows: List[dict] = []
-    for i, raw in enumerate(reader):
-        rowdict = {_norm_header(k): v for k, v in raw.items() if k is not None}
-        rowdict["_row"] = i + 2
-        rows.append(rowdict)
-    return rows
+    raw_rows = list(csv.reader(io.StringIO(text)))
+    if not raw_rows:
+        return []
+    hi = (int(header_row) - 1) if header_row is not None else 0
+    if hi < 0 or hi >= len(raw_rows):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Start row {header_row} is out of range for this file ({len(raw_rows)} lines)",
+        )
+    header_cells = raw_rows[hi]
+    if not any(str(c or "").strip() for c in header_cells):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Start row {hi + 1} is empty — pick the line that contains column names",
+        )
+    # Preserve display order; normalize keys; make duplicates unique
+    headers: List[str] = []
+    seen: Dict[str, int] = {}
+    for c in header_cells:
+        h = _norm_header(c)
+        if not h:
+            headers.append("")
+            continue
+        if h in seen:
+            seen[h] += 1
+            h = f"{h}_{seen[h]}"
+        else:
+            seen[h] = 1
+        headers.append(h)
+    out: List[dict] = []
+    last = len(raw_rows) - 1
+    if row_end is not None:
+        last = min(last, int(row_end) - 1)
+    for i in range(hi + 1, last + 1):
+        cells = raw_rows[i]
+        if not any(str(c or "").strip() for c in cells):
+            continue
+        rowdict: dict = {}
+        for k, h in enumerate(headers):
+            if not h:
+                continue
+            rowdict[h] = cells[k] if k < len(cells) else None
+        rowdict["_row"] = i + 1
+        out.append(rowdict)
+    return out
 
 
-def _parse_upload(content: bytes, filename: str, sheet_names: List[str], *, multi: bool = False):
+def _parse_upload(
+    content: bytes, filename: str, sheet_names: List[str], *,
+    multi: bool = False,
+    header_row: Optional[int] = None,
+    row_end: Optional[int] = None,
+):
     fn = (filename or "").lower()
     if not content:
         raise HTTPException(status_code=400, detail="Uploaded file is empty")
     if fn.endswith(".csv"):
         if multi:
             raise HTTPException(status_code=400, detail="CSV supports a single data sheet only. Use .xlsx for multi-sheet imports.")
-        return _parse_csv_rows(content)
+        return _parse_csv_rows(content, header_row=header_row, row_end=row_end)
     if fn.endswith(".xlsx"):
         if multi:
             return _parse_xlsx_multi(content, sheet_name_list=sheet_names)
-        return _parse_xlsx_sheet(content, sheet_names, fallback_first=True)
+        return _parse_xlsx_sheet(
+            content, sheet_names,
+            fallback_first=True,
+            header_row=header_row,
+            row_end=row_end,
+        )
     raise HTTPException(status_code=400, detail="Unsupported file type. Upload a .xlsx or .csv file.")
 
 
@@ -1719,53 +1801,79 @@ def _suggest_purchase_mapping(headers: List[str]) -> Dict[str, str]:
     return mapping
 
 
-def inspect_purchase_import(content: bytes, filename: str) -> dict:
-    """Return headers, sample values, suggested mapping, and target field catalog."""
-    rows = _parse_upload(content, filename, ["Purchases", "Purchase"])
+def inspect_purchase_import(
+    content: bytes, filename: str, *,
+    row_start: Optional[int] = None,
+    row_end: Optional[int] = None,
+) -> dict:
+    """Return column names from the header line (`row_start`, default 1).
+
+    `row_start` = 1-based file line of the column-header row.
+    `row_end` = optional 1-based last data line (inclusive).
+    """
+    header_row = int(row_start) if row_start is not None else 1
+    if header_row < 1:
+        raise HTTPException(status_code=400, detail="row_start must be >= 1")
+    if row_end is not None and int(row_end) < header_row:
+        raise HTTPException(status_code=400, detail="row_end cannot be before row_start")
+
+    rows = _parse_upload(
+        content, filename, ["Purchases", "Purchase"],
+        header_row=header_row,
+        row_end=row_end,
+    )
+    file_line_count = _count_file_lines(content, filename)
+
     if not rows:
         return {
             "headers": [],
-            "samples": {},
             "suggested_mapping": {},
             "format_hint": "empty",
             "targets": PURCHASE_IMPORT_TARGETS,
             "row_count": 0,
-            "min_row": 0,
-            "max_row": 0,
+            "min_row": header_row,
+            "max_row": file_line_count,
+            "header_row": header_row,
+            "file_line_count": file_line_count,
         }
-    # Preserve header order from first data dict (insertion order from parser)
     headers = [k for k in rows[0].keys() if k != "_row"]
-    # Prefer original-cased labels from CSV/xlsx when available via first-row keys;
-    # _parse_* stores normalized keys — display those uppercased for CL* niceness.
     display_headers = []
     for h in headers:
         if re.fullmatch(r"cl\d+", h or ""):
             display_headers.append(h.upper())
         else:
             display_headers.append(h)
-    samples: Dict[str, List[str]] = {dh: [] for dh in display_headers}
-    for row in rows[:5]:
-        for nh, dh in zip(headers, display_headers):
-            val = row.get(nh)
-            s = _strip_excel_formula(val) if val is not None else None
-            if s is None:
-                s = "" if val is None else str(val)
-            if len(samples[dh]) < 3:
-                samples[dh].append(s[:80])
-    # Suggest against display headers but keys must match what client will send
     suggested = _suggest_purchase_mapping(display_headers)
     format_hint = "vendor_htf" if _looks_like_vendor_purchase(rows) else "flat"
     row_nums = [int(r.get("_row") or 0) for r in rows]
     return {
         "headers": display_headers,
-        "samples": samples,
         "suggested_mapping": suggested,
         "format_hint": format_hint,
         "targets": PURCHASE_IMPORT_TARGETS,
         "row_count": len(rows),
-        "min_row": min(row_nums) if row_nums else 0,
-        "max_row": max(row_nums) if row_nums else 0,
+        "min_row": min(row_nums) if row_nums else header_row + 1,
+        "max_row": max(row_nums) if row_nums else file_line_count,
+        "header_row": header_row,
+        "file_line_count": file_line_count,
     }
+
+
+def _count_file_lines(content: bytes, filename: str) -> int:
+    fn = (filename or "").lower()
+    if fn.endswith(".csv"):
+        text = content.decode("utf-8-sig", errors="replace")
+        return sum(1 for _ in io.StringIO(text))
+    if fn.endswith(".xlsx"):
+        try:
+            wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True, read_only=True)
+            if not wb.sheetnames:
+                return 0
+            ws = wb[wb.sheetnames[0]]
+            return sum(1 for _ in ws.iter_rows())
+        except Exception:
+            return 0
+    return 0
 
 
 def _looks_like_vendor_purchase(rows: List[dict]) -> bool:
@@ -2443,11 +2551,40 @@ def import_purchases(
     - Named-header .xlsx/.csv matching PURCHASE_HEADERS
     - Either format with a UI `column_mapping` of {source_header: erp_field}
     - Optional UI overrides: supplier_id, invoice_number, entry/bill dates
-    - Optional row_start / row_end (1-based file line numbers, inclusive)
+    - `row_start`: 1-based file line of the column-header row (default: 1)
+    - `row_end`: optional 1-based last data line (inclusive); omit = through EOF
     """
     summary = _empty_summary(dry_run=dry_run)
-    rows = _parse_upload(content, filename, ["Purchases", "Purchase"])
-    rows = _filter_rows_by_line(rows, row_start, row_end)
+    header_row = int(row_start) if row_start is not None else 1
+    if header_row < 1:
+        summary["errors"].append({
+            "sheet": "Purchases", "row": 0,
+            "message": "row_start must be >= 1",
+        })
+        summary["error_count"] = 1
+        return summary
+    if row_end is not None and int(row_end) < header_row:
+        summary["errors"].append({
+            "sheet": "Purchases", "row": 0,
+            "message": "row_end cannot be before row_start",
+        })
+        summary["error_count"] = 1
+        return summary
+
+    try:
+        rows = _parse_upload(
+            content, filename, ["Purchases", "Purchase"],
+            header_row=header_row,
+            row_end=row_end,
+        )
+    except HTTPException as exc:
+        summary["errors"].append({
+            "sheet": "Purchases", "row": 0,
+            "message": str(exc.detail),
+        })
+        summary["error_count"] = 1
+        return summary
+
     hospital_id = user.hospital_id
     mapping = column_mapping or {}
     field_cols = _normalize_column_mapping(mapping)

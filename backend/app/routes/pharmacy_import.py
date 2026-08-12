@@ -316,11 +316,19 @@ def purchases_import_template(
 @router.post("/purchases/import/inspect")
 async def purchases_import_inspect(
     file: UploadFile = File(...),
+    row_start: Optional[int] = Form(None),
+    row_end: Optional[int] = Form(None),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "create_purchase")),
 ):
-    """Return file headers, samples, and suggested ERP field mapping for the mapper UI."""
+    """Return file column names (from start row), suggested mapping, and targets."""
     content, filename = await _read_upload(file)
-    return inspect_purchase_import(content, filename)
+    if row_start is not None and row_end is not None and int(row_start) > int(row_end):
+        raise HTTPException(status_code=400, detail="row_start cannot be greater than row_end")
+    return inspect_purchase_import(
+        content, filename,
+        row_start=row_start,
+        row_end=row_end,
+    )
 
 
 @router.get("/purchases/import/mappings", response_model=List[PurchaseImportMappingOut])

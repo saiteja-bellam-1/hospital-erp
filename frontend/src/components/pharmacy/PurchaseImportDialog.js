@@ -126,28 +126,38 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
     loadSavedMappings();
   }, [open]);
 
-  const inspectFile = async (f) => {
+  const inspectFile = async (f, { rowStart: rs, rowEnd: re, preserveRows = false } = {}) => {
     setInspecting(true);
-    setInspect(null);
-    setMapping({});
     setSummary(null);
     setDone(null);
     setMappingSaved(false);
     try {
       const fd = new FormData();
       fd.append('file', f);
+      const startVal = rs !== undefined && rs !== null && rs !== '' ? Number(rs) : 1;
+      fd.append('row_start', String(startVal));
+      if (re !== undefined && re !== null && re !== '') {
+        fd.append('row_end', String(Number(re)));
+      }
       const res = await axios.post('/api/pharmacy/purchases/import/inspect', fd, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
       setInspect(res.data);
       setMapping(res.data.suggested_mapping || {});
-      if (res.data.min_row) setRowStart(String(res.data.min_row));
-      if (res.data.max_row) setRowEnd(String(res.data.max_row));
+      if (!preserveRows) {
+        setRowStart(String(res.data.header_row || startVal || 1));
+      }
+      return res.data;
     } catch (err) {
       const detail = err.response?.data?.detail;
       feedback(typeof detail === 'string' ? detail : 'Could not read file columns', 'error');
-      setFile(null);
-      if (fileInputRef.current) fileInputRef.current.value = '';
+      if (!preserveRows) {
+        setInspect(null);
+        setMapping({});
+        setFile(null);
+        if (fileInputRef.current) fileInputRef.current.value = '';
+      }
+      throw err;
     } finally {
       setInspecting(false);
     }
@@ -156,8 +166,11 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
   const onFileChange = (e) => {
     const f = e.target.files?.[0] || null;
     setFile(f);
-    if (f) inspectFile(f);
-    else {
+    if (f) {
+      setRowStart('1');
+      setRowEnd('');
+      inspectFile(f, { rowStart: 1, rowEnd: '' });
+    } else {
       setInspect(null);
       setMapping({});
       setSummary(null);
@@ -305,10 +318,20 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
 
   const detailsReady = !!file && !!inspect && !!supplierId && !!entryDate;
   const rowsReady = detailsReady
-    && rowStart !== '' && rowEnd !== ''
+    && rowStart !== ''
     && Number(rowStart) > 0
-    && Number(rowEnd) >= Number(rowStart);
+    && (rowEnd === '' || Number(rowEnd) >= Number(rowStart));
   const mappingReady = rowsReady && mappedTargets.size > 0;
+
+  const goToMapping = async () => {
+    if (!file || !rowsReady) return;
+    try {
+      await inspectFile(file, { rowStart, rowEnd, preserveRows: true });
+      setStep('mapping');
+    } catch {
+      // toast already shown
+    }
+  };
 
   const targets = inspect?.targets || [];
   const targetsByGroup = useMemo(() => {
@@ -459,12 +482,19 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
             {/* -------- Step 2: Rows -------- */}
             <TabsContent value="rows" className="mt-0 space-y-4">
               <div className="text-xs text-slate-500 bg-slate-50 rounded-lg p-3 leading-relaxed">
-                Enter 1-based file line numbers for where data starts and ends (including any header/
-                footer lines you want the importer to see). Available data lines in this file:{' '}
-                <span className="font-medium text-slate-700">
-                  {inspect ? `${inspect.min_row}–${inspect.max_row}` : '—'}
-                </span>
-                {' '}({inspect?.row_count || 0} parsed rows).
+                <span className="font-medium text-slate-700">Start row</span> is the file line that
+                contains the <span className="font-medium text-slate-700">column names</span> (e.g. 1
+                for <span className="font-mono">CL1, CL2, …</span>). Data is read from the lines
+                below that. <span className="font-medium text-slate-700">End row</span> is optional —
+                leave blank to import through the end of the file.
+                {inspect?.file_line_count ? (
+                  <span>
+                    {' '}This file has{' '}
+                    <span className="font-medium text-slate-700">{inspect.file_line_count}</span> lines
+                    ({inspect.row_count || 0} data rows with the current start
+                    {rowEnd ? `–end` : ''}).
+                  </span>
+                ) : null}
               </div>
 
               <div className="rounded-lg border border-slate-200 p-3 text-xs text-slate-600 space-y-1">
@@ -476,30 +506,35 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
 
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
-                  <Label className="text-xs">Start row *</Label>
+                  <Label className="text-xs">Start row (header line) *</Label>
                   <Input
                     type="number"
                     min={1}
                     className="h-9 text-sm"
                     value={rowStart}
                     onChange={(e) => { setRowStart(e.target.value); setSummary(null); setDone(null); }}
+                    placeholder="1"
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <Label className="text-xs">End row *</Label>
+                  <Label className="text-xs">End row (optional)</Label>
                   <Input
                     type="number"
                     min={1}
                     className="h-9 text-sm"
                     value={rowEnd}
                     onChange={(e) => { setRowEnd(e.target.value); setSummary(null); setDone(null); }}
+                    placeholder={inspect?.file_line_count ? `Through ${inspect.file_line_count}` : 'Through end of file'}
                   />
                 </div>
               </div>
 
               <div className="flex justify-between pt-2 border-t">
                 <Button variant="outline" size="sm" onClick={() => setStep('details')}>Back</Button>
-                <Button size="sm" disabled={!rowsReady} onClick={() => setStep('mapping')}>
+                <Button size="sm" disabled={!rowsReady || inspecting} onClick={goToMapping}>
+                  {inspecting
+                    ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                    : null}
                   Next: Mapping <ArrowRight className="h-3.5 w-3.5 ml-1" />
                 </Button>
               </div>
@@ -555,10 +590,17 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
 
               {inspect && headers.length > 0 && (
                 <div className="border border-slate-200 rounded-lg overflow-hidden">
-                  <div className="grid grid-cols-[1fr_auto_1fr] gap-2 px-3 py-2 text-[10px] uppercase tracking-wider text-slate-400 border-b bg-slate-50">
+                  <div className="px-3 py-2 text-[11px] text-slate-500 border-b bg-slate-50">
+                    Column names from file line{' '}
+                    <span className="font-mono font-medium text-slate-700">
+                      {inspect.header_row || rowStart || 1}
+                    </span>
+                    {' '}— pick which column maps to each purchase field (no cell values).
+                  </div>
+                  <div className="grid grid-cols-[1fr_auto_1fr] gap-2 px-3 py-2 text-[10px] uppercase tracking-wider text-slate-400 border-b bg-slate-50/80">
                     <div>ERP purchase field</div>
                     <div className="w-6" />
-                    <div>File column</div>
+                    <div>File column name</div>
                   </div>
                   <div className="max-h-72 overflow-y-auto">
                     {targetsByGroup.map((group) => (
@@ -675,7 +717,7 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
                 <div><span className="text-slate-400">Supplier:</span> {selectedSupplier?.name || '—'}</div>
                 <div><span className="text-slate-400">Invoice:</span> {invoiceNumber || '—'}</div>
                 <div><span className="text-slate-400">Entry date:</span> {entryDate || '—'}</div>
-                <div><span className="text-slate-400">Rows:</span> {rowStart}–{rowEnd}</div>
+                <div><span className="text-slate-400">Rows:</span> {rowStart}{rowEnd ? `–${rowEnd}` : ' → end'}</div>
                 <div className="col-span-2"><span className="text-slate-400">File:</span> {file?.name || '—'}</div>
               </div>
 
