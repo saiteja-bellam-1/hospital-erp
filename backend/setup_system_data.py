@@ -50,6 +50,13 @@ def setup_system_modules():
             "is_always_enabled": False
         },
         {
+            "module_name": "physiotherapy",
+            "display_name": "Physiotherapy",
+            "description": "Physiotherapy clinic sessions, packages, and billing",
+            "is_enabled": False,
+            "is_always_enabled": False
+        },
+        {
             "module_name": "ehr",
             "display_name": "Electronic Health Records",
             "description": "Electronic health records and patient data",

@@ -14,6 +14,7 @@ from app.models.outpatient import Appointment
 from app.models.inpatient import Admission
 from app.models.billing import Bill, Payment
 from app.models.pharmacy import PharmacySale
+from app.models.physiotherapy import PhysioAppointment
 from app.models.user import User
 from app.utils.dependencies import get_current_user
 
@@ -25,6 +26,7 @@ def _require_ehr_access(current_user: User):
     allowed = [
         'doctor', 'hospital_admin', 'super_admin',
         'receptionist', 'frontdesk', 'nurse', 'inpatient_admin', 'billing_admin',
+        'physiotherapist',
     ]
     if not any(r in current_user.role_names for r in allowed):
         raise HTTPException(
@@ -477,6 +479,43 @@ async def get_patient_full_history(
             "data": sale,
         })
 
+    # --- Physiotherapy sessions ---
+    physio_db = db.query(PhysioAppointment).filter(
+        PhysioAppointment.patient_id == patient.id,
+        PhysioAppointment.hospital_id == current_user.hospital_id,
+    ).order_by(PhysioAppointment.appointment_date.desc()).limit(200).all()
+
+    physio_sessions = []
+    for a in physio_db:
+        therapist = db.query(User).filter(User.id == a.therapist_id).first()
+        service_name = a.service.name if a.service else None
+        row = {
+            "id": a.id,
+            "appointment_number": a.appointment_number,
+            "appointment_date": a.appointment_date.isoformat() if a.appointment_date else None,
+            "appointment_time": a.appointment_time.strftime("%H:%M") if a.appointment_time else None,
+            "session_type": a.session_type,
+            "status": a.status,
+            "therapist_name": f"{therapist.first_name} {therapist.last_name}" if therapist else None,
+            "service_name": service_name,
+            "session_note": a.session_note,
+            "referral_source": a.referral_source,
+            "package_id": a.package_id,
+            "bill_id": a.bill_id,
+        }
+        physio_sessions.append(row)
+        # Prefer completed_at / appointment_date for timeline ordering
+        tl_date = None
+        if a.completed_at:
+            tl_date = a.completed_at.isoformat()
+        elif a.appointment_date:
+            tl_date = a.appointment_date.isoformat()
+        timeline.append({
+            "type": "physio_session",
+            "date": tl_date,
+            "data": row,
+        })
+
     # Sort timeline by date descending
     timeline.sort(key=lambda x: x["date"] or "", reverse=True)
 
@@ -487,7 +526,8 @@ async def get_patient_full_history(
         "appointment_count": len(appointments),
         "admission_count": len(admissions),
         "pharmacy_sale_count": len(pharmacy_sales),
-        "visit_count": len(appointments) + len(admissions),
+        "physio_session_count": len(physio_sessions),
+        "visit_count": len(appointments) + len(admissions) + len(physio_sessions),
         "active_allergy_count": sum(1 for a in allergies if a["is_active"]),
         "total_billed": billing["total_billed"],
         "outstanding": billing["outstanding"],
@@ -503,6 +543,7 @@ async def get_patient_full_history(
         "appointments": appointments,
         "admissions": admissions,
         "pharmacy_sales": pharmacy_sales,
+        "physio_sessions": physio_sessions,
         "billing": billing,
         "documents": documents,
         "summary": summary,

@@ -117,6 +117,7 @@ const BillingModule = () => {
     else if (activeTab === 'lab') params.set('bill_type', 'lab');
     else if (activeTab === 'pharmacy') params.set('bill_type', 'pharmacy');
     else if (activeTab === 'inpatient') params.set('bill_type', 'admission');
+    else if (activeTab === 'physiotherapy') params.set('bill_type', 'physiotherapy');
     if (paymentStatus !== 'all') params.set('payment_status', paymentStatus);
     if (doctorFilter !== 'all') params.set('doctor_id', doctorFilter);
     if (referralFilter !== 'all') params.set('referred_by', referralFilter);
@@ -163,6 +164,8 @@ const BillingModule = () => {
       case 'lab': return 'border-purple-200 text-purple-700 bg-purple-50';
       case 'pharmacy': return 'border-emerald-200 text-emerald-700 bg-emerald-50';
       case 'admission': return 'border-teal-200 text-teal-700 bg-teal-50';
+      case 'physiotherapy': return 'border-cyan-200 text-cyan-700 bg-cyan-50';
+      case 'day_care': return 'border-indigo-200 text-indigo-700 bg-indigo-50';
       default: return 'border-gray-200 text-gray-700';
     }
   };
@@ -196,6 +199,7 @@ const BillingModule = () => {
         return bill.admission_id ? `/api/inpatient/admissions/${bill.admission_id}/bill/pdf` : null;
       case 'day_care':
       case 'consolidated':
+      case 'physiotherapy':
         return bill.bill_id ? `/api/hospital/billing/bills/${bill.bill_id}/pdf` : null;
       default:
         return bill.bill_id ? `/api/hospital/billing/bills/${bill.bill_id}/pdf` : null;
@@ -211,7 +215,7 @@ const BillingModule = () => {
   };
 
   const handleViewBill = (bill) => {
-    if (bill.type === 'admission' || bill.type === 'consolidated' || bill.type === 'day_care') {
+    if (bill.type === 'admission' || bill.type === 'consolidated' || bill.type === 'day_care' || bill.type === 'physiotherapy') {
       openBillDetail(bill);
       return;
     }
@@ -281,7 +285,7 @@ const BillingModule = () => {
 
   const openBillDetail = async (bill) => {
     // Bills backed by the bills table use the detail endpoint
-    if (bill.type === 'admission' || bill.type === 'consolidated' || bill.type === 'day_care') {
+    if (bill.type === 'admission' || bill.type === 'consolidated' || bill.type === 'day_care' || bill.type === 'physiotherapy') {
       setDetailBill(bill);
       setDetailLoading(true);
       setSplits([]);
@@ -790,6 +794,9 @@ const BillingModule = () => {
           <TabsTrigger value="inpatient">
             <BedDouble className="h-3.5 w-3.5 mr-1" /> Inpatient
           </TabsTrigger>
+          <TabsTrigger value="physiotherapy">
+            Physiotherapy
+          </TabsTrigger>
           <TabsTrigger value="reports">
             <TrendingUp className="h-3.5 w-3.5 mr-1" /> Reports
           </TabsTrigger>
@@ -1018,7 +1025,7 @@ const BillingModule = () => {
         </TabsContent>
 
         {/* Bills Table - same content for all tabs, filtered by activeTab */}
-        {['all', 'outpatient', 'lab', 'pharmacy', 'inpatient'].map(tab => (
+        {['all', 'outpatient', 'lab', 'pharmacy', 'inpatient', 'physiotherapy'].map(tab => (
           <TabsContent key={tab} value={tab} className="mt-4">
             <Card>
               <CardContent className="pt-4">

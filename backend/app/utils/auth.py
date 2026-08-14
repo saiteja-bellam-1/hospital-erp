@@ -67,4 +67,5 @@ class Modules:
     OUTPATIENT = "outpatient"
     INPATIENT = "inpatient"
     CANTEEN = "canteen"
+    PHYSIOTHERAPY = "physiotherapy"
     ADMIN = "admin"

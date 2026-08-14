@@ -288,6 +288,23 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
     if (items.length > 0) sections.push({ label: 'Canteen', items });
   }
 
+  // ── PHYSIOTHERAPY ──
+  if (enabledModules.physiotherapy && hasAnyRole(
+    'hospital_admin', 'super_admin', 'receptionist', 'frontdesk',
+    'physiotherapist', 'billing_admin',
+  )) {
+    const items = [];
+    add(items, make("Today's Board", Activity, '/dashboard/physiotherapy/today'));
+    add(items, make('Appointments', Calendar, '/dashboard/physiotherapy/appointments'));
+    add(items, make('Packages', Package, '/dashboard/physiotherapy/packages'));
+    add(items, make('Catalog', BookOpen, '/dashboard/physiotherapy/catalog'));
+    add(items, make('Therapists', Users, '/dashboard/physiotherapy/therapists'));
+    if (hasAnyRole('hospital_admin', 'super_admin', 'receptionist', 'billing_admin')) {
+      add(items, make('Reports', BarChart3, '/dashboard/physiotherapy/reports'));
+    }
+    if (items.length > 0) sections.push({ label: 'Physiotherapy', items });
+  }
+
   // ── ADMINISTRATION + SYSTEM ──
   // Billing dashboard and Day Care live under the Outpatient group above for
   // admins, so they're omitted here to avoid duplicates. Split into two groups:
@@ -356,6 +373,9 @@ export function getRoleDashboards({ hasRole, hasAnyRole, enabledModules, isLabSt
   }
   if (enabledModules.inpatient && hasAnyRole('canteen_admin', 'canteen_sales')) {
     out.push({ key: 'canteen', label: 'Canteen', path: '/dashboard/canteen' });
+  }
+  if (enabledModules.physiotherapy && hasRole('physiotherapist')) {
+    out.push({ key: 'physiotherapy', label: 'Physio Board', path: '/dashboard/physiotherapy/today' });
   }
   return out;
 }

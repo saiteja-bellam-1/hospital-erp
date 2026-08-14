@@ -1650,7 +1650,7 @@ async def delete_cancelled_bill(
             # Soft-purge so any sale-return FK rows stay valid.
             sale.status = "deleted"
 
-    elif bill_type in ("day_care", "consolidated", "admission", "catch_up", "canteen", "consultation_ledger"):
+    elif bill_type in ("day_care", "consolidated", "admission", "catch_up", "canteen", "consultation_ledger", "physiotherapy"):
         mapped_type = "consultation" if bill_type == "consultation_ledger" else bill_type
         bill = db.query(Bill).join(Patient, Bill.patient_id == Patient.id).filter(
             Bill.id == bill_id,
@@ -2174,6 +2174,55 @@ async def get_all_bills(
                 "doctor_name": "",
                 "reference": b.bill_number,
                 "items": items_text or "Day care services",
+                "subtotal": float(b.subtotal or 0),
+                "discount": float(b.discount_amount or 0),
+                "amount": float(b.total_amount or 0),
+                "payment_status": b.status or "pending",
+                "payment_method": "",
+                "referred_by": b.referred_by or "",
+                "cancel_reason": "",
+                "cancelled_by": "",
+                "cancelled_at": "",
+                "amount_paid": paid_total,
+                "balance_due": float(b.total_amount or 0) - paid_total,
+                "admission_id": None,
+            })
+
+    # --- Physiotherapy clinic bills ---
+    if bill_type in (None, 'physiotherapy', 'physio'):
+        physio_query = db.query(Bill).join(Patient, Bill.patient_id == Patient.id).filter(
+            Patient.hospital_id == hospital_id,
+            Bill.bill_type == "physiotherapy",
+            sql_func.date(Bill.bill_date) >= d_from,
+            sql_func.date(Bill.bill_date) <= d_to,
+        )
+        if payment_status:
+            mapped = {"paid": "paid", "pending": "pending", "cancelled": "cancelled", "partial": "partial"}.get(payment_status, payment_status)
+            physio_query = physio_query.filter(Bill.status == mapped)
+        if patient_search:
+            q = f"%{patient_search}%"
+            physio_query = physio_query.filter(
+                (Patient.first_name.ilike(q)) | (Patient.last_name.ilike(q)) | (Patient.primary_phone.ilike(q))
+            )
+        for b in physio_query.order_by(Bill.bill_date.desc()).all():
+            p = db.query(Patient).filter(Patient.id == b.patient_id).first()
+            items_list = db.query(BillItem).filter(BillItem.bill_id == b.id).all()
+            items_text = ", ".join(it.item_name for it in items_list[:3])
+            if len(items_list) > 3:
+                items_text += f" +{len(items_list) - 3} more"
+            paid_total = sum(float(pay.amount_paid) for pay in (b.payments or []))
+            bills.append({
+                "id": f"PHY-{b.id}",
+                "bill_id": b.id,
+                "type": "physiotherapy",
+                "date": b.bill_date.isoformat() if b.bill_date else "",
+                "patient_name": f"{p.first_name} {p.last_name}" if p else "Unknown",
+                "patient_phone": p.primary_phone if p else "",
+                "patient_id": p.patient_id if p else "",
+                "_doctor_id": None,
+                "doctor_name": "",
+                "reference": b.bill_number,
+                "items": items_text or "Physiotherapy",
                 "subtotal": float(b.subtotal or 0),
                 "discount": float(b.discount_amount or 0),
                 "amount": float(b.total_amount or 0),

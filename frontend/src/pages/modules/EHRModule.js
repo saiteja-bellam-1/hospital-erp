@@ -272,6 +272,7 @@ const EHRPage = () => {
     if (type === 'appointment') return <CalendarDays className="h-4 w-4" />;
     if (type === 'admission') return <Bed className="h-4 w-4" />;
     if (type === 'pharmacy_sale') return <ShoppingBag className="h-4 w-4" />;
+    if (type === 'physio_session') return <Activity className="h-4 w-4" />;
     return <FileText className="h-4 w-4" />;
   };
 
@@ -282,6 +283,7 @@ const EHRPage = () => {
     if (type === 'appointment') return 'border-l-indigo-500 bg-indigo-50/30';
     if (type === 'admission') return 'border-l-teal-500 bg-teal-50/30';
     if (type === 'pharmacy_sale') return 'border-l-amber-500 bg-amber-50/30';
+    if (type === 'physio_session') return 'border-l-cyan-500 bg-cyan-50/30';
     return 'border-l-gray-500';
   };
 
@@ -292,6 +294,7 @@ const EHRPage = () => {
     if (type === 'appointment') return 'Appointment';
     if (type === 'admission') return 'Admission';
     if (type === 'pharmacy_sale') return 'Pharmacy';
+    if (type === 'physio_session') return 'Physio Session';
     return type;
   };
 
@@ -302,6 +305,7 @@ const EHRPage = () => {
     if (type === 'appointment') return 'bg-indigo-100 text-indigo-600';
     if (type === 'admission') return 'bg-teal-100 text-teal-600';
     if (type === 'pharmacy_sale') return 'bg-amber-100 text-amber-600';
+    if (type === 'physio_session') return 'bg-cyan-100 text-cyan-600';
     return 'bg-gray-100 text-gray-600';
   };
 
@@ -881,6 +885,21 @@ const EHRPage = () => {
                                   <Badge className={`text-xs ${statusColor(item.data.status)}`}>{item.data.status}</Badge>
                                   <span className="text-xs text-gray-600 ml-auto">{formatMoney(item.data.grand_total)}</span>
                                 </div>
+                              </div>
+                            )}
+                            {item.type === 'physio_session' && (
+                              <div className="text-sm space-y-1">
+                                <p className="font-medium">
+                                  {item.data.service_name || item.data.session_type} · {item.data.appointment_number}
+                                </p>
+                                <p className="text-xs text-gray-500">
+                                  {item.data.therapist_name}
+                                  {item.data.appointment_time ? ` · ${item.data.appointment_time}` : ''}
+                                </p>
+                                {item.data.session_note && (
+                                  <p className="text-xs text-gray-600">{item.data.session_note}</p>
+                                )}
+                                <Badge className={`text-xs ${statusColor(item.data.status)}`}>{item.data.status}</Badge>
                               </div>
                             )}
                           </div>

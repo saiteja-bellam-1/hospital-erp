@@ -41,6 +41,7 @@ SYSTEM_ROLES = [
     ("inpatient_admin", "Inpatient Administrator — manages beds, wards, room rates, ward operations"),
     ("canteen_admin", "Canteen Administrator — manages food catalog, prices, and kitchen orders"),
     ("canteen_sales", "Canteen Sales — IP food order queue, kitchen status, and walk-in POS"),
+    ("physiotherapist", "Physiotherapist — clinic sessions, attendance, and assigned patient care"),
     ("frontdesk", "Front Desk Staff — appointments, patient registration, scheduling"),
     ("receptionist", "Receptionist with patient registration access"),
 ]
@@ -93,6 +94,20 @@ _CANTEEN_SALES_DEFAULT = [
 ]
 _CANTEEN_CLINICAL_ORDER = [
     "view_catalog", "view_orders", "place_order",
+]
+
+# Physiotherapy clinic — standalone ops + billing module
+_PHYSIO_ALL = [
+    "view_physio", "manage_catalog", "manage_packages",
+    "schedule_sessions", "record_attendance", "bill_sessions",
+    "view_physio_reports", "manage_therapist_schedules",
+]
+_PHYSIO_RECEPTION = [
+    "view_physio", "manage_packages", "schedule_sessions",
+    "record_attendance", "bill_sessions", "view_physio_reports",
+]
+_PHYSIO_THERAPIST = [
+    "view_physio", "record_attendance", "schedule_sessions",
 ]
 
 # Full pharmacy permission set — kept in sync with the pharmacy permission catalog
@@ -204,7 +219,7 @@ def _seed_module_permissions(db, ModulePermission):
         {"module_name": "pharmacy", "permission_name": "view_narcotic_register", "permission_description": "View narcotic / Schedule H register", "category": "user"},
         # Inventory
         {"module_name": "pharmacy", "permission_name": "view_inventory", "permission_description": "View current stock levels and batch list", "category": "user"},
-        {"module_name": "pharmacy", "permission_name": "adjust_stock", "permission_description": "Make manual stock adjustments and import opening stock (pharmacy admin)", "category": "admin"},
+        {"module_name": "pharmacy", "permission_name": "adjust_stock", "permission_description": "Make manual stock adjustments, force-correct batch Tabs/strip + stock, and import opening stock (pharmacy admin)", "category": "admin"},
         {"module_name": "pharmacy", "permission_name": "view_stock_ledger", "permission_description": "View stock movement ledger", "category": "user"},
         {"module_name": "pharmacy", "permission_name": "view_low_stock", "permission_description": "View low-stock alerts", "category": "user"},
         {"module_name": "pharmacy", "permission_name": "view_expiring", "permission_description": "View expiring batches alert", "category": "user"},
@@ -340,6 +355,15 @@ def _seed_module_permissions(db, ModulePermission):
         {"module_name": "canteen", "permission_name": "create_sale", "permission_description": "Create walk-in / cash canteen POS sales", "category": "user"},
         {"module_name": "canteen", "permission_name": "view_sales", "permission_description": "View canteen POS sales history", "category": "user"},
         {"module_name": "canteen", "permission_name": "void_sale", "permission_description": "Void a completed canteen POS sale", "category": "admin"},
+        # Physiotherapy
+        {"module_name": "physiotherapy", "permission_name": "view_physio", "permission_description": "View physio board, appointments, catalog, and packages", "category": "user"},
+        {"module_name": "physiotherapy", "permission_name": "manage_catalog", "permission_description": "Create and edit physio service / modality catalog", "category": "admin"},
+        {"module_name": "physiotherapy", "permission_name": "manage_packages", "permission_description": "Manage package templates and sell packages to patients", "category": "admin"},
+        {"module_name": "physiotherapy", "permission_name": "schedule_sessions", "permission_description": "Book, check-in, cancel, and mark no-show for physio sessions", "category": "user"},
+        {"module_name": "physiotherapy", "permission_name": "record_attendance", "permission_description": "Start and complete physio sessions", "category": "user"},
+        {"module_name": "physiotherapy", "permission_name": "bill_sessions", "permission_description": "Create à la carte physio bills and collect payment", "category": "user"},
+        {"module_name": "physiotherapy", "permission_name": "view_physio_reports", "permission_description": "View physio collections and utilization reports", "category": "user"},
+        {"module_name": "physiotherapy", "permission_name": "manage_therapist_schedules", "permission_description": "Manage therapist weekly availability and leave", "category": "admin"},
         # EHR
         {"module_name": "ehr", "permission_name": "view_records", "permission_description": "View patient electronic health records", "category": "user"},
         {"module_name": "ehr", "permission_name": "edit_records", "permission_description": "Edit patient records", "category": "user"},
@@ -379,6 +403,7 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
             "outpatient": ["schedule_appointments", "manage_schedules", "register_patients", "manage_queues", "view_appointments", "cancel_appointments"],
             "inpatient": list(_INPATIENT_ALL),
             "canteen": list(_CANTEEN_ALL),
+            "physiotherapy": list(_PHYSIO_ALL),
             "ehr": ["view_records", "edit_records", "create_prescriptions", "manage_templates", "view_history", "generate_reports"],
         },
         "hospital_admin": {
@@ -389,6 +414,7 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
             "outpatient": ["schedule_appointments", "manage_schedules", "register_patients", "manage_queues", "view_appointments", "cancel_appointments"],
             "inpatient": list(_INPATIENT_ALL),
             "canteen": list(_CANTEEN_ALL),
+            "physiotherapy": list(_PHYSIO_ALL),
             "ehr": ["view_records", "edit_records", "view_history", "generate_reports"],
         },
         "doctor": {
@@ -456,6 +482,7 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
         },
         "billing_admin": {
             "billing": ["manage_rates", "process_payments", "generate_invoices", "view_financial_reports", "manage_insurance", "handle_refunds"],
+            "physiotherapy": ["view_physio", "bill_sessions", "view_physio_reports", "manage_packages"],
             "inpatient": [
                 "view_occupancy",
                 "view_bill", "generate_interim_bill", "finalize_bill",
@@ -473,6 +500,7 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
             "outpatient": ["schedule_appointments", "register_patients", "manage_queues", "view_appointments", "cancel_appointments"],
             "billing": ["process_payments", "generate_invoices", "view_financial_reports"],
             "ehr": ["view_records", "view_history"],
+            "physiotherapy": list(_PHYSIO_RECEPTION) + ["manage_catalog", "manage_therapist_schedules"],
             "inpatient": [
                 "view_occupancy", "admit_patients", "update_admission", "discharge_patients",
                 "record_vitals", "view_vitals",
@@ -496,6 +524,7 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
         "frontdesk": {
             "outpatient": ["schedule_appointments", "register_patients", "manage_queues", "view_appointments", "cancel_appointments"],
             "ehr": ["view_records", "view_history"],
+            "physiotherapy": list(_PHYSIO_RECEPTION),
             "inpatient": [
                 "view_occupancy", "admit_patients", "update_admission", "discharge_patients",
                 "record_vitals", "view_vitals",
@@ -511,6 +540,10 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
                 "manage_ancillary_catalog", "manage_surgery_packages", "manage_tpa",
                 "manage_consent_templates",
             ],
+        },
+        "physiotherapist": {
+            "physiotherapy": list(_PHYSIO_THERAPIST),
+            "ehr": ["view_records", "view_history"],
         },
         "lab_admin": {
             "lab": ["manage_tests", "set_rates", "view_reports", "create_reports", "manage_equipment", "manage_templates"],
@@ -652,6 +685,7 @@ def upsert_modules_and_permissions(db_path: str) -> None:
             ("inpatient", "Inpatient", False, False),
             ("lab", "Laboratory", False, False),
             ("pharmacy", "Pharmacy", False, False),
+            ("physiotherapy", "Physiotherapy", False, False),
             ("ehr", "Electronic Health Records", True, False),
             ("billing", "Billing", True, True),
             ("admin", "Administration", True, True),
@@ -705,6 +739,10 @@ def init_database_and_seed(seed: Mapping, db_path: str) -> None:
     from app.models.patient import Patient  # noqa
     from app.models.referral import Referral  # noqa
     from app.models.canteen import CanteenCategory, CanteenItem, CanteenOrder, CanteenOrderItem, CanteenSale, CanteenSaleItem  # noqa
+    from app.models.physiotherapy import (  # noqa
+        PhysioService, PhysioPackageTemplate, PhysioPatientPackage, PhysioPackageLedger,
+        PhysioTherapistAvailability, PhysioTherapistSpecialSchedule, PhysioAppointment,
+    )
     from app.models.settlement import Settlement, SettlementConfig  # noqa
 
     engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
@@ -727,6 +765,7 @@ def init_database_and_seed(seed: Mapping, db_path: str) -> None:
             ("inpatient", "Inpatient", False, False),
             ("lab", "Laboratory", False, False),
             ("pharmacy", "Pharmacy", False, False),
+            ("physiotherapy", "Physiotherapy", False, False),
             ("ehr", "Electronic Health Records", True, False),
             ("billing", "Billing", True, True),
             ("admin", "Administration", True, True),

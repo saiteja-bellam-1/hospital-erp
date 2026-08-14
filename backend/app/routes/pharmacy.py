@@ -1513,6 +1513,144 @@ def adjust_stock(
     }
 
 
+class BatchStripStockCorrectIn(BaseModel):
+    """Force-correct batch Tabs/strip + on-hand qty without sold-qty gates.
+
+    Leaves historical sales/purchase ledger rows as-is. Stock delta (if any)
+    is recorded as a normal adjustment so the ledger stays auditable.
+    """
+    batch_id: int
+    strip_conversion_factor: int = Field(..., ge=1)
+    quantity_in_stock: float = Field(..., ge=0)
+    reason: str = Field(..., min_length=2, max_length=200)
+    update_medicine_scf: bool = True
+    update_purchase_lines: bool = True
+
+
+@router.post("/inventory/correct-strip-stock")
+def correct_batch_strip_and_stock(
+    data: BatchStripStockCorrectIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "adjust_stock")),
+):
+    """Set batch Tabs/strip and absolute stock without purchase sold-qty checks.
+
+    Use when a wrong strip conversion inflated stock and sales already happened:
+    leave past bills untouched, fix the batch factor + physical count so future
+    POS uses the correct Tabs/strip.
+    """
+    batch = (
+        db.query(PharmacyInventory)
+        .filter(
+            PharmacyInventory.id == data.batch_id,
+            PharmacyInventory.hospital_id == current_user.hospital_id,
+        )
+        .with_for_update()
+        .first()
+    )
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+
+    old_scf = max(1, int(batch.strip_conversion_factor or 1))
+    old_qty = float(batch.quantity_in_stock or 0)
+    new_scf = max(1, int(data.strip_conversion_factor))
+    new_qty = float(data.quantity_in_stock or 0)
+    if new_qty < 0:
+        raise HTTPException(status_code=400, detail="quantity_in_stock cannot be negative")
+
+    qty_delta = new_qty - old_qty
+    batch.strip_conversion_factor = new_scf
+    batch.quantity_in_stock = new_qty
+    batch.is_active = new_qty > 0
+
+    # Re-spread strip purchase rate across the corrected tablet count when possible.
+    pr = float(batch.purchase_rate or 0)
+    if pr > 0 and new_scf > 0:
+        batch.cost_price = round_money(pr / new_scf)
+
+    medicine_updated = False
+    if data.update_medicine_scf:
+        med = db.query(Medicine).filter(Medicine.id == batch.medicine_id).first()
+        if med and int(med.strip_conversion_factor or 1) != new_scf:
+            med.strip_conversion_factor = new_scf
+            medicine_updated = True
+
+    purchase_lines_updated = 0
+    if data.update_purchase_lines:
+        lines = (
+            db.query(PharmacyPurchaseItem)
+            .filter(PharmacyPurchaseItem.inventory_id == batch.id)
+            .all()
+        )
+        for line in lines:
+            if int(line.strip_conversion_factor or 1) != new_scf:
+                line.strip_conversion_factor = new_scf
+                purchase_lines_updated += 1
+
+    adj_id = None
+    if abs(qty_delta) > 1e-9:
+        adj = PharmacyStockAdjustment(
+            medicine_id=batch.medicine_id, batch_id=batch.id,
+            qty_change=qty_delta, reason=data.reason,
+            performed_by=current_user.id, store_id=batch.store_id,
+            hospital_id=current_user.hospital_id,
+        )
+        db.add(adj)
+        db.flush()
+        adj_id = adj.id
+        db.add(PharmacyStockLedger(
+            medicine_id=batch.medicine_id, batch_id=batch.id,
+            txn_type="adjustment", qty_delta=qty_delta,
+            reference_type="adjustment", reference_id=adj.id,
+            performed_by=current_user.id, store_id=batch.store_id,
+            notes=f"Strip/stock correction: {data.reason}",
+            hospital_id=current_user.hospital_id,
+        ))
+    elif old_scf != new_scf:
+        # SCF-only change still needs an audit trail in the ledger notes stream.
+        db.add(PharmacyStockLedger(
+            medicine_id=batch.medicine_id, batch_id=batch.id,
+            txn_type="adjustment", qty_delta=0,
+            reference_type="adjustment", reference_id=None,
+            performed_by=current_user.id, store_id=batch.store_id,
+            notes=(
+                f"Strip factor correction {old_scf}→{new_scf} (stock unchanged): "
+                f"{data.reason}"
+            ),
+            hospital_id=current_user.hospital_id,
+        ))
+
+    db.commit()
+    db.refresh(batch)
+    _audit(
+        db, current_user, "correct_strip_stock", "pharmacy_inventory", batch.id,
+        (
+            f"Force-corrected batch {batch.batch_number}: "
+            f"SCF {old_scf}→{new_scf}, stock {old_qty:g}→{new_qty:g}"
+        ),
+        details={
+            "reason": data.reason,
+            "old_scf": old_scf,
+            "new_scf": new_scf,
+            "old_qty": old_qty,
+            "new_qty": new_qty,
+            "qty_delta": qty_delta,
+            "medicine_updated": medicine_updated,
+            "purchase_lines_updated": purchase_lines_updated,
+            "adjustment_id": adj_id,
+        },
+    )
+    return {
+        "batch_id": batch.id,
+        "strip_conversion_factor": batch.strip_conversion_factor,
+        "quantity_in_stock": batch.quantity_in_stock,
+        "qty_delta": qty_delta,
+        "adjustment_id": adj_id,
+        "medicine_updated": medicine_updated,
+        "purchase_lines_updated": purchase_lines_updated,
+    }
+
+
 class ExpiringBatchOut(BaseModel):
     batch_id: int
     medicine_id: int

@@ -58,6 +58,15 @@ export default function InventoryTab() {
   const [adjustQty, setAdjustQty] = useState('');
   const [adjustReason, setAdjustReason] = useState('');
 
+  const [correctOpen, setCorrectOpen] = useState(false);
+  const [correctTarget, setCorrectTarget] = useState(null);
+  const [correctScf, setCorrectScf] = useState('1');
+  const [correctQty, setCorrectQty] = useState('');
+  const [correctReason, setCorrectReason] = useState('');
+  const [correctUpdateMedicine, setCorrectUpdateMedicine] = useState(true);
+  const [correctUpdatePurchase, setCorrectUpdatePurchase] = useState(true);
+  const [correctSaving, setCorrectSaving] = useState(false);
+
   useEffect(() => {
     if (view !== 'ledger' || !ledgerMedicine?.id) {
       setBatchesForFilter([]);
@@ -119,6 +128,49 @@ export default function InventoryTab() {
       setAdjustOpen(false); load();
     } catch (e) {
       toast({ variant: 'destructive', title: 'Adjustment failed', description: errMsg(e) });
+    }
+  };
+
+  const openCorrect = (batch) => {
+    if (!canAdjustStock) return;
+    setCorrectTarget(batch);
+    setCorrectScf(String(Math.max(1, parseInt(batch.strip_conversion_factor, 10) || 1)));
+    setCorrectQty(String(batch.quantity_in_stock ?? ''));
+    setCorrectReason('');
+    setCorrectUpdateMedicine(true);
+    setCorrectUpdatePurchase(true);
+    setCorrectOpen(true);
+  };
+  const saveCorrect = async () => {
+    if (!canAdjustStock || !correctTarget || !correctReason.trim()) return;
+    const scf = Math.max(1, parseInt(correctScf, 10) || 1);
+    const qty = parseFloat(correctQty);
+    if (Number.isNaN(qty) || qty < 0) {
+      toast({ variant: 'destructive', title: 'Enter a valid stock quantity (tabs)' });
+      return;
+    }
+    if (!window.confirm(
+      'Force-correct Tabs/strip and stock on this batch?\n\n'
+      + 'Past sales are left as-is. Future strip sales will use the new Tabs/strip.\n'
+      + 'Stock is set to the absolute quantity you enter (not a delta).',
+    )) return;
+    setCorrectSaving(true);
+    try {
+      await axios.post('/api/pharmacy/inventory/correct-strip-stock', {
+        batch_id: correctTarget.id,
+        strip_conversion_factor: scf,
+        quantity_in_stock: qty,
+        reason: correctReason.trim(),
+        update_medicine_scf: correctUpdateMedicine,
+        update_purchase_lines: correctUpdatePurchase,
+      });
+      toast({ title: 'Strip factor and stock corrected' });
+      setCorrectOpen(false);
+      load();
+    } catch (e) {
+      toast({ variant: 'destructive', title: 'Correction failed', description: errMsg(e) });
+    } finally {
+      setCorrectSaving(false);
     }
   };
 
@@ -293,6 +345,7 @@ export default function InventoryTab() {
                 view={view}
                 data={data}
                 onAdjust={canAdjustStock ? openAdjust : null}
+                onCorrect={canAdjustStock ? openCorrect : null}
                 canAdjust={canAdjustStock}
                 onDeleteLedger={canAdjustStock ? deleteLegacyLedger : null}
               />
@@ -340,11 +393,98 @@ export default function InventoryTab() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={correctOpen} onOpenChange={setCorrectOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Correct Tabs/strip &amp; stock — {correctTarget?.batch_number}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-2.5 py-2">
+              Leaves past sales as-is. Sets Tabs/strip and absolute stock on this batch with no sold-qty checks.
+              Use when a wrong strip factor inflated stock and you do not want to void bills.
+            </p>
+            <div className="text-xs text-gray-500">
+              {correctTarget?.medicine_name}
+              {' • '}current: {correctTarget?.quantity_in_stock} tabs
+              {' @ '}{correctTarget?.strip_conversion_factor || 1} tabs/strip
+            </div>
+            <div>
+              <Label>Correct Tabs / strip</Label>
+              <Input
+                className={pharmacyNoSpinInputClass}
+                type="number"
+                min={1}
+                step={1}
+                value={correctScf}
+                onChange={(e) => setCorrectScf(e.target.value)}
+              />
+            </div>
+            <div>
+              <Label>Correct stock (tabs, absolute)</Label>
+              <Input
+                className={pharmacyNoSpinInputClass}
+                type="number"
+                min={0}
+                step="any"
+                value={displayPharmacyNumericInput(correctQty)}
+                onChange={(e) => setCorrectQty(e.target.value)}
+              />
+              {(() => {
+                const scf = Math.max(1, parseInt(correctScf, 10) || 1);
+                const qty = parseFloat(correctQty);
+                if (Number.isNaN(qty) || qty < 0 || scf <= 1) return null;
+                return (
+                  <p className="text-[10px] text-gray-500 mt-0.5">
+                    ≈ {(qty / scf).toLocaleString(undefined, { maximumFractionDigits: 2 })} strips
+                  </p>
+                );
+              })()}
+            </div>
+            <div>
+              <Label>Reason</Label>
+              <Textarea
+                value={correctReason}
+                onChange={(e) => setCorrectReason(e.target.value)}
+                placeholder="Wrong Tabs/strip on purchase; correcting batch + stock"
+              />
+            </div>
+            <label className="flex items-start gap-2 text-xs text-gray-700">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={correctUpdateMedicine}
+                onChange={(e) => setCorrectUpdateMedicine(e.target.checked)}
+              />
+              <span>Also update medicine master Tabs/strip</span>
+            </label>
+            <label className="flex items-start gap-2 text-xs text-gray-700">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={correctUpdatePurchase}
+                onChange={(e) => setCorrectUpdatePurchase(e.target.checked)}
+              />
+              <span>Also update linked purchase line Tabs/strip (does not rewrite purchase qty or sales)</span>
+            </label>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCorrectOpen(false)} disabled={correctSaving}>Cancel</Button>
+            <Button
+              onClick={saveCorrect}
+              disabled={correctSaving || !correctReason.trim() || correctQty === ''}
+            >
+              {correctSaving ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : null}
+              Force correct
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
-function TableForView({ view, data, onAdjust, canAdjust, onDeleteLedger }) {
+function TableForView({ view, data, onAdjust, onCorrect, canAdjust, onDeleteLedger }) {
   if (view === 'stock') {
     return (
       <table className="w-full text-sm">
@@ -429,8 +569,11 @@ function TableForView({ view, data, onAdjust, canAdjust, onDeleteLedger }) {
                 <td className="py-2 pr-4">₹{formatMoney(b.rate_a)}</td>
                 <td className="py-2 pr-4 text-xs">{b.supplier_name || '—'}</td>
                 {canAdjust ? (
-                  <td className="py-2 text-right">
+                  <td className="py-2 text-right whitespace-nowrap space-x-1">
                     <Button size="sm" variant="outline" onClick={() => onAdjust(b)}>Adjust</Button>
+                    {onCorrect ? (
+                      <Button size="sm" variant="outline" onClick={() => onCorrect(b)}>Correct strip</Button>
+                    ) : null}
                   </td>
                 ) : null}
               </tr>
