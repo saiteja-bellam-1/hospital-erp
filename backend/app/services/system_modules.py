@@ -120,3 +120,74 @@ def sync_modules_with_license(
             module.is_enabled = True
 
     db.commit()
+
+
+PENDING_LICENSE_MODULE_SYNC = ".pending_license_module_sync"
+
+
+def queue_post_upgrade_module_sync(exe_dir: str) -> str:
+    """Write a flag so the next heal pass force-syncs modules with the license.
+
+    Software Update / Inno upgrade-in-place replaces the .exe but writes no
+    install_seed.json. Without this one-shot, Module Management never picks up
+    new catalog rows (e.g. physiotherapy) on upgraded customer DBs.
+    """
+    import os
+
+    flag = os.path.join(exe_dir, "data", PENDING_LICENSE_MODULE_SYNC)
+    os.makedirs(os.path.dirname(flag), exist_ok=True)
+    with open(flag, "w", encoding="utf-8") as f:
+        f.write("1\n")
+    return flag
+
+
+def heal_system_modules(exe_dir: Optional[str] = None) -> None:
+    """Insert missing SystemModule rows; on post-upgrade flag, sync with license.
+
+    Safe to call from the frozen launcher (before uvicorn) and from FastAPI
+    startup. Idempotent. Never raises — failures are printed and swallowed so
+    boot can continue.
+    """
+    import os
+
+    try:
+        from config.database import SessionLocal, reinitialize_engine, create_tables
+        from app.models.system import SystemModule  # noqa: F401
+        from app.services.license_service import get_current_license
+        from app.utils.paths import get_data_dir
+
+        reinitialize_engine()
+        create_tables()
+
+        # Launcher passes the .exe directory; FastAPI startup uses the resolved
+        # data dir (backend/ in source mode, <exe>/data when bundled).
+        data_dir = os.path.join(exe_dir, "data") if exe_dir else get_data_dir()
+        flag = os.path.join(data_dir, PENDING_LICENSE_MODULE_SYNC)
+        pending = os.path.isfile(flag)
+
+        db = SessionLocal()
+        try:
+            lic = get_current_license(db)
+            features = list(lic.features or []) if lic else []
+            if pending and features:
+                # previous_features=[] → every licensed feature counts as newly
+                # covered: create missing rows AND enable them (heals physio
+                # after Software Update when the license already included it).
+                sync_modules_with_license(db, features, previous_features=[])
+                print("  Post-upgrade module catalog synced with license features")
+            else:
+                created = ensure_system_modules(
+                    db, licensed_features=features if features else None
+                )
+                db.commit()
+                for mod_name in sorted(created):
+                    print(f"  Added module: {mod_name}")
+            if pending:
+                try:
+                    os.remove(flag)
+                except OSError as e:
+                    print(f"Warning: could not clear module sync flag: {e}")
+        finally:
+            db.close()
+    except Exception as e:
+        print(f"Warning: Module catalog heal failed: {e}")

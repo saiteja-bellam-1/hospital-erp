@@ -131,3 +131,30 @@ def test_license_sync_disables_dropped_features(db):
     # Always-on modules stay on even if omitted from features.
     admin = db.query(SystemModule).filter_by(module_name="admin").one()
     assert admin.is_enabled is True
+
+
+def test_post_upgrade_sync_enables_existing_disabled_licensed_physio(db):
+    """Software Update scenario: physio row exists (disabled) + license already
+    has physiotherapy. Post-upgrade sync with previous_features=[] must enable it.
+    """
+    _seed_pre_physio(db)
+    db.add(
+        SystemModule(
+            module_name="physiotherapy",
+            display_name="Physiotherapy",
+            description="Physiotherapy management",
+            is_enabled=False,
+            is_always_enabled=False,
+        )
+    )
+    db.commit()
+
+    features = [
+        "outpatient", "lab", "ehr", "admin", "billing",
+        "inpatient", "pharmacy", "physiotherapy",
+    ]
+    # Mimic heal_system_modules pending-flag path
+    sync_modules_with_license(db, features, previous_features=[])
+
+    physio = db.query(SystemModule).filter_by(module_name="physiotherapy").one()
+    assert physio.is_enabled is True

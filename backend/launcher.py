@@ -423,6 +423,12 @@ def main():
             print(f"Upgrade detected: {previous} -> {APP_VERSION}")
             log.warning("Upgrade detected from %s to %s", previous, APP_VERSION)
             _wait_for_exe_readable(sys.executable, timeout_sec=45, log=log)
+            try:
+                from app.services.system_modules import queue_post_upgrade_module_sync
+                flag = queue_post_upgrade_module_sync(exe_dir)
+                log.info("Queued post-upgrade license module sync (%s)", flag)
+            except Exception:
+                log.exception("Could not queue post-upgrade module sync")
         else:
             log.info("Same version as previous launch")
 
@@ -444,6 +450,15 @@ def main():
                 log.error("Installer seed apply failed: %s", seed_status.get("error"))
         except Exception:
             log.exception("Bootstrap from seed raised; continuing to fallback wizard")
+
+        # Heal system_modules before uvicorn starts. Critical for Software
+        # Update upgrades: no seed file is written, so Module Management only
+        # picks up new modules (physiotherapy, …) if we sync here.
+        try:
+            from app.services.system_modules import heal_system_modules
+            heal_system_modules(exe_dir)
+        except Exception:
+            log.exception("Module catalog heal failed (non-fatal)")
     else:
         # Dev mode: change to backend directory
         backend_dir = os.path.dirname(os.path.abspath(__file__))

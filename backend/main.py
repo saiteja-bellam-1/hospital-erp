@@ -130,10 +130,6 @@ def _run_schema_bootstrap():
 
 def _run_operational_startup():
     """Seeds, data heals, and background jobs for an already-bootstrapped install."""
-    # Ensure role permissions exist (for installations that pre-date the wizard)
-    _ensure_role_permissions()
-    # Ensure all modules exist (add missing ones for upgrades)
-    _ensure_modules()
     # Seed default payer schemes (Cash, Aarogyasri, Teachers, Govt Employee, Private Insurance, TPA)
     _ensure_payer_schemes()
     # Heal existing rows from the old `bill_type='procedure'` label to the
@@ -213,6 +209,15 @@ async def startup_event():
     # Schema bootstrap is unconditional. setup_complete only gates operational
     # seeds/backup threads — never column migrations.
     _run_schema_bootstrap()
+
+    # Module catalog heal is also unconditional. Software Update upgrades
+    # replace the .exe without writing install_seed.json; if we only seeded
+    # modules inside the setup_complete gate, physiotherapy (and future
+    # modules) never appeared in Module Management on upgraded installs.
+    _ensure_modules()
+    # Roles + physio permission catalog must land even when setup_complete is
+    # briefly false after an in-place upgrade.
+    _ensure_role_permissions()
 
     if is_setup_complete():
         _run_operational_startup()
@@ -432,27 +437,9 @@ def _ensure_admission_consent_templates():
 
 
 def _ensure_modules():
-    """Ensure all required modules exist in the DB (for upgrades).
-
-    If a license is already installed, newly inserted modules that appear in
-    its features list are created enabled (heals physio-on-upgrade installs).
-    """
-    from config.database import SessionLocal
-    from app.services.system_modules import ensure_system_modules
-    from app.services.license_service import get_current_license
-    db = SessionLocal()
-    try:
-        lic = get_current_license(db)
-        licensed = list(lic.features or []) if lic else None
-        created = ensure_system_modules(db, licensed_features=licensed)
-        db.commit()
-        for mod_name in sorted(created):
-            print(f"  Added module: {mod_name}")
-    except Exception as e:
-        print(f"Warning: Module sync: {e}")
-        db.rollback()
-    finally:
-        db.close()
+    """Ensure system_modules rows exist; on post-upgrade flag, sync with license."""
+    from app.services.system_modules import heal_system_modules
+    heal_system_modules()
 
 
 @app.get("/")
