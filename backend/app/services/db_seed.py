@@ -680,23 +680,8 @@ def upsert_modules_and_permissions(db_path: str) -> None:
         db.flush()
         _seed_module_permissions(db, ModulePermission)
         db.flush()
-        canonical = [
-            ("outpatient", "Outpatient", True, False),
-            ("inpatient", "Inpatient", False, False),
-            ("lab", "Laboratory", False, False),
-            ("pharmacy", "Pharmacy", False, False),
-            ("physiotherapy", "Physiotherapy", False, False),
-            ("ehr", "Electronic Health Records", True, False),
-            ("billing", "Billing", True, True),
-            ("admin", "Administration", True, True),
-        ]
-        for mod_name, display, enabled, always in canonical:
-            if not db.query(SystemModule).filter(SystemModule.module_name == mod_name).first():
-                db.add(SystemModule(
-                    module_name=mod_name, display_name=display,
-                    description=f"{display} management",
-                    is_enabled=enabled, is_always_enabled=always,
-                ))
+        from app.services.system_modules import ensure_system_modules
+        ensure_system_modules(db, licensed_features=None)
         db.flush()
         stamp_schema_version(db)
         db.commit()
@@ -760,25 +745,8 @@ def init_database_and_seed(seed: Mapping, db_path: str) -> None:
         _seed_module_permissions(db, ModulePermission)
         db.flush()
 
-        modules = [
-            ("outpatient", "Outpatient", True, False),
-            ("inpatient", "Inpatient", False, False),
-            ("lab", "Laboratory", False, False),
-            ("pharmacy", "Pharmacy", False, False),
-            ("physiotherapy", "Physiotherapy", False, False),
-            ("ehr", "Electronic Health Records", True, False),
-            ("billing", "Billing", True, True),
-            ("admin", "Administration", True, True),
-        ]
-        for mod_name, display, enabled, always in modules:
-            if not db.query(SystemModule).filter(SystemModule.module_name == mod_name).first():
-                db.add(SystemModule(
-                    module_name=mod_name,
-                    display_name=display,
-                    description=f"{display} management",
-                    is_enabled=enabled,
-                    is_always_enabled=always,
-                ))
+        from app.services.system_modules import ensure_system_modules
+        ensure_system_modules(db, licensed_features=None)
         db.flush()
 
         from app.services.super_admin_service import generate_hospital_code

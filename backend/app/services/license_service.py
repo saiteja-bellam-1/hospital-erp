@@ -168,6 +168,12 @@ def upload_license(db: Session, file_content: str, uploaded_by: int = None) -> d
 
     status = compute_license_status(expires_at)
 
+    # Features from the currently-installed license (if any), used so we only
+    # auto-enable modules that are *newly* covered by this upload — not ones
+    # an admin previously turned off while already licensed.
+    prior = get_current_license(db)
+    previous_features = list(prior.features or []) if prior else []
+
     # Check if this license_id already exists (re-upload)
     existing = db.query(License).filter(
         License.license_id == license_data["license_id"]
@@ -208,25 +214,30 @@ def upload_license(db: Session, file_content: str, uploaded_by: int = None) -> d
         db.add(new_license)
         db.commit()
 
-    # Auto-disable modules not included in the new license
-    _sync_modules_with_license(db, license_data.get("features", []))
+    # Heal missing SystemModule rows + disable dropped features + enable newly
+    # licensed ones (e.g. physiotherapy added on renew after an app upgrade).
+    _sync_modules_with_license(
+        db,
+        license_data.get("features", []),
+        previous_features=previous_features,
+    )
 
     return get_license_status(db)
 
 
-def _sync_modules_with_license(db: Session, licensed_features: list):
-    """Disable modules that are not in the license. Enable licensed ones if they were disabled due to licensing."""
-    from app.models.system import SystemModule
-    if not licensed_features:
-        return
-    licensed_set = set(licensed_features)
-    modules = db.query(SystemModule).all()
-    for module in modules:
-        if module.is_always_enabled:
-            continue
-        if module.module_name not in licensed_set and module.is_enabled:
-            module.is_enabled = False
-    db.commit()
+def _sync_modules_with_license(
+    db: Session,
+    licensed_features: list,
+    previous_features: list | None = None,
+):
+    """Align system_modules with license features (create / enable / disable)."""
+    from app.services.system_modules import sync_modules_with_license
+
+    sync_modules_with_license(
+        db,
+        licensed_features or [],
+        previous_features=previous_features,
+    )
 
 
 def is_license_valid_for_login(db: Session, role_name: str) -> tuple[bool, str]:

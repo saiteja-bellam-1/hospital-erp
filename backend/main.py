@@ -432,36 +432,22 @@ def _ensure_admission_consent_templates():
 
 
 def _ensure_modules():
-    """Ensure all required modules exist in the DB (for upgrades)."""
+    """Ensure all required modules exist in the DB (for upgrades).
+
+    If a license is already installed, newly inserted modules that appear in
+    its features list are created enabled (heals physio-on-upgrade installs).
+    """
     from config.database import SessionLocal
-    from app.models.system import SystemModule
+    from app.services.system_modules import ensure_system_modules
+    from app.services.license_service import get_current_license
     db = SessionLocal()
     try:
-        required_modules = [
-            ("outpatient", "Outpatient", True, False),
-            ("inpatient", "Inpatient", False, False),
-            ("lab", "Laboratory", False, False),
-            ("pharmacy", "Pharmacy", False, False),
-            ("physiotherapy", "Physiotherapy", False, False),
-            ("ehr", "Electronic Health Records", True, False),
-            ("billing", "Billing", True, True),
-            ("admin", "Administration", True, True),
-        ]
-        for mod_name, display, default_enabled, always_on in required_modules:
-            existing = db.query(SystemModule).filter(SystemModule.module_name == mod_name).first()
-            if not existing:
-                db.add(SystemModule(
-                    module_name=mod_name, display_name=display,
-                    description=f"{display} management",
-                    is_enabled=default_enabled, is_always_enabled=always_on,
-                ))
-                print(f"  Added module: {mod_name}")
-            else:
-                # Sync is_always_enabled flag for existing modules (handles upgrades)
-                if existing.is_always_enabled != always_on:
-                    existing.is_always_enabled = always_on
-                    print(f"  Updated module {mod_name}: is_always_enabled={always_on}")
+        lic = get_current_license(db)
+        licensed = list(lic.features or []) if lic else None
+        created = ensure_system_modules(db, licensed_features=licensed)
         db.commit()
+        for mod_name in sorted(created):
+            print(f"  Added module: {mod_name}")
     except Exception as e:
         print(f"Warning: Module sync: {e}")
         db.rollback()
