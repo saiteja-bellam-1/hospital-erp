@@ -1,4 +1,9 @@
 from .user import User, UserRole, UserPermission
+from .doctor_availability import (
+    DoctorAvailability,
+    DoctorSpecialSchedule,
+    DoctorAvailabilityStatus,
+)
 from .hospital import Hospital, HospitalModule
 from .patient import Patient, PatientContact, PatientMedicalHistory
 from .lab import LabTest, LabTestCategory, LabReport, LabReportTemplate, PatientLabOrder
@@ -8,10 +13,21 @@ from .ehr import Consultation, Diagnosis, TreatmentPlan, MedicalNote
 from .outpatient import Appointment, OutpatientVisit
 from .inpatient import Admission, RoomManagement, DischargeRecord
 from .settlement import Settlement, SettlementConfig
+from .system import SystemModule, SystemSettings
+from .physiotherapy import (  # noqa: F401 — register physio mappers with Base
+    PhysioService,
+    PhysioPackageTemplate,
+    PhysioPatientPackage,
+    PhysioPackageLedger,
+    PhysioTherapistAvailability,
+    PhysioTherapistSpecialSchedule,
+    PhysioAppointment,
+)
 
 __all__ = [
     "User", "UserRole", "UserPermission",
-    "Hospital", "HospitalModule", 
+    "DoctorAvailability", "DoctorSpecialSchedule", "DoctorAvailabilityStatus",
+    "Hospital", "HospitalModule",
     "Patient", "PatientContact", "PatientMedicalHistory",
     "LabTest", "LabTestCategory", "LabReport", "LabReportTemplate", "PatientLabOrder",
     "Medicine", "MedicineCategory", "Prescription", "PrescriptionItem", "PharmacyInventory",
@@ -19,5 +35,6 @@ __all__ = [
     "Consultation", "Diagnosis", "TreatmentPlan", "MedicalNote",
     "Appointment", "OutpatientVisit",
     "Admission", "RoomManagement", "DischargeRecord",
-    "Settlement", "SettlementConfig"
+    "Settlement", "SettlementConfig",
+    "SystemModule", "SystemSettings",
 ]

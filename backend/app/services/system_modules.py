@@ -151,13 +151,19 @@ def heal_system_modules(exe_dir: Optional[str] = None) -> None:
     import os
 
     try:
-        from config.database import SessionLocal, reinitialize_engine, create_tables
-        from app.models.system import SystemModule  # noqa: F401
+        from config.database import SessionLocal, reinitialize_engine
         from app.services.license_service import get_current_license
         from app.utils.paths import get_data_dir
 
+        # Importing app.models loads User (via package __init__). DoctorAvailability
+        # must be registered before any Session query or mapper configure fails and
+        # breaks login for the rest of the process.
+        import app.models  # noqa: F401
+        from app.models.system import SystemModule  # noqa: F401
+
         reinitialize_engine()
-        create_tables()
+        # Do NOT call create_tables() here — that belongs to main's schema
+        # bootstrap after every model is imported. On upgrade the tables exist.
 
         # Launcher passes the .exe directory; FastAPI startup uses the resolved
         # data dir (backend/ in source mode, <exe>/data when bundled).
