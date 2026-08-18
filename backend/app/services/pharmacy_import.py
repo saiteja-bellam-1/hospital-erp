@@ -353,6 +353,7 @@ def _empty_summary(*, dry_run: bool) -> dict:
         "masters_created": [],
         "errors": [],
         "preview": [],
+        "form": None,
     }
 
 
@@ -2533,6 +2534,41 @@ def _filter_rows_by_line(
     return out
 
 
+def _purchase_form_item(resolved: dict) -> dict:
+    """Serialize a resolved import line into PurchaseEntry form shape."""
+    med = resolved["medicine"]
+    exp = resolved.get("expiry_date")
+    if hasattr(exp, "isoformat"):
+        exp = exp.isoformat()
+    elif exp is not None:
+        exp = str(exp)[:10]
+    return {
+        "medicine_id": med.id,
+        "medicine_name": med.name or "",
+        "medicine_code": med.medicine_code or "",
+        "batch_number": resolved.get("batch_number") or "",
+        "expiry_date": exp,
+        "mrp": resolved.get("mrp") or 0,
+        "quantity": resolved.get("quantity") or 0,
+        "free_quantity": resolved.get("free_quantity") or 0,
+        "purchase_rate": resolved.get("purchase_rate") or 0,
+        "rate_a": resolved.get("rate_a") or 0,
+        "rate_b": resolved.get("rate_b") or 0,
+        "strip_conversion_factor": resolved.get("strip_conversion_factor") or 1,
+        "discount_pct": resolved.get("discount_pct") or 0,
+        "hsn_id": med.hsn_id,
+    }
+
+
+def _iso_date(v) -> Optional[str]:
+    if v is None:
+        return None
+    if hasattr(v, "isoformat"):
+        return v.isoformat()
+    s = str(v).strip()
+    return s[:10] if s else None
+
+
 def import_purchases(
     db: Session, user: User, content: bytes, filename: str,
     *, dry_run: bool, on_duplicate: str,
@@ -2541,18 +2577,15 @@ def import_purchases(
     invoice_number: Optional[str] = None,
     entry_date: Optional[date] = None,
     bill_date: Optional[date] = None,
+    payment_type: Optional[str] = None,
     row_start: Optional[int] = None,
     row_end: Optional[int] = None,
 ) -> dict:
-    """Import purchase invoices as **draft** purchases.
+    """Import purchase invoices into the purchase form payload.
 
-    Accepts:
-    - Vendor distributor CSV (H/T/F rows, CL1..CL31 headers) — e.g. Vasu Pharma export
-    - Named-header .xlsx/.csv matching PURCHASE_HEADERS
-    - Either format with a UI `column_mapping` of {source_header: erp_field}
-    - Optional UI overrides: supplier_id, invoice_number, entry/bill dates
-    - `row_start`: 1-based file line of the column-header row (default: 1)
-    - `row_end`: optional 1-based last data line (inclusive); omit = through EOF
+    Parses vendor H/T/F CSV or named-header sheets, resolves/auto-creates
+    medicines, and returns a `form` object for PurchaseEntry. Does **not**
+    create a PharmacyPurchase — the user saves/submits from the purchase form.
     """
     summary = _empty_summary(dry_run=dry_run)
     header_row = int(row_start) if row_start is not None else 1
@@ -2629,6 +2662,8 @@ def import_purchases(
             block["bill_date"] = bill_date
         elif entry_date is not None and not block.get("bill_date"):
             block["bill_date"] = entry_date
+        if payment_type in ("cash", "credit"):
+            block["payment_type"] = payment_type
 
     if not blocks:
         summary["errors"].append({
@@ -2638,13 +2673,12 @@ def import_purchases(
         summary["error_count"] = 1
         return summary
 
-    store_cache: Dict[str, PharmacyStore] = {
-        s.code.strip().lower(): s
-        for s in db.query(PharmacyStore).filter(PharmacyStore.hospital_id == hospital_id).all()
-    }
     medicine_cache: dict = {}
     supplier_cache: Dict[str, PharmacySupplier] = {}
     resolver = _MasterResolver(db, hospital_id)
+    form_header: Optional[dict] = None
+    form_items: List[dict] = []
+    form_warnings: List[str] = []
 
     for block in blocks:
         items = block.get("items") or []
@@ -2694,37 +2728,12 @@ def import_purchases(
         if tax_mode not in ("exclusive", "inclusive"):
             tax_mode = "exclusive"
 
-        store_id = _resolve_purchase_store_id(db, hospital_id, block.get("store_code"), store_cache)
-        if not store_id:
-            msg = f"Store not found: '{block.get('store_code') or '(purchase/master store)'}'"
-            summary["errors"].append({"sheet": "Purchases", "row": header_row, "message": msg})
-            summary["preview"].append({
-                "row": header_row, "key": preview_key, "name": supplier_name or "",
-                "status": "error", "message": msg, "sheet": "Purchases",
-            })
-            continue
-
         existing = _find_existing_purchase(db, hospital_id, supplier.id, invoice_number_b)
-        if existing and on_duplicate == "skip":
-            summary["skipped"] += 1
-            summary["preview"].append({
-                "row": header_row, "key": preview_key, "name": supplier.name,
-                "status": "skip",
-                "message": f"Invoice already exists as {existing.purchase_number}",
-                "sheet": "Purchases",
-            })
-            continue
-        if existing and existing.status != "draft":
-            msg = (
+        if existing:
+            form_warnings.append(
                 f"Invoice #{invoice_number_b} already exists as {existing.purchase_number} "
-                f"({existing.status}) — only draft purchases can be updated"
+                f"({existing.status}). Change the invoice number before saving, or edit that purchase instead."
             )
-            summary["errors"].append({"sheet": "Purchases", "row": header_row, "message": msg})
-            summary["preview"].append({
-                "row": header_row, "key": preview_key, "name": supplier.name,
-                "status": "error", "message": msg, "sheet": "Purchases",
-            })
-            continue
 
         # Resolve all line items first; fail the whole invoice if any line errors
         resolved: List[dict] = []
@@ -2824,83 +2833,50 @@ def import_purchases(
             continue
 
         entry = block.get("entry_date") or date.today()
-        if existing and on_duplicate == "update":
-            for old in list(existing.items):
-                db.delete(old)
-            db.flush()
-            purchase = existing
-            purchase.entry_date = entry
-            purchase.bill_date = block.get("bill_date") or purchase.bill_date
-            purchase.payment_type = payment_type
-            purchase.purchase_type = block.get("purchase_type") or purchase.purchase_type
-            purchase.tax_mode = tax_mode
-            purchase.notes = block.get("notes") or purchase.notes
-            purchase.store_id = store_id
-            status = "update"
-        else:
-            purchase = PharmacyPurchase(
-                purchase_number=_next_purchase_number_import(db, hospital_id),
-                entry_date=entry,
-                supplier_id=supplier.id,
-                invoice_number=invoice_number_b,
-                bill_date=block.get("bill_date"),
-                payment_type=payment_type,
-                purchase_type=block.get("purchase_type"),
-                tax_mode=tax_mode,
-                status="draft",
-                notes=block.get("notes"),
-                created_by=user.id,
-                store_id=store_id,
-                hospital_id=hospital_id,
-            )
-            db.add(purchase)
-            db.flush()
-            for _attempt in range(3):
-                clash = db.query(PharmacyPurchase).filter(
-                    PharmacyPurchase.purchase_number == purchase.purchase_number,
-                    PharmacyPurchase.id != purchase.id,
-                ).first()
-                if not clash:
-                    break
-                purchase.purchase_number = _next_purchase_number_import(db, hospital_id)
-                db.flush()
-            status = "new"
+        bill = block.get("bill_date") or entry
+        if form_header is None:
+            form_header = {
+                "supplier_id": supplier.id,
+                "invoice_number": invoice_number_b or "",
+                "entry_date": _iso_date(entry),
+                "bill_date": _iso_date(bill),
+                "payment_type": payment_type,
+                "purchase_type": block.get("purchase_type") or "local",
+                "tax_mode": tax_mode,
+                "notes": block.get("notes") or None,
+            }
+        elif block.get("notes") and not form_header.get("notes"):
+            form_header["notes"] = block.get("notes")
 
         for r in resolved:
-            db.add(PharmacyPurchaseItem(
-                purchase_id=purchase.id,
-                medicine_id=r["medicine"].id,
-                batch_number=r["batch_number"],
-                expiry_date=r["expiry_date"],
-                mrp=r["mrp"],
-                quantity=r["quantity"],
-                free_quantity=r["free_quantity"],
-                purchase_rate=r["purchase_rate"],
-                rate_a=r["rate_a"],
-                rate_b=r["rate_b"],
-                strip_conversion_factor=r["strip_conversion_factor"],
-                discount_pct=r["discount_pct"],
-                hsn_id=r["medicine"].hsn_id,
-            ))
-        db.flush()
-        db.refresh(purchase)
-        _recompute_purchase_totals_import(purchase, db)
-
-        if status == "new":
-            summary["created"] += 1
-        else:
-            summary["updated"] += 1
-        msg_bits = [f"Draft {purchase.purchase_number}"]
+            form_items.append(_purchase_form_item(r))
+            summary["preview"].append({
+                "row": r["row"],
+                "key": r["medicine"].medicine_code or "",
+                "name": r["medicine"].name,
+                "status": "new",
+                "message": r["batch_number"],
+                "sheet": "Purchases",
+            })
+        summary["created"] += len(resolved)
+        msg_bits = [f"{len(resolved)} line(s) ready for purchase form"]
         if medicines_created:
             msg_bits.append(f"{medicines_created} medicine(s) auto-created")
         summary["preview"].append({
             "row": header_row,
             "key": preview_key,
-            "name": f"{supplier.name} — {len(resolved)} items — ₹{purchase.grand_total:.2f}",
-            "status": status,
+            "name": f"{supplier.name} — {len(resolved)} items",
+            "status": "new",
             "message": " · ".join(msg_bits),
             "sheet": "Purchases",
         })
+
+    if form_header and form_items:
+        summary["form"] = {
+            "header": form_header,
+            "items": form_items,
+            "warnings": form_warnings,
+        }
 
     summary["masters_created"] = resolver.masters_created
     summary["error_count"] = len(summary["errors"])
@@ -2921,7 +2897,7 @@ def build_purchases_template() -> bytes:
         _append_instructions(wb, [
             "KT HEALTH ERP — Purchase Import",
             "",
-            "Creates DRAFT purchases (review then Confirm in Purchases).",
+            "Loads lines into the New Purchase form (Save / Submit there).",
             "Supplier must already exist.",
             "Missing medicines are auto-created (category General) from name, manufacturer,",
             "MRP, PTR/purchase_rate, pack, and HSN (+ CGST/SGST % when present).",

@@ -10,13 +10,12 @@ import {
 import hospitalLogo from '../../assets/Final Logo KT (1).jpg';
 import UniversalSearch from './UniversalSearch';
 
-const MAX_VISIBLE_SECTIONS = 5;
-
 const idleLinkClass =
-  'header-nav-link px-2.5 py-1.5 rounded-md text-sm font-medium whitespace-nowrap transition-colors';
+  'header-nav-link px-2.5 py-1.5 rounded-md text-sm font-medium whitespace-nowrap transition-colors flex-shrink-0';
 
 /**
  * Top navigation bar for header layout mode — uses the same dark chrome as the sidebar.
+ * Every module section is a first-class item on the bar (no More/Others overflow).
  */
 export default function AppHeader({
   navigationSections,
@@ -27,25 +26,10 @@ export default function AppHeader({
   userInitials,
   roleLabel,
 }) {
-  const { primarySections, overflowSections, flatItems } = useMemo(() => {
-    const labeled = [];
-    const flat = [];
-    for (const section of navigationSections || []) {
-      if (!section.label) {
-        flat.push(...(section.items || []));
-      } else {
-        labeled.push(section);
-      }
-    }
-    if (labeled.length <= MAX_VISIBLE_SECTIONS) {
-      return { primarySections: labeled, overflowSections: [], flatItems: flat };
-    }
-    return {
-      primarySections: labeled.slice(0, MAX_VISIBLE_SECTIONS),
-      overflowSections: labeled.slice(MAX_VISIBLE_SECTIONS),
-      flatItems: flat,
-    };
-  }, [navigationSections]);
+  const labeledSections = useMemo(
+    () => (navigationSections || []).filter((section) => section.label),
+    [navigationSections],
+  );
 
   const sectionHasActive = (section) =>
     (section.items || []).some((item) => isActive(item.path));
@@ -86,7 +70,12 @@ export default function AppHeader({
           <Menu className="h-5 w-5" />
         </button>
 
-        <Link to="/dashboard/home" className="flex items-center flex-shrink-0">
+        <Link
+          to="/dashboard"
+          className="flex items-center flex-shrink-0 rounded"
+          title="Dashboard"
+          aria-label="Dashboard"
+        >
           <img
             src={hospitalLogo}
             alt="KT Health Soft"
@@ -95,30 +84,8 @@ export default function AppHeader({
           />
         </Link>
 
-        <nav className="hidden lg:flex items-center gap-0.5 flex-1 min-w-0 ml-2 overflow-hidden">
-          {flatItems.map((item) => {
-            const active = isActive(item.path);
-            return (
-              <Link
-                key={item.text}
-                to={item.path}
-                className={`${idleLinkClass} ${active ? 'header-nav-link-active' : ''}`}
-                style={
-                  active
-                    ? { color: '#fff', background: 'hsl(var(--sidebar-active))' }
-                    : idleStyle
-                }
-                onMouseEnter={(e) => {
-                  if (!active) onIdleEnter(e);
-                }}
-                onMouseLeave={(e) => onIdleLeave(e, active)}
-              >
-                {item.text}
-              </Link>
-            );
-          })}
-
-          {primarySections.map((section) => {
+        <nav className="header-nav hidden lg:flex items-center gap-0.5 flex-1 min-w-0 ml-2 overflow-x-auto">
+          {labeledSections.map((section) => {
             const active = sectionHasActive(section);
             return (
               <DropdownMenu key={section.label}>
@@ -158,53 +125,6 @@ export default function AppHeader({
               </DropdownMenu>
             );
           })}
-
-          {overflowSections.length > 0 && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button
-                  type="button"
-                  className={`${idleLinkClass} inline-flex items-center gap-1 ${
-                    overflowSections.some(sectionHasActive) ? 'header-nav-link-active' : ''
-                  }`}
-                  style={
-                    overflowSections.some(sectionHasActive)
-                      ? { color: '#fff', background: 'hsl(var(--sidebar-active))' }
-                      : idleStyle
-                  }
-                  onMouseEnter={(e) => {
-                    if (!overflowSections.some(sectionHasActive)) onIdleEnter(e);
-                  }}
-                  onMouseLeave={(e) =>
-                    onIdleLeave(e, overflowSections.some(sectionHasActive))
-                  }
-                >
-                  More
-                  <ChevronDown className="h-3.5 w-3.5 opacity-60" />
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="min-w-[220px] max-h-[70vh] overflow-y-auto">
-                {overflowSections.map((section) => (
-                  <React.Fragment key={section.label}>
-                    <div className="px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                      {section.label}
-                    </div>
-                    {section.items.map((item) => (
-                      <DropdownMenuItem key={`${section.label}-${item.text}`} asChild>
-                        <Link
-                          to={item.path}
-                          className={`cursor-pointer ${isActive(item.path) ? 'font-semibold' : ''}`}
-                        >
-                          <span className="mr-2 opacity-70">{item.icon}</span>
-                          {item.text}
-                        </Link>
-                      </DropdownMenuItem>
-                    ))}
-                  </React.Fragment>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
         </nav>
 
         <div className="flex items-center gap-2 ml-auto flex-shrink-0">

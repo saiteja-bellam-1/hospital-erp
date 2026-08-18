@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import axios from 'axios';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '../../../components/ui/card';
 import { Button } from '../../../components/ui/button';
 import { Input } from '../../../components/ui/input';
@@ -78,6 +78,7 @@ const isExpiryAfterCurrentMonth = (raw) => {
 export default function PurchaseEntry() {
   const { toast } = useToast();
   const navigate = useNavigate();
+  const location = useLocation();
   const { id: routeId } = useParams();
   const { stores } = usePharmacyStore();
   const masterStore = stores.find((s) => s.store_type === 'master');
@@ -137,6 +138,50 @@ export default function PurchaseEntry() {
     }));
   }, [cacheMedicine]);
 
+  const importAppliedRef = useRef(false);
+  useEffect(() => {
+    if (importAppliedRef.current || routeId) return;
+    const draft = location.state?.importDraft;
+    if (!draft?.items?.length) return;
+    importAppliedRef.current = true;
+    const h = draft.header || {};
+    setHeader({
+      entry_date: h.entry_date || TODAY,
+      supplier_id: h.supplier_id || null,
+      invoice_number: h.invoice_number || '',
+      bill_date: h.bill_date || TODAY,
+      payment_type: h.payment_type === 'cash' ? 'cash' : 'credit',
+      purchase_type: h.purchase_type || 'local',
+      tax_mode: h.tax_mode === 'inclusive' ? 'inclusive' : 'exclusive',
+      notes: h.notes || '',
+    });
+    const loaded = (draft.items || []).map((it) => ({
+      medicine_id: it.medicine_id || null,
+      batch_number: it.batch_number || '',
+      expiry_mm_yyyy: expiryToDisplay(it.expiry_date),
+      mrp: it.mrp ?? '',
+      quantity: it.quantity ?? 1,
+      free_quantity: it.free_quantity || '',
+      purchase_rate: it.purchase_rate ?? '',
+      rate_a: it.rate_a ?? '',
+      rate_b: it.rate_b ?? '',
+      strip_conversion_factor: it.strip_conversion_factor || 1,
+      discount_pct: it.discount_pct || '',
+      hsn_id: it.hsn_id ?? null,
+    }));
+    setItems(loaded);
+    setHeaderPanelOpen(true);
+    loadMedicinesByIds(loaded.map((l) => l.medicine_id).filter(Boolean));
+    (draft.warnings || []).forEach((w) => {
+      toast({ title: 'Import notice', description: w });
+    });
+    toast({
+      title: `Loaded ${loaded.length} line(s) from import`,
+      description: 'Review the purchase, then Save draft or Submit.',
+    });
+    navigate(location.pathname, { replace: true, state: {} });
+  }, [location.state, location.pathname, routeId, loadMedicinesByIds, navigate, toast]);
+
   useEffect(() => {
     Promise.all([
       axios.get('/api/pharmacy/suppliers').then(r => setSuppliers(r.data || [])),
@@ -147,6 +192,7 @@ export default function PurchaseEntry() {
 
   useEffect(() => {
     if (routeId) return; // edit mode loads tax_mode from the purchase
+    if (location.state?.importDraft) return;
     axios.get('/api/pharmacy/pos-settings')
       .then((r) => {
         const mode = r.data?.default_tax_mode_purchase === 'inclusive' ? 'inclusive' : 'exclusive';

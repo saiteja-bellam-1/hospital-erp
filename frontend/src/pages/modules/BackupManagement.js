@@ -3,15 +3,14 @@ import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/ca
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../../components/ui/dialog';
 import { useToast } from '../../hooks/use-toast';
 import axios from 'axios';
 import { Badge } from '../../components/ui/badge';
 import {
   FolderSync, FolderOpen, Plus, X, Play, CheckCircle2, AlertCircle, Loader2, RefreshCw,
-  Database, HardDrive, MapPin, ShieldCheck, Image, FileText, Settings, Clock, Timer, RotateCcw, AlertTriangle, Cloud, Upload, Download, Cpu
+  Database, HardDrive, MapPin, ShieldCheck, Image, FileText, Settings, Timer, RotateCcw, AlertTriangle, Cloud, Upload, Download, Cpu, ScrollText
 } from 'lucide-react';
-import { localDateString } from '../../utils/localDate';
 
 const BackupManagement = () => {
   const [loading, setLoading] = useState(true);
@@ -29,6 +28,11 @@ const BackupManagement = () => {
   const [snapshotStatus, setSnapshotStatus] = useState(null);
   const [gdriveStatus, setGdriveStatus] = useState(null);
   const [gdriveBacking, setGdriveBacking] = useState(false);
+  const [gdriveLive, setGdriveLive] = useState(null);
+  const [gdriveChecking, setGdriveChecking] = useState(false);
+  const [logErrors, setLogErrors] = useState([]);
+  const [showLogErrors, setShowLogErrors] = useState(false);
+  const [logErrorsLoaded, setLogErrorsLoaded] = useState(false);
   const [restorePoints, setRestorePoints] = useState([]);
   const [showRestoreDialog, setShowRestoreDialog] = useState(false);
   const [selectedRestore, setSelectedRestore] = useState(null);
@@ -48,6 +52,43 @@ const BackupManagement = () => {
 
   const fetchGdriveStatus = async () => {
     try { const res = await axios.get('/api/backup/gdrive-status'); setGdriveStatus(res.data); } catch {}
+  };
+
+  const fetchGdriveLive = async () => {
+    setGdriveChecking(true);
+    try { const res = await axios.get('/api/backup/gdrive-health'); setGdriveLive(res.data); }
+    catch { setGdriveLive(null); }
+    finally { setGdriveChecking(false); }
+  };
+
+  const fetchLogErrors = async ({ openPopup = false } = {}) => {
+    try {
+      const res = await axios.get('/api/backup/log-errors');
+      const errors = [...(res.data.errors || [])];
+      const current = res.data.current || {};
+      Object.entries(current).forEach(([source, msg]) => {
+        if (!msg) return;
+        if (errors.some((e) => (e.message || '').includes(msg))) return;
+        errors.unshift({ timestamp: null, source, message: msg, level: 'ERROR', file: 'current' });
+      });
+      setLogErrors(errors);
+      if (openPopup && errors.length > 0) {
+        const fingerprint = errors.map((e) => `${e.source}:${e.message}`).join('|').slice(0, 800);
+        if (sessionStorage.getItem('backup-log-errors-dismissed') !== fingerprint) {
+          setShowLogErrors(true);
+        }
+      }
+    } catch {
+      setLogErrors([]);
+    } finally {
+      setLogErrorsLoaded(true);
+    }
+  };
+
+  const dismissLogErrors = () => {
+    const fingerprint = logErrors.map((e) => `${e.source}:${e.message}`).join('|').slice(0, 800);
+    sessionStorage.setItem('backup-log-errors-dismissed', fingerprint);
+    setShowLogErrors(false);
   };
 
   const fetchRestorePoints = async () => {
@@ -81,6 +122,8 @@ const BackupManagement = () => {
     fetchSnapshotStatus();
     fetchRestorePoints();
     fetchGdriveStatus();
+    fetchGdriveLive();
+    fetchLogErrors({ openPopup: true });
     const interval = setInterval(() => { fetchMirrorStatus(); fetchSnapshotStatus(); fetchGdriveStatus(); }, 15000);
     return () => clearInterval(interval);
   }, []);
@@ -236,9 +279,16 @@ const BackupManagement = () => {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold">Database & Backup</h1>
-        <p className="text-muted-foreground text-sm">Manage your database, backups, and system configuration.</p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold">Database & Backup</h1>
+          <p className="text-muted-foreground text-sm">Manage your database, backups, and system configuration.</p>
+        </div>
+        {logErrorsLoaded && logErrors.length > 0 && (
+          <Button variant="destructive" size="sm" className="h-8 shrink-0" onClick={() => setShowLogErrors(true)}>
+            <ScrollText className="w-3.5 h-3.5 mr-1.5" /> {logErrors.length} log error{logErrors.length === 1 ? '' : 's'}
+          </Button>
+        )}
       </div>
 
       {/* Top Row: Database + Config */}
@@ -477,49 +527,98 @@ const BackupManagement = () => {
       )}
 
       {/* Google Drive Backup */}
-      {gdriveStatus?.enabled && (
-        <Card>
-          <CardHeader className="pb-3">
-            <div className="flex items-center justify-between">
-              <CardTitle className="flex items-center gap-2 text-base">
-                <Cloud className={`w-4 h-4 ${gdriveStatus.last_sent === localDateString() ? 'text-green-500' : 'text-gray-400'}`} />
-                Google Drive Backup
-              </CardTitle>
+      {gdriveStatus && (
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Cloud className={`w-4 h-4 ${
+                gdriveLive?.healthy || gdriveStatus?.health_status === 'healthy'
+                  ? 'text-green-500'
+                  : gdriveStatus?.health_status === 'error' || gdriveLive?.healthy === false
+                    ? 'text-red-500'
+                    : 'text-gray-400'
+              }`} />
+              Google Drive Backup
+            </CardTitle>
+            <div className="flex items-center gap-2">
+              {gdriveStatus?.running && (
+                <Badge className="text-[10px] bg-blue-100 text-blue-700">Thread active</Badge>
+              )}
               <Badge className={`text-[10px] ${
-                gdriveStatus.last_sent === localDateString()
-                  ? 'bg-green-100 text-green-700'
-                  : gdriveStatus.last_error
-                    ? 'bg-red-100 text-red-700'
-                    : 'bg-gray-100 text-gray-600'
+                !gdriveStatus?.enabled
+                  ? 'bg-gray-100 text-gray-600'
+                  : gdriveLive?.healthy || gdriveStatus?.health_status === 'healthy'
+                    ? 'bg-green-100 text-green-700'
+                    : gdriveStatus?.health_status === 'error' || (gdriveLive && gdriveLive.healthy === false)
+                      ? 'bg-red-100 text-red-700'
+                      : gdriveStatus?.health_status === 'stale'
+                        ? 'bg-amber-100 text-amber-800'
+                        : 'bg-gray-100 text-gray-600'
               }`}>
-                {gdriveStatus.last_sent === localDateString()
-                  ? 'Sent today'
-                  : gdriveStatus.last_error ? 'Error' : 'Waiting'}
+                {!gdriveStatus?.enabled
+                  ? 'Not enabled'
+                  : gdriveLive?.healthy
+                    ? 'Healthy'
+                    : gdriveLive && gdriveLive.healthy === false
+                      ? 'Unreachable'
+                      : gdriveStatus?.health_status === 'healthy'
+                        ? 'Healthy'
+                        : gdriveStatus?.health_status === 'error'
+                          ? 'Error'
+                          : gdriveStatus?.health_status === 'stale'
+                            ? 'Stale'
+                            : 'Waiting'}
               </Badge>
             </div>
-          </CardHeader>
-          <CardContent className="space-y-3">
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {!gdriveStatus?.enabled ? (
             <p className="text-sm text-gray-600">
-              Daily compressed backup uploaded to Google Drive automatically.
+              Google Drive backup is not enabled on this license. When it is, a daily compressed copy is uploaded automatically.
             </p>
-            <div className="flex gap-4 text-xs text-gray-500">
-              {gdriveStatus.last_sent && <span>Last sent: {gdriveStatus.last_sent}</span>}
-              {gdriveStatus.last_error && <span className="text-red-500">Error: {gdriveStatus.last_error}</span>}
-            </div>
-            <Button size="sm" className="h-8" disabled={gdriveBacking} onClick={async () => {
-              setGdriveBacking(true);
-              try {
-                await axios.post('/api/backup/gdrive-backup-now');
-                toast({ title: 'Success', description: 'Backed up to Google Drive' });
-                fetchGdriveStatus();
-              } catch (err) {
-                toast({ variant: 'destructive', title: 'Failed', description: err.response?.data?.detail || 'Backup failed' });
-              } finally { setGdriveBacking(false); }
-            }}>
-              {gdriveBacking ? <><Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> Uploading...</> : <><Cloud className="w-3.5 h-3.5 mr-1.5" /> Backup Now</>}
-            </Button>
-          </CardContent>
-        </Card>
+          ) : (
+            <>
+              <p className="text-sm text-gray-600">
+                Daily compressed backup uploaded to Google Drive automatically.
+                {gdriveLive?.folder_name && (
+                  <span className="text-gray-500"> Folder: <code className="bg-gray-50 px-1 rounded">{gdriveLive.folder_name}</code></span>
+                )}
+              </p>
+              <div className="flex flex-wrap gap-4 text-xs text-gray-500">
+                {gdriveStatus.last_sent && <span>Last sent: {gdriveStatus.last_sent}</span>}
+                {gdriveLive?.error && <span className="text-red-500">Connection: {gdriveLive.error}</span>}
+                {gdriveStatus.last_error && <span className="text-red-500">Last backup error: {gdriveStatus.last_error}</span>}
+                {gdriveStatus.health_message && !gdriveStatus.last_error && gdriveStatus.health_status !== 'healthy' && (
+                  <span className="text-amber-700">{gdriveStatus.health_message}</span>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <Button size="sm" className="h-8" disabled={gdriveBacking} onClick={async () => {
+                  setGdriveBacking(true);
+                  try {
+                    await axios.post('/api/backup/gdrive-backup-now');
+                    toast({ title: 'Success', description: 'Backed up to Google Drive' });
+                    fetchGdriveStatus();
+                    fetchGdriveLive();
+                    fetchLogErrors();
+                  } catch (err) {
+                    toast({ variant: 'destructive', title: 'Failed', description: err.response?.data?.detail || 'Backup failed' });
+                    fetchGdriveStatus();
+                    fetchLogErrors();
+                  } finally { setGdriveBacking(false); }
+                }}>
+                  {gdriveBacking ? <><Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> Uploading...</> : <><Cloud className="w-3.5 h-3.5 mr-1.5" /> Backup Now</>}
+                </Button>
+                <Button size="sm" variant="outline" className="h-8" disabled={gdriveChecking} onClick={fetchGdriveLive}>
+                  {gdriveChecking ? <><Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> Checking...</> : <><ShieldCheck className="w-3.5 h-3.5 mr-1.5" /> Check connection</>}
+                </Button>
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
       )}
 
       {/* Mirror Status + Manual Backup Row */}
@@ -861,6 +960,44 @@ const BackupManagement = () => {
               <Button onClick={handleMigrate} disabled={migrating || !migratePath.trim()}>
                 {migrating ? <><Loader2 className="w-4 h-4 mr-1 animate-spin" /> Migrating...</> : 'Move Database'}
               </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Backup log errors popup */}
+      <Dialog open={showLogErrors} onOpenChange={(open) => { if (open) setShowLogErrors(true); else dismissLogErrors(); }}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-red-500" /> Backup errors
+            </DialogTitle>
+            <DialogDescription>
+              Recent backup-related failures from the server log ({logErrors.length} shown).
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            {logErrors.length === 0 ? (
+              <p className="text-sm text-gray-500">No backup errors in the log.</p>
+            ) : (
+              <div className="max-h-80 overflow-y-auto space-y-2">
+                {logErrors.map((err, i) => (
+                  <div key={i} className="bg-red-50 border border-red-100 rounded-lg p-2.5 text-xs">
+                    <div className="flex items-center gap-2 text-red-800 mb-1">
+                      <Badge className="text-[9px] bg-red-100 text-red-700">{err.source || 'backup'}</Badge>
+                      {err.timestamp && <span className="text-gray-500">{formatDate(err.timestamp)}</span>}
+                      {err.file && err.file !== 'current' && <span className="text-gray-400">{err.file}.log</span>}
+                    </div>
+                    <p className="text-red-900 whitespace-pre-wrap break-words font-mono">{err.message}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="flex justify-end gap-2 pt-2 border-t">
+              <Button variant="outline" size="sm" onClick={() => fetchLogErrors()}>
+                <RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Refresh
+              </Button>
+              <Button size="sm" onClick={dismissLogErrors}>Dismiss</Button>
             </div>
           </div>
         </DialogContent>

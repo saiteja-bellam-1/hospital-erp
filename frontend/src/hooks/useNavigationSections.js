@@ -263,6 +263,24 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
     if (items.length > 0) sections.push({ label: 'Inpatient', items });
   }
 
+  // ── PHYSIOTHERAPY ──
+  // Keep with other clinical modules (not after Canteen/Admin).
+  if (enabledModules.physiotherapy && hasAnyRole(
+    'hospital_admin', 'super_admin', 'receptionist', 'frontdesk',
+    'physiotherapist', 'billing_admin',
+  )) {
+    const items = [];
+    add(items, make("Today's Board", Activity, '/dashboard/physiotherapy/today'));
+    add(items, make('Appointments', Calendar, '/dashboard/physiotherapy/appointments'));
+    add(items, make('Packages', Package, '/dashboard/physiotherapy/packages'));
+    add(items, make('Catalog', BookOpen, '/dashboard/physiotherapy/catalog'));
+    add(items, make('Therapists', Users, '/dashboard/physiotherapy/therapists'));
+    if (hasAnyRole('hospital_admin', 'super_admin', 'receptionist', 'billing_admin')) {
+      add(items, make('Reports', BarChart3, '/dashboard/physiotherapy/reports'));
+    }
+    if (items.length > 0) sections.push({ label: 'Physiotherapy', items });
+  }
+
   // ── CANTEEN (available whenever inpatient is enabled) ──
   if (enabledModules.inpatient && (
     hasAnyRole(...CANTEEN_ROLE_NAMES, 'nurse', 'doctor', 'receptionist', 'inpatient_admin')
@@ -286,23 +304,6 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
       add(items, make('Order Food', UtensilsCrossed, '/dashboard/canteen/order'));
     }
     if (items.length > 0) sections.push({ label: 'Canteen', items });
-  }
-
-  // ── PHYSIOTHERAPY ──
-  if (enabledModules.physiotherapy && hasAnyRole(
-    'hospital_admin', 'super_admin', 'receptionist', 'frontdesk',
-    'physiotherapist', 'billing_admin',
-  )) {
-    const items = [];
-    add(items, make("Today's Board", Activity, '/dashboard/physiotherapy/today'));
-    add(items, make('Appointments', Calendar, '/dashboard/physiotherapy/appointments'));
-    add(items, make('Packages', Package, '/dashboard/physiotherapy/packages'));
-    add(items, make('Catalog', BookOpen, '/dashboard/physiotherapy/catalog'));
-    add(items, make('Therapists', Users, '/dashboard/physiotherapy/therapists'));
-    if (hasAnyRole('hospital_admin', 'super_admin', 'receptionist', 'billing_admin')) {
-      add(items, make('Reports', BarChart3, '/dashboard/physiotherapy/reports'));
-    }
-    if (items.length > 0) sections.push({ label: 'Physiotherapy', items });
   }
 
   // ── ADMINISTRATION + SYSTEM ──

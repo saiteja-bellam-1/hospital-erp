@@ -146,6 +146,22 @@
   to { transform: scaleY(1); }
 }
 
+/* Header nav — keep all modules on the bar; scroll instead of a More menu */
+.header-nav {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--sidebar-border)) transparent;
+}
+.header-nav::-webkit-scrollbar {
+  height: 4px;
+}
+.header-nav::-webkit-scrollbar-track {
+  background: transparent;
+}
+.header-nav::-webkit-scrollbar-thumb {
+  background: hsl(var(--sidebar-border));
+  border-radius: 4px;
+}
+
 /* Header nav active — match sidebar active chip on dark chrome */
 .header-nav-link-active {
   color: #fff;

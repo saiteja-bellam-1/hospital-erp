@@ -50,6 +50,40 @@ class PharmacyImportPreviewRow(BaseModel):
     sheet: str = ""
 
 
+class PurchaseImportFormItem(BaseModel):
+    medicine_id: Optional[int] = None
+    medicine_name: str = ""
+    medicine_code: str = ""
+    batch_number: str = ""
+    expiry_date: Optional[str] = None
+    mrp: float = 0
+    quantity: float = 0
+    free_quantity: float = 0
+    purchase_rate: float = 0
+    rate_a: float = 0
+    rate_b: float = 0
+    strip_conversion_factor: int = 1
+    discount_pct: float = 0
+    hsn_id: Optional[int] = None
+
+
+class PurchaseImportFormHeader(BaseModel):
+    supplier_id: Optional[int] = None
+    invoice_number: str = ""
+    entry_date: Optional[str] = None
+    bill_date: Optional[str] = None
+    payment_type: str = "credit"
+    purchase_type: str = "local"
+    tax_mode: str = "exclusive"
+    notes: Optional[str] = None
+
+
+class PurchaseImportForm(BaseModel):
+    header: PurchaseImportFormHeader
+    items: List[PurchaseImportFormItem] = []
+    warnings: List[str] = []
+
+
 class PharmacyImportSummary(BaseModel):
     dry_run: bool
     total_rows: int
@@ -60,6 +94,7 @@ class PharmacyImportSummary(BaseModel):
     masters_created: List[str] = []
     errors: List[PharmacyImportRowError] = []
     preview: List[PharmacyImportPreviewRow] = []
+    form: Optional[PurchaseImportForm] = None
 
 
 class PurchaseImportMappingIn(BaseModel):
@@ -412,6 +447,7 @@ async def purchases_import(
     invoice_number: str = Form(""),
     entry_date: Optional[str] = Form(None),
     bill_date: Optional[str] = Form(None),
+    payment_type: Optional[str] = Form(None),
     row_start: Optional[int] = Form(None),
     row_end: Optional[int] = Form(None),
     db: Session = Depends(get_db),
@@ -439,6 +475,9 @@ async def purchases_import(
 
     parsed_entry = _parse_opt_date(entry_date)
     parsed_bill = _parse_opt_date(bill_date)
+    pay = (payment_type or "").strip().lower() or None
+    if pay and pay not in ("cash", "credit"):
+        raise HTTPException(status_code=400, detail="payment_type must be cash or credit")
     if row_start is not None and row_end is not None and int(row_start) > int(row_end):
         raise HTTPException(status_code=400, detail="row_start cannot be greater than row_end")
 
@@ -449,6 +488,7 @@ async def purchases_import(
         invoice_number=(invoice_number or "").strip() or None,
         entry_date=parsed_entry,
         bill_date=parsed_bill,
+        payment_type=pay,
         row_start=row_start,
         row_end=row_end,
     )

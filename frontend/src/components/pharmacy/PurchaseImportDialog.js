@@ -39,6 +39,29 @@ const STEPS = [
   { id: 'import', label: '4. Import' },
 ];
 
+/** Header fields collected on step 1 — keep them out of the column mapper. */
+const WIZARD_FIELDS = new Set([
+  'supplier_name',
+  'supplier_or_invoice',
+  'invoice_number',
+  'entry_date',
+  'bill_date',
+  'payment_type',
+  'purchase_type',
+  'tax_mode',
+  'store_code',
+  'notes',
+]);
+
+function stripWizardFields(mapping) {
+  const next = {};
+  Object.entries(mapping || {}).forEach(([header, target]) => {
+    if (!target || target === 'ignore' || WIZARD_FIELDS.has(target)) return;
+    next[header] = target;
+  });
+  return next;
+}
+
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -54,6 +77,7 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
   const [invoiceNumber, setInvoiceNumber] = useState('');
   const [entryDate, setEntryDate] = useState(todayISO());
   const [billDate, setBillDate] = useState(todayISO());
+  const [paymentType, setPaymentType] = useState('credit');
   const [rowStart, setRowStart] = useState('');
   const [rowEnd, setRowEnd] = useState('');
   const [onDuplicate, setOnDuplicate] = useState('skip');
@@ -78,6 +102,7 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
     setInvoiceNumber('');
     setEntryDate(todayISO());
     setBillDate(todayISO());
+    setPaymentType('credit');
     setRowStart('');
     setRowEnd('');
     setOnDuplicate('skip');
@@ -143,7 +168,7 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
         headers: { 'Content-Type': 'multipart/form-data' },
       });
       setInspect(res.data);
-      setMapping(res.data.suggested_mapping || {});
+      setMapping(stripWizardFields(res.data.suggested_mapping || {}));
       if (!preserveRows) {
         setRowStart(String(res.data.header_row || startVal || 1));
       }
@@ -220,7 +245,7 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
     setSelectedPresetId(id);
     const preset = savedMappings.find((m) => String(m.id) === String(id));
     if (!preset) return;
-    setMapping(preset.column_mapping || {});
+    setMapping(stripWizardFields(preset.column_mapping || {}));
     if (preset.default_row_start != null) setRowStart(String(preset.default_row_start));
     if (preset.default_row_end != null) setRowEnd(String(preset.default_row_end));
     setMappingName(preset.name || '');
@@ -245,11 +270,12 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
   const appendImportFields = (fd) => {
     fd.append('file', file);
     fd.append('on_duplicate', onDuplicate);
-    fd.append('column_mapping', JSON.stringify(mapping));
+    fd.append('column_mapping', JSON.stringify(stripWizardFields(mapping)));
     if (supplierId) fd.append('supplier_id', String(supplierId));
     if (invoiceNumber.trim()) fd.append('invoice_number', invoiceNumber.trim());
     if (entryDate) fd.append('entry_date', entryDate);
     if (billDate) fd.append('bill_date', billDate);
+    if (paymentType) fd.append('payment_type', paymentType);
     if (rowStart !== '' && rowStart != null) fd.append('row_start', String(Number(rowStart)));
     if (rowEnd !== '' && rowEnd != null) fd.append('row_end', String(Number(rowEnd)));
   };
@@ -269,12 +295,15 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
         setSummary(res.data);
         setStep('import');
       } else {
-        setDone(res.data);
-        setSummary(res.data);
-        onImported?.();
-        feedback(
-          `Imported: ${res.data.created} new, ${res.data.updated} updated, ${res.data.skipped} skipped`,
-        );
+        const form = res.data.form;
+        if (!form?.items?.length) {
+          setSummary(res.data);
+          feedback('No purchase lines to load into the form', 'error');
+          return;
+        }
+        onImported?.(form);
+        reset();
+        onOpenChange(false);
       }
     } catch (err) {
       const detail = err.response?.data?.detail;
@@ -298,7 +327,7 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
     try {
       const payload = {
         name,
-        column_mapping: mapping,
+        column_mapping: stripWizardFields(mapping),
         format_hint: inspect?.format_hint || null,
         default_row_start: rowStart !== '' ? Number(rowStart) : null,
         default_row_end: rowEnd !== '' ? Number(rowEnd) : null,
@@ -338,7 +367,7 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
     const groups = [];
     let current = null;
     targets.forEach((t) => {
-      if (t.key === 'ignore') return;
+      if (t.key === 'ignore' || WIZARD_FIELDS.has(t.key) || t.group === 'Purchase header') return;
       const g = t.group || '';
       if (!current || current.label !== g) {
         current = { label: g, items: [] };
@@ -378,8 +407,9 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
             {/* -------- Step 1: Details -------- */}
             <TabsContent value="details" className="mt-0 space-y-4">
               <div className="text-xs text-slate-500 bg-slate-50 rounded-lg p-3 leading-relaxed">
-                Choose the file and enter purchase header details. Supplier, invoice number, and
-                dates from this step override values in the file.
+                Choose the file and enter purchase header details. Supplier, invoice number,
+                dates, and cash/credit from this step are used for the purchase — they are not
+                mapped from the file.
               </div>
 
               <div className="border-2 border-dashed border-slate-200 rounded-lg p-5 text-center">
@@ -458,6 +488,18 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
                     onChange={(e) => setBillDate(e.target.value)}
                   />
                 </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Payment type *</Label>
+                  <Select value={paymentType} onValueChange={setPaymentType}>
+                    <SelectTrigger className="h-9 text-sm">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="cash">Cash</SelectItem>
+                      <SelectItem value="credit">Credit</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
 
               <div className="flex justify-between items-center pt-2 border-t">
@@ -501,6 +543,7 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
                 <div><span className="text-slate-400">Supplier:</span> {selectedSupplier?.name || '—'}</div>
                 <div><span className="text-slate-400">Invoice:</span> {invoiceNumber || '—'}</div>
                 <div><span className="text-slate-400">Date:</span> {entryDate || '—'}</div>
+                <div><span className="text-slate-400">Payment:</span> {paymentType === 'cash' ? 'Cash' : 'Credit'}</div>
                 <div><span className="text-slate-400">File:</span> {file?.name || '—'}</div>
               </div>
 
@@ -578,7 +621,7 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
                   size="sm"
                   className="text-xs"
                   onClick={() => {
-                    setMapping(inspect?.suggested_mapping || {});
+                    setMapping(stripWizardFields(inspect?.suggested_mapping || {}));
                     setSelectedPresetId('');
                     setSummary(null);
                     setDone(null);
@@ -634,19 +677,17 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
                                     <SelectItem value="__none__" className="text-xs">
                                       — Not mapped —
                                     </SelectItem>
-                                    {headers.map((header) => {
-                                      const taken = usedColumns.has(header) && selectedCol !== header;
-                                      return (
+                                    {headers
+                                      .filter((header) => header === selectedCol || !usedColumns.has(header))
+                                      .map((header) => (
                                         <SelectItem
                                           key={header}
                                           value={header}
-                                          disabled={taken}
                                           className="text-xs font-mono"
                                         >
-                                          {header}{taken ? ' (used)' : ''}
+                                          {header}
                                         </SelectItem>
-                                      );
-                                    })}
+                                      ))}
                                   </SelectContent>
                                 </Select>
                               </div>
@@ -717,26 +758,16 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
                 <div><span className="text-slate-400">Supplier:</span> {selectedSupplier?.name || '—'}</div>
                 <div><span className="text-slate-400">Invoice:</span> {invoiceNumber || '—'}</div>
                 <div><span className="text-slate-400">Entry date:</span> {entryDate || '—'}</div>
+                <div><span className="text-slate-400">Payment:</span> {paymentType === 'cash' ? 'Cash' : 'Credit'}</div>
                 <div><span className="text-slate-400">Rows:</span> {rowStart}{rowEnd ? `–${rowEnd}` : ' → end'}</div>
                 <div className="col-span-2"><span className="text-slate-400">File:</span> {file?.name || '—'}</div>
               </div>
 
               {!done && (
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-slate-600">If invoice already exists:</span>
-                    <Select
-                      value={onDuplicate}
-                      onValueChange={(v) => { setOnDuplicate(v); setSummary(null); }}
-                    >
-                      <SelectTrigger className="h-8 w-36 text-xs">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="skip">Skip it</SelectItem>
-                        <SelectItem value="update">Update draft</SelectItem>
-                      </SelectContent>
-                    </Select>
+                  <div className="text-xs text-slate-500">
+                    Preview the lines, then open them in the purchase form. Nothing is saved until you
+                    Save or Submit there.
                   </div>
                   <Button
                     size="sm"
@@ -753,11 +784,10 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
               )}
 
               {result && (
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                  <SummaryStat label="New" value={result.created} color="text-emerald-600" />
-                  <SummaryStat label="Update" value={result.updated} color="text-blue-600" />
-                  <SummaryStat label="Skipped" value={result.skipped} color="text-slate-500" />
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                  <SummaryStat label="Lines" value={result.form?.items?.length || result.created} color="text-emerald-600" />
                   <SummaryStat label="Errors" value={result.error_count} color="text-red-600" />
+                  <SummaryStat label="Masters" value={result.masters_created?.length || 0} color="text-indigo-600" />
                 </div>
               )}
 
@@ -852,10 +882,10 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
                       <Button
                         size="sm"
                         onClick={() => runImport(false)}
-                        disabled={!summary || importing || (summary.created + summary.updated === 0)}
+                        disabled={!summary?.form?.items?.length || importing}
                       >
                         {importing && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                        Confirm Import{summary ? ` (${summary.created + summary.updated})` : ''}
+                        Open purchase form{summary?.form?.items?.length ? ` (${summary.form.items.length})` : ''}
                       </Button>
                     </div>
                   </>

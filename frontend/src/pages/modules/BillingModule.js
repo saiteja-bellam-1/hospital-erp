@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
@@ -13,11 +14,12 @@ import axios from 'axios';
 import {
   Receipt, Search, Download, DollarSign, TrendingUp, Clock,
   CheckCircle2, Loader2, XCircle,   Ban, CreditCard, Eye,
-  Building2, Stethoscope, FlaskConical, BedDouble, Pill, Printer, FileText, ChevronDown, Trash2
+  Building2, Stethoscope, FlaskConical, BedDouble, Pill, Printer, FileText, ChevronDown, Trash2, Pencil
 } from 'lucide-react';
 import { printPdfFromUrl } from '../../utils/printPdf';
 import PdfPreviewDialog from '../../components/PdfPreviewDialog';
 import PatientSearchPicker from '../../components/PatientSearchPicker';
+import EditBillDialog, { canEditBill, isPharmacyPosBill } from '../../components/billing/EditBillDialog';
 import { localDateString, localDateStringOffset, localWeekStart, localMonthStart, localLastMonthRange } from '../../utils/localDate';
 import {
   DropdownMenu,
@@ -27,6 +29,7 @@ import {
 } from '../../components/ui/dropdown-menu';
 
 const BillingModule = () => {
+  const navigate = useNavigate();
   const [bills, setBills] = useState([]);
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -107,6 +110,7 @@ const BillingModule = () => {
   // PDF preview for consultation / lab bills (and any row without a detail dialog)
   const [pdfPreview, setPdfPreview] = useState(null);
   const [exporting, setExporting] = useState(false);
+  const [editBill, setEditBill] = useState(null);
 
   const buildBillingParams = useCallback(() => {
     const params = new URLSearchParams();
@@ -212,6 +216,15 @@ const BillingModule = () => {
     printPdfFromUrl(path, {
       onError: (msg) => alert(msg || 'Could not load the bill PDF'),
     });
+  };
+
+  const openEditBill = (bill) => {
+    if (!canEditBill(bill)) return;
+    if (isPharmacyPosBill(bill)) {
+      navigate(`/dashboard/pharmacy/sales-counter/${bill.bill_id}/edit`);
+      return;
+    }
+    setEditBill(bill);
   };
 
   const handleViewBill = (bill) => {
@@ -1095,6 +1108,13 @@ const BillingModule = () => {
                                     <Eye className="w-3 h-3 mr-0.5" /> View
                                   </Button>
                                 )}
+                                {canEditBill(bill) && (
+                                  <Button size="sm" variant="ghost" className="h-6 text-[10px] px-2 text-blue-600 hover:text-blue-700 hover:bg-blue-50"
+                                    onClick={() => openEditBill(bill)}
+                                    title="Edit bill">
+                                    <Pencil className="w-3 h-3 mr-0.5" /> Edit
+                                  </Button>
+                                )}
                                 {/* Collect payment for admission bills with balance */}
                                 {bill.type === 'admission' && bill.payment_status !== 'cancelled' && bill.payment_status !== 'paid' && (
                                   <Button size="sm" variant="ghost" className="h-6 text-[10px] text-green-600 hover:text-green-700 hover:bg-green-50 px-2"
@@ -1328,6 +1348,11 @@ const BillingModule = () => {
 
               {/* Actions */}
               <div className="flex justify-end gap-2 pt-2 border-t flex-wrap">
+                {detailData.status !== 'cancelled' && canEditBill(detailBill) && (
+                  <Button variant="outline" size="sm" onClick={() => openEditBill(detailBill)}>
+                    <Pencil className="h-4 w-4 mr-1" /> Edit Bill
+                  </Button>
+                )}
                 {detailData.status !== 'cancelled' && detailData.amount_paid === 0 && (
                   <>
                     <Button variant="outline" size="sm" onClick={() => openAdjustDialog('discount')}>
@@ -1368,17 +1393,26 @@ const BillingModule = () => {
                 <div className="flex justify-between text-lg font-bold border-t pt-2"><span>Amount:</span><span>{formatCurrency(detailBill.amount)}</span></div>
                 <div className="flex justify-between"><span className="text-gray-500">Status:</span><Badge className={getStatusBadge(detailBill.payment_status)}>{detailBill.payment_status}</Badge></div>
               </div>
-              {getBillPdfPath(detailBill) && (
+              {(getBillPdfPath(detailBill) || canEditBill(detailBill)) && (
                 <div className="flex justify-end gap-2">
-                  <Button variant="outline" onClick={() => setPdfPreview({
-                    title: `Bill — ${detailBill.reference || detailBill.patient_name}`,
-                    path: getBillPdfPath(detailBill),
-                  })}>
-                    <Eye className="h-4 w-4 mr-1" /> View PDF
-                  </Button>
-                  <Button onClick={() => handlePrintBill(detailBill)}>
-                    <Printer className="h-4 w-4 mr-1" /> Print Bill
-                  </Button>
+                  {canEditBill(detailBill) && (
+                    <Button variant="outline" onClick={() => openEditBill(detailBill)}>
+                      <Pencil className="h-4 w-4 mr-1" /> Edit Bill
+                    </Button>
+                  )}
+                  {getBillPdfPath(detailBill) && (
+                    <>
+                      <Button variant="outline" onClick={() => setPdfPreview({
+                        title: `Bill — ${detailBill.reference || detailBill.patient_name}`,
+                        path: getBillPdfPath(detailBill),
+                      })}>
+                        <Eye className="h-4 w-4 mr-1" /> View PDF
+                      </Button>
+                      <Button onClick={() => handlePrintBill(detailBill)}>
+                        <Printer className="h-4 w-4 mr-1" /> Print Bill
+                      </Button>
+                    </>
+                  )}
                 </div>
               )}
             </div>
@@ -1863,6 +1897,22 @@ const BillingModule = () => {
         onClose={() => setPdfPreview(null)}
         title={pdfPreview?.title || 'Bill Preview'}
         path={pdfPreview?.path || null}
+      />
+
+      <EditBillDialog
+        open={!!editBill}
+        bill={editBill}
+        formatCurrency={formatCurrency}
+        onClose={() => setEditBill(null)}
+        onSaved={async () => {
+          fetchBills();
+          if (detailBill && editBill && detailBill.bill_id === editBill.bill_id) {
+            try {
+              const res = await axios.get(`/api/hospital/billing/bills/${detailBill.bill_id}`);
+              setDetailData(res.data);
+            } catch (_) { /* keep existing detail */ }
+          }
+        }}
       />
     </div>
   );

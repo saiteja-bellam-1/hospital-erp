@@ -55,6 +55,11 @@ const BackupHealthBanner = () => {
       <span className="text-sm font-medium flex-1">
         {health.message}
       </span>
+      {health.gdrive_enabled && health.gdrive_status && health.gdrive_status !== 'disabled' && (
+        <span className={`text-xs ${health.gdrive_status === 'error' ? 'text-red-800' : health.gdrive_status === 'healthy' ? 'text-inherit' : ''}`}>
+          Drive: {health.gdrive_status === 'healthy' ? 'healthy' : health.gdrive_status === 'error' ? 'failing' : health.gdrive_status}
+        </span>
+      )}
       {health.broken && health.broken.length > 0 && (
         <span className="text-xs">
           ({health.broken.map((b) => b.location).join(', ')})

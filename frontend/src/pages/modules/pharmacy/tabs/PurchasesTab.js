@@ -192,7 +192,10 @@ export default function PurchasesTab() {
       <PurchaseImportDialog
         open={importOpen}
         onOpenChange={setImportOpen}
-        onImported={load}
+        onImported={(form) => {
+          setImportOpen(false);
+          navigate('/dashboard/pharmacy/purchases/new', { state: { importDraft: form } });
+        }}
       />
     </Card>
   );

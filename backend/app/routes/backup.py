@@ -393,7 +393,72 @@ async def update_snapshot_config(
 async def get_gdrive_backup_status(current_user: User = Depends(get_current_user)):
     _require_admin(current_user)
     from app.utils.config import get_gdrive_status
-    return get_gdrive_status()
+    from app.services.backup_health import classify_gdrive
+    import datetime as _dt
+    status = get_gdrive_status()
+    classified = classify_gdrive(status, _dt.datetime.now())
+    status["health_status"] = classified["status"]
+    status["health_message"] = classified.get("detail")
+    return status
+
+
+@router.get("/gdrive-health")
+async def check_gdrive_connection(current_user: User = Depends(get_current_user)):
+    """Live ping: refresh the OAuth token and confirm the Drive folder exists."""
+    _require_admin(current_user)
+    from app.utils.config import get_gdrive_status
+    status = get_gdrive_status()
+    if not status.get("enabled"):
+        return {
+            "healthy": False,
+            "enabled": False,
+            "error": "Google Drive backup is not enabled on this license.",
+        }
+    try:
+        from config.database import SessionLocal
+        from app.models.license import License
+        db = SessionLocal()
+        try:
+            lic = db.query(License).order_by(License.id.desc()).first()
+            gdrive = lic.gdrive_config if lic else None
+        finally:
+            db.close()
+        if not gdrive:
+            return {"healthy": False, "enabled": True, "error": "License has no Google Drive config."}
+        from app.utils.gdrive import test_connection
+        info = test_connection(gdrive)
+        return {
+            "healthy": True,
+            "enabled": True,
+            "folder_name": info.get("folder_name"),
+            "folder_id": info.get("folder_id"),
+            "last_sent": status.get("last_sent"),
+        }
+    except Exception as e:
+        return {"healthy": False, "enabled": True, "error": str(e)}
+
+
+@router.get("/log-errors")
+async def get_backup_log_errors(
+    lines: int = 100,
+    current_user: User = Depends(get_current_user),
+):
+    """Recent backup-related errors from data/logs/backup.log (plus matching
+    lines in launcher.log / server.log). Used by the Backup page popup."""
+    _require_admin(current_user)
+    from app.utils.backup_log import read_backup_errors
+    from app.utils.config import get_gdrive_status, get_mirror_status, get_snapshot_status
+
+    payload = read_backup_errors(max_entries=lines)
+    gdrive = get_gdrive_status()
+    mirror = get_mirror_status()
+    snapshot = get_snapshot_status()
+    payload["current"] = {
+        "gdrive": gdrive.get("last_error"),
+        "mirror": mirror.get("last_error"),
+        "snapshot": snapshot.get("last_error"),
+    }
+    return payload
 
 
 @router.post("/gdrive-backup-now")
@@ -1003,6 +1068,8 @@ async def backup_health_public():
         "message": full["message"],
         "locations_configured": full["locations_configured"],
         "locations_healthy": full["locations_healthy"],
+        "gdrive_enabled": full.get("gdrive_enabled"),
+        "gdrive_status": full.get("gdrive_status"),
     }
 
 

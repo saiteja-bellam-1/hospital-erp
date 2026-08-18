@@ -147,11 +147,15 @@ def run_backup():
             if not verify["ok"]:
                 entry["success"] = False
                 entry["message"] = f"Backup written but verification failed: {verify.get('error') or verify.get('integrity')}"
+                from app.utils.backup_log import log_backup_error
+                log_backup_error("manual", f"{location}: {entry['message']}")
             else:
                 entry["success"] = True
                 entry["message"] = f"Backed up to {backup_dir}"
         except Exception as e:
             entry["message"] = str(e)
+            from app.utils.backup_log import log_backup_error
+            log_backup_error("manual", f"{location}: {e}")
         results.append(entry)
 
     all_ok = all(r["success"] for r in results) if results else False
@@ -244,6 +248,8 @@ def run_mirror_sync():
             loc_status["last_error"] = str(e)
             if prev_state == "ok" or prev_state == "new":
                 record_location_transition("mirror", location, "failed", message=str(e))
+                from app.utils.backup_log import log_backup_error
+                log_backup_error("mirror", f"{location}: {e}")
 
 
 def get_per_location_status() -> dict:
@@ -372,6 +378,8 @@ def run_snapshot():
             _last_snapshot_error = None
         except Exception as e:
             _last_snapshot_error = str(e)
+            from app.utils.backup_log import log_backup_error
+            log_backup_error("snapshot", f"{location}: {e}")
 
 
 def _resolve_snapshot_retention_days(config: dict) -> int:
@@ -590,6 +598,8 @@ def run_gdrive_backup():
             _gdrive_last_error = f"Pre-upload verification failed: {err}"
             config["gdrive_last_error"] = _gdrive_last_error
             save_config(config)
+            from app.utils.backup_log import log_backup_error
+            log_backup_error("gdrive", _gdrive_last_error)
             return
 
         with open(tmp_path, "rb") as f:
@@ -622,6 +632,8 @@ def run_gdrive_backup():
         _gdrive_last_error = str(e)
         config["gdrive_last_error"] = str(e)
         save_config(config)
+        from app.utils.backup_log import log_backup_error
+        log_backup_error("gdrive", str(e))
 
 
 def start_gdrive_backup(interval_minutes=10):

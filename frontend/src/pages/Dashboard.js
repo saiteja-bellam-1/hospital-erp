@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Routes, Route, useLocation, Navigate } from 'react-router-dom';
+import { Routes, Route, useLocation, Navigate, Link } from 'react-router-dom';
 import {
   Shield,
   Phone,
@@ -9,6 +9,7 @@ import {
   X as XIcon,
   Wifi,
   Menu,
+  HardDrive,
 } from 'lucide-react';
 import axios from 'axios';
 
@@ -78,6 +79,23 @@ const HomeDashboard = ({ hasRole, enabledModules }) => {
   return <DashboardHome />;
 };
 
+const backupSupportLine = (health) => {
+  if (!health) return null;
+  const statusWord = {
+    healthy: 'Healthy',
+    broken: 'Failing',
+    stale: 'Needs attention',
+    disabled: 'Not configured',
+  }[health.status] || health.status;
+  const drive = health.gdrive_enabled && health.gdrive_status && health.gdrive_status !== 'disabled'
+    ? ({ healthy: 'Drive healthy', error: 'Drive failing', stale: 'Drive stale', waiting: 'Drive waiting' }[health.gdrive_status] || `Drive ${health.gdrive_status}`)
+    : null;
+  const mentionsDrive = /google drive|drive /i.test(health.message || '');
+  const parts = [`${statusWord} — ${health.message || ''}`.trim()];
+  if (drive && !mentionsDrive) parts.push(drive);
+  return parts.join(' · ');
+};
+
 const DashboardShell = () => {
   const { user, logout, licenseStatus, setLicenseStatus } = useAuth();
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -85,6 +103,7 @@ const DashboardShell = () => {
   const [pwaInstallPrompt, setPwaInstallPrompt] = useState(null);
   const [appVersion, setAppVersion] = useState('');
   const [networkInfo, setNetworkInfo] = useState(null);
+  const [backupHealth, setBackupHealth] = useState(null);
 
   // Capture the PWA install prompt
   useEffect(() => {
@@ -232,6 +251,17 @@ const DashboardShell = () => {
     }
   }, [showSupportPopup, networkInfo]);
 
+  useEffect(() => {
+    if (!showSupportPopup) return undefined;
+    let alive = true;
+    axios.get('/api/backup/health/public').then((r) => {
+      if (alive) setBackupHealth(r.data);
+    }).catch(() => {
+      if (alive) setBackupHealth(null);
+    });
+    return () => { alive = false; };
+  }, [showSupportPopup]);
+
   // Close sidebar on route change (mobile)
   useEffect(() => {
     setSidebarOpen(false);
@@ -240,6 +270,15 @@ const DashboardShell = () => {
   const roles = normalizeUserRoles(user);
   const hasRole = (r) => roles.includes(r);
   const hasAnyRole = (...r) => r.some(x => roles.includes(x));
+  const isBackupAdmin = hasAnyRole('super_admin', 'hospital_admin');
+  const backupLine = backupSupportLine(backupHealth);
+  const backupTone = backupHealth?.status === 'broken'
+    ? 'bg-red-50 text-red-800'
+    : backupHealth?.status === 'stale'
+      ? 'bg-amber-50 text-amber-900'
+      : backupHealth?.status === 'healthy'
+        ? 'bg-green-50 text-green-800'
+        : 'bg-gray-50 text-gray-600';
 
   const getRoleLabel = () => {
     const labels = {
@@ -517,6 +556,23 @@ const DashboardShell = () => {
                     </div>
                   </div>
                 </div>
+
+                {backupHealth && backupLine && (
+                  <div className="space-y-2.5">
+                    <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Backup</p>
+                    {isBackupAdmin ? (
+                      <Link to="/dashboard/backup" onClick={() => setShowSupportPopup(false)} className={`rounded-xl px-3.5 py-2.5 flex items-start gap-2 ${backupTone} hover:opacity-90`}>
+                        <HardDrive className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
+                        <p className="text-xs leading-snug">{backupLine}</p>
+                      </Link>
+                    ) : (
+                      <div className={`rounded-xl px-3.5 py-2.5 flex items-start gap-2 ${backupTone}`}>
+                        <HardDrive className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
+                        <p className="text-xs leading-snug">{backupLine}</p>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {networkInfo?.ips?.length > 0 && (
                   <div className="space-y-2.5">

@@ -47,14 +47,14 @@ export default function AppSidebar({
         className="flex items-center justify-between h-16 px-5 flex-shrink-0"
         style={{ borderBottom: '1px solid hsl(var(--sidebar-border))' }}
       >
-        <div className="flex items-center gap-2">
+        <Link to="/dashboard" className="flex items-center gap-2" title="Dashboard" aria-label="Dashboard">
           <img
             src={hospitalLogo}
             alt="KT Health Soft"
             className="h-9 w-auto max-w-[180px] rounded"
             style={{ filter: 'brightness(1.1) contrast(1.05)' }}
           />
-        </div>
+        </Link>
         <button
           className={`${hideOnDesktop ? '' : 'lg:hidden '}p-1 rounded-md hover:bg-white/10 transition-colors`}
           style={{ color: 'hsl(var(--sidebar-fg))' }}
@@ -75,7 +75,7 @@ export default function AppSidebar({
       )}
 
       <nav className="sidebar-nav flex-1 overflow-y-auto py-4 px-3">
-        {navigationSections.map((section, sIdx) => {
+        {navigationSections.filter((section) => section.label).map((section, sIdx) => {
           const isCollapsible = !!section.label;
           const isCollapsed = isCollapsible && collapsedSections[section.label] !== false;
           return (

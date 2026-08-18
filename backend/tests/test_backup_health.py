@@ -94,3 +94,42 @@ def test_one_broken_one_healthy_is_broken(monkeypatch):
     # not healthy from a data-safety standpoint.
     assert out["status"] == "broken"
     assert len(out["broken"]) == 1
+
+
+def test_gdrive_error_promotes_healthy_local_to_broken(monkeypatch):
+    _install(
+        monkeypatch,
+        locations=["/tmp/back"],
+        per_location={"/tmp/back": {"last_success": _iso(60), "last_error": None, "last_attempt": _iso(60), "writable": True}},
+        gdrive={"enabled": True, "running": True, "last_sent": None, "last_error": "Token refresh failed"},
+    )
+    out = bh.compute_backup_health()
+    assert out["status"] == "broken"
+    assert out["gdrive_status"] == "error"
+    assert any(b["location"] == "Google Drive" for b in out["broken"])
+
+
+def test_gdrive_sent_today_is_healthy(monkeypatch):
+    today = datetime.date.today().isoformat()
+    _install(
+        monkeypatch,
+        locations=["/tmp/back"],
+        per_location={"/tmp/back": {"last_success": _iso(60), "last_error": None, "last_attempt": _iso(60), "writable": True}},
+        gdrive={"enabled": True, "running": True, "last_sent": today, "last_error": None},
+    )
+    out = bh.compute_backup_health()
+    assert out["status"] == "healthy"
+    assert out["gdrive_status"] == "healthy"
+
+
+def test_gdrive_stale_promotes_to_stale(monkeypatch):
+    _install(
+        monkeypatch,
+        locations=["/tmp/back"],
+        per_location={"/tmp/back": {"last_success": _iso(60), "last_error": None, "last_attempt": _iso(60), "writable": True}},
+        gdrive={"enabled": True, "running": True, "last_sent": "2020-01-01", "last_error": None},
+    )
+    out = bh.compute_backup_health()
+    assert out["status"] == "stale"
+    assert out["gdrive_status"] == "stale"
+    assert any(s["location"] == "Google Drive" for s in out["stale"])

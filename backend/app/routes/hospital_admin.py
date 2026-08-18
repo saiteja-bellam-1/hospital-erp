@@ -19,7 +19,7 @@ from app.models.outpatient import Appointment
 from app.models.ehr import Consultation
 from app.models.lab import PatientLabOrder, LabTest, LabTestCategory, LabTestPackage
 from app.models.billing import Bill, BillItem, Payment
-from app.models.inpatient import Admission
+from app.models.inpatient import Admission, BillSplit
 from app.models.pharmacy import PharmacySale
 from app.models.settlement import (
     Settlement, SettlementConfig, SETTLEMENT_UNITS, DEFAULT_PAYOUT_PERCENTAGE,
@@ -2790,6 +2790,8 @@ async def get_bill_detail(
                 "quantity": it.quantity,
                 "unit_price": float(it.unit_price),
                 "total_price": float(it.total_price),
+                "source_ref_type": it.source_ref_type,
+                "source_ref_id": it.source_ref_id,
             }
             for it in items
         ],
@@ -2925,6 +2927,11 @@ class BillTaxRequest(BaseModel):
     reason: str = Field(..., min_length=2, max_length=500)
 
 
+def _require_billing_user(current_user: User):
+    if not any(r in current_user.role_names for r in ['super_admin', 'hospital_admin', 'receptionist']):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+
 def _ensure_bill_editable(bill: Bill):
     if bill.status == "cancelled":
         raise HTTPException(status_code=400, detail="Cannot modify a cancelled bill")
@@ -2936,6 +2943,27 @@ def _ensure_bill_editable(bill: Bill):
             status_code=400,
             detail=f"Cannot modify a bill with payments recorded (paid ₹{paid:.2f}). Reverse payments first.",
         )
+
+
+def _bill_net_paid(bill: Bill, db: Session) -> float:
+    """Cash payments plus, for admission bills, deposits already allocated."""
+    paid = sum(float(p.amount_paid or 0) for p in (bill.payments or []))
+    if (bill.bill_type or "") == "admission":
+        from app.routes.inpatient import allocate_deposits_to_bill
+        paid += allocate_deposits_to_bill(db, bill)
+    return round(paid, 2)
+
+
+def _recompute_bill_status(bill: Bill, net_paid: float) -> None:
+    total = float(bill.total_amount or 0)
+    if bill.status == "cancelled":
+        return
+    if net_paid <= 0.01:
+        bill.status = "pending"
+    elif net_paid >= total - 0.01:
+        bill.status = "paid"
+    else:
+        bill.status = "partial"
 
 
 @router.patch("/billing/bills/{bill_id}/discount")
@@ -3023,6 +3051,388 @@ async def apply_bill_tax(
         "tax_amount": float(bill.tax_amount),
         "total_amount": float(bill.total_amount),
         "message": "Tax applied",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Edit bills (line items / fees)
+# ---------------------------------------------------------------------------
+
+class BillItemEditRequest(BaseModel):
+    id: Optional[int] = None
+    item_type: Optional[str] = Field(None, max_length=50)
+    item_name: str = Field(..., min_length=1, max_length=200)
+    item_code: Optional[str] = Field(None, max_length=50)
+    quantity: float = Field(..., gt=0)
+    unit_price: float = Field(..., ge=0)
+
+
+class BillEditRequest(BaseModel):
+    items: List[BillItemEditRequest] = Field(..., min_length=1)
+    discount_amount: Optional[float] = Field(None, ge=0)
+    tax_amount: Optional[float] = Field(None, ge=0)
+    notes: Optional[str] = None
+    reason: Optional[str] = Field(None, max_length=500)
+
+
+class ConsultationBillEditRequest(BaseModel):
+    consultation_fee: float = Field(..., ge=0)
+    registration_fee: float = Field(..., ge=0)
+    discount_amount: float = Field(0, ge=0)
+    reason: Optional[str] = Field(None, max_length=500)
+
+
+class LabBillItemEditRequest(BaseModel):
+    order_id: int
+    amount: float = Field(..., ge=0)
+
+
+class LabBillEditRequest(BaseModel):
+    items: List[LabBillItemEditRequest] = Field(..., min_length=1)
+    reason: Optional[str] = Field(None, max_length=500)
+
+
+def _edit_reason(reason: Optional[str]) -> str:
+    text = (reason or "").strip()
+    return text if len(text) >= 2 else "Edited from Billing Management"
+
+
+def _clear_pending_bill_splits(db: Session, bill: Bill, new_total: float) -> None:
+    """Block edits when a TPA/cash split has already been received. Drop
+    pending splits so they can be re-entered against the new total."""
+    splits = db.query(BillSplit).filter(BillSplit.bill_id == bill.id).all()
+    if not splits:
+        return
+    received = [s for s in splits if (s.payment_status or "") == "received"]
+    if received:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Cannot edit — one or more payer splits have already been marked as received. "
+                "Reverse those splits first."
+            ),
+        )
+    split_sum = round(sum(float(s.amount or 0) for s in splits), 2)
+    if abs(split_sum - round(new_total, 2)) > 0.01:
+        for s in splits:
+            db.delete(s)
+
+
+@router.put("/billing/bills/{bill_id}")
+async def update_bill(
+    bill_id: int,
+    req: BillEditRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Replace line items on a bills-table row and recompute totals.
+    Cannot reduce the total below amount already paid (refund first).
+    Removing a line only changes this invoice; source charges stay consumed."""
+    _require_billing_user(current_user)
+    reason = _edit_reason(req.reason)
+
+    bill = db.query(Bill).filter(Bill.id == bill_id).first()
+    if not bill:
+        raise HTTPException(status_code=404, detail="Bill not found")
+    patient = db.query(Patient).filter(Patient.id == bill.patient_id).first()
+    if not patient or patient.hospital_id != current_user.hospital_id:
+        raise HTTPException(status_code=404, detail="Bill not found")
+    if bill.status == "cancelled":
+        raise HTTPException(status_code=400, detail="Cannot edit a cancelled bill")
+    if (bill.bill_type or "") == "credit_note":
+        raise HTTPException(status_code=400, detail="Cannot edit a credit note; issue a new one if needed")
+
+    existing = {it.id: it for it in db.query(BillItem).filter(BillItem.bill_id == bill.id).all()}
+    keep_ids = set()
+    new_items = []
+
+    for row in req.items:
+        qty = float(row.quantity)
+        rate = round(float(row.unit_price), 2)
+        line_total = round(qty * rate, 2)
+        if row.id:
+            item = existing.get(row.id)
+            if not item:
+                raise HTTPException(status_code=400, detail=f"Bill item {row.id} does not belong to this bill")
+            item.item_name = row.item_name.strip()
+            if row.item_type:
+                item.item_type = row.item_type
+            if row.item_code is not None:
+                item.item_code = row.item_code
+            item.quantity = qty
+            item.unit_price = rate
+            item.total_price = line_total
+            keep_ids.add(item.id)
+        else:
+            new_items.append(BillItem(
+                bill_id=bill.id,
+                item_type=(row.item_type or "miscellaneous").strip() or "miscellaneous",
+                item_name=row.item_name.strip(),
+                item_code=row.item_code,
+                quantity=qty,
+                unit_price=rate,
+                total_price=line_total,
+            ))
+
+    for item_id, item in existing.items():
+        if item_id not in keep_ids:
+            db.delete(item)
+    for item in new_items:
+        db.add(item)
+
+    db.flush()
+    live_items = db.query(BillItem).filter(BillItem.bill_id == bill.id).all()
+    if not live_items:
+        raise HTTPException(status_code=400, detail="Bill must have at least one line item")
+
+    subtotal = round(sum(float(it.total_price or 0) for it in live_items), 2)
+    discount = round(float(req.discount_amount if req.discount_amount is not None else (bill.discount_amount or 0)), 2)
+    tax = round(float(req.tax_amount if req.tax_amount is not None else (bill.tax_amount or 0)), 2)
+    if discount > subtotal:
+        raise HTTPException(status_code=400, detail=f"Discount ₹{discount:.2f} exceeds subtotal ₹{subtotal:.2f}")
+    new_total = round(subtotal + tax - discount, 2)
+    if new_total < 0:
+        raise HTTPException(status_code=400, detail="Bill total cannot be negative")
+
+    net_paid = _bill_net_paid(bill, db)
+    if new_total + 0.01 < net_paid:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"New total ₹{new_total:.2f} is less than amount already paid ₹{net_paid:.2f}. "
+                "Refund the difference first, then edit."
+            ),
+        )
+
+    _clear_pending_bill_splits(db, bill, new_total)
+
+    bill.subtotal = subtotal
+    bill.discount_amount = discount
+    bill.tax_amount = tax
+    bill.total_amount = new_total
+    note_line = (
+        f"[EDIT by user {current_user.id} on {datetime.now().isoformat()}]: "
+        f"Rs. {new_total:.2f} — {reason}"
+    )
+    bill.notes = (bill.notes + "\n" if bill.notes else "") + note_line
+    _recompute_bill_status(bill, net_paid)
+    _sync_admission_item_payment_status(bill, db)
+
+    db.commit()
+
+    from app.services.audit_service import log_action
+    log_action(
+        db, current_user, "edit_bill", "billing", "Bill", bill.id,
+        f"Edited bill {bill.bill_number}: {reason}",
+        details={
+            "reason": reason,
+            "subtotal": subtotal,
+            "discount_amount": discount,
+            "tax_amount": tax,
+            "total_amount": new_total,
+            "item_count": len(live_items),
+        },
+    )
+
+    return {
+        "bill_id": bill.id,
+        "bill_number": bill.bill_number,
+        "subtotal": subtotal,
+        "discount_amount": discount,
+        "tax_amount": tax,
+        "total_amount": new_total,
+        "status": bill.status,
+        "amount_paid": net_paid,
+        "balance_due": round(max(0.0, new_total - net_paid), 2),
+        "message": "Bill updated",
+    }
+
+
+@router.get("/billing/consultation/{appointment_id}")
+async def get_consultation_bill_for_edit(
+    appointment_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Fee breakdown for an outpatient consultation bill (Appointment ledger)."""
+    _require_billing_user(current_user)
+    apt = db.query(Appointment).join(Patient).filter(
+        Appointment.id == appointment_id,
+        Patient.hospital_id == current_user.hospital_id,
+    ).first()
+    if not apt:
+        raise HTTPException(status_code=404, detail="Consultation bill not found")
+    return {
+        "appointment_id": apt.id,
+        "reference": apt.appointment_number,
+        "payment_status": apt.payment_status,
+        "consultation_fee": float(apt.consultation_fee or 0),
+        "registration_fee": float(apt.registration_fee or 0),
+        "discount_amount": float(apt.discount_amount or 0),
+        "final_amount": float(apt.final_amount or 0),
+    }
+
+
+@router.put("/billing/consultation/{appointment_id}")
+async def update_consultation_bill(
+    appointment_id: int,
+    req: ConsultationBillEditRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Update consultation / registration fees on an unpaid or paid OPD bill."""
+    _require_billing_user(current_user)
+    reason = _edit_reason(req.reason)
+    apt = db.query(Appointment).join(Patient).filter(
+        Appointment.id == appointment_id,
+        Patient.hospital_id == current_user.hospital_id,
+    ).first()
+    if not apt:
+        raise HTTPException(status_code=404, detail="Consultation bill not found")
+    if (apt.payment_status or "") in ("cancelled", "deleted"):
+        raise HTTPException(status_code=400, detail="Cannot edit a cancelled consultation bill")
+    if (apt.payment_status or "") == "consolidated":
+        raise HTTPException(status_code=400, detail="This consultation is on a consolidated bill; edit that bill instead")
+
+    consult = round(float(req.consultation_fee), 2)
+    regist = round(float(req.registration_fee), 2)
+    discount = round(float(req.discount_amount), 2)
+    subtotal = round(consult + regist, 2)
+    if discount > subtotal:
+        raise HTTPException(status_code=400, detail=f"Discount ₹{discount:.2f} exceeds subtotal ₹{subtotal:.2f}")
+    new_total = round(subtotal - discount, 2)
+
+    old_total = float(apt.final_amount or 0)
+    apt.consultation_fee = consult
+    apt.registration_fee = regist
+    apt.discount_amount = discount
+    apt.final_amount = new_total
+
+    # Paid consults that are increased leave a balance; reductions stay paid
+    # because this ledger has no separate amount_paid column.
+    status = apt.payment_status or "pending"
+    if status == "paid" and new_total > old_total + 0.01:
+        apt.payment_status = "partial"
+    elif status == "partial" and new_total <= 0.01:
+        apt.payment_status = "paid"
+
+    db.commit()
+
+    from app.services.audit_service import log_action
+    log_action(
+        db, current_user, "edit_bill", "billing", "Appointment", apt.id,
+        f"Edited consultation bill {apt.appointment_number}: {reason}",
+        details={
+            "reason": reason,
+            "consultation_fee": consult,
+            "registration_fee": regist,
+            "discount_amount": discount,
+            "final_amount": new_total,
+            "previous_amount": old_total,
+        },
+    )
+
+    return {
+        "appointment_id": apt.id,
+        "consultation_fee": consult,
+        "registration_fee": regist,
+        "discount_amount": discount,
+        "final_amount": new_total,
+        "payment_status": apt.payment_status,
+        "message": "Consultation bill updated",
+    }
+
+
+@router.get("/billing/lab/edit")
+async def get_lab_bill_for_edit(
+    lab_bill_group_id: Optional[str] = None,
+    order_id: Optional[int] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Line items for a grouped or legacy lab bill."""
+    _require_billing_user(current_user)
+    if not lab_bill_group_id and not order_id:
+        raise HTTPException(status_code=400, detail="Provide lab_bill_group_id or order_id")
+
+    q = db.query(PatientLabOrder).join(Patient).filter(Patient.hospital_id == current_user.hospital_id)
+    if lab_bill_group_id:
+        orders = q.filter(PatientLabOrder.lab_bill_group_id == lab_bill_group_id).order_by(PatientLabOrder.id.asc()).all()
+    else:
+        orders = q.filter(PatientLabOrder.id == order_id).all()
+    if not orders:
+        raise HTTPException(status_code=404, detail="Lab bill not found")
+
+    items = []
+    for o in orders:
+        test = db.query(LabTest).filter(LabTest.id == o.test_id).first()
+        items.append({
+            "order_id": o.id,
+            "test_name": test.name if test else (o.order_number or "Lab test"),
+            "amount": float(o.amount or 0),
+            "payment_status": o.payment_status,
+        })
+    return {
+        "lab_bill_group_id": orders[0].lab_bill_group_id,
+        "reference": orders[0].lab_bill_number or orders[0].order_number,
+        "payment_status": orders[0].payment_status,
+        "items": items,
+        "total_amount": round(sum(it["amount"] for it in items), 2),
+    }
+
+
+@router.put("/billing/lab/edit")
+async def update_lab_bill(
+    req: LabBillEditRequest,
+    lab_bill_group_id: Optional[str] = None,
+    order_id: Optional[int] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Update test amounts on a lab bill. Tests cannot be added or removed here."""
+    _require_billing_user(current_user)
+    reason = _edit_reason(req.reason)
+    if not lab_bill_group_id and not order_id:
+        raise HTTPException(status_code=400, detail="Provide lab_bill_group_id or order_id")
+
+    q = db.query(PatientLabOrder).join(Patient).filter(Patient.hospital_id == current_user.hospital_id)
+    if lab_bill_group_id:
+        orders = q.filter(PatientLabOrder.lab_bill_group_id == lab_bill_group_id).all()
+    else:
+        orders = q.filter(PatientLabOrder.id == order_id).all()
+    if not orders:
+        raise HTTPException(status_code=404, detail="Lab bill not found")
+    if any((o.payment_status or "") in ("cancelled", "deleted") for o in orders):
+        raise HTTPException(status_code=400, detail="Cannot edit a cancelled lab bill")
+    if any((o.payment_status or "") == "consolidated" for o in orders):
+        raise HTTPException(status_code=400, detail="This lab bill is on a consolidated bill; edit that bill instead")
+
+    by_id = {o.id: o for o in orders}
+    if {row.order_id for row in req.items} != set(by_id.keys()):
+        raise HTTPException(status_code=400, detail="Submit every test on this bill; tests cannot be added or removed here")
+
+    for row in req.items:
+        by_id[row.order_id].amount = round(float(row.amount), 2)
+
+    db.commit()
+
+    new_total = round(sum(float(o.amount or 0) for o in orders), 2)
+    from app.services.audit_service import log_action
+    log_action(
+        db, current_user, "edit_bill", "billing", "PatientLabOrder", orders[0].id,
+        f"Edited lab bill {orders[0].lab_bill_number or orders[0].order_number}: {reason}",
+        details={
+            "reason": reason,
+            "lab_bill_group_id": orders[0].lab_bill_group_id,
+            "total_amount": new_total,
+            "order_ids": [o.id for o in orders],
+        },
+    )
+
+    return {
+        "lab_bill_group_id": orders[0].lab_bill_group_id,
+        "total_amount": new_total,
+        "message": "Lab bill updated",
     }
 
 
