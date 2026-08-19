@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import axios from 'axios';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../ui/dialog';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { Input } from '../ui/input';
@@ -13,11 +13,9 @@ import { useToast } from '../../hooks/use-toast';
 import { downloadPharmacyBlob } from './PharmacyImportDialog';
 import {
   Upload, FileSpreadsheet, Loader2, CheckCircle2,
-  AlertTriangle, RefreshCw, X, ArrowRight, Save, Trash2, Plus, Link2,
+  AlertTriangle, RefreshCw, X, ArrowRight, Save, Trash2, Plus,
 } from 'lucide-react';
 import QuickMedicineDialog from './QuickMedicineDialog';
-import QuickSupplierDialog from './QuickSupplierDialog';
-import PharmacyMedicinePicker from './PharmacyMedicinePicker';
 
 const PREVIEW_LIMIT = 100;
 
@@ -36,33 +34,58 @@ const STATUS_LABEL = {
 };
 
 const STEPS = [
-  { id: 'details', label: '1. Details' },
+  { id: 'details', label: '1. File' },
   { id: 'rows', label: '2. Rows' },
   { id: 'mapping', label: '3. Mapping' },
   { id: 'import', label: '4. Import' },
 ];
 
-const MAP_FIELDS = [
-  { key: 'medicine_name', label: 'Medicine name', required: true },
-  { key: 'batch_number', label: 'Batch number', required: true },
-  { key: 'quantity', label: 'Quantity', required: true },
-  { key: 'purchase_rate', label: 'Purchase rate (PTR)', required: true },
-  { key: 'mrp', label: 'MRP', required: true },
-  { key: 'discount_pct', label: 'Discount', required: true },
-  { key: 'expiry_date', label: 'Expiry', required: true },
-  { key: 'free_quantity', label: 'Free items', required: false },
-  { key: 'record_type', label: 'Record type (H / T / F)', required: false },
-  { key: 'medicine_code', label: 'Medicine code', required: false },
+export const MEDICINE_MAP_FIELDS = [
+  { key: 'medicine_code', label: 'Medicine code', required: true },
+  { key: 'name', label: 'Name', required: true },
+  { key: 'category', label: 'Category', required: true },
+  { key: 'generic_name', label: 'Generic name', required: false },
+  { key: 'mrp', label: 'MRP', required: false },
+  { key: 'purchase_rate', label: 'Purchase rate (PTR)', required: false },
   { key: 'rate_a', label: 'Rate A (sale)', required: false },
   { key: 'rate_b', label: 'Rate B (sale)', required: false },
-  { key: 'pack_size', label: 'Pack size', required: false },
-  { key: 'hsn_code', label: 'HSN code', required: false },
+  { key: 'packaging', label: 'Pack / packaging', required: false },
+  { key: 'strip_conversion_factor', label: 'Tabs / strip', required: false },
   { key: 'manufacturer', label: 'Manufacturer', required: false },
+  { key: 'company', label: 'Company', required: false },
+  { key: 'hsn_code', label: 'HSN code', required: false },
+  { key: 'sgst_pct', label: 'SGST %', required: false },
+  { key: 'cgst_pct', label: 'CGST %', required: false },
+  { key: 'salt', label: 'Salt', required: false },
+  { key: 'uom', label: 'UoM', required: false },
+  { key: 'rack_code', label: 'Rack', required: false },
+  { key: 'barcode', label: 'Barcode', required: false },
+  { key: 'dosage_form', label: 'Dosage form', required: false },
+  { key: 'strength', label: 'Strength', required: false },
+  { key: 'unit_price', label: 'Unit price', required: false },
 ];
 
-const REQUIRED_MAP_FIELDS = MAP_FIELDS.filter((f) => f.required);
-
-const MAP_FIELD_KEYS = new Set(MAP_FIELDS.map((f) => f.key));
+export const SALE_MAP_FIELDS = [
+  { key: 'sale_date', label: 'Sale date', required: true },
+  { key: 'quantity', label: 'Quantity', required: true },
+  { key: 'medicine_name', label: 'Medicine name', required: false },
+  { key: 'medicine_code', label: 'Medicine code', required: false },
+  { key: 'sale_number', label: 'Sale / bill number', required: false },
+  { key: 'batch_number', label: 'Batch number', required: false },
+  { key: 'rate', label: 'Rate', required: false },
+  { key: 'discount_pct', label: 'Discount %', required: false },
+  { key: 'qty_unit', label: 'Qty unit (tablet / strip)', required: false },
+  { key: 'rate_tier', label: 'Rate tier (A / B)', required: false },
+  { key: 'payment_type', label: 'Payment (cash / credit)', required: false },
+  { key: 'tax_mode', label: 'Tax mode', required: false },
+  { key: 'store_code', label: 'Store code', required: false },
+  { key: 'patient_name', label: 'Patient name', required: false },
+  { key: 'patient_phone', label: 'Patient phone', required: false },
+  { key: 'patient_address', label: 'Patient address', required: false },
+  { key: 'doctor_name', label: 'Doctor name', required: false },
+  { key: 'doctor_number', label: 'Doctor number', required: false },
+  { key: 'bill_discount_amount', label: 'Bill discount', required: false },
+];
 
 function toColLetter(raw) {
   return String(raw || '').toUpperCase().replace(/[^A-Z]/g, '').slice(0, 3);
@@ -79,28 +102,20 @@ function excelLetterFromIndex(idx) {
   return s;
 }
 
-/** Load saved mapping as { field: "F" }, including older inverted CL* presets. */
-function normalizeLoadedMapping(raw) {
-  if (typeof raw === 'string') {
-    try {
-      raw = JSON.parse(raw);
-    } catch {
-      return {};
-    }
-  }
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+function normalizeLoadedMapping(raw, fieldKeys) {
+  if (!raw || typeof raw !== 'object') return {};
   const keys = Object.keys(raw);
   const next = {};
-  if (keys.some((k) => MAP_FIELD_KEYS.has(k))) {
+  if (keys.some((k) => fieldKeys.has(k))) {
     keys.forEach((k) => {
       const letter = toColLetter(raw[k]);
-      if (MAP_FIELD_KEYS.has(k) && letter) next[k] = letter;
+      if (fieldKeys.has(k) && letter) next[k] = letter;
     });
     return next;
   }
   keys.forEach((h) => {
     const field = raw[h];
-    if (!field || field === 'ignore' || !MAP_FIELD_KEYS.has(field)) return;
+    if (!field || field === 'ignore' || !fieldKeys.has(field)) return;
     const m = String(h).match(/^cl(\d+)$/i);
     if (m) next[field] = excelLetterFromIndex(parseInt(m[1], 10) - 1);
     else {
@@ -109,14 +124,6 @@ function normalizeLoadedMapping(raw) {
     }
   });
   return next;
-}
-
-function missingRequiredFields(mapping) {
-  return REQUIRED_MAP_FIELDS.filter((f) => !toColLetter(mapping[f.key]));
-}
-
-function todayISO() {
-  return new Date().toISOString().slice(0, 10);
 }
 
 function unmatchedName(item) {
@@ -144,21 +151,39 @@ function prefillFromUnmatched(item) {
   };
 }
 
-export default function PurchaseImportDialog({ open, onOpenChange, onImported }) {
+export default function MappedImportDialog({
+  open,
+  onOpenChange,
+  onImported,
+  title,
+  entityLabel,
+  inspectUrl,
+  importUrl,
+  templateUrl,
+  mappingsUrl,
+  mapFields,
+  detailsHelp,
+  mappingHelp,
+  importHelp,
+  fileHint,
+  showDuplicateSelect = true,
+  showAffectStock = false,
+  defaultAffectStock = false,
+  showUnmatchedMedicines = false,
+  requireAny = null,
+  commitLabel = 'Import',
+}) {
   const { toast } = useToast();
   const fileInputRef = useRef(null);
+  const fieldKeys = new Set((mapFields || []).map((f) => f.key));
+  const requiredFields = (mapFields || []).filter((f) => f.required);
 
   const [step, setStep] = useState('details');
   const [file, setFile] = useState(null);
-  const [suppliers, setSuppliers] = useState([]);
-  const [supplierId, setSupplierId] = useState('');
-  const [invoiceNumber, setInvoiceNumber] = useState('');
-  const [entryDate, setEntryDate] = useState(todayISO());
-  const [billDate, setBillDate] = useState(todayISO());
-  const [paymentType, setPaymentType] = useState('credit');
   const [rowStart, setRowStart] = useState('');
   const [rowEnd, setRowEnd] = useState('');
   const [onDuplicate, setOnDuplicate] = useState('skip');
+  const [affectStock, setAffectStock] = useState(defaultAffectStock);
 
   const [inspecting, setInspecting] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
@@ -174,23 +199,15 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
   const [mappingSaved, setMappingSaved] = useState(false);
   const [medicineDialogOpen, setMedicineDialogOpen] = useState(false);
   const [medicinePrefill, setMedicinePrefill] = useState({});
-  const [supplierDialogOpen, setSupplierDialogOpen] = useState(false);
-  const [nameAliases, setNameAliases] = useState({});
-  const [mapItem, setMapItem] = useState(null);
-  const [mapPick, setMapPick] = useState(null);
   const unmatchedQueueRef = useRef([]);
 
   const reset = () => {
     setStep('details');
     setFile(null);
-    setSupplierId('');
-    setInvoiceNumber('');
-    setEntryDate(todayISO());
-    setBillDate(todayISO());
-    setPaymentType('credit');
     setRowStart('');
     setRowEnd('');
     setOnDuplicate('skip');
+    setAffectStock(defaultAffectStock);
     setInspect(null);
     setMapping({});
     setSelectedPresetId('');
@@ -200,16 +217,12 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
     setMappingSaved(false);
     setMedicineDialogOpen(false);
     setMedicinePrefill({});
-    setSupplierDialogOpen(false);
-    setNameAliases({});
-    setMapItem(null);
-    setMapPick(null);
     unmatchedQueueRef.current = [];
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const handleClose = (v) => {
-    if (importing || analyzing || inspecting || savingMapping || medicineDialogOpen || supplierDialogOpen || mapItem) return;
+    if (importing || analyzing || inspecting || savingMapping || medicineDialogOpen) return;
     if (!v) reset();
     onOpenChange(v);
   };
@@ -219,18 +232,9 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
     else toast({ title: msg });
   };
 
-  const loadSuppliers = async () => {
-    try {
-      const r = await axios.get('/api/pharmacy/suppliers', { params: { active_only: true } });
-      setSuppliers(r.data || []);
-    } catch {
-      setSuppliers([]);
-    }
-  };
-
   const loadSavedMappings = async () => {
     try {
-      const r = await axios.get('/api/pharmacy/purchases/import/mappings');
+      const r = await axios.get(mappingsUrl);
       setSavedMappings(r.data || []);
     } catch {
       setSavedMappings([]);
@@ -239,11 +243,10 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
 
   useEffect(() => {
     if (!open) return;
-    loadSuppliers();
     loadSavedMappings();
-  }, [open]);
+  }, [open, mappingsUrl]);
 
-  const inspectFile = async (f, { rowStart: rs, rowEnd: re, preserveRows = false } = {}) => {
+  const inspectFile = async (f, { rowStart: rs, rowEnd: re, preserveRows = false, preserveMapping = false } = {}) => {
     setInspecting(true);
     setSummary(null);
     setDone(null);
@@ -256,12 +259,18 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
       if (re !== undefined && re !== null && re !== '') {
         fd.append('row_end', String(Number(re)));
       }
-      const res = await axios.post('/api/pharmacy/purchases/import/inspect', fd, {
+      const res = await axios.post(inspectUrl, fd, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
       setInspect(res.data);
       if (!preserveRows) {
-        setRowStart(String(res.data.min_row || startVal || 1));
+        const nextStart = res.data.header_detected && res.data.suggested_row_start
+          ? res.data.suggested_row_start
+          : (res.data.min_row || startVal || 1);
+        setRowStart(String(nextStart));
+      }
+      if (!preserveMapping && Object.keys(res.data.suggested_letter_mapping || {}).length) {
+        setMapping(res.data.suggested_letter_mapping);
       }
       return res.data;
     } catch (err) {
@@ -285,6 +294,7 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
     if (f) {
       setRowStart('1');
       setRowEnd('');
+      setMapping({});
       inspectFile(f, { rowStart: 1, rowEnd: '' });
     } else {
       setInspect(null);
@@ -309,44 +319,28 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
     setMappingSaved(false);
   };
 
-  const mappingReady = REQUIRED_MAP_FIELDS.every((f) => toColLetter(mapping[f.key]));
-  const missingRequired = missingRequiredFields(mapping);
+  const anyGroupReady = !requireAny || requireAny.every((group) => (
+    group.some((k) => toColLetter(mapping[k]))
+  ));
+  const mappingReady = requiredFields.every((f) => toColLetter(mapping[f.key])) && anyGroupReady;
 
   const applyPreset = (id) => {
     setSelectedPresetId(id);
     const preset = savedMappings.find((m) => String(m.id) === String(id));
     if (!preset) return;
-    const loaded = normalizeLoadedMapping(preset.column_mapping || {});
-    setMapping(loaded);
-    if (preset.default_row_start != null && Number(preset.default_row_start) > 0) {
-      setRowStart(String(preset.default_row_start));
-    }
-    if (preset.default_row_end != null && Number(preset.default_row_end) > 0) {
-      const start = Number(preset.default_row_start) > 0
-        ? Number(preset.default_row_start)
-        : Number(rowStart) || 1;
-      if (Number(preset.default_row_end) >= start) {
-        setRowEnd(String(preset.default_row_end));
-      }
-    }
+    setMapping(normalizeLoadedMapping(preset.column_mapping || {}, fieldKeys));
+    if (preset.default_row_start != null) setRowStart(String(preset.default_row_start));
+    if (preset.default_row_end != null) setRowEnd(String(preset.default_row_end));
     setMappingName(preset.name || '');
     setSummary(null);
     setDone(null);
     setMappingSaved(false);
-    const missing = missingRequiredFields(loaded);
-    if (missing.length) {
-      feedback(
-        `“${preset.name}” is missing ${missing.map((f) => f.label).join(', ')}. Map those columns to continue.`,
-        'error',
-      );
-    } else {
-      feedback(`Loaded mapping “${preset.name}”`);
-    }
+    feedback(`Loaded mapping “${preset.name}”`);
   };
 
   const deletePreset = async (id) => {
     try {
-      await axios.delete(`/api/pharmacy/purchases/import/mappings/${id}`);
+      await axios.delete(`${mappingsUrl}/${id}`);
       setSavedMappings((prev) => prev.filter((m) => m.id !== id));
       if (String(selectedPresetId) === String(id)) setSelectedPresetId('');
       feedback('Saved mapping deleted');
@@ -360,27 +354,20 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
     fd.append('file', file);
     fd.append('on_duplicate', onDuplicate);
     fd.append('column_mapping', JSON.stringify(mapping));
-    if (Object.keys(nameAliases).length) {
-      fd.append('name_aliases', JSON.stringify(nameAliases));
-    }
-    if (supplierId) fd.append('supplier_id', String(supplierId));
-    if (invoiceNumber.trim()) fd.append('invoice_number', invoiceNumber.trim());
-    if (entryDate) fd.append('entry_date', entryDate);
-    if (billDate) fd.append('bill_date', billDate);
-    if (paymentType) fd.append('payment_type', paymentType);
     if (rowStart !== '' && rowStart != null) fd.append('row_start', String(Number(rowStart)));
     if (rowEnd !== '' && rowEnd != null) fd.append('row_end', String(Number(rowEnd)));
+    if (showAffectStock) fd.append('affect_stock', affectStock ? 'true' : 'false');
   };
 
   const runImport = async (dryRun) => {
-    if (!file) return;
+    if (!file) return null;
     const setBusy = dryRun ? setAnalyzing : setImporting;
     setBusy(true);
     try {
       const fd = new FormData();
       appendImportFields(fd);
       fd.append('dry_run', dryRun ? 'true' : 'false');
-      const res = await axios.post('/api/pharmacy/purchases/import', fd, {
+      const res = await axios.post(importUrl, fd, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
       if (dryRun) {
@@ -388,19 +375,16 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
         setStep('import');
         return res.data;
       }
-      const form = res.data.form;
-      if (!form?.items?.length) {
-        setSummary(res.data);
-        feedback('No purchase lines to load into the form', 'error');
-        return res.data;
-      }
-      onImported?.(form);
-      reset();
-      onOpenChange(false);
+      setDone(res.data);
+      onImported?.();
+      feedback(
+        `Imported: ${res.data.created} new, ${res.data.updated} updated, ${res.data.skipped} skipped`,
+      );
       return res.data;
     } catch (err) {
       const detail = err.response?.data?.detail;
       feedback(typeof detail === 'string' ? detail : 'Import failed', 'error');
+      return null;
     } finally {
       setBusy(false);
     }
@@ -412,7 +396,7 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
       feedback('Enter a name for this mapping', 'error');
       return;
     }
-    if (!REQUIRED_MAP_FIELDS.every((f) => toColLetter(mapping[f.key]))) {
+    if (!mappingReady) {
       feedback('Enter columns for all required fields before saving', 'error');
       return;
     }
@@ -425,7 +409,7 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
         default_row_start: rowStart !== '' ? Number(rowStart) : null,
         default_row_end: rowEnd !== '' ? Number(rowEnd) : null,
       };
-      const res = await axios.post('/api/pharmacy/purchases/import/mappings', payload);
+      const res = await axios.post(mappingsUrl, payload);
       setMappingSaved(true);
       await loadSavedMappings();
       setSelectedPresetId(String(res.data.id));
@@ -438,33 +422,21 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
     }
   };
 
-  const detailsReady = !!file && !!inspect && !!supplierId && !!entryDate;
+  const detailsReady = !!file && !!inspect;
   const rowsReady = detailsReady
     && rowStart !== ''
     && Number(rowStart) > 0
     && (rowEnd === '' || Number(rowEnd) >= Number(rowStart));
   const canProceedMapping = rowsReady && mappingReady;
 
-  const goToMapping = () => {
-    if (!rowsReady) return;
-    setStep('mapping');
-  };
-
-  const goToImport = () => {
-    if (!canProceedMapping) return;
-    setStep('import');
-    runImport(true);
-  };
-
   const result = done || summary;
   const previewRows = result?.preview || [];
   const visiblePreview = previewRows.slice(0, PREVIEW_LIMIT);
   const hiddenCount = Math.max(0, previewRows.length - PREVIEW_LIMIT);
-  const unmatched = normalizeUnmatched(result?.unmatched_medicines);
-  const selectedSupplier = suppliers.find((s) => String(s.id) === String(supplierId));
+  const unmatched = showUnmatchedMedicines ? normalizeUnmatched(result?.unmatched_medicines) : [];
   const otherErrors = (result?.errors || []).filter((e) => {
     const m = String(e.message || '').toLowerCase();
-    return !m.includes('not found');
+    return !showUnmatchedMedicines || !m.includes('not found');
   });
 
   const openAddMedicine = (item, rest = []) => {
@@ -502,55 +474,23 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
     openAddMedicine(next, nextRest);
   };
 
-  const openMapMedicine = (item) => {
-    setMapPick(null);
-    setMapItem(item);
-  };
-
-  const handleMapConfirm = async () => {
-    const name = unmatchedName(mapItem);
-    if (!name || !mapPick?.id) return;
-    try {
-      await axios.post('/api/pharmacy/purchases/import/aliases', {
-        alias: name,
-        medicine_id: mapPick.id,
-      });
-    } catch (err) {
-      const detail = err.response?.data?.detail;
-      feedback(typeof detail === 'string' ? detail : 'Could not save mapping', 'error');
-      return;
-    }
-    setNameAliases((prev) => ({ ...prev, [name]: mapPick.id }));
-    setMapItem(null);
-    setMapPick(null);
-    feedback(`Mapped “${name}” to ${mapPick.name}`);
-    await runImport(true);
-  };
+  const canCommit = !!summary
+    && unmatched.length === 0
+    && (summary.created + summary.updated + summary.skipped + (summary.error_count || 0) > 0
+      || (summary.preview || []).length > 0)
+    && !importing;
 
   return (
     <>
-    <Dialog
-      open={open}
-      onOpenChange={handleClose}
-      modal={!supplierDialogOpen && !medicineDialogOpen && !mapItem}
-    >
+    <Dialog open={open} onOpenChange={handleClose}>
       <DialogContent className="max-w-4xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Upload className="h-5 w-5 text-indigo-500" /> Import Purchases
+            <Upload className="h-5 w-5 text-indigo-500" /> {title}
           </DialogTitle>
         </DialogHeader>
 
-        <Tabs
-          value={step}
-          onValueChange={(next) => {
-            setStep(next);
-            if (next === 'import' && canProceedMapping && file && !summary && !analyzing) {
-              runImport(true);
-            }
-          }}
-          className="w-full"
-        >
+        <Tabs value={step} onValueChange={setStep} className="w-full">
           <TabsList className="grid w-full grid-cols-4 h-auto">
             {STEPS.map((s) => (
               <TabsTrigger key={s.id} value={s.id} className="text-xs py-2">
@@ -560,12 +500,9 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
           </TabsList>
 
           <div className="max-h-[72vh] overflow-y-auto pr-1 mt-3 space-y-4">
-            {/* -------- Step 1: Details -------- */}
             <TabsContent value="details" className="mt-0 space-y-4">
               <div className="text-xs text-slate-500 bg-slate-50 rounded-lg p-3 leading-relaxed">
-                Choose the file and enter purchase header details. Supplier, invoice number,
-                dates, and cash/credit from this step are used for the purchase — they are not
-                mapped from the file.
+                {detailsHelp}
               </div>
 
               <div className="border-2 border-dashed border-slate-200 rounded-lg p-5 text-center">
@@ -593,7 +530,7 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
                 ) : (
                   <>
                     <Upload className="h-8 w-8 text-slate-300 mx-auto mb-2" />
-                    <p className="text-sm text-slate-500 mb-2">Choose an .xlsx or .csv purchase file</p>
+                    <p className="text-sm text-slate-500 mb-2">{fileHint || `Choose an .xlsx or .csv ${entityLabel} file`}</p>
                     <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>
                       Select File
                     </Button>
@@ -601,95 +538,54 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
                 )}
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {showDuplicateSelect && (
                 <div className="space-y-1.5">
-                  <Label className="text-xs">Supplier *</Label>
-                  <div className="flex gap-2">
-                    <Select value={supplierId} onValueChange={setSupplierId}>
-                      <SelectTrigger className="h-9 text-sm flex-1">
-                        <SelectValue placeholder="Select supplier" />
-                      </SelectTrigger>
-                      <SelectContent className="max-h-72">
-                        {suppliers.map((s) => (
-                          <SelectItem key={s.id} value={String(s.id)} className="text-sm">
-                            {s.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="icon"
-                      className="h-9 w-9 shrink-0"
-                      title="Add Supplier"
-                      onClick={() => setSupplierDialogOpen(true)}
-                    >
-                      <Plus className="h-4 w-4" />
-                    </Button>
-                  </div>
-                </div>
-                <div className="space-y-1.5">
-                  <Label className="text-xs">Invoice number *</Label>
-                  <Input
-                    className="h-9 text-sm"
-                    value={invoiceNumber}
-                    onChange={(e) => setInvoiceNumber(e.target.value)}
-                    placeholder="e.g. 2026-27/TAX/1808"
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label className="text-xs">Entry date *</Label>
-                  <Input
-                    type="date"
-                    className="h-9 text-sm"
-                    value={entryDate}
-                    onChange={(e) => setEntryDate(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label className="text-xs">Bill / invoice date</Label>
-                  <Input
-                    type="date"
-                    className="h-9 text-sm"
-                    value={billDate}
-                    onChange={(e) => setBillDate(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label className="text-xs">Payment type *</Label>
-                  <Select value={paymentType} onValueChange={setPaymentType}>
+                  <Label className="text-xs">If a record already exists</Label>
+                  <Select value={onDuplicate} onValueChange={setOnDuplicate}>
                     <SelectTrigger className="h-9 text-sm">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="cash">Cash</SelectItem>
-                      <SelectItem value="credit">Credit</SelectItem>
+                      <SelectItem value="skip">Skip existing</SelectItem>
+                      <SelectItem value="update">Update existing</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
-              </div>
+              )}
+
+              {showAffectStock && (
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Stock</Label>
+                  <Select
+                    value={affectStock ? 'deduct' : 'record'}
+                    onValueChange={(v) => setAffectStock(v === 'deduct')}
+                  >
+                    <SelectTrigger className="h-9 text-sm">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="record">Record only (do not change stock)</SelectItem>
+                      <SelectItem value="deduct">Deduct stock from existing batches</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
 
               <div className="flex justify-between items-center pt-2 border-t">
                 <Button
                   variant="outline"
                   size="sm"
                   className="text-xs"
-                  onClick={() => downloadPharmacyBlob(
-                    '/api/pharmacy/purchases/import/template',
-                    'pharmacy_purchases_import_template.xlsx',
-                    toast,
-                  )}
+                  onClick={() => downloadPharmacyBlob(templateUrl, `${entityLabel}_import_template.xlsx`, toast)}
                 >
                   <FileSpreadsheet className="h-3.5 w-3.5 mr-1.5" /> Template
                 </Button>
-                <Button size="sm" disabled={!detailsReady || !invoiceNumber.trim()} onClick={() => setStep('rows')}>
+                <Button size="sm" disabled={!detailsReady} onClick={() => setStep('rows')}>
                   Next: Rows <ArrowRight className="h-3.5 w-3.5 ml-1" />
                 </Button>
               </div>
             </TabsContent>
 
-            {/* -------- Step 2: Rows -------- */}
             <TabsContent value="rows" className="mt-0 space-y-4">
               <div className="text-xs text-slate-500 bg-slate-50 rounded-lg p-3 leading-relaxed">
                 <span className="font-medium text-slate-700">Start row</span> is the first
@@ -702,14 +598,11 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
                     <span className="font-medium text-slate-700">{inspect.file_line_count}</span> lines.
                   </span>
                 ) : null}
-              </div>
-
-              <div className="rounded-lg border border-slate-200 p-3 text-xs text-slate-600 space-y-1">
-                <div><span className="text-slate-400">Supplier:</span> {selectedSupplier?.name || '—'}</div>
-                <div><span className="text-slate-400">Invoice:</span> {invoiceNumber || '—'}</div>
-                <div><span className="text-slate-400">Date:</span> {entryDate || '—'}</div>
-                <div><span className="text-slate-400">Payment:</span> {paymentType === 'cash' ? 'Cash' : 'Credit'}</div>
-                <div><span className="text-slate-400">File:</span> {file?.name || '—'}</div>
+                {inspect?.header_detected ? (
+                  <span className="block mt-1 text-emerald-700">
+                    Header row detected — start row is set to the first data line.
+                  </span>
+                ) : null}
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -739,13 +632,12 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
 
               <div className="flex justify-between pt-2 border-t">
                 <Button variant="outline" size="sm" onClick={() => setStep('details')}>Back</Button>
-                <Button size="sm" disabled={!rowsReady} onClick={goToMapping}>
+                <Button size="sm" disabled={!rowsReady} onClick={() => setStep('mapping')}>
                   Next: Mapping <ArrowRight className="h-3.5 w-3.5 ml-1" />
                 </Button>
               </div>
             </TabsContent>
 
-            {/* -------- Step 3: Mapping -------- */}
             <TabsContent value="mapping" className="mt-0 space-y-4">
               <div className="flex flex-wrap items-end gap-2">
                 <div className="flex-1 min-w-[200px] space-y-1.5">
@@ -794,27 +686,41 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
               </div>
 
               <div className="text-xs text-slate-500 bg-slate-50 rounded-lg p-3 leading-relaxed">
-                Type the Excel column letter for each field (A, B, C, … AA). Fields marked *
-                must be mapped. Names must match the catalog — missing items can be added on
-                the Import step.
+                {mappingHelp || (
+                  <>
+                    Type the Excel column letter for each field (A, B, C, … AA). Fields marked *
+                    must be mapped.
+                    {requireAny ? ' Map at least one of medicine name or medicine code.' : null}
+                  </>
+                )}
               </div>
+
+              {inspect?.header_preview?.length > 0 && (
+                <div className="text-[11px] text-slate-500 border border-slate-100 rounded-md px-3 py-2">
+                  <span className="font-medium text-slate-600">Detected headers: </span>
+                  {inspect.header_preview.slice(0, 12).map((h) => (
+                    <span key={h.letter} className="mr-2">
+                      <span className="font-mono text-slate-700">{h.letter}</span>
+                      {h.value ? ` ${h.value}` : ''}
+                    </span>
+                  ))}
+                </div>
+              )}
 
               <div className="border border-slate-200 rounded-lg overflow-hidden">
                 <div className="grid grid-cols-[1fr_6rem] gap-2 px-3 py-2 text-[10px] uppercase tracking-wider text-slate-400 border-b bg-slate-50">
-                  <div>Purchase field</div>
+                  <div>Field</div>
                   <div>Column</div>
                 </div>
                 <div className="divide-y divide-slate-50 max-h-80 overflow-y-auto">
-                  {MAP_FIELDS.map((f) => (
+                  {mapFields.map((f) => (
                     <div key={f.key} className="grid grid-cols-[1fr_6rem] gap-2 items-center px-3 py-2">
                       <Label className={`text-sm ${f.required ? 'text-slate-800' : 'text-slate-600'}`}>
                         {f.label}
                         {f.required && <span className="text-red-500 ml-0.5">*</span>}
                       </Label>
                       <Input
-                        className={`h-8 text-sm font-mono uppercase text-center ${
-                          f.required && !toColLetter(mapping[f.key]) ? 'border-red-300 bg-red-50/40' : ''
-                        }`}
+                        className="h-8 text-sm font-mono uppercase text-center"
                         value={mapping[f.key] || ''}
                         onChange={(e) => setFieldLetter(f.key, e.target.value)}
                         placeholder={f.required ? 'A' : ''}
@@ -828,7 +734,7 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
               <div className="border border-slate-200 rounded-lg p-3 space-y-2">
                 <div className="text-xs font-medium text-slate-700">Save this mapping</div>
                 <div className="text-[11px] text-slate-500">
-                  Name and save the current column map (and row range) to reuse on similar purchases.
+                  Name and save the current column map (and row range) to reuse on similar files.
                 </div>
                 <div className="flex flex-wrap items-end gap-2">
                   <div className="flex-1 min-w-[180px] space-y-1">
@@ -837,7 +743,7 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
                       className="h-9 text-sm"
                       value={mappingName}
                       onChange={(e) => { setMappingName(e.target.value); setMappingSaved(false); }}
-                      placeholder="e.g. Vasu Pharma CSV"
+                      placeholder="e.g. Vendor catalog CSV"
                     />
                   </div>
                   <Button
@@ -852,48 +758,32 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
                     {mappingSaved ? 'Saved' : 'Save mapping'}
                   </Button>
                 </div>
-                {mappingSaved && (
-                  <div className="text-[11px] text-emerald-700 flex items-center gap-1">
-                    <CheckCircle2 className="h-3.5 w-3.5" />
-                    Mapping “{mappingName}” saved — load it from the dropdown above next time.
-                  </div>
-                )}
               </div>
 
               <div className="flex justify-between pt-2 border-t">
                 <Button variant="outline" size="sm" onClick={() => setStep('rows')}>Back</Button>
-                <div className="flex flex-col items-end gap-1">
-                  {missingRequired.length > 0 && (
-                    <div className="text-[11px] text-red-600">
-                      Map {missingRequired.map((f) => f.label).join(', ')} to continue
-                    </div>
-                  )}
-                  <Button size="sm" disabled={!canProceedMapping || analyzing} onClick={goToImport}>
-                    {analyzing
-                      ? <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                      : null}
-                    Next: Import <ArrowRight className="h-3.5 w-3.5 ml-1" />
-                  </Button>
-                </div>
+                <Button size="sm" disabled={!canProceedMapping} onClick={() => setStep('import')}>
+                  Next: Import <ArrowRight className="h-3.5 w-3.5 ml-1" />
+                </Button>
               </div>
             </TabsContent>
 
-            {/* -------- Step 4: Import -------- */}
             <TabsContent value="import" className="mt-0 space-y-4">
               <div className="rounded-lg border border-slate-200 p-3 text-xs text-slate-600 grid grid-cols-2 gap-x-4 gap-y-1">
-                <div><span className="text-slate-400">Supplier:</span> {selectedSupplier?.name || '—'}</div>
-                <div><span className="text-slate-400">Invoice:</span> {invoiceNumber || '—'}</div>
-                <div><span className="text-slate-400">Entry date:</span> {entryDate || '—'}</div>
-                <div><span className="text-slate-400">Payment:</span> {paymentType === 'cash' ? 'Cash' : 'Credit'}</div>
                 <div><span className="text-slate-400">Rows:</span> {rowStart}{rowEnd ? `–${rowEnd}` : ' → end'}</div>
-                <div className="col-span-2"><span className="text-slate-400">File:</span> {file?.name || '—'}</div>
+                <div><span className="text-slate-400">File:</span> {file?.name || '—'}</div>
+                {showAffectStock && (
+                  <div className="col-span-2">
+                    <span className="text-slate-400">Stock:</span>{' '}
+                    {affectStock ? 'Deduct from batches' : 'Record only'}
+                  </div>
+                )}
               </div>
 
               {!done && (
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="text-xs text-slate-500">
-                    Preview the lines, then open them in the purchase form. Nothing is saved until you
-                    Save or Submit there.
+                    {importHelp || 'Preview the rows, then confirm the import.'}
                   </div>
                   <Button
                     size="sm"
@@ -910,9 +800,10 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
               )}
 
               {result && (
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-                  <SummaryStat label="Matched lines" value={result.form?.items?.length || result.created} color="text-emerald-600" />
-                  <SummaryStat label="Unmatched" value={unmatched.length} color="text-red-600" />
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                  <SummaryStat label="New" value={result.created} color="text-emerald-600" />
+                  <SummaryStat label="Updated" value={result.updated} color="text-blue-600" />
+                  <SummaryStat label="Skipped" value={result.skipped} color="text-slate-500" />
                   <SummaryStat label="Errors" value={result.error_count} color="text-red-600" />
                 </div>
               )}
@@ -936,9 +827,8 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
                     </Button>
                   </div>
                   <p className="text-[11px] text-amber-800/80">
-                    Add a new catalog item, or map a distributor spelling to an existing
-                    medicine. Preview runs again after either action. The purchase form
-                    stays closed until every name matches.
+                    Add each item here (category is required). After save, Preview runs again.
+                    Import stays blocked until every name matches.
                   </p>
                   <div className="border border-amber-100 rounded-md bg-white max-h-48 overflow-y-auto divide-y divide-amber-50">
                     {unmatched.map((item) => (
@@ -957,18 +847,8 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
                           size="sm"
                           variant="outline"
                           className="h-7 text-[11px] shrink-0"
-                          onClick={() => openMapMedicine(item)}
-                          disabled={analyzing || medicineDialogOpen || !!mapItem}
-                        >
-                          <Link2 className="h-3 w-3 mr-1" />
-                          Map
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="h-7 text-[11px] shrink-0"
                           onClick={() => startAddQueue(item)}
-                          disabled={analyzing || medicineDialogOpen || !!mapItem}
+                          disabled={analyzing || medicineDialogOpen}
                         >
                           <Plus className="h-3 w-3 mr-1" />
                           Add
@@ -1042,9 +922,6 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
               {done && (
                 <div className="border border-emerald-100 bg-emerald-50/40 rounded-lg px-3 py-2 text-sm text-emerald-700 flex items-center gap-1.5">
                   <CheckCircle2 className="h-4 w-4" /> Import complete.
-                  {mappingSaved && mappingName.trim() && (
-                    <span className="text-emerald-600/80"> Mapping “{mappingName}” is saved for next time.</span>
-                  )}
                 </div>
               )}
 
@@ -1059,10 +936,10 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
                       <Button
                         size="sm"
                         onClick={() => runImport(false)}
-                        disabled={!summary?.form?.items?.length || unmatched.length > 0 || importing}
+                        disabled={!canCommit || unmatched.length > 0}
                       >
                         {importing && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                        Open purchase form{summary?.form?.items?.length ? ` (${summary.form.items.length})` : ''}
+                        {commitLabel}
                       </Button>
                     </div>
                   </>
@@ -1078,71 +955,18 @@ export default function PurchaseImportDialog({ open, onOpenChange, onImported })
         </Tabs>
       </DialogContent>
     </Dialog>
-    <QuickMedicineDialog
-      open={medicineDialogOpen}
-      onOpenChange={(v) => {
-        setMedicineDialogOpen(v);
-        if (!v && !analyzing) unmatchedQueueRef.current = [];
-      }}
-      prefill={medicinePrefill}
-      lockName
-      onCreated={handleMedicineCreated}
-    />
-    <QuickSupplierDialog
-      open={supplierDialogOpen}
-      onOpenChange={setSupplierDialogOpen}
-      onCreated={(created) => {
-        setSuppliers((prev) => {
-          if (prev.some((s) => s.id === created.id)) return prev;
-          return [...prev, created].sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
-        });
-        setSupplierId(String(created.id));
-      }}
-    />
-    <Dialog
-      open={!!mapItem}
-      onOpenChange={(v) => {
-        if (!v) {
-          setMapItem(null);
-          setMapPick(null);
-        }
-      }}
-    >
-      <DialogContent className="max-w-lg overflow-visible">
-        <DialogHeader>
-          <DialogTitle>Map to existing medicine</DialogTitle>
-        </DialogHeader>
-        <p className="text-sm text-slate-600">
-          File name <span className="font-medium text-slate-900">“{unmatchedName(mapItem)}”</span> will
-          use the catalog item you pick. Saved for later imports from this hospital.
-        </p>
-        <div className="space-y-1.5">
-          <Label className="text-xs">Catalog medicine</Label>
-          <PharmacyMedicinePicker
-            key={unmatchedName(mapItem)}
-            value={mapPick?.id}
-            medicine={mapPick}
-            autoSearch={unmatchedName(mapItem)}
-            wideMenu
-            placeholder="Search catalog name / code…"
-            onSelect={setMapPick}
-          />
-        </div>
-        <DialogFooter>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => { setMapItem(null); setMapPick(null); }}
-          >
-            Cancel
-          </Button>
-          <Button size="sm" onClick={handleMapConfirm} disabled={!mapPick?.id || analyzing}>
-            {analyzing && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-            Use this item
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    {showUnmatchedMedicines && (
+      <QuickMedicineDialog
+        open={medicineDialogOpen}
+        onOpenChange={(v) => {
+          setMedicineDialogOpen(v);
+          if (!v && !analyzing) unmatchedQueueRef.current = [];
+        }}
+        prefill={medicinePrefill}
+        lockName
+        onCreated={handleMedicineCreated}
+      />
+    )}
     </>
   );
 }

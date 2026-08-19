@@ -4,7 +4,7 @@ from __future__ import annotations
 import csv
 import io
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Callable, Dict, List, Optional, Tuple
 
 import openpyxl
@@ -18,6 +18,7 @@ from app.models.pharmacy import (
     PharmacyCompany,
     PharmacyHSN,
     PharmacyInventory,
+    PharmacyMedicineImportAlias,
     PharmacyPurchase,
     PharmacyPurchaseImportMapping,
     PharmacyPurchaseItem,
@@ -308,6 +309,75 @@ def _parse_upload(
     raise HTTPException(status_code=400, detail="Unsupported file type. Upload a .xlsx or .csv file.")
 
 
+def _excel_col_letter(idx: int) -> str:
+    """0 → A, 25 → Z, 26 → AA."""
+    n = int(idx) + 1
+    if n < 1:
+        return "A"
+    letters: List[str] = []
+    while n:
+        n, rem = divmod(n - 1, 26)
+        letters.append(chr(65 + rem))
+    return "".join(reversed(letters))
+
+
+def _parse_excel_col_letter(raw) -> Optional[str]:
+    """Return a normalized Excel column letter (A, B, … AA) or None."""
+    if raw is None:
+        return None
+    s = str(raw).strip().upper()
+    if not s or not re.fullmatch(r"[A-Z]{1,3}", s):
+        return None
+    return s
+
+
+def _read_grid_matrix(content: bytes, filename: str) -> List[list]:
+    """Raw cell rows for purchase import (no header interpretation)."""
+    fn = (filename or "").lower()
+    if fn.endswith(".csv"):
+        text = content.decode("utf-8-sig", errors="replace")
+        return list(csv.reader(io.StringIO(text)))
+    if fn.endswith(".xlsx"):
+        wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True, read_only=True)
+        if not wb.sheetnames:
+            return []
+        ws = wb[wb.sheetnames[0]]
+        return [list(r) for r in ws.iter_rows(values_only=True)]
+    raise HTTPException(status_code=400, detail="Unsupported file type. Upload a .xlsx or .csv file.")
+
+
+def _parse_purchase_grid(
+    content: bytes, filename: str, *,
+    row_start: Optional[int] = None,
+    row_end: Optional[int] = None,
+) -> List[dict]:
+    """Parse file as positional columns A, B, C, … Start row is the first *data* line (inclusive)."""
+    matrix = _read_grid_matrix(content, filename)
+    if not matrix:
+        return []
+    start_i = (int(row_start) - 1) if row_start is not None else 0
+    if start_i < 0:
+        start_i = 0
+    if start_i >= len(matrix):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Start row {row_start} is out of range for this file ({len(matrix)} lines)",
+        )
+    last = len(matrix) - 1
+    if row_end is not None:
+        last = min(last, int(row_end) - 1)
+    out: List[dict] = []
+    for i in range(start_i, last + 1):
+        cells = matrix[i] or []
+        if _row_is_empty(cells):
+            continue
+        rowdict: dict = {"_row": i + 1}
+        for k, val in enumerate(cells):
+            rowdict[_excel_col_letter(k)] = val
+        out.append(rowdict)
+    return out
+
+
 def _normalize_hsn_tax(sgst_pct: float, cgst_pct: float) -> Tuple[float, float, float]:
     sgst = float(sgst_pct or 0)
     cgst = float(cgst_pct or 0)
@@ -354,6 +424,7 @@ def _empty_summary(*, dry_run: bool) -> dict:
         "errors": [],
         "preview": [],
         "form": None,
+        "unmatched_medicines": [],
     }
 
 
@@ -580,9 +651,27 @@ def _apply_medicine_row(med: Medicine, row: dict, resolver: _MasterResolver) -> 
 def import_medicines(
     db: Session, user: User, content: bytes, filename: str,
     *, dry_run: bool, on_duplicate: str,
+    column_mapping: Optional[dict] = None,
+    row_start: Optional[int] = None,
+    row_end: Optional[int] = None,
 ) -> dict:
     summary = _empty_summary(dry_run=dry_run)
-    rows = _parse_upload(content, filename, ["Medicines"])
+    try:
+        rows = resolve_mapped_rows(
+            content, filename,
+            column_mapping=column_mapping,
+            valid_targets=_VALID_MEDICINE_TARGETS,
+            required_fields=REQUIRED_MEDICINE_LETTER_FIELDS,
+            named_sheet_names=["Medicines"],
+            row_start=row_start,
+            row_end=row_end,
+        )
+    except HTTPException as exc:
+        summary["errors"].append({
+            "sheet": "Medicines", "row": 0, "message": str(exc.detail),
+        })
+        summary["error_count"] = 1
+        return summary
     hospital_id = user.hospital_id
     resolver = _MasterResolver(db, hospital_id)
 
@@ -1659,6 +1748,16 @@ PURCHASE_IMPORT_TARGETS = [
 
 _VALID_PURCHASE_TARGETS = {t["key"] for t in PURCHASE_IMPORT_TARGETS}
 
+REQUIRED_PURCHASE_LETTER_FIELDS = [
+    "medicine_name",
+    "batch_number",
+    "quantity",
+    "purchase_rate",
+    "mrp",
+    "discount_pct",
+    "expiry_date",
+]
+
 
 def _strip_excel_formula(v) -> Optional[str]:
     """Normalize Excel-exported cells like `=\"000008\"` or `=\"3338.06\"`."""
@@ -1672,31 +1771,76 @@ def _strip_excel_formula(v) -> Optional[str]:
     return s.strip() if s.strip() else None
 
 
+def _safe_date(year, month, day) -> Optional[date]:
+    try:
+        return date(int(year), int(month), int(day))
+    except (TypeError, ValueError):
+        return None
+
+
 def _parse_ddmmyyyy(v) -> Optional[date]:
-    """Parse DDMMYYYY (vendor CSV) or fall back to ISO / MM/YYYY."""
+    """Parse vendor expiry / bill dates.
+
+    Accepts datetime/date, Excel serials, packed Marg/Vasu integers
+    (DDMMYYYY, DMMYYYY, YYYYMMDD), ISO, and MM/YYYY or MM/YY.
+    """
     if isinstance(v, datetime):
         return v.date()
     if isinstance(v, date):
         return v
-    s = _strip_excel_formula(v)
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, float) and v.is_integer():
+        v = int(v)
+    if isinstance(v, int):
+        # Typical Excel serial range for 1954–2119
+        if 20000 <= v <= 80000:
+            try:
+                return date(1899, 12, 30) + timedelta(days=v)
+            except OverflowError:
+                return None
+        s = str(v)
+    else:
+        s = _strip_excel_formula(v)
     if not s:
         return None
+
     digits = re.sub(r"\D", "", s)
     if len(digits) == 8:
-        dd, mm, yyyy = int(digits[0:2]), int(digits[2:4]), int(digits[4:8])
-        return date(yyyy, mm, dd)
+        # YYYYMMDD (ISO stripped) vs DDMMYYYY (Vasu / Marg day>=10)
+        if 1990 <= int(digits[0:4]) <= 2100:
+            parsed = _safe_date(digits[0:4], digits[4:6], digits[6:8])
+            if parsed:
+                return parsed
+        parsed = _safe_date(digits[4:8], digits[2:4], digits[0:2])
+        if parsed:
+            return parsed
+    if len(digits) == 7:
+        # DMMYYYY — Marg ERP omits the leading zero on day 1–9 (1032028 → 1 Mar 2028)
+        parsed = _safe_date(digits[3:7], digits[1:3], digits[0])
+        if parsed:
+            return parsed
     if len(digits) == 6:
-        # MMYYYY → last day of month is unknown; use day 1
-        mm, yyyy = int(digits[0:2]), int(digits[2:6])
-        return date(yyyy, mm, 1)
+        parsed = _safe_date(digits[2:6], digits[0:2], 1)  # MMYYYY
+        if parsed:
+            return parsed
+
     try:
         return date.fromisoformat(s[:10])
     except ValueError:
         pass
-    # MM/YYYY or MM-YYYY
-    m = re.match(r"^(\d{1,2})[/-](\d{4})$", s)
+    m = re.match(r"^(\d{1,2})[/\-.](\d{4})$", s)
     if m:
-        return date(int(m.group(2)), int(m.group(1)), 1)
+        parsed = _safe_date(m.group(2), m.group(1), 1)
+        if parsed:
+            return parsed
+    m = re.match(r"^(\d{1,2})[/\-.](\d{2})$", s)
+    if m:
+        yy = int(m.group(2))
+        year = 2000 + yy if yy < 100 else yy
+        parsed = _safe_date(year, m.group(1), 1)
+        if parsed:
+            return parsed
     raise ValueError(f"'{s}' is not a valid date")
 
 
@@ -1714,8 +1858,9 @@ def _parse_pack_scf(pack: Optional[str]) -> Optional[int]:
     return n if n >= 1 else None
 
 
-def _normalize_column_mapping(raw: Optional[dict]) -> Dict[str, str]:
+def _normalize_column_mapping(raw: Optional[dict], valid_targets: Optional[set] = None) -> Dict[str, str]:
     """Convert {source_header: target_field} → {target_field: normalized_source}."""
+    targets = valid_targets if valid_targets is not None else _VALID_PURCHASE_TARGETS
     if not raw:
         return {}
     out: Dict[str, str] = {}
@@ -1723,10 +1868,120 @@ def _normalize_column_mapping(raw: Optional[dict]) -> Dict[str, str]:
         if src is None or tgt is None:
             continue
         target = str(tgt).strip()
-        if not target or target == "ignore" or target not in _VALID_PURCHASE_TARGETS:
+        if not target or target == "ignore" or target not in targets:
             continue
         out[target] = _norm_header(src)
     return out
+
+
+def _normalize_letter_mapping(raw: Optional[dict], valid_targets: Optional[set] = None) -> Dict[str, str]:
+    """Return {erp_field: Excel column letter}.
+
+    Accepts the new UI shape `{medicine_name: "F"}` and the older inverted
+    `{CL6: "medicine_name"}` / `{F: "medicine_name"}` presets.
+    """
+    targets = valid_targets if valid_targets is not None else _VALID_PURCHASE_TARGETS
+    if not raw or not isinstance(raw, dict):
+        return {}
+    keys = [str(k) for k in raw.keys()]
+    looks_new = any(k in targets for k in keys)
+    out: Dict[str, str] = {}
+    if looks_new:
+        for k, v in raw.items():
+            field = str(k).strip()
+            if field not in targets or field == "ignore":
+                continue
+            letter = _parse_excel_col_letter(v)
+            if letter:
+                out[field] = letter
+        return out
+    inverted = _normalize_column_mapping(raw, targets)
+    for field, src in inverted.items():
+        letter = _parse_excel_col_letter(src)
+        if letter:
+            out[field] = letter
+            continue
+        m = re.fullmatch(r"cl(\d+)", src or "")
+        if m:
+            out[field] = _excel_col_letter(int(m.group(1)) - 1)
+    return out
+
+
+def _line_items_from_letter_grid(grid: List[dict], letter_map: Dict[str, str]) -> List[dict]:
+    """Turn positional A/B/C rows into purchase line dicts using field → letter map."""
+
+    def _opt_float(v):
+        try:
+            return _cell_float(_strip_excel_formula(v) or v)
+        except (ValueError, TypeError):
+            return None
+
+    def _opt_int(v):
+        try:
+            return _cell_int(_strip_excel_formula(v) or v)
+        except (ValueError, TypeError):
+            return None
+
+    items: List[dict] = []
+    for row in grid:
+        def cell(field: str):
+            letter = letter_map.get(field)
+            if not letter:
+                return None
+            return row.get(letter)
+
+        typ = (_strip_excel_formula(cell("record_type")) or "").upper()
+        if typ in ("H", "F"):
+            continue
+        name = _strip_excel_formula(cell("medicine_name"))
+        code = _strip_excel_formula(cell("medicine_code"))
+        if not name and not code:
+            continue
+        expiry = None
+        try:
+            expiry = _parse_ddmmyyyy(cell("expiry_date"))
+        except ValueError:
+            expiry = None
+        qty = _opt_float(cell("quantity"))
+        free = _opt_float(cell("free_quantity"))
+        if free is None:
+            free = 0.0
+        rate = _opt_float(cell("purchase_rate"))
+        mrp = _opt_float(cell("mrp"))
+        rate_a_raw = cell("rate_a")
+        rate_b_raw = cell("rate_b")
+        rate_a = _opt_float(rate_a_raw) if rate_a_raw is not None else None
+        rate_b = _opt_float(rate_b_raw) if rate_b_raw is not None else None
+        if rate_a is None:
+            rate_a = mrp
+        if rate_b is None:
+            rate_b = mrp
+        scf_raw = cell("strip_conversion_factor")
+        scf = _opt_int(scf_raw) if scf_raw is not None else None
+        pack = _strip_excel_formula(cell("pack_size"))
+        if scf is None:
+            scf = _parse_pack_scf(pack)
+        items.append({
+            "_row": row.get("_row"),
+            "medicine_name": name,
+            "medicine_code": code,
+            "batch_number": _strip_excel_formula(cell("batch_number")) or "",
+            "expiry_date": expiry,
+            "quantity": qty,
+            "free_quantity": free,
+            "purchase_rate": rate,
+            "mrp": mrp,
+            "rate_a": rate_a,
+            "rate_b": rate_b,
+            "pack_size": pack,
+            "manufacturer": _strip_excel_formula(cell("manufacturer")),
+            "hsn_code": _strip_excel_formula(cell("hsn_code")),
+            "discount_pct": _opt_float(cell("discount_pct")) or 0.0,
+            "strip_conversion_factor": scf,
+            "cgst_pct": _opt_float(cell("cgst_pct")),
+            "sgst_pct": _opt_float(cell("sgst_pct")),
+        })
+    return items
 
 
 def _suggest_purchase_mapping(headers: List[str]) -> Dict[str, str]:
@@ -1807,57 +2062,279 @@ def inspect_purchase_import(
     row_start: Optional[int] = None,
     row_end: Optional[int] = None,
 ) -> dict:
-    """Return column names from the header line (`row_start`, default 1).
-
-    `row_start` = 1-based file line of the column-header row.
-    `row_end` = optional 1-based last data line (inclusive).
-    """
-    header_row = int(row_start) if row_start is not None else 1
-    if header_row < 1:
+    """Return file line count and mapper field catalog. Does not read cell values for mapping."""
+    start = int(row_start) if row_start is not None else 1
+    if start < 1:
         raise HTTPException(status_code=400, detail="row_start must be >= 1")
-    if row_end is not None and int(row_end) < header_row:
+    if row_end is not None and int(row_end) < start:
         raise HTTPException(status_code=400, detail="row_end cannot be before row_start")
 
-    rows = _parse_upload(
-        content, filename, ["Purchases", "Purchase"],
-        header_row=header_row,
-        row_end=row_end,
-    )
     file_line_count = _count_file_lines(content, filename)
-
-    if not rows:
-        return {
-            "headers": [],
-            "suggested_mapping": {},
-            "format_hint": "empty",
-            "targets": PURCHASE_IMPORT_TARGETS,
-            "row_count": 0,
-            "min_row": header_row,
-            "max_row": file_line_count,
-            "header_row": header_row,
-            "file_line_count": file_line_count,
-        }
-    headers = [k for k in rows[0].keys() if k != "_row"]
-    display_headers = []
-    for h in headers:
-        if re.fullmatch(r"cl\d+", h or ""):
-            display_headers.append(h.upper())
-        else:
-            display_headers.append(h)
-    suggested = _suggest_purchase_mapping(display_headers)
-    format_hint = "vendor_htf" if _looks_like_vendor_purchase(rows) else "flat"
-    row_nums = [int(r.get("_row") or 0) for r in rows]
+    try:
+        grid = _parse_purchase_grid(
+            content, filename, row_start=start, row_end=row_end,
+        )
+    except HTTPException:
+        grid = []
+    row_nums = [int(r.get("_row") or 0) for r in grid]
     return {
-        "headers": display_headers,
-        "suggested_mapping": suggested,
-        "format_hint": format_hint,
+        "headers": [],
+        "suggested_mapping": {},
+        "format_hint": "letter_columns",
         "targets": PURCHASE_IMPORT_TARGETS,
-        "row_count": len(rows),
-        "min_row": min(row_nums) if row_nums else header_row + 1,
+        "row_count": len(grid),
+        "min_row": min(row_nums) if row_nums else start,
         "max_row": max(row_nums) if row_nums else file_line_count,
-        "header_row": header_row,
+        "header_row": start,
         "file_line_count": file_line_count,
+        "required_fields": list(REQUIRED_PURCHASE_LETTER_FIELDS),
     }
+
+
+def _alias_norm_set(aliases: List[Tuple[str, List[str]]]) -> set:
+    out: set = set()
+    for _, names in aliases:
+        out.update(names)
+    return out
+
+
+def _row_looks_like_headers(cells, aliases: List[Tuple[str, List[str]]]) -> bool:
+    names = _alias_norm_set(aliases)
+    hits = 0
+    for c in cells or []:
+        if _norm_header(c) in names:
+            hits += 1
+    return hits >= 2
+
+
+def _suggest_letter_mapping_from_cells(
+    cells, aliases: List[Tuple[str, List[str]]],
+) -> Dict[str, str]:
+    """Return {erp_field: Excel letter} from a header row."""
+    by_norm: Dict[str, str] = {}
+    for i, cell in enumerate(cells or []):
+        n = _norm_header(cell)
+        if n and n not in by_norm:
+            by_norm[n] = _excel_col_letter(i)
+    suggested: Dict[str, str] = {}
+    used: set = set()
+    for field, names in aliases:
+        for name in names:
+            letter = by_norm.get(name)
+            if letter and letter not in used:
+                suggested[field] = letter
+                used.add(letter)
+                break
+    return suggested
+
+
+def _header_preview(cells, limit: int = 20) -> List[dict]:
+    out: List[dict] = []
+    for i, cell in enumerate(cells or []):
+        if i >= limit:
+            break
+        text = _strip_excel_formula(cell) or _cell_str(cell) or ""
+        out.append({"letter": _excel_col_letter(i), "value": text})
+    return out
+
+
+def inspect_letter_import(
+    content: bytes, filename: str, *,
+    row_start: Optional[int] = None,
+    row_end: Optional[int] = None,
+    required_fields: Optional[List[str]] = None,
+    aliases: Optional[List[Tuple[str, List[str]]]] = None,
+) -> dict:
+    """Inspect a spreadsheet for letter-column mapping (medicines, sales, …)."""
+    start = int(row_start) if row_start is not None else 1
+    if start < 1:
+        raise HTTPException(status_code=400, detail="row_start must be >= 1")
+    if row_end is not None and int(row_end) < start:
+        raise HTTPException(status_code=400, detail="row_end cannot be before row_start")
+
+    file_line_count = _count_file_lines(content, filename)
+    matrix = _read_grid_matrix(content, filename)
+    alias_list = aliases or []
+
+    def cells_at(zero_idx: int) -> list:
+        if 0 <= zero_idx < len(matrix):
+            return matrix[zero_idx] or []
+        return []
+
+    suggested: Dict[str, str] = {}
+    header_detected = False
+    suggested_row_start = start
+    preview_cells: list = []
+
+    header_idx = None
+    if start >= 2:
+        header_idx = start - 2
+    elif _row_looks_like_headers(cells_at(0), alias_list):
+        header_idx = 0
+        header_detected = True
+        suggested_row_start = 2
+
+    if header_idx is not None:
+        preview_cells = cells_at(header_idx)
+        suggested = _suggest_letter_mapping_from_cells(preview_cells, alias_list)
+        if suggested:
+            header_detected = True
+            if start == 1:
+                suggested_row_start = 2
+    elif matrix:
+        preview_cells = cells_at(max(0, start - 1))
+
+    try:
+        grid = _parse_purchase_grid(
+            content, filename, row_start=start, row_end=row_end,
+        )
+    except HTTPException:
+        grid = []
+    row_nums = [int(r.get("_row") or 0) for r in grid]
+    return {
+        "headers": [],
+        "suggested_mapping": {},
+        "suggested_letter_mapping": suggested,
+        "format_hint": "letter_columns",
+        "row_count": len(grid),
+        "min_row": min(row_nums) if row_nums else start,
+        "max_row": max(row_nums) if row_nums else file_line_count,
+        "header_row": start,
+        "file_line_count": file_line_count,
+        "required_fields": list(required_fields or []),
+        "header_detected": header_detected,
+        "suggested_row_start": suggested_row_start,
+        "header_preview": _header_preview(preview_cells),
+    }
+
+
+def _dict_rows_from_letter_grid(grid: List[dict], letter_map: Dict[str, str]) -> List[dict]:
+    """Copy letter-keyed grid rows into {erp_field: value, _row: n} dicts."""
+    rows: List[dict] = []
+    for row in grid:
+        out: dict = {"_row": row.get("_row")}
+        any_val = False
+        for field, letter in letter_map.items():
+            raw = row.get(letter)
+            stripped = _strip_excel_formula(raw)
+            out[field] = stripped if stripped is not None else raw
+            if stripped is not None or (raw is not None and str(raw).strip() != ""):
+                any_val = True
+        if any_val:
+            rows.append(out)
+    return rows
+
+
+def _is_headerish_mapped_row(row: dict, fields: List[str]) -> bool:
+    hits = 0
+    for field in fields:
+        val = _norm_header(row.get(field))
+        if val and (val == field or val.replace("_", "") == field.replace("_", "")):
+            hits += 1
+    return hits >= 2
+
+
+def resolve_mapped_rows(
+    content: bytes, filename: str, *,
+    column_mapping: Optional[dict],
+    valid_targets: set,
+    required_fields: List[str],
+    named_sheet_names: List[str],
+    row_start: Optional[int] = None,
+    row_end: Optional[int] = None,
+    require_any: Optional[List[List[str]]] = None,
+) -> List[dict]:
+    """Letter-map rows when ``column_mapping`` is set; otherwise named-header parse."""
+    mapping = column_mapping if isinstance(column_mapping, dict) and column_mapping else None
+    if not mapping:
+        return _parse_upload(content, filename, named_sheet_names)
+
+    letter_map = _normalize_letter_mapping(mapping, valid_targets)
+    missing = [f for f in required_fields if f not in letter_map]
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Map required columns: {', '.join(missing)}",
+        )
+    for group in require_any or []:
+        if not any(f in letter_map for f in group):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Map at least one of: {', '.join(group)}",
+            )
+    start_row = int(row_start) if row_start is not None else 1
+    if start_row < 1:
+        raise HTTPException(status_code=400, detail="row_start must be >= 1")
+    if row_end is not None and int(row_end) < start_row:
+        raise HTTPException(status_code=400, detail="row_end cannot be before row_start")
+    grid = _parse_purchase_grid(
+        content, filename, row_start=start_row, row_end=row_end,
+    )
+    rows = _dict_rows_from_letter_grid(grid, letter_map)
+    keep_fields = list(letter_map.keys())
+    return [r for r in rows if not _is_headerish_mapped_row(r, keep_fields)]
+
+
+REQUIRED_MEDICINE_LETTER_FIELDS = ["medicine_code", "name", "category"]
+_VALID_MEDICINE_TARGETS = set(MEDICINE_HEADERS)
+
+MEDICINE_IMPORT_ALIASES: List[Tuple[str, List[str]]] = [
+    ("medicine_code", ["medicine_code", "item_code", "product_code", "sku", "code", "itemcode"]),
+    ("name", ["name", "medicine_name", "item_name", "product_name", "item", "product"]),
+    ("category", ["category", "category_name", "cat"]),
+    ("generic_name", ["generic_name", "generic"]),
+    ("dosage_form", ["dosage_form", "form"]),
+    ("strength", ["strength"]),
+    ("mrp", ["mrp"]),
+    ("purchase_rate", ["purchase_rate", "ptr", "p_rate", "prate"]),
+    ("rate_a", ["rate_a", "sale_rate", "selling_rate", "rate"]),
+    ("rate_b", ["rate_b"]),
+    ("unit_price", ["unit_price"]),
+    ("default_discount_pct", ["default_discount_pct"]),
+    ("item_discount_pct", ["item_discount_pct"]),
+    ("barcode", ["barcode"]),
+    ("packaging", ["packaging", "pack_size", "pack", "packing"]),
+    ("strip_conversion_factor", ["strip_conversion_factor", "scf", "conversion", "tabs_per_strip"]),
+    ("rate_unit", ["rate_unit"]),
+    ("decimal_supported", ["decimal_supported"]),
+    ("requires_prescription", ["requires_prescription"]),
+    ("is_narcotic", ["is_narcotic"]),
+    ("is_high_alert", ["is_high_alert"]),
+    ("is_schedule_h", ["is_schedule_h"]),
+    ("is_schedule_h1", ["is_schedule_h1"]),
+    ("is_tramadol", ["is_tramadol"]),
+    ("is_controlled", ["is_controlled"]),
+    ("is_active", ["is_active"]),
+    ("is_hidden", ["is_hidden"]),
+    ("min_qty", ["min_qty"]),
+    ("max_qty", ["max_qty"]),
+    ("reorder_qty", ["reorder_qty"]),
+    ("description", ["description"]),
+    ("side_effects", ["side_effects"]),
+    ("contraindications", ["contraindications"]),
+    ("storage_conditions", ["storage_conditions"]),
+    ("manufacturer", ["manufacturer", "mfg"]),
+    ("company", ["company", "company_name"]),
+    ("rack_code", ["rack_code", "rack"]),
+    ("salt", ["salt", "salt_name"]),
+    ("uom", ["uom", "unit"]),
+    ("hsn_code", ["hsn_code", "hsn"]),
+    ("sgst_pct", ["sgst_pct", "sgst"]),
+    ("cgst_pct", ["cgst_pct", "cgst"]),
+]
+
+
+def inspect_medicines_import(
+    content: bytes, filename: str, *,
+    row_start: Optional[int] = None,
+    row_end: Optional[int] = None,
+) -> dict:
+    return inspect_letter_import(
+        content, filename,
+        row_start=row_start, row_end=row_end,
+        required_fields=REQUIRED_MEDICINE_LETTER_FIELDS,
+        aliases=MEDICINE_IMPORT_ALIASES,
+    )
 
 
 def _count_file_lines(content: bytes, filename: str) -> int:
@@ -2261,6 +2738,84 @@ def _find_supplier_by_name(db: Session, hospital_id: int, name: str) -> Optional
     ).first()
 
 
+def upsert_medicine_import_alias(
+    db: Session, hospital_id: int, medicine_id: int, alias: str,
+) -> PharmacyMedicineImportAlias:
+    name = (alias or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="alias is required")
+    norm = name.lower()
+    row = db.query(PharmacyMedicineImportAlias).filter(
+        PharmacyMedicineImportAlias.hospital_id == hospital_id,
+        PharmacyMedicineImportAlias.alias_norm == norm,
+    ).first()
+    if row:
+        row.alias_name = name
+        row.medicine_id = medicine_id
+    else:
+        row = PharmacyMedicineImportAlias(
+            alias_name=name,
+            alias_norm=norm,
+            medicine_id=medicine_id,
+            hospital_id=hospital_id,
+        )
+        db.add(row)
+    db.flush()
+    return row
+
+
+def _apply_name_aliases_to_cache(
+    db: Session, hospital_id: int, cache: dict, extra_aliases: Optional[dict],
+) -> None:
+    """Seed the medicine cache so vendor spellings resolve to catalog items."""
+    pairs: List[Tuple[str, int]] = []
+    if isinstance(extra_aliases, dict):
+        for raw, mid in extra_aliases.items():
+            name = str(raw or "").strip()
+            try:
+                mid_int = int(mid)
+            except (TypeError, ValueError):
+                continue
+            if name:
+                pairs.append((name, mid_int))
+    for row in db.query(PharmacyMedicineImportAlias).filter(
+        PharmacyMedicineImportAlias.hospital_id == hospital_id,
+    ).all():
+        if row.alias_name:
+            pairs.append((row.alias_name, row.medicine_id))
+    med_ids = {mid for _, mid in pairs}
+    if not med_ids:
+        return
+    meds = {
+        m.id: m
+        for m in db.query(Medicine).filter(
+            Medicine.hospital_id == hospital_id,
+            Medicine.id.in_(med_ids),
+            Medicine.is_active == True,  # noqa: E712
+        ).all()
+    }
+    for name, mid in pairs:
+        med = meds.get(mid)
+        if not med:
+            continue
+        cache[f"name:{name.strip().lower()}"] = med
+
+
+def _normalize_name_aliases(raw: Optional[dict]) -> Dict[str, int]:
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, int] = {}
+    for k, v in raw.items():
+        name = str(k or "").strip()
+        try:
+            mid = int(v)
+        except (TypeError, ValueError):
+            continue
+        if name and mid > 0:
+            out[name] = mid
+    return out
+
+
 def _find_medicine_for_purchase(
     db: Session, hospital_id: int, *,
     medicine_code: Optional[str], medicine_name: Optional[str], pack_size: Optional[str],
@@ -2294,6 +2849,19 @@ def _find_medicine_for_purchase(
         Medicine.is_active == True,  # noqa: E712
     ).all()
     if not matches:
+        alias = db.query(PharmacyMedicineImportAlias).filter(
+            PharmacyMedicineImportAlias.hospital_id == hospital_id,
+            PharmacyMedicineImportAlias.alias_norm == medicine_name.strip().lower(),
+        ).first()
+        if alias:
+            med = db.query(Medicine).filter(
+                Medicine.id == alias.medicine_id,
+                Medicine.hospital_id == hospital_id,
+                Medicine.is_active == True,  # noqa: E712
+            ).first()
+            if med:
+                cache[key] = med
+                return med, None
         return None, f"Medicine '{medicine_name}' not found"
     if len(matches) == 1:
         cache[key] = matches[0]
@@ -2560,6 +3128,40 @@ def _purchase_form_item(resolved: dict) -> dict:
     }
 
 
+def _unmatched_catalog_entry(item: dict, name: str, rownum: int) -> dict:
+    scf = item.get("strip_conversion_factor")
+    try:
+        scf_int = int(scf) if scf is not None else None
+    except (TypeError, ValueError):
+        scf_int = None
+    return {
+        "name": name,
+        "medicine_code": _cell_str(item.get("medicine_code")) or None,
+        "pack_size": _cell_str(item.get("pack_size")) or None,
+        "manufacturer": _cell_str(item.get("manufacturer")) or None,
+        "mrp": item.get("mrp"),
+        "purchase_rate": item.get("purchase_rate"),
+        "hsn_code": _cell_str(item.get("hsn_code")) or None,
+        "strip_conversion_factor": scf_int,
+        "row": rownum,
+    }
+
+
+def _merge_unmatched_medicines(existing: List, new_entries: List[dict]) -> List[dict]:
+    out: List[dict] = []
+    seen: set = set()
+    for entry in list(existing or []) + list(new_entries or []):
+        if isinstance(entry, str):
+            entry = {"name": entry}
+        name = (entry.get("name") or "").strip()
+        key = name.lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(entry)
+    return out
+
+
 def _iso_date(v) -> Optional[str]:
     if v is None:
         return None
@@ -2580,23 +3182,23 @@ def import_purchases(
     payment_type: Optional[str] = None,
     row_start: Optional[int] = None,
     row_end: Optional[int] = None,
+    name_aliases: Optional[dict] = None,
 ) -> dict:
-    """Import purchase invoices into the purchase form payload.
+    """Parse a spreadsheet by Excel column letters and return a purchase form payload.
 
-    Parses vendor H/T/F CSV or named-header sheets, resolves/auto-creates
-    medicines, and returns a `form` object for PurchaseEntry. Does **not**
-    create a PharmacyPurchase — the user saves/submits from the purchase form.
+    Does **not** create a PharmacyPurchase. Medicines must already exist in the
+    catalog — unmatched names are returned in `unmatched_medicines`.
     """
     summary = _empty_summary(dry_run=dry_run)
-    header_row = int(row_start) if row_start is not None else 1
-    if header_row < 1:
+    start_row = int(row_start) if row_start is not None else 1
+    if start_row < 1:
         summary["errors"].append({
             "sheet": "Purchases", "row": 0,
             "message": "row_start must be >= 1",
         })
         summary["error_count"] = 1
         return summary
-    if row_end is not None and int(row_end) < header_row:
+    if row_end is not None and int(row_end) < start_row:
         summary["errors"].append({
             "sheet": "Purchases", "row": 0,
             "message": "row_end cannot be before row_start",
@@ -2604,11 +3206,20 @@ def import_purchases(
         summary["error_count"] = 1
         return summary
 
+    letter_map = _normalize_letter_mapping(column_mapping)
+    missing_req = [f for f in REQUIRED_PURCHASE_LETTER_FIELDS if f not in letter_map]
+    if missing_req:
+        labels = ", ".join(missing_req)
+        summary["errors"].append({
+            "sheet": "Purchases", "row": 0,
+            "message": f"Map required columns: {labels}",
+        })
+        summary["error_count"] = 1
+        return summary
+
     try:
-        rows = _parse_upload(
-            content, filename, ["Purchases", "Purchase"],
-            header_row=header_row,
-            row_end=row_end,
+        grid = _parse_purchase_grid(
+            content, filename, row_start=start_row, row_end=row_end,
         )
     except HTTPException as exc:
         summary["errors"].append({
@@ -2619,8 +3230,14 @@ def import_purchases(
         return summary
 
     hospital_id = user.hospital_id
-    mapping = column_mapping or {}
-    field_cols = _normalize_column_mapping(mapping)
+    items = _line_items_from_letter_grid(grid, letter_map)
+    if not items:
+        summary["errors"].append({
+            "sheet": "Purchases", "row": start_row,
+            "message": "No purchase rows found in the selected range. Adjust start/end rows or column mapping.",
+        })
+        summary["error_count"] = 1
+        return summary
 
     override_supplier = None
     if supplier_id is not None:
@@ -2637,16 +3254,19 @@ def import_purchases(
             summary["error_count"] = 1
             return summary
 
-    use_vendor = (
-        _looks_like_vendor_purchase(rows)
-        or "record_type" in field_cols
-        or "supplier_or_invoice" in field_cols
-    )
-    if use_vendor:
-        blocks = _parse_vendor_purchase_blocks(rows, column_mapping=mapping or None)
-    else:
-        remapped = _remap_flat_purchase_rows(rows, mapping or None)
-        blocks = _group_named_purchase_rows(remapped)
+    blocks = [{
+        "invoice_number": (invoice_number or "").strip() or None,
+        "entry_date": entry_date,
+        "bill_date": bill_date or entry_date,
+        "payment_type": payment_type or "credit",
+        "purchase_type": "local",
+        "tax_mode": "exclusive",
+        "notes": None,
+        "supplier_name": override_supplier.name if override_supplier else None,
+        "_supplier_id": override_supplier.id if override_supplier else None,
+        "items": items,
+        "_header_row": items[0].get("_row") if items else start_row,
+    }]
 
     # Apply header overrides from the wizard (take precedence over file values)
     inv_override = (invoice_number or "").strip() or None
@@ -2674,8 +3294,10 @@ def import_purchases(
         return summary
 
     medicine_cache: dict = {}
+    _apply_name_aliases_to_cache(
+        db, hospital_id, medicine_cache, _normalize_name_aliases(name_aliases),
+    )
     supplier_cache: Dict[str, PharmacySupplier] = {}
-    resolver = _MasterResolver(db, hospital_id)
     form_header: Optional[dict] = None
     form_items: List[dict] = []
     form_warnings: List[str] = []
@@ -2738,9 +3360,10 @@ def import_purchases(
         # Resolve all line items first; fail the whole invoice if any line errors
         resolved: List[dict] = []
         line_errors: List[str] = []
-        medicines_created = 0
+        unmatched_entries: List[dict] = []
+        seen_unmatched: set = set()
 
-        # Pass 1 — structural validation (no catalog writes yet)
+        # Pass 1 — structural validation (no catalog writes)
         for item in items:
             rownum = item.get("_row") or header_row
             batch = (item.get("batch_number") or "").strip()
@@ -2755,7 +3378,9 @@ def import_purchases(
             if qty is None or qty <= 0:
                 errs.append("quantity must be > 0")
             if rate is None or rate < 0:
-                errs.append("Missing purchase_rate (vendor CSV PTR / CL11)")
+                errs.append("Missing purchase_rate (PTR)")
+            if item.get("mrp") is None or item.get("mrp") < 0:
+                errs.append("Missing MRP")
             if not _cell_str(item.get("medicine_name")) and not _cell_str(item.get("medicine_code")):
                 errs.append("Missing medicine_name / medicine_code")
             if errs:
@@ -2769,42 +3394,51 @@ def import_purchases(
                     "status": "error", "message": msg, "sheet": "Purchases",
                 })
 
-        if line_errors:
-            continue
-
-        # Pass 2 — resolve / auto-create medicines
+        # Pass 2 — match existing catalog medicines only (never auto-create)
         for item in items:
             rownum = item.get("_row") or header_row
             batch = (item.get("batch_number") or "").strip()
             qty = item.get("quantity")
             expiry = item.get("expiry_date")
             rate = item.get("purchase_rate")
+            name = _cell_str(item.get("medicine_name")) or _cell_str(item.get("medicine_code")) or ""
 
-            med, med_created, med_err = _get_or_create_medicine_for_purchase(
-                db, hospital_id, item, resolver=resolver, cache=medicine_cache,
+            med, med_err = _find_medicine_for_purchase(
+                db, hospital_id,
+                medicine_code=item.get("medicine_code"),
+                medicine_name=item.get("medicine_name"),
+                pack_size=item.get("pack_size"),
+                cache=medicine_cache,
             )
+            if not med and item.get("medicine_code") and item.get("medicine_name"):
+                med, med_err = _find_medicine_for_purchase(
+                    db, hospital_id,
+                    medicine_code=None,
+                    medicine_name=item.get("medicine_name"),
+                    pack_size=item.get("pack_size"),
+                    cache=medicine_cache,
+                )
             if not med:
-                msg = f"Line {rownum}: {med_err or 'Medicine not found'}"
+                msg = f"Line {rownum}: {med_err or 'Medicine not found in catalog'}"
                 line_errors.append(msg)
+                err_l = (med_err or "").lower()
+                is_missing = "not found" in err_l or "missing medicine" in err_l or not med_err
+                is_ambiguous = "ambiguous" in err_l
+                if is_missing and not is_ambiguous and name:
+                    key = name.strip().lower()
+                    if key not in seen_unmatched:
+                        seen_unmatched.add(key)
+                        unmatched_entries.append(_unmatched_catalog_entry(item, name, rownum))
                 summary["errors"].append({"sheet": "Purchases", "row": rownum, "message": msg})
                 summary["preview"].append({
                     "row": rownum,
-                    "key": item.get("medicine_code") or item.get("medicine_name") or "",
-                    "name": batch or "",
-                    "status": "error", "message": msg, "sheet": "Purchases",
-                })
-                continue
-
-            if med_created:
-                medicines_created += 1
-                summary["preview"].append({
-                    "row": rownum,
-                    "key": med.medicine_code,
-                    "name": med.name,
-                    "status": "new",
-                    "message": "Medicine auto-created from purchase line",
+                    "key": item.get("medicine_code") or name,
+                    "name": name,
+                    "status": "error",
+                    "message": med_err or "Not in catalog",
                     "sheet": "Purchases",
                 })
+                continue
 
             scf = item.get("strip_conversion_factor") or med.strip_conversion_factor or 1
             scf = max(1, int(scf))
@@ -2813,10 +3447,10 @@ def import_purchases(
                 "medicine": med,
                 "batch_number": batch,
                 "expiry_date": expiry,
-                "quantity": float(qty),
+                "quantity": float(qty or 0),
                 "free_quantity": float(item.get("free_quantity") or 0),
                 "mrp": round_money(item.get("mrp") or med.mrp or 0),
-                "purchase_rate": round_money(rate),
+                "purchase_rate": round_money(rate or 0),
                 "rate_a": round_money(
                     item.get("rate_a") if item.get("rate_a") is not None else (med.rate_a or 0)
                 ),
@@ -2827,7 +3461,12 @@ def import_purchases(
                 "discount_pct": float(item.get("discount_pct") or 0),
             })
 
-        if line_errors:
+        if unmatched_entries:
+            summary["unmatched_medicines"] = _merge_unmatched_medicines(
+                summary.get("unmatched_medicines") or [], unmatched_entries,
+            )
+
+        if line_errors or unmatched_entries:
             continue
         if not resolved:
             continue
@@ -2859,26 +3498,23 @@ def import_purchases(
                 "sheet": "Purchases",
             })
         summary["created"] += len(resolved)
-        msg_bits = [f"{len(resolved)} line(s) ready for purchase form"]
-        if medicines_created:
-            msg_bits.append(f"{medicines_created} medicine(s) auto-created")
         summary["preview"].append({
             "row": header_row,
             "key": preview_key,
             "name": f"{supplier.name} — {len(resolved)} items",
             "status": "new",
-            "message": " · ".join(msg_bits),
+            "message": f"{len(resolved)} line(s) matched catalog medicines",
             "sheet": "Purchases",
         })
 
-    if form_header and form_items:
+    if form_header and form_items and not summary.get("unmatched_medicines"):
         summary["form"] = {
             "header": form_header,
             "items": form_items,
             "warnings": form_warnings,
         }
 
-    summary["masters_created"] = resolver.masters_created
+    summary["masters_created"] = []
     summary["error_count"] = len(summary["errors"])
     return summary
 
@@ -2898,11 +3534,10 @@ def build_purchases_template() -> bytes:
             "KT HEALTH ERP — Purchase Import",
             "",
             "Loads lines into the New Purchase form (Save / Submit there).",
-            "Supplier must already exist.",
-            "Missing medicines are auto-created (category General) from name, manufacturer,",
-            "MRP, PTR/purchase_rate, pack, and HSN (+ CGST/SGST % when present).",
-            "Missing HSN codes are auto-created and linked to the medicine.",
-            "Ambiguous medicine names (multiple catalog matches) still error.",
+            "Supplier must already exist (chosen in the import wizard).",
+            "Map Excel columns by letter (A, B, C…). Start row is the first data row.",
+            "Required columns: medicine name, batch, quantity, PTR, MRP, discount, expiry.",
+            "Every medicine name must already exist in the catalog — unmatched items block import.",
             "",
             "Option A — Named template (this sheet):",
             "  Required: supplier_name, medicine_code OR medicine_name, batch_number,",

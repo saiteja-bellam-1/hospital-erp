@@ -103,6 +103,27 @@ function findNextField(sorted, current, direction, mode) {
   return null;
 }
 
+function isTextLikeInput(el) {
+  if (!el) return false;
+  if (el.tagName === 'TEXTAREA') return true;
+  if (el.tagName !== 'INPUT') return false;
+  const t = (el.type || 'text').toLowerCase();
+  return ['text', 'search', 'tel', 'email', 'url', 'password'].includes(t);
+}
+
+/** Keep Left/Right for the caret unless it is already at the matching edge. */
+function caretBlocksHorizontalNav(target, direction) {
+  if (!isTextLikeInput(target)) return false;
+  if (typeof target.selectionStart !== 'number') return false;
+  const start = target.selectionStart;
+  const end = target.selectionEnd;
+  const len = String(target.value || '').length;
+  if (start !== end) return true;
+  if (direction === 'left') return start > 0;
+  if (direction === 'right') return start < len;
+  return false;
+}
+
 function isSelectOpen(target) {
   if (target.getAttribute('aria-expanded') === 'true') return true;
   if (target.closest('[role="listbox"]')) return true;
@@ -156,8 +177,10 @@ export function handleFormNavKeyDown(e, container, options = {}) {
     if (isCombobox) return;
     direction = 'prev';
   } else if (e.key === 'ArrowRight' && (mode === 'grid' || mode === 'table')) {
+    if (caretBlocksHorizontalNav(target, 'right')) return;
     direction = 'right';
   } else if (e.key === 'ArrowLeft' && (mode === 'grid' || mode === 'table')) {
+    if (caretBlocksHorizontalNav(target, 'left')) return;
     direction = 'left';
   }
 

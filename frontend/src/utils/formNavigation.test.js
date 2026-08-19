@@ -86,4 +86,28 @@ describe('formNavigation', () => {
     );
     expect(document.activeElement).toBe(a);
   });
+
+  test('grid ArrowRight stays in a text field until the caret is at the end', () => {
+    const root = mount(`
+      <input id="a" value="ACME" />
+      <input id="b" />
+    `);
+    const a = root.querySelector('#a');
+    const b = root.querySelector('#b');
+    a.focus();
+    a.setSelectionRange(2, 2);
+    handleFormNavKeyDown(
+      { key: 'ArrowRight', target: a, preventDefault: jest.fn() },
+      root,
+      { mode: 'grid' },
+    );
+    expect(document.activeElement).toBe(a);
+    a.setSelectionRange(4, 4);
+    handleFormNavKeyDown(
+      { key: 'ArrowRight', target: a, preventDefault: jest.fn() },
+      root,
+      { mode: 'grid' },
+    );
+    expect(document.activeElement).toBe(b);
+  });
 });

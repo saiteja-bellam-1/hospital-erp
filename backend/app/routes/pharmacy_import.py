@@ -5,9 +5,10 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from app.models.pharmacy import PharmacyPurchaseImportMapping
+from app.models.pharmacy import Medicine, PharmacyPurchaseImportMapping
 from app.models.user import User
 from app.services.audit_service import log_action
 from app.services.pharmacy_import import (
@@ -25,9 +26,15 @@ from app.services.pharmacy_import import (
     import_opening_stock,
     import_purchases,
     import_suppliers,
+    inspect_medicines_import,
     inspect_purchase_import,
+    upsert_medicine_import_alias,
 )
-from app.services.pharmacy_sales_import import build_sales_template, import_sales
+from app.services.pharmacy_sales_import import (
+    build_sales_template,
+    import_sales,
+    inspect_sales_import,
+)
 from app.utils.auth import Modules
 from app.utils.dependencies import require_feature_permission, require_feature_permission_any
 from config.database import get_db
@@ -84,6 +91,18 @@ class PurchaseImportForm(BaseModel):
     warnings: List[str] = []
 
 
+class UnmatchedPurchaseMedicine(BaseModel):
+    name: str
+    medicine_code: Optional[str] = None
+    pack_size: Optional[str] = None
+    manufacturer: Optional[str] = None
+    mrp: Optional[float] = None
+    purchase_rate: Optional[float] = None
+    hsn_code: Optional[str] = None
+    strip_conversion_factor: Optional[int] = None
+    row: Optional[int] = None
+
+
 class PharmacyImportSummary(BaseModel):
     dry_run: bool
     total_rows: int
@@ -95,6 +114,7 @@ class PharmacyImportSummary(BaseModel):
     errors: List[PharmacyImportRowError] = []
     preview: List[PharmacyImportPreviewRow] = []
     form: Optional[PurchaseImportForm] = None
+    unmatched_medicines: List[UnmatchedPurchaseMedicine] = []
 
 
 class PurchaseImportMappingIn(BaseModel):
@@ -167,6 +187,110 @@ def _normalize_on_duplicate(on_duplicate: str) -> str:
     return on_duplicate
 
 
+def _parse_column_mapping(raw: str) -> Optional[dict]:
+    import json
+    if not raw or not str(raw).strip():
+        return None
+    try:
+        mapping = json.loads(raw)
+        if not isinstance(mapping, dict):
+            raise ValueError("column_mapping must be a JSON object")
+        return mapping
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid column_mapping: {exc}") from exc
+
+
+def _parse_name_aliases(raw: str) -> Optional[dict]:
+    import json
+    if not raw or not str(raw).strip():
+        return None
+    try:
+        aliases = json.loads(raw)
+        if not isinstance(aliases, dict):
+            raise ValueError("name_aliases must be a JSON object")
+        return aliases
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid name_aliases: {exc}") from exc
+
+
+_VALID_IMPORT_KINDS = ("purchases", "medicines", "sales")
+
+
+def _mapping_kind_clause(kind: str):
+    if kind == "purchases":
+        return or_(
+            PharmacyPurchaseImportMapping.import_kind == "purchases",
+            PharmacyPurchaseImportMapping.import_kind.is_(None),
+        )
+    return PharmacyPurchaseImportMapping.import_kind == kind
+
+
+def _list_import_mappings(db: Session, hospital_id: int, kind: str):
+    if kind not in _VALID_IMPORT_KINDS:
+        raise HTTPException(status_code=400, detail="Invalid import mapping kind")
+    return (
+        db.query(PharmacyPurchaseImportMapping)
+        .filter(
+            PharmacyPurchaseImportMapping.hospital_id == hospital_id,
+            _mapping_kind_clause(kind),
+        )
+        .order_by(PharmacyPurchaseImportMapping.name.asc())
+        .all()
+    )
+
+
+def _save_import_mapping(
+    db: Session, user: User, data: PurchaseImportMappingIn, kind: str,
+) -> PharmacyPurchaseImportMapping:
+    if kind not in _VALID_IMPORT_KINDS:
+        raise HTTPException(status_code=400, detail="Invalid import mapping kind")
+    name = (data.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Mapping name is required")
+    if not isinstance(data.column_mapping, dict) or not data.column_mapping:
+        raise HTTPException(status_code=400, detail="column_mapping is required")
+
+    existing = db.query(PharmacyPurchaseImportMapping).filter(
+        PharmacyPurchaseImportMapping.hospital_id == user.hospital_id,
+        PharmacyPurchaseImportMapping.name == name,
+        _mapping_kind_clause(kind),
+    ).first()
+    if existing:
+        existing.column_mapping = data.column_mapping
+        existing.format_hint = data.format_hint
+        existing.default_row_start = data.default_row_start
+        existing.default_row_end = data.default_row_end
+        existing.import_kind = kind
+        row = existing
+    else:
+        row = PharmacyPurchaseImportMapping(
+            name=name,
+            column_mapping=data.column_mapping,
+            format_hint=data.format_hint,
+            import_kind=kind,
+            default_row_start=data.default_row_start,
+            default_row_end=data.default_row_end,
+            hospital_id=user.hospital_id,
+            created_by=user.id,
+        )
+        db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def _delete_import_mapping(db: Session, hospital_id: int, mapping_id: int, kind: str) -> None:
+    row = db.query(PharmacyPurchaseImportMapping).filter(
+        PharmacyPurchaseImportMapping.id == mapping_id,
+        PharmacyPurchaseImportMapping.hospital_id == hospital_id,
+        _mapping_kind_clause(kind),
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Mapping not found")
+    db.delete(row)
+    db.commit()
+
+
 # ---------------------------------------------------------------------------
 # Medicines
 # ---------------------------------------------------------------------------
@@ -185,16 +309,68 @@ async def medicines_import(
     file: UploadFile = File(...),
     dry_run: bool = Form(False),
     on_duplicate: str = Form("skip"),
+    column_mapping: str = Form(""),
+    row_start: Optional[int] = Form(None),
+    row_end: Optional[int] = Form(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "manage_medicines")),
 ):
     content, filename = await _read_upload(file)
     on_duplicate = _normalize_on_duplicate(on_duplicate)
+    mapping = _parse_column_mapping(column_mapping)
+    if row_start is not None and row_end is not None and int(row_start) > int(row_end):
+        raise HTTPException(status_code=400, detail="row_start cannot be greater than row_end")
     summary = import_medicines(
-        db, current_user, content, filename, dry_run=dry_run, on_duplicate=on_duplicate,
+        db, current_user, content, filename,
+        dry_run=dry_run, on_duplicate=on_duplicate,
+        column_mapping=mapping, row_start=row_start, row_end=row_end,
     )
     summary["dry_run"] = dry_run
     return _finalize_import(db, current_user, summary, action="import_pharmacy_medicines", resource_type="medicine")
+
+
+@router.post("/medicines/import/inspect")
+async def medicines_import_inspect(
+    file: UploadFile = File(...),
+    row_start: Optional[int] = Form(None),
+    row_end: Optional[int] = Form(None),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "manage_medicines")),
+):
+    content, filename = await _read_upload(file)
+    if row_start is not None and row_end is not None and int(row_start) > int(row_end):
+        raise HTTPException(status_code=400, detail="row_start cannot be greater than row_end")
+    return inspect_medicines_import(
+        content, filename, row_start=row_start, row_end=row_end,
+    )
+
+
+@router.get("/medicines/import/mappings", response_model=List[PurchaseImportMappingOut])
+def list_medicine_import_mappings(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission_any(
+        Modules.PHARMACY, "view_catalog", "manage_medicines",
+    )),
+):
+    return _list_import_mappings(db, current_user.hospital_id, "medicines")
+
+
+@router.post("/medicines/import/mappings", response_model=PurchaseImportMappingOut, status_code=201)
+def save_medicine_import_mapping(
+    data: PurchaseImportMappingIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "manage_medicines")),
+):
+    return _save_import_mapping(db, current_user, data, "medicines")
+
+
+@router.delete("/medicines/import/mappings/{mapping_id}", status_code=204)
+def delete_medicine_import_mapping(
+    mapping_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "manage_medicines")),
+):
+    _delete_import_mapping(db, current_user.hospital_id, mapping_id, "medicines")
+    return None
 
 
 @router.get("/medicines/export/xlsx")
@@ -373,13 +549,7 @@ def list_purchase_import_mappings(
         Modules.PHARMACY, "view_purchases", "create_purchase",
     )),
 ):
-    rows = (
-        db.query(PharmacyPurchaseImportMapping)
-        .filter(PharmacyPurchaseImportMapping.hospital_id == current_user.hospital_id)
-        .order_by(PharmacyPurchaseImportMapping.name.asc())
-        .all()
-    )
-    return rows
+    return _list_import_mappings(db, current_user.hospital_id, "purchases")
 
 
 @router.post("/purchases/import/mappings", response_model=PurchaseImportMappingOut, status_code=201)
@@ -388,36 +558,7 @@ def save_purchase_import_mapping(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "create_purchase")),
 ):
-    name = (data.name or "").strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="Mapping name is required")
-    if not isinstance(data.column_mapping, dict) or not data.column_mapping:
-        raise HTTPException(status_code=400, detail="column_mapping is required")
-
-    existing = db.query(PharmacyPurchaseImportMapping).filter(
-        PharmacyPurchaseImportMapping.hospital_id == current_user.hospital_id,
-        PharmacyPurchaseImportMapping.name == name,
-    ).first()
-    if existing:
-        existing.column_mapping = data.column_mapping
-        existing.format_hint = data.format_hint
-        existing.default_row_start = data.default_row_start
-        existing.default_row_end = data.default_row_end
-        row = existing
-    else:
-        row = PharmacyPurchaseImportMapping(
-            name=name,
-            column_mapping=data.column_mapping,
-            format_hint=data.format_hint,
-            default_row_start=data.default_row_start,
-            default_row_end=data.default_row_end,
-            hospital_id=current_user.hospital_id,
-            created_by=current_user.id,
-        )
-        db.add(row)
-    db.commit()
-    db.refresh(row)
-    return row
+    return _save_import_mapping(db, current_user, data, "purchases")
 
 
 @router.delete("/purchases/import/mappings/{mapping_id}", status_code=204)
@@ -426,15 +567,41 @@ def delete_purchase_import_mapping(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "create_purchase")),
 ):
-    row = db.query(PharmacyPurchaseImportMapping).filter(
-        PharmacyPurchaseImportMapping.id == mapping_id,
-        PharmacyPurchaseImportMapping.hospital_id == current_user.hospital_id,
-    ).first()
-    if not row:
-        raise HTTPException(status_code=404, detail="Mapping not found")
-    db.delete(row)
-    db.commit()
+    _delete_import_mapping(db, current_user.hospital_id, mapping_id, "purchases")
     return None
+
+
+class PurchaseImportAliasIn(BaseModel):
+    alias: str = Field(..., min_length=1, max_length=200)
+    medicine_id: int
+
+
+@router.post("/purchases/import/aliases")
+def save_purchase_import_alias(
+    data: PurchaseImportAliasIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission_any(
+        Modules.PHARMACY, "create_purchase", "manage_medicines",
+    )),
+):
+    med = db.query(Medicine).filter(
+        Medicine.id == data.medicine_id,
+        Medicine.hospital_id == current_user.hospital_id,
+        Medicine.is_active == True,  # noqa: E712
+    ).first()
+    if not med:
+        raise HTTPException(status_code=404, detail="Medicine not found")
+    row = upsert_medicine_import_alias(
+        db, current_user.hospital_id, med.id, data.alias,
+    )
+    db.commit()
+    return {
+        "id": row.id,
+        "alias": row.alias_name,
+        "medicine_id": med.id,
+        "medicine_name": med.name,
+        "medicine_code": med.medicine_code,
+    }
 
 
 @router.post("/purchases/import", response_model=PharmacyImportSummary)
@@ -443,6 +610,7 @@ async def purchases_import(
     dry_run: bool = Form(False),
     on_duplicate: str = Form("skip"),
     column_mapping: str = Form(""),
+    name_aliases: str = Form(""),
     supplier_id: Optional[int] = Form(None),
     invoice_number: str = Form(""),
     entry_date: Optional[str] = Form(None),
@@ -453,17 +621,10 @@ async def purchases_import(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "create_purchase")),
 ):
-    import json
     content, filename = await _read_upload(file)
     on_duplicate = _normalize_on_duplicate(on_duplicate)
-    mapping = None
-    if column_mapping and column_mapping.strip():
-        try:
-            mapping = json.loads(column_mapping)
-            if not isinstance(mapping, dict):
-                raise ValueError("column_mapping must be a JSON object")
-        except (json.JSONDecodeError, ValueError) as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid column_mapping: {exc}") from exc
+    mapping = _parse_column_mapping(column_mapping)
+    aliases = _parse_name_aliases(name_aliases)
 
     def _parse_opt_date(raw: Optional[str]) -> Optional[date]:
         if not raw or not str(raw).strip():
@@ -491,6 +652,7 @@ async def purchases_import(
         payment_type=pay,
         row_start=row_start,
         row_end=row_end,
+        name_aliases=aliases,
     )
     summary["dry_run"] = dry_run
     return _finalize_import(
@@ -518,17 +680,68 @@ async def sales_import(
     dry_run: bool = Form(False),
     on_duplicate: str = Form("skip"),
     affect_stock: bool = Form(False),
+    column_mapping: str = Form(""),
+    row_start: Optional[int] = Form(None),
+    row_end: Optional[int] = Form(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "create_sale")),
 ):
     content, filename = await _read_upload(file)
     on_duplicate = _normalize_on_duplicate(on_duplicate)
+    mapping = _parse_column_mapping(column_mapping)
+    if row_start is not None and row_end is not None and int(row_start) > int(row_end):
+        raise HTTPException(status_code=400, detail="row_start cannot be greater than row_end")
     summary = import_sales(
         db, current_user, content, filename,
         dry_run=dry_run, on_duplicate=on_duplicate, affect_stock=affect_stock,
+        column_mapping=mapping, row_start=row_start, row_end=row_end,
     )
     summary["dry_run"] = dry_run
     return _finalize_import(
         db, current_user, summary,
         action="import_pharmacy_sales", resource_type="pharmacy_sale",
     )
+
+
+@router.post("/sales/import/inspect")
+async def sales_import_inspect(
+    file: UploadFile = File(...),
+    row_start: Optional[int] = Form(None),
+    row_end: Optional[int] = Form(None),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "create_sale")),
+):
+    content, filename = await _read_upload(file)
+    if row_start is not None and row_end is not None and int(row_start) > int(row_end):
+        raise HTTPException(status_code=400, detail="row_start cannot be greater than row_end")
+    return inspect_sales_import(
+        content, filename, row_start=row_start, row_end=row_end,
+    )
+
+
+@router.get("/sales/import/mappings", response_model=List[PurchaseImportMappingOut])
+def list_sales_import_mappings(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission_any(
+        Modules.PHARMACY, "view_sales", "create_sale",
+    )),
+):
+    return _list_import_mappings(db, current_user.hospital_id, "sales")
+
+
+@router.post("/sales/import/mappings", response_model=PurchaseImportMappingOut, status_code=201)
+def save_sales_import_mapping(
+    data: PurchaseImportMappingIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "create_sale")),
+):
+    return _save_import_mapping(db, current_user, data, "sales")
+
+
+@router.delete("/sales/import/mappings/{mapping_id}", status_code=204)
+def delete_sales_import_mapping(
+    mapping_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "create_sale")),
+):
+    _delete_import_mapping(db, current_user.hospital_id, mapping_id, "sales")
+    return None

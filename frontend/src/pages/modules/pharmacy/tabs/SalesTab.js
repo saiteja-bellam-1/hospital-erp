@@ -12,7 +12,7 @@ import { useToast } from '../../../../hooks/use-toast';
 import { Plus, RefreshCw, Ban, Printer, Pencil, Upload, RotateCcw } from 'lucide-react';
 import { errMsg } from '../../PharmacyModule';
 import PdfPreviewDialog from '../../../../components/PdfPreviewDialog';
-import PharmacyImportDialog from '../../../../components/pharmacy/PharmacyImportDialog';
+import MappedImportDialog, { SALE_MAP_FIELDS } from '../../../../components/pharmacy/MappedImportDialog';
 import { usePharmacyStore } from '../../../../contexts/PharmacyStoreContext';
 import { usePharmacyPermissions } from '../../../../hooks/usePharmacyPermissions';
 
@@ -160,25 +160,24 @@ export default function SalesTab() {
         path={previewSaleId ? `/api/pharmacy/sales/${previewSaleId}/invoice/pdf` : null}
       />
 
-      <PharmacyImportDialog
+      <MappedImportDialog
         open={importOpen}
         onOpenChange={setImportOpen}
         onImported={load}
         title="Import previous sales"
         entityLabel="sales"
+        inspectUrl="/api/pharmacy/sales/import/inspect"
         importUrl="/api/pharmacy/sales/import"
         templateUrl="/api/pharmacy/sales/import/template"
+        mappingsUrl="/api/pharmacy/sales/import/mappings"
+        mapFields={SALE_MAP_FIELDS}
         showDuplicateSelect={false}
         showAffectStock
         defaultAffectStock={false}
-        helpText={(
-          <>
-            Download the Excel template, fill one row per line item (same <code className="text-[11px]">sale_number</code> groups
-            lines into one bill), then preview and confirm. Choose <strong>Record only</strong> when migrating history
-            from another system so inventory is not changed, or <strong>Deduct stock</strong> when batches still have
-            stock to remove. Medicines must already exist in the catalog.
-          </>
-        )}
+        showUnmatchedMedicines
+        requireAny={[['medicine_code', 'medicine_name']]}
+        detailsHelp="Upload a historical POS export or our template. Map columns, then preview. Missing catalog items can be added before import. Use Record only when migrating history so inventory is not changed."
+        importHelp="Preview grouped sales, add any unmatched medicines, then confirm. Same sale number groups line items into one bill."
       />
     </Card>
   );

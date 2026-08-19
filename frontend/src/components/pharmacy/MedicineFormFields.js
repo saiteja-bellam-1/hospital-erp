@@ -115,6 +115,7 @@ export default function MedicineFormFields({
   masters,
   onMastersChange,
   activeStep = 0,
+  nameReadOnly = false,
 }) {
   const set = (k, v) => onChange({ ...form, [k]: v });
   const patch = (updates) => onChange(patchMedicineForm(form, updates));
@@ -136,7 +137,14 @@ export default function MedicineFormFields({
         <Section title="Basic">
           <Grid>
             <F label="Code *"><Input value={form.medicine_code} onChange={(e) => set('medicine_code', e.target.value)} /></F>
-            <F label="Name *"><Input value={form.name} onChange={(e) => set('name', e.target.value)} /></F>
+            <F label="Name *">
+              <Input
+                value={form.name}
+                onChange={(e) => set('name', e.target.value)}
+                readOnly={nameReadOnly}
+                className={nameReadOnly ? 'bg-slate-50' : undefined}
+              />
+            </F>
             <F label="Generic Name"><Input value={form.generic_name} onChange={(e) => set('generic_name', e.target.value)} /></F>
             <F label="Category *">
               <PharmacyMasterSelectWithCreate path="categories" value={form.category_id}

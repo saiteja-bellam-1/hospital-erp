@@ -6,8 +6,12 @@ import { Input } from '../../../../components/ui/input';
 import { Badge } from '../../../../components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../../../components/ui/select';
 import { useToast } from '../../../../hooks/use-toast';
-import { Plus, Pencil, Trash2, RefreshCw, Search, Upload, Download, Loader2 } from 'lucide-react';
+import { Plus, Pencil, Trash2, RefreshCw, Search, Upload, Download, Loader2, ChevronDown, FileSpreadsheet, List } from 'lucide-react';
 import PharmacyImportDialog, { downloadPharmacyBlob } from '../../../../components/pharmacy/PharmacyImportDialog';
+import MappedImportDialog, { MEDICINE_MAP_FIELDS } from '../../../../components/pharmacy/MappedImportDialog';
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+} from '../../../../components/ui/dropdown-menu';
 import PharmacyFormDialog from '../../../../components/pharmacy/PharmacyFormDialog';
 import { errMsg } from '../../PharmacyModule';
 import { usePharmacyMedicineMasters } from '../../../../hooks/usePharmacyMedicineMasters';
@@ -27,7 +31,8 @@ export default function MedicinesTab() {
   const [categoryFilter, setCategoryFilter] = useState('');
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
-  const [importOpen, setImportOpen] = useState(false);
+  const [templateImportOpen, setTemplateImportOpen] = useState(false);
+  const [mappedImportOpen, setMappedImportOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(EMPTY_MEDICINE_FORM);
@@ -169,9 +174,40 @@ export default function MedicinesTab() {
               </SelectContent>
             </Select>
             <Button size="sm" variant="outline" onClick={load}><RefreshCw className="h-3 w-3" /></Button>
-            <Button size="sm" variant="outline" onClick={() => setImportOpen(true)}>
-              <Upload className="h-3 w-3 mr-1" /> Import
-            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button size="sm" variant="outline">
+                  <Upload className="h-3 w-3 mr-1" /> Import
+                  <ChevronDown className="h-3 w-3 ml-1" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-72">
+                <DropdownMenuItem
+                  className="items-start gap-2 py-2"
+                  onSelect={() => setTemplateImportOpen(true)}
+                >
+                  <FileSpreadsheet className="h-4 w-4 mt-0.5 text-indigo-500 shrink-0" />
+                  <div>
+                    <div className="font-medium">ERP template</div>
+                    <div className="text-[11px] text-muted-foreground leading-snug">
+                      Previous flow — download our Excel, fill named columns, preview and import.
+                    </div>
+                  </div>
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  className="items-start gap-2 py-2"
+                  onSelect={() => setMappedImportOpen(true)}
+                >
+                  <List className="h-4 w-4 mt-0.5 text-indigo-500 shrink-0" />
+                  <div>
+                    <div className="font-medium">Vendor file</div>
+                    <div className="text-[11px] text-muted-foreground leading-snug">
+                      New flow — map Excel columns from a supplier catalog, then import.
+                    </div>
+                  </div>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
             <Button size="sm" variant="outline" onClick={handleExport} disabled={exporting}>
               {exporting ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Download className="h-3 w-3 mr-1" />}
               Export
@@ -247,16 +283,32 @@ export default function MedicinesTab() {
       </CardContent>
 
       <PharmacyImportDialog
-        open={importOpen}
-        onOpenChange={setImportOpen}
+        open={templateImportOpen}
+        onOpenChange={setTemplateImportOpen}
         onImported={() => { load(); loadMasters(); }}
-        title="Import Medicines"
+        title="Import Medicines — ERP template"
         entityLabel="medicines"
         importUrl="/api/pharmacy/medicines/import"
         templateUrl="/api/pharmacy/medicines/import/template"
         exportUrl="/api/pharmacy/medicines/export/xlsx"
         duplicateLabel="If a medicine code already exists:"
         helpText="Fill the medicines sheet with medicine_code, name, category, and pricing fields. Related masters (category, company, salt, HSN, rack, UoM) are matched by code or name and created if missing."
+      />
+
+      <MappedImportDialog
+        open={mappedImportOpen}
+        onOpenChange={setMappedImportOpen}
+        onImported={() => { load(); loadMasters(); }}
+        title="Import Medicines — vendor file"
+        entityLabel="medicines"
+        inspectUrl="/api/pharmacy/medicines/import/inspect"
+        importUrl="/api/pharmacy/medicines/import"
+        templateUrl="/api/pharmacy/medicines/import/template"
+        mappingsUrl="/api/pharmacy/medicines/import/mappings"
+        mapFields={MEDICINE_MAP_FIELDS}
+        showDuplicateSelect
+        detailsHelp="Upload a vendor catalog. Map columns on the next steps. Category, company, salt, rack, UoM, and HSN are created automatically when the mapped values are new."
+        importHelp="Preview the catalog rows, then import. Existing medicine codes are skipped or updated based on your choice."
       />
 
       <PharmacyFormDialog

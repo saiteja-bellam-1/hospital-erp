@@ -18,8 +18,11 @@ from app.services.pharmacy_import import (
     _cell_str,
     _empty_summary,
     _find_medicine_for_purchase,
-    _parse_upload,
+    _merge_unmatched_medicines,
+    _unmatched_catalog_entry,
     _workbook_bytes,
+    inspect_letter_import,
+    resolve_mapped_rows,
 )
 from app.services.pharmacy_store_service import resolve_store_id
 
@@ -30,6 +33,45 @@ SALE_HEADERS = [
     "medicine_code", "medicine_name", "batch_number",
     "quantity", "qty_unit", "rate", "discount_pct", "rate_tier",
 ]
+
+REQUIRED_SALE_LETTER_FIELDS = ["sale_date", "quantity"]
+_VALID_SALE_TARGETS = set(SALE_HEADERS)
+SALE_REQUIRE_ANY = [["medicine_code", "medicine_name"]]
+
+SALE_IMPORT_ALIASES = [
+    ("sale_number", ["sale_number", "bill_no", "bill_number", "invoice_number", "invoice_no"]),
+    ("sale_date", ["sale_date", "date", "bill_date", "invoice_date"]),
+    ("payment_type", ["payment_type", "payment"]),
+    ("tax_mode", ["tax_mode"]),
+    ("store_code", ["store_code", "store"]),
+    ("patient_name", ["patient_name", "patient", "customer", "customer_name"]),
+    ("patient_phone", ["patient_phone", "phone", "mobile"]),
+    ("patient_address", ["patient_address", "address"]),
+    ("doctor_name", ["doctor_name", "doctor", "prescriber"]),
+    ("doctor_number", ["doctor_number"]),
+    ("bill_discount_amount", ["bill_discount_amount", "bill_discount"]),
+    ("medicine_code", ["medicine_code", "item_code", "product_code", "sku"]),
+    ("medicine_name", ["medicine_name", "item_name", "item", "product", "product_name"]),
+    ("batch_number", ["batch_number", "batch", "batch_no", "lot"]),
+    ("quantity", ["quantity", "qty"]),
+    ("qty_unit", ["qty_unit", "unit"]),
+    ("rate", ["rate", "sale_rate", "selling_rate", "mrp", "rate_a"]),
+    ("discount_pct", ["discount_pct", "discount", "disc"]),
+    ("rate_tier", ["rate_tier", "tier"]),
+]
+
+
+def inspect_sales_import(
+    content: bytes, filename: str, *,
+    row_start: Optional[int] = None,
+    row_end: Optional[int] = None,
+) -> dict:
+    return inspect_letter_import(
+        content, filename,
+        row_start=row_start, row_end=row_end,
+        required_fields=REQUIRED_SALE_LETTER_FIELDS,
+        aliases=SALE_IMPORT_ALIASES,
+    )
 
 
 def _cell_datetime(v) -> Optional[datetime]:
@@ -198,16 +240,34 @@ def import_sales(
     dry_run: bool = False,
     affect_stock: bool = False,
     on_duplicate: str = "skip",
+    column_mapping: Optional[dict] = None,
+    row_start: Optional[int] = None,
+    row_end: Optional[int] = None,
 ) -> dict:
     """Import historical pharmacy sales into Sales History.
 
     affect_stock=True deducts inventory (like live POS).
     affect_stock=False records the sale only (stock_affected=False).
+    Unmatched catalog names are returned in ``unmatched_medicines``.
     """
     from app.routes.pharmacy import SaleItemIn, _next_sale_number, _process_sale_lines
 
     summary = _empty_summary(dry_run=dry_run)
-    rows = _parse_upload(content, filename, ["Sales", "Sheet1"])
+    try:
+        rows = resolve_mapped_rows(
+            content, filename,
+            column_mapping=column_mapping,
+            valid_targets=_VALID_SALE_TARGETS,
+            required_fields=REQUIRED_SALE_LETTER_FIELDS,
+            named_sheet_names=["Sales", "Sheet1"],
+            row_start=row_start,
+            row_end=row_end,
+            require_any=SALE_REQUIRE_ANY if column_mapping else None,
+        )
+    except HTTPException as exc:
+        summary["errors"].append({"sheet": "Sales", "row": 0, "message": str(exc.detail)})
+        summary["error_count"] = 1
+        return summary
     if not rows:
         raise HTTPException(status_code=400, detail="No data rows found in the file")
 
@@ -216,6 +276,7 @@ def import_sales(
     med_cache: dict = {}
     groups = _group_sale_rows(rows)
     pending: List[_PendingSale] = []
+    unmatched_entries: List[dict] = []
 
     for group_key, group_rows in groups.items():
         first = group_rows[0]
@@ -277,6 +338,22 @@ def import_sales(
                     cache=med_cache,
                 )
                 if not med:
+                    label = med_name or med_code or "Unknown"
+                    rate_val = None
+                    try:
+                        rate_val = _cell_float(lr.get("rate"))
+                    except ValueError:
+                        rate_val = None
+                    unmatched_entries.append(_unmatched_catalog_entry(
+                        {
+                            "medicine_code": med_code,
+                            "medicine_name": med_name,
+                            "mrp": rate_val,
+                            "purchase_rate": None,
+                        },
+                        label,
+                        int(lr.get("_row") or row_num),
+                    ))
                     raise ValueError(med_err or "Medicine not found")
 
                 qty = _cell_float(lr.get("quantity"))
@@ -356,6 +433,11 @@ def import_sales(
                 "status": "error",
                 "message": msg,
             })
+
+    if unmatched_entries:
+        summary["unmatched_medicines"] = _merge_unmatched_medicines(
+            summary.get("unmatched_medicines") or [], unmatched_entries,
+        )
 
     if not pending and summary["error_count"] > 0:
         return summary
@@ -441,4 +523,8 @@ def import_sales(
                 "message": msg,
             })
 
+    if unmatched_entries:
+        summary["unmatched_medicines"] = _merge_unmatched_medicines(
+            summary.get("unmatched_medicines") or [], unmatched_entries,
+        )
     return summary

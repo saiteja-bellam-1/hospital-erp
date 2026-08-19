@@ -10,10 +10,12 @@ import SupplierFormFields, {
   supplierStepCanProceed,
 } from './SupplierFormFields';
 
+const NO_PREFILL = {};
+
 export default function QuickSupplierDialog({
   open,
   onOpenChange,
-  prefill = {},
+  prefill = NO_PREFILL,
   onCreated,
 }) {
   const { toast } = useToast();
@@ -25,7 +27,11 @@ export default function QuickSupplierDialog({
     if (!open) return;
     setActiveStep(0);
     setForm({ ...EMPTY_SUPPLIER_FORM, ...prefill });
-  }, [open, prefill]);
+    // Reset only when the dialog opens. `prefill = {}` is a new object every
+    // render, so depending on it wipes Ledger Name (and every other field)
+    // after each keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   const steps = useMemo(
     () => SUPPLIER_FORM_STEPS.map((s, i) => ({ ...s, completed: i < activeStep })),

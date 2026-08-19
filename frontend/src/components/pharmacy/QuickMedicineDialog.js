@@ -15,13 +15,18 @@ import MedicineFormFields, {
 /**
  * Full medicine create dialog for POS / purchase workflows.
  *
- * @param {object} [prefill] - { medicine_code?, name? }
+ * @param {object} [prefill] - { medicine_code?, name?, packaging?, pack_size?,
+ *   manufacturer?, mrp?, purchase_rate?, rate_a?, rate_b?, strip_conversion_factor? }
+ * @param {boolean} [lockName] - keep the catalog name equal to the import line
  * @param {(medicine: object) => void} onCreated
  */
+const NO_PREFILL = {};
+
 export default function QuickMedicineDialog({
   open,
   onOpenChange,
-  prefill = {},
+  prefill = NO_PREFILL,
+  lockName = false,
   onCreated,
 }) {
   const { toast } = useToast();
@@ -33,11 +38,26 @@ export default function QuickMedicineDialog({
   useEffect(() => {
     if (!open) return;
     setActiveStep(0);
+    const name = prefill.name || '';
+    const mrp = prefill.mrp ?? '';
+    const vendorCode = String(prefill.medicine_code || '').trim();
     setForm(patchMedicineForm(EMPTY_MEDICINE_FORM, {
-      medicine_code: prefill.medicine_code || '',
-      name: prefill.name || '',
+      medicine_code: vendorCode && vendorCode.length <= 20
+        ? vendorCode
+        : (name ? suggestMedicineCode(name) : ''),
+      name,
+      packaging: prefill.packaging || prefill.pack_size || '',
+      manufacturer: prefill.manufacturer || '',
+      mrp,
+      purchase_rate: prefill.purchase_rate ?? '',
+      rate_a: prefill.rate_a ?? mrp,
+      rate_b: prefill.rate_b ?? mrp,
+      strip_conversion_factor: prefill.strip_conversion_factor || 1,
     }));
-  }, [open, prefill]);
+    // Reset only when the dialog opens — a default `prefill = {}` is a new
+    // object every render and would wipe typed fields after each keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   const steps = useMemo(
     () => MEDICINE_FORM_STEPS.map((s, i) => ({ ...s, completed: i < activeStep })),
@@ -80,7 +100,7 @@ export default function QuickMedicineDialog({
     <PharmacyFormDialog
       open={open}
       onOpenChange={onOpenChange}
-      title="Add Medicine"
+      title={prefill.name ? `Add medicine — ${prefill.name}` : 'Add Medicine'}
       steps={steps}
       activeStep={activeStep}
       onStepChange={setActiveStep}
@@ -89,7 +109,7 @@ export default function QuickMedicineDialog({
       saving={saving}
       loading={loading}
       canProceed={activeStep !== 0 || medicineStepCanProceed(form, 0)}
-      saveLabel="Add & use"
+      saveLabel={lockName ? 'Add to catalog' : 'Add & use'}
     >
       <MedicineFormFields
         form={form}
@@ -97,7 +117,13 @@ export default function QuickMedicineDialog({
         masters={masters}
         onMastersChange={setMasters}
         activeStep={activeStep}
+        nameReadOnly={lockName}
       />
     </PharmacyFormDialog>
   );
+}
+
+function suggestMedicineCode(name) {
+  const base = String(name || 'MED').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12) || 'MED';
+  return base.slice(0, 20);
 }

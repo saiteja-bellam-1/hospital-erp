@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Float, Date, JSON
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Float, Date, JSON, UniqueConstraint
 from sqlalchemy.orm import relationship
 from config.database import Base
 from app.utils.time import system_now
@@ -935,16 +935,41 @@ class PrescriptionItem(Base):
 
 
 class PharmacyPurchaseImportMapping(Base):
-    """Saved column-mapping presets for reusable purchase CSV/Excel imports."""
+    """Saved column-mapping presets for pharmacy CSV/Excel imports.
+
+    ``import_kind`` is ``purchases`` (default), ``medicines``, or ``sales``.
+    """
     __tablename__ = "pharmacy_purchase_import_mappings"
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(100), nullable=False)
-    column_mapping = Column(JSON, nullable=False)  # {source_header: erp_field}
-    format_hint = Column(String(30))  # vendor_htf | flat
+    column_mapping = Column(JSON, nullable=False)  # {erp_field: Excel letter} or older inverted
+    format_hint = Column(String(30))  # vendor_htf | flat | letter_columns
+    import_kind = Column(String(30), nullable=False, default="purchases", index=True)
     default_row_start = Column(Integer, nullable=True)
     default_row_end = Column(Integer, nullable=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False, index=True)
     created_by = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime(timezone=True), default=system_now)
     updated_at = Column(DateTime(timezone=True), onupdate=system_now)
+
+
+class PharmacyMedicineImportAlias(Base):
+    """Maps a distributor/file medicine name to an existing catalog item.
+
+    Used when vendor spellings differ slightly from the hospital catalog.
+    """
+    __tablename__ = "pharmacy_medicine_import_aliases"
+    __table_args__ = (
+        UniqueConstraint("hospital_id", "alias_norm", name="uq_pharmacy_med_import_alias"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    alias_name = Column(String(200), nullable=False)
+    alias_norm = Column(String(200), nullable=False, index=True)
+    medicine_id = Column(Integer, ForeignKey("medicines.id"), nullable=False, index=True)
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)
+
+    medicine = relationship("Medicine")

@@ -26,6 +26,8 @@ export default function PharmacyMedicinePicker({
   wideMenu = false,
   /** Optional map of company_id → name for manufacturer display */
   companyById = null,
+  /** Prefill and search this term when the picker opens empty */
+  autoSearch = '',
 }) {
   const mfrOf = (m) => {
     if (!m) return '';
@@ -67,6 +69,15 @@ export default function PharmacyMedicinePicker({
       setSearching(false);
     }
   }, []);
+
+  useEffect(() => {
+    if (value) return;
+    const q = (autoSearch || '').trim();
+    if (q.length < 2) return;
+    setEditing(true);
+    setQuery(q);
+    search(q);
+  }, [autoSearch, value, search]);
 
   const handleQueryChange = (v) => {
     setQuery(v);

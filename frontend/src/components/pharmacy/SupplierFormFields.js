@@ -111,7 +111,7 @@ export default function SupplierFormFields({ form, onChange, activeStep = 0 }) {
       {activeStep === 0 && (
         <Section title="Basic">
           <Grid>
-            <F label="Ledger Name *" colSpan={2}><Input value={form.name} onChange={(e) => set('name', e.target.value)} /></F>
+            <F label="Ledger Name *" colSpan={2}><Input value={form.name || ''} onChange={(e) => set('name', e.target.value)} /></F>
             <F label="Station"><Input value={form.station} onChange={(e) => set('station', e.target.value)} /></F>
             <F label="Account Group"><Input value={form.account_group} onChange={(e) => set('account_group', e.target.value)} /></F>
             <F label="Balancing Method">
