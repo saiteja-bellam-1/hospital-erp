@@ -5580,13 +5580,22 @@ class PDFService:
         elements.append(Spacer(1, 8))
 
         # Totals
+        bill_disc = float(purchase_data.get("bill_discount_amount") or 0)
+        line_disc = max(0.0, float(purchase_data.get("total_discount") or 0) - bill_disc)
         tot_rows = [
             [Paragraph("Subtotal", cell), Paragraph(f"Rs. {purchase_data.get('subtotal', 0):.2f}", cell)],
-            [Paragraph("Discount", cell), Paragraph(f"−Rs. {purchase_data.get('total_discount', 0):.2f}", cell)],
+            [Paragraph("Discount", cell), Paragraph(f"−Rs. {line_disc:.2f}", cell)],
+        ]
+        if bill_disc > 0:
+            tot_rows.append([
+                Paragraph("Bill discount", cell),
+                Paragraph(f"−Rs. {bill_disc:.2f}", cell),
+            ])
+        tot_rows.extend([
             [Paragraph("Tax", cell), Paragraph(f"+Rs. {purchase_data.get('total_tax', 0):.2f}", cell)],
             [Paragraph("<b>Grand Total</b>", cell),
              Paragraph(f"<b>Rs. {purchase_data.get('grand_total', 0):.2f}</b>", cell)],
-        ]
+        ])
         tot = Table(tot_rows, colWidths=[120, 90], hAlign='RIGHT')
         tot.setStyle(TableStyle([
             ('BOX', (0, -1), (-1, -1), 0.75, colors.black),

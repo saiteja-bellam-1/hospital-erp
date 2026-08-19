@@ -2074,7 +2074,16 @@ class PurchaseIn(BaseModel):
     purchase_type: Optional[str] = None
     tax_mode: str = Field("exclusive", pattern="^(exclusive|inclusive)$")
     notes: Optional[str] = None
+    bill_discount_amount: float = Field(0.0, ge=0)
+    bill_discount_pct: float = Field(0.0, ge=0, le=100)
     items: List[PurchaseItemIn] = Field(default_factory=list)
+
+    @field_validator("bill_discount_amount", "bill_discount_pct", mode="before")
+    @classmethod
+    def _round_purchase_bill_discount(cls, v):
+        if v is None or v == "":
+            return 0.0
+        return round_money(v)
 
 
 class PurchaseEditIn(PurchaseIn):
@@ -2098,6 +2107,8 @@ class PurchaseOut(BaseModel):
     total_discount: float
     total_tax: float
     grand_total: float
+    bill_discount_amount: float = 0.0
+    bill_discount_pct: float = 0.0
     notes: Optional[str] = None
     items: List[PurchaseItemOut] = Field(default_factory=list)
     created_at: datetime
@@ -2226,10 +2237,17 @@ def _recompute_purchase_totals(purchase: PharmacyPurchase, db: Session) -> None:
         disc += comp["discount_amount"]
         tax += comp["tax_amount"]
         grand += comp["line_total"]
+    pct = float(getattr(purchase, "bill_discount_pct", None) or 0)
+    requested = float(getattr(purchase, "bill_discount_amount", None) or 0)
+    if pct > 0:
+        bill_disc = round(min(grand * pct / 100.0, grand), 2)
+    else:
+        bill_disc = round(min(max(requested, 0.0), grand), 2)
+    purchase.bill_discount_amount = bill_disc
     purchase.subtotal = round(subtotal, 2)
-    purchase.total_discount = round(disc, 2)
+    purchase.total_discount = round(disc + bill_disc, 2)
     purchase.total_tax = round(tax, 2)
-    purchase.grand_total = round(grand, 2)
+    purchase.grand_total = round(grand - bill_disc, 2)
 
 
 def _batch_key(medicine_id: int, batch_number: str, expiry_date: date) -> tuple:
@@ -2558,6 +2576,8 @@ def _shape_purchase(p: PharmacyPurchase, db: Session) -> PurchaseOut:
         status=p.status,
         subtotal=p.subtotal or 0.0, total_discount=p.total_discount or 0.0,
         total_tax=p.total_tax or 0.0, grand_total=p.grand_total or 0.0,
+        bill_discount_amount=float(getattr(p, "bill_discount_amount", None) or 0.0),
+        bill_discount_pct=float(getattr(p, "bill_discount_pct", None) or 0.0),
         notes=p.notes, items=items_out,
         created_at=p.created_at, confirmed_at=p.confirmed_at,
         revoked_at=p.revoked_at, revoke_reason=p.revoke_reason,
@@ -2626,6 +2646,8 @@ def create_purchase(
         payment_type=data.payment_type, purchase_type=data.purchase_type,
         tax_mode=data.tax_mode or "exclusive",
         status="draft", notes=data.notes,
+        bill_discount_amount=data.bill_discount_amount or 0.0,
+        bill_discount_pct=data.bill_discount_pct or 0.0,
         created_by=current_user.id, store_id=purchase_store_id,
         hospital_id=current_user.hospital_id,
     )
@@ -2738,6 +2760,8 @@ def edit_purchase(
     purchase.purchase_type = data.purchase_type
     purchase.tax_mode = data.tax_mode or "exclusive"
     purchase.notes = data.notes
+    purchase.bill_discount_amount = data.bill_discount_amount or 0.0
+    purchase.bill_discount_pct = data.bill_discount_pct or 0.0
     if data.store_id is not None and not is_confirmed:
         purchase.store_id = resolve_store_id(
             db, current_user, data.store_id, require_purchase_store=True,

@@ -725,3 +725,39 @@ def test_purge_medicine_blocked_when_stock_remains(client, auth_headers, pharmac
     assert r.status_code == 400
     detail = r.json()["detail"].lower()
     assert "stock" in detail or "purchase" in detail
+
+
+def test_purchase_bill_discount_amount_after_tax(client, auth_headers, pharmacy_setup):
+    """Global ₹ discount is taken off grand after line GST, not off each line."""
+    body = _purchase_payload(pharmacy_setup, invoice_number=f"INV-{uuid.uuid4().hex[:6]}",
+                             qty=10, rate=20.0)
+    body["tax_mode"] = "exclusive"
+    body["bill_discount_amount"] = 50
+    r = client.post("/api/pharmacy/purchases", headers=auth_headers, json=body)
+    assert r.status_code == 201, r.text
+    data = r.json()
+    # 10 × 20 = 200; HSN 6+6 = 12% exclusive → tax 24, lines grand 224; −50 = 174
+    assert data["subtotal"] == pytest.approx(200)
+    assert data["total_tax"] == pytest.approx(24)
+    assert data["bill_discount_amount"] == pytest.approx(50)
+    assert data["grand_total"] == pytest.approx(174)
+    assert data["total_discount"] == pytest.approx(50)
+
+    got = client.get(f"/api/pharmacy/purchases/{data['id']}", headers=auth_headers).json()
+    assert got["bill_discount_amount"] == pytest.approx(50)
+    assert got["grand_total"] == pytest.approx(174)
+
+
+def test_purchase_bill_discount_pct_wins_over_amount(client, auth_headers, pharmacy_setup):
+    body = _purchase_payload(pharmacy_setup, invoice_number=f"INV-{uuid.uuid4().hex[:6]}",
+                             qty=10, rate=20.0)
+    body["tax_mode"] = "exclusive"
+    body["bill_discount_pct"] = 10
+    body["bill_discount_amount"] = 9999
+    r = client.post("/api/pharmacy/purchases", headers=auth_headers, json=body)
+    assert r.status_code == 201, r.text
+    data = r.json()
+    # 10% of 224 = 22.40
+    assert data["bill_discount_pct"] == pytest.approx(10)
+    assert data["bill_discount_amount"] == pytest.approx(22.4)
+    assert data["grand_total"] == pytest.approx(201.6)

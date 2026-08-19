@@ -391,6 +391,10 @@ class PharmacyPurchase(Base):
     total_discount = Column(Float, default=0.0)
     total_tax = Column(Float, default=0.0)
     grand_total = Column(Float, default=0.0)
+    # Flat ₹ off grand after line tax; if bill_discount_pct > 0 it wins and
+    # the stored amount is recomputed from the current line grand.
+    bill_discount_amount = Column(Float, default=0.0)
+    bill_discount_pct = Column(Float, default=0.0)
     tax_mode = Column(String(20), default="exclusive")  # exclusive | inclusive
     notes = Column(Text)
 

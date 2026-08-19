@@ -3064,10 +3064,17 @@ def _recompute_purchase_totals_import(purchase: PharmacyPurchase, db: Session) -
         disc += round(base - base_after, 2)
         tax += tax_amt
         grand += line_total
+    pct = float(getattr(purchase, "bill_discount_pct", None) or 0)
+    requested = float(getattr(purchase, "bill_discount_amount", None) or 0)
+    if pct > 0:
+        bill_disc = round(min(grand * pct / 100.0, grand), 2)
+    else:
+        bill_disc = round(min(max(requested, 0.0), grand), 2)
+    purchase.bill_discount_amount = bill_disc
     purchase.subtotal = round(subtotal, 2)
-    purchase.total_discount = round(disc, 2)
+    purchase.total_discount = round(disc + bill_disc, 2)
     purchase.total_tax = round(tax, 2)
-    purchase.grand_total = round(grand, 2)
+    purchase.grand_total = round(grand - bill_disc, 2)
 
 
 def _find_existing_purchase(
