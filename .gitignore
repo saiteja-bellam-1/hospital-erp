@@ -1,34 +1,54 @@
 # Dependencies
 node_modules/
-backend/venv/
-license-manager/backend/venv/
+venv/
+.venv/
 frontend/build/
+license-manager/frontend/build/
 
 # Database
 *.db
 *.db-journal
+*.db-wal
+*.db-shm
 *.sqlite3
 
 # Python
 __pycache__/
 *.py[cod]
+*$py.class
 *.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
 dist/
 build/
 
 # License sensitive files
-license-tools/keys/private_key.pem
-license-tools/*.lic
+*.lic
+**/private_key.pem
+!backend/tools/private_key.pem
 license-tools/license_log.json
+
+# Local runtime / machine config
+backend/config.json
+backend/uploads/
+backend/data/
+backend/machine_id.txt
+*.log
+logs/
 
 # Environment
 .env
-.env.local
-.env.production
+.env.*
+!.env.example
 
 # OS
 .DS_Store
 Thumbs.db
+Desktop.ini
 
 # IDE
 .vscode/
@@ -36,14 +56,12 @@ Thumbs.db
 *.swp
 *.swo
 
-# Uploads (user-generated content)
-backend/uploads/
-
-# Installer build artifacts
+# Installer / packaging artifacts
 installer/bin/
 installer/dbcheck/build/
 installer/dbcheck/dist/
+installer/Output/
+Output/
 
 # Claude internal
 .claude/
-backend/machine_id.txt

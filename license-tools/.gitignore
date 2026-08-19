@@ -1,0 +1,5 @@
+keys/private_key.pem
+*.lic
+license_log.json
+__pycache__/
+*.py[cod]
