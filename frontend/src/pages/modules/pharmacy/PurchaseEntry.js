@@ -86,6 +86,7 @@ export default function PurchaseEntry() {
   const [header, setHeader] = useState({
     entry_date: TODAY, supplier_id: null, invoice_number: '', bill_date: TODAY,
     payment_type: 'cash', purchase_type: 'local', tax_mode: 'exclusive', notes: '',
+    bill_discount_pct: '', bill_discount_amount: '',
   });
   const [items, setItems] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
@@ -154,6 +155,8 @@ export default function PurchaseEntry() {
       purchase_type: h.purchase_type || 'local',
       tax_mode: h.tax_mode === 'inclusive' ? 'inclusive' : 'exclusive',
       notes: h.notes || '',
+      bill_discount_pct: h.bill_discount_pct || '',
+      bill_discount_amount: h.bill_discount_amount || '',
     });
     const loaded = (draft.items || []).map((it) => ({
       medicine_id: it.medicine_id || null,
@@ -228,6 +231,8 @@ export default function PurchaseEntry() {
           purchase_type: p.purchase_type || 'local',
           tax_mode: p.tax_mode || 'exclusive',
           notes: p.notes || '',
+          bill_discount_pct: Number(p.bill_discount_pct) > 0 ? p.bill_discount_pct : '',
+          bill_discount_amount: Number(p.bill_discount_amount) > 0 ? p.bill_discount_amount : '',
         });
         const loaded = (p.items || []).map((it) => ({
           medicine_id: it.medicine_id,
@@ -517,10 +522,28 @@ export default function PurchaseEntry() {
     const { tax, total } = computeLineTax(afterDisc, taxPct, header.tax_mode);
     return { base, afterDisc, tax, total };
   };
-  const totals = items.reduce((acc, ln) => {
+  const lineTotals = items.reduce((acc, ln) => {
     const c = calcLine(ln, hsnForLine(ln));
-    return { sub: acc.sub + c.base, disc: acc.disc + (c.base - c.afterDisc), tax: acc.tax + c.tax, grand: acc.grand + c.total };
-  }, { sub: 0, disc: 0, tax: 0, grand: 0 });
+    return {
+      sub: acc.sub + c.base,
+      lineDisc: acc.lineDisc + (c.base - c.afterDisc),
+      tax: acc.tax + c.tax,
+      linesGrand: acc.linesGrand + c.total,
+    };
+  }, { sub: 0, lineDisc: 0, tax: 0, linesGrand: 0 });
+  const billDiscPct = parseFloat(header.bill_discount_pct) || 0;
+  const billDiscEntered = parseFloat(header.bill_discount_amount) || 0;
+  const billDiscAmt = roundMoney(billDiscPct > 0
+    ? Math.min(lineTotals.linesGrand * billDiscPct / 100, lineTotals.linesGrand)
+    : Math.min(billDiscEntered, lineTotals.linesGrand));
+  const totals = {
+    sub: lineTotals.sub,
+    lineDisc: lineTotals.lineDisc,
+    billDisc: billDiscAmt,
+    disc: roundMoney(lineTotals.lineDisc + billDiscAmt),
+    tax: lineTotals.tax,
+    grand: roundMoney(Math.max(0, lineTotals.linesGrand - billDiscAmt)),
+  };
 
   const buildPayload = ({ lines = items, headerState = header, allowEmpty = false } = {}) => {
     const errors = [];
@@ -560,6 +583,10 @@ export default function PurchaseEntry() {
         purchase_type: headerState.purchase_type || null,
         tax_mode: headerState.tax_mode || 'exclusive',
         notes: headerState.notes || null,
+        bill_discount_pct: roundMoney(headerState.bill_discount_pct),
+        bill_discount_amount: roundMoney(
+          (parseFloat(headerState.bill_discount_pct) || 0) > 0 ? 0 : headerState.bill_discount_amount,
+        ),
         ...(isConfirmed ? { reason: editReason.trim() } : {}),
         items: lines.map(it => ({
           medicine_id: it.medicine_id,
@@ -730,6 +757,24 @@ export default function PurchaseEntry() {
     } finally { setSubmitting(false); }
   };
 
+  const persistBillDiscount = () => {
+    if (!isConfirmed && header.supplier_id) {
+      enqueueDraftSave({ quiet: true });
+    }
+  };
+
+  const setBillDiscount = (k, v) => {
+    setHeader((s) => {
+      if (k === 'bill_discount_pct') {
+        return { ...s, bill_discount_pct: v, bill_discount_amount: v === '' || v == null ? s.bill_discount_amount : '' };
+      }
+      if (k === 'bill_discount_amount') {
+        return { ...s, bill_discount_amount: v, bill_discount_pct: '' };
+      }
+      return { ...s, [k]: v };
+    });
+  };
+
   const setH = (k, v) => {
     setHeader((s) => {
       const next = { ...s, [k]: v };
@@ -889,10 +934,51 @@ export default function PurchaseEntry() {
               <span className="text-gray-600">Subtotal</span>
               <span className="tabular-nums">₹{totals.sub.toFixed(2)}</span>
             </div>
-            <div className="flex justify-between gap-3 text-gray-600">
-              <span>Discount</span>
-              <span className="tabular-nums">−₹{totals.disc.toFixed(2)}</span>
+            {totals.lineDisc > 0 && (
+              <div className="flex justify-between gap-3 text-gray-600">
+                <span>Line discount</span>
+                <span className="tabular-nums">−₹{totals.lineDisc.toFixed(2)}</span>
+              </div>
+            )}
+            <div className="flex items-center justify-between gap-2 text-gray-600">
+              <Label className="text-xs text-gray-600 shrink-0">Global disc %</Label>
+              <Input
+                className={`h-8 w-20 text-right ${pharmacyNoSpinInputClass}`}
+                type="number"
+                min="0"
+                max="100"
+                step="0.01"
+                value={displayPharmacyNumericInput(header.bill_discount_pct)}
+                onChange={(e) => setBillDiscount(
+                  'bill_discount_pct',
+                  e.target.value === '' ? '' : roundMoney(e.target.value),
+                )}
+                onBlur={persistBillDiscount}
+              />
             </div>
+            <div className="flex items-center justify-between gap-2 text-gray-600">
+              <Label className="text-xs text-gray-600 shrink-0">Global disc ₹</Label>
+              <Input
+                className={`h-8 w-24 text-right ${pharmacyNoSpinInputClass}`}
+                type="number"
+                min="0"
+                step="0.01"
+                value={displayPharmacyNumericInput(
+                  billDiscPct > 0 ? billDiscAmt : header.bill_discount_amount,
+                )}
+                onChange={(e) => setBillDiscount(
+                  'bill_discount_amount',
+                  e.target.value === '' ? '' : roundMoney(e.target.value),
+                )}
+                onBlur={persistBillDiscount}
+              />
+            </div>
+            {totals.billDisc > 0 && (
+              <div className="flex justify-between gap-3 text-gray-600">
+                <span>Bill discount</span>
+                <span className="tabular-nums">−₹{totals.billDisc.toFixed(2)}</span>
+              </div>
+            )}
             <div className="flex justify-between gap-3 text-gray-600">
               <span>Tax ({header.tax_mode === 'inclusive' ? 'incl.' : 'added'})</span>
               <span className="tabular-nums">

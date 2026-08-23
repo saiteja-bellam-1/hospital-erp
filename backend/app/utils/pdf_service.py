@@ -1,4 +1,4 @@
-from reportlab.lib.pagesizes import A4
+from reportlab.lib.pagesizes import A4, A5, landscape
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image, HRFlowable, XPreformatted
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
@@ -5243,27 +5243,28 @@ class PDFService:
           prepared_by, printed_by, discount_total, void_reason
         """
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4,
-            rightMargin=22, leftMargin=22, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=18)
+        page = landscape(A5)
+        doc = SimpleDocTemplate(buffer, pagesize=page,
+            rightMargin=18, leftMargin=18, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=16)
         elements = []
-        page_width = A4[0] - 44
+        page_width = page[0] - 36
 
         is_voided = (sale_data.get('status') == 'voided')
         watermark = "VOIDED" if is_voided else None
 
-        cell = ParagraphStyle('PhBillC', parent=self.styles['Normal'], fontSize=7,
-            fontName='Helvetica', textColor=colors.black, leading=9)
-        cell_sm = ParagraphStyle('PhBillSm', parent=cell, fontSize=6.5, leading=8)
+        cell = ParagraphStyle('PhBillC', parent=self.styles['Normal'], fontSize=6.5,
+            fontName='Helvetica', textColor=colors.black, leading=7.5)
+        cell_sm = ParagraphStyle('PhBillSm', parent=cell, fontSize=6, leading=7)
         header_p = ParagraphStyle('PhBillH', parent=cell_sm, fontName='Helvetica-Bold')
         center_title = ParagraphStyle('PhBillTitle', parent=self.styles['Normal'],
-            fontSize=13, alignment=1, fontName='Helvetica-Bold',
-            textColor=colors.black, spaceAfter=2)
-        center_sub = ParagraphStyle('PhBillSub', parent=self.styles['Normal'],
-            fontSize=8, alignment=1, fontName='Helvetica',
+            fontSize=11, alignment=1, fontName='Helvetica-Bold',
             textColor=colors.black, spaceAfter=1)
+        center_sub = ParagraphStyle('PhBillSub', parent=self.styles['Normal'],
+            fontSize=7, alignment=1, fontName='Helvetica',
+            textColor=colors.black, spaceAfter=0)
         center_bill = ParagraphStyle('PhBillType', parent=self.styles['Normal'],
-            fontSize=10, alignment=1, fontName='Helvetica-Bold',
-            textColor=colors.black, spaceAfter=2)
+            fontSize=8, alignment=1, fontName='Helvetica-Bold',
+            textColor=colors.black, spaceAfter=1)
 
         def esc(v):
             return _escape_pdf_inline(v if v is not None else '')
@@ -5281,11 +5282,11 @@ class PDFService:
             phone = hospital_info.get('phone')
             if phone:
                 elements.append(Paragraph(f"Phone No : {esc(phone)}", center_sub))
-            elements.append(Spacer(1, 2))
+            elements.append(Spacer(1, 1))
             elements.append(Paragraph("<u>CASH/CREDIT BILL</u>", center_bill))
             gstin = hospital_info.get('gstin') or ''
             elements.append(Paragraph(f"GSTINNO : {esc(gstin)}", center_sub))
-            elements.append(Spacer(1, 4))
+            elements.append(Spacer(1, 2))
             elements.append(HRFlowable(width="100%", thickness=0.75, color=colors.black))
         else:
             elements.append(Spacer(1, letterhead_gap_pt))
@@ -5295,7 +5296,7 @@ class PDFService:
                 elements.append(Paragraph(f"GSTINNO : {esc(gstin)}", center_sub))
             elements.append(HRFlowable(width="100%", thickness=0.75, color=colors.black))
 
-        elements.append(Spacer(1, 4))
+        elements.append(Spacer(1, 2))
 
         # ── Meta: Patient / UHID / Bill No ────────────────────────────────
         sd_str = _fmt_bill_date(sale_data.get('sale_date'), empty="")
@@ -5320,15 +5321,15 @@ class PDFService:
         meta = Table(meta_rows, colWidths=[left_w, mid_w, right_w])
         meta.setStyle(TableStyle([
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-            ('LEFTPADDING', (0, 0), (-1, -1), 2),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 2),
-            ('TOPPADDING', (0, 0), (-1, -1), 1),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
+            ('LEFTPADDING', (0, 0), (-1, -1), 1),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 1),
+            ('TOPPADDING', (0, 0), (-1, -1), 0),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
         ]))
         elements.append(meta)
-        elements.append(Spacer(1, 3))
+        elements.append(Spacer(1, 2))
         elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
-        elements.append(Spacer(1, 3))
+        elements.append(Spacer(1, 2))
 
         # ── Items: 12 columns matching reference ─────────────────────────
         # SNo | Medicine Name | Manufacturer | Sch | Batchno | Exp.Date |
@@ -5403,11 +5404,11 @@ class PDFService:
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('LEFTPADDING', (0, 0), (-1, -1), 1),
             ('RIGHTPADDING', (0, 0), (-1, -1), 1),
-            ('TOPPADDING', (0, 0), (-1, -1), 1.5),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 1.5),
+            ('TOPPADDING', (0, 0), (-1, -1), 0.5),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 0.5),
         ]))
         elements.append(items_tbl)
-        elements.append(Spacer(1, 6))
+        elements.append(Spacer(1, 3))
 
         # ── Totals: SGST/CGST left; Total/Net/Paid right ──────────────────
         sgst_tax = float(sale_data.get('sgst_tax') or 0)
@@ -5424,7 +5425,7 @@ class PDFService:
         left_tot = [
             Paragraph(f"<b>SGST TAX :</b> {sgst_tax:.2f}", cell),
             Paragraph(f"<b>CGST TAX :</b> {cgst_tax:.2f}", cell),
-            Spacer(1, 4),
+            Spacer(1, 2),
             Paragraph(f"<b>Prepared By :</b> {esc(prepared)}", cell),
             Paragraph(f"<b>Printed By :</b> {esc(printed)}", cell),
         ]
@@ -5444,24 +5445,26 @@ class PDFService:
         tot_tbl.setStyle(TableStyle([
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
             ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
-            ('LEFTPADDING', (0, 0), (-1, -1), 2),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 2),
+            ('LEFTPADDING', (0, 0), (-1, -1), 1),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 1),
+            ('TOPPADDING', (0, 0), (-1, -1), 0),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
         ]))
         elements.append(tot_tbl)
 
         if is_voided:
-            elements.append(Spacer(1, 6))
+            elements.append(Spacer(1, 3))
             elements.append(Paragraph(
                 f"<i>VOIDED — {esc(sale_data.get('void_reason') or 'no reason recorded')}</i>",
-                ParagraphStyle('PhVoid', parent=cell, fontSize=9, textColor=colors.red),
+                ParagraphStyle('PhVoid', parent=cell, fontSize=8, textColor=colors.red),
             ))
 
-        elements.append(Spacer(1, 8))
+        elements.append(Spacer(1, 3))
         elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
-        elements.append(Spacer(1, 4))
+        elements.append(Spacer(1, 2))
 
         # ── Footer: Terms | *bill* | Signature ────────────────────────────
-        terms_style = ParagraphStyle('PhTerms', parent=cell, fontSize=6.5, leading=8)
+        terms_style = ParagraphStyle('PhTerms', parent=cell, fontSize=6, leading=7)
         terms = Paragraph(
             "<b>Terms and Conditions:</b><br/>"
             "* Goods once sold will be Exchanged with in one week only.<br/>"
@@ -5471,11 +5474,11 @@ class PDFService:
         )
         bill_star = Paragraph(
             f"*{esc(sale_data.get('sale_number') or '')}*",
-            ParagraphStyle('PhBillStar', parent=cell, alignment=1, fontSize=8),
+            ParagraphStyle('PhBillStar', parent=cell, alignment=1, fontSize=7),
         )
         sig = Paragraph(
-            "<br/><br/>Signature",
-            ParagraphStyle('PhSig', parent=cell, alignment=2, fontSize=8),
+            "<br/>Signature",
+            ParagraphStyle('PhSig', parent=cell, alignment=2, fontSize=7),
         )
         foot = Table(
             [[terms, bill_star, sig]],
@@ -5484,10 +5487,10 @@ class PDFService:
         foot.setStyle(TableStyle([
             ('BOX', (0, 0), (-1, -1), 0.5, colors.black),
             ('VALIGN', (0, 0), (-1, -1), 'BOTTOM'),
-            ('LEFTPADDING', (0, 0), (-1, -1), 4),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 4),
-            ('TOPPADDING', (0, 0), (-1, -1), 4),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('LEFTPADDING', (0, 0), (-1, -1), 2),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 2),
+            ('TOPPADDING', (0, 0), (-1, -1), 2),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
         ]))
         elements.append(foot)
 
@@ -5831,9 +5834,10 @@ class PDFService:
 
     def generate_pharmacy_report_pdf(
         self, *, title: str, period: Optional[dict],
-        columns: list, rows: list, hospital_info: dict,
+        columns: Optional[list] = None, rows: Optional[list] = None, hospital_info: dict,
         include_header: bool = True, letterhead_gap_pt: float = DEFAULT_LETTERHEAD_GAP_PT,
         meta: Optional[dict] = None,
+        sections: Optional[list] = None,
     ):
         """Generic landscape tabular PDF for Phase-2 pharmacy reports.
 
@@ -5846,6 +5850,9 @@ class PDFService:
 
         `period`: {from, to} strings shown in the sub-header. `meta`: optional
         extra dict of {label: value} pairs to render alongside the period.
+
+        `sections`: optional list of {title?, columns, rows} for multi-table PDFs
+        (B2B/B2C, exempt register). When set, `columns`/`rows` are ignored.
         """
         from reportlab.lib.pagesizes import landscape, A4 as _A4
         buffer = BytesIO()
@@ -5863,55 +5870,72 @@ class PDFService:
                               fontName='Helvetica', textColor=colors.black, leading=10)
         sub = ParagraphStyle('GenSub', parent=cell, fontSize=9)
         header_p = ParagraphStyle('GenHdr', parent=cell, fontName='Helvetica-Bold')
+        section_p = ParagraphStyle(
+            'GenSec', parent=self.styles['Normal'], fontSize=9,
+            fontName='Helvetica-Bold', spaceBefore=8, spaceAfter=4,
+        )
+
+        table_specs = sections if sections else [{"columns": columns or [], "rows": rows or []}]
+        row_count = sum(len(s.get("rows") or []) for s in table_specs)
 
         sub_bits = []
         if period:
             sub_bits.append(
                 f"<b>Period:</b> {period.get('from') or '—'} to {period.get('to') or '—'}"
             )
-        sub_bits.append(f"<b>Rows:</b> {len(rows)}")
+        sub_bits.append(f"<b>Rows:</b> {row_count}")
         for k, v in (meta or {}).items():
             sub_bits.append(f"<b>{k}:</b> {v}")
         elements.append(Paragraph("&nbsp;&nbsp;&nbsp;".join(sub_bits), sub))
         elements.append(Spacer(1, 6))
 
-        out = [[Paragraph(c.get('label', c['key']), header_p) for c in columns]]
-        for r in rows or []:
-            cells = []
-            for c in columns:
-                val = r.get(c['key']) if isinstance(r, dict) else getattr(r, c['key'], None)
-                fmt = c.get('formatter')
-                if fmt is not None:
-                    s = fmt(val)
-                elif val is None:
-                    s = '—'
-                elif isinstance(val, float):
-                    s = f"{val:,.2f}"
-                elif isinstance(val, int):
-                    s = f"{val:,}"
-                else:
-                    s = str(val)
-                cells.append(Paragraph(s, cell))
-            out.append(cells)
+        def _append_table(spec):
+            cols = spec.get("columns") or []
+            spec_rows = spec.get("rows") or []
+            heading = spec.get("title")
+            if heading and len(table_specs) > 1:
+                elements.append(Paragraph(heading, section_p))
+            out = [[Paragraph(c.get('label', c['key']), header_p) for c in cols]]
+            for r in spec_rows:
+                cells = []
+                for c in cols:
+                    val = r.get(c['key']) if isinstance(r, dict) else getattr(r, c['key'], None)
+                    fmt = c.get('formatter')
+                    if fmt is not None:
+                        s = fmt(val)
+                    elif val is None:
+                        s = '—'
+                    elif isinstance(val, float):
+                        s = f"{val:,.2f}"
+                    elif isinstance(val, int):
+                        s = f"{val:,}"
+                    else:
+                        s = str(val)
+                    cells.append(Paragraph(s, cell))
+                out.append(cells)
+            if not cols:
+                return
+            weights = [float(c.get('width', 1)) for c in cols]
+            total = sum(weights) or 1.0
+            col_widths = [page_width * w / total for w in weights]
+            tbl = Table(out, colWidths=col_widths, repeatRows=1)
+            style = [
+                ('BOX', (0, 0), (-1, -1), 0.5, colors.black),
+                ('INNERGRID', (0, 0), (-1, -1), 0.25, colors.grey),
+                ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+                ('FONTSIZE', (0, 0), (-1, -1), 7),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ]
+            for col_idx, c in enumerate(cols):
+                a = (c.get('align') or 'LEFT').upper()
+                if a in ('RIGHT', 'CENTER'):
+                    style.append(('ALIGN', (col_idx, 1), (col_idx, -1), a))
+            tbl.setStyle(TableStyle(style))
+            elements.append(tbl)
 
-        weights = [float(c.get('width', 1)) for c in columns]
-        total = sum(weights) or 1.0
-        col_widths = [page_width * w / total for w in weights]
+        for spec in table_specs:
+            _append_table(spec)
 
-        tbl = Table(out, colWidths=col_widths, repeatRows=1)
-        style = [
-            ('BOX', (0, 0), (-1, -1), 0.5, colors.black),
-            ('INNERGRID', (0, 0), (-1, -1), 0.25, colors.grey),
-            ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
-            ('FONTSIZE', (0, 0), (-1, -1), 7),
-            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ]
-        for col_idx, c in enumerate(columns):
-            a = (c.get('align') or 'LEFT').upper()
-            if a in ('RIGHT', 'CENTER'):
-                style.append(('ALIGN', (col_idx, 1), (col_idx, -1), a))
-        tbl.setStyle(TableStyle(style))
-        elements.append(tbl)
         _finalize(doc, elements, hospital_info)
         buffer.seek(0)
         return buffer
@@ -6507,6 +6531,267 @@ class PDFService:
             ParagraphStyle('F', parent=self.styles['Normal'], fontSize=8, alignment=1),
         ))
         _finalize(doc, elements, hospital_info)
+        buffer.seek(0)
+        return buffer
+
+
+    def generate_gstr3b_pdf(self, data, hospital_info, include_header=True,
+                            letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
+        """Form GSTR-3B working paper (Rule 61(5) layout)."""
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(
+            buffer, pagesize=A4,
+            rightMargin=28, leftMargin=28, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=28,
+        )
+        elements = []
+        page_width = A4[0] - 56
+        hi = hospital_info or {}
+        hmeta = (data or {}).get("hospital") or {}
+
+        self._pharmacy_header(
+            elements, hi, include_header,
+            "Form GSTR-3B  [See Rule 61(5)]",
+            page_width, letterhead_gap_pt,
+        )
+
+        cell = ParagraphStyle(
+            "G3bCell", parent=self.styles["Normal"], fontSize=7,
+            fontName="Helvetica", textColor=colors.black, leading=9,
+        )
+        header_p = ParagraphStyle("G3bHdr", parent=cell, fontName="Helvetica-Bold")
+        note = ParagraphStyle(
+            "G3bNote", parent=self.styles["Normal"], fontSize=7,
+            fontName="Helvetica-Oblique", textColor=colors.HexColor("#555555"), leading=9,
+        )
+        section = ParagraphStyle(
+            "G3bSec", parent=self.styles["Normal"], fontSize=8,
+            fontName="Helvetica-Bold", spaceBefore=8, spaceAfter=3,
+        )
+
+        def money(v):
+            try:
+                return f"{float(v or 0):,.2f}"
+            except (TypeError, ValueError):
+                return "0.00"
+
+        def P(text, style=cell):
+            return Paragraph(str(text or ""), style)
+
+        gstin = hmeta.get("gstin") or hi.get("gstin") or hi.get("tax_id") or ""
+        legal = hmeta.get("name") or hi.get("name") or ""
+        period = hmeta.get("period_label") or ""
+        year = ""
+        month = period
+        if period:
+            parts = period.rsplit(" ", 1)
+            if len(parts) == 2 and parts[1].isdigit():
+                month, year = parts[0], parts[1]
+
+        meta = Table(
+            [
+                [P(f"<b>1 GSTIN :</b> {gstin}", cell), P(f"<b>Year :</b> {year}", cell)],
+                [P(f"<b>2 Legal Name of the registered person :</b> {legal}", cell),
+                 P(f"<b>Month :</b> {month}", cell)],
+            ],
+            colWidths=[page_width * 0.68, page_width * 0.32],
+        )
+        meta.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ]))
+        elements.append(meta)
+        elements.append(Paragraph(
+            (data or {}).get("disclaimer") or "Working paper — not a GSTN upload.",
+            note,
+        ))
+
+        t31 = (data or {}).get("table_3_1") or {}
+        elements.append(Paragraph(
+            "3.1 Details of Outward Supplies and Inward supplies liable to reverse charge",
+            section,
+        ))
+        hdr = ["Nature of Supplies", "Total Taxable Value", "Integrated Tax",
+               "Central Tax", "State/UT Tax", "Cess"]
+        rows_31 = [
+            ("(a) Outward taxable supplies (other than zero rated, Nil rated and exempted)", "a"),
+            ("(b) Outward taxable supplies (zero rated)", "b"),
+            ("(c) Other Outward supplies (Nil rated, exempted)", "c"),
+            ("(d) Inward supplies (liable to reverse charge)", "d"),
+            ("(e) Non-GST outward supplies", "e"),
+        ]
+        body = [[P(h, header_p) for h in hdr]]
+        for label, key in rows_31:
+            r = t31.get(key) or {}
+            body.append([
+                P(label), P(money(r.get("taxable")), cell), P(money(r.get("igst")), cell),
+                P(money(r.get("cgst")), cell), P(money(r.get("sgst")), cell),
+                P(money(r.get("cess")), cell),
+            ])
+        w = page_width
+        tbl = Table(body, colWidths=[w * 0.40, w * 0.12, w * 0.12, w * 0.12, w * 0.12, w * 0.12])
+        tbl.setStyle(TableStyle([
+            ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
+            ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.grey),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 3),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+            ("TOPPADDING", (0, 0), (-1, -1), 2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ]))
+        elements.append(tbl)
+
+        elements.append(Paragraph(
+            "3.2 Of the supplies shown in 3.1(a) above, detail of inter-state supplies "
+            "made to unregistered persons, composition taxable persons and UIN holders",
+            section,
+        ))
+        t32 = (data or {}).get("table_3_2") or []
+        body32 = [[P(h, header_p) for h in [
+            "Place of supply (State/UT)", "Total Taxable Value", "Amount of Integrated tax",
+        ]]]
+        if t32:
+            for r in t32:
+                body32.append([
+                    P(r.get("place_of_supply") or ""),
+                    P(money(r.get("taxable"))),
+                    P(money(r.get("igst"))),
+                ])
+        else:
+            body32.append([P("—"), P("0.00"), P("0.00")])
+        tbl32 = Table(body32, colWidths=[w * 0.50, w * 0.25, w * 0.25])
+        tbl32.setStyle(TableStyle([
+            ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
+            ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.grey),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 3),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+        ]))
+        elements.append(tbl32)
+
+        t4 = (data or {}).get("table_4") or {}
+        elements.append(Paragraph("4. Eligible ITC", section))
+        t4_rows = [
+            ("(A)(1) Import of Goods", "a1_import_goods"),
+            ("(A)(2) Import of Services", "a2_import_services"),
+            ("(A)(3) Inward supplies liable to reverse charge (other than 1 & 2 above)", "a3_rcm"),
+            ("(A)(4) Inward supplies from ISD", "a4_isd"),
+            ("(A)(5) All other ITC", "a5_all_other"),
+            ("(B)(1) As per rules 38, 42 & 43 of CGST rules and section 17(5)", "b1_rules"),
+            ("(B)(2) Others", "b2_others"),
+            ("(C) Net ITC available (A)-(B)", "c_net"),
+            ("(D)(1) ITC reclaimed which was reversed under Table 4(B)(2) in earlier tax period", "d1_reclaimed"),
+            ("(D)(2) Ineligible ITC under section 16(4) & ITC restricted due to PoS rules", "d2_ineligible"),
+        ]
+        body4 = [[P(h, header_p) for h in ["Details", "Integrated Tax", "Central Tax", "State/UT Tax", "Cess"]]]
+        for label, key in t4_rows:
+            r = t4.get(key) or {}
+            body4.append([
+                P(label), P(money(r.get("igst"))), P(money(r.get("cgst"))),
+                P(money(r.get("sgst"))), P(money(r.get("cess"))),
+            ])
+        tbl4 = Table(body4, colWidths=[w * 0.48, w * 0.13, w * 0.13, w * 0.13, w * 0.13])
+        tbl4.setStyle(TableStyle([
+            ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
+            ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.grey),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 3),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+        ]))
+        elements.append(tbl4)
+        if t4.get("footnote"):
+            elements.append(Paragraph(t4["footnote"], note))
+
+        t5 = (data or {}).get("table_5") or {}
+        comp = t5.get("composition_nil_exempt") or {}
+        non = t5.get("non_gst") or {}
+        elements.append(Paragraph(
+            "5. Values of Exempt, Nil-rated and Non-GST inward supplies", section,
+        ))
+        body5 = [
+            [P(h, header_p) for h in ["Nature of Supplies", "Inter-State Supplies", "Intra-State Supplies"]],
+            [P("From a supplier under composition scheme, Exempt and Nil rated supply"),
+             P(money(comp.get("inter"))), P(money(comp.get("intra")))],
+            [P("Non GST supply"), P(money(non.get("inter"))), P(money(non.get("intra")))],
+        ]
+        tbl5 = Table(body5, colWidths=[w * 0.50, w * 0.25, w * 0.25])
+        tbl5.setStyle(TableStyle([
+            ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
+            ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.grey),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+            ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 3),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+        ]))
+        elements.append(tbl5)
+
+        p = (data or {}).get("table_6_1") or {}
+        elements.append(Paragraph("6.1 Payment of Tax", section))
+        body61 = [[P(h, header_p) for h in [
+            "Description", "Tax payable", "Paid through ITC", "Paid in cash",
+        ]]]
+        for label, key in [
+            ("Integrated Tax", "igst"),
+            ("Central Tax", "cgst"),
+            ("State/UT Tax", "sgst"),
+            ("Cess", "cess"),
+        ]:
+            r = p.get(key) or {}
+            body61.append([
+                P(label), P(money(r.get("payable"))), P(money(r.get("itc"))), P(money(r.get("cash"))),
+            ])
+        tbl61 = Table(body61, colWidths=[w * 0.34, w * 0.22, w * 0.22, w * 0.22])
+        tbl61.setStyle(TableStyle([
+            ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
+            ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.grey),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+            ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 3),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+        ]))
+        elements.append(tbl61)
+
+        elements.append(Paragraph("6.2 TDS/TCS Credit", section))
+        body62 = [
+            [P(h, header_p) for h in ["Details", "Integrated Tax", "Central Tax", "State/UT Tax"]],
+            [P("TDS"), P("0.00"), P("0.00"), P("0.00")],
+            [P("TCS"), P("0.00"), P("0.00"), P("0.00")],
+        ]
+        tbl62 = Table(body62, colWidths=[w * 0.34, w * 0.22, w * 0.22, w * 0.22])
+        tbl62.setStyle(TableStyle([
+            ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
+            ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.grey),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+            ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 3),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+        ]))
+        elements.append(tbl62)
+
+        chk = (data or {}).get("check") or {}
+        elements.append(Spacer(1, 8))
+        elements.append(Paragraph(
+            "GSTR-1 vs 3B: taxable "
+            + ("match" if chk.get("gstr1_3b_taxable_match") else "review")
+            + " · tax "
+            + ("match" if chk.get("gstr1_3b_tax_match") else "review")
+            + " · ITC "
+            + ("match" if chk.get("itc_matches_gstr2") else "review"),
+            note,
+        ))
+        elements.append(Paragraph(
+            f"Generated on {_generated_on('%d/%m/%Y at %H:%M')} — working paper, not a GSTN filing.",
+            note,
+        ))
+
+        _finalize(doc, elements, hi)
         buffer.seek(0)
         return buffer
 

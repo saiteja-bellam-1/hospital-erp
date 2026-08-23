@@ -7,7 +7,8 @@ import {
   BarChart3, ClipboardList, Shield, Database, ScrollText, Activity, Stethoscope,
   DownloadCloud, Pill, ShoppingCart, Boxes, Truck, BookOpen, LayoutGrid, Plus,
   Warehouse, Tags, Layers, Ruler, Percent, Link2, ArrowLeftRight, Store, Droplets,
-  UtensilsCrossed, IndianRupee, Settings2, Undo2,
+  UtensilsCrossed, IndianRupee, Settings2, Undo2, UserCheck, PanelTop, Settings,
+  CreditCard,
 } from 'lucide-react';
 import { PHARMACY_ROLE_NAMES } from './usePharmacyPermissions';
 import { CANTEEN_ROLE_NAMES } from './useCanteenPermissions';
@@ -136,19 +137,37 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
     }
     add(items, make('Day Care', Stethoscope, '/dashboard/reception/procedures'));
     add(items, make('Referrals', Share2, '/dashboard/reception/referrals'));
-    // Billing is always available — always-on module, backend authorises
-    // receptionist/admin for it.
-    add(items, make('Billing', Receipt, '/dashboard/billing'));
     if (enabledModules.outpatient) {
       add(items, make('Reports', TrendingUp, '/dashboard/reception/reports'));
     }
     if (items.length > 0) sections.push({ label: 'Outpatient', items });
   }
 
-  // ── PRINT SETTINGS (reception staff only — admins get it under Administration) ──
+  // ── BILLING ── always-on hub (ledger + GST / sales reports)
+  if (hasAnyRole('receptionist', 'hospital_admin', 'super_admin', 'billing_admin')) {
+    const items = [];
+    add(items, make('Bills', Receipt, '/dashboard/billing'));
+    if (hasAnyRole('hospital_admin', 'super_admin', 'billing_admin')) {
+      add(items, make('Sales Summary', TrendingUp, '/dashboard/billing/sales-summary'));
+      if (enabledModules.pharmacy) {
+        add(items, make('Purchase Summary', Truck, '/dashboard/billing/purchase-summary'));
+      }
+      add(items, make('GST Reports', Percent, '/dashboard/billing/gst'));
+      add(items, make('GST Returns', DownloadCloud, '/dashboard/billing/gst-export'));
+    }
+    if (hasAnyRole('hospital_admin', 'super_admin')) {
+      add(items, make('Catch-up Bills', FileText, '/dashboard/catch-up'));
+      add(items, make('Settlements', IndianRupee, '/dashboard/settlements'));
+      add(items, make('Payer Schemes', CreditCard, '/dashboard/hospital-admin/payers'));
+      add(items, make('Registration Fee', Receipt, '/dashboard/hospital-admin/billing'));
+    }
+    if (items.length > 0) sections.push({ label: 'Billing', items });
+  }
+
+  // ── CUSTOMISATIONS (reception staff only — admins get it under Administration) ──
   if (hasRole('receptionist') && !hasAnyRole('hospital_admin', 'super_admin')) {
     const items = [];
-    add(items, make('Print Settings', Printer, '/dashboard/print-settings'));
+    add(items, make('Customisations', Printer, '/dashboard/print-settings'));
     if (items.length > 0) sections.push({ label: 'Settings', items });
   }
 
@@ -306,22 +325,24 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
     if (items.length > 0) sections.push({ label: 'Canteen', items });
   }
 
-  // ── ADMINISTRATION + SYSTEM ──
-  // Billing dashboard and Day Care live under the Outpatient group above for
-  // admins, so they're omitted here to avoid duplicates. Split into two groups:
-  // "Administration" (day-to-day admin config/ops) and "System" (technical/system).
+  // ── ADMINISTRATION ── people, hospital identity, onboarding
   if (hasAnyRole('super_admin', 'hospital_admin')) {
     const admin = [];
+    add(admin, make('Users', Users, '/dashboard/admin/users'));
+    add(admin, make('Roles & Permissions', Shield, '/dashboard/admin/roles'));
+    add(admin, make('Doctor Profiles', UserCheck, '/dashboard/hospital-admin/doctors'));
+    add(admin, make('Hospital Info', Building2, '/dashboard/hospital-admin/info'));
+    add(admin, make('Appearance', PanelTop, '/dashboard/hospital-admin/appearance'));
+    add(admin, make('Customisations', Printer, '/dashboard/print-settings'));
     add(admin, make('Guided Setup', ClipboardList, '/dashboard/setup'));
-    add(admin, make('Users & Roles', ClipboardList, '/dashboard/admin'));
-    add(admin, make('Hospital Config', Building2, '/dashboard/hospital-admin'));
-    add(admin, make('Print Settings', Printer, '/dashboard/print-settings'));
-    add(admin, make('Settlements', IndianRupee, '/dashboard/settlements'));
-    add(admin, make('Catch-up Bills', Receipt, '/dashboard/catch-up'));
     if (admin.length > 0) sections.push({ label: 'Administration', items: admin });
 
     const system = [];
     add(system, make('License', Shield, '/dashboard/license'));
+    if (hasRole('super_admin')) {
+      add(system, make('Modules', Settings, '/dashboard/admin/modules'));
+      add(system, make('Module Settings', Settings2, '/dashboard/admin/module-settings'));
+    }
     add(system, make('Database', Database, '/dashboard/backup'));
     add(system, make('Software Update', DownloadCloud, '/dashboard/software-update'));
     add(system, make('Audit Logs', ScrollText, '/dashboard/audit'));

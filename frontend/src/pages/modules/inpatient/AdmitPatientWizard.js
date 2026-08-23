@@ -1034,7 +1034,7 @@ const AdmitPatientWizard = ({
               {schemes.length === 0 ? (
                 <div className="text-sm text-gray-500 border rounded p-3">
                   No active payer schemes. Ask an admin to add them in
-                  Hospital Administration → Payer Schemes.
+                  Billing → Payer Schemes.
                 </div>
               ) : (
                 <div className="grid grid-cols-3 gap-2">

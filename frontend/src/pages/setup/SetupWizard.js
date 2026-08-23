@@ -679,7 +679,7 @@ export default function SetupWizard() {
                 </label>
                 <div className="flex gap-2">
                   <Button onClick={savePrintSettings} disabled={busy}>
-                    {busy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />} Save print settings
+                    {busy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />} Save customisations
                   </Button>
                   <Button variant="outline" onClick={previewPrintSettings}>Preview sample bill</Button>
                 </div>
@@ -823,8 +823,8 @@ export default function SetupWizard() {
                   setBusy={setBusy}
                   setError={setError}
                 />
-                <Button variant="outline" onClick={() => navigate('/dashboard/admin')}>
-                  <Settings2 className="mr-2 h-4 w-4" /> Open Users & Roles
+                <Button variant="outline" onClick={() => navigate('/dashboard/admin/users')}>
+                  <Settings2 className="mr-2 h-4 w-4" /> Open Users
                 </Button>
               </div>
             )}
@@ -851,7 +851,7 @@ export default function SetupWizard() {
                   Review them and add any hospital-specific schemes. Point-of-sale payment methods
                   (cash, card, UPI, cheque) are built in and do not need setup.
                 </p>
-                <Button variant="outline" onClick={() => navigate('/dashboard/hospital-admin')}>
+                <Button variant="outline" onClick={() => navigate('/dashboard/hospital-admin/payers')}>
                   <Settings2 className="mr-2 h-4 w-4" /> Open payer schemes
                 </Button>
               </div>

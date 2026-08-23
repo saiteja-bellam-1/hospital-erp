@@ -22,6 +22,7 @@ class Patient(Base):
     blood_group = Column(String(5))
     marital_status = Column(String(20))
     abha_id = Column(String(30))
+    gstin = Column(String(20))
     email = Column(String(100))
     primary_phone = Column(String(15), nullable=False)
     emergency_contact_phone = Column(String(15))

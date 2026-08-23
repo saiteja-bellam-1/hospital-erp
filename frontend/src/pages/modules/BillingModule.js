@@ -903,136 +903,17 @@ const BillingModule = () => {
         </Card>
         )}
 
-        {/* Reports Tab */}
+        {/* Reports Tab — financial reports live on dedicated Billing hub pages */}
         <TabsContent value="reports" className="mt-4 space-y-4">
           <Card>
-            <CardContent className="pt-4 pb-3 flex flex-wrap gap-3 items-end">
-              <div>
-                <Label className="text-xs">Report</Label>
-                <Select value={reportKind} onValueChange={setReportKind}>
-                  <SelectTrigger className="w-[220px] h-9"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="daily-collection">Daily Collection</SelectItem>
-                    <SelectItem value="doctor-revenue">Doctor-wise Revenue</SelectItem>
-                    <SelectItem value="tax-summary">GST / Tax Summary</SelectItem>
-                  </SelectContent>
-                </Select>
+            <CardContent className="pt-6 pb-6 space-y-2 text-sm">
+              <p className="font-medium text-gray-900">Reports moved to the Billing menu</p>
+              <p className="text-gray-600">Use Sales Summary, GST Reports, and GST Returns in the sidebar. Those pages cover daily collection, doctor-wise revenue, module-wise sales, and CA-ready GSTR-1 / 3B templates.</p>
+              <div className="flex flex-wrap gap-2 pt-2">
+                <Button variant="outline" size="sm" onClick={() => navigate('/dashboard/billing/sales-summary')}>Sales Summary</Button>
+                <Button variant="outline" size="sm" onClick={() => navigate('/dashboard/billing/gst')}>GST Reports</Button>
+                <Button variant="outline" size="sm" onClick={() => navigate('/dashboard/billing/gst-export')}>GST Returns</Button>
               </div>
-              <div>
-                <Label className="text-xs">From</Label>
-                <Input type="date" value={reportFrom} onChange={(e) => setReportFrom(e.target.value)} className="w-[150px] h-9" />
-              </div>
-              <div>
-                <Label className="text-xs">To</Label>
-                <Input type="date" value={reportTo} onChange={(e) => setReportTo(e.target.value)} className="w-[150px] h-9" />
-              </div>
-              <Button variant="outline" onClick={fetchReport} disabled={reportLoading}>
-                {reportLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Run'}
-              </Button>
-              <Button variant="outline" onClick={exportReportCSV} disabled={!reportData?.rows?.length}>
-                <Download className="h-4 w-4 mr-1" /> CSV
-              </Button>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardContent className="pt-4">
-              {reportLoading ? (
-                <div className="flex justify-center py-12"><Loader2 className="h-6 w-6 animate-spin text-gray-400" /></div>
-              ) : !reportData?.rows?.length ? (
-                <div className="text-center py-12 text-gray-500">No data for the selected range.</div>
-              ) : reportKind === 'daily-collection' ? (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead><tr className="border-b text-left text-gray-500">
-                      <th className="pb-2 pr-3">Date</th>
-                      <th className="pb-2 pr-3 text-right">Net total</th>
-                      <th className="pb-2 pr-3 text-right">Refunds</th>
-                      {reportData.methods.map((m) => (
-                        <th key={m} className="pb-2 pr-3 text-right capitalize">{m}</th>
-                      ))}
-                    </tr></thead>
-                    <tbody>
-                      {reportData.rows.map((r) => (
-                        <tr key={r.date} className="border-b">
-                          <td className="py-2 pr-3">{r.date}</td>
-                          <td className="py-2 pr-3 text-right font-semibold">{formatCurrency(r.total)}</td>
-                          <td className="py-2 pr-3 text-right text-red-600">{r.refunds > 0 ? `-${formatCurrency(r.refunds)}` : '—'}</td>
-                          {reportData.methods.map((m) => (
-                            <td key={m} className="py-2 pr-3 text-right">{r.by_method?.[m] ? formatCurrency(r.by_method[m]) : '—'}</td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                    <tfoot><tr className="border-t font-semibold">
-                      <td className="py-2">Total</td>
-                      <td className="py-2 text-right">{formatCurrency(reportData.totals.net_collected)}</td>
-                      <td className="py-2 text-right text-red-600">-{formatCurrency(reportData.totals.refunds)}</td>
-                      <td className="py-2 pr-3 text-right text-xs text-gray-500" colSpan={reportData.methods.length}>
-                        Gross: {formatCurrency(reportData.totals.gross_collected)}
-                      </td>
-                    </tr></tfoot>
-                  </table>
-                </div>
-              ) : reportKind === 'doctor-revenue' ? (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead><tr className="border-b text-left text-gray-500">
-                      <th className="pb-2 pr-3">Doctor</th>
-                      <th className="pb-2 pr-3 text-right">Consults</th>
-                      <th className="pb-2 pr-3 text-right">Consult ₹</th>
-                      <th className="pb-2 pr-3 text-right">Admissions</th>
-                      <th className="pb-2 pr-3 text-right">Admission ₹</th>
-                      <th className="pb-2 pr-3 text-right">Total ₹</th>
-                    </tr></thead>
-                    <tbody>
-                      {reportData.rows.map((r) => (
-                        <tr key={r.doctor_id} className="border-b">
-                          <td className="py-2 pr-3">{r.doctor_name}</td>
-                          <td className="py-2 pr-3 text-right">{r.consultation_count}</td>
-                          <td className="py-2 pr-3 text-right">{formatCurrency(r.consultation_revenue)}</td>
-                          <td className="py-2 pr-3 text-right">{r.admission_count}</td>
-                          <td className="py-2 pr-3 text-right">{formatCurrency(r.admission_revenue)}</td>
-                          <td className="py-2 pr-3 text-right font-semibold">{formatCurrency(r.total_revenue)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                    <tfoot><tr className="border-t font-semibold">
-                      <td className="py-2">Total</td>
-                      <td colSpan={2} className="py-2 text-right">{formatCurrency(reportData.totals.consultation_total)}</td>
-                      <td colSpan={2} className="py-2 text-right">{formatCurrency(reportData.totals.admission_total)}</td>
-                      <td className="py-2 text-right">{formatCurrency(reportData.totals.grand_total)}</td>
-                    </tr></tfoot>
-                  </table>
-                </div>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead><tr className="border-b text-left text-gray-500">
-                      <th className="pb-2 pr-3">Date</th>
-                      <th className="pb-2 pr-3 text-right">Bills</th>
-                      <th className="pb-2 pr-3 text-right">Taxable value</th>
-                      <th className="pb-2 pr-3 text-right">Tax amount</th>
-                    </tr></thead>
-                    <tbody>
-                      {reportData.rows.map((r) => (
-                        <tr key={r.date} className="border-b">
-                          <td className="py-2 pr-3">{r.date}</td>
-                          <td className="py-2 pr-3 text-right">{r.bill_count}</td>
-                          <td className="py-2 pr-3 text-right">{formatCurrency(r.taxable_value)}</td>
-                          <td className="py-2 pr-3 text-right font-semibold">{formatCurrency(r.tax_amount)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                    <tfoot><tr className="border-t font-semibold">
-                      <td className="py-2">Total</td>
-                      <td className="py-2 text-right">{reportData.totals.bill_count}</td>
-                      <td className="py-2 text-right">{formatCurrency(reportData.totals.taxable_value)}</td>
-                      <td className="py-2 text-right">{formatCurrency(reportData.totals.tax_amount)}</td>
-                    </tr></tfoot>
-                  </table>
-                </div>
-              )}
             </CardContent>
           </Card>
         </TabsContent>

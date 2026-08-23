@@ -45,7 +45,7 @@ const docs = {
 - **Laboratory module** — Test configuration, order management, result entry with abnormal detection, PDF reports
 - **Prescription system** — Create, print, and track prescriptions with dosage schedules
 - **Doctor availability** — Weekly schedules, special schedules (leave/holidays), real-time status
-- **Administration** — User management, role permissions, module enable/disable, hospital configuration
+- **Administration** — Users, roles, doctor profiles, hospital info, and customisations
 - **License management** — Upload and track software license status
 - **Backup system** — Configure backup locations and run manual backups
 - **Single executable** — Packaged as a Windows .exe for easy deployment; no separate server setup needed
@@ -159,12 +159,12 @@ As the Super Admin, complete these steps to set up your hospital:
 - The license status will update to show validity period
 
 ### 2. Configure Hospital Details
-- Go to **Settings > Hospital Config**
+- Go to **Administration → Hospital Info**
 - Fill in complete hospital information (address, city, state, etc.)
 - Upload hospital logo if available
 
 ### 3. Create User Accounts
-- Go to **Settings > Administration > Users** tab
+- Go to **Administration → Users**
 - Click **Add User** to create accounts for:
   - Hospital Admins
   - Doctors (with specialization details)
@@ -174,7 +174,7 @@ As the Super Admin, complete these steps to set up your hospital:
   - Lab Admins
 
 ### 4. Configure Doctor Profiles
-- Go to **Settings > Hospital Config > Doctor Profiles**
+- Go to **Administration → Doctor Profiles**
 - For each doctor, set:
   - Specialization
   - Consultation fee
@@ -182,11 +182,11 @@ As the Super Admin, complete these steps to set up your hospital:
   - Experience
 
 ### 5. Set Registration Fee
-- Go to **Settings > Hospital Config > Registration Fee**
+- Go to **Billing → Registration Fee**
 - Set the patient registration fee amount
 
 ### 6. Enable Modules
-- Go to **Settings > Administration > Modules** tab
+- Go to **System → Modules**
 - Enable the modules your hospital needs:
   - **Laboratory** — for lab test management
   - **Pharmacy** — for medication management
@@ -240,10 +240,9 @@ The sidebar provides access to all modules and settings:
 - **Inpatient** — Ward and bed management
 
 ### Settings
-- **Administration** — Users, roles, and module management
-- **Hospital Config** — Hospital details, doctor profiles, fees
-- **License** — Software license management
-- **Backup** — Database backup management
+- **Administration** — Users, roles, doctor profiles, hospital info, customisations
+- **Billing** — Bills, settlements, payer schemes, registration fee
+- **System** — License, modules, database, software update, audit logs
         `
       },
       'user-management': {
@@ -251,11 +250,11 @@ The sidebar provides access to all modules and settings:
         content: `
 # User Management
 
-Manage all user accounts from **Settings > Administration > Users**.
+Manage all user accounts from **Administration → Users**.
 
 ## Viewing Users
 
-The Users tab displays all registered users with:
+The Users page displays all registered users with:
 - Name and username
 - Role
 - Email
@@ -311,7 +310,7 @@ The Users tab displays all registered users with:
         content: `
 # Role & Permission Management
 
-Manage roles and their permissions from **Settings > Administration > Roles**.
+Manage roles and their permissions from **Administration → Roles & Permissions**.
 
 ## Default Roles
 
@@ -319,7 +318,7 @@ The system comes with 8 pre-configured roles. Each role has specific module acce
 
 ## Viewing Role Permissions
 
-1. Go to **Administration > Roles** tab
+1. Go to **Administration → Roles & Permissions**
 2. Click on any role to view its permissions
 3. Permissions are organized by module
 
@@ -374,7 +373,7 @@ Permissions follow a module-action pattern:
         content: `
 # Module Management
 
-Enable or disable hospital modules from **Settings > Administration > Modules**.
+Enable or disable hospital modules from **System → Modules**.
 
 ## System Modules
 
@@ -389,7 +388,7 @@ Enable or disable hospital modules from **Settings > Administration > Modules**.
 
 ## Enabling a Module
 
-1. Go to **Administration > Modules** tab
+1. Go to **System → Modules**
 2. Find the module you want to enable
 3. Toggle the switch to **Enabled**
 4. The module will appear in the sidebar for authorized roles
@@ -414,7 +413,7 @@ Enable or disable hospital modules from **Settings > Administration > Modules**.
         content: `
 # Hospital Information
 
-Manage hospital details from **Settings > Hospital Config > Hospital Info**.
+Manage hospital details from **Administration → Hospital Info**.
 
 ## Editable Fields
 
@@ -432,10 +431,9 @@ Manage hospital details from **Settings > Hospital Config > Hospital Info**.
 
 ## Updating Hospital Information
 
-1. Navigate to **Hospital Config**
-2. Click the **Hospital Info** tab
-3. Edit the fields as needed
-4. Click **Save Changes**
+1. Go to **Administration → Hospital Info**
+2. Edit the fields as needed
+3. Click **Save Changes**
 
 > **Note**: Hospital name and details appear on printed bills, prescriptions, and lab reports.
         `
@@ -445,11 +443,11 @@ Manage hospital details from **Settings > Hospital Config > Hospital Info**.
         content: `
 # Doctor Profiles
 
-Configure doctor-specific information from **Settings > Hospital Config > Doctor Profiles**.
+Configure doctor-specific information from **Administration → Doctor Profiles**.
 
 ## Managing Doctor Profiles
 
-1. Navigate to **Hospital Config > Doctor Profiles** tab
+1. Go to **Administration → Doctor Profiles**
 2. Select a doctor from the list
 3. Update their profile details
 
@@ -475,7 +473,7 @@ Configure doctor-specific information from **Settings > Hospital Config > Doctor
         content: `
 # Registration Fee
 
-Set the patient registration fee from **Settings > Hospital Config > Registration Fee**.
+Set the patient registration fee from **Billing → Registration Fee**.
 
 ## What Is the Registration Fee?
 
@@ -486,7 +484,7 @@ The registration fee is a one-time charge collected when a new patient is regist
 
 ## Setting the Fee
 
-1. Go to **Hospital Config > Registration Fee** tab
+1. Go to **Billing → Registration Fee**
 2. Enter the fee amount
 3. Click **Save**
 
@@ -498,7 +496,7 @@ The registration fee is a one-time charge collected when a new patient is regist
         content: `
 # Module Settings
 
-Configure module-specific settings from **Settings > Hospital Config > Module Settings**.
+Configure module-specific settings from **System → Module Settings**.
 
 ## Available Settings
 
@@ -1264,7 +1262,7 @@ Each lab report PDF includes:
 ## Lab Provider Configuration
 
 To customize the lab report header:
-1. Go to **Hospital Config > Module Settings > Laboratory**
+1. Go to **System → Module Settings** and choose **Laboratory**
 2. Set:
    - Lab Provider Name
    - Lab Provider Address
@@ -1716,7 +1714,7 @@ The inpatient module uses 58 granular permission keys. Below is the full catalog
         content: `
 # Default Role → Permission Matrix
 
-What every role gets out-of-box. You can override any of these in **Hospital Administration → Role Permissions**.
+What every role gets out-of-box. You can override any of these in **Administration → Roles & Permissions**.
 
 ## Outpatient
 
@@ -1811,7 +1809,7 @@ Only \`super_admin\` and \`hospital_admin\` can change grants.
 ## How to edit
 
 1. Log in as \`hospital_admin\` or \`super_admin\`
-2. Go to **Hospital Administration → Role Permissions**
+2. Go to **Administration → Roles & Permissions**
 3. Pick a role from the list
 4. Use the checkbox grid grouped by category (\`user\` and \`admin\`)
 5. Use **Select All** / **Clear All** within a category for bulk edits
@@ -1825,17 +1823,17 @@ Only \`super_admin\` and \`hospital_admin\` can change grants.
 
 ## Audit trail
 
-Every permission save is recorded in the audit log via the \`update_role_permissions\` action. You can review it under **Settings → Audit Logs** filtered by action.
+Every permission save is recorded in the audit log via the \`update_role_permissions\` action. You can review it under **System → Audit Logs** filtered by action.
 
 ## Creating custom roles
 
-Custom (non-system) roles can be created by \`super_admin\` from the Roles tab:
+Custom (non-system) roles can be created by \`super_admin\` from **Administration → Roles & Permissions**:
 
-1. Go to **Hospital Administration → Roles**
+1. Go to **Administration → Roles & Permissions**
 2. Click **Add Role**
 3. Enter name and description
 4. Save — the role appears in the Role Permissions grid with no grants
-5. Switch to the Role Permissions tab and grant the keys you want
+5. Grant the permission keys you want on the same page
 
 System roles (the 12 seeded by the application) cannot be deleted, only re-granted.
 

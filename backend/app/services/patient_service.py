@@ -47,6 +47,7 @@ class PatientService:
             "primary_phone", "emergency_contact_phone", "emergency_contact_name",
             "emergency_contact_relation", "address_line1", "address_line2",
             "village", "mandal", "district", "address", "referred_by",
+            "gstin",
             "hospital_id",
         }
         kwargs = {k: v for k, v in patient_data.items() if k in allowed}

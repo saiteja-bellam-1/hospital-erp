@@ -99,6 +99,10 @@ REPORT_CATALOG: list[dict[str, str]] = [
     {"key": "pharmacy_dispense", "label": "Dispense Slip", "module": "pharmacy"},
     {"key": "narcotic_register", "label": "Narcotic Register", "module": "pharmacy"},
     {"key": "pharmacy_report", "label": "Pharmacy Reports", "module": "pharmacy"},
+    {"key": "billing_sales_summary", "label": "Sales Summary", "module": "billing"},
+    {"key": "billing_purchase_summary", "label": "Purchase Summary", "module": "billing"},
+    {"key": "billing_gst_reports", "label": "GST Reports", "module": "billing"},
+    {"key": "billing_gstr3b", "label": "GSTR-3B", "module": "billing"},
 ]
 
 VALID_REPORT_KEYS = {r["key"] for r in REPORT_CATALOG}

@@ -11,6 +11,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { Printer, Save, ArrowLeft, Eye, ChevronUp, ChevronDown } from 'lucide-react';
 import { invalidatePdfPrintSettingsCache, resolveIncludeHeaderForReport, resolveIncludeFooterForReport } from '../../hooks/usePdfPrintSettings';
 import PrintSettingsPreviewDialog from '../../components/PrintSettingsPreviewDialog';
+import { cn } from '../../lib/utils';
 
 const MODULE_ORDER = ['outpatient', 'laboratory', 'billing', 'inpatient', 'pharmacy'];
 const FOOTER_MODULE_ORDER = ['outpatient', 'laboratory'];
@@ -80,7 +81,7 @@ const BILL_PREVIEW_ROWS = {
 const BillSummaryPreview = ({ detailed }) => {
   const rows = detailed ? BILL_PREVIEW_ROWS.detailed : BILL_PREVIEW_ROWS.simple;
   return (
-    <div className="h-full border rounded-lg p-3 bg-white text-sm font-mono w-full">
+    <div className="flex-1 flex flex-col border rounded-lg p-3 bg-white text-sm font-mono w-full min-h-[11rem]">
       <p className="text-xs font-sans font-medium text-muted-foreground mb-2">Payment summary preview</p>
       {rows.map(([label, value]) => (
         <div key={label} className="flex justify-between gap-6 py-0.5">
@@ -88,38 +89,40 @@ const BillSummaryPreview = ({ detailed }) => {
           <span>{value}</span>
         </div>
       ))}
-      <p className="text-[10px] font-sans text-muted-foreground mt-2 border-t pt-2">
+      <p className="text-[10px] font-sans text-muted-foreground mt-auto border-t pt-2">
         Amount in words uses net total (Total − Discount) on printed bills.
       </p>
     </div>
   );
 };
 
-const SettingsSection = ({ title, children }) => (
-  <Card className="w-full">
-    <CardHeader className="pb-4">
-      <CardTitle className="text-lg">{title}</CardTitle>
-    </CardHeader>
-    <CardContent className="space-y-5">{children}</CardContent>
-  </Card>
+const SettingsSection = ({ title, children, className }) => (
+  <div className="break-inside-avoid mb-6">
+    <Card className={cn('w-full', className)}>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-lg">{title}</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">{children}</CardContent>
+    </Card>
+  </div>
 );
 
 const DocumentOverrideTable = ({ groups, overrides, onChange, namePrefix, onPreview }) => (
-  <div className="space-y-5">
+  <div className="space-y-4">
     {groups.map((group) => (
-      <div key={`${namePrefix}-${group.module}`} className="w-full">
+      <div key={`${namePrefix}-${group.module}`}>
         <h3 className="text-sm font-semibold text-foreground mb-2">{group.label}</h3>
-        <div className="border rounded-lg overflow-hidden w-full">
-          <table className="w-full table-fixed text-sm">
+        <div className="border rounded-lg overflow-x-auto">
+          <table className="w-full text-sm">
             <thead className="bg-muted/50">
               <tr>
-                <th className="text-left px-3 py-2 font-medium w-[40%]">Document</th>
+                <th className="text-left px-3 py-2 font-medium">Document</th>
                 {OVERRIDE_OPTIONS.map((opt) => (
-                  <th key={opt.value} className="text-center px-2 py-2 font-medium w-[15%]">
+                  <th key={opt.value} className="text-center px-3 py-2 font-medium">
                     {opt.label}
                   </th>
                 ))}
-                <th className="text-center px-2 py-2 font-medium w-[15%]">Preview</th>
+                <th className="text-center px-3 py-2 font-medium">Preview</th>
               </tr>
             </thead>
             <tbody>
@@ -129,7 +132,7 @@ const DocumentOverrideTable = ({ groups, overrides, onChange, namePrefix, onPrev
                   <tr key={item.key} className="border-t">
                     <td className="px-3 py-2">{item.label}</td>
                     {OVERRIDE_OPTIONS.map((opt) => (
-                      <td key={opt.value} className="text-center px-2 py-2">
+                      <td key={opt.value} className="text-center px-3 py-2">
                         <input
                           type="radio"
                           name={`${namePrefix}-${item.key}`}
@@ -139,7 +142,7 @@ const DocumentOverrideTable = ({ groups, overrides, onChange, namePrefix, onPrev
                         />
                       </td>
                     ))}
-                    <td className="text-center px-2 py-2">
+                    <td className="text-center px-3 py-2">
                       <Button
                         type="button"
                         variant="ghost"
@@ -394,7 +397,7 @@ const PrintSettingsPage = () => {
       invalidatePdfPrintSettingsCache();
       queryClient.invalidateQueries({ queryKey: ['hospital-vitals-config'] });
       queryClient.invalidateQueries({ queryKey: ['hospital-print-settings'] });
-      toast({ title: 'Saved', description: 'Print settings updated' });
+      toast({ title: 'Saved', description: 'Customisations updated' });
     } catch (err) {
       toast({
         variant: 'destructive',
@@ -408,11 +411,9 @@ const PrintSettingsPage = () => {
 
   if (!canEdit) {
     return (
-      <div className="p-6">
-        <p className="text-sm text-muted-foreground">
-          You do not have permission to edit print settings.
-        </p>
-      </div>
+      <p className="text-sm text-muted-foreground">
+        You do not have permission to edit customisations.
+      </p>
     );
   }
 
@@ -422,24 +423,26 @@ const PrintSettingsPage = () => {
   const unselectedRows = catalog.filter((item) => !prescriptionVitalFields.includes(item.key));
 
   return (
-    <div className="p-4 md:p-6 max-w-4xl mx-auto">
-      <div className="flex items-center gap-3 mb-6">
-        <Link
-          to="/dashboard"
-          className="text-muted-foreground hover:text-foreground shrink-0"
-          aria-label="Back to dashboard"
-        >
-          <ArrowLeft className="h-5 w-5" />
-        </Link>
-        <div className="flex-1 min-w-0">
-          <h1 className="text-2xl font-semibold flex items-center gap-2">
-            <Printer className="h-6 w-6 shrink-0" />
-            Print Settings
-          </h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Configure letterhead, prescription vitals, and top gap for pre-printed stationery.
-            Use preview to check alignment before saving.
-          </p>
+    <div className="space-y-6 min-w-0">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex items-start gap-3 min-w-0">
+          <Link
+            to="/dashboard"
+            className="text-muted-foreground hover:text-foreground shrink-0 mt-1"
+            aria-label="Back to dashboard"
+          >
+            <ArrowLeft className="h-5 w-5" />
+          </Link>
+          <div className="min-w-0">
+            <h1 className="text-2xl font-bold flex items-center gap-2">
+              <Printer className="h-6 w-6 shrink-0" />
+              Customisations
+            </h1>
+            <p className="text-sm text-muted-foreground mt-1 max-w-xl">
+              Letterhead, bill summaries, prescription vitals, and print layout.
+              Use preview to check alignment before saving.
+            </p>
+          </div>
         </div>
         <Button
           type="button"
@@ -456,7 +459,8 @@ const PrintSettingsPage = () => {
       {loading ? (
         <p className="text-sm text-muted-foreground">Loading…</p>
       ) : (
-        <div className="space-y-6 w-full">
+        <>
+        <div className="columns-1 lg:columns-2 2xl:columns-3 gap-6">
           <SettingsSection title="Bill payment summary">
             <label className="flex items-start gap-3 cursor-pointer">
               <input
@@ -465,7 +469,7 @@ const PrintSettingsPage = () => {
                 checked={detailedBillingOnPdfs}
                 onChange={(e) => setDetailedBillingOnPdfs(e.target.checked)}
               />
-              <div className="min-w-0">
+              <div>
                 <p className="text-sm font-medium">Detailed billing on printed bills</p>
                 <p className="text-xs text-muted-foreground mt-1">
                   When enabled, bills show net total, paid amount, and balance.
@@ -475,17 +479,16 @@ const PrintSettingsPage = () => {
               </div>
             </label>
 
-            <div className="grid gap-4 md:grid-cols-2 items-stretch">
-              <div className="min-w-0 flex flex-col">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="flex flex-col">
                 <p className="text-xs font-medium text-muted-foreground mb-2">Current setting</p>
                 <BillSummaryPreview detailed={detailedBillingOnPdfs} />
               </div>
-              <div className="min-w-0 flex flex-col">
-                <p className="text-xs font-medium text-muted-foreground mb-2">Compare</p>
-                <BillSummaryPreview detailed={!detailedBillingOnPdfs} />
-                <p className="text-[10px] text-muted-foreground mt-1">
+              <div className="flex flex-col">
+                <p className="text-xs font-medium text-muted-foreground mb-2">
                   {detailedBillingOnPdfs ? 'Simple layout (when unchecked)' : 'Detailed layout (when checked)'}
                 </p>
+                <BillSummaryPreview detailed={!detailedBillingOnPdfs} />
               </div>
             </div>
 
@@ -500,130 +503,6 @@ const PrintSettingsPage = () => {
             </Button>
           </SettingsSection>
 
-          <SettingsSection title="Prescription vitals">
-            <div className="space-y-3">
-              <p className="text-sm font-medium">Vitals column layout</p>
-              <div className="grid gap-3">
-                {VITALS_LAYOUT_OPTIONS.map((opt) => (
-                  <label
-                    key={opt.value}
-                    className={`flex items-start gap-3 cursor-pointer rounded-lg border p-3 ${
-                      prescriptionVitalsLayout === opt.value ? 'border-foreground/30 bg-muted/30' : ''
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="prescription-vitals-layout"
-                      className="mt-1 w-4 h-4 shrink-0"
-                      checked={prescriptionVitalsLayout === opt.value}
-                      onChange={() => setPrescriptionVitalsLayout(opt.value)}
-                    />
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium">{opt.label}</p>
-                      <p className="text-xs text-muted-foreground mt-0.5">{opt.description}</p>
-                    </div>
-                  </label>
-                ))}
-              </div>
-            </div>
-
-            {prescriptionVitalsLayout !== 'remove' ? (
-              <div className="max-w-xs">
-                <Label htmlFor="vitals-column-width">
-                  {prescriptionVitalsLayout === 'blank' ? 'Blank column width (inches)' : 'Left column width (inches)'}
-                </Label>
-                <Input
-                  id="vitals-column-width"
-                  type="number"
-                  min={prescriptionVitalsColumnWidthMinIn}
-                  max={prescriptionVitalsColumnWidthMaxIn}
-                  step={0.05}
-                  value={prescriptionVitalsColumnWidthIn}
-                  onChange={(e) => setPrescriptionVitalsColumnWidthIn(e.target.value)}
-                  className="mt-1"
-                />
-                <p className="text-xs text-muted-foreground mt-1">
-                  Fixed minimum {prescriptionVitalsColumnWidthMinIn}&quot;.
-                  Maximum {prescriptionVitalsColumnWidthMaxIn}&quot; (40% of usable page width).
-                  Default 1.75&quot;.
-                </p>
-              </div>
-            ) : null}
-
-            <div>
-              <p className="text-sm font-medium mb-1">Vitals to collect &amp; display</p>
-              <p className="text-xs text-muted-foreground mb-3">
-                Reception and nurses only see these fields when recording vitals after an appointment.
-                When layout is &quot;Show vitals&quot;, the same fields print on the prescription (use arrows for print order).
-              </p>
-              <div className="border rounded-lg divide-y w-full">
-                {[...selectedRows, ...unselectedRows].map((item) => {
-                  const selected = prescriptionVitalFields.includes(item.key);
-                  const orderIdx = prescriptionVitalFields.indexOf(item.key);
-                  return (
-                    <div
-                      key={item.key}
-                      className="flex items-center gap-3 px-3 py-2"
-                    >
-                      <input
-                        type="checkbox"
-                        className="w-4 h-4 shrink-0"
-                        checked={selected}
-                        onChange={() => toggleVitalField(item.key)}
-                        aria-label={`Show ${item.label}`}
-                      />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium">{item.label}</p>
-                        {item.unit ? (
-                          <p className="text-xs text-muted-foreground">{item.unit}</p>
-                        ) : null}
-                      </div>
-                      {selected ? (
-                        <div className="flex items-center gap-1 shrink-0">
-                          <span className="text-xs text-muted-foreground w-5 text-right">
-                            {orderIdx + 1}
-                          </span>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            className="h-7 w-7 p-0"
-                            disabled={orderIdx <= 0}
-                            onClick={() => moveVitalField(item.key, -1)}
-                            aria-label={`Move ${item.label} up`}
-                          >
-                            <ChevronUp className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            className="h-7 w-7 p-0"
-                            disabled={orderIdx >= prescriptionVitalFields.length - 1}
-                            onClick={() => moveVitalField(item.key, 1)}
-                            aria-label={`Move ${item.label} down`}
-                          >
-                            <ChevronDown className="h-4 w-4" />
-                          </Button>
-                        </div>
-                      ) : null}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              onClick={() => openPreview('prescription', 'Prescription')}
-            >
-              <Eye className="h-4 w-4 mr-2" />
-              Preview prescription PDF
-            </Button>
-          </SettingsSection>
-
           <SettingsSection title="Global defaults">
             <label className="flex items-start gap-3 cursor-pointer">
               <input
@@ -632,16 +511,16 @@ const PrintSettingsPage = () => {
                 checked={includeHeaderOnPdfs}
                 onChange={(e) => setIncludeHeaderOnPdfs(e.target.checked)}
               />
-              <div className="min-w-0">
+              <div>
                 <p className="text-sm font-medium">Include hospital letterhead on PDFs (default)</p>
                 <p className="text-xs text-muted-foreground mt-1">
-                  When enabled, logo and hospital details from Hospital Config appear at the top.
+                  When enabled, logo and hospital details from Administration → Hospital Info appear at the top.
                   Individual documents below can override this.
                 </p>
               </div>
             </label>
 
-            <div className="max-w-xs">
+            <div className="w-48">
               <Label htmlFor="letterhead-gap">Letterhead gap when header is off (mm)</Label>
               <Input
                 id="letterhead-gap"
@@ -669,6 +548,132 @@ const PrintSettingsPage = () => {
             </Button>
           </SettingsSection>
 
+          <SettingsSection title="Prescription vitals">
+            <div className="space-y-4">
+              <div className="space-y-3">
+                <p className="text-sm font-medium">Vitals column layout</p>
+                <div className="grid gap-2">
+                  {VITALS_LAYOUT_OPTIONS.map((opt) => (
+                    <label
+                      key={opt.value}
+                      className={`flex items-start gap-3 cursor-pointer rounded-lg border p-3 ${
+                        prescriptionVitalsLayout === opt.value ? 'border-foreground/30 bg-muted/30' : ''
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="prescription-vitals-layout"
+                        className="mt-1 w-4 h-4 shrink-0"
+                        checked={prescriptionVitalsLayout === opt.value}
+                        onChange={() => setPrescriptionVitalsLayout(opt.value)}
+                      />
+                      <div>
+                        <p className="text-sm font-medium">{opt.label}</p>
+                        <p className="text-xs text-muted-foreground mt-0.5">{opt.description}</p>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+
+                {prescriptionVitalsLayout !== 'remove' ? (
+                  <div className="max-w-xs">
+                    <Label htmlFor="vitals-column-width">
+                      {prescriptionVitalsLayout === 'blank' ? 'Blank column width (inches)' : 'Left column width (inches)'}
+                    </Label>
+                    <Input
+                      id="vitals-column-width"
+                      type="number"
+                      min={prescriptionVitalsColumnWidthMinIn}
+                      max={prescriptionVitalsColumnWidthMaxIn}
+                      step={0.05}
+                      value={prescriptionVitalsColumnWidthIn}
+                      onChange={(e) => setPrescriptionVitalsColumnWidthIn(e.target.value)}
+                      className="mt-1"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Fixed minimum {prescriptionVitalsColumnWidthMinIn}&quot;.
+                      Maximum {prescriptionVitalsColumnWidthMaxIn}&quot; (40% of usable page width).
+                      Default 1.75&quot;.
+                    </p>
+                  </div>
+                ) : null}
+              </div>
+
+              <div>
+                <p className="text-sm font-medium mb-1">Vitals to collect &amp; display</p>
+                <p className="text-xs text-muted-foreground mb-3">
+                  Reception and nurses only see these fields when recording vitals after an appointment.
+                  When layout is &quot;Show vitals&quot;, the same fields print on the prescription (use arrows for print order).
+                </p>
+                <div className="border rounded-lg divide-y">
+                  {[...selectedRows, ...unselectedRows].map((item) => {
+                    const selected = prescriptionVitalFields.includes(item.key);
+                    const orderIdx = prescriptionVitalFields.indexOf(item.key);
+                    return (
+                      <div
+                        key={item.key}
+                        className="flex items-center gap-3 px-3 py-2"
+                      >
+                        <input
+                          type="checkbox"
+                          className="w-4 h-4 shrink-0"
+                          checked={selected}
+                          onChange={() => toggleVitalField(item.key)}
+                          aria-label={`Show ${item.label}`}
+                        />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium">{item.label}</p>
+                          {item.unit ? (
+                            <p className="text-xs text-muted-foreground">{item.unit}</p>
+                          ) : null}
+                        </div>
+                        {selected ? (
+                          <div className="flex items-center gap-1 shrink-0">
+                            <span className="text-xs text-muted-foreground w-5 text-right">
+                              {orderIdx + 1}
+                            </span>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 w-7 p-0"
+                              disabled={orderIdx <= 0}
+                              onClick={() => moveVitalField(item.key, -1)}
+                              aria-label={`Move ${item.label} up`}
+                            >
+                              <ChevronUp className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 w-7 p-0"
+                              disabled={orderIdx >= prescriptionVitalFields.length - 1}
+                              onClick={() => moveVitalField(item.key, 1)}
+                              aria-label={`Move ${item.label} down`}
+                            >
+                              <ChevronDown className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => openPreview('prescription', 'Prescription')}
+              >
+                <Eye className="h-4 w-4 mr-2" />
+                Preview prescription PDF
+              </Button>
+            </div>
+          </SettingsSection>
+
           <SettingsSection title="Per-document letterhead">
             <p className="text-sm text-muted-foreground">
               Choose whether each printable document uses the digital letterhead, leaves gap only,
@@ -693,7 +698,7 @@ const PrintSettingsPage = () => {
                 checked={includeFooterOnPdfs}
                 onChange={(e) => setIncludeFooterOnPdfs(e.target.checked)}
               />
-              <div className="min-w-0">
+              <div>
                 <p className="text-sm font-medium">Show staff names on PDF footers (default)</p>
                 <p className="text-xs text-muted-foreground mt-1">
                   When enabled, bills show Prepared by / Printed by (receptionist name).
@@ -714,14 +719,15 @@ const PrintSettingsPage = () => {
               onPreview={openPreview}
             />
           </SettingsSection>
-
-          <div className="flex justify-start">
-            <Button onClick={handleSave} disabled={saving}>
-              <Save className="h-4 w-4 mr-2" />
-              {saving ? 'Saving…' : 'Save print settings'}
-            </Button>
-          </div>
         </div>
+
+        <div>
+          <Button onClick={handleSave} disabled={saving}>
+            <Save className="h-4 w-4 mr-2" />
+            {saving ? 'Saving…' : 'Save customisations'}
+          </Button>
+        </div>
+        </>
       )}
 
       <PrintSettingsPreviewDialog

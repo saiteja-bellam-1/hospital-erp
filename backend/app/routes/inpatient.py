@@ -6055,17 +6055,20 @@ def _create_admission_bill_record_inner(
                 # Include HSN GST (exclusive) — same policy as _pharmacy_rx_billable_amount.
                 from app.utils.pharmacy_pricing import compute_line_tax
                 from app.models.pharmacy import PharmacyHSN
+                from app.services.gst_classification import gst_fields_from_hsn
                 medicine = db.query(Medicine).filter(Medicine.id == item.medicine_id).first()
                 base = round(float(item.unit_price or 0) * qty, 2)
                 tax_pct = 0.0
+                hsn = None
                 if medicine and medicine.hsn_id:
                     hsn = db.query(PharmacyHSN).filter(PharmacyHSN.id == medicine.hsn_id).first()
                     if hsn:
                         tax_pct = float(hsn.sgst_pct or 0) + float(hsn.cgst_pct or 0)
-                _t, _tax, line_total = compute_line_tax(base, tax_pct, tax_mode="exclusive")
+                taxable, _tax, line_total = compute_line_tax(base, tax_pct, tax_mode="exclusive")
                 label = f"Rx: {medicine.name if medicine else 'Medicine'} ({item.dosage or ''})"
                 if rx_type_in_pkg and not covers:
                     label += " (excess stay)"
+                gst = gst_fields_from_hsn(hsn, taxable)
                 db.add(BillItem(
                     bill_id=bill.id,
                     item_type="pharmacy",
@@ -6075,6 +6078,7 @@ def _create_admission_bill_record_inner(
                     total_price=line_total,
                     source_ref_type="prescription_item",
                     source_ref_id=item.id,
+                    **gst,
                 ))
         rx.inpatient_bill_id = bill.id
 
@@ -6082,11 +6086,24 @@ def _create_admission_bill_record_inner(
         sale_dt = getattr(sale, "sale_date", None)
         covers = rx_type_in_pkg and _pkg_covers(pkg_boundary_dt, sale_dt)
         if not covers:
+            from app.services.gst_classification import split_gst_amounts, TAX_TAXABLE
+            from app.models.pharmacy import PharmacyHSN
             for item, allocated_total in _allocate_pos_sale_line_totals(sale):
                 med = db.query(Medicine).filter(Medicine.id == item.medicine_id).first()
                 label = f"POS: {med.name if med else 'Medicine'} ({sale.sale_number})"
                 if rx_type_in_pkg and not covers:
                     label += " (excess stay)"
+                sgst_p = float(item.sgst_pct or 0)
+                cgst_p = float(item.cgst_pct or 0)
+                igst_p = float(item.igst_pct or 0)
+                base = float(item.quantity or 0) * float(item.rate or 0)
+                taxable = base * (1 - float(item.discount_pct or 0) / 100.0)
+                sa, ca, ia = split_gst_amounts(taxable, sgst_p, cgst_p, igst_p)
+                hsn_code = None
+                if med and med.hsn_id:
+                    hsn_row = db.query(PharmacyHSN).filter(PharmacyHSN.id == med.hsn_id).first()
+                    if hsn_row:
+                        hsn_code = hsn_row.code
                 db.add(BillItem(
                     bill_id=bill.id,
                     item_type="pharmacy",
@@ -6096,6 +6113,14 @@ def _create_admission_bill_record_inner(
                     total_price=float(allocated_total),
                     source_ref_type="pharmacy_sale_item",
                     source_ref_id=item.id,
+                    hsn_sac=hsn_code,
+                    tax_category=TAX_TAXABLE,
+                    sgst_pct=sgst_p,
+                    cgst_pct=cgst_p,
+                    igst_pct=igst_p,
+                    sgst_amount=sa,
+                    cgst_amount=ca,
+                    igst_amount=ia,
                 ))
         sale.inpatient_bill_id = bill.id
 

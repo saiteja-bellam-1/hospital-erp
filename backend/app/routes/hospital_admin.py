@@ -50,6 +50,8 @@ class HospitalInfoResponse(BaseModel):
     license_number: Optional[str]
     registration_number: Optional[str]
     tax_id: Optional[str]
+    gstin: Optional[str] = None
+    gst_state_code: Optional[str] = None
     logo_url: Optional[str]
     description: Optional[str]
     established_date: Optional[datetime]
@@ -314,6 +316,8 @@ class HospitalInfoPartialUpdateRequest(BaseModel):
     license_number: Optional[str] = None
     registration_number: Optional[str] = None
     tax_id: Optional[str] = None
+    gstin: Optional[str] = None
+    gst_state_code: Optional[str] = None
     logo_url: Optional[str] = None
     description: Optional[str] = None
     established_date: Optional[datetime] = None
@@ -360,6 +364,11 @@ async def update_hospital_info(
         hospital.registration_number = hospital_data.registration_number
     if hospital_data.tax_id is not None:
         hospital.tax_id = hospital_data.tax_id
+    if hospital_data.gstin is not None:
+        hospital.gstin = hospital_data.gstin.strip() or None
+    if hospital_data.gst_state_code is not None:
+        code = (hospital_data.gst_state_code or "").strip()
+        hospital.gst_state_code = code[:2] or None
     if hospital_data.logo_url is not None:
         hospital.logo_url = hospital_data.logo_url
     if hospital_data.description is not None:
@@ -593,13 +602,14 @@ async def upload_module_file(
 LAB_CONFIG_FIELDS = [
     "provider_name", "provider_address", "provider_city", "provider_state",
     "provider_pincode", "provider_phone", "provider_email", "provider_logo",
-    "registration_number", "nabl_number", "license_number",
+    "registration_number", "nabl_number", "license_number", "gst_number",
+    "use_hospital_gstin",
     "pathologist_name", "pathologist_qualification", "signature_image",
 ]
 
 # Pharmacy config fields (same as lab + pharmacy-specific)
 PHARMACY_CONFIG_FIELDS = LAB_CONFIG_FIELDS + [
-    "drug_license_number", "pharmacist_name", "gst_number",
+    "drug_license_number", "pharmacist_name",
 ]
 
 
@@ -1704,7 +1714,7 @@ async def get_all_bills(
     db: Session = Depends(get_db)
 ):
     """Centralised billing view — consultation, lab, pharmacy, and admission bills."""
-    if not any(r in current_user.role_names for r in ['super_admin', 'hospital_admin', 'receptionist']):
+    if not any(r in current_user.role_names for r in ['super_admin', 'hospital_admin', 'receptionist', 'billing_admin']):
         raise HTTPException(status_code=403, detail="Not authorized")
 
     hospital_id = current_user.hospital_id
@@ -3595,8 +3605,8 @@ async def refund_receipt_pdf(
 # ---------------------------------------------------------------------------
 
 def _report_auth(current_user: User):
-    if not any(r in current_user.role_names for r in ['super_admin', 'hospital_admin']):
-        raise HTTPException(status_code=403, detail="Only admins can view billing reports")
+    if not any(r in current_user.role_names for r in ['super_admin', 'hospital_admin', 'billing_admin']):
+        raise HTTPException(status_code=403, detail="Not authorized to view billing reports")
 
 
 def _parse_date_range(date_from: Optional[str], date_to: Optional[str]):
@@ -3762,6 +3772,810 @@ async def report_tax_summary(
             "bill_count": sum(r["bill_count"] for r in rows),
         },
     }
+
+
+def _gst_dates(date_from, date_to):
+    from app.services.gst_report_service import parse_date_range
+    return parse_date_range(date_from, date_to)
+
+
+@router.get("/billing/reports/sales-summary")
+async def report_sales_summary(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    module: Optional[str] = None,
+    group_by: str = Query("day"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Hospital-wide sales with optional module filter (opd, lab, inpatient, pharmacy, ...)."""
+    _report_auth(current_user)
+    from app.services.gst_report_service import sales_summary
+    d_from, d_to = _gst_dates(date_from, date_to)
+    return sales_summary(db, current_user.hospital_id, d_from, d_to, module=module, group_by=group_by)
+
+
+@router.get("/billing/reports/outstanding")
+async def report_outstanding(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _report_auth(current_user)
+    from app.services.gst_report_service import outstanding_by_module
+    d_from, d_to = _gst_dates(date_from, date_to)
+    return outstanding_by_module(db, current_user.hospital_id, d_from, d_to)
+
+
+@router.get("/billing/reports/purchase-summary")
+async def report_purchase_summary(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    group_by: str = Query("day"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _report_auth(current_user)
+    from app.services.gst_report_service import purchase_summary
+    d_from, d_to = _gst_dates(date_from, date_to)
+    return purchase_summary(db, current_user.hospital_id, d_from, d_to, group_by=group_by)
+
+
+def _summary_hospital_info(db: Session, hospital_id: int, *, pharmacy: bool = False) -> dict:
+    """Hospital letterhead for billing summary PDFs; pharmacy uses provider config when set."""
+    from app.utils.export_branding import hospital_brand_dict
+    hi = hospital_brand_dict(db, hospital_id)
+    if not pharmacy:
+        return hi
+    settings = db.query(HospitalSettings).filter(
+        HospitalSettings.setting_category == "pharmacy_config"
+    ).all()
+    cfg = {s.setting_key: s.setting_value for s in settings}
+    name = (cfg.get("provider_name") or "").strip()
+    if name:
+        hi = dict(hi)
+        hi["name"] = name
+        addr_parts = []
+        if (cfg.get("provider_address") or "").strip():
+            addr_parts.append(cfg["provider_address"].strip())
+        city_line = ", ".join(
+            p for p in [
+                (cfg.get("provider_city") or "").strip(),
+                (cfg.get("provider_state") or "").strip(),
+                (cfg.get("provider_pincode") or "").strip(),
+            ] if p
+        )
+        if city_line:
+            addr_parts.append(city_line)
+        if addr_parts:
+            hi["address"] = ", ".join(addr_parts)
+        if (cfg.get("provider_phone") or "").strip():
+            hi["phone"] = cfg["provider_phone"].strip()
+        if (cfg.get("gst_number") or "").strip():
+            hi["gstin"] = cfg["gst_number"].strip()
+    return hi
+
+
+def _build_summary_xlsx(sheets: list, hospital: dict, meta_rows: list) -> bytes:
+    """Branded multi-sheet workbook. sheets = [{title, columns, rows}, ...]."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
+    from openpyxl.utils import get_column_letter
+    from app.utils.export_branding import apply_workbook_branding
+
+    wb = Workbook()
+    header_font = Font(bold=True)
+    header_fill = PatternFill("solid", fgColor="E8EEF5")
+    thin = Border(
+        left=Side(style="thin", color="CCCCCC"),
+        right=Side(style="thin", color="CCCCCC"),
+        top=Side(style="thin", color="CCCCCC"),
+        bottom=Side(style="thin", color="CCCCCC"),
+    )
+
+    for idx, sheet in enumerate(sheets):
+        ws = wb.active if idx == 0 else wb.create_sheet()
+        ws.title = (sheet.get("title") or f"Sheet{idx + 1}")[:31]
+        data_header_row = apply_workbook_branding(ws, hospital, meta_rows)
+        columns = sheet.get("columns") or []
+        rows = sheet.get("rows") or []
+        for col, c in enumerate(columns, 1):
+            cell = ws.cell(row=data_header_row, column=col, value=c.get("label") or c.get("key"))
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.border = thin
+        money_keys = {
+            c["key"] for c in columns
+            if c.get("align") == "RIGHT" and "count" not in (c.get("key") or "")
+        }
+        for offset, r in enumerate(rows):
+            row_idx = data_header_row + 1 + offset
+            for col, c in enumerate(columns, 1):
+                key = c["key"]
+                val = r.get(key)
+                if val is None:
+                    val = ""
+                cell = ws.cell(row=row_idx, column=col, value=val if val != "" else None)
+                cell.border = thin
+                if key in money_keys and isinstance(val, (int, float)):
+                    cell.number_format = "#,##0.00"
+                    cell.alignment = Alignment(horizontal="right")
+                elif c.get("align") == "RIGHT":
+                    cell.alignment = Alignment(horizontal="right")
+        for col, c in enumerate(columns, 1):
+            letter = get_column_letter(col)
+            width = max(10, min(28, int(float(c.get("width") or 1) * 10)))
+            existing = ws.column_dimensions[letter].width or 0
+            ws.column_dimensions[letter].width = max(existing, width)
+        last = data_header_row + max(len(rows), 0)
+        ws.freeze_panes = f"A{data_header_row + 1}"
+        if columns:
+            end_letter = get_column_letter(len(columns))
+            ws.auto_filter.ref = f"A{data_header_row}:{end_letter}{max(data_header_row, last)}"
+
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+@router.get("/billing/reports/sales-summary.pdf")
+async def report_sales_summary_pdf(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    module: Optional[str] = None,
+    group_by: str = Query("day"),
+    include_header: Optional[bool] = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """PDF of sales invoices with GST rate columns and hospital letterhead."""
+    from fastapi.responses import Response
+    from app.services.gst_report_service import (
+        sales_summary, flatten_tax_rate_rows, sales_summary_export_columns,
+    )
+    from app.utils.pdf_service import PDFService
+
+    _report_auth(current_user)
+    d_from, d_to = _gst_dates(date_from, date_to)
+    data = sales_summary(db, current_user.hospital_id, d_from, d_to, module=module, group_by=group_by)
+    rates = data.get("tax_rate_columns") or []
+    rows = flatten_tax_rate_rows(data.get("invoices") or [], rates, "amount")
+    cols = sales_summary_export_columns(rates)
+    hi = _summary_hospital_info(db, current_user.hospital_id, pharmacy=False)
+    meta = {
+        "Module": module or "all",
+        "Bills": data.get("totals", {}).get("count", 0),
+    }
+    pdf = PDFService()
+    buf = pdf.generate_pharmacy_report_pdf(
+        title="SALES SUMMARY",
+        period={"from": d_from.isoformat(), "to": d_to.isoformat()},
+        columns=cols,
+        rows=rows,
+        hospital_info=hi,
+        meta=meta,
+        **pdf_gen_kwargs(
+            db, current_user.hospital_id, "billing_sales_summary",
+            query_include_header=include_header,
+        ),
+    )
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/pdf",
+        headers={"Content-Disposition": 'inline; filename="sales_summary.pdf"'},
+    )
+
+
+@router.get("/billing/reports/purchase-summary.pdf")
+async def report_purchase_summary_pdf(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    group_by: str = Query("day"),
+    include_header: Optional[bool] = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """PDF of purchase invoices with GST rate columns and pharmacy/hospital letterhead."""
+    from fastapi.responses import Response
+    from app.services.gst_report_service import (
+        purchase_summary, flatten_tax_rate_rows, purchase_summary_export_columns,
+    )
+    from app.utils.pdf_service import PDFService
+
+    _report_auth(current_user)
+    d_from, d_to = _gst_dates(date_from, date_to)
+    data = purchase_summary(db, current_user.hospital_id, d_from, d_to, group_by=group_by)
+    rates = data.get("tax_rate_columns") or []
+    rows = flatten_tax_rate_rows(
+        (data.get("invoices") or []) + (data.get("returns") or []),
+        rates,
+        "amount",
+    )
+    cols = purchase_summary_export_columns(rates)
+    hi = _summary_hospital_info(db, current_user.hospital_id, pharmacy=True)
+    meta = {
+        "Documents": data.get("totals", {}).get("count", 0),
+    }
+    pdf = PDFService()
+    buf = pdf.generate_pharmacy_report_pdf(
+        title="PURCHASE SUMMARY",
+        period={"from": d_from.isoformat(), "to": d_to.isoformat()},
+        columns=cols,
+        rows=rows,
+        hospital_info=hi,
+        meta=meta,
+        **pdf_gen_kwargs(
+            db, current_user.hospital_id, "billing_purchase_summary",
+            query_include_header=include_header,
+        ),
+    )
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/pdf",
+        headers={"Content-Disposition": 'inline; filename="purchase_summary.pdf"'},
+    )
+
+
+@router.get("/billing/reports/sales-summary.xlsx")
+async def report_sales_summary_xlsx(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    module: Optional[str] = None,
+    group_by: str = Query("day"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from app.services.gst_report_service import (
+        sales_summary, flatten_tax_rate_rows, sales_summary_export_columns,
+    )
+    from app.utils.export_branding import hospital_brand_dict
+
+    _report_auth(current_user)
+    d_from, d_to = _gst_dates(date_from, date_to)
+    data = sales_summary(db, current_user.hospital_id, d_from, d_to, module=module, group_by=group_by)
+    rates = data.get("tax_rate_columns") or []
+    hospital = hospital_brand_dict(db, current_user.hospital_id)
+    meta = [
+        ("Report", "Sales Summary"),
+        ("Period", f"{d_from.isoformat()} to {d_to.isoformat()}"),
+        ("Module", module or "all"),
+    ]
+    invoices = flatten_tax_rate_rows(data.get("invoices") or [], rates, "amount")
+    content = _build_summary_xlsx(
+        [
+            {
+                "title": "Invoices by tax rate",
+                "columns": sales_summary_export_columns(rates),
+                "rows": invoices,
+            },
+        ],
+        hospital,
+        meta,
+    )
+    return StreamingResponse(
+        BytesIO(content),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="sales_summary.xlsx"'},
+    )
+
+
+@router.get("/billing/reports/purchase-summary.xlsx")
+async def report_purchase_summary_xlsx(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    group_by: str = Query("day"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from app.services.gst_report_service import (
+        purchase_summary, flatten_tax_rate_rows, purchase_summary_export_columns,
+    )
+    from app.utils.export_branding import hospital_brand_dict
+
+    _report_auth(current_user)
+    d_from, d_to = _gst_dates(date_from, date_to)
+    data = purchase_summary(db, current_user.hospital_id, d_from, d_to, group_by=group_by)
+    rates = data.get("tax_rate_columns") or []
+    hospital = _summary_hospital_info(db, current_user.hospital_id, pharmacy=True)
+    # Ensure brand keys expected by Excel branding
+    brand = hospital_brand_dict(db, current_user.hospital_id)
+    brand.update({k: v for k, v in hospital.items() if v})
+    meta = [
+        ("Report", "Purchase Summary"),
+        ("Period", f"{d_from.isoformat()} to {d_to.isoformat()}"),
+    ]
+    invoices = flatten_tax_rate_rows(
+        (data.get("invoices") or []) + (data.get("returns") or []),
+        rates,
+        "amount",
+    )
+    content = _build_summary_xlsx(
+        [
+            {
+                "title": "Invoices by tax rate",
+                "columns": purchase_summary_export_columns(rates),
+                "rows": invoices,
+            },
+        ],
+        brand,
+        meta,
+    )
+    return StreamingResponse(
+        BytesIO(content),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="purchase_summary.xlsx"'},
+    )
+
+
+@router.get("/billing/reports/gst/outward-hsn")
+async def report_gst_outward_hsn(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    module: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _report_auth(current_user)
+    from app.services.gst_report_service import gst_outward_hsn
+    d_from, d_to = _gst_dates(date_from, date_to)
+    return gst_outward_hsn(db, current_user.hospital_id, d_from, d_to, module=module)
+
+
+@router.get("/billing/reports/gst/inward-hsn")
+async def report_gst_inward_hsn(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    module: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _report_auth(current_user)
+    from app.services.gst_report_service import gst_inward_hsn
+    d_from, d_to = _gst_dates(date_from, date_to)
+    return gst_inward_hsn(db, current_user.hospital_id, d_from, d_to, module=module)
+
+
+@router.get("/billing/reports/gst/b2b-b2c")
+async def report_gst_b2b_b2c(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    module: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _report_auth(current_user)
+    from app.services.gst_report_service import gst_b2b_b2c
+    d_from, d_to = _gst_dates(date_from, date_to)
+    return gst_b2b_b2c(db, current_user.hospital_id, d_from, d_to, module=module)
+
+
+@router.get("/billing/reports/gst/exempt")
+async def report_gst_exempt(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    module: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _report_auth(current_user)
+    from app.services.gst_report_service import gst_exempt_register
+    d_from, d_to = _gst_dates(date_from, date_to)
+    return gst_exempt_register(db, current_user.hospital_id, d_from, d_to, module=module)
+
+
+def _gst_working_paper_data(kind: str, db: Session, hospital_id: int, d_from, d_to, module):
+    from app.services.gst_report_service import (
+        gst_outward_hsn, gst_inward_hsn, gst_b2b_b2c, gst_exempt_register,
+        gst_working_paper_export,
+    )
+    if kind == "outward":
+        data = gst_outward_hsn(db, hospital_id, d_from, d_to, module=module)
+    elif kind == "inward":
+        data = gst_inward_hsn(db, hospital_id, d_from, d_to, module=module)
+    elif kind == "b2b":
+        data = gst_b2b_b2c(db, hospital_id, d_from, d_to, module=module)
+    elif kind == "exempt":
+        data = gst_exempt_register(db, hospital_id, d_from, d_to, module=module)
+    else:
+        raise HTTPException(status_code=400, detail="Unknown GST report")
+    return data, gst_working_paper_export(kind, data)
+
+
+def _gst_working_paper_hospital(db: Session, current_user: User, data: dict, module: Optional[str]):
+    from app.utils.export_branding import hospital_brand_dict
+    pharmacy = (module or "").lower() in ("pharmacy", "pharmacy_ip")
+    hi = dict(_summary_hospital_info(db, current_user.hospital_id, pharmacy=pharmacy))
+    brand = hospital_brand_dict(db, current_user.hospital_id)
+    brand.update({k: v for k, v in hi.items() if v})
+    gstin = (data or {}).get("gstin")
+    if gstin:
+        brand["gstin"] = gstin
+        hi["gstin"] = gstin
+    return hi, brand
+
+
+def _gst_working_paper_xlsx(kind: str, date_from, date_to, module, current_user, db):
+    d_from, d_to = _gst_dates(date_from, date_to)
+    data, pack = _gst_working_paper_data(kind, db, current_user.hospital_id, d_from, d_to, module)
+    _hi, brand = _gst_working_paper_hospital(db, current_user, data, module)
+    meta = [
+        ("Report", pack["title"]),
+        ("Period", f"{d_from.isoformat()} to {d_to.isoformat()}"),
+        ("GST registration", data.get("module_label") or module or "all"),
+        ("GSTIN", data.get("gstin") or ""),
+    ]
+    content = _build_summary_xlsx(pack["sheets"], brand, meta)
+    filename = f"{pack['filename_slug']}_{_mod_slug(module)}_{d_from.isoformat()}_{d_to.isoformat()}.xlsx"
+    return _xlsx_response(content, filename)
+
+
+def _gst_working_paper_pdf(kind: str, date_from, date_to, module, include_header, current_user, db):
+    from fastapi.responses import Response
+    from app.utils.pdf_service import PDFService
+
+    d_from, d_to = _gst_dates(date_from, date_to)
+    data, pack = _gst_working_paper_data(kind, db, current_user.hospital_id, d_from, d_to, module)
+    hi, _brand = _gst_working_paper_hospital(db, current_user, data, module)
+    pdf = PDFService()
+    buf = pdf.generate_pharmacy_report_pdf(
+        title=pack["title"],
+        period={"from": d_from.isoformat(), "to": d_to.isoformat()},
+        sections=pack["sheets"],
+        hospital_info=hi,
+        meta={
+            "GSTIN": data.get("gstin") or "—",
+            "Registration": data.get("module_label") or "All",
+        },
+        **pdf_gen_kwargs(
+            db, current_user.hospital_id, "billing_gst_reports",
+            query_include_header=include_header,
+        ),
+    )
+    filename = f"{pack['filename_slug']}.pdf"
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
+
+
+@router.get("/billing/reports/gst/outward-hsn.xlsx")
+async def report_gst_outward_hsn_xlsx(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    module: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _report_auth(current_user)
+    return _gst_working_paper_xlsx("outward", date_from, date_to, module, current_user, db)
+
+
+@router.get("/billing/reports/gst/outward-hsn.pdf")
+async def report_gst_outward_hsn_pdf(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    module: Optional[str] = None,
+    include_header: Optional[bool] = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _report_auth(current_user)
+    return _gst_working_paper_pdf("outward", date_from, date_to, module, include_header, current_user, db)
+
+
+@router.get("/billing/reports/gst/inward-hsn.xlsx")
+async def report_gst_inward_hsn_xlsx(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    module: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _report_auth(current_user)
+    return _gst_working_paper_xlsx("inward", date_from, date_to, module, current_user, db)
+
+
+@router.get("/billing/reports/gst/inward-hsn.pdf")
+async def report_gst_inward_hsn_pdf(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    module: Optional[str] = None,
+    include_header: Optional[bool] = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _report_auth(current_user)
+    return _gst_working_paper_pdf("inward", date_from, date_to, module, include_header, current_user, db)
+
+
+@router.get("/billing/reports/gst/b2b-b2c.xlsx")
+async def report_gst_b2b_b2c_xlsx(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    module: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _report_auth(current_user)
+    return _gst_working_paper_xlsx("b2b", date_from, date_to, module, current_user, db)
+
+
+@router.get("/billing/reports/gst/b2b-b2c.pdf")
+async def report_gst_b2b_b2c_pdf(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    module: Optional[str] = None,
+    include_header: Optional[bool] = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _report_auth(current_user)
+    return _gst_working_paper_pdf("b2b", date_from, date_to, module, include_header, current_user, db)
+
+
+@router.get("/billing/reports/gst/exempt.xlsx")
+async def report_gst_exempt_xlsx(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    module: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _report_auth(current_user)
+    return _gst_working_paper_xlsx("exempt", date_from, date_to, module, current_user, db)
+
+
+@router.get("/billing/reports/gst/exempt.pdf")
+async def report_gst_exempt_pdf(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    module: Optional[str] = None,
+    include_header: Optional[bool] = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _report_auth(current_user)
+    return _gst_working_paper_pdf("exempt", date_from, date_to, module, include_header, current_user, db)
+
+
+@router.get("/billing/reports/gst/cdnr")
+async def report_gst_cdnr(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _report_auth(current_user)
+    from app.services.gst_report_service import gst_cdnr
+    d_from, d_to = _gst_dates(date_from, date_to)
+    return gst_cdnr(db, current_user.hospital_id, d_from, d_to)
+
+
+def _gst_hospital(db: Session, current_user: User):
+    hospital = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
+    if not hospital:
+        hospital = db.query(Hospital).first()
+    return hospital
+
+
+def _gst_return_dates(year, month, date_from, date_to):
+    from app.services.gst_return_forms import parse_return_period
+    return parse_return_period(year, month, date_from, date_to)
+
+
+def _gst_module(module: Optional[str]) -> Optional[str]:
+    from app.services.gst_return_forms import normalize_module
+    return normalize_module(module)
+
+
+def _mod_slug(module: Optional[str]) -> str:
+    return _gst_module(module) or "all"
+
+
+def _xlsx_response(content: bytes, filename: str):
+    return StreamingResponse(
+        BytesIO(content),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/billing/reports/gst/gstr1")
+async def report_gstr1(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    module: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _report_auth(current_user)
+    from app.services.gst_return_forms import gstr1_return
+    d_from, d_to = _gst_return_dates(year, month, date_from, date_to)
+    return gstr1_return(db, _gst_hospital(db, current_user), d_from, d_to, module=_gst_module(module))
+
+
+@router.get("/billing/reports/gst/gstr1.xlsx")
+async def report_gstr1_xlsx(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    module: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _report_auth(current_user)
+    from app.services.gst_return_forms import gstr1_return
+    from app.services.gst_excel_export import build_gstr1_workbook
+    d_from, d_to = _gst_return_dates(year, month, date_from, date_to)
+    hospital = _gst_hospital(db, current_user)
+    data = gstr1_return(db, hospital, d_from, d_to, module=_gst_module(module))
+    filename = f"GSTR1_{_mod_slug(module)}_{d_from.isoformat()}_{d_to.isoformat()}.xlsx"
+    return _xlsx_response(build_gstr1_workbook(data), filename)
+
+
+@router.get("/billing/reports/gst/gstr2")
+async def report_gstr2(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    module: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _report_auth(current_user)
+    from app.services.gst_return_forms import gstr2_books
+    d_from, d_to = _gst_return_dates(year, month, date_from, date_to)
+    return gstr2_books(db, _gst_hospital(db, current_user), d_from, d_to, module=_gst_module(module))
+
+
+@router.get("/billing/reports/gst/gstr2.xlsx")
+async def report_gstr2_xlsx(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    module: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _report_auth(current_user)
+    from app.services.gst_return_forms import gstr2_books
+    from app.services.gst_excel_export import build_gstr2_workbook
+    d_from, d_to = _gst_return_dates(year, month, date_from, date_to)
+    hospital = _gst_hospital(db, current_user)
+    data = gstr2_books(db, hospital, d_from, d_to, module=_gst_module(module))
+    filename = f"GSTR2_books_{_mod_slug(module)}_{d_from.isoformat()}_{d_to.isoformat()}.xlsx"
+    return _xlsx_response(build_gstr2_workbook(data), filename)
+
+
+@router.get("/billing/reports/gst/gstr3b")
+async def report_gstr3b(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    module: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _report_auth(current_user)
+    from app.services.gst_report_service import gstr3b_summary
+    d_from, d_to = _gst_return_dates(year, month, date_from, date_to)
+    return gstr3b_summary(db, current_user.hospital_id, d_from, d_to, module=_gst_module(module))
+
+
+@router.get("/billing/reports/gst/gstr3b.xlsx")
+async def report_gstr3b_xlsx(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    module: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _report_auth(current_user)
+    from app.services.gst_report_service import gstr3b_summary
+    from app.services.gst_excel_export import build_gstr3b_workbook
+    d_from, d_to = _gst_return_dates(year, month, date_from, date_to)
+    data = gstr3b_summary(db, current_user.hospital_id, d_from, d_to, module=_gst_module(module))
+    filename = f"GSTR3B_{_mod_slug(module)}_{d_from.isoformat()}_{d_to.isoformat()}.xlsx"
+    return _xlsx_response(build_gstr3b_workbook(data), filename)
+
+
+@router.get("/billing/reports/gst/gstr3b.pdf")
+async def report_gstr3b_pdf(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    module: Optional[str] = None,
+    include_header: Optional[bool] = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from fastapi.responses import Response
+    from app.services.gst_report_service import gstr3b_summary
+    from app.utils.pdf_service import PDFService
+
+    _report_auth(current_user)
+    d_from, d_to = _gst_return_dates(year, month, date_from, date_to)
+    data = gstr3b_summary(db, current_user.hospital_id, d_from, d_to, module=_gst_module(module))
+    hi = dict(_summary_hospital_info(db, current_user.hospital_id, pharmacy=False))
+    if data.get("hospital", {}).get("gstin"):
+        hi["gstin"] = data["hospital"]["gstin"]
+    pdf = PDFService()
+    buf = pdf.generate_gstr3b_pdf(
+        data, hi,
+        **pdf_gen_kwargs(
+            db, current_user.hospital_id, "billing_gstr3b",
+            query_include_header=include_header,
+        ),
+    )
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/pdf",
+        headers={"Content-Disposition": 'inline; filename="GSTR3B.pdf"'},
+    )
+
+
+@router.get("/billing/reports/gst/gstr9")
+async def report_gstr9(
+    fy_start: Optional[int] = None,
+    module: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _report_auth(current_user)
+    from app.services.gst_return_forms import gstr9_annual
+    today = date.today()
+    year = int(fy_start) if fy_start else (today.year if today.month >= 4 else today.year - 1)
+    return gstr9_annual(db, _gst_hospital(db, current_user), year, module=_gst_module(module))
+
+
+@router.get("/billing/reports/gst/gstr9.xlsx")
+async def report_gstr9_xlsx(
+    fy_start: Optional[int] = None,
+    module: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _report_auth(current_user)
+    from app.services.gst_return_forms import gstr9_annual
+    from app.services.gst_excel_export import build_gstr9_workbook
+    today = date.today()
+    year = int(fy_start) if fy_start else (today.year if today.month >= 4 else today.year - 1)
+    data = gstr9_annual(db, _gst_hospital(db, current_user), year, module=_gst_module(module))
+    filename = f"GSTR9_{_mod_slug(module)}_FY{year}_{year + 1}.xlsx"
+    return _xlsx_response(build_gstr9_workbook(data), filename)
+
+
+@router.get("/billing/reports/gst/audit.xlsx")
+async def report_gst_audit_xlsx(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    module: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """CA-ready multi-sheet GST audit workbook (all working papers)."""
+    _report_auth(current_user)
+    from app.services.gst_excel_export import build_gst_audit_workbook
+    d_from, d_to = _gst_return_dates(year, month, date_from, date_to)
+    hospital = _gst_hospital(db, current_user)
+    selected = _gst_module(module)
+    content = build_gst_audit_workbook(db, hospital, d_from, d_to, module=selected)
+    filename = f"gst_audit_{_mod_slug(module)}_{d_from.isoformat()}_{d_to.isoformat()}.xlsx"
+    return _xlsx_response(content, filename)
 
 
 # ---------------------------------------------------------------------------

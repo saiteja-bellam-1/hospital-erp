@@ -83,7 +83,7 @@ TEMPLATES = {
         "instructions": [
             "Required: username, email, first_name, last_name, password, specialization, license_number.",
             "Set inpatient_fee_inr for inpatient doctor visits (used as the default IP visit rate).",
-            "Upload from Users & Roles > Bulk Import.",
+            "Upload from Administration → Users → Bulk Import.",
         ],
     },
     "nurses": {
@@ -96,7 +96,7 @@ TEMPLATES = {
         ],
         "instructions": [
             "All columns except phone are required.",
-            "Upload from Users & Roles > Bulk Import.",
+            "Upload from Administration → Users → Bulk Import.",
         ],
     },
     "staff": {

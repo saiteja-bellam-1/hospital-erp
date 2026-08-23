@@ -41,6 +41,8 @@ class Bill(Base):
     # Appointment + PatientLabOrder). Populated by procedure / day-care bills
     # and surfaced in the central billing dashboard + the printed PDF.
     referred_by = Column(String(100), nullable=True)
+    # Snapshot of the paying party's GSTIN at invoice time (B2B vs B2C).
+    customer_gstin = Column(String(20), nullable=True)
 
     patient = relationship("Patient", back_populates="bills")
     items = relationship("BillItem", back_populates="bill")
@@ -60,6 +62,14 @@ class BillItem(Base):
     total_price = Column(Float, nullable=False)
     discount_percentage = Column(Float, default=0.0)
     tax_percentage = Column(Float, default=0.0)
+    hsn_sac = Column(String(20), nullable=True)
+    tax_category = Column(String(20), nullable=True)  # exempt | taxable | nil
+    sgst_pct = Column(Float, default=0.0)
+    cgst_pct = Column(Float, default=0.0)
+    igst_pct = Column(Float, default=0.0)
+    sgst_amount = Column(Float, default=0.0)
+    cgst_amount = Column(Float, default=0.0)
+    igst_amount = Column(Float, default=0.0)
 
     # Source pointer for reversal. e.g. ('prescription_item', 42) lets the
     # pharmacy cancel flow find this exact line and emit a credit-note for it.
@@ -67,6 +77,14 @@ class BillItem(Base):
     source_ref_id = Column(Integer, nullable=True)
 
     bill = relationship("Bill", back_populates="items")
+
+
+def _register_gst_listeners():
+    from app.services.gst_classification import register_bill_gst_listeners
+    register_bill_gst_listeners()
+
+
+_register_gst_listeners()
 
 class Payment(Base):
     __tablename__ = "payments"

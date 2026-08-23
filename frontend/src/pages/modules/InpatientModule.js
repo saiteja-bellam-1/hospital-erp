@@ -10048,7 +10048,7 @@ const InpatientModule = () => {
             ) : null}
           </div>
           <p className="text-xs text-muted-foreground pt-3 border-t">
-            Letterhead follows Settings → Print Settings.
+            Letterhead follows Administration → Customisations.
           </p>
           <div className="flex items-center gap-3 pt-3">
             <div className="flex-1" />

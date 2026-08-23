@@ -351,7 +351,7 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
               </div>
             )}
             <p className="text-xs text-muted-foreground">
-              Letterhead follows Settings → Print Settings.
+              Letterhead follows Administration → Customisations.
             </p>
             <div className="flex-1 min-h-[400px] border rounded-lg overflow-hidden">
               {billPdfUrl && (

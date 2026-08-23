@@ -27,6 +27,7 @@ export const EMPTY_PATIENT_FORM = {
   blood_group: '',
   marital_status: '',
   abha_id: '',
+  gstin: '',
   email: '',
   primary_phone: '',
   referred_by: '',
@@ -131,6 +132,10 @@ export default function PatientRegisterFormFields({ form, onChange, activeStep =
           <div>
             <Label>ABHA ID</Label>
             <Input value={form.abha_id} onChange={(e) => set('abha_id', e.target.value)} placeholder="14-digit ABHA number" />
+          </div>
+          <div>
+            <Label>GSTIN (optional, B2B)</Label>
+            <Input value={form.gstin || ''} onChange={(e) => set('gstin', e.target.value.toUpperCase())} placeholder="Customer GSTIN for ITC invoices" maxLength={15} />
           </div>
           <div>
             <Label>Email</Label>

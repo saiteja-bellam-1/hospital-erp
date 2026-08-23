@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Navigate, useLocation } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
@@ -9,8 +10,6 @@ import { ConfirmDialog } from '../../components/ui/confirm-dialog';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../components/ui/dialog';
 import {
   Settings,
-  Users,
-  Shield,
   ToggleLeft,
   Plus,
   Edit,
@@ -26,15 +25,22 @@ import BulkUserImportDialog from './admin/BulkUserImport';
 import ModuleConfigForm from './ModuleConfigForm';
 import RolePermissionsEditor from './admin/RolePermissionsEditor';
 
+const ADMIN_PAGE_TITLES = {
+  users: 'Users',
+  roles: 'Roles & Permissions',
+  modules: 'Modules',
+  'module-settings': 'Module Settings',
+};
+
 const AdminModule = () => {
   const { user } = useAuth();
   const { toast } = useToast();
+  const location = useLocation();
   const userRoles = user?.roles || [user?.role];
   const hasRole = (r) => userRoles.includes(r);
   const [modules, setModules] = useState([]);
   const [users, setUsers] = useState([]);
   const [roles, setRoles] = useState([]);
-  const [activeTab, setActiveTab] = useState(hasRole('super_admin') ? 'modules' : 'users');
   const [showUserForm, setShowUserForm] = useState(false);
   const [showBulkImport, setShowBulkImport] = useState(false);
   const [showRoleForm, setShowRoleForm] = useState(false);
@@ -464,67 +470,23 @@ const AdminModule = () => {
     );
   }
 
+  const defaultTab = hasRole('super_admin') ? 'modules' : 'users';
+  const allowedTabs = hasRole('super_admin')
+    ? ['users', 'roles', 'modules', 'module-settings']
+    : ['users', 'roles'];
+  const lastSegment = location.pathname.replace(/\/+$/, '').split('/').pop();
+  if (lastSegment === 'admin' || !allowedTabs.includes(lastSegment)) {
+    return <Navigate to={`/dashboard/admin/${defaultTab}`} replace />;
+  }
+  const activeTab = lastSegment;
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-3xl font-bold text-gray-900">System Administration</h1>
+        <h1 className="text-3xl font-bold text-gray-900">{ADMIN_PAGE_TITLES[activeTab]}</h1>
       </div>
 
-      {/* Tab Navigation */}
-      <div className="border-b border-gray-200">
-        <nav className="-mb-px flex space-x-8">
-          {hasRole('super_admin') && (
-            <button
-              onClick={() => setActiveTab('modules')}
-              className={`py-2 px-1 border-b-2 font-medium text-sm ${
-                activeTab === 'modules'
-                  ? 'border-primary text-primary'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              }`}
-            >
-              <Settings className="inline h-4 w-4 mr-2" />
-              Module Management
-            </button>
-          )}
-          <button
-            onClick={() => setActiveTab('users')}
-            className={`py-2 px-1 border-b-2 font-medium text-sm ${
-              activeTab === 'users'
-                ? 'border-primary text-primary'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-            }`}
-          >
-            <Users className="inline h-4 w-4 mr-2" />
-            User Management
-          </button>
-          <button
-            onClick={() => setActiveTab('roles')}
-            className={`py-2 px-1 border-b-2 font-medium text-sm ${
-              activeTab === 'roles'
-                ? 'border-primary text-primary'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-            }`}
-          >
-            <Shield className="inline h-4 w-4 mr-2" />
-            Roles &amp; Permissions
-          </button>
-          {hasRole('super_admin') && (
-            <button
-              onClick={() => setActiveTab('module-settings')}
-              className={`py-2 px-1 border-b-2 font-medium text-sm ${
-                activeTab === 'module-settings'
-                  ? 'border-primary text-primary'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              }`}
-            >
-              <Settings className="inline h-4 w-4 mr-2" />
-              Module Settings
-            </button>
-          )}
-        </nav>
-      </div>
-
-      {/* Modules Tab - Super Admin Only (enable/disable + per-module config) */}
+      {/* Modules — Super Admin Only (enable/disable) */}
       {activeTab === 'modules' && hasRole('super_admin') && (
         <div className="space-y-6">
         <Card>

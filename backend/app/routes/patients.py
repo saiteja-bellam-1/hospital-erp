@@ -38,6 +38,7 @@ class PatientCreate(BaseModel):
     district: Optional[str] = Field(None, max_length=100)
     address: Optional[str] = None
     referred_by: Optional[str] = Field(None, max_length=100)
+    gstin: Optional[str] = Field(None, max_length=20)
 
 class PatientResponse(BaseModel):
     id: int
@@ -64,6 +65,7 @@ class PatientResponse(BaseModel):
     district: Optional[str] = None
     address: Optional[str]
     referred_by: Optional[str] = None
+    gstin: Optional[str] = None
     is_active: bool
 
     class Config:
@@ -142,6 +144,7 @@ class PatientUpdate(BaseModel):
     mandal: Optional[str] = Field(None, max_length=100)
     district: Optional[str] = Field(None, max_length=100)
     address: Optional[str] = None
+    gstin: Optional[str] = Field(None, max_length=20)
 
 @router.post("/", response_model=PatientResponse)
 async def create_patient(

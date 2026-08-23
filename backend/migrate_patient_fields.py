@@ -267,6 +267,20 @@ NEW_COLUMNS = [
     ("pharmacy_sales", "stock_affected", "BOOLEAN DEFAULT 1"),
     # Reuse purchase mapping presets for medicines / sales imports
     ("pharmacy_purchase_import_mappings", "import_kind", "VARCHAR(30) DEFAULT 'purchases'"),
+    # Billing hub / GST audit
+    ("hospitals", "gstin", "VARCHAR(20)"),
+    ("hospitals", "gst_state_code", "VARCHAR(2)"),
+    ("patients", "gstin", "VARCHAR(20)"),
+    ("bills", "customer_gstin", "VARCHAR(20)"),
+    ("bill_items", "hsn_sac", "VARCHAR(20)"),
+    ("bill_items", "tax_category", "VARCHAR(20)"),
+    ("bill_items", "sgst_pct", "FLOAT DEFAULT 0.0"),
+    ("bill_items", "cgst_pct", "FLOAT DEFAULT 0.0"),
+    ("bill_items", "igst_pct", "FLOAT DEFAULT 0.0"),
+    ("bill_items", "sgst_amount", "FLOAT DEFAULT 0.0"),
+    ("bill_items", "cgst_amount", "FLOAT DEFAULT 0.0"),
+    ("bill_items", "igst_amount", "FLOAT DEFAULT 0.0"),
+    ("pharmacy_sales", "customer_gstin", "VARCHAR(20)"),
 ]
 
 # B6 — body release table is created via create_all on startup; no column adds.

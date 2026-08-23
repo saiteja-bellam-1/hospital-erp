@@ -124,7 +124,7 @@ export default function DischargeSummaryPdfPreviewDialog({
             <p className="text-xs text-muted-foreground">
               Letterhead and top gap follow{' '}
               <Link to="/dashboard/print-settings" className="underline hover:text-foreground">
-                Print Settings
+                Customisations
               </Link>
               {' '}(Discharge Summary).
             </p>

@@ -30,7 +30,7 @@ import LabModule from './modules/LabModule';
 import PharmacyModule from './modules/PharmacyModule';
 import CanteenModule from './modules/CanteenModule';
 import PhysiotherapyModule from './modules/PhysiotherapyModule';
-import BillingModule from './modules/BillingModule';
+import BillingHub from './modules/BillingHub';
 import EHRModule from './modules/EHRModule';
 import OutpatientModule from './modules/OutpatientModule';
 import InpatientModule from './modules/InpatientModule';
@@ -298,7 +298,7 @@ const DashboardShell = () => {
 
   const isActive = (path) => {
     if (path === '/dashboard') return location.pathname === '/dashboard';
-    return location.pathname.startsWith(path);
+    return location.pathname === path || location.pathname.startsWith(`${path}/`);
   };
 
   // When the route changes, auto-open the section that contains the active item
@@ -432,7 +432,7 @@ const DashboardShell = () => {
               <Route path="/pharmacy/*" element={<PharmacyModule />} />
               <Route path="/canteen/*" element={<CanteenModule />} />
               <Route path="/physiotherapy/*" element={<PhysiotherapyModule />} />
-              <Route path="/billing/*" element={<BillingModule />} />
+              <Route path="/billing/*" element={<BillingHub />} />
               <Route path="/ehr/*" element={<EHRModule />} />
               <Route path="/consultation" element={<ConsultationPage />} />
               <Route path="/availability/*" element={<AvailabilityModule />} />

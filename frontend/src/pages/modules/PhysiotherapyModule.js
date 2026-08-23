@@ -1053,7 +1053,7 @@ function TherapistsPage() {
         <CardContent className="space-y-2">
           {therapists.length === 0 && (
             <p className="text-sm text-muted-foreground">
-              No users with the physiotherapist role. Create one under Users & Roles.
+              No users with the physiotherapist role. Create one under Administration → Users.
             </p>
           )}
           {therapists.map((t) => (

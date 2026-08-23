@@ -54,7 +54,7 @@ const ReceptionPatientsPage = () => {
   // Edit patient form
   const [editPatientForm, setEditPatientForm] = useState({
     first_name: '', last_name: '', date_of_birth: '', age: '', age_months: '', gender: '',
-    blood_group: '', marital_status: '', abha_id: '', email: '',
+    blood_group: '', marital_status: '', abha_id: '', gstin: '', email: '',
     emergency_contact_name: '', emergency_contact_phone: '', emergency_contact_relation: '',
     address_line1: '', address_line2: '', village: '', mandal: '', district: ''
   });
@@ -269,6 +269,7 @@ const ReceptionPatientsPage = () => {
       blood_group: patient.blood_group || '',
       marital_status: patient.marital_status || '',
       abha_id: patient.abha_id || '',
+      gstin: patient.gstin || '',
       email: patient.email || '',
       emergency_contact_name: patient.emergency_contact_name || '',
       emergency_contact_phone: patient.emergency_contact_phone || '',
@@ -732,6 +733,10 @@ const ReceptionPatientsPage = () => {
             <div>
               <Label>ABHA ID</Label>
               <Input value={editPatientForm.abha_id} onChange={(e) => setEditPatientForm({...editPatientForm, abha_id: e.target.value})} placeholder="14-digit ABHA number" />
+            </div>
+            <div>
+              <Label>GSTIN (optional)</Label>
+              <Input value={editPatientForm.gstin || ''} onChange={(e) => setEditPatientForm({...editPatientForm, gstin: e.target.value.toUpperCase()})} placeholder="Customer GSTIN" maxLength={15} />
             </div>
             <div>
               <Label>Email</Label>

@@ -5769,6 +5769,13 @@ def _hospital_info_for_pdf(db: Session, hospital_id: int) -> dict:
     }
 
 
+def _pharmacy_report_gstin(cfg: dict, hospital) -> str:
+    """Pharmacy GSTIN for invoices: own number, else hospital if opted in, else blank."""
+    from app.services.gst_return_forms import hospital_gstin, resolve_config_gstin
+    gstin, _ = resolve_config_gstin(cfg, hospital_gstin(hospital), config_module="pharmacy")
+    return gstin
+
+
 def _pharmacy_hospital_info_for_pdf(db: Session, hospital_id: int) -> dict:
     """Prefer pharmacy module config (provider_* / gst_number); fall back to hospital."""
     from app.models.permissions import HospitalSettings
@@ -5803,7 +5810,7 @@ def _pharmacy_hospital_info_for_pdf(db: Session, hospital_id: int) -> dict:
         "phone": (cfg.get("provider_phone") or "").strip() or (getattr(h, "phone", "") if h else ""),
         "email": (cfg.get("provider_email") or "").strip() or (getattr(h, "email", "") if h else ""),
         "logo_url": (cfg.get("provider_logo") or "").strip() or (getattr(h, "logo_url", "") if h else ""),
-        "gstin": (cfg.get("gst_number") or "").strip(),
+        "gstin": _pharmacy_report_gstin(cfg, h),
     }
 
 

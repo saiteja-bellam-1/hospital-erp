@@ -690,7 +690,7 @@ const ConsultationPage = () => {
           <Card>
             <CardContent className="pt-6 space-y-4">
               <p className="text-xs text-muted-foreground">
-                Fields shown match hospital Print Settings (vitals to collect).
+                Fields shown match hospital Customisations (vitals to collect).
               </p>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 {isEnabled('blood_pressure') && (

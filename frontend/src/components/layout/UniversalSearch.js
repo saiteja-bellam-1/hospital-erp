@@ -52,18 +52,18 @@ const ROLE_QUICK_PATHS = {
   ],
   hospital_admin: [
     '/dashboard/hospital-admin-home',
-    '/dashboard/hospital-admin',
+    '/dashboard/hospital-admin/info',
     '/dashboard/billing',
     '/dashboard/reception/appointments',
     '/dashboard/inpatient',
-    '/dashboard/admin',
+    '/dashboard/admin/users',
   ],
   super_admin: [
     '/dashboard/admin-home',
-    '/dashboard/admin',
+    '/dashboard/admin/users',
     '/dashboard/license',
     '/dashboard/backup',
-    '/dashboard/hospital-admin',
+    '/dashboard/hospital-admin/info',
   ],
   inpatient_admin: [
     '/dashboard/inpatient',

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Navigate, useLocation, Link } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
@@ -9,7 +10,6 @@ import { useLayoutPreferences } from '../../contexts/LayoutPreferencesContext';
 import { useToast } from '../../hooks/use-toast';
 import axios from 'axios';
 import PayerSchemesAdmin from './inpatient/PayerSchemesAdmin';
-import { Link } from 'react-router-dom';
 import {
   Building2,
   UserCheck,
@@ -17,17 +17,23 @@ import {
   Edit,
   X,
   Receipt,
-  CreditCard,
-  Printer,
   PanelLeft,
   PanelTop,
 } from 'lucide-react';
 
+const HOSPITAL_PAGE_TITLES = {
+  info: 'Hospital Info',
+  doctors: 'Doctor Profiles',
+  billing: 'Registration Fee',
+  payers: 'Payer Schemes',
+  appearance: 'Appearance',
+};
+
 const HospitalAdminModule = () => {
   const { user } = useAuth();
   const { toast } = useToast();
+  const location = useLocation();
   const { navLayout, setNavLayout } = useLayoutPreferences();
-  const [activeTab, setActiveTab] = useState('hospital-info');
   const [loading, setLoading] = useState(false);
   const [appearanceLayout, setAppearanceLayout] = useState('sidebar');
   const [savingAppearance, setSavingAppearance] = useState(false);
@@ -47,6 +53,8 @@ const HospitalAdminModule = () => {
     license_number: '',
     registration_number: '',
     tax_id: '',
+    gstin: '',
+    gst_state_code: '',
     logo_url: '',
     description: '',
     mrn_prefix: ''
@@ -235,112 +243,31 @@ const HospitalAdminModule = () => {
     );
   }
 
+  const lastSegment = location.pathname.replace(/\/+$/, '').split('/').pop();
+  const aliases = {
+    'hospital-info': '/dashboard/hospital-admin/info',
+    'billing-settings': '/dashboard/hospital-admin/billing',
+    'payer-schemes': '/dashboard/hospital-admin/payers',
+    'print-settings': '/dashboard/print-settings',
+  };
+  if (aliases[lastSegment]) {
+    return <Navigate to={aliases[lastSegment]} replace />;
+  }
+  const allowedPages = ['info', 'doctors', 'billing', 'payers', 'appearance'];
+  if (lastSegment === 'hospital-admin' || !allowedPages.includes(lastSegment)) {
+    return <Navigate to="/dashboard/hospital-admin/info" replace />;
+  }
+  const activeTab = lastSegment;
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-3xl font-bold">Hospital Administration</h1>
+        <h1 className="text-3xl font-bold">{HOSPITAL_PAGE_TITLES[activeTab]}</h1>
       </div>
 
-      {/* Navigation Tabs */}
-      <div className="flex space-x-1 overflow-x-auto border-b">
-        <Button
-          variant="ghost"
-          className={`px-4 py-2 ${
-            activeTab === 'hospital-info'
-              ? 'border-b-2 border-blue-500 text-blue-600'
-              : 'text-gray-600 hover:text-gray-800'
-          }`}
-          onClick={() => setActiveTab('hospital-info')}
-        >
-          <Building2 className="h-4 w-4 mr-2" />
-          Hospital Info
-        </Button>
-        <Button
-          variant="ghost"
-          className={`px-4 py-2 ${
-            activeTab === 'doctors'
-              ? 'border-b-2 border-blue-500 text-blue-600'
-              : 'text-gray-600 hover:text-gray-800'
-          }`}
-          onClick={() => setActiveTab('doctors')}
-        >
-          <UserCheck className="h-4 w-4 mr-2" />
-          Doctor Profiles
-        </Button>
-        <Button
-          variant="ghost"
-          className={`px-4 py-2 ${
-            activeTab === 'billing-settings'
-              ? 'border-b-2 border-blue-500 text-blue-600'
-              : 'text-gray-600 hover:text-gray-800'
-          }`}
-          onClick={() => setActiveTab('billing-settings')}
-        >
-          <Receipt className="h-4 w-4 mr-2" />
-          Billing Settings
-        </Button>
-        <Button
-          variant="ghost"
-          className={`px-4 py-2 ${
-            activeTab === 'payer-schemes'
-              ? 'border-b-2 border-blue-500 text-blue-600'
-              : 'text-gray-600 hover:text-gray-800'
-          }`}
-          onClick={() => setActiveTab('payer-schemes')}
-        >
-          <CreditCard className="h-4 w-4 mr-2" />
-          Payer Schemes
-        </Button>
-        <Button
-          variant="ghost"
-          className={`px-4 py-2 ${
-            activeTab === 'print-settings'
-              ? 'border-b-2 border-blue-500 text-blue-600'
-              : 'text-gray-600 hover:text-gray-800'
-          }`}
-          onClick={() => setActiveTab('print-settings')}
-        >
-          <Printer className="h-4 w-4 mr-2" />
-          Print Settings
-        </Button>
-        <Button
-          variant="ghost"
-          className={`px-4 py-2 ${
-            activeTab === 'appearance'
-              ? 'border-b-2 border-blue-500 text-blue-600'
-              : 'text-gray-600 hover:text-gray-800'
-          }`}
-          onClick={() => setActiveTab('appearance')}
-        >
-          <PanelTop className="h-4 w-4 mr-2" />
-          Appearance
-        </Button>
-      </div>
+      {activeTab === 'payers' && <PayerSchemesAdmin />}
 
-      {activeTab === 'payer-schemes' && <PayerSchemesAdmin />}
-
-      {/* Print Settings Tab */}
-      {activeTab === 'print-settings' && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center">
-              <Printer className="h-5 w-5 mr-2" />
-              Printing &amp; PDFs
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <p className="text-sm text-gray-600">
-              Letterhead, pre-printed stationery gap, and per-document overrides are managed on the
-              dedicated Print Settings page (also available to reception staff).
-            </p>
-            <Button type="button" variant="outline" asChild>
-              <Link to="/dashboard/print-settings">Open Print Settings</Link>
-            </Button>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Appearance Tab */}
+      {/* Appearance */}
       {activeTab === 'appearance' && (
         <Card>
           <CardHeader>
@@ -403,7 +330,7 @@ const HospitalAdminModule = () => {
       )}
 
       {/* Hospital Information Tab */}
-      {activeTab === 'hospital-info' && (
+      {activeTab === 'info' && (
         <div className="space-y-6">
         <Card>
           <CardHeader>
@@ -481,13 +408,34 @@ const HospitalAdminModule = () => {
                   />
                 </div>
                 <div>
-                  <Label htmlFor="tax_id">Tax ID</Label>
+                  <Label htmlFor="tax_id">Tax ID / PAN</Label>
                   <Input
                     id="tax_id"
                     value={hospitalInfo.tax_id}
                     onChange={(e) => setHospitalInfo({ ...hospitalInfo, tax_id: e.target.value })}
-                    placeholder="TAX-123456789"
+                    placeholder="PAN or tax ID"
                   />
+                </div>
+                <div>
+                  <Label htmlFor="gstin">Hospital GSTIN</Label>
+                  <Input
+                    id="gstin"
+                    value={hospitalInfo.gstin || ''}
+                    onChange={(e) => setHospitalInfo({ ...hospitalInfo, gstin: e.target.value.toUpperCase() })}
+                    placeholder="22AAAAA0000A1Z5"
+                    maxLength={15}
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="gst_state_code">GST state code</Label>
+                  <Input
+                    id="gst_state_code"
+                    value={hospitalInfo.gst_state_code || ''}
+                    onChange={(e) => setHospitalInfo({ ...hospitalInfo, gst_state_code: e.target.value.replace(/\D/g, '').slice(0, 2) })}
+                    placeholder="e.g. 36"
+                    maxLength={2}
+                  />
+                  <p className="text-xs text-gray-500 mt-1">Used to split CGST+SGST vs IGST on GST reports.</p>
                 </div>
               </div>
 
@@ -636,7 +584,10 @@ const HospitalAdminModule = () => {
             </CardHeader>
             <CardContent>
               {doctors.length === 0 ? (
-                <p className="text-gray-500 text-center py-4">No doctors found. Create doctors from the Administration panel.</p>
+                <p className="text-gray-500 text-center py-4">
+                  No doctors found. Create doctor accounts from{' '}
+                  <Link to="/dashboard/admin/users" className="text-blue-600 hover:underline">Users</Link>.
+                </p>
               ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full border-collapse">
@@ -756,7 +707,7 @@ const HospitalAdminModule = () => {
       )}
 
       {/* Billing Settings Tab */}
-      {activeTab === 'billing-settings' && (
+      {activeTab === 'billing' && (
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center">

@@ -495,6 +495,7 @@ class PharmacySale(Base):
     admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=True, index=True)
     billing_mode = Column(String(30), default="cash_at_pharmacy")  # cash_at_pharmacy | inpatient_bill
     inpatient_bill_id = Column(Integer, ForeignKey("bills.id"), nullable=True)
+    customer_gstin = Column(String(20), nullable=True)
 
     # False for historical imports recorded without inventory movement.
     # Void/edit must not credit stock when this is False.

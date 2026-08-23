@@ -162,7 +162,7 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
           </DialogHeader>
           <div className="flex flex-col space-y-4">
             <p className="text-xs text-muted-foreground">
-              Letterhead follows Settings → Print Settings.
+              Letterhead follows Administration → Customisations.
             </p>
             <div className="grid grid-cols-2 gap-4 p-4 bg-gray-50 rounded-lg">
               <div>

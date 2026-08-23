@@ -137,7 +137,7 @@ const PdfPreviewDialog = ({
             <p className="text-xs text-muted-foreground">
               Default letterhead and top gap are configured under{' '}
               <Link to="/dashboard/print-settings" className="underline hover:text-foreground">
-                Print Settings
+                Customisations
               </Link>
               {letterheadReportType === 'lab_report' ? ' (Lab Report).' : '.'}
             </p>

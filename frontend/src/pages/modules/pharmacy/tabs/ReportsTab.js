@@ -5,6 +5,7 @@ import { Button } from '../../../../components/ui/button';
 import { Input } from '../../../../components/ui/input';
 import { Label } from '../../../../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../../../components/ui/select';
+import { Link } from 'react-router-dom';
 import { Download, Play, Printer } from 'lucide-react';
 import { printPdfFromUrl } from '../../../../utils/printPdf';
 import PharmacyStoreSelector from '../../../../components/pharmacy/PharmacyStoreSelector';
@@ -112,6 +113,12 @@ export default function ReportsTab() {
     <Card>
       <CardHeader>
         <CardTitle>Reports</CardTitle>
+        <p className="text-sm text-gray-600 font-normal mt-1">
+          Stock, narcotic, margin, and closeout stay here. Hospital-wide sales, GST HSN registers, and CA Excel exports are under{' '}
+          <Link to="/dashboard/billing/gst" className="text-blue-600 hover:underline">Billing → GST Reports</Link>
+          {' '}and{' '}
+          <Link to="/dashboard/billing/sales-summary" className="text-blue-600 hover:underline">Sales Summary</Link>.
+        </p>
       </CardHeader>
       <CardContent>
         <div className="flex flex-wrap gap-3 items-end mb-4">

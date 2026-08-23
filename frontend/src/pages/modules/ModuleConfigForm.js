@@ -28,10 +28,17 @@ const SIGNATORY_FIELDS = [
   { key: 'pathologist_qualification', label: 'Qualification', placeholder: 'MD Pathology, DMLT' },
 ];
 
+const GST_FIELD = {
+  key: 'gst_number',
+  label: 'GST Number',
+  placeholder: '36AABCU9603R1ZM',
+};
+
+const isSettingOn = (val) => ['true', '1', 'yes', 'on'].includes(String(val || '').trim().toLowerCase());
+
 const PHARMACY_EXTRA_FIELDS = [
   { key: 'drug_license_number', label: 'Drug License Number', placeholder: 'DL-20B-12345' },
   { key: 'pharmacist_name', label: 'Pharmacist Name', placeholder: 'Mr. Rajesh Kumar' },
-  { key: 'gst_number', label: 'GST Number', placeholder: '36AABCU9603R1ZM' },
 ];
 
 // Provider identity fields — only relevant when the lab/pharmacy is a third party.
@@ -129,6 +136,8 @@ const ModuleConfigForm = ({ moduleName }) => {
   const isPharmacy = moduleName === 'pharmacy';
   const moduleLabel = isPharmacy ? 'Pharmacy' : 'Laboratory';
   const isThirdParty = providerType === 'third_party';
+  const hasOwnGst = !!(config.gst_number || '').trim();
+  const useHospitalGst = isSettingOn(config.use_hospital_gstin);
 
   useEffect(() => {
     fetchConfig();
@@ -139,10 +148,14 @@ const ModuleConfigForm = ({ moduleName }) => {
     try {
       const response = await axios.get(`/api/hospital/module-config/${moduleName}`);
       const loaded = response.data.config || {};
-      setConfig(loaded);
+      const thirdParty = !!(loaded.provider_name || '').trim();
       // Infer the mode from stored data: a provider name means it's an external
       // third party; otherwise the lab/pharmacy is run by the hospital itself.
-      setProviderType((loaded.provider_name || '').trim() ? 'third_party' : 'in_house');
+      setProviderType(thirdParty ? 'third_party' : 'in_house');
+      if (loaded.use_hospital_gstin === undefined || loaded.use_hospital_gstin === null || loaded.use_hospital_gstin === '') {
+        loaded.use_hospital_gstin = thirdParty ? 'false' : 'true';
+      }
+      setConfig(loaded);
     } catch (error) {
       console.error('Failed to fetch module config:', error);
     } finally {
@@ -162,8 +175,14 @@ const ModuleConfigForm = ({ moduleName }) => {
       setConfig(prev => {
         const next = { ...prev };
         PROVIDER_FIELD_KEYS.forEach(k => { next[k] = ''; });
+        if (!(next.gst_number || '').trim()) next.use_hospital_gstin = 'true';
         return next;
       });
+    } else {
+      setConfig(prev => ({
+        ...prev,
+        use_hospital_gstin: (prev.gst_number || '').trim() ? prev.use_hospital_gstin : 'false',
+      }));
     }
   };
 
@@ -274,6 +293,37 @@ const ModuleConfigForm = ({ moduleName }) => {
                 />
               </div>
             ))}
+            <div className="md:col-span-2 space-y-2">
+              <Label htmlFor={GST_FIELD.key}>{GST_FIELD.label}</Label>
+              <Input
+                id={GST_FIELD.key}
+                value={config[GST_FIELD.key] || ''}
+                onChange={(e) => handleChange(GST_FIELD.key, e.target.value.toUpperCase())}
+                placeholder={GST_FIELD.placeholder}
+                maxLength={15}
+              />
+              {hasOwnGst ? (
+                <p className="text-xs text-gray-500">
+                  Shown on {moduleLabel} GST reports. This number is used instead of the hospital GSTIN.
+                </p>
+              ) : (
+                <label className="flex items-start gap-3 cursor-pointer pt-1">
+                  <input
+                    type="checkbox"
+                    className="mt-1 w-4 h-4 shrink-0"
+                    checked={useHospitalGst}
+                    onChange={(e) => handleChange('use_hospital_gstin', e.target.checked ? 'true' : 'false')}
+                  />
+                  <span>
+                    <span className="text-sm font-medium text-gray-800">Use hospital GSTIN</span>
+                    <span className="block text-xs text-gray-500 mt-0.5">
+                      Print the hospital GSTIN on {moduleLabel} GST reports. Leave unchecked to keep GSTIN blank
+                      {isThirdParty ? ' (typical for an unregistered third party)' : ''}.
+                    </span>
+                  </span>
+                </label>
+              )}
+            </div>
             {isPharmacy && PHARMACY_EXTRA_FIELDS.map(f => (
               <div key={f.key}>
                 <Label htmlFor={f.key}>{f.label}</Label>
