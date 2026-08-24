@@ -22,27 +22,6 @@ def setup_system_modules():
     
     modules = [
         {
-            "module_name": "outpatient",
-            "display_name": "Outpatient",
-            "description": "Outpatient management and appointments",
-            "is_enabled": False,
-            "is_always_enabled": False
-        },
-        {
-            "module_name": "inpatient", 
-            "display_name": "Inpatient",
-            "description": "Inpatient management and ward administration",
-            "is_enabled": False,
-            "is_always_enabled": False
-        },
-        {
-            "module_name": "lab",
-            "display_name": "Laboratory",
-            "description": "Laboratory tests and reports management",
-            "is_enabled": False,
-            "is_always_enabled": False
-        },
-        {
             "module_name": "pharmacy",
             "display_name": "Pharmacy",
             "description": "Pharmacy and medication management",
@@ -50,16 +29,9 @@ def setup_system_modules():
             "is_always_enabled": False
         },
         {
-            "module_name": "physiotherapy",
-            "display_name": "Physiotherapy",
-            "description": "Physiotherapy clinic sessions, packages, and billing",
-            "is_enabled": False,
-            "is_always_enabled": False
-        },
-        {
-            "module_name": "ehr",
-            "display_name": "Electronic Health Records",
-            "description": "Electronic health records and patient data",
+            "module_name": "billing",
+            "display_name": "Billing",
+            "description": "Billing and payments",
             "is_enabled": True,
             "is_always_enabled": True
         },

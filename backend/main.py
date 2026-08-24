@@ -30,21 +30,13 @@ from app.models.inpatient import (
     TPACompany, BillSplit,
     BedTransferHistory, BedTurnoverLog, BedReservation, NurseAssignment, NurseShiftRoster,
     ConsentTemplate, Consent,
-    FluidBalance, CriticalLabAlert,
+    FluidBalance,
 )
 from app.models.patient import PatientAllergy
-from app.models.canteen import (  # noqa: F401
-    CanteenCategory, CanteenItem, CanteenOrder, CanteenOrderItem,
-    CanteenSale, CanteenSaleItem,
-)
-from app.models.physiotherapy import (  # noqa: F401
-    PhysioService, PhysioPackageTemplate, PhysioPatientPackage, PhysioPackageLedger,
-    PhysioTherapistAvailability, PhysioTherapistSpecialSchedule, PhysioAppointment,
-)
 from app.models.settlement import Settlement, SettlementConfig  # noqa: F401
 
 # Import route modules
-from app.routes import auth, patients, admin, system, module_admin, hospital_admin, onboarding, appointments, prescriptions, medicines, consultations, prescriptions_simple, doctor_availability, lab, ehr, license, backup, referrals, audit, inpatient, outpatient_procedures, pharmacy, canteen, catch_up, physiotherapy
+from app.routes import auth, patients, admin, system, module_admin, hospital_admin, onboarding, prescriptions, medicines, license, backup, audit, pharmacy, catch_up
 from app.middleware.license_middleware import LicenseMiddleware
 from app.middleware.audit_middleware import AuditMiddleware
 from app.middleware.maintenance import MaintenanceMiddleware
@@ -191,15 +183,6 @@ def _run_operational_startup():
         print("Google Drive backup thread started — checking every 10 min")
     except Exception as e:
         print(f"Google Drive backup note: {e}")
-    # Inpatient daily charges auto-post (one doctor visit per admitted
-    # patient per day at the admitting doctor's fee). Idempotent — manually
-    # recorded visits supersede the auto-post.
-    try:
-        from app.services.inpatient_daily_charges import start_daily_charges_thread
-        start_daily_charges_thread(check_interval_seconds=3600)
-        print("Inpatient daily-charges thread started — hourly check")
-    except Exception as e:
-        print(f"Daily-charges note: {e}")
 
 
 @app.on_event("startup")
@@ -212,10 +195,10 @@ async def startup_event():
 
     # Module catalog heal is also unconditional. Software Update upgrades
     # replace the .exe without writing install_seed.json; if we only seeded
-    # modules inside the setup_complete gate, physiotherapy (and future
-    # modules) never appeared in Module Management on upgraded installs.
+    # modules inside the setup_complete gate, new catalog modules never
+    # appeared in Module Management on upgraded installs.
     _ensure_modules()
-    # Roles + physio permission catalog must land even when setup_complete is
+    # Roles + permission catalog must land even when setup_complete is
     # briefly false after an in-place upgrade.
     _ensure_role_permissions()
 
@@ -246,13 +229,15 @@ def _ensure_role_permissions():
         db.commit()
         print("Roles, module permissions, and role permissions synced")
 
-        # Fix outpatient: make it toggleable (not always-on) for existing installs
+        # Disable retired outpatient / inpatient modules on existing installs
         from app.models.system import SystemModule
-        outpatient = db.query(SystemModule).filter(SystemModule.module_name == "outpatient").first()
-        if outpatient and outpatient.is_always_enabled:
-            outpatient.is_always_enabled = False
-            db.commit()
-            print("Updated outpatient module: now toggleable")
+        for retired in ("outpatient", "inpatient", "lab", "ehr", "physiotherapy", "canteen"):
+            mod = db.query(SystemModule).filter(SystemModule.module_name == retired).first()
+            if mod and (mod.is_enabled or mod.is_always_enabled):
+                mod.is_enabled = False
+                mod.is_always_enabled = False
+                print(f"Disabled retired {retired} module")
+        db.commit()
     except Exception as e:
         print(f"Warning: Could not seed role permissions: {e}")
         db.rollback()
@@ -477,27 +462,15 @@ app.include_router(system.router, prefix="/api/system", tags=["System"])
 app.include_router(module_admin.router, prefix="/api/modules", tags=["Module Administration"])
 app.include_router(hospital_admin.router, prefix="/api/hospital", tags=["Hospital Administration"])
 app.include_router(onboarding.router, prefix="/api/onboarding", tags=["Hospital Onboarding"])
-app.include_router(appointments.router, prefix="/api/appointments", tags=["Appointments"])
-app.include_router(consultations.router, prefix="/api/consultations", tags=["Consultations"])
 app.include_router(prescriptions.router, prefix="/api/prescriptions", tags=["Prescriptions"])
-app.include_router(prescriptions_simple.router, prefix="/api/prescriptions-simple", tags=["Simple Prescriptions"])
 app.include_router(medicines.router, prefix="/api/medicines", tags=["Medicines"])
-app.include_router(doctor_availability.router, prefix="/api/doctor-availability", tags=["Doctor Availability"])
-app.include_router(lab.router, prefix="/api/lab", tags=["Laboratory"])
 app.include_router(pharmacy.router, prefix="/api/pharmacy", tags=["Pharmacy"])
 # Additional module routers will be added as they are implemented
 # app.include_router(billing.router, prefix="/api/billing", tags=["Billing"])
-app.include_router(ehr.router, prefix="/api/ehr", tags=["EHR"])
 app.include_router(license.router, prefix="/api/license", tags=["License"])
 app.include_router(backup.router, prefix="/api/backup", tags=["Backup"])
-app.include_router(referrals.router, prefix="/api/referrals", tags=["Referrals"])
 app.include_router(audit.router, prefix="/api/audit", tags=["Audit Logs"])
-# app.include_router(outpatient.router, prefix="/api/outpatient", tags=["Outpatient"])
-app.include_router(inpatient.router, prefix="/api/inpatient", tags=["Inpatient"])
-app.include_router(canteen.router, prefix="/api/canteen", tags=["Canteen"])
-app.include_router(physiotherapy.router, prefix="/api/physiotherapy", tags=["Physiotherapy"])
 app.include_router(catch_up.router, prefix="/api/admin/catch-up", tags=["Catch-up Bills"])
-app.include_router(outpatient_procedures.router, prefix="/api/outpatient", tags=["Outpatient Procedures"])
 
 # Serve uploaded files
 _uploads_dir = get_uploads_dir()

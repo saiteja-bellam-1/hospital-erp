@@ -1,7 +1,7 @@
-"""End-to-end catch-up bill generation across all modules + edge cases.
+"""End-to-end catch-up bill generation across remaining modules + edge cases.
 
-Covers: consultation, lab, pharmacy, canteen, misc, inpatient stay (with food),
-append-charges, date/permission edges, and dual Service/Payment date wiring.
+Covers: pharmacy, misc, inpatient stay, append-charges, date/permission
+edges, and dual Service/Payment date wiring.
 """
 
 from __future__ import annotations
@@ -12,10 +12,7 @@ from datetime import date, datetime, timedelta
 import pytest
 
 from app.models.billing import Bill, BillItem, Payment
-from app.models.canteen import CanteenOrder, CanteenSale
 from app.models.inpatient import Admission
-from app.models.lab import LabTest, PatientLabOrder
-from app.models.outpatient import Appointment
 from app.models.pharmacy import (
     Medicine,
     MedicineCategory,
@@ -52,89 +49,6 @@ def _assert_paid_bill(db, bill_id, *, bill_type, service_date, payment_id, expec
 class TestCatchUpAllModulesBillGeneration:
     """Happy-path bill generation for every catch-up module type."""
 
-    def test_consultation_generates_bill_and_appointment(
-        self, client, auth_headers, seed_data, db_session
-    ):
-        svc, pay = _dates(7, 6)
-        res = client.post(
-            "/api/admin/catch-up/consultation",
-            headers=auth_headers,
-            json={
-                "patient_id": seed_data["patient_id"],
-                "doctor_id": seed_data["doctor_user_id"],
-                "consultation_fee": 500,
-                "registration_fee": 50,
-                "service_date": svc,
-                "payment_date": pay,
-                "reason": "Missed OPD slip",
-            },
-        )
-        assert res.status_code == 200, res.text
-        body = res.json()
-        assert body["total"] == 550.0
-        bill, items, payment = _assert_paid_bill(
-            db_session, body["bill_id"],
-            bill_type="consultation", service_date=svc,
-            payment_id=body["payment_id"], expected_total=550.0,
-        )
-        assert payment.payment_date.date().isoformat() == pay
-        apt = db_session.query(Appointment).filter(Appointment.id == body["appointment_id"]).first()
-        assert apt is not None
-        assert apt.payment_status == "paid"
-        assert any("consult" in (i.item_name or "").lower() or i.item_type == "consultation"
-                   for i in items) or len(items) >= 1
-
-    def test_lab_generates_orders_and_bill(self, client, auth_headers, seed_data, db_session):
-        from app.models.lab import LabTestCategory
-
-        hid = seed_data["hospital_id"]
-        cat = LabTestCategory(name=f"CU-Cat-{uuid.uuid4().hex[:6]}", hospital_id=hid)
-        db_session.add(cat)
-        db_session.flush()
-        test = LabTest(
-            test_code=f"CU-{uuid.uuid4().hex[:6]}",
-            name="CatchUp CBC",
-            cost=350.0,
-            category_id=cat.id,
-            hospital_id=hid,
-            is_active=True,
-        )
-        db_session.add(test)
-        db_session.commit()
-
-        svc, pay = _dates(8, 3)
-        res = client.post(
-            "/api/admin/catch-up/lab",
-            headers=auth_headers,
-            json={
-                "patient_id": seed_data["patient_id"],
-                "doctor_id": seed_data["doctor_user_id"],
-                "test_ids": [test.id],
-                "service_date": svc,
-                "payment_date": pay,
-            },
-        )
-        assert res.status_code == 200, res.text
-        body = res.json()
-        assert body["total"] == 350.0
-        _assert_paid_bill(
-            db_session, body["bill_id"],
-            bill_type="lab", service_date=svc,
-            payment_id=body["payment_id"], expected_total=350.0,
-        )
-        orders = db_session.query(PatientLabOrder).filter(
-            PatientLabOrder.id.in_(body["order_ids"])
-        ).all()
-        assert len(orders) == 1
-        assert orders[0].payment_status == "paid"
-        assert orders[0].status == "collected"
-        assert orders[0].completion_date is None
-        assert (orders[0].lab_bill_number or "").startswith("LB-CU-")
-        assert orders[0].payment_date.date().isoformat() == pay
-        assert orders[0].order_date.date().isoformat() == svc
-        assert body.get("orders") and body["orders"][0]["id"] == orders[0].id
-        assert body["orders"][0]["has_report"] is False
-
     def test_pharmacy_financial_only_generates_bill(
         self, client, auth_headers, seed_data, db_session
     ):
@@ -165,61 +79,7 @@ class TestCatchUpAllModulesBillGeneration:
         assert payment.payment_date.date().isoformat() == pay
         assert len(items) == 2
 
-    def test_canteen_with_patient_generates_sale_and_bill(
-        self, client, auth_headers, seed_data, db_session
-    ):
-        svc, pay = _dates(6, 5)
-        res = client.post(
-            "/api/admin/catch-up/canteen-sale",
-            headers=auth_headers,
-            json={
-                "patient_id": seed_data["patient_id"],
-                "service_date": svc,
-                "payment_date": pay,
-                "items": [
-                    {"item_name": "Tea", "quantity": 2, "unit_price": 15},
-                    {"item_name": "Idli", "quantity": 1, "unit_price": 40},
-                ],
-            },
-        )
-        assert res.status_code == 200, res.text
-        body = res.json()
-        assert body["total"] == 70.0
-        assert body["sale_id"]
-        assert body["bill_id"]
-        _assert_paid_bill(
-            db_session, body["bill_id"],
-            bill_type="canteen", service_date=svc,
-            payment_id=body["payment_id"], expected_total=70.0,
-        )
-        sale = db_session.query(CanteenSale).filter(CanteenSale.id == body["sale_id"]).first()
-        assert sale is not None
-        assert sale.status == "completed"
-        assert float(sale.grand_total) == pytest.approx(70.0)
 
-    def test_canteen_walkin_without_patient_sale_only(
-        self, client, auth_headers, seed_data, db_session
-    ):
-        svc, pay = _dates(2, 2)
-        res = client.post(
-            "/api/admin/catch-up/canteen-sale",
-            headers=auth_headers,
-            json={
-                "customer_name": "Walk-in Guest",
-                "service_date": svc,
-                "payment_date": pay,
-                "items": [{"item_name": "Coffee", "quantity": 1, "unit_price": 25}],
-            },
-        )
-        assert res.status_code == 200, res.text
-        body = res.json()
-        assert body["total"] == 25.0
-        assert body["sale_id"]
-        assert body["bill_id"] is None
-        assert body["payment_id"] is None
-        sale = db_session.query(CanteenSale).filter(CanteenSale.id == body["sale_id"]).first()
-        assert sale is not None
-        assert sale.customer_name == "Walk-in Guest"
 
     def test_misc_multi_line_bill(self, client, auth_headers, seed_data, db_session):
         svc, pay = _dates(9, 1)
@@ -267,14 +127,6 @@ class TestCatchUpAllModulesBillGeneration:
         assert room.status_code == 201, room.text
         room_id = room.json()["id"]
 
-        food = client.post(
-            "/api/canteen/items",
-            headers=auth_headers,
-            json={"name": f"E2E Meal {uuid.uuid4().hex[:4]}", "price": 90.0, "is_veg": True},
-        )
-        assert food.status_code == 201, food.text
-        food_id = food.json()["id"]
-
         admit = datetime(2026, 4, 1, 10, 0, 0)
         disc = datetime(2026, 4, 4, 10, 0, 0)  # 3 days
         svc, pay = "2026-04-04", "2026-04-04"
@@ -295,15 +147,6 @@ class TestCatchUpAllModulesBillGeneration:
                     "visit_datetime": (admit + timedelta(days=1)).isoformat(),
                     "charge_amount": 400,
                 }],
-                "canteen_orders": [{
-                    "serve_date": "2026-04-02",
-                    "items": [{
-                        "item_id": food_id,
-                        "item_name": food.json()["name"],
-                        "quantity": 2,
-                        "unit_price": 90,
-                    }],
-                }],
                 "pharmacy_lines": [
                     {"item_name": "Inj. NS", "quantity": 1, "unit_price": 50},
                 ],
@@ -312,26 +155,14 @@ class TestCatchUpAllModulesBillGeneration:
         )
         assert res.status_code == 200, res.text
         body = res.json()
-        # 3d room 3000 + visit 400 + food 180 + pharm 50 = 3630
-        assert body["total"] == pytest.approx(3630.0)
+        # 3d room 3000 + visit 400 + pharm 50 = 3450
+        assert body["total"] == pytest.approx(3450.0)
         assert body["is_catch_up"] is True
 
         bill = db_session.query(Bill).filter(Bill.id == body["bill_id"]).first()
         assert bill.status == "paid"
         assert bill.bill_date.date().isoformat() == svc
         items = db_session.query(BillItem).filter(BillItem.bill_id == body["bill_id"]).all()
-        types = {it.item_type for it in items}
-        assert "food" in types
-        food_total = sum(float(i.total_price or 0) for i in items if i.item_type == "food")
-        assert food_total == pytest.approx(180.0)
-
-        orders = db_session.query(CanteenOrder).filter(
-            CanteenOrder.admission_id == body["admission_id"]
-        ).all()
-        assert len(orders) == 1
-        assert orders[0].billed is True
-        assert orders[0].bill_id == body["bill_id"]
-
         payment = db_session.query(Payment).filter(Payment.id == body["payment_id"]).first()
         assert payment.payment_date.date().isoformat() == pay
 
@@ -401,34 +232,7 @@ class TestCatchUpEdgeCases:
         )
         assert res.status_code == 404
 
-    def test_lab_unknown_test_ids(self, client, auth_headers, seed_data):
-        svc, pay = _dates()
-        res = client.post(
-            "/api/admin/catch-up/lab",
-            headers=auth_headers,
-            json={
-                "patient_id": seed_data["patient_id"],
-                "test_ids": [999999],
-                "service_date": svc,
-                "payment_date": pay,
-            },
-        )
-        assert res.status_code == 400
-        assert "Unknown lab test" in res.text
 
-    def test_lab_empty_test_ids_422(self, client, auth_headers, seed_data):
-        svc, pay = _dates()
-        res = client.post(
-            "/api/admin/catch-up/lab",
-            headers=auth_headers,
-            json={
-                "patient_id": seed_data["patient_id"],
-                "test_ids": [],
-                "service_date": svc,
-                "payment_date": pay,
-            },
-        )
-        assert res.status_code == 422
 
     def test_pharmacy_affect_stock_requires_batch(self, client, auth_headers, seed_data):
         svc, pay = _dates()
@@ -573,8 +377,7 @@ class TestCatchUpEdgeCases:
                 "service_date": svc,
                 "payment_date": pay,
                 "visits": [],
-                "canteen_orders": [],
-                "deposits": [],
+                                "deposits": [],
             },
         )
         assert res.status_code == 400
@@ -616,8 +419,7 @@ class TestCatchUpEdgeCases:
                     "visit_datetime": admit.isoformat(),
                     "charge_amount": 300,
                 }],
-                "canteen_orders": [],
-                "deposits": [],
+                                "deposits": [],
             },
         )
         assert res.status_code == 200, res.text
@@ -658,8 +460,7 @@ class TestCatchUpEdgeCases:
                 "service_date": svc,
                 "payment_date": svc,
                 "visits": [],
-                "canteen_orders": [],
-                "deposits": [],
+                                "deposits": [],
             },
         )
         assert create.status_code == 200, create.text
@@ -673,7 +474,6 @@ class TestCatchUpEdgeCases:
                 "payment_date": date.today().isoformat(),
                 "visits": [],
                 "ancillary": [],
-                "canteen_orders": [],
                 "pharmacy_lines": [],
             },
         )
@@ -712,8 +512,7 @@ class TestCatchUpEdgeCases:
                 "service_date": svc,
                 "payment_date": svc,
                 "visits": [],
-                "canteen_orders": [],
-                "deposits": [],
+                                "deposits": [],
             },
         )
         assert create.status_code == 200, create.text
@@ -754,10 +553,6 @@ class TestCatchUpEdgeCases:
         assert isinstance(rows, list)
         assert any(r.get("action", "").startswith("catch_up_") for r in rows)
 
-    def test_canteen_catalog_available(self, client, auth_headers):
-        res = client.get("/api/admin/catch-up/canteen-catalog", headers=auth_headers)
-        assert res.status_code == 200, res.text
-        assert isinstance(res.json(), list)
 
     def test_reports_see_catch_up_by_dual_dates(
         self, client, auth_headers, seed_data, db_session
@@ -892,77 +687,9 @@ class TestCatchUpPharmacyStockBill:
 
 
 class TestCatchUpBillPreviewAndPdf:
-    """Dry-run previews for all modules + pdf path on create responses."""
+    """Dry-run previews for remaining modules + pdf path on create responses."""
 
-    def test_consultation_preview_and_pdf_meta(self, client, auth_headers, seed_data):
-        svc, pay = _dates(4, 3)
-        payload = {
-            "patient_id": seed_data["patient_id"],
-            "doctor_id": seed_data["doctor_user_id"],
-            "consultation_fee": 400,
-            "registration_fee": 100,
-            "service_date": svc,
-            "payment_date": pay,
-        }
-        prev = client.post(
-            "/api/admin/catch-up/consultation/preview",
-            headers=auth_headers,
-            json=payload,
-        )
-        assert prev.status_code == 200, prev.text
-        draft = prev.json()
-        assert draft["bill_type"] == "consultation"
-        assert draft["grand_total"] == 500.0
-        assert len(draft["items"]) == 2
-        assert draft["creates_central_bill"] is True
-
-        created = client.post(
-            "/api/admin/catch-up/consultation",
-            headers=auth_headers,
-            json=payload,
-        )
-        assert created.status_code == 200, created.text
-        pdf = created.json()["pdf"]
-        assert pdf["path"].startswith("/api/appointments/")
-        assert pdf["path"].endswith("/bill/download")
-
-    def test_lab_preview_and_pdf_meta(self, client, auth_headers, seed_data, db_session):
-        from app.models.lab import LabTestCategory
-
-        hid = seed_data["hospital_id"]
-        cat = LabTestCategory(name=f"Prev-Cat-{uuid.uuid4().hex[:6]}", hospital_id=hid)
-        db_session.add(cat)
-        db_session.flush()
-        test = LabTest(
-            test_code=f"PV-{uuid.uuid4().hex[:6]}",
-            name="Preview Lipid",
-            cost=220.0,
-            category_id=cat.id,
-            hospital_id=hid,
-            is_active=True,
-        )
-        db_session.add(test)
-        db_session.commit()
-
-        svc, pay = _dates(3, 2)
-        payload = {
-            "patient_id": seed_data["patient_id"],
-            "test_ids": [test.id],
-            "service_date": svc,
-            "payment_date": pay,
-        }
-        prev = client.post("/api/admin/catch-up/lab/preview", headers=auth_headers, json=payload)
-        assert prev.status_code == 200, prev.text
-        assert prev.json()["grand_total"] == 220.0
-        assert prev.json()["items"][0]["item_name"] == "Preview Lipid"
-
-        created = client.post("/api/admin/catch-up/lab", headers=auth_headers, json=payload)
-        assert created.status_code == 200, created.text
-        body = created.json()
-        assert body["lab_bill_group_id"]
-        assert body["pdf"]["path"] == f"/api/lab/bills/{body['lab_bill_group_id']}/pdf"
-
-    def test_pharmacy_misc_canteen_previews(self, client, auth_headers, seed_data):
+    def test_pharmacy_misc_previews(self, client, auth_headers, seed_data):
         svc, pay = _dates(2, 1)
 
         ph = client.post(
@@ -990,20 +717,6 @@ class TestCatchUpBillPreviewAndPdf:
         )
         assert misc.status_code == 200, misc.text
         assert misc.json()["grand_total"] == 80.0
-
-        canteen = client.post(
-            "/api/admin/catch-up/canteen-sale/preview",
-            headers=auth_headers,
-            json={
-                "service_date": svc,
-                "payment_date": pay,
-                "items": [{"item_name": "Tea", "quantity": 3, "unit_price": 10}],
-            },
-        )
-        assert canteen.status_code == 200, canteen.text
-        assert canteen.json()["grand_total"] == 30.0
-        assert canteen.json()["creates_central_bill"] is False
-        assert any("no central bill" in w.lower() for w in canteen.json()["warnings"])
 
         created = client.post(
             "/api/admin/catch-up/misc-bill",
@@ -1053,7 +766,6 @@ class TestCatchUpBillPreviewAndPdf:
                 "is_observation": False,
                 "visits": [],
                 "ancillary": [],
-                "canteen_orders": [],
                 "pharmacy_lines": [{"item_name": "ORS", "quantity": 2, "unit_price": 25}],
             },
         )
@@ -1063,139 +775,3 @@ class TestCatchUpBillPreviewAndPdf:
         assert isinstance(draft["items"], list)
         assert len(draft["items"]) >= 1
         assert any("ORS" in (i.get("item_name") or "") for i in draft["items"])
-
-
-class TestCatchUpLabResultsAndReport:
-    """Admin-owned catch-up lab: enter values + download clinical report."""
-
-    def test_catch_up_lab_results_and_report_pdf(
-        self, client, auth_headers, seed_data, db_session
-    ):
-        from app.models.lab import LabTestCategory, LabTestParameter, LabReport
-
-        hid = seed_data["hospital_id"]
-        cat = LabTestCategory(name=f"CU-RCat-{uuid.uuid4().hex[:6]}", hospital_id=hid)
-        db_session.add(cat)
-        db_session.flush()
-        test = LabTest(
-            test_code=f"CUR-{uuid.uuid4().hex[:6]}",
-            name="CatchUp Glucose",
-            cost=120.0,
-            category_id=cat.id,
-            hospital_id=hid,
-            is_active=True,
-        )
-        db_session.add(test)
-        db_session.flush()
-        param = LabTestParameter(
-            test_id=test.id,
-            parameter_name="Fasting Glucose",
-            unit="mg/dL",
-            field_type="numeric",
-            reference_min_default=70,
-            reference_max_default=100,
-            display_order=0,
-            is_active=True,
-        )
-        db_session.add(param)
-        db_session.commit()
-
-        svc, pay = _dates(5, 4)
-        created = client.post(
-            "/api/admin/catch-up/lab",
-            headers=auth_headers,
-            json={
-                "patient_id": seed_data["patient_id"],
-                "test_ids": [test.id],
-                "service_date": svc,
-                "payment_date": pay,
-            },
-        )
-        assert created.status_code == 200, created.text
-        body = created.json()
-        order_id = body["order_ids"][0]
-        assert body["orders"][0]["status"] == "collected"
-
-        stored = client.get(
-            "/api/admin/catch-up/lab/reports",
-            headers=auth_headers,
-        )
-        assert stored.status_code == 200, stored.text
-        stored_order = next(row for row in stored.json() if row["order_id"] == order_id)
-        assert stored_order["test_name"] == "CatchUp Glucose"
-        assert stored_order["service_date"] == svc
-        assert stored_order["has_report"] is False
-        assert stored_order["report_id"] is None
-
-        form = client.get(
-            f"/api/admin/catch-up/lab/orders/{order_id}/entry-form",
-            headers=auth_headers,
-        )
-        assert form.status_code == 200, form.text
-        form_body = form.json()
-        assert form_body["order_id"] == order_id
-        assert form_body["has_report"] is False
-        assert len(form_body["parameters"]) == 1
-        assert form_body["parameters"][0]["parameter_name"] == "Fasting Glucose"
-
-        submitted = client.post(
-            f"/api/admin/catch-up/lab/orders/{order_id}/results",
-            headers=auth_headers,
-            json={
-                "results": [{
-                    "parameter_id": param.id,
-                    "value": "92",
-                    "remarks": "",
-                    "manual_abnormal": False,
-                }],
-                "interpretation": "Normal fasting glucose",
-            },
-        )
-        assert submitted.status_code == 200, submitted.text
-        sub = submitted.json()
-        assert sub["report_id"]
-        assert sub["pdf"]["path"] == f"/api/lab/reports/{sub['report_id']}/download"
-
-        order = db_session.query(PatientLabOrder).filter(PatientLabOrder.id == order_id).first()
-        assert order.status == "completed"
-        assert order.completion_date is not None
-        assert order.completion_date.date().isoformat() == svc
-        report = db_session.query(LabReport).filter(LabReport.id == sub["report_id"]).first()
-        assert report is not None
-        assert report.report_date.date().isoformat() == svc
-
-        stored = client.get(
-            "/api/admin/catch-up/lab/reports",
-            headers=auth_headers,
-        )
-        assert stored.status_code == 200, stored.text
-        stored_report = next(row for row in stored.json() if row["order_id"] == order_id)
-        assert stored_report["has_report"] is True
-        assert stored_report["report_id"] == sub["report_id"]
-        assert stored_report["report_date"] == svc
-        assert stored_report["pdf"]["path"] == sub["pdf"]["path"]
-
-        pdf = client.get(
-            f"/api/lab/reports/{sub['report_id']}/download",
-            headers=auth_headers,
-        )
-        assert pdf.status_code == 200, pdf.text
-        assert pdf.headers.get("content-type", "").startswith("application/pdf")
-        assert pdf.content[:4] == b"%PDF"
-
-        # Non catch-up order rejected on catch-up entry endpoint
-        other = PatientLabOrder(
-            order_number=f"LAB-{uuid.uuid4().hex[:8].upper()}",
-            patient_id=seed_data["patient_id"],
-            test_id=test.id,
-            status="collected",
-            payment_status="paid",
-            amount=120.0,
-        )
-        db_session.add(other)
-        db_session.commit()
-        bad = client.get(
-            f"/api/admin/catch-up/lab/orders/{other.id}/entry-form",
-            headers=auth_headers,
-        )
-        assert bad.status_code == 400

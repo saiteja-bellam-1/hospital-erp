@@ -6,22 +6,17 @@ import { localDateString, localDateStringOffset, localWeekStart, localMonthStart
 
 export const BILLING_MODULES = [
   { id: 'all', label: 'All' },
-  { id: 'opd', label: 'OPD' },
-  { id: 'lab', label: 'Lab' },
   { id: 'inpatient', label: 'Inpatient' },
   { id: 'pharmacy', label: 'Pharmacy' },
   { id: 'pharmacy_ip', label: 'Pharmacy (IP)' },
   { id: 'day_care', label: 'Day Care' },
-  { id: 'physiotherapy', label: 'Physio' },
-  { id: 'canteen', label: 'Canteen' },
   { id: 'catch_up', label: 'Catch-up' },
 ];
 
-/** GST filing groups — Lab and Pharmacy keep their own GSTIN; the rest file as Hospital GST. */
+/** GST filing groups — Pharmacy keeps its own GSTIN; the rest file as Hospital GST. */
 export const GST_SCOPES = [
   { id: 'all', label: 'All', hint: 'Combined working paper (not a filing)' },
-  { id: 'hospital', label: 'Hospital GST', hint: 'OPD, IP, day care, physio, canteen' },
-  { id: 'lab', label: 'Lab GST', hint: 'Laboratory only' },
+  { id: 'hospital', label: 'Hospital GST', hint: 'IP, day care' },
   { id: 'pharmacy', label: 'Pharmacy GST', hint: 'Pharmacy OP and IP' },
 ];
 

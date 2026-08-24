@@ -13,7 +13,6 @@ from sqlalchemy.orm import Session, joinedload
 from config.database import get_db
 from app.models.audit import AuditLog
 from app.models.billing import Bill, Payment
-from app.models.canteen import CanteenItem, CanteenOrder, CanteenOrderItem, CanteenSale, CanteenSaleItem
 from app.models.inpatient import (
     Admission,
     AdmissionAncillaryCharge,
@@ -27,9 +26,8 @@ from app.models.inpatient import (
     RoomManagement,
     SurgeryPackage,
 )
-from app.models.lab import LabTest, LabTestParameter, LabReport, PatientLabOrder
+from app.models.lab import PatientLabOrder
 from app.models.patient import Patient
-from app.models.outpatient import Appointment
 from app.models.pharmacy import PharmacyInventory, PharmacySale, PharmacySaleItem, Prescription
 from app.models.user import User
 from app.services.catch_up_service import (
@@ -122,550 +120,19 @@ def _draft_bill(
 
 def _pdf_meta(
     *,
-    appointment_id: Optional[int] = None,
-    lab_group_id: Optional[str] = None,
     admission_id: Optional[int] = None,
     pharmacy_sale_id: Optional[int] = None,
-    canteen_sale_id: Optional[int] = None,
     bill_id: Optional[int] = None,
     title: str = "Bill",
 ) -> Optional[dict]:
     """Canonical PDF path for PdfPreviewDialog after a catch-up create."""
-    if appointment_id:
-        return {"path": f"/api/appointments/{appointment_id}/bill/download", "title": title}
-    if lab_group_id:
-        return {"path": f"/api/lab/bills/{lab_group_id}/pdf", "title": title}
     if admission_id:
         return {"path": f"/api/inpatient/admissions/{admission_id}/bill/pdf", "title": title}
     if pharmacy_sale_id:
         return {"path": f"/api/pharmacy/sales/{pharmacy_sale_id}/invoice/pdf", "title": title}
-    if canteen_sale_id:
-        return {"path": f"/api/canteen/sales/{canteen_sale_id}/receipt/pdf", "title": title}
     if bill_id:
         return {"path": f"/api/hospital/billing/bills/{bill_id}/pdf", "title": title}
     return None
-
-
-# ---------------------------------------------------------------------------
-# Consultation
-# ---------------------------------------------------------------------------
-
-class ConsultationCatchUp(CatchUpDates):
-    patient_id: int
-    doctor_id: int
-    consultation_fee: float = Field(..., ge=0)
-    registration_fee: float = Field(0, ge=0)
-    appointment_type: str = "consultation"
-    notes: Optional[str] = None
-    referred_by: Optional[str] = None
-
-
-@router.post("/consultation")
-async def catch_up_consultation(
-    data: ConsultationCatchUp,
-    current_user: User = Depends(require_feature_permission(Modules.BILLING, "catch_up_bills")),
-    db: Session = Depends(get_db),
-):
-    assert_catch_up_dates(data.service_date, data.payment_date)
-    hospital = get_hospital(db, current_user)
-    patient = get_patient(db, data.patient_id, hospital.id)
-    doctor = db.query(User).filter(User.id == data.doctor_id, User.hospital_id == hospital.id).first()
-    if not doctor:
-        raise HTTPException(status_code=404, detail="Doctor not found")
-
-    total = round(float(data.consultation_fee) + float(data.registration_fee or 0), 2)
-    service_dt = date_to_datetime(data.service_date)
-    payment_dt = date_to_datetime(data.payment_date)
-
-    apt = Appointment(
-        appointment_number=f"APT-{str(uuid.uuid4())[:8].upper()}",
-        patient_id=patient.id,
-        doctor_id=doctor.id,
-        appointment_date=service_dt,
-        appointment_type=data.appointment_type or "consultation",
-        status="completed",
-        notes=data.notes,
-        booked_by_id=current_user.id,
-        consultation_fee=float(data.consultation_fee),
-        registration_fee=float(data.registration_fee or 0),
-        payment_status="paid",
-        payment_method=data.payment_method,
-        payment_date=payment_dt,
-        final_amount=total,
-        referred_by=data.referred_by,
-        checked_out_at=service_dt,
-    )
-    db.add(apt)
-    db.flush()
-
-    items = []
-    if data.consultation_fee:
-        items.append({
-            "item_type": "consultation",
-            "item_name": f"Consultation — Dr. {doctor.first_name} {doctor.last_name}",
-            "quantity": 1,
-            "unit_price": float(data.consultation_fee),
-            "total_price": float(data.consultation_fee),
-        })
-    if data.registration_fee:
-        items.append({
-            "item_type": "registration",
-            "item_name": "Registration fee",
-            "quantity": 1,
-            "unit_price": float(data.registration_fee),
-            "total_price": float(data.registration_fee),
-        })
-    if not items:
-        raise HTTPException(status_code=400, detail="At least one fee must be greater than zero")
-
-    bill, payment = create_bill_with_payment(
-        db,
-        patient_id=patient.id,
-        hospital_id=hospital.id,
-        created_by_id=current_user.id,
-        bill_type="consultation",
-        items=items,
-        service_date=data.service_date,
-        payment_date=data.payment_date,
-        payment_method=data.payment_method,
-        reference_id=apt.id,
-        notes=data.reason,
-        referred_by=data.referred_by,
-    )
-    db.commit()
-    log_catch_up(
-        db, current_user, "catch_up_consultation", "Appointment", apt.id,
-        f"Catch-up consultation {apt.appointment_number}",
-        service_date=data.service_date, payment_date=data.payment_date,
-        reason=data.reason,
-        extra={"bill_id": bill.id, "payment_id": payment.id, "amount": total},
-    )
-    return {
-        "appointment_id": apt.id,
-        "appointment_number": apt.appointment_number,
-        "bill_id": bill.id,
-        "bill_number": bill.bill_number,
-        "payment_id": payment.id,
-        "total": total,
-        "pdf": _pdf_meta(appointment_id=apt.id, bill_id=bill.id, title="Consultation bill"),
-    }
-
-
-@router.post("/consultation/preview")
-async def catch_up_consultation_preview(
-    data: ConsultationCatchUp,
-    current_user: User = Depends(require_feature_permission(Modules.BILLING, "catch_up_bills")),
-    db: Session = Depends(get_db),
-):
-    assert_catch_up_dates(data.service_date, data.payment_date)
-    hospital = get_hospital(db, current_user)
-    patient = get_patient(db, data.patient_id, hospital.id)
-    doctor = db.query(User).filter(User.id == data.doctor_id, User.hospital_id == hospital.id).first()
-    if not doctor:
-        raise HTTPException(status_code=404, detail="Doctor not found")
-    items = []
-    if data.consultation_fee:
-        items.append({
-            "item_type": "consultation",
-            "item_name": f"Consultation — Dr. {doctor.first_name} {doctor.last_name}",
-            "quantity": 1,
-            "unit_price": float(data.consultation_fee),
-            "total_price": float(data.consultation_fee),
-        })
-    if data.registration_fee:
-        items.append({
-            "item_type": "registration",
-            "item_name": "Registration fee",
-            "quantity": 1,
-            "unit_price": float(data.registration_fee),
-            "total_price": float(data.registration_fee),
-        })
-    if not items:
-        raise HTTPException(status_code=400, detail="At least one fee must be greater than zero")
-    return _draft_bill(
-        bill_type="consultation",
-        items=items,
-        service_date=data.service_date,
-        payment_date=data.payment_date,
-        payment_method=data.payment_method,
-        patient_name=_patient_label(patient),
-    )
-
-
-# ---------------------------------------------------------------------------
-# Lab
-# ---------------------------------------------------------------------------
-
-class LabCatchUp(CatchUpDates):
-    patient_id: int
-    test_ids: List[int] = Field(..., min_length=1)
-    doctor_id: Optional[int] = None
-    referred_by: Optional[str] = None
-    notes: Optional[str] = None
-
-
-@router.post("/lab")
-async def catch_up_lab(
-    data: LabCatchUp,
-    current_user: User = Depends(require_feature_permission(Modules.BILLING, "catch_up_bills")),
-    db: Session = Depends(get_db),
-):
-    assert_catch_up_dates(data.service_date, data.payment_date)
-    hospital = get_hospital(db, current_user)
-    patient = get_patient(db, data.patient_id, hospital.id)
-
-    tests = db.query(LabTest).filter(LabTest.id.in_(data.test_ids)).all()
-    by_id = {t.id: t for t in tests}
-    missing = [tid for tid in data.test_ids if tid not in by_id]
-    if missing:
-        raise HTTPException(status_code=400, detail=f"Unknown lab test ids: {missing}")
-
-    service_dt = date_to_datetime(data.service_date)
-    payment_dt = date_to_datetime(data.payment_date)
-    group_id = str(uuid.uuid4())
-    bill_number_label = f"LB-CU-{service_date_str(data.service_date)}"
-    order_ids = []
-    items = []
-    total = 0.0
-
-    for tid in data.test_ids:
-        test = by_id[tid]
-        amount = float(test.cost or 0)
-        total += amount
-        order = PatientLabOrder(
-            order_number=f"LAB-{str(uuid.uuid4())[:8].upper()}",
-            patient_id=patient.id,
-            test_id=test.id,
-            doctor_id=data.doctor_id,
-            # collected (not completed): admin enters results next in Catch-up UI.
-            # LB-CU- bill number keeps these out of the Lab Tech pending queue.
-            status="collected",
-            order_date=service_dt,
-            collection_date=service_dt,
-            completion_date=None,
-            amount=amount,
-            payment_status="paid",
-            payment_method=data.payment_method,
-            payment_date=payment_dt,
-            referred_by=data.referred_by,
-            notes=data.notes,
-            lab_bill_group_id=group_id,
-            lab_bill_number=bill_number_label,
-        )
-        db.add(order)
-        db.flush()
-        order_ids.append(order.id)
-        items.append({
-            "item_type": "lab_test",
-            "item_name": test.name,
-            "item_code": test.test_code,
-            "quantity": 1,
-            "unit_price": amount,
-            "total_price": amount,
-        })
-
-    bill, payment = create_bill_with_payment(
-        db,
-        patient_id=patient.id,
-        hospital_id=hospital.id,
-        created_by_id=current_user.id,
-        bill_type="lab",
-        items=items,
-        service_date=data.service_date,
-        payment_date=data.payment_date,
-        payment_method=data.payment_method,
-        reference_id=order_ids[0] if order_ids else None,
-        notes=data.reason,
-        referred_by=data.referred_by,
-    )
-    db.commit()
-    order_summaries = []
-    for oid in order_ids:
-        o = db.query(PatientLabOrder).filter(PatientLabOrder.id == oid).first()
-        t = by_id.get(o.test_id) if o else None
-        order_summaries.append({
-            "id": oid,
-            "order_number": o.order_number if o else None,
-            "test_id": o.test_id if o else None,
-            "test_name": t.name if t else None,
-            "test_code": t.test_code if t else None,
-            "status": o.status if o else None,
-            "has_report": False,
-        })
-    log_catch_up(
-        db, current_user, "catch_up_lab", "PatientLabOrder", order_ids[0],
-        f"Catch-up lab bill {bill.bill_number}",
-        service_date=data.service_date, payment_date=data.payment_date,
-        reason=data.reason,
-        extra={"bill_id": bill.id, "order_ids": order_ids, "amount": total},
-    )
-    return {
-        "order_ids": order_ids,
-        "orders": order_summaries,
-        "lab_bill_group_id": group_id,
-        "bill_id": bill.id,
-        "bill_number": bill.bill_number,
-        "payment_id": payment.id,
-        "total": round(total, 2),
-        "pdf": _pdf_meta(lab_group_id=group_id, bill_id=bill.id, title="Lab bill"),
-    }
-
-
-@router.post("/lab/preview")
-async def catch_up_lab_preview(
-    data: LabCatchUp,
-    current_user: User = Depends(require_feature_permission(Modules.BILLING, "catch_up_bills")),
-    db: Session = Depends(get_db),
-):
-    assert_catch_up_dates(data.service_date, data.payment_date)
-    hospital = get_hospital(db, current_user)
-    patient = get_patient(db, data.patient_id, hospital.id)
-    tests = db.query(LabTest).filter(LabTest.id.in_(data.test_ids)).all()
-    by_id = {t.id: t for t in tests}
-    missing = [tid for tid in data.test_ids if tid not in by_id]
-    if missing:
-        raise HTTPException(status_code=400, detail=f"Unknown lab test ids: {missing}")
-    items = []
-    for tid in data.test_ids:
-        test = by_id[tid]
-        amount = float(test.cost or 0)
-        items.append({
-            "item_type": "lab_test",
-            "item_name": test.name,
-            "item_code": test.test_code,
-            "quantity": 1,
-            "unit_price": amount,
-            "total_price": amount,
-        })
-    return _draft_bill(
-        bill_type="lab",
-        items=items,
-        service_date=data.service_date,
-        payment_date=data.payment_date,
-        payment_method=data.payment_method,
-        patient_name=_patient_label(patient),
-    )
-
-
-class CatchUpLabResultEntry(BaseModel):
-    parameter_id: int
-    value: str
-    remarks: Optional[str] = None
-    manual_abnormal: bool = False
-
-
-class CatchUpLabResultSubmit(BaseModel):
-    results: List[CatchUpLabResultEntry]
-    interpretation: Optional[str] = None
-
-
-def _assert_catch_up_lab_order(db: Session, order_id: int, hospital_id: int) -> PatientLabOrder:
-    order = (
-        db.query(PatientLabOrder)
-        .join(Patient)
-        .filter(
-            PatientLabOrder.id == order_id,
-            Patient.hospital_id == hospital_id,
-        )
-        .first()
-    )
-    if not order:
-        raise HTTPException(status_code=404, detail="Lab order not found")
-    bill_no = order.lab_bill_number or ""
-    if not bill_no.startswith("LB-CU-"):
-        raise HTTPException(
-            status_code=400,
-            detail="Only catch-up lab orders can use this endpoint",
-        )
-    return order
-
-
-@router.get("/lab/reports")
-async def catch_up_lab_reports(
-    limit: int = 100,
-    current_user: User = Depends(require_feature_permission(Modules.BILLING, "catch_up_bills")),
-    db: Session = Depends(get_db),
-):
-    """Persisted catch-up lab orders/reports for later result entry and download."""
-    hospital = get_hospital(db, current_user)
-    rows = (
-        db.query(PatientLabOrder, LabTest, Patient, LabReport)
-        .join(Patient, Patient.id == PatientLabOrder.patient_id)
-        .join(LabTest, LabTest.id == PatientLabOrder.test_id)
-        .outerjoin(LabReport, LabReport.order_id == PatientLabOrder.id)
-        .filter(
-            Patient.hospital_id == hospital.id,
-            PatientLabOrder.lab_bill_number.like("LB-CU-%"),
-        )
-        .order_by(PatientLabOrder.order_date.desc(), PatientLabOrder.id.desc())
-        .limit(max(1, min(limit, 500)))
-        .all()
-    )
-    return [
-        {
-            "id": order.id,
-            "order_id": order.id,
-            "order_number": order.order_number,
-            "lab_bill_group_id": order.lab_bill_group_id,
-            "lab_bill_number": order.lab_bill_number,
-            "patient_id": patient.id,
-            "patient_name": _patient_label(patient),
-            "mrn": patient.mrn,
-            "test_id": test.id,
-            "test_name": test.name,
-            "test_code": test.test_code,
-            "service_date": order.order_date.date().isoformat() if order.order_date else None,
-            "collection_date": (
-                order.collection_date.date().isoformat()
-                if order.collection_date else None
-            ),
-            "status": order.status,
-            "has_report": report is not None,
-            "report_id": report.id if report else None,
-            "report_date": (
-                report.report_date.date().isoformat()
-                if report and report.report_date else None
-            ),
-            "pdf": (
-                {
-                    "path": f"/api/lab/reports/{report.id}/download",
-                    "title": f"Lab report — {order.order_number}",
-                }
-                if report else None
-            ),
-        }
-        for order, test, patient, report in rows
-    ]
-
-
-@router.get("/lab/orders/{order_id}/entry-form")
-async def catch_up_lab_entry_form(
-    order_id: int,
-    current_user: User = Depends(require_feature_permission(Modules.BILLING, "catch_up_bills")),
-    db: Session = Depends(get_db),
-):
-    """Admin result-entry form for a catch-up lab order."""
-    from app.routes.lab import _patient_age
-    from app.utils.lab_reference import match_reference_range
-
-    hospital = get_hospital(db, current_user)
-    order = _assert_catch_up_lab_order(db, order_id, hospital.id)
-    test = db.query(LabTest).filter(LabTest.id == order.test_id).first()
-    if not test:
-        raise HTTPException(status_code=404, detail="Lab test not found")
-    patient = db.query(Patient).filter(Patient.id == order.patient_id).first()
-    params = (
-        db.query(LabTestParameter)
-        .filter(LabTestParameter.test_id == test.id, LabTestParameter.is_active == True)
-        .order_by(LabTestParameter.display_order)
-        .all()
-    )
-    gender = patient.gender.lower() if patient and patient.gender else None
-    age = _patient_age(patient)
-    existing = db.query(LabReport).filter(LabReport.order_id == order.id).first()
-
-    def _resolve_range(p):
-        if p.reference_ranges:
-            rmin, rmax, _ = match_reference_range(p.reference_ranges, gender, age)
-            return rmin, rmax
-        if gender == "male" and p.reference_min_male is not None:
-            return p.reference_min_male, p.reference_max_male
-        if gender == "female" and p.reference_min_female is not None:
-            return p.reference_min_female, p.reference_max_female
-        return p.reference_min_default, p.reference_max_default
-
-    return {
-        "order_id": order.id,
-        "order_number": order.order_number,
-        "test_name": test.name,
-        "test_code": test.test_code,
-        "patient_name": _patient_label(patient) or "Unknown",
-        "patient_gender": patient.gender if patient else None,
-        "service_date": order.order_date.date().isoformat() if order.order_date else None,
-        "has_report": existing is not None,
-        "report_id": existing.id if existing else None,
-        "parameters": [
-            {
-                "id": p.id,
-                "parameter_name": p.parameter_name,
-                "unit": p.unit,
-                "field_type": p.field_type,
-                "reference_min": _resolve_range(p)[0],
-                "reference_max": _resolve_range(p)[1],
-                "possible_values": p.possible_values,
-                "abnormal_values": p.abnormal_values,
-                "normal_value": p.normal_value,
-                "notes": p.notes,
-                "display_order": p.display_order,
-            }
-            for p in params
-        ],
-    }
-
-
-@router.post("/lab/orders/{order_id}/results")
-async def catch_up_lab_submit_results(
-    order_id: int,
-    data: CatchUpLabResultSubmit,
-    current_user: User = Depends(require_feature_permission(Modules.BILLING, "catch_up_bills")),
-    db: Session = Depends(get_db),
-):
-    """Admin submits lab report values for a catch-up order (dates follow service date)."""
-    hospital = get_hospital(db, current_user)
-    order = _assert_catch_up_lab_order(db, order_id, hospital.id)
-    if order.status == "cancelled":
-        raise HTTPException(status_code=400, detail="Cannot submit results for a cancelled order")
-
-    existing = db.query(LabReport).filter(LabReport.order_id == order.id).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Report already exists for this order")
-
-    result_values = [
-        {
-            "parameter_id": r.parameter_id,
-            "value": r.value,
-            "remarks": r.remarks or "",
-            "manual_abnormal": r.manual_abnormal,
-        }
-        for r in data.results
-    ]
-    # Stamp clinical report on the order's service date (order_date), not wall clock
-    report_dt = as_naive(order.order_date) if order.order_date else datetime.now()
-    report = LabReport(
-        order_id=order.id,
-        result_values=result_values,
-        interpretation=data.interpretation,
-        technician_id=current_user.id,
-        report_date=report_dt,
-    )
-    db.add(report)
-    order.status = "completed"
-    order.completion_date = report_dt
-    db.commit()
-    db.refresh(report)
-
-    svc_d = report_dt.date() if isinstance(report_dt, datetime) else date.today()
-    log_catch_up(
-        db, current_user, "catch_up_lab_results", "LabReport", report.id,
-        f"Catch-up lab report for {order.order_number}",
-        service_date=svc_d,
-        payment_date=svc_d,
-        reason=None,
-        extra={"order_id": order.id, "report_id": report.id},
-    )
-    return {
-        "message": "Results submitted successfully",
-        "report_id": report.id,
-        "order_id": order.id,
-        "pdf": {
-            "path": f"/api/lab/reports/{report.id}/download",
-            "title": f"Lab report — {order.order_number}",
-        },
-    }
-
-
-def service_date_str(d: date) -> str:
-    return d.strftime("%Y%m%d")
 
 
 # ---------------------------------------------------------------------------
@@ -901,177 +368,6 @@ async def catch_up_pharmacy_preview(
     )
 
 
-# ---------------------------------------------------------------------------
-# Canteen POS
-# ---------------------------------------------------------------------------
-
-class CanteenLineIn(BaseModel):
-    item_id: Optional[int] = None
-    item_name: str = Field(..., min_length=1, max_length=200)
-    quantity: int = Field(1, gt=0)
-    unit_price: float = Field(..., ge=0)
-
-
-class CanteenCatchUp(CatchUpDates):
-    patient_id: Optional[int] = None
-    customer_name: Optional[str] = None
-    customer_phone: Optional[str] = None
-    items: List[CanteenLineIn] = Field(..., min_length=1)
-    notes: Optional[str] = None
-
-
-@router.post("/canteen-sale")
-async def catch_up_canteen_sale(
-    data: CanteenCatchUp,
-    current_user: User = Depends(require_feature_permission(Modules.BILLING, "catch_up_bills")),
-    db: Session = Depends(get_db),
-):
-    assert_catch_up_dates(data.service_date, data.payment_date)
-    hospital = get_hospital(db, current_user)
-    patient = get_patient(db, data.patient_id, hospital.id) if data.patient_id else None
-
-    from app.routes.canteen import _next_canteen_sale_number
-
-    sale_dt = date_to_datetime(data.service_date)
-    lines = []
-    subtotal = Decimal("0.00")
-    for li in data.items:
-        unit = Decimal(str(round(float(li.unit_price), 2)))
-        qty = int(li.quantity)
-        line_total = Decimal(str(round(float(unit) * qty, 2)))
-        subtotal += line_total
-        name = li.item_name
-        if li.item_id:
-            cat = db.query(CanteenItem).filter(
-                CanteenItem.id == li.item_id,
-                CanteenItem.hospital_id == hospital.id,
-            ).first()
-            if cat:
-                name = cat.name
-        lines.append((li.item_id, name, unit, qty, line_total))
-
-    sale = CanteenSale(
-        hospital_id=hospital.id,
-        sale_number=_next_canteen_sale_number(db, hospital.id),
-        sale_date=sale_dt,
-        status="completed",
-        payment_type=data.payment_method or "cash",
-        customer_name=data.customer_name or (
-            f"{patient.first_name} {patient.last_name}" if patient else None
-        ),
-        customer_phone=data.customer_phone or (patient.primary_phone if patient else None),
-        subtotal=subtotal,
-        discount_amount=Decimal("0.00"),
-        grand_total=subtotal,
-        notes=data.notes,
-        created_by_id=current_user.id,
-    )
-    db.add(sale)
-    db.flush()
-    for item_id, name, unit, qty, line_total in lines:
-        db.add(CanteenSaleItem(
-            sale_id=sale.id,
-            item_id=item_id,
-            item_name=name,
-            unit_price=unit,
-            quantity=qty,
-            line_total=line_total,
-        ))
-
-    bill = payment = None
-    if patient:
-        bill_items = [
-            {
-                "item_type": "canteen",
-                "item_name": name,
-                "quantity": qty,
-                "unit_price": float(unit),
-                "total_price": float(line_total),
-            }
-            for _, name, unit, qty, line_total in lines
-        ]
-        bill, payment = create_bill_with_payment(
-            db,
-            patient_id=patient.id,
-            hospital_id=hospital.id,
-            created_by_id=current_user.id,
-            bill_type="canteen",
-            items=bill_items,
-            service_date=data.service_date,
-            payment_date=data.payment_date,
-            payment_method=data.payment_method,
-            reference_id=sale.id,
-            notes=data.reason or data.notes,
-        )
-
-    db.commit()
-    log_catch_up(
-        db, current_user, "catch_up_canteen_sale", "CanteenSale", sale.id,
-        f"Catch-up canteen sale {sale.sale_number}",
-        service_date=data.service_date, payment_date=data.payment_date,
-        reason=data.reason,
-        extra={
-            "sale_id": sale.id,
-            "bill_id": bill.id if bill else None,
-            "amount": float(subtotal),
-        },
-    )
-    return {
-        "sale_id": sale.id,
-        "sale_number": sale.sale_number,
-        "bill_id": bill.id if bill else None,
-        "bill_number": bill.bill_number if bill else None,
-        "payment_id": payment.id if payment else None,
-        "total": float(subtotal),
-        "pdf": _pdf_meta(
-            canteen_sale_id=sale.id,
-            bill_id=bill.id if bill else None,
-            title="Canteen receipt" if not bill else "Canteen bill",
-        ),
-    }
-
-
-@router.post("/canteen-sale/preview")
-async def catch_up_canteen_preview(
-    data: CanteenCatchUp,
-    current_user: User = Depends(require_feature_permission(Modules.BILLING, "catch_up_bills")),
-    db: Session = Depends(get_db),
-):
-    assert_catch_up_dates(data.service_date, data.payment_date)
-    hospital = get_hospital(db, current_user)
-    patient = get_patient(db, data.patient_id, hospital.id) if data.patient_id else None
-    items = []
-    for li in data.items:
-        name = li.item_name
-        if li.item_id:
-            cat = db.query(CanteenItem).filter(
-                CanteenItem.id == li.item_id,
-                CanteenItem.hospital_id == hospital.id,
-            ).first()
-            if cat:
-                name = cat.name
-        line_total = round(float(li.unit_price) * int(li.quantity), 2)
-        items.append({
-            "item_type": "canteen",
-            "item_name": name,
-            "quantity": int(li.quantity),
-            "unit_price": float(li.unit_price),
-            "total_price": line_total,
-        })
-    warnings = []
-    if not patient:
-        warnings.append("No patient selected — canteen sale only (no central bill).")
-    return _draft_bill(
-        bill_type="canteen",
-        items=items,
-        service_date=data.service_date,
-        payment_date=data.payment_date,
-        payment_method=data.payment_method,
-        patient_name=_patient_label(patient) or data.customer_name,
-        creates_central_bill=bool(patient),
-        warnings=warnings,
-    )
-
 
 # ---------------------------------------------------------------------------
 # Misc bill
@@ -1198,33 +494,6 @@ async def catch_up_history(
     return out
 
 
-@router.get("/canteen-catalog")
-async def catch_up_canteen_catalog(
-    current_user: User = Depends(require_feature_permission(Modules.BILLING, "catch_up_bills")),
-    db: Session = Depends(get_db),
-):
-    """Canteen menu for catch-up IP food lines (uses catch-up permission, not canteen)."""
-    hospital = get_hospital(db, current_user)
-    rows = (
-        db.query(CanteenItem)
-        .filter(
-            CanteenItem.hospital_id == hospital.id,
-            CanteenItem.is_active == True,  # noqa: E712
-        )
-        .order_by(CanteenItem.sort_order.asc(), CanteenItem.name.asc())
-        .all()
-    )
-    return [
-        {
-            "id": it.id,
-            "name": it.name,
-            "price": float(it.price or 0),
-            "is_veg": bool(it.is_veg),
-        }
-        for it in rows
-    ]
-
-
 # ---------------------------------------------------------------------------
 # Inpatient stay reconstruction
 # ---------------------------------------------------------------------------
@@ -1242,19 +511,6 @@ class AncillaryIn(BaseModel):
     quantity: float = 1
     unit_price: Optional[float] = None
     charged_at: Optional[datetime] = None
-    notes: Optional[str] = None
-
-
-class CanteenOrderLineIn(BaseModel):
-    item_id: Optional[int] = None
-    item_name: str
-    quantity: int = 1
-    unit_price: float
-
-
-class CanteenOrderIn(BaseModel):
-    serve_date: Optional[date] = None
-    items: List[CanteenOrderLineIn] = Field(..., min_length=1)
     notes: Optional[str] = None
 
 
@@ -1284,7 +540,6 @@ class InpatientStayCatchUp(CatchUpDates):
     is_observation: bool = False
     visits: List[VisitIn] = []
     ancillary: List[AncillaryIn] = []
-    canteen_orders: List[CanteenOrderIn] = []
     pharmacy_lines: List[PharmacyIpLineIn] = []
     surgery_package_id: Optional[int] = None
     surgery_package_price: Optional[float] = None
@@ -1390,40 +645,6 @@ async def catch_up_inpatient_stay(
             hospital_id=hospital.id,
             created_by_id=current_user.id,
         ))
-
-    for co in data.canteen_orders:
-        serve = co.serve_date or as_naive(data.admission_date).date()
-        order = CanteenOrder(
-            hospital_id=hospital.id,
-            admission_id=admission.id,
-            patient_id=patient.id,
-            status="delivered",
-            notes=co.notes,
-            serve_date=serve,
-            ordered_at=date_to_datetime(serve),
-            ordered_by_id=current_user.id,
-            billed=False,
-        )
-        db.add(order)
-        db.flush()
-        for li in co.items:
-            unit = Decimal(str(round(float(li.unit_price), 2)))
-            qty = max(int(li.quantity or 1), 1)
-            name = (li.item_name or "").strip()
-            if not name:
-                raise HTTPException(status_code=400, detail="Food order line requires item_name")
-            item = CanteenOrderItem(
-                order_id=order.id,
-                item_id=li.item_id,
-                item_name=name,
-                unit_price=unit,
-                quantity=qty,
-                line_total=Decimal(str(round(float(unit) * qty, 2))),
-            )
-            # Keep the relationship collection in sync so later joinedload /
-            # identity-map reads see the lines without a stale empty cache.
-            order.items.append(item)
-        db.flush()
 
     # Financial-only pharmacy sale deferred to admission bill (no stock deduction)
     if data.pharmacy_lines:
@@ -1679,10 +900,6 @@ async def catch_up_inpatient_preview(
     ancillary_total = round(ancillary_total, 2)
 
     food_total = 0.0
-    for co in data.canteen_orders:
-        for li in co.items:
-            food_total += float(li.unit_price) * int(li.quantity)
-    food_total = round(food_total, 2)
 
     pharmacy_total = round(
         sum(float(li.quantity) * float(li.unit_price) for li in data.pharmacy_lines),
@@ -1786,16 +1003,6 @@ async def catch_up_inpatient_preview(
             "unit_price": unit,
             "total_price": round(unit * qty, 2),
         })
-    for co in data.canteen_orders:
-        for li in co.items:
-            line_total = round(float(li.unit_price) * int(li.quantity), 2)
-            draft_items.append({
-                "item_type": "canteen",
-                "item_name": li.item_name,
-                "quantity": int(li.quantity),
-                "unit_price": float(li.unit_price),
-                "total_price": line_total,
-            })
     for li in data.pharmacy_lines:
         line_total = round(float(li.quantity) * float(li.unit_price), 2)
         draft_items.append({
@@ -1854,7 +1061,6 @@ async def catch_up_inpatient_preview(
 class AppendChargesCatchUp(CatchUpDates):
     visits: List[VisitIn] = []
     ancillary: List[AncillaryIn] = []
-    canteen_orders: List[CanteenOrderIn] = []
     pharmacy_lines: List[PharmacyIpLineIn] = []
 
 
@@ -1888,10 +1094,6 @@ def _release_admission_bill_sources(db: Session, bill: Bill) -> dict:
     food_released = food_q.count()
     food_q.update({FoodOrder.billed: False, FoodOrder.bill_id: None}, synchronize_session=False)
 
-    canteen_q = db.query(CanteenOrder).filter(CanteenOrder.bill_id == bill.id)
-    canteen_released = canteen_q.count()
-    canteen_q.update({CanteenOrder.billed: False, CanteenOrder.bill_id: None}, synchronize_session=False)
-
     return {
         "visits": visits_released,
         "ot": ot_released,
@@ -1900,7 +1102,6 @@ def _release_admission_bill_sources(db: Session, bill: Bill) -> dict:
         "pharmacy_pos_sales": pos_released,
         "lab_orders": lab_released,
         "food_orders": food_released,
-        "canteen_orders": canteen_released,
     }
 
 
@@ -1913,7 +1114,6 @@ def _add_catch_up_charge_rows(
     current_user: User,
     visits: List[VisitIn],
     ancillary: List[AncillaryIn],
-    canteen_orders: List[CanteenOrderIn],
     pharmacy_lines: List[PharmacyIpLineIn],
     default_dt: datetime,
 ):
@@ -1953,38 +1153,6 @@ def _add_catch_up_charge_rows(
             hospital_id=hospital.id,
             created_by_id=current_user.id,
         ))
-
-    for co in canteen_orders:
-        serve = co.serve_date or as_naive(default_dt).date()
-        order = CanteenOrder(
-            hospital_id=hospital.id,
-            admission_id=admission.id,
-            patient_id=patient.id,
-            status="delivered",
-            notes=co.notes,
-            serve_date=serve,
-            ordered_at=date_to_datetime(serve),
-            ordered_by_id=current_user.id,
-            billed=False,
-        )
-        db.add(order)
-        db.flush()
-        for li in co.items:
-            unit = Decimal(str(round(float(li.unit_price), 2)))
-            qty = max(int(li.quantity or 1), 1)
-            name = (li.item_name or "").strip()
-            if not name:
-                raise HTTPException(status_code=400, detail="Food order line requires item_name")
-            item = CanteenOrderItem(
-                order_id=order.id,
-                item_id=li.item_id,
-                item_name=name,
-                unit_price=unit,
-                quantity=qty,
-                line_total=Decimal(str(round(float(unit) * qty, 2))),
-            )
-            order.items.append(item)
-        db.flush()
 
     if pharmacy_lines:
         from app.routes.pharmacy import _next_sale_number
@@ -2026,10 +1194,10 @@ async def catch_up_append_charges(
     """Reopen a catch-up discharged stay: cancel paid final bill, add omitted
     charges, and re-finalize with new Service/Payment dates."""
     assert_catch_up_dates(data.service_date, data.payment_date)
-    if not (data.visits or data.ancillary or data.canteen_orders or data.pharmacy_lines):
+    if not (data.visits or data.ancillary or data.pharmacy_lines):
         raise HTTPException(
             status_code=400,
-            detail="Provide at least one of: visits, ancillary, canteen_orders, pharmacy_lines",
+            detail="Provide at least one of: visits, ancillary, pharmacy_lines",
         )
 
     hospital = get_hospital(db, current_user)
@@ -2084,7 +1252,6 @@ async def catch_up_append_charges(
         current_user=current_user,
         visits=data.visits,
         ancillary=data.ancillary,
-        canteen_orders=data.canteen_orders,
         pharmacy_lines=data.pharmacy_lines,
         default_dt=charge_dt,
     )

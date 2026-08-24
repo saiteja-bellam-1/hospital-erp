@@ -30,7 +30,6 @@ import DischargeCheckoutPage from './inpatient/DischargeCheckoutPage';
 import DoctorDischargeSummaryPage from './inpatient/discharge/DoctorDischargeSummaryPage';
 import { canAccessDischargeCheckout, prepareDischargeSummaryEdit, summaryIsReadyForPrint } from './inpatient/discharge/dischargeSummaryUtils';
 import DischargeHistory from './inpatient/discharge/DischargeHistory';
-import CanteenOrderPanel from './canteen/CanteenOrderPanel';
 import DischargeSummaryEditor from './inpatient/DischargeSummaryEditor';
 import DischargeSummaryPreviewCard from './inpatient/discharge/DischargeSummaryPreviewCard';
 import DischargeSummaryTemplatePage from './inpatient/DischargeSummaryTemplatePage';
@@ -147,7 +146,6 @@ const InpatientModule = () => {
     return list.includes('*') || list.includes(key);
   }, [myPerms]);
   const ip = useCallback((key) => hasPerm('inpatient', key), [hasPerm]);
-  const canteen = useCallback((key) => hasPerm('canteen', key), [hasPerm]);
   const canViewVitals = useMemo(() => ip('view_vitals'), [ip]);
   const canRecordVitals = useMemo(() => ip('record_vitals'), [ip]);
   // Nurse-only users get a nurse-scoped Visit form (no Doctor Visit option,
@@ -3948,7 +3946,6 @@ const InpatientModule = () => {
                           { v: 'visits', l: 'Visits' },
                           { v: 'lab', l: 'Lab' },
                           { v: 'medications', l: 'Meds' },
-                          ...(canteen('view_orders') || canteen('place_order') ? [{ v: 'food', l: 'Food' }] : []),
                         ]},
                         ...(canViewBilling ? {
                           billing: { label: 'Billing', tabs: [
@@ -4186,16 +4183,6 @@ const InpatientModule = () => {
                             ))}
                           </div>
                         )}
-                      </TabsContent>
-
-                      {/* Food sub-tab — canteen catalog orders for this admission */}
-                      <TabsContent value="food" className="space-y-3 mt-3">
-                        <CanteenOrderPanel
-                          admissionId={activityAdmission?.id}
-                          canPlaceOrder={canteen('place_order')}
-                          canViewOrders={canteen('view_orders') || canteen('place_order')}
-                          compact
-                        />
                       </TabsContent>
 
                       {/* Bill sub-tab */}
@@ -9711,7 +9698,7 @@ const InpatientModule = () => {
                     </div>
                   </div>
                   <p className="text-xs text-gray-500">
-                    Food catalog and prices are managed in the <strong>Canteen</strong> module — not per room type.
+                    Food charges (if any) come from legacy meal plans — not per room type.
                   </p>
                 </div>
               )}

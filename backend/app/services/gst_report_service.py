@@ -15,7 +15,6 @@ from sqlalchemy import func as sql_func
 
 from app.models.billing import Bill, BillItem, Payment
 from app.models.patient import Patient
-from app.models.outpatient import Appointment
 from app.models.lab import PatientLabOrder
 from app.models.pharmacy import (
     PharmacySale, PharmacySaleItem, PharmacyHSN, Medicine,
@@ -23,14 +22,12 @@ from app.models.pharmacy import (
     PharmacySaleReturn, PharmacySaleReturnItem,
     PharmacyPurchaseReturn, PharmacyPurchaseReturnItem,
 )
-from app.models.canteen import CanteenSale
 from app.services.gst_classification import (
     MODULE_LABELS, ALL_MODULES, SAC_HEALTHCARE, TAX_EXEMPT, TAX_TAXABLE,
     module_for_bill_type, is_pharmacy_sourced_item, split_gst_amounts,
 )
 
 
-SKIP_APT_STATUS = frozenset({"cancelled", "deleted", "consolidated", "no_show"})
 SKIP_LAB_STATUS = frozenset({"cancelled", "deleted", "consolidated"})
 SKIP_BILL_STATUS = frozenset({"cancelled"})
 SKIP_BILL_SUBTYPES = frozenset({"interim", "advance_receipt"})
@@ -281,32 +278,7 @@ def collect_sales_invoices(db: Session, hospital_id: int, d_from: date, d_to: da
     """Invoice-level rows across modules. One row per source document."""
     rows = []
 
-    # OPD appointments
-    apts = db.query(Appointment).join(Patient).filter(
-        Patient.hospital_id == hospital_id,
-        sql_func.date(Appointment.appointment_date) >= d_from,
-        sql_func.date(Appointment.appointment_date) <= d_to,
-    ).all()
-    for a in apts:
-        if (a.payment_status or "") in SKIP_APT_STATUS:
-            continue
-        billed = _money(a.final_amount) if a.final_amount else _money(
-            (a.consultation_fee or 0) + (a.registration_fee or 0) - (a.discount_amount or 0)
-        )
-        collected = billed if (a.payment_status or "") == "paid" else 0.0
-        if (a.payment_status or "") == "partial":
-            collected = 0.0
-        p = a.patient
-        name = f"{p.first_name} {p.last_name}" if p else ""
-        gstin = getattr(p, "gstin", None) if p else None
-        rows.append(_invoice_row(
-            "opd", _as_date(a.appointment_date), a.appointment_number,
-            billed, a.discount_amount or 0, 0, collected,
-            party=name, gstin=gstin or "", hsn=SAC_HEALTHCARE,
-            extra={"tax_category": TAX_EXEMPT, "status": a.payment_status},
-        ))
-
-    # Lab (OPD only — IP lab is on the admission bill)
+    # Lab (historical OPD lab — IP lab is on the admission bill)
     lab_orders = db.query(PatientLabOrder).join(Patient).filter(
         Patient.hospital_id == hospital_id,
         sql_func.date(PatientLabOrder.created_at) >= d_from,
@@ -427,22 +399,6 @@ def collect_sales_invoices(db: Session, hospital_id: int, d_from: date, d_to: da
             taxable=taxable,
             tax_by_rate=by_rate,
             extra={"tax_category": TAX_TAXABLE, "status": s.status, "sale_id": s.id},
-        ))
-
-    # Canteen POS
-    canteen = db.query(CanteenSale).filter(
-        CanteenSale.hospital_id == hospital_id,
-        CanteenSale.status == "completed",
-        sql_func.date(CanteenSale.sale_date) >= d_from,
-        sql_func.date(CanteenSale.sale_date) <= d_to,
-    ).all()
-    for s in canteen:
-        billed = _money(s.grand_total)
-        rows.append(_invoice_row(
-            "canteen", _as_date(s.sale_date), s.sale_number,
-            billed, s.discount_amount or 0, 0, billed,
-            party=s.customer_name or "", hsn="",
-            extra={"tax_category": TAX_EXEMPT, "status": s.status},
         ))
 
     return rows

@@ -21,7 +21,7 @@ export function canEditBill(bill) {
 function usesBillsTable(bill) {
   if (!bill) return false;
   if (bill.is_catch_up || String(bill.id || '').startsWith('CU-')) return true;
-  return ['admission', 'consolidated', 'day_care', 'physiotherapy', 'catch_up', 'canteen'].includes(bill.type);
+  return ['admission', 'consolidated', 'day_care', 'catch_up'].includes(bill.type);
 }
 
 function errMessage(err, fallback) {

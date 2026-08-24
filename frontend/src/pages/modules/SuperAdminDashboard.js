@@ -5,8 +5,8 @@ import { Button } from '../../components/ui/button';
 import { useAuth } from '../../contexts/AuthContext';
 import axios from 'axios';
 import {
-  Users, Shield, Activity, Clock, CheckCircle2, AlertCircle, XCircle,
-  Monitor, UserCheck, LogIn, Loader2, RefreshCw, Database
+  Users, Shield, Activity, Clock, AlertCircle, XCircle,
+  UserCheck, LogIn, Loader2, RefreshCw, Database
 } from 'lucide-react';
 
 const SuperAdminDashboard = () => {
@@ -156,9 +156,8 @@ const SuperAdminDashboard = () => {
         </Card>
       </div>
 
-      {/* License + Modules row */}
+      {/* License Status */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* License Status */}
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2 text-base">
@@ -189,30 +188,6 @@ const SuperAdminDashboard = () => {
               {data.license.expires_at && (
                 <div className="flex justify-between"><span className="text-gray-500">Expires</span><span className="font-medium">{formatDate(data.license.expires_at)}</span></div>
               )}
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Modules */}
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Monitor className="h-5 w-5" /> System Modules
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-2 gap-2">
-              {(data.modules || []).map(m => (
-                <div key={m.name} className={`flex items-center gap-2 px-3 py-2 rounded-lg border ${m.enabled ? 'bg-green-50 border-green-200' : 'bg-gray-50 border-gray-200'}`}>
-                  {m.enabled
-                    ? <CheckCircle2 className="h-4 w-4 text-green-500 flex-shrink-0" />
-                    : <XCircle className="h-4 w-4 text-gray-400 flex-shrink-0" />}
-                  <div>
-                    <p className="text-sm font-medium">{m.display_name}</p>
-                    {m.always_on && <p className="text-[10px] text-gray-400">Always on</p>}
-                  </div>
-                </div>
-              ))}
             </div>
           </CardContent>
         </Card>

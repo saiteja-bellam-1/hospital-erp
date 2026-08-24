@@ -98,7 +98,7 @@ def cmd_create_license(args):
     expires_at = issued_at + timedelta(days=args.days)
 
     features = args.features.split(",") if args.features else [
-        "lab", "pharmacy", "inpatient", "outpatient", "ehr", "billing", "physiotherapy"
+        "pharmacy", "billing", "admin"
     ]
 
     license_data = {

@@ -10,10 +10,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/ta
 import { useToast } from '../../hooks/use-toast';
 import {
   Search,
-  Calendar,
   User,
   Phone,
-  Clock,
   Activity,
   RefreshCw,
   Bed,
@@ -21,7 +19,6 @@ import {
   Eye,
 } from 'lucide-react';
 import axios from 'axios';
-import { localDateString } from '../../utils/localDate';
 import VitalsForm from '../../components/vitals/VitalsForm';
 
 const NurseDashboard = () => {
@@ -31,10 +28,8 @@ const NurseDashboard = () => {
   const [loading, setLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedPatient, setSelectedPatient] = useState(null);
-  const [todayAppointments, setTodayAppointments] = useState([]);
   const [showVitalsDialog, setShowVitalsDialog] = useState(false);
-  const [vitalsAppointmentId, setVitalsAppointmentId] = useState(null);
-  const [activeTab, setActiveTab] = useState('appointments');
+  const [activeTab, setActiveTab] = useState('patients');
 
   // Inpatient ward state
   const [inpatientEnabled, setInpatientEnabled] = useState(false);
@@ -46,11 +41,8 @@ const NurseDashboard = () => {
   const [myPatients, setMyPatients] = useState([]);
   const [myPatientsShift, setMyPatientsShift] = useState('');
 
-  // Load initial data
   useEffect(() => {
     fetchPatients();
-    fetchTodayAppointments();
-    // Check if inpatient module is enabled
     axios.get('/api/system/enabled-modules').then(res => {
       const mod = (res.data || []).find(m => m.module_name === 'inpatient');
       if (mod?.is_enabled) {
@@ -62,7 +54,6 @@ const NurseDashboard = () => {
     }).catch(() => {});
   }, []);
 
-  // Fetch "my patients" when the toggle is on
   useEffect(() => {
     if (!myPatientsOnly) return;
     const params = {};
@@ -72,11 +63,10 @@ const NurseDashboard = () => {
       .catch(() => setMyPatients([]));
   }, [myPatientsOnly, myPatientsShift]);
 
-  // Filter patients based on search term
   useEffect(() => {
     let filtered = patients;
     if (searchTerm) {
-      filtered = filtered.filter(patient => 
+      filtered = filtered.filter(patient =>
         patient.first_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
         patient.last_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
         patient.primary_phone?.includes(searchTerm) ||
@@ -114,59 +104,13 @@ const NurseDashboard = () => {
     }
   };
 
-  const fetchTodayAppointments = async () => {
-    try {
-      const token = localStorage.getItem('token');
-      const today = localDateString();
-      const response = await fetch(`/api/appointments/?date_from=${today}&date_to=${today}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        }
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        setTodayAppointments(data || []);
-      }
-    } catch (error) {
-      console.error('Error fetching today appointments:', error);
-    }
-  };
-
-  // Open the vitals dialog for a specific appointment's patient
-  const openVitalsForAppointment = (appointment) => {
-    const patientForVitals = {
-      id: appointment.patient_id,
-      patient_id: appointment.patient_uuid,
-      first_name: (appointment.patient_name || '').split(' ')[0] || '',
-      last_name: (appointment.patient_name || '').split(' ').slice(1).join(' '),
-    };
-    setSelectedPatient(patientForVitals);
-    setVitalsAppointmentId(appointment.id);
-    setShowVitalsDialog(true);
-  };
-
   const openVitalsForPatient = (patient) => {
     setSelectedPatient(patient);
-    setVitalsAppointmentId(null);
     setShowVitalsDialog(true);
-  };
-
-  const getStatusBadge = (status) => {
-    const colors = {
-      'scheduled': 'bg-blue-100 text-blue-800',
-      'confirmed': 'bg-green-100 text-green-800',
-      'in_progress': 'bg-yellow-100 text-yellow-800',
-      'completed': 'bg-gray-100 text-gray-800',
-      'cancelled': 'bg-red-100 text-red-800'
-    };
-    return <Badge className={colors[status] || 'bg-gray-100 text-gray-800'}>{status}</Badge>;
   };
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Nurse Dashboard</h1>
@@ -181,15 +125,12 @@ const NurseDashboard = () => {
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-        <TabsList className={`grid w-full ${inpatientEnabled ? 'grid-cols-3' : 'grid-cols-2'}`}>
+        <TabsList className={`grid w-full ${inpatientEnabled ? 'grid-cols-2' : 'grid-cols-1'}`}>
           <TabsTrigger value="patients">Patient Care</TabsTrigger>
-          <TabsTrigger value="appointments">Today's Consultations</TabsTrigger>
           {inpatientEnabled && <TabsTrigger value="ward">Inpatient Ward</TabsTrigger>}
         </TabsList>
 
-        {/* Patient Care Tab */}
         <TabsContent value="patients" className="space-y-4">
-          {/* Search Bar */}
           <Card>
             <CardContent className="pt-6">
               <div className="flex gap-4 items-end">
@@ -210,7 +151,6 @@ const NurseDashboard = () => {
           </Card>
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Patients List */}
             <div className="lg:col-span-2 space-y-4">
               <Card>
                 <CardHeader>
@@ -299,7 +239,6 @@ const NurseDashboard = () => {
               </Card>
             </div>
 
-            {/* Quick Actions */}
             <div className="space-y-4">
               {selectedPatient && (
                 <Card>
@@ -317,6 +256,8 @@ const NurseDashboard = () => {
                     <Button
                       variant="outline"
                       className="w-full flex items-center gap-2"
+                      disabled
+                      title="Visit history is not available"
                     >
                       <Eye className="h-4 w-4" />
                       View History
@@ -325,10 +266,9 @@ const NurseDashboard = () => {
                 </Card>
               )}
 
-              {/* Quick Stats */}
               <Card>
                 <CardHeader>
-                  <CardTitle>Today's Summary</CardTitle>
+                  <CardTitle>Summary</CardTitle>
                 </CardHeader>
                 <CardContent>
                   <div className="space-y-2 text-sm">
@@ -336,10 +276,9 @@ const NurseDashboard = () => {
                       <span>Total Patients:</span>
                       <span className="font-medium">{patients.length}</span>
                     </div>
-                    <div className="flex justify-between">
-                      <span>Appointments:</span>
-                      <span className="font-medium">{todayAppointments.length}</span>
-                    </div>
+                    <p className="text-gray-500 text-xs pt-1">
+                      Search a patient to record vitals. Outpatient appointments are no longer used.
+                    </p>
                   </div>
                 </CardContent>
               </Card>
@@ -347,76 +286,8 @@ const NurseDashboard = () => {
           </div>
         </TabsContent>
 
-        {/* Today's Consultations Tab — booked outpatient appointments. Nurse records vitals here. */}
-        <TabsContent value="appointments" className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center justify-between">
-                <span className="flex items-center gap-2">
-                  <Calendar className="h-5 w-5" />
-                  Today's Consultations ({todayAppointments.length})
-                </span>
-                <Button variant="outline" size="sm" onClick={fetchTodayAppointments}>
-                  <RefreshCw className="h-4 w-4 mr-2" /> Refresh
-                </Button>
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              {todayAppointments.length === 0 ? (
-                <p className="text-gray-500 text-center py-4">No consultations booked for today.</p>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full border-collapse">
-                    <thead>
-                      <tr className="border-b text-left text-sm text-gray-600">
-                        <th className="py-2">Time</th>
-                        <th className="py-2">Patient</th>
-                        <th className="py-2">Doctor</th>
-                        <th className="py-2">Reason</th>
-                        <th className="py-2">Status</th>
-                        <th className="py-2">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {todayAppointments.map((appointment) => (
-                        <tr key={appointment.id} className="border-b hover:bg-gray-50">
-                          <td className="py-2 text-sm whitespace-nowrap">
-                            <div className="flex items-center gap-1">
-                              <Clock className="h-3 w-3 text-gray-400" />
-                              {appointment.appointment_time}
-                            </div>
-                          </td>
-                          <td className="py-2">
-                            <div className="font-medium text-sm">{appointment.patient_name}</div>
-                            <div className="text-xs text-gray-500">{appointment.patient_uuid}</div>
-                          </td>
-                          <td className="py-2 text-sm">{appointment.doctor_name}</td>
-                          <td className="py-2 text-sm text-gray-600">{appointment.reason || '—'}</td>
-                          <td className="py-2">{getStatusBadge(appointment.status)}</td>
-                          <td className="py-2">
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              disabled={!appointment.patient_uuid}
-                              onClick={() => openVitalsForAppointment(appointment)}
-                            >
-                              <Activity className="h-3 w-3 mr-1" /> Record Vitals
-                            </Button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        {/* Inpatient Ward Tab */}
         {inpatientEnabled && (
           <TabsContent value="ward" className="space-y-4">
-            {/* "My Patients" filter */}
             <div className="flex items-center justify-between bg-gray-50 p-3 rounded border">
               <div className="flex items-center gap-3">
                 <label className="flex items-center gap-2 cursor-pointer">
@@ -521,12 +392,10 @@ const NurseDashboard = () => {
                 )}
               </CardContent>
             </Card>
-
           </TabsContent>
         )}
       </Tabs>
 
-      {/* Nurse Visit Dialog */}
       <Dialog open={showNurseVisitDialog} onOpenChange={setShowNurseVisitDialog}>
         <DialogContent className="max-w-md">
           <DialogHeader>
@@ -543,9 +412,8 @@ const NurseDashboard = () => {
               });
               toast({ title: 'Success', description: 'Nurse visit recorded' });
               setShowNurseVisitDialog(false);
-              // Refresh ward list
               axios.get('/api/inpatient/admissions', { params: { status: 'admitted' } })
-                .then(r => setWardAdmissions(r.data)).catch(() => {});
+                .then(r => setWardAdmissions(Array.isArray(r.data) ? r.data : (r.data?.items || []))).catch(() => {});
             } catch (err) {
               toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed to record visit' });
             }
@@ -559,13 +427,11 @@ const NurseDashboard = () => {
         </DialogContent>
       </Dialog>
 
-      {/* Vitals Recording Dialog — fields driven by hospital Print Settings */}
       <VitalsForm
         isOpen={showVitalsDialog}
         onClose={() => setShowVitalsDialog(false)}
         selectedPatient={selectedPatient}
         userRole="nurse"
-        appointmentId={vitalsAppointmentId}
       />
     </div>
   );

@@ -30,8 +30,6 @@ SYSTEM_ROLES = [
     ("hospital_admin", "Hospital Administrator with full hospital access"),
     ("doctor", "Medical Doctor — patient care and medical records access"),
     ("nurse", "Nursing Staff — patient care support"),
-    ("lab_admin", "Laboratory Administrator — manages lab operations, rates, templates"),
-    ("lab_technician", "Laboratory Technician — performs lab tests and generates reports"),
     ("pharmacy_admin", "Pharmacy Administrator — manages inventory, drug rates, suppliers"),
     ("pharmacist", "Pharmacist — medication dispensing and pharmacy operations"),
     ("satellite_pharmacy_admin", "Satellite pharmacy in-charge — store-scoped admin at ward/satellite counters"),
@@ -39,9 +37,6 @@ SYSTEM_ROLES = [
     ("pharmacy_transfer_clerk", "Pharmacy transfer clerk — master store stock movements to satellites"),
     ("billing_admin", "Billing Administrator — manages rates, insurance, financial operations"),
     ("inpatient_admin", "Inpatient Administrator — manages beds, wards, room rates, ward operations"),
-    ("canteen_admin", "Canteen Administrator — manages food catalog, prices, and kitchen orders"),
-    ("canteen_sales", "Canteen Sales — IP food order queue, kitchen status, and walk-in POS"),
-    ("physiotherapist", "Physiotherapist — clinic sessions, attendance, and assigned patient care"),
     ("frontdesk", "Front Desk Staff — appointments, patient registration, scheduling"),
     ("receptionist", "Receptionist with patient registration access"),
 ]
@@ -57,7 +52,7 @@ _INPATIENT_ALL = [
     "record_vitals", "view_vitals", "record_io", "view_io",
     "administer_medications", "view_mar",
     "manage_nursing_notes", "manage_allergies", "record_visits",
-    "order_labs", "prescribe_medications",
+    "prescribe_medications",
     "schedule_ot", "record_ot_charges",
     "view_bill", "generate_interim_bill", "finalize_bill",
     "manage_packages", "manage_ancillary_charges",
@@ -76,39 +71,6 @@ _INPATIENT_ALL = [
 ]
 
 
-# Canteen permissions — available whenever inpatient is enabled/licensed.
-_CANTEEN_ALL = [
-    "view_catalog", "manage_catalog",
-    "view_orders", "place_order", "manage_order_status",
-    "create_sale", "view_sales", "void_sale",
-]
-# Canteen admin: catalog + kitchen + POS (clinical staff place IP ward orders).
-_CANTEEN_ADMIN_DEFAULT = [
-    "view_catalog", "manage_catalog",
-    "view_orders", "manage_order_status",
-    "create_sale", "view_sales", "void_sale",
-]
-_CANTEEN_SALES_DEFAULT = [
-    "view_catalog", "view_orders", "manage_order_status",
-    "create_sale", "view_sales", "void_sale",
-]
-_CANTEEN_CLINICAL_ORDER = [
-    "view_catalog", "view_orders", "place_order",
-]
-
-# Physiotherapy clinic — standalone ops + billing module
-_PHYSIO_ALL = [
-    "view_physio", "manage_catalog", "manage_packages",
-    "schedule_sessions", "record_attendance", "bill_sessions",
-    "view_physio_reports", "manage_therapist_schedules",
-]
-_PHYSIO_RECEPTION = [
-    "view_physio", "manage_packages", "schedule_sessions",
-    "record_attendance", "bill_sessions", "view_physio_reports",
-]
-_PHYSIO_THERAPIST = [
-    "view_physio", "record_attendance", "schedule_sessions",
-]
 
 # Full pharmacy permission set — kept in sync with the pharmacy permission catalog
 # above. Used to seed full access for super_admin / hospital_admin / pharmacy_admin.
@@ -193,13 +155,7 @@ def _seed_roles(db, UserRole):
 
 def _seed_module_permissions(db, ModulePermission):
     permissions_data = [
-        # Lab
-        {"module_name": "lab", "permission_name": "manage_tests", "permission_description": "Create and manage lab test types", "category": "admin"},
-        {"module_name": "lab", "permission_name": "set_rates", "permission_description": "Set pricing for lab tests", "category": "admin"},
-        {"module_name": "lab", "permission_name": "view_reports", "permission_description": "View lab reports", "category": "user"},
-        {"module_name": "lab", "permission_name": "create_reports", "permission_description": "Create lab reports", "category": "user"},
-        {"module_name": "lab", "permission_name": "manage_equipment", "permission_description": "Manage lab equipment", "category": "admin"},
-        {"module_name": "lab", "permission_name": "manage_templates", "permission_description": "Create and edit report templates", "category": "admin"},
+
         # Pharmacy — granular per-feature keys (mirror inpatient style)
         # Catalog
         {"module_name": "pharmacy", "permission_name": "view_catalog", "permission_description": "View medicine catalog and master tables", "category": "user"},
@@ -277,13 +233,6 @@ def _seed_module_permissions(db, ModulePermission):
         {"module_name": "billing", "permission_name": "manage_insurance", "permission_description": "Manage insurance claims", "category": "admin"},
         {"module_name": "billing", "permission_name": "handle_refunds", "permission_description": "Process refunds", "category": "admin"},
         {"module_name": "billing", "permission_name": "catch_up_bills", "permission_description": "Enter omitted / backdated bills via admin catch-up", "category": "admin"},
-        # Outpatient
-        {"module_name": "outpatient", "permission_name": "schedule_appointments", "permission_description": "Schedule patient appointments", "category": "user"},
-        {"module_name": "outpatient", "permission_name": "manage_schedules", "permission_description": "Manage doctor schedules", "category": "admin"},
-        {"module_name": "outpatient", "permission_name": "register_patients", "permission_description": "Register new patients", "category": "user"},
-        {"module_name": "outpatient", "permission_name": "manage_queues", "permission_description": "Manage patient queues", "category": "user"},
-        {"module_name": "outpatient", "permission_name": "view_appointments", "permission_description": "View appointment details", "category": "user"},
-        {"module_name": "outpatient", "permission_name": "cancel_appointments", "permission_description": "Cancel appointments", "category": "user"},
         # Inpatient
         {"module_name": "inpatient", "permission_name": "view_occupancy", "permission_description": "View beds, rooms, dashboard, and admission lists", "category": "user"},
         {"module_name": "inpatient", "permission_name": "admit_patients", "permission_description": "Create admissions", "category": "user"},
@@ -310,7 +259,6 @@ def _seed_module_permissions(db, ModulePermission):
         {"module_name": "inpatient", "permission_name": "manage_nursing_notes", "permission_description": "Create and edit nursing notes", "category": "user"},
         {"module_name": "inpatient", "permission_name": "manage_allergies", "permission_description": "Record and update patient allergies", "category": "user"},
         {"module_name": "inpatient", "permission_name": "record_visits", "permission_description": "Record ward round / nurse visits", "category": "user"},
-        {"module_name": "inpatient", "permission_name": "order_labs", "permission_description": "Order lab tests for admitted patients", "category": "user"},
         {"module_name": "inpatient", "permission_name": "prescribe_medications", "permission_description": "Create prescriptions for admitted patients", "category": "user"},
         {"module_name": "inpatient", "permission_name": "schedule_ot", "permission_description": "Schedule operating theatre procedures", "category": "user"},
         {"module_name": "inpatient", "permission_name": "record_ot_charges", "permission_description": "Set surgeon / anaesthetist / consumable charges on OT", "category": "admin"},
@@ -346,31 +294,7 @@ def _seed_module_permissions(db, ModulePermission):
         {"module_name": "inpatient", "permission_name": "issue_gate_pass", "permission_description": "Issue a gate pass after discharge for security at exit", "category": "user"},
         {"module_name": "inpatient", "permission_name": "write_discharge_summary", "permission_description": "Author and finalize the clinical discharge summary", "category": "user"},
         {"module_name": "inpatient", "permission_name": "view_discharge_summary", "permission_description": "View and print the discharge summary document", "category": "user"},
-        # Canteen (gated by inpatient module enablement / license)
-        {"module_name": "canteen", "permission_name": "view_catalog", "permission_description": "View the canteen food catalog", "category": "user"},
-        {"module_name": "canteen", "permission_name": "manage_catalog", "permission_description": "Create and edit canteen categories, items, and prices", "category": "admin"},
-        {"module_name": "canteen", "permission_name": "view_orders", "permission_description": "View canteen orders for admitted patients", "category": "user"},
-        {"module_name": "canteen", "permission_name": "place_order", "permission_description": "Place and cancel canteen orders for admitted patients", "category": "user"},
-        {"module_name": "canteen", "permission_name": "manage_order_status", "permission_description": "Update kitchen order status (preparing / ready / delivered)", "category": "user"},
-        {"module_name": "canteen", "permission_name": "create_sale", "permission_description": "Create walk-in / cash canteen POS sales", "category": "user"},
-        {"module_name": "canteen", "permission_name": "view_sales", "permission_description": "View canteen POS sales history", "category": "user"},
-        {"module_name": "canteen", "permission_name": "void_sale", "permission_description": "Void a completed canteen POS sale", "category": "admin"},
-        # Physiotherapy
-        {"module_name": "physiotherapy", "permission_name": "view_physio", "permission_description": "View physio board, appointments, catalog, and packages", "category": "user"},
-        {"module_name": "physiotherapy", "permission_name": "manage_catalog", "permission_description": "Create and edit physio service / modality catalog", "category": "admin"},
-        {"module_name": "physiotherapy", "permission_name": "manage_packages", "permission_description": "Manage package templates and sell packages to patients", "category": "admin"},
-        {"module_name": "physiotherapy", "permission_name": "schedule_sessions", "permission_description": "Book, check-in, cancel, and mark no-show for physio sessions", "category": "user"},
-        {"module_name": "physiotherapy", "permission_name": "record_attendance", "permission_description": "Start and complete physio sessions", "category": "user"},
-        {"module_name": "physiotherapy", "permission_name": "bill_sessions", "permission_description": "Create à la carte physio bills and collect payment", "category": "user"},
-        {"module_name": "physiotherapy", "permission_name": "view_physio_reports", "permission_description": "View physio collections and utilization reports", "category": "user"},
-        {"module_name": "physiotherapy", "permission_name": "manage_therapist_schedules", "permission_description": "Manage therapist weekly availability and leave", "category": "admin"},
         # EHR
-        {"module_name": "ehr", "permission_name": "view_records", "permission_description": "View patient electronic health records", "category": "user"},
-        {"module_name": "ehr", "permission_name": "edit_records", "permission_description": "Edit patient records", "category": "user"},
-        {"module_name": "ehr", "permission_name": "create_prescriptions", "permission_description": "Create prescriptions", "category": "user"},
-        {"module_name": "ehr", "permission_name": "manage_templates", "permission_description": "Manage EHR templates", "category": "admin"},
-        {"module_name": "ehr", "permission_name": "view_history", "permission_description": "View patient medical history", "category": "user"},
-        {"module_name": "ehr", "permission_name": "generate_reports", "permission_description": "Generate medical reports", "category": "user"},
         # Admin
         {"module_name": "admin", "permission_name": "manage_users", "permission_description": "Create and manage users", "category": "admin"},
         {"module_name": "admin", "permission_name": "manage_roles", "permission_description": "Create and manage roles", "category": "admin"},
@@ -397,39 +321,26 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
     role_permissions_map = {
         "super_admin": {
             "admin": ["manage_users", "manage_roles", "manage_modules", "view_system_reports", "manage_settings"],
-            "lab": ["manage_tests", "set_rates", "view_reports", "create_reports", "manage_equipment", "manage_templates"],
             "pharmacy": list(_PHARMACY_ALL),
             "billing": ["manage_rates", "process_payments", "generate_invoices", "view_financial_reports", "manage_insurance", "handle_refunds", "catch_up_bills"],
-            "outpatient": ["schedule_appointments", "manage_schedules", "register_patients", "manage_queues", "view_appointments", "cancel_appointments"],
             "inpatient": list(_INPATIENT_ALL),
-            "canteen": list(_CANTEEN_ALL),
-            "physiotherapy": list(_PHYSIO_ALL),
-            "ehr": ["view_records", "edit_records", "create_prescriptions", "manage_templates", "view_history", "generate_reports"],
         },
         "hospital_admin": {
             "admin": ["manage_users", "manage_roles", "view_system_reports", "manage_settings"],
-            "lab": ["view_reports", "create_reports"],
             "pharmacy": list(_PHARMACY_ALL),
             "billing": ["view_financial_reports", "manage_insurance", "process_payments", "generate_invoices", "catch_up_bills"],
-            "outpatient": ["schedule_appointments", "manage_schedules", "register_patients", "manage_queues", "view_appointments", "cancel_appointments"],
             "inpatient": list(_INPATIENT_ALL),
-            "canteen": list(_CANTEEN_ALL),
-            "physiotherapy": list(_PHYSIO_ALL),
-            "ehr": ["view_records", "edit_records", "view_history", "generate_reports"],
         },
         "doctor": {
-            "ehr": ["view_records", "edit_records", "create_prescriptions", "view_history", "generate_reports"],
-            "lab": ["view_reports", "create_reports"],
             # No pharmacy permissions for doctor — pharmacy module is standalone in
             # this build. Cross-module Rx → dispense linkage is a later phase.
-            "outpatient": ["view_appointments", "view_patients", "schedule_appointments", "update_appointments", "register_patients", "manage_queues", "cancel_appointments"],
             "inpatient": [
                 "view_occupancy",
                 "admit_patients", "update_admission", "discharge_patients", "record_mortality",
                 "record_vitals", "view_vitals", "record_io", "view_io",
                 "administer_medications", "view_mar",
                 "manage_nursing_notes", "manage_allergies", "record_visits",
-                "order_labs", "prescribe_medications",
+                "prescribe_medications",
                 "schedule_ot", "view_procedures",
                 "record_consent", "withdraw_consent",
                 "transfer_beds", "initiate_ward_transfer", "accept_ward_transfer",
@@ -440,28 +351,22 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
                 "accept_admission",
                 "write_discharge_summary", "view_discharge_summary",
             ],
-            "canteen": list(_CANTEEN_CLINICAL_ORDER),
         },
         "nurse": {
-            "ehr": ["view_records", "edit_records", "view_history", "manage_allergies"],
-            "outpatient": ["manage_queues", "view_appointments"],
-            "lab": ["view_reports"],
             "inpatient": [
                 "view_occupancy",
                 "record_vitals", "view_vitals", "record_io", "view_io",
                 "administer_medications", "view_mar",
                 "manage_nursing_notes", "manage_allergies", "record_visits",
-                "order_labs", "prescribe_medications",
+                "prescribe_medications",
                 "record_consent",
                 "accept_ward_transfer", "manage_housekeeping",
                 "acknowledge_critical_alert",
                 "view_roster",
                 "view_documents",
             ],
-            "canteen": list(_CANTEEN_CLINICAL_ORDER),
         },
         "inpatient_admin": {
-            "ehr": ["view_records", "view_history", "manage_allergies"],
             "inpatient": [
                 "view_occupancy", "admit_patients", "update_admission", "discharge_patients",
                 "record_vitals", "view_vitals",
@@ -478,11 +383,9 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
                 "accept_admission", "convert_payer", "manage_payer_schemes",
                 "write_discharge_summary", "view_discharge_summary",
             ],
-            "canteen": list(_CANTEEN_CLINICAL_ORDER),
         },
         "billing_admin": {
             "billing": ["manage_rates", "process_payments", "generate_invoices", "view_financial_reports", "manage_insurance", "handle_refunds"],
-            "physiotherapy": ["view_physio", "bill_sessions", "view_physio_reports", "manage_packages"],
             "inpatient": [
                 "view_occupancy",
                 "view_bill", "generate_interim_bill", "finalize_bill",
@@ -497,10 +400,7 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
             ],
         },
         "receptionist": {
-            "outpatient": ["schedule_appointments", "register_patients", "manage_queues", "view_appointments", "cancel_appointments"],
             "billing": ["process_payments", "generate_invoices", "view_financial_reports"],
-            "ehr": ["view_records", "view_history"],
-            "physiotherapy": list(_PHYSIO_RECEPTION) + ["manage_catalog", "manage_therapist_schedules"],
             "inpatient": [
                 "view_occupancy", "admit_patients", "update_admission", "discharge_patients",
                 "record_vitals", "view_vitals",
@@ -519,12 +419,8 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
                 "manage_ancillary_catalog", "manage_surgery_packages", "manage_tpa",
                 "manage_consent_templates",
             ],
-            "canteen": list(_CANTEEN_CLINICAL_ORDER),
         },
         "frontdesk": {
-            "outpatient": ["schedule_appointments", "register_patients", "manage_queues", "view_appointments", "cancel_appointments"],
-            "ehr": ["view_records", "view_history"],
-            "physiotherapy": list(_PHYSIO_RECEPTION),
             "inpatient": [
                 "view_occupancy", "admit_patients", "update_admission", "discharge_patients",
                 "record_vitals", "view_vitals",
@@ -541,16 +437,6 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
                 "manage_consent_templates",
             ],
         },
-        "physiotherapist": {
-            "physiotherapy": list(_PHYSIO_THERAPIST),
-            "ehr": ["view_records", "view_history"],
-        },
-        "lab_admin": {
-            "lab": ["manage_tests", "set_rates", "view_reports", "create_reports", "manage_equipment", "manage_templates"],
-        },
-        "lab_technician": {
-            "lab": ["view_reports", "create_reports"],
-        },
         "pharmacy_admin": {
             "pharmacy": list(_PHARMACY_ALL),
         },
@@ -565,12 +451,6 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
         },
         "pharmacy_transfer_clerk": {
             "pharmacy": list(_PHARMACY_TRANSFER_CLERK),
-        },
-        "canteen_admin": {
-            "canteen": list(_CANTEEN_ADMIN_DEFAULT),
-        },
-        "canteen_sales": {
-            "canteen": list(_CANTEEN_SALES_DEFAULT),
         },
     }
 
@@ -716,18 +596,12 @@ def init_database_and_seed(seed: Mapping, db_path: str) -> None:
     from app.models.prescriptions_simple import SimplePrescription  # noqa
     from app.models.doctor_availability import DoctorAvailability, DoctorSpecialSchedule, DoctorAvailabilityStatus  # noqa
     from app.models.license import License  # noqa
-    from app.models.lab import LabTestCategory, LabTest, LabTestParameter, LabReport, PatientLabOrder  # noqa
-    from app.models.lab import LabTestPackageCategory, LabTestPackage  # noqa
+    from app.models.lab import LabTestCategory, LabTest, LabTestParameter, LabReport, PatientLabOrder, LabTestPackageCategory, LabTestPackage  # noqa
     from app.models.billing import PaymentMethod, Bill, BillItem, Payment  # noqa
     from app.models.ehr import Consultation  # noqa
     from app.models.outpatient import Appointment  # noqa
     from app.models.patient import Patient  # noqa
     from app.models.referral import Referral  # noqa
-    from app.models.canteen import CanteenCategory, CanteenItem, CanteenOrder, CanteenOrderItem, CanteenSale, CanteenSaleItem  # noqa
-    from app.models.physiotherapy import (  # noqa
-        PhysioService, PhysioPackageTemplate, PhysioPatientPackage, PhysioPackageLedger,
-        PhysioTherapistAvailability, PhysioTherapistSpecialSchedule, PhysioAppointment,
-    )
     from app.models.settlement import Settlement, SettlementConfig  # noqa
 
     engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})

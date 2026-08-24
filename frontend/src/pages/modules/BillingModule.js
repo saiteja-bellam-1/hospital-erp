@@ -14,11 +14,10 @@ import axios from 'axios';
 import {
   Receipt, Search, Download, DollarSign, TrendingUp, Clock,
   CheckCircle2, Loader2, XCircle,   Ban, CreditCard, Eye,
-  Building2, Stethoscope, FlaskConical, BedDouble, Pill, Printer, FileText, ChevronDown, Trash2, Pencil
+  Building2, Stethoscope, BedDouble, Pill, Printer, FileText, ChevronDown, Trash2, Pencil
 } from 'lucide-react';
 import { printPdfFromUrl } from '../../utils/printPdf';
 import PdfPreviewDialog from '../../components/PdfPreviewDialog';
-import PatientSearchPicker from '../../components/PatientSearchPicker';
 import EditBillDialog, { canEditBill, isPharmacyPosBill } from '../../components/billing/EditBillDialog';
 import { localDateString, localDateStringOffset, localWeekStart, localMonthStart, localLastMonthRange } from '../../utils/localDate';
 import {
@@ -93,13 +92,6 @@ const BillingModule = () => {
   const [reportData, setReportData] = useState(null);
   const [reportLoading, setReportLoading] = useState(false);
 
-  // Consolidate dialog
-  const [consolidateOpen, setConsolidateOpen] = useState(false);
-  const [consolidatePatient, setConsolidatePatient] = useState(null);
-  const [consolidatePreview, setConsolidatePreview] = useState(null);
-  const [consolidatePicked, setConsolidatePicked] = useState({ consultations: new Set(), labs: new Set() });
-  const [consolidateSaving, setConsolidateSaving] = useState(false);
-
   // Payment dialog
   const [payBill, setPayBill] = useState(null);
   const [paymentForm, setPaymentForm] = useState({
@@ -117,11 +109,8 @@ const BillingModule = () => {
     params.set('date_from', dateFrom);
     params.set('date_to', dateTo);
     if (patientSearch) params.set('patient_search', patientSearch);
-    if (activeTab === 'outpatient') params.set('bill_type', 'consultation');
-    else if (activeTab === 'lab') params.set('bill_type', 'lab');
-    else if (activeTab === 'pharmacy') params.set('bill_type', 'pharmacy');
+    if (activeTab === 'pharmacy') params.set('bill_type', 'pharmacy');
     else if (activeTab === 'inpatient') params.set('bill_type', 'admission');
-    else if (activeTab === 'physiotherapy') params.set('bill_type', 'physiotherapy');
     if (paymentStatus !== 'all') params.set('payment_status', paymentStatus);
     if (doctorFilter !== 'all') params.set('doctor_id', doctorFilter);
     if (referralFilter !== 'all') params.set('referred_by', referralFilter);
@@ -155,7 +144,6 @@ const BillingModule = () => {
   const getTypeIcon = (type) => {
     switch (type) {
       case 'consultation': return <Stethoscope className="h-3 w-3" />;
-      case 'lab': return <FlaskConical className="h-3 w-3" />;
       case 'pharmacy': return <Pill className="h-3 w-3" />;
       case 'admission': return <BedDouble className="h-3 w-3" />;
       default: return <Receipt className="h-3 w-3" />;
@@ -165,10 +153,8 @@ const BillingModule = () => {
   const getTypeColor = (type) => {
     switch (type) {
       case 'consultation': return 'border-blue-200 text-blue-700 bg-blue-50';
-      case 'lab': return 'border-purple-200 text-purple-700 bg-purple-50';
       case 'pharmacy': return 'border-emerald-200 text-emerald-700 bg-emerald-50';
       case 'admission': return 'border-teal-200 text-teal-700 bg-teal-50';
-      case 'physiotherapy': return 'border-cyan-200 text-cyan-700 bg-cyan-50';
       case 'day_care': return 'border-indigo-200 text-indigo-700 bg-indigo-50';
       default: return 'border-gray-200 text-gray-700';
     }
@@ -189,10 +175,8 @@ const BillingModule = () => {
     if (!bill) return null;
     switch (bill.type) {
       case 'consultation':
-        return bill.bill_id ? `/api/appointments/${bill.bill_id}/bill/download` : null;
-      case 'lab':
-        if (bill.lab_bill_group_id) return `/api/lab/bills/${bill.lab_bill_group_id}/pdf`;
-        return bill.bill_id ? `/api/lab/orders/${bill.bill_id}/bill` : null;
+        // Historical catch-up consultation bills live on the central Bill table.
+        return bill.bill_id ? `/api/hospital/billing/bills/${bill.bill_id}/pdf` : null;
       case 'pharmacy':
         // Catch-up pharmacy bills use central Bill ids, not PharmacySale ids.
         if (bill.is_catch_up || String(bill.id || '').startsWith('CU-')) {
@@ -203,7 +187,6 @@ const BillingModule = () => {
         return bill.admission_id ? `/api/inpatient/admissions/${bill.admission_id}/bill/pdf` : null;
       case 'day_care':
       case 'consolidated':
-      case 'physiotherapy':
         return bill.bill_id ? `/api/hospital/billing/bills/${bill.bill_id}/pdf` : null;
       default:
         return bill.bill_id ? `/api/hospital/billing/bills/${bill.bill_id}/pdf` : null;
@@ -228,7 +211,7 @@ const BillingModule = () => {
   };
 
   const handleViewBill = (bill) => {
-    if (bill.type === 'admission' || bill.type === 'consolidated' || bill.type === 'day_care' || bill.type === 'physiotherapy') {
+    if (bill.type === 'admission' || bill.type === 'consolidated' || bill.type === 'day_care') {
       openBillDetail(bill);
       return;
     }
@@ -298,7 +281,7 @@ const BillingModule = () => {
 
   const openBillDetail = async (bill) => {
     // Bills backed by the bills table use the detail endpoint
-    if (bill.type === 'admission' || bill.type === 'consolidated' || bill.type === 'day_care' || bill.type === 'physiotherapy') {
+    if (bill.type === 'admission' || bill.type === 'consolidated' || bill.type === 'day_care') {
       setDetailBill(bill);
       setDetailLoading(true);
       setSplits([]);
@@ -497,74 +480,6 @@ const BillingModule = () => {
     URL.revokeObjectURL(url);
   };
 
-  const openConsolidateDialog = () => {
-    setConsolidatePatient(null);
-    setConsolidatePreview(null);
-    setConsolidatePicked({ consultations: new Set(), labs: new Set() });
-    setConsolidateOpen(true);
-  };
-
-  const selectConsolidatePatient = async (p) => {
-    setConsolidatePatient(p);
-    try {
-      const res = await axios.get(`/api/hospital/billing/consolidate/preview?patient_id=${p.id}`);
-      setConsolidatePreview(res.data);
-      // Pre-select everything
-      setConsolidatePicked({
-        consultations: new Set(res.data.consultations.map((c) => c.id)),
-        labs: new Set(res.data.lab_orders.map((l) => l.id)),
-      });
-    } catch (err) {
-      const detail = err.response?.data?.detail;
-      alert(typeof detail === 'string' ? detail : 'Failed to load patient charges');
-    }
-  };
-
-  const togglePicked = (kind, id) => {
-    const next = new Set(consolidatePicked[kind]);
-    if (next.has(id)) next.delete(id); else next.add(id);
-    setConsolidatePicked({ ...consolidatePicked, [kind]: next });
-  };
-
-  const consolidateSelectedTotal = () => {
-    if (!consolidatePreview) return 0;
-    const c = consolidatePreview.consultations.filter((x) => consolidatePicked.consultations.has(x.id))
-      .reduce((s, x) => s + x.total, 0);
-    const l = consolidatePreview.lab_orders.filter((x) => consolidatePicked.labs.has(x.id))
-      .reduce((s, x) => s + x.cost, 0);
-    return c + l;
-  };
-
-  const submitConsolidate = async () => {
-    if (!consolidatePatient) return;
-    const consultation_ids = [...consolidatePicked.consultations];
-    const lab_order_ids = [...consolidatePicked.labs];
-    if (!consultation_ids.length && !lab_order_ids.length) {
-      alert('Pick at least one item to consolidate.');
-      return;
-    }
-    setConsolidateSaving(true);
-    try {
-      const r = await axios.post('/api/hospital/billing/consolidate', {
-        patient_id: consolidatePatient.id, consultation_ids, lab_order_ids,
-      });
-      setConsolidateOpen(false);
-      fetchBills();
-      if (r.data?.bill_id) {
-        await openBillDetail({
-          type: 'consolidated',
-          bill_id: r.data.bill_id,
-          patient_name: `${consolidatePatient.first_name} ${consolidatePatient.last_name}`,
-        });
-      }
-    } catch (err) {
-      const detail = err.response?.data?.detail;
-      alert(typeof detail === 'string' ? detail : 'Consolidate failed');
-    } finally {
-      setConsolidateSaving(false);
-    }
-  };
-
   const openCreditNoteDialog = () => {
     setCreditNoteForm({
       items: [{ item_name: '', quantity: 1, unit_price: '' }],
@@ -699,12 +614,9 @@ const BillingModule = () => {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">Billing Management</h1>
-          <p className="text-muted-foreground text-sm">Manage outpatient, lab, pharmacy, and inpatient bills</p>
+          <p className="text-muted-foreground text-sm">Manage pharmacy bills</p>
         </div>
         <div className="flex gap-2">
-          <Button onClick={openConsolidateDialog} variant="outline">
-            <FileText className="h-4 w-4 mr-1" /> Consolidate Bills
-          </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" disabled={exporting}>
@@ -768,7 +680,7 @@ const BillingModule = () => {
                   <p className="text-xs text-gray-500">Total Bills</p>
                   <p className="text-xl font-bold">{summary.total_bills}</p>
                   <p className="text-[10px] text-gray-400">
-                    {summary.appointment_count} consult + {summary.lab_count} lab
+                    {summary.appointment_count} consult
                     {summary.pharmacy_count > 0 && ` + ${summary.pharmacy_count} pharmacy`}
                     {summary.admission_count > 0 && ` + ${summary.admission_count} admission`}
                   </p>
@@ -795,20 +707,8 @@ const BillingModule = () => {
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
           <TabsTrigger value="all">All Bills</TabsTrigger>
-          <TabsTrigger value="outpatient">
-            <Stethoscope className="h-3.5 w-3.5 mr-1" /> Outpatient
-          </TabsTrigger>
-          <TabsTrigger value="lab">
-            <FlaskConical className="h-3.5 w-3.5 mr-1" /> Lab
-          </TabsTrigger>
           <TabsTrigger value="pharmacy">
             <Pill className="h-3.5 w-3.5 mr-1" /> Pharmacy
-          </TabsTrigger>
-          <TabsTrigger value="inpatient">
-            <BedDouble className="h-3.5 w-3.5 mr-1" /> Inpatient
-          </TabsTrigger>
-          <TabsTrigger value="physiotherapy">
-            Physiotherapy
           </TabsTrigger>
           <TabsTrigger value="reports">
             <TrendingUp className="h-3.5 w-3.5 mr-1" /> Reports
@@ -919,7 +819,7 @@ const BillingModule = () => {
         </TabsContent>
 
         {/* Bills Table - same content for all tabs, filtered by activeTab */}
-        {['all', 'outpatient', 'lab', 'pharmacy', 'inpatient', 'physiotherapy'].map(tab => (
+        {['all', 'pharmacy'].map(tab => (
           <TabsContent key={tab} value={tab} className="mt-4">
             <Card>
               <CardContent className="pt-4">
@@ -1425,90 +1325,6 @@ const BillingModule = () => {
               <Button variant="outline" onClick={() => setDeleteBill(null)} disabled={deleting}>Close</Button>
               <Button variant="destructive" disabled={deleting} onClick={handleDeleteCancelledBill}>
                 {deleting ? 'Deleting...' : 'Delete Bill'}
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      {/* Consolidate Bills Dialog */}
-      <Dialog open={consolidateOpen} onOpenChange={(open) => { if (!open) setConsolidateOpen(false); }}>
-        <DialogContent className="max-w-3xl">
-          <DialogHeader>
-            <DialogTitle>Consolidate Patient Bills</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4">
-            {/* Patient search */}
-            <PatientSearchPicker
-              value={consolidatePatient}
-              onChange={(p) => {
-                if (!p) {
-                  setConsolidatePatient(null);
-                  setConsolidatePreview(null);
-                  return;
-                }
-                selectConsolidatePatient(p);
-              }}
-              label="Patient"
-              compact
-            />
-
-            {/* Preview lists */}
-            {consolidatePreview && (
-              <>
-                <div>
-                  <Label className="text-xs">Consultations ({consolidatePreview.consultations.length})</Label>
-                  {consolidatePreview.consultations.length === 0 ? (
-                    <p className="text-xs text-gray-400">No pending consultations.</p>
-                  ) : (
-                    <div className="space-y-1 max-h-40 overflow-auto">
-                      {consolidatePreview.consultations.map((c) => (
-                        <label key={c.id} className="flex items-center gap-2 text-sm border rounded p-2 cursor-pointer hover:bg-gray-50">
-                          <input type="checkbox" checked={consolidatePicked.consultations.has(c.id)}
-                            onChange={() => togglePicked('consultations', c.id)} />
-                          <span className="flex-1">
-                            <span className="font-mono text-xs text-gray-500">{c.appointment_number}</span>
-                            <span className="ml-2 text-xs text-gray-400">{c.date ? new Date(c.date).toLocaleDateString() : ''}</span>
-                            <Badge variant="outline" className="ml-2 text-[9px]">{c.payment_status}</Badge>
-                          </span>
-                          <span className="font-semibold">{formatCurrency(c.total)}</span>
-                        </label>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                <div>
-                  <Label className="text-xs">Lab Orders ({consolidatePreview.lab_orders.length})</Label>
-                  {consolidatePreview.lab_orders.length === 0 ? (
-                    <p className="text-xs text-gray-400">No pending lab orders.</p>
-                  ) : (
-                    <div className="space-y-1 max-h-40 overflow-auto">
-                      {consolidatePreview.lab_orders.map((l) => (
-                        <label key={l.id} className="flex items-center gap-2 text-sm border rounded p-2 cursor-pointer hover:bg-gray-50">
-                          <input type="checkbox" checked={consolidatePicked.labs.has(l.id)}
-                            onChange={() => togglePicked('labs', l.id)} />
-                          <span className="flex-1">
-                            <span className="font-mono text-xs text-gray-500">{l.order_number}</span>
-                            <span className="ml-2">{l.test_name}</span>
-                            <Badge variant="outline" className="ml-2 text-[9px]">{l.payment_status}</Badge>
-                          </span>
-                          <span className="font-semibold">{formatCurrency(l.cost)}</span>
-                        </label>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                <div className="bg-gray-50 rounded p-3 text-right text-sm">
-                  Total to bill: <span className="font-bold text-lg ml-2">{formatCurrency(consolidateSelectedTotal())}</span>
-                </div>
-              </>
-            )}
-
-            <div className="flex justify-end gap-2 pt-2 border-t">
-              <Button variant="outline" onClick={() => setConsolidateOpen(false)}>Cancel</Button>
-              <Button disabled={consolidateSaving || !consolidatePreview || consolidateSelectedTotal() <= 0}
-                onClick={submitConsolidate}>
-                {consolidateSaving ? 'Creating...' : 'Create Consolidated Bill'}
               </Button>
             </div>
           </div>

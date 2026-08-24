@@ -1,7 +1,7 @@
 """Business-unit revenue settlements.
 
 The Settlements page splits finalized inpatient bill lines across the fixed
-business units (lab / pharmacy / canteen / hospital). These tables let an
+business units (pharmacy / hospital). These tables let an
 admin *record* a payout to a business unit for a period, applying a
 configurable payout percentage (the hospital keeps the remainder as its
 commission). Tables are created via ``create_all`` on startup.
@@ -15,7 +15,7 @@ from app.utils.time import system_now
 
 # Fixed business units the hospital settles revenue to. "hospital" is the
 # residual bucket kept in-house and is intentionally not settleable.
-SETTLEMENT_UNITS = ("lab", "pharmacy", "canteen")
+SETTLEMENT_UNITS = ("pharmacy",)
 DEFAULT_PAYOUT_PERCENTAGE = 100.0
 
 
@@ -30,7 +30,7 @@ class SettlementConfig(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False, index=True)
-    unit = Column(String(20), nullable=False)  # lab | pharmacy | canteen
+    unit = Column(String(20), nullable=False)  # pharmacy
     payout_percentage = Column(Float, nullable=False, default=DEFAULT_PAYOUT_PERCENTAGE)
     updated_at = Column(DateTime(timezone=True), default=system_now, onupdate=system_now)
     updated_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
@@ -52,7 +52,7 @@ class Settlement(Base):
     id = Column(Integer, primary_key=True, index=True)
     settlement_number = Column(String(40), unique=True, nullable=False, index=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False, index=True)
-    unit = Column(String(20), nullable=False, index=True)  # lab | pharmacy | canteen
+    unit = Column(String(20), nullable=False, index=True)  # pharmacy
 
     period_from = Column(Date, nullable=False)
     period_to = Column(Date, nullable=False)

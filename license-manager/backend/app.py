@@ -259,7 +259,7 @@ class LicenseCreate(BaseModel):
     months: int = Field(default=0, ge=0)
     days: int = Field(default=365, ge=0)
     features: List[str] = [
-        "outpatient", "lab", "ehr", "admin", "billing", "physiotherapy",
+        "admin", "billing", "pharmacy",
     ]
     modules: List[str] = []
     notes: Optional[str] = None

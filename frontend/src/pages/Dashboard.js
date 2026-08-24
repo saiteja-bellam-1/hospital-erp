@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Routes, Route, useLocation, Navigate, Link } from 'react-router-dom';
+import { Routes, Route, useLocation, Link } from 'react-router-dom';
 import {
   Shield,
   Phone,
@@ -25,57 +25,24 @@ import HospitalAdminDashboard from './modules/HospitalAdminDashboard';
 import SuperAdminDashboard from './modules/SuperAdminDashboard';
 import AuditLogsPage from './modules/AuditLogsPage';
 import SupportContactPage from './modules/SupportContactPage';
-import PatientsModule from './modules/PatientsModule';
-import LabModule from './modules/LabModule';
 import PharmacyModule from './modules/PharmacyModule';
-import CanteenModule from './modules/CanteenModule';
-import PhysiotherapyModule from './modules/PhysiotherapyModule';
 import BillingHub from './modules/BillingHub';
-import EHRModule from './modules/EHRModule';
-import OutpatientModule from './modules/OutpatientModule';
-import InpatientModule from './modules/InpatientModule';
 import AdminModule from './modules/AdminModule';
 import HospitalAdminModule from './modules/HospitalAdminModule';
 import CatchUpBills from './modules/admin/CatchUpBills';
-import SettlementsPage from './modules/admin/SettlementsPage';
 import PrintSettingsPage from './modules/PrintSettingsPage';
-import DoctorDashboard from './modules/DoctorDashboard';
-import ReceptionDashboard from './modules/reception/ReceptionDashboard';
-import ReceptionPatientsPage from './modules/reception/ReceptionPatientsPage';
-import ReceptionAppointmentsPage from './modules/reception/ReceptionAppointmentsPage';
-import DoctorAvailabilityPage from './modules/reception/DoctorAvailabilityPage';
-import ReceptionReportsPage from './modules/reception/ReceptionReportsPage';
-import ReceptionPackagesPage from './modules/reception/ReceptionPackagesPage';
-import ProceduresBillingPage from './modules/reception/ProceduresBillingPage';
-import ReferralManagementPage from './modules/reception/ReferralManagementPage';
-import ReceptionLabOrdersPage from './modules/reception/ReceptionLabOrdersPage';
-import NurseDashboard from './modules/NurseDashboard';
-import AvailabilityModule from './modules/AvailabilityModule';
-import LabTechDashboard from './modules/LabTechDashboard';
-import ConsultationPage from './modules/ConsultationPage';
 import LicenseManagement from './modules/LicenseManagement';
 import BackupManagement from './modules/BackupManagement';
 import SoftwareUpdate from './modules/SoftwareUpdate';
 import LicenseBanner from '../components/LicenseBanner';
 import BackupHealthBanner from '../components/BackupHealthBanner';
-import SetupProgressBanner from '../components/SetupProgressBanner';
-import { useNavigationSections, normalizeUserRoles, canAccessLabAdminDashboard } from '../hooks/useNavigationSections';
+import { useNavigationSections, normalizeUserRoles } from '../hooks/useNavigationSections';
 import HomeGrid from './modules/HomeGrid';
-import SetupWizard from './setup/SetupWizard';
 
-const HomeDashboard = ({ hasRole, enabledModules }) => {
+const HomeDashboard = ({ hasRole }) => {
   // Priority-based: show the most relevant dashboard for the user
   if (hasRole('super_admin')) return <SuperAdminDashboard />;
   if (hasRole('hospital_admin')) return <HospitalAdminDashboard />;
-  // Doctors always get their dashboard (same pattern as lab staff below).
-  if (hasRole('doctor')) return <DoctorDashboard />;
-  if (hasRole('lab_admin') || hasRole('lab_technician')) return <LabTechDashboard />;
-  if (hasRole('receptionist') && enabledModules.outpatient) return <ReceptionDashboard />;
-  if (hasRole('receptionist') && enabledModules.lab) return <LabTechDashboard />;
-  if (hasRole('physiotherapist') && enabledModules.physiotherapy) {
-    return <Navigate to="/dashboard/physiotherapy/today" replace />;
-  }
-  if (hasRole('nurse')) return <NurseDashboard />;
   return <DashboardHome />;
 };
 
@@ -145,19 +112,6 @@ const DashboardShell = () => {
 
   useEffect(() => {
     if (!user) return;
-    const roleList = (() => {
-      const r = user?.roles;
-      if (Array.isArray(r) && r.length > 0) {
-        return r.map((x) => (typeof x === 'string' ? x : x?.name)).filter(Boolean);
-      }
-      return user?.role ? [user.role] : [];
-    })();
-    if (roleList.some((name) => name === 'lab_admin' || name === 'lab_technician')) {
-      setEnabledModules((prev) => ({ ...prev, lab: true }));
-    }
-    if (roleList.some((name) => name === 'doctor')) {
-      setEnabledModules((prev) => ({ ...prev, outpatient: true }));
-    }
   }, [user]);
 
   useEffect(() => {
@@ -173,35 +127,11 @@ const DashboardShell = () => {
         // gated on enabledModules.billing don't silently disappear.
         if (moduleMap.billing === undefined) moduleMap.billing = true;
         if (moduleMap.admin === undefined) moduleMap.admin = true;
-        // Lab staff must always see lab navigation even while modules are loading.
-        const r = user?.roles;
-        const roleList = Array.isArray(r) && r.length > 0
-          ? r.map((x) => (typeof x === 'string' ? x : x?.name)).filter(Boolean)
-          : (user?.role ? [user.role] : []);
-        if (roleList.some((name) => name === 'lab_admin' || name === 'lab_technician')) {
-          moduleMap.lab = true;
-        }
-        if (roleList.some((name) => name === 'doctor')) {
-          moduleMap.outpatient = true;
-        }
         setEnabledModules(moduleMap);
       } catch (error) {
         console.error('Failed to fetch enabled modules:', error);
-        const roleList = (() => {
-          const r = user?.roles;
-          if (Array.isArray(r) && r.length > 0) {
-            return r.map((x) => (typeof x === 'string' ? x : x?.name)).filter(Boolean);
-          }
-          return user?.role ? [user.role] : [];
-        })();
-        const isLabStaff = roleList.some((name) => name === 'lab_admin' || name === 'lab_technician');
-        const isDoctor = roleList.some((name) => name === 'doctor');
         setEnabledModules({
-          outpatient: isDoctor,
-          inpatient: false,
-          lab: isLabStaff,
           pharmacy: false,
-          ehr: false,
           billing: true,
           admin: true
         });
@@ -286,8 +216,6 @@ const DashboardShell = () => {
       hospital_admin: 'Hospital Admin',
       doctor: 'Doctor',
       receptionist: 'Receptionist',
-      lab_technician: 'Lab Technician',
-      lab_admin: 'Lab Admin',
       nurse: 'Nurse',
     };
     return roles.map(r => labels[r] || r).join(', ') || 'Staff';
@@ -364,7 +292,6 @@ const DashboardShell = () => {
         <div className="flex-1 flex flex-col min-w-0">
           <LicenseBanner licenseStatus={licenseStatus} />
           <BackupHealthBanner />
-          {hasAnyRole('super_admin', 'hospital_admin') && <SetupProgressBanner />}
 
           {/* Mobile menu button — sidebar mode only (header mode uses AppHeader hamburger) */}
           {!isHeaderMode && (
@@ -384,13 +311,13 @@ const DashboardShell = () => {
             location.pathname.includes('/pharmacy/sales-counter')
               ? 'overflow-hidden flex flex-col'
               : 'overflow-y-auto'
-          } ${(location.pathname.startsWith('/dashboard/inpatient') || location.pathname === '/dashboard/home' || location.pathname.includes('/pharmacy/sales-counter')) ? '' : 'p-4 lg:p-6'}`}>
+          } ${(location.pathname === '/dashboard/home' || location.pathname.includes('/pharmacy/sales-counter')) ? '' : 'p-4 lg:p-6'}`}>
             <div className={location.pathname.includes('/pharmacy/sales-counter') ? 'flex-1 min-h-0 flex flex-col overflow-hidden' : undefined}>
             <Routes>
               <Route
                 path="/"
                 element={
-                  <HomeDashboard hasRole={hasRole} enabledModules={enabledModules} />
+                  <HomeDashboard hasRole={hasRole} />
                 }
               />
               {/* Per-role dashboards — surfaced as separate sidebar items when a
@@ -398,10 +325,6 @@ const DashboardShell = () => {
                   behind the priority fallback at /dashboard. */}
               <Route path="/admin-home" element={<SuperAdminDashboard />} />
               <Route path="/hospital-admin-home" element={<HospitalAdminDashboard />} />
-              <Route path="/doctor-home" element={<DoctorDashboard />} />
-              <Route path="/lab-home" element={<LabTechDashboard />} />
-              <Route path="/reception-home" element={<ReceptionDashboard />} />
-              <Route path="/nurse-home" element={<NurseDashboard />} />
               <Route
                 path="/home"
                 element={
@@ -412,40 +335,10 @@ const DashboardShell = () => {
                   />
                 }
               />
-              <Route path="/reception/patients" element={<ReceptionPatientsPage />} />
-              <Route path="/reception/appointments" element={<ReceptionAppointmentsPage />} />
-              <Route path="/reception/doctor-availability" element={<DoctorAvailabilityPage />} />
-              <Route path="/reception/reports" element={<ReceptionReportsPage />} />
-              <Route path="/reception/packages" element={<ReceptionPackagesPage />} />
-              <Route path="/reception/lab-orders" element={<ReceptionLabOrdersPage />} />
-              <Route path="/reception/procedures" element={<ProceduresBillingPage />} />
-              <Route path="/reception/referrals" element={<ReferralManagementPage />} />
-              <Route path="/patients/*" element={<PatientsModule />} />
-              <Route
-                path="lab/*"
-                element={
-                  canAccessLabAdminDashboard(roles)
-                    ? <LabModule />
-                    : <Navigate to="/dashboard/lab-home" replace />
-                }
-              />
               <Route path="/pharmacy/*" element={<PharmacyModule />} />
-              <Route path="/canteen/*" element={<CanteenModule />} />
-              <Route path="/physiotherapy/*" element={<PhysiotherapyModule />} />
               <Route path="/billing/*" element={<BillingHub />} />
-              <Route path="/ehr/*" element={<EHRModule />} />
-              <Route path="/consultation" element={<ConsultationPage />} />
-              <Route path="/availability/*" element={<AvailabilityModule />} />
-              <Route path="/outpatient/*" element={hasRole('doctor') ? <DoctorDashboard /> : <OutpatientModule />} />
-              <Route path="/inpatient/*" element={<InpatientModule />} />
               <Route path="/admin/*" element={<AdminModule />} />
               <Route path="/hospital-admin/*" element={<HospitalAdminModule />} />
-              <Route path="/setup" element={
-                hasAnyRole('super_admin', 'hospital_admin')
-                  ? <SetupWizard />
-                  : <Navigate to="/dashboard/home" replace />
-              } />
-              <Route path="/settlements" element={<SettlementsPage />} />
               <Route path="/catch-up" element={<CatchUpBills />} />
               <Route path="/print-settings" element={<PrintSettingsPage />} />
               <Route path="/license" element={<LicenseManagement />} />

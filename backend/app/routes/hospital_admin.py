@@ -130,16 +130,12 @@ def require_print_settings_editor(current_user: User = Depends(get_current_user)
 
 def _category_split(items) -> dict:
     """Group saved inpatient bill lines into settlement reporting buckets."""
-    totals = {"lab": 0.0, "pharmacy": 0.0, "canteen": 0.0, "hospital": 0.0}
+    totals = {"pharmacy": 0.0, "hospital": 0.0}
     for item in items:
         item_type = (item.item_type or "").lower()
         amount = float(item.total_price or 0)
-        if item_type == "lab_test":
-            totals["lab"] += amount
-        elif item_type == "pharmacy":
+        if item_type == "pharmacy":
             totals["pharmacy"] += amount
-        elif item_type == "food":
-            totals["canteen"] += amount
         else:
             totals["hospital"] += amount
 
@@ -148,7 +144,7 @@ def _category_split(items) -> dict:
     return rounded
 
 
-UNIT_LABELS = {"lab": "Laboratory", "pharmacy": "Pharmacy", "canteen": "Canteen"}
+UNIT_LABELS = {"pharmacy": "Pharmacy"}
 
 
 def _settlement_bill_rows(db, hospital_id, period_from, period_to):
@@ -251,9 +247,7 @@ def _serialize_settlement(s: Settlement) -> dict:
 
 
 class SettlementConfigUpdate(BaseModel):
-    lab: Optional[float] = None
     pharmacy: Optional[float] = None
-    canteen: Optional[float] = None
 
 
 class SettlementCreate(BaseModel):
@@ -994,7 +988,7 @@ async def get_inpatient_settlements_summary(
         db, current_user.hospital_id, period_from, period_to
     )
 
-    totals = {"lab": 0.0, "pharmacy": 0.0, "canteen": 0.0, "hospital": 0.0, "total": 0.0}
+    totals = {"pharmacy": 0.0, "hospital": 0.0, "total": 0.0}
     bills = []
     for bill, patient, admission in bill_rows:
         split = _category_split(items_by_bill.get(bill.id, []))
@@ -1660,7 +1654,7 @@ async def delete_cancelled_bill(
             # Soft-purge so any sale-return FK rows stay valid.
             sale.status = "deleted"
 
-    elif bill_type in ("day_care", "consolidated", "admission", "catch_up", "canteen", "consultation_ledger", "physiotherapy"):
+    elif bill_type in ("day_care", "consolidated", "admission", "catch_up", "consultation_ledger"):
         mapped_type = "consultation" if bill_type == "consultation_ledger" else bill_type
         bill = db.query(Bill).join(Patient, Bill.patient_id == Patient.id).filter(
             Bill.id == bill_id,
@@ -1668,7 +1662,7 @@ async def delete_cancelled_bill(
             Bill.bill_type == mapped_type,
         ).first()
         if not bill:
-            # Catch-up pharmacy/canteen/misc may arrive with their real bill_type.
+            # Catch-up pharmacy/misc may arrive with their real bill_type.
             bill = db.query(Bill).join(Patient, Bill.patient_id == Patient.id).filter(
                 Bill.id == bill_id,
                 Patient.hospital_id == hospital_id,
@@ -2198,55 +2192,6 @@ async def get_all_bills(
                 "admission_id": None,
             })
 
-    # --- Physiotherapy clinic bills ---
-    if bill_type in (None, 'physiotherapy', 'physio'):
-        physio_query = db.query(Bill).join(Patient, Bill.patient_id == Patient.id).filter(
-            Patient.hospital_id == hospital_id,
-            Bill.bill_type == "physiotherapy",
-            sql_func.date(Bill.bill_date) >= d_from,
-            sql_func.date(Bill.bill_date) <= d_to,
-        )
-        if payment_status:
-            mapped = {"paid": "paid", "pending": "pending", "cancelled": "cancelled", "partial": "partial"}.get(payment_status, payment_status)
-            physio_query = physio_query.filter(Bill.status == mapped)
-        if patient_search:
-            q = f"%{patient_search}%"
-            physio_query = physio_query.filter(
-                (Patient.first_name.ilike(q)) | (Patient.last_name.ilike(q)) | (Patient.primary_phone.ilike(q))
-            )
-        for b in physio_query.order_by(Bill.bill_date.desc()).all():
-            p = db.query(Patient).filter(Patient.id == b.patient_id).first()
-            items_list = db.query(BillItem).filter(BillItem.bill_id == b.id).all()
-            items_text = ", ".join(it.item_name for it in items_list[:3])
-            if len(items_list) > 3:
-                items_text += f" +{len(items_list) - 3} more"
-            paid_total = sum(float(pay.amount_paid) for pay in (b.payments or []))
-            bills.append({
-                "id": f"PHY-{b.id}",
-                "bill_id": b.id,
-                "type": "physiotherapy",
-                "date": b.bill_date.isoformat() if b.bill_date else "",
-                "patient_name": f"{p.first_name} {p.last_name}" if p else "Unknown",
-                "patient_phone": p.primary_phone if p else "",
-                "patient_id": p.patient_id if p else "",
-                "_doctor_id": None,
-                "doctor_name": "",
-                "reference": b.bill_number,
-                "items": items_text or "Physiotherapy",
-                "subtotal": float(b.subtotal or 0),
-                "discount": float(b.discount_amount or 0),
-                "amount": float(b.total_amount or 0),
-                "payment_status": b.status or "pending",
-                "payment_method": "",
-                "referred_by": b.referred_by or "",
-                "cancel_reason": "",
-                "cancelled_by": "",
-                "cancelled_at": "",
-                "amount_paid": paid_total,
-                "balance_due": float(b.total_amount or 0) - paid_total,
-                "admission_id": None,
-            })
-
     # --- Consolidated bills from bills table ---
     if bill_type in (None, 'consolidated'):
         cons_query = db.query(Bill).join(Patient, Bill.patient_id == Patient.id).filter(
@@ -2298,16 +2243,14 @@ async def get_all_bills(
 
     # --- Catch-up / POS ledger bills (Bill rows with Service Date on bill_date) ---
     # Consultation catch-up: CU-* bills (source Appointment skipped above).
-    # Misc / pharmacy / canteen catch-up: bill_type catch_up|pharmacy|canteen.
+    # Misc / pharmacy catch-up: bill_type catch_up|pharmacy.
     # Lab catch-up already surfaces via PatientLabOrder.order_date — skip Bill.lab.
-    if bill_type in (None, 'catch_up', 'pharmacy', 'canteen', 'consultation', 'misc'):
+    if bill_type in (None, 'catch_up', 'pharmacy', 'consultation', 'misc'):
         ledger_types = []
         if bill_type in (None, 'catch_up', 'misc'):
             ledger_types.append("catch_up")
         if bill_type in (None, 'pharmacy'):
             ledger_types.append("pharmacy")
-        if bill_type in (None, 'canteen'):
-            ledger_types.append("canteen")
         if bill_type in (None, 'consultation'):
             ledger_types.append("consultation")
 

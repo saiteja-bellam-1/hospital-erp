@@ -54,7 +54,7 @@ const DaysLeft = ({ days }) => {
 
 const FeatureTag = ({ name }) => (
   <span className="px-1.5 py-0.5 bg-slate-700/50 text-slate-300 rounded text-[10px] font-medium capitalize tracking-wide">
-    {name === 'physiotherapy' ? 'Physiotherapy' : name}
+    {name === 'pharmacy' ? 'Pharmacy' : name}
   </span>
 );
 
@@ -98,7 +98,7 @@ function App() {
   const [form, setForm] = useState({
     hospital_id: '', hospital_name: '', machine_id: '', plan: 'standard',
     max_users: 50, months: 12, days: 0,
-    features: ['outpatient', 'lab', 'ehr', 'admin', 'billing', 'physiotherapy'],
+    features: ['admin', 'billing', 'pharmacy'],
     modules: [], notes: '',
     seller_id: '', seller_name: '', seller_address: '', seller_phone: '',
     gdrive_backup_enabled: false
@@ -198,7 +198,7 @@ function App() {
         showMessage('License generated successfully');
         setShowForm(false);
         setCustomDuration(false);
-        setForm({ hospital_id: '', hospital_name: '', machine_id: '', plan: 'standard', max_users: 50, months: 12, days: 0, features: ['outpatient', 'lab', 'ehr', 'admin', 'billing', 'physiotherapy'], modules: [], notes: '', seller_id: '', seller_name: '', seller_address: '', seller_phone: '', gdrive_backup_enabled: false });
+        setForm({ hospital_id: '', hospital_name: '', machine_id: '', plan: 'standard', max_users: 50, months: 12, days: 0, features: ['admin', 'billing', 'pharmacy'], modules: [], notes: '', seller_id: '', seller_name: '', seller_address: '', seller_phone: '', gdrive_backup_enabled: false });
         fetchLicenses(); fetchDash();
         if (selectedCust) fetchCustDetail(selectedCust);
       } else {
@@ -385,7 +385,7 @@ function App() {
     } catch { showMessage('Failed', 'error'); }
   };
 
-  const allFeatures = ['outpatient', 'inpatient', 'lab', 'pharmacy', 'physiotherapy', 'ehr', 'admin', 'billing'];
+  const allFeatures = ['pharmacy', 'admin', 'billing'];
 
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: Icons.dashboard },

@@ -33,7 +33,6 @@ const PatientsModule = () => {
   const [registering, setRegistering] = useState(false);
   const [registerStep, setRegisterStep] = useState(0);
   const [inpatientEnabled, setInpatientEnabled] = useState(false);
-  const [ehrEnabled, setEhrEnabled] = useState(false);
   const [admissions, setAdmissions] = useState([]);
   const [loadingAdmissions, setLoadingAdmissions] = useState(false);
 
@@ -67,15 +66,10 @@ const PatientsModule = () => {
     fetchPatients();
   }, [fetchPatients]);
 
-  // Universal search jump: open full patient chart in EHR when available
+  // Universal search jump: open patient detail when available
   useEffect(() => {
     const incoming = location.state?.searchPatient;
     if (!incoming) return;
-    const uuid = incoming.patient_id;
-    if (uuid) {
-      navigate(`/dashboard/ehr/patient/${encodeURIComponent(uuid)}`, { replace: true });
-      return;
-    }
     const term =
       incoming.primary_phone ||
       incoming.mrn ||
@@ -92,8 +86,6 @@ const PatientsModule = () => {
     axios.get('/api/system/enabled-modules').then(res => {
       const mod = (res.data || []).find(m => m.module_name === 'inpatient');
       if (mod?.is_enabled) setInpatientEnabled(true);
-      const ehr = (res.data || []).find(m => m.module_name === 'ehr');
-      if (ehr?.is_enabled) setEhrEnabled(true);
     }).catch(() => {});
   }, []);
 
@@ -128,10 +120,6 @@ const PatientsModule = () => {
   };
 
   const viewPatientDetail = async (patientUuid) => {
-    if (ehrEnabled && patientUuid) {
-      navigate(`/dashboard/ehr/patient/${encodeURIComponent(patientUuid)}`);
-      return;
-    }
     try {
       const response = await axios.get(`/api/patients/${patientUuid}`);
       setSelectedPatient(response.data);

@@ -1,22 +1,17 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 import {
-  Home, Users, Calendar, CalendarClock, Package, Share2, Receipt, TrendingUp,
-  FileText, TestTube, LayoutDashboard, BedDouble, Scissors, FileCheck,
-  CalendarDays, CalendarRange, Sparkles, RotateCcw, Building2, Printer,
-  BarChart3, ClipboardList, Shield, Database, ScrollText, Activity, Stethoscope,
+  Home, Users, Receipt, TrendingUp,
+  FileText, LayoutDashboard, Building2, Printer,
+  BarChart3, Shield, Database, ScrollText, RotateCcw,
   DownloadCloud, Pill, ShoppingCart, Boxes, Truck, BookOpen, LayoutGrid, Plus,
-  Warehouse, Tags, Layers, Ruler, Percent, Link2, ArrowLeftRight, Store, Droplets,
-  UtensilsCrossed, IndianRupee, Settings2, Undo2, UserCheck, PanelTop, Settings,
-  CreditCard,
+  Warehouse, Tags, Layers, Ruler, Percent, Link2, ArrowLeftRight, Store,
+  IndianRupee, Settings2, Undo2, UserCheck, PanelTop,
 } from 'lucide-react';
 import { PHARMACY_ROLE_NAMES } from './usePharmacyPermissions';
-import { CANTEEN_ROLE_NAMES } from './useCanteenPermissions';
 
 const I = (Icon) => <Icon className="h-[18px] w-[18px]" />;
 const B = (Icon) => <Icon className="h-7 w-7" />;
-
-const LAB_ADMIN_DASHBOARD_ROLES = ['lab_admin', 'hospital_admin', 'super_admin'];
 
 /** Normalize role entries from login/profile user objects or raw arrays. */
 export function normalizeUserRoles(userOrRoles) {
@@ -30,11 +25,6 @@ export function normalizeUserRoles(userOrRoles) {
   return userOrRoles?.role ? [userOrRoles.role] : [];
 }
 
-export function canAccessLabAdminDashboard(roles) {
-  const normalized = normalizeUserRoles(roles);
-  return normalized.some((r) => LAB_ADMIN_DASHBOARD_ROLES.includes(r));
-}
-
 /**
  * Builds the same role+module-aware section list used by the sidebar and HomeGrid.
  * Single source of truth — keep both views in sync.
@@ -46,10 +36,6 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
   const roles = normalizeUserRoles(rawRoles);
   const hasRole = (r) => roles.includes(r);
   const hasAnyRole = (...r) => r.some((x) => roles.includes(x));
-  const isLabStaff = hasAnyRole('lab_admin', 'lab_technician');
-  const isDoctor = hasRole('doctor');
-  const labEnabled = isLabStaff || !!enabledModules.lab;
-  const outpatientEnabled = isDoctor || !!enabledModules.outpatient;
 
   const [pharmacyPermState, setPharmacyPermState] = useState({
     loaded: !enabledModules?.pharmacy,
@@ -102,9 +88,8 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
 
   // ── HOME ──
   // If the user has more than one role-specific dashboard, surface each as its
-  // own sidebar item (e.g. "Reception Dashboard", "Lab Tech Dashboard") so
-  // nothing gets shadowed by the priority fallback at /dashboard.
-  const roleDashboards = getRoleDashboards({ hasRole, hasAnyRole, enabledModules, isLabStaff });
+  // own sidebar item so nothing gets shadowed by the priority fallback at /dashboard.
+  const roleDashboards = getRoleDashboards({ hasRole, hasAnyRole, enabledModules });
   const homeItems = [];
   if (roleDashboards.length > 0) {
     roleDashboards.forEach((d) => {
@@ -116,32 +101,6 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
     addedPaths.add('/dashboard');
   }
   sections.push({ label: '', items: homeItems });
-
-  // ── OUTPATIENT ── (visible to receptionist + hospital/super admin)
-  // Front-desk operations: patients, appointments, packages, day-care services,
-  // referrals, and the central billing views. Admins see the same items so they
-  // can manage OPD operations without needing a receptionist role.
-  if (hasAnyRole('receptionist', 'hospital_admin', 'super_admin')) {
-    const items = [];
-    add(items, make('Patients', Users, '/dashboard/reception/patients'));
-    if (enabledModules.ehr) {
-      add(items, make('EHR / Patient Chart', FileText, '/dashboard/ehr'));
-    }
-    if (enabledModules.outpatient) {
-      add(items, make('Appointments', Calendar, '/dashboard/reception/appointments'));
-      add(items, make('Doctor Schedule', CalendarClock, '/dashboard/reception/doctor-availability'));
-    }
-    if (enabledModules.lab) {
-      add(items, make('Lab Packages', Package, '/dashboard/reception/packages'));
-      add(items, make('Lab Orders', TestTube, '/dashboard/reception/lab-orders'));
-    }
-    add(items, make('Day Care', Stethoscope, '/dashboard/reception/procedures'));
-    add(items, make('Referrals', Share2, '/dashboard/reception/referrals'));
-    if (enabledModules.outpatient) {
-      add(items, make('Reports', TrendingUp, '/dashboard/reception/reports'));
-    }
-    if (items.length > 0) sections.push({ label: 'Outpatient', items });
-  }
 
   // ── BILLING ── always-on hub (ledger + GST / sales reports)
   if (hasAnyRole('receptionist', 'hospital_admin', 'super_admin', 'billing_admin')) {
@@ -157,8 +116,6 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
     }
     if (hasAnyRole('hospital_admin', 'super_admin')) {
       add(items, make('Catch-up Bills', FileText, '/dashboard/catch-up'));
-      add(items, make('Settlements', IndianRupee, '/dashboard/settlements'));
-      add(items, make('Payer Schemes', CreditCard, '/dashboard/hospital-admin/payers'));
       add(items, make('Registration Fee', Receipt, '/dashboard/hospital-admin/billing'));
     }
     if (items.length > 0) sections.push({ label: 'Billing', items });
@@ -169,28 +126,6 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
     const items = [];
     add(items, make('Customisations', Printer, '/dashboard/print-settings'));
     if (items.length > 0) sections.push({ label: 'Settings', items });
-  }
-
-  // ── DOCTOR ──
-  if (isDoctor && outpatientEnabled) {
-    const items = [];
-    add(items, make('Availability', CalendarClock, '/dashboard/availability'));
-    if (enabledModules.ehr) {
-      add(items, make('EHR', FileText, '/dashboard/ehr'));
-    }
-    add(items, make('Day Care', Stethoscope, '/dashboard/reception/procedures'));
-    if (items.length > 0) sections.push({ label: 'Doctor', items });
-  }
-
-  // ── LAB (configuration — lab admin / hospital admin only) ──
-  if (canAccessLabAdminDashboard(roles) && labEnabled) {
-    const items = [];
-    add(items, make('Dashboard', LayoutDashboard, '/dashboard/lab'));
-    add(items, make('Test Catalog', TestTube, '/dashboard/lab/tests'));
-    add(items, make('Categories', Tags, '/dashboard/lab/categories'));
-    add(items, make('Sample Types', Droplets, '/dashboard/lab/sample-types'));
-    add(items, make('Packages', Package, '/dashboard/lab/packages'));
-    if (items.length > 0) sections.push({ label: 'Laboratory', items });
   }
 
   // ── PHARMACY ── (flat routes — one sidebar item per screen)
@@ -225,106 +160,6 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
     if (setup.length > 0) sections.push({ label: 'Pharmacy Setup', items: setup });
   }
 
-  // ── EHR (non-doctor clinical / admin roles; doctors get it under Doctor section) ──
-  if (hasAnyRole('hospital_admin', 'super_admin', 'nurse', 'frontdesk', 'inpatient_admin', 'billing_admin') && !hasRole('doctor') && enabledModules.ehr) {
-    const items = [];
-    add(items, make('EHR', FileText, '/dashboard/ehr'));
-    if (items.length > 0) sections.push({ label: 'Health Records', items });
-  }
-
-  // ── INPATIENT ──
-  if (enabledModules.inpatient && hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'billing_admin', 'receptionist', 'frontdesk', 'nurse', 'doctor')) {
-    const items = [];
-    add(items, make('Ward Overview', LayoutDashboard, '/dashboard/inpatient'));
-    add(items, make('Active Admissions', BedDouble, '/dashboard/inpatient/admissions'));
-    add(items, make('ER Triage Queue', Activity, '/dashboard/inpatient/triage'));
-    if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'billing_admin', 'receptionist', 'frontdesk')) {
-      add(items, make('Discharge & Exit', FileCheck, '/dashboard/inpatient/discharge'));
-    } else if (hasAnyRole('doctor')) {
-      add(items, make('Discharge Summary', FileText, '/dashboard/inpatient/discharge'));
-    }
-    if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'doctor', 'billing_admin', 'receptionist', 'frontdesk')) {
-      add(items, make('Discharge History', FileText, '/dashboard/inpatient/discharge-history'));
-    }
-    if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'doctor')) {
-      add(items, make('OT Schedule', Scissors, '/dashboard/inpatient/ot'));
-    }
-    if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'billing_admin')) {
-      add(items, make('Pre-Authorisations', FileCheck, '/dashboard/inpatient/preauth'));
-    }
-    if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'receptionist', 'frontdesk')) {
-      add(items, make('Reservations', CalendarDays, '/dashboard/inpatient/reservations'));
-    }
-    if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'doctor', 'nurse', 'receptionist', 'frontdesk')) {
-      add(items, make('Duty Roster', CalendarRange, '/dashboard/inpatient/duty-roster'));
-    }
-    if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'nurse')) {
-      add(items, make('Housekeeping', Sparkles, '/dashboard/inpatient/housekeeping'));
-    }
-    if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'doctor')) {
-      add(items, make('Quality Reports', RotateCcw, '/dashboard/inpatient/quality'));
-    }
-    if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'receptionist', 'frontdesk')) {
-      add(items, make('Management Reports', FileText, '/dashboard/inpatient/reports'));
-    }
-    if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'receptionist', 'frontdesk')) {
-      add(items, make('Room Management', Building2, '/dashboard/inpatient/rooms'));
-    }
-    if (hasAnyRole('hospital_admin', 'super_admin', 'billing_admin', 'receptionist', 'frontdesk')) {
-      add(items, make('Billing Setup', Package, '/dashboard/inpatient/billing-setup'));
-    }
-    if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin')) {
-      add(items, make('Discharge Summary Template', FileText, '/dashboard/inpatient/discharge-summary-template'));
-    }
-    if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'doctor')) {
-      add(items, make('Procedures', Scissors, '/dashboard/inpatient/procedures'));
-    }
-    if (items.length > 0) sections.push({ label: 'Inpatient', items });
-  }
-
-  // ── PHYSIOTHERAPY ──
-  // Keep with other clinical modules (not after Canteen/Admin).
-  if (enabledModules.physiotherapy && hasAnyRole(
-    'hospital_admin', 'super_admin', 'receptionist', 'frontdesk',
-    'physiotherapist', 'billing_admin',
-  )) {
-    const items = [];
-    add(items, make("Today's Board", Activity, '/dashboard/physiotherapy/today'));
-    add(items, make('Appointments', Calendar, '/dashboard/physiotherapy/appointments'));
-    add(items, make('Packages', Package, '/dashboard/physiotherapy/packages'));
-    add(items, make('Catalog', BookOpen, '/dashboard/physiotherapy/catalog'));
-    add(items, make('Therapists', Users, '/dashboard/physiotherapy/therapists'));
-    if (hasAnyRole('hospital_admin', 'super_admin', 'receptionist', 'billing_admin')) {
-      add(items, make('Reports', BarChart3, '/dashboard/physiotherapy/reports'));
-    }
-    if (items.length > 0) sections.push({ label: 'Physiotherapy', items });
-  }
-
-  // ── CANTEEN (available whenever inpatient is enabled) ──
-  if (enabledModules.inpatient && (
-    hasAnyRole(...CANTEEN_ROLE_NAMES, 'nurse', 'doctor', 'receptionist', 'inpatient_admin')
-  )) {
-    const items = [];
-    // IP ward food queue — primary for canteen_sales kitchen staff
-    if (hasAnyRole('canteen_admin', 'canteen_sales', 'hospital_admin', 'super_admin')) {
-      add(items, make('IP Food Orders', UtensilsCrossed, '/dashboard/canteen/orders'));
-    }
-    // POS: canteen admin + sales
-    if (hasAnyRole('canteen_admin', 'canteen_sales', 'hospital_admin', 'super_admin')) {
-      add(items, make('Sales Counter', UtensilsCrossed, '/dashboard/canteen/pos'));
-      add(items, make('Sales History', UtensilsCrossed, '/dashboard/canteen/sales'));
-    }
-    // Catalog: canteen admin
-    if (hasAnyRole('canteen_admin', 'hospital_admin', 'super_admin')) {
-      add(items, make('Canteen Catalog', UtensilsCrossed, '/dashboard/canteen/catalog'));
-    }
-    // IP food ordering: clinical / reception — not canteen staff
-    if (hasAnyRole('nurse', 'doctor', 'receptionist', 'inpatient_admin', 'hospital_admin', 'super_admin')) {
-      add(items, make('Order Food', UtensilsCrossed, '/dashboard/canteen/order'));
-    }
-    if (items.length > 0) sections.push({ label: 'Canteen', items });
-  }
-
   // ── ADMINISTRATION ── people, hospital identity, onboarding
   if (hasAnyRole('super_admin', 'hospital_admin')) {
     const admin = [];
@@ -334,26 +169,14 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
     add(admin, make('Hospital Info', Building2, '/dashboard/hospital-admin/info'));
     add(admin, make('Appearance', PanelTop, '/dashboard/hospital-admin/appearance'));
     add(admin, make('Customisations', Printer, '/dashboard/print-settings'));
-    add(admin, make('Guided Setup', ClipboardList, '/dashboard/setup'));
     if (admin.length > 0) sections.push({ label: 'Administration', items: admin });
 
     const system = [];
     add(system, make('License', Shield, '/dashboard/license'));
-    if (hasRole('super_admin')) {
-      add(system, make('Modules', Settings, '/dashboard/admin/modules'));
-      add(system, make('Module Settings', Settings2, '/dashboard/admin/module-settings'));
-    }
     add(system, make('Database', Database, '/dashboard/backup'));
     add(system, make('Software Update', DownloadCloud, '/dashboard/software-update'));
     add(system, make('Audit Logs', ScrollText, '/dashboard/audit'));
     if (system.length > 0) sections.push({ label: 'System', items: system });
-  }
-
-  // ── NURSE ──
-  if (hasRole('nurse') && !hasAnyRole('receptionist', 'doctor', 'hospital_admin', 'super_admin')) {
-    const items = [];
-    add(items, make('Patients', Users, '/dashboard/patients'));
-    if (items.length > 0) sections.push({ label: 'Nursing', items });
   }
 
   return { sections };
@@ -364,40 +187,13 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
  * Mirrors the legacy HomeDashboard switch in Dashboard.js so the sidebar and
  * the /dashboard fallback agree on what counts as a "dashboard".
  */
-export function getRoleDashboards({ hasRole, hasAnyRole, enabledModules, isLabStaff = false }) {
+export function getRoleDashboards({ hasRole, hasAnyRole, enabledModules }) {
   const out = [];
   if (hasRole('super_admin')) {
     out.push({ key: 'super_admin', label: 'Admin Dashboard', path: '/dashboard/admin-home' });
   }
   if (hasRole('hospital_admin') && !hasRole('super_admin')) {
     out.push({ key: 'hospital_admin', label: 'Admin Dashboard', path: '/dashboard/hospital-admin-home' });
-  }
-  if (hasRole('doctor')) {
-    out.push({ key: 'doctor', label: 'Doctor Dashboard', path: '/dashboard/doctor-home' });
-  }
-  if (isLabStaff || (hasAnyRole('lab_admin', 'lab_technician') && enabledModules.lab)) {
-    out.push({ key: 'lab', label: 'Lab Tech Dashboard', path: '/dashboard/lab-home' });
-  }
-  if (hasRole('receptionist') && enabledModules.outpatient) {
-    out.push({ key: 'reception', label: 'Reception Dashboard', path: '/dashboard/reception-home' });
-  }
-  // Receptionist-only with lab (no outpatient, no lab role) — fall back to lab dashboard.
-  if (
-    hasRole('receptionist') &&
-    !enabledModules.outpatient &&
-    enabledModules.lab &&
-    !hasAnyRole('lab_admin', 'lab_technician')
-  ) {
-    out.push({ key: 'lab', label: 'Lab Tech Dashboard', path: '/dashboard/lab-home' });
-  }
-  if (hasRole('nurse')) {
-    out.push({ key: 'nurse', label: 'Nurse Dashboard', path: '/dashboard/nurse-home' });
-  }
-  if (enabledModules.inpatient && hasAnyRole('canteen_admin', 'canteen_sales')) {
-    out.push({ key: 'canteen', label: 'Canteen', path: '/dashboard/canteen' });
-  }
-  if (enabledModules.physiotherapy && hasRole('physiotherapist')) {
-    out.push({ key: 'physiotherapy', label: 'Physio Board', path: '/dashboard/physiotherapy/today' });
   }
   return out;
 }

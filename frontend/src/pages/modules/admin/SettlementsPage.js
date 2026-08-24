@@ -5,7 +5,6 @@ import {
   Building2,
   Eye,
   FileText,
-  FlaskConical,
   IndianRupee,
   Loader2,
   Percent,
@@ -14,7 +13,6 @@ import {
   Save,
   Search,
   Send,
-  UtensilsCrossed,
 } from 'lucide-react';
 import { Card, CardContent } from '../../../components/ui/card';
 import { Button } from '../../../components/ui/button';
@@ -66,28 +64,12 @@ const formatBillDate = (value) => {
 
 const summaryCards = [
   {
-    key: 'lab',
-    label: 'Laboratory',
-    description: 'Diagnostic tests',
-    icon: FlaskConical,
-    accent: 'border-cyan-200 bg-cyan-50/70 text-cyan-800',
-    iconClass: 'bg-cyan-100 text-cyan-700',
-  },
-  {
     key: 'pharmacy',
     label: 'Pharmacy',
     description: 'Medicines dispensed',
     icon: Pill,
     accent: 'border-emerald-200 bg-emerald-50/70 text-emerald-800',
     iconClass: 'bg-emerald-100 text-emerald-700',
-  },
-  {
-    key: 'canteen',
-    label: 'Canteen',
-    description: 'Food and meals',
-    icon: UtensilsCrossed,
-    accent: 'border-orange-200 bg-orange-50/70 text-orange-900',
-    iconClass: 'bg-orange-100 text-orange-800',
   },
   {
     key: 'hospital',
@@ -108,27 +90,15 @@ const summaryCards = [
 ];
 
 const UNIT_META = {
-  lab: {
-    label: 'Laboratory',
-    icon: FlaskConical,
-    accent: 'border-cyan-200 bg-cyan-50/70 text-cyan-900',
-    iconClass: 'bg-cyan-100 text-cyan-700',
-  },
   pharmacy: {
     label: 'Pharmacy',
     icon: Pill,
     accent: 'border-emerald-200 bg-emerald-50/70 text-emerald-900',
     iconClass: 'bg-emerald-100 text-emerald-700',
   },
-  canteen: {
-    label: 'Canteen',
-    icon: UtensilsCrossed,
-    accent: 'border-orange-200 bg-orange-50/70 text-orange-900',
-    iconClass: 'bg-orange-100 text-orange-800',
-  },
 };
 
-const SETTLEABLE_UNITS = ['lab', 'pharmacy', 'canteen'];
+const SETTLEABLE_UNITS = ['pharmacy'];
 
 const PAYMENT_METHODS = [
   { value: 'cash', label: 'Cash' },
@@ -149,7 +119,7 @@ const SettlementsPage = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [summary, setSummary] = useState(null);
   const [settlements, setSettlements] = useState([]);
-  const [rates, setRates] = useState({ lab: 100, pharmacy: 100, canteen: 100 });
+  const [rates, setRates] = useState({ pharmacy: 100 });
   const [loading, setLoading] = useState(true);
   const [savingRates, setSavingRates] = useState(false);
   const [error, setError] = useState('');
@@ -297,7 +267,7 @@ const SettlementsPage = () => {
     }
   };
 
-  const totals = summary?.totals || { lab: 0, pharmacy: 0, canteen: 0, hospital: 0, total: 0 };
+  const totals = summary?.totals || { pharmacy: 0, hospital: 0, total: 0 };
   const bills = summary?.bills || [];
 
   const filteredBills = useMemo(() => {
@@ -457,9 +427,7 @@ const SettlementsPage = () => {
                       <th className="px-6 py-3 font-semibold">Bill</th>
                       <th className="px-4 py-3 font-semibold">Patient</th>
                       <th className="px-4 py-3 font-semibold">Admission</th>
-                      <th className="px-4 py-3 text-right font-semibold">Lab</th>
                       <th className="px-4 py-3 text-right font-semibold">Pharmacy</th>
-                      <th className="px-4 py-3 text-right font-semibold">Canteen</th>
                       <th className="px-4 py-3 text-right font-semibold">Hospital</th>
                       <th className="px-4 py-3 text-right font-semibold">Total</th>
                       <th className="px-6 py-3 text-right font-semibold">Action</th>
@@ -479,14 +447,8 @@ const SettlementsPage = () => {
                         <td className="px-4 py-4 text-slate-600">
                           {bill.admission_number || (bill.admission_id ? `#${bill.admission_id}` : '—')}
                         </td>
-                        <td className="px-4 py-4 text-right tabular-nums text-cyan-800">
-                          {formatCurrency(bill.lab)}
-                        </td>
                         <td className="px-4 py-4 text-right tabular-nums text-emerald-800">
                           {formatCurrency(bill.pharmacy)}
-                        </td>
-                        <td className="px-4 py-4 text-right tabular-nums text-orange-900">
-                          {formatCurrency(bill.canteen)}
                         </td>
                         <td className="px-4 py-4 text-right tabular-nums text-amber-900">
                           {formatCurrency(bill.hospital)}
@@ -520,7 +482,7 @@ const SettlementsPage = () => {
           {/* Unit payout cards */}
           <div className="grid gap-4 lg:grid-cols-3">
             {units.map((unitRow) => {
-              const meta = UNIT_META[unitRow.unit] || UNIT_META.lab;
+              const meta = UNIT_META[unitRow.unit] || UNIT_META.pharmacy;
               const Icon = meta.icon;
               return (
                 <Card key={unitRow.unit} className={`overflow-hidden shadow-none ${meta.accent}`}>

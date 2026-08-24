@@ -39,7 +39,7 @@ def main():
     parser.add_argument("--plan", default="standard", help="License plan (default: standard)")
     parser.add_argument("--max-users", type=int, default=50, help="Max users (default: 50)")
     parser.add_argument("--days", type=int, default=365, help="License validity in days (default: 365)")
-    parser.add_argument("--features", nargs="*", default=["outpatient", "lab", "ehr", "admin", "billing", "physiotherapy"],
+    parser.add_argument("--features", nargs="*", default=["admin", "billing", "pharmacy"],
                         help="Enabled features/modules")
     parser.add_argument("--private-key", default="tools/private_key.pem", help="Path to private key PEM file")
     parser.add_argument("--output", "-o", help="Output .lic file path")

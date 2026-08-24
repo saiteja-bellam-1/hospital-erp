@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import axios from 'axios';
-import { FileText, Loader2, Search, User, Zap } from 'lucide-react';
+import { FileText, Search, Zap } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -19,43 +18,12 @@ const MAX_QUICK = 6;
 /** Preferred quick-jump paths per role (order = priority). Only shown if in nav. */
 const ROLE_QUICK_PATHS = {
   receptionist: [
-    '/dashboard/reception-home',
-    '/dashboard/reception/appointments',
-    '/dashboard/reception/patients',
     '/dashboard/billing',
-    '/dashboard/reception/lab-orders',
-    '/dashboard/reception/procedures',
-  ],
-  doctor: [
-    '/dashboard/doctor-home',
-    '/dashboard/ehr',
-    '/dashboard/inpatient/admissions',
-    '/dashboard/availability',
-    '/dashboard/inpatient/ot',
-  ],
-  lab_technician: [
-    '/dashboard/lab-home',
-    '/dashboard/reception/lab-orders',
-  ],
-  lab_admin: [
-    '/dashboard/lab-home',
-    '/dashboard/lab',
-    '/dashboard/lab/tests',
-    '/dashboard/lab/packages',
-  ],
-  nurse: [
-    '/dashboard/nurse-home',
-    '/dashboard/inpatient/admissions',
-    '/dashboard/inpatient',
-    '/dashboard/inpatient/housekeeping',
-    '/dashboard/ehr',
   ],
   hospital_admin: [
     '/dashboard/hospital-admin-home',
     '/dashboard/hospital-admin/info',
     '/dashboard/billing',
-    '/dashboard/reception/appointments',
-    '/dashboard/inpatient',
     '/dashboard/admin/users',
   ],
   super_admin: [
@@ -65,22 +33,11 @@ const ROLE_QUICK_PATHS = {
     '/dashboard/backup',
     '/dashboard/hospital-admin/info',
   ],
-  inpatient_admin: [
-    '/dashboard/inpatient',
-    '/dashboard/inpatient/admissions',
-    '/dashboard/inpatient/discharge',
-    '/dashboard/inpatient/rooms',
-  ],
   billing_admin: [
     '/dashboard/billing',
-    '/dashboard/settlements',
-    '/dashboard/inpatient/admissions',
     '/dashboard/catch-up',
   ],
   frontdesk: [
-    '/dashboard/reception/patients',
-    '/dashboard/reception/appointments',
-    '/dashboard/inpatient/admissions',
     '/dashboard/billing',
   ],
   pharmacy_admin: [
@@ -109,12 +66,7 @@ const ROLE_QUICK_PATHS = {
     '/dashboard/pharmacy/transfers',
     '/dashboard/pharmacy/inventory',
   ],
-  canteen_admin: [
-    '/dashboard/canteen',
-  ],
-  canteen_sales: [
-    '/dashboard/canteen',
-  ],
+
 };
 
 function loadRecentPages() {
@@ -148,11 +100,6 @@ function flattenNavPages(sections) {
     }
   }
   return pages;
-}
-
-function patientDisplayName(p) {
-  const name = [p.first_name, p.last_name].filter(Boolean).join(' ').trim();
-  return name || p.full_name || 'Patient';
 }
 
 /** Build role-aware quick jumps that intersect with pages the user can open. */
@@ -205,9 +152,6 @@ export default function UniversalSearch({
   const setOpen = onOpenChange || setInternalOpen;
 
   const [query, setQuery] = useState('');
-  const [patients, setPatients] = useState([]);
-  const [searchingPatients, setSearchingPatients] = useState(false);
-  const [patientsDenied, setPatientsDenied] = useState(false);
   const [highlight, setHighlight] = useState(0);
   const [recentPages, setRecentPages] = useState(() => loadRecentPages());
   const inputRef = useRef(null);
@@ -246,12 +190,9 @@ export default function UniversalSearch({
       recentForEmpty.forEach((p) => items.push({ type: 'page', ...p }));
     } else {
       pageResults.forEach((p) => items.push({ type: 'page', ...p }));
-      if (!patientsDenied) {
-        patients.forEach((p) => items.push({ type: 'patient', patient: p }));
-      }
     }
     return items;
-  }, [query, quickActions, recentForEmpty, pageResults, patients, patientsDenied]);
+  }, [query, quickActions, recentForEmpty, pageResults]);
 
   useEffect(() => {
     const onKey = (e) => {
@@ -267,9 +208,7 @@ export default function UniversalSearch({
   useEffect(() => {
     if (!open) {
       setQuery('');
-      setPatients([]);
       setHighlight(0);
-      setSearchingPatients(false);
       return;
     }
     setRecentPages(loadRecentPages());
@@ -278,38 +217,8 @@ export default function UniversalSearch({
   }, [open]);
 
   useEffect(() => {
-    const q = query.trim();
-    if (!q) {
-      setPatients([]);
-      setSearchingPatients(false);
-      return undefined;
-    }
-    setSearchingPatients(true);
-    const timer = setTimeout(async () => {
-      try {
-        const res = await axios.post('/api/patients/search', {
-          search_term: q,
-          sort_by: 'name',
-          sort_order: 'asc',
-        });
-        setPatients((res.data?.patients || []).slice(0, 8));
-        setPatientsDenied(false);
-      } catch (err) {
-        setPatients([]);
-        if (err?.response?.status === 403) setPatientsDenied(true);
-      } finally {
-        setSearchingPatients(false);
-      }
-    }, 300);
-    return () => clearTimeout(timer);
-  }, [query]);
-
-  useEffect(() => {
     setHighlight(0);
-  }, [query, patients, pageResults.length, quickActions.length, recentForEmpty.length]);
-
-  const hasReceptionPatients = allPages.some((p) => p.path === '/dashboard/reception/patients');
-  const patientsPath = hasReceptionPatients ? '/dashboard/reception/patients' : '/dashboard/patients';
+  }, [query, pageResults.length, quickActions.length, recentForEmpty.length]);
 
   const goToPage = useCallback(
     (page) => {
@@ -320,27 +229,13 @@ export default function UniversalSearch({
     [navigate, setOpen],
   );
 
-  const goToPatient = useCallback(
-    (patient) => {
-      setOpen(false);
-      const uuid = patient?.patient_id;
-      if (uuid) {
-        navigate(`/dashboard/ehr/patient/${encodeURIComponent(uuid)}`);
-        return;
-      }
-      navigate(patientsPath, { state: { searchPatient: patient } });
-    },
-    [navigate, patientsPath, setOpen],
-  );
-
   const selectIndex = useCallback(
     (idx) => {
       const item = flatResults[idx];
       if (!item) return;
       if (item.type === 'page') goToPage(item);
-      else if (item.type === 'patient') goToPatient(item.patient);
     },
-    [flatResults, goToPage, goToPatient],
+    [flatResults, goToPage],
   );
 
   const onKeyDown = (e) => {
@@ -415,7 +310,7 @@ export default function UniversalSearch({
         <Search className="h-4 w-4 flex-shrink-0 opacity-70" />
         {!isCompact && (
           <span className="flex-1 text-left truncate">
-            {isSidebar ? 'Search…' : 'Search pages or patients…'}
+            {isSidebar ? 'Search…' : 'Search pages…'}
           </span>
         )}
         {isHeader && !isCompact && (
@@ -452,10 +347,9 @@ export default function UniversalSearch({
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={onKeyDown}
-              placeholder="Search pages or patients…"
+              placeholder="Search pages…"
               className="border-0 shadow-none focus-visible:ring-0 px-0 h-9"
             />
-            {searchingPatients && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
           </div>
 
           <div className="max-h-[min(60vh,420px)] overflow-y-auto py-2">
@@ -504,55 +398,15 @@ export default function UniversalSearch({
               </div>
             )}
 
-            {query.trim() && !patientsDenied && (
-              <div className="px-2 pb-1">
-                <p className="px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  Patients
-                </p>
-                {patients.length === 0 && !searchingPatients ? (
-                  <p className="px-2 py-2 text-sm text-muted-foreground">No patients found</p>
-                ) : (
-                  patients.map((patient, i) => {
-                    const idx = pageResults.length + i;
-                    const active = highlight === idx;
-                    const mrn = patient.mrn || patient.patient_id || '';
-                    return (
-                      <button
-                        key={patient.patient_id || patient.id || i}
-                        type="button"
-                        className={`w-full flex items-center gap-3 rounded-md px-2 py-2 text-left text-sm ${
-                          active ? 'bg-accent text-accent-foreground' : 'hover:bg-muted'
-                        }`}
-                        onMouseEnter={() => setHighlight(idx)}
-                        onClick={() => goToPatient(patient)}
-                      >
-                        <User className="h-4 w-4 opacity-60 flex-shrink-0" />
-                        <span className="flex-1 min-w-0">
-                          <span className="font-medium block truncate">{patientDisplayName(patient)}</span>
-                          <span className="text-xs text-muted-foreground truncate block">
-                            {[patient.primary_phone, mrn].filter(Boolean).join(' · ')}
-                          </span>
-                        </span>
-                      </button>
-                    );
-                  })
-                )}
-              </div>
-            )}
-
-            {query.trim() && patientsDenied && (
-              <p className="px-4 py-2 text-sm text-muted-foreground">No access to patient search</p>
-            )}
-
             {!query.trim() && quickActions.length === 0 && recentForEmpty.length === 0 && (
               <p className="px-4 py-6 text-sm text-center text-muted-foreground">
-                Type to search pages or patients
+                Type to search pages
               </p>
             )}
 
-            {query.trim() && pageResults.length === 0 && patients.length === 0 && !searchingPatients && !patientsDenied && (
+            {query.trim() && pageResults.length === 0 && (
               <p className="px-4 py-6 text-sm text-center text-muted-foreground">
-                No matching pages or patients
+                No matching pages
               </p>
             )}
           </div>

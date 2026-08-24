@@ -1,14 +1,15 @@
 """Tests for billing report endpoints."""
-from datetime import datetime, date, time
+from datetime import datetime, date
 
 
-def _bill_with_payment(db_session, seed_data, total=1000.0, paid=500.0, method="cash", tax=180.0, subtotal=820.0):
+def _bill_with_payment(db_session, seed_data, total=1000.0, paid=500.0, method="cash", tax=180.0, subtotal=820.0,
+                       bill_type="admission"):
     from app.models.billing import Bill, Payment
     ts = datetime.now().timestamp()
     bill = Bill(
         bill_number=f"R-{ts}",
         patient_id=seed_data["patient_id"],
-        bill_type="consultation",
+        bill_type=bill_type,
         reference_id=0,
         subtotal=subtotal,
         tax_amount=tax,
@@ -60,26 +61,48 @@ class TestReports:
         today_row = next(row for row in body["rows"] if row["date"] == date.today().isoformat())
         assert today_row["refunds"] >= 100
 
-    def test_doctor_revenue_includes_consultations(self, client, auth_headers, db_session, seed_data):
-        from app.models.outpatient import Appointment
-        ts = datetime.now().timestamp()
-        a = Appointment(
-            appointment_number=f"DRR-{ts}",
-            patient_id=seed_data["patient_id"],
-            doctor_id=seed_data["doctor_user_id"],
-            appointment_date=datetime.now(),
-            appointment_time=time(11, 0),
-            consultation_fee=500,
-            registration_fee=0,
-            payment_status="paid",
+    def test_doctor_revenue_includes_admissions(self, client, auth_headers, db_session, seed_data):
+        from app.models.billing import Bill
+        from app.models.inpatient import Admission, RoomManagement
+
+        room = RoomManagement(
+            room_number=f"DRR-{int(datetime.now().timestamp())}",
+            room_type="general",
+            floor="1",
+            department="General Ward",
+            bed_count=1,
+            available_beds=1,
+            room_charge_per_day=1000.0,
+            hospital_id=seed_data["hospital_id"],
+            is_active=True,
         )
-        db_session.add(a); db_session.commit()
+        db_session.add(room)
+        db_session.flush()
+        adm = Admission(
+            admission_number=f"DRR-{datetime.now().timestamp()}",
+            patient_id=seed_data["patient_id"],
+            admitting_doctor_id=seed_data["doctor_user_id"],
+            room_id=room.id,
+            admission_date=datetime.now(),
+            admission_type="elective",
+            status="discharged",
+        )
+        db_session.add(adm)
+        db_session.flush()
+        bill = _bill_with_payment(
+            db_session, seed_data, total=500, paid=500, method="cash", tax=0, subtotal=500,
+            bill_type="admission",
+        )
+        bill = db_session.query(Bill).filter(Bill.id == bill.id).first()
+        bill.reference_id = adm.id
+        db_session.commit()
+
         r = client.get("/api/hospital/billing/reports/doctor-revenue", headers=auth_headers)
         assert r.status_code == 200, r.text
         body = r.json()
         doc_row = next((row for row in body["rows"] if row["doctor_id"] == seed_data["doctor_user_id"]), None)
         assert doc_row is not None
-        assert doc_row["consultation_revenue"] >= 500
+        assert doc_row["admission_revenue"] >= 500
 
     def test_tax_summary_excludes_cancelled_and_credit_notes(self, client, auth_headers, db_session, seed_data):
         _bill_with_payment(db_session, seed_data, total=1180, paid=0, tax=180, subtotal=1000)

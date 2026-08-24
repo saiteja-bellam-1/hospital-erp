@@ -26,12 +26,9 @@ TAXABLE_ITEM_TYPES = frozenset({
 BILL_TYPE_TO_MODULE = {
     "consultation": "opd",
     "outpatient": "opd",
-    "lab": "lab",
     "admission": "inpatient",
     "day_care": "day_care",
     "procedure": "day_care",
-    "physiotherapy": "physiotherapy",
-    "canteen": "canteen",
     "catch_up": "catch_up",
     "pharmacy": "pharmacy",
     "consolidated": "opd",
@@ -39,39 +36,33 @@ BILL_TYPE_TO_MODULE = {
 
 MODULE_LABELS = {
     "opd": "OPD",
-    "lab": "Lab",
     "inpatient": "Inpatient",
     "pharmacy": "Pharmacy",
     "pharmacy_ip": "Pharmacy (IP)",
     "day_care": "Day Care",
-    "physiotherapy": "Physiotherapy",
-    "canteen": "Canteen",
     "catch_up": "Catch-up",
 }
 
 ALL_MODULES = tuple(MODULE_LABELS.keys())
 
-# GST filing groups: Lab and Pharmacy keep their own GSTIN; everything else
-# is one Hospital GST return (OPD, IP, day care, physio, canteen, catch-up).
+# GST filing groups: Pharmacy keeps its own GSTIN; everything else
+# is one Hospital GST return (OPD, IP, day care, catch-up).
 PHARMACY_GST_MODULES = frozenset({"pharmacy", "pharmacy_ip"})
-LAB_GST_MODULES = frozenset({"lab"})
 HOSPITAL_GST_MODULES = frozenset(
-    m for m in MODULE_LABELS if m not in PHARMACY_GST_MODULES and m not in LAB_GST_MODULES
+    m for m in MODULE_LABELS if m not in PHARMACY_GST_MODULES
 )
 GST_SCOPE_MODULES = {
     "hospital": HOSPITAL_GST_MODULES,
-    "lab": LAB_GST_MODULES,
     "pharmacy": PHARMACY_GST_MODULES,
 }
 GST_SCOPE_LABELS = {
     "hospital": "Hospital GST",
-    "lab": "Lab GST",
     "pharmacy": "Pharmacy GST",
 }
 
 
 def normalize_gst_scope(module: str | None) -> str | None:
-    """GST filter key: None (all), hospital / lab / pharmacy, or a single module."""
+    """GST filter key: None (all), hospital / pharmacy, or a single module."""
     m = (module or "").strip().lower()
     if not m or m == "all":
         return None
@@ -108,8 +99,6 @@ def gst_scope_label(scope: str | None) -> str:
 
 def config_bucket_for_scope(scope: str | None) -> str | None:
     """Module-settings bucket that stores this filing's GSTIN, if any."""
-    if scope == "lab" or gst_scope_modules(scope) == LAB_GST_MODULES:
-        return "lab"
     mods = gst_scope_modules(scope)
     if scope in ("pharmacy", "pharmacy_ip") or (mods and mods & PHARMACY_GST_MODULES):
         return "pharmacy"

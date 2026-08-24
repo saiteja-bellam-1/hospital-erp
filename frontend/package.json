@@ -2,7 +2,7 @@
   "name": "kthealth-erp-frontend",
   "version": "1.0.0",
   "private": true,
-  "proxy": "http://localhost:8000",
+  "proxy": "http://localhost:8003",
   "dependencies": {
     "@radix-ui/react-avatar": "^1.0.3",
     "@radix-ui/react-dialog": "^1.1.15",

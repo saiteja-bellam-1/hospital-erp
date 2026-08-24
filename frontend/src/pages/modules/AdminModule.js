@@ -9,8 +9,6 @@ import { useToast } from '../../hooks/use-toast';
 import { ConfirmDialog } from '../../components/ui/confirm-dialog';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../components/ui/dialog';
 import {
-  Settings,
-  ToggleLeft,
   Plus,
   Edit,
   Trash2,
@@ -22,14 +20,11 @@ import {
 } from 'lucide-react';
 import axios from 'axios';
 import BulkUserImportDialog from './admin/BulkUserImport';
-import ModuleConfigForm from './ModuleConfigForm';
 import RolePermissionsEditor from './admin/RolePermissionsEditor';
 
 const ADMIN_PAGE_TITLES = {
   users: 'Users',
   roles: 'Roles & Permissions',
-  modules: 'Modules',
-  'module-settings': 'Module Settings',
 };
 
 const AdminModule = () => {
@@ -38,7 +33,6 @@ const AdminModule = () => {
   const location = useLocation();
   const userRoles = user?.roles || [user?.role];
   const hasRole = (r) => userRoles.includes(r);
-  const [modules, setModules] = useState([]);
   const [users, setUsers] = useState([]);
   const [roles, setRoles] = useState([]);
   const [showUserForm, setShowUserForm] = useState(false);
@@ -51,7 +45,6 @@ const AdminModule = () => {
   const [passwordResetUser, setPasswordResetUser] = useState(null);
   const [newPassword, setNewPassword] = useState('');
   const [userLimit, setUserLimit] = useState(null);
-  const [selectedConfigModule, setSelectedConfigModule] = useState('lab');
 
   const [userForm, setUserForm] = useState({
     username: '',
@@ -102,9 +95,6 @@ const AdminModule = () => {
 
   useEffect(() => {
     if (hasRole('super_admin') || hasRole('hospital_admin')) {
-      if (hasRole('super_admin')) {
-        fetchModules();
-      }
       fetchUsers(); fetchUserLimit();
       fetchRoles();
       fetchUserLimit();
@@ -116,19 +106,6 @@ const AdminModule = () => {
       const res = await axios.get('/api/admin/user-limit');
       setUserLimit(res.data);
     } catch {}
-  };
-
-  const fetchModules = async () => {
-    try {
-      const response = await axios.get('/api/admin/modules');
-      setModules(response.data);
-    } catch (error) {
-      toast({
-        variant: "destructive",
-        title: "Error",
-        description: "Failed to fetch modules"
-      });
-    }
   };
 
   const fetchUsers = async () => {
@@ -153,27 +130,6 @@ const AdminModule = () => {
         variant: "destructive",
         title: "Error", 
         description: "Failed to fetch roles"
-      });
-    }
-  };
-
-  const toggleModule = async (moduleId, currentStatus) => {
-    try {
-      await axios.put(`/api/admin/modules/${moduleId}`, {
-        is_enabled: !currentStatus
-      });
-      
-      toast({
-        title: "Success",
-        description: "Module status updated successfully"
-      });
-      
-      fetchModules();
-    } catch (error) {
-      toast({
-        variant: "destructive",
-        title: "Error",
-        description: error.response?.data?.detail || "Failed to update module status"
       });
     }
   };
@@ -470,10 +426,8 @@ const AdminModule = () => {
     );
   }
 
-  const defaultTab = hasRole('super_admin') ? 'modules' : 'users';
-  const allowedTabs = hasRole('super_admin')
-    ? ['users', 'roles', 'modules', 'module-settings']
-    : ['users', 'roles'];
+  const defaultTab = 'users';
+  const allowedTabs = ['users', 'roles'];
   const lastSegment = location.pathname.replace(/\/+$/, '').split('/').pop();
   if (lastSegment === 'admin' || !allowedTabs.includes(lastSegment)) {
     return <Navigate to={`/dashboard/admin/${defaultTab}`} replace />;
@@ -485,89 +439,6 @@ const AdminModule = () => {
       <div className="flex items-center justify-between">
         <h1 className="text-3xl font-bold text-gray-900">{ADMIN_PAGE_TITLES[activeTab]}</h1>
       </div>
-
-      {/* Modules — Super Admin Only (enable/disable) */}
-      {activeTab === 'modules' && hasRole('super_admin') && (
-        <div className="space-y-6">
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center">
-              <Settings className="mr-2 h-5 w-5" />
-              System Modules
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
-              {modules.map((module) => (
-                <div
-                  key={module.id}
-                  className={`flex items-center justify-between p-4 border rounded-lg ${!module.is_licensed ? 'bg-gray-50 opacity-75' : ''}`}
-                >
-                  <div>
-                    <h3 className="font-medium">{module.display_name}</h3>
-                    <p className="text-sm text-gray-600">{module.description}</p>
-                    {module.is_always_enabled && (
-                      <p className="text-xs text-blue-600 mt-1">Always enabled</p>
-                    )}
-                    {!module.is_licensed && (
-                      <p className="text-xs text-red-600 mt-1">Not included in license</p>
-                    )}
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <Button
-                      variant={module.is_enabled ? "default" : "outline"}
-                      size="sm"
-                      onClick={() => toggleModule(module.id, module.is_enabled)}
-                      disabled={module.is_always_enabled || !module.is_licensed}
-                      className="flex items-center"
-                    >
-                      <ToggleLeft className="h-4 w-4 mr-1" />
-                      {module.is_enabled ? 'Enabled' : 'Disabled'}
-                    </Button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-        </div>
-      )}
-
-      {/* Module Settings Tab — per-module configuration (lab / pharmacy) */}
-      {activeTab === 'module-settings' && (
-        <div className="space-y-6">
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center">
-              <Settings className="mr-2 h-5 w-5" />
-              Module Settings
-            </CardTitle>
-            <p className="text-sm text-gray-500 mt-1">
-              Configure behaviour for individual modules.
-            </p>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex flex-wrap gap-2">
-              {[
-                { id: 'lab', name: 'Laboratory' },
-                { id: 'pharmacy', name: 'Pharmacy' },
-              ].map((module) => (
-                <Button
-                  key={module.id}
-                  variant={selectedConfigModule === module.id ? 'default' : 'outline'}
-                  onClick={() => setSelectedConfigModule(module.id)}
-                >
-                  {module.name}
-                </Button>
-              ))}
-            </div>
-            {(selectedConfigModule === 'lab' || selectedConfigModule === 'pharmacy') && (
-              <ModuleConfigForm moduleName={selectedConfigModule} />
-            )}
-          </CardContent>
-        </Card>
-        </div>
-      )}
 
       {/* User Management Tab */}
       {activeTab === 'users' && (

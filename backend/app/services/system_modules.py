@@ -1,7 +1,7 @@
 """Canonical system-module catalog + license sync helpers.
 
 Module Management lists rows from ``system_modules``. New modules added in
-app upgrades (e.g. physiotherapy) must be inserted for existing customer DBs.
+app upgrades (e.g. new catalog modules) must be inserted for existing customer DBs.
 License upload alone used to only *disable* unlicensed modules — it never
 created missing rows — so a renewed .lic with a new feature could not make
 that module appear. These helpers heal that gap.
@@ -14,12 +14,7 @@ from sqlalchemy.orm import Session
 
 # (module_name, display_name, default_enabled, is_always_enabled)
 CANONICAL_SYSTEM_MODULES: Sequence[Tuple[str, str, bool, bool]] = (
-    ("outpatient", "Outpatient", True, False),
-    ("inpatient", "Inpatient", False, False),
-    ("lab", "Laboratory", False, False),
     ("pharmacy", "Pharmacy", False, False),
-    ("physiotherapy", "Physiotherapy", False, False),
-    ("ehr", "Electronic Health Records", True, False),
     ("billing", "Billing", True, True),
     ("admin", "Administration", True, True),
 )
@@ -34,8 +29,8 @@ def ensure_system_modules(
 
     When ``licensed_features`` is provided, newly inserted toggleable modules
     that appear in that set are created already enabled (so an upgrade +
-    already-installed license with physiotherapy does not leave physio stuck
-    Disabled until a re-upload).
+    already-installed license with a new feature does not leave that module
+    stuck Disabled until a re-upload).
 
     Returns the set of module_name values that were newly inserted.
     """

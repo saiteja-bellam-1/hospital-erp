@@ -71,7 +71,7 @@ def test_inpatient_settlements_summary_groups_final_bill_items(
         BillItem(
             bill_id=final_bill.id,
             item_type="food",
-            item_name="Canteen meal",
+            item_name="Meal",
             quantity=1,
             unit_price=150,
             total_price=150,
@@ -112,10 +112,8 @@ def test_inpatient_settlements_summary_groups_final_bill_items(
     data = response.json()
     assert data["bill_count"] == 1
     assert data["totals"] == {
-        "lab": 250.0,
         "pharmacy": 300.0,
-        "canteen": 150.0,
-        "hospital": 300.0,
+        "hospital": 700.0,
         "total": 1000.0,
     }
     assert data["bills"][0]["bill_number"] == final_bill.bill_number

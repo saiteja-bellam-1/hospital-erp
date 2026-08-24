@@ -20,7 +20,6 @@ import {
   ChevronRight
 } from 'lucide-react';
 import VitalsForm from '../../../components/vitals/VitalsForm';
-import LabTestBookingDialog from '../../../components/LabTestBookingDialog';
 import ReferralSelectWithCreate from '../../../components/ReferralSelectWithCreate';
 import SteppedFormDialog from '../../../components/SteppedFormDialog';
 import PatientRegisterFormFields, {
@@ -48,13 +47,11 @@ const ReceptionPatientsPage = () => {
   const [showEditPatientDialog, setShowEditPatientDialog] = useState(false);
   const [showVitalsDialog, setShowVitalsDialog] = useState(false);
   const [showHistoryDialog, setShowHistoryDialog] = useState(false);
-  const [appointmentHistory, setAppointmentHistory] = useState([]);
-  const [historyLoading, setHistoryLoading] = useState(false);
 
   // Edit patient form
   const [editPatientForm, setEditPatientForm] = useState({
     first_name: '', last_name: '', date_of_birth: '', age: '', age_months: '', gender: '',
-    blood_group: '', marital_status: '', abha_id: '', gstin: '', email: '',
+    blood_group: '', marital_status: '', abha_id: '', gstin: '', email: '', referred_by: '',
     emergency_contact_name: '', emergency_contact_phone: '', emergency_contact_relation: '',
     address_line1: '', address_line2: '', village: '', mandal: '', district: ''
   });
@@ -76,41 +73,6 @@ const ReceptionPatientsPage = () => {
     [registerStep],
   );
 
-  // Referral list
-  const [referralList, setReferralList] = useState([]);
-  useEffect(() => {
-    const fetchRefs = async () => {
-      try {
-        const token = localStorage.getItem('token');
-        const res = await fetch('/api/referrals', { headers: { Authorization: `Bearer ${token}` } });
-        if (res.ok) setReferralList(await res.json());
-      } catch {}
-    };
-    fetchRefs();
-  }, []);
-
-  // Lab test booking
-  const [showLabBooking, setShowLabBooking] = useState(false);
-  const [labBookingPatient, setLabBookingPatient] = useState(null);
-
-  // Enabled modules
-  const [enabledModules, setEnabledModules] = useState({});
-  useEffect(() => {
-    const fetchMods = async () => {
-      try {
-        const token = localStorage.getItem('token');
-        const res = await fetch('/api/system/enabled-modules', { headers: { Authorization: `Bearer ${token}` } });
-        if (res.ok) {
-          const mods = await res.json();
-          const map = {};
-          mods.forEach(m => { map[m.module_name] = m.is_enabled; });
-          setEnabledModules(map);
-        }
-      } catch {}
-    };
-    fetchMods();
-  }, []);
-
   // Fetch patients from API with server-side pagination
   useEffect(() => {
     const filtersChanged = prevFilterKey.current !== filterKey;
@@ -129,14 +91,10 @@ const ReceptionPatientsPage = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentPage, filterKey, searchTerm]);
 
-  // Universal search jump: open full patient chart
+  // Universal search jump: open patient history when available
   useEffect(() => {
     const incoming = location.state?.searchPatient;
     if (!incoming) return;
-    if (incoming.patient_id) {
-      navigate(`/dashboard/ehr/patient/${encodeURIComponent(incoming.patient_id)}`, { replace: true });
-      return;
-    }
     const term =
       incoming.primary_phone ||
       incoming.mrn ||
@@ -144,17 +102,13 @@ const ReceptionPatientsPage = () => {
       '';
     if (term) setSearchTerm(term);
     setSelectedPatient(incoming);
+    setShowHistoryDialog(true);
     navigate(location.pathname, { replace: true, state: {} });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.state]);
 
   const openPatientChart = (patient) => {
-    if (patient?.patient_id) {
-      navigate(`/dashboard/ehr/patient/${encodeURIComponent(patient.patient_id)}`);
-      return;
-    }
     setSelectedPatient(patient);
-    fetchAppointmentHistory(patient.patient_id);
     setShowHistoryDialog(true);
   };
 
@@ -271,6 +225,7 @@ const ReceptionPatientsPage = () => {
       abha_id: patient.abha_id || '',
       gstin: patient.gstin || '',
       email: patient.email || '',
+      referred_by: patient.referred_by || '',
       emergency_contact_name: patient.emergency_contact_name || '',
       emergency_contact_phone: patient.emergency_contact_phone || '',
       emergency_contact_relation: patient.emergency_contact_relation || '',
@@ -318,52 +273,6 @@ const ReceptionPatientsPage = () => {
     } finally {
       setLoading(false);
     }
-  };
-
-  const fetchAppointmentHistory = async (patientId) => {
-    setHistoryLoading(true);
-    try {
-      const token = localStorage.getItem('token');
-      const response = await fetch(`/api/appointments/patient/${patientId}/history`, {
-        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setAppointmentHistory(data.appointments || []);
-      } else {
-        setAppointmentHistory([]);
-      }
-    } catch (error) {
-      console.error('Error fetching history:', error);
-      setAppointmentHistory([]);
-    } finally {
-      setHistoryLoading(false);
-    }
-  };
-
-  const formatTimeStr = (timeStr) => {
-    if (!timeStr) return '';
-    try {
-      const [hours, minutes] = timeStr.split(':');
-      const h = parseInt(hours);
-      const ampm = h >= 12 ? 'PM' : 'AM';
-      const h12 = h % 12 || 12;
-      return `${h12}:${minutes} ${ampm}`;
-    } catch {
-      return timeStr;
-    }
-  };
-
-  const getStatusColor = (status) => {
-    const colors = {
-      'scheduled': 'bg-blue-100 text-blue-800',
-      'confirmed': 'bg-green-100 text-green-800',
-      'in_progress': 'bg-yellow-100 text-yellow-800',
-      'completed': 'bg-gray-100 text-gray-800',
-      'cancelled': 'bg-red-100 text-red-800',
-      'no_show': 'bg-red-100 text-red-800'
-    };
-    return colors[status] || 'bg-gray-100 text-gray-800';
   };
 
   return (
@@ -542,18 +451,6 @@ const ReceptionPatientsPage = () => {
                         <Button size="sm" variant="outline" onClick={() => openEditPatient(patient)}>
                           Edit
                         </Button>
-                        {enabledModules.outpatient && (
-                          <Button size="sm" onClick={() => navigate(
-                            `/dashboard/reception/appointments?action=schedule&patientUuid=${encodeURIComponent(patient.patient_id)}`
-                          )}>
-                            Book Appointment
-                          </Button>
-                        )}
-                        {enabledModules.lab && (
-                          <Button size="sm" variant="outline" onClick={() => { setLabBookingPatient(patient); setShowLabBooking(true); }}>
-                            Book Lab Test
-                          </Button>
-                        )}
                       </div>
                     </div>
                   </div>
@@ -745,8 +642,6 @@ const ReceptionPatientsPage = () => {
             <ReferralSelectWithCreate
               value={editPatientForm.referred_by || ''}
               onValueChange={(name) => setEditPatientForm({ ...editPatientForm, referred_by: name })}
-              referrals={referralList}
-              onReferralsChange={setReferralList}
             />
 
             {/* Emergency Contact Section */}
@@ -829,51 +724,34 @@ const ReceptionPatientsPage = () => {
         }}
       />
 
-      {/* Visit History Dialog */}
+      {/* Patient chart dialog (appointment history removed with OPD) */}
       <Dialog open={showHistoryDialog} onOpenChange={setShowHistoryDialog}>
         <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Visit History - {selectedPatient?.first_name} {selectedPatient?.last_name}</DialogTitle>
+            <DialogTitle>
+              Patient — {selectedPatient?.first_name} {selectedPatient?.last_name}
+            </DialogTitle>
           </DialogHeader>
           <div className="space-y-3">
-            {historyLoading ? (
-              <div className="flex items-center justify-center py-8">
-                <RefreshCw className="h-6 w-6 animate-spin mr-2" />
-                <span>Loading history...</span>
+            {selectedPatient && (
+              <div className="text-sm text-gray-600 space-y-1 border rounded-lg p-3">
+                <p><span className="font-medium text-gray-800">ID:</span> {selectedPatient.patient_id}</p>
+                {selectedPatient.primary_phone && (
+                  <p><span className="font-medium text-gray-800">Phone:</span> {selectedPatient.primary_phone}</p>
+                )}
+                {(selectedPatient.age != null || selectedPatient.gender) && (
+                  <p>
+                    {selectedPatient.age != null && <span>{selectedPatient.age}y</span>}
+                    {selectedPatient.age != null && selectedPatient.gender && ' · '}
+                    {selectedPatient.gender}
+                  </p>
+                )}
               </div>
-            ) : appointmentHistory.length === 0 ? (
-              <div className="text-center py-8">
-                <Calendar className="h-12 w-12 text-gray-400 mx-auto mb-3" />
-                <p className="text-gray-500">No appointment history found</p>
-              </div>
-            ) : (
-              appointmentHistory.map((apt) => (
-                <div key={apt.id} className="border rounded-lg p-3">
-                  <div className="flex justify-between items-start">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2 mb-1">
-                        <span className="font-medium">{apt.appointment_date ? new Date(apt.appointment_date).toLocaleDateString() : 'N/A'}</span>
-                        <span className="text-sm text-gray-500">{formatTimeStr(apt.appointment_time)}</span>
-                        {apt.token_number && (
-                          <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-blue-100 text-blue-800 font-bold text-xs">
-                            {apt.token_number}
-                          </span>
-                        )}
-                        <Badge className={getStatusColor(apt.status)}>{apt.status}</Badge>
-                      </div>
-                      <p className="text-sm">{apt.doctor_name} {apt.doctor_specialization ? `(${apt.doctor_specialization})` : ''}</p>
-                      <p className="text-sm text-gray-500">{apt.appointment_type}{apt.reason ? ` - ${apt.reason}` : ''}</p>
-                      {apt.notes && <p className="text-sm text-gray-600 mt-1 italic">Notes: {apt.notes}</p>}
-                      {apt.cancellation_reason && <p className="text-xs text-red-500">Cancelled: {apt.cancellation_reason}</p>}
-                    </div>
-                    <div className="text-right text-sm">
-                      {apt.final_amount > 0 && <p className="font-medium text-green-600">₹{apt.final_amount}</p>}
-                      {apt.payment_status && <Badge variant="outline" className="text-xs">{apt.payment_status}</Badge>}
-                    </div>
-                  </div>
-                </div>
-              ))
             )}
+            <div className="text-center py-6">
+              <Calendar className="h-12 w-12 text-gray-400 mx-auto mb-3" />
+              <p className="text-gray-500">No outpatient visit history available</p>
+            </div>
             <div className="flex justify-end pt-2">
               <Button variant="outline" onClick={() => setShowHistoryDialog(false)}>Close</Button>
             </div>
@@ -881,14 +759,6 @@ const ReceptionPatientsPage = () => {
         </DialogContent>
       </Dialog>
 
-      {/* Lab Test Booking Dialog */}
-      <LabTestBookingDialog
-        open={showLabBooking}
-        patient={labBookingPatient}
-        onClose={(success) => { setShowLabBooking(false); setLabBookingPatient(null); }}
-        referralList={referralList}
-        onReferralsChange={setReferralList}
-      />
     </div>
   );
 };

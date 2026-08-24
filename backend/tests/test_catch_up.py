@@ -68,7 +68,7 @@ class TestCatchUpPermission:
         assert res.status_code == 403, res.text
 
 
-class TestCatchUpMiscAndConsultation:
+class TestCatchUpMisc:
     def test_misc_bill_with_optional_reason_omitted(self, client, auth_headers, seed_data, db_session):
         svc = (date.today() - timedelta(days=5)).isoformat()
         pay = (date.today() - timedelta(days=4)).isoformat()
@@ -95,29 +95,6 @@ class TestCatchUpMiscAndConsultation:
         payment = db_session.query(Payment).filter(Payment.id == body["payment_id"]).first()
         assert payment is not None
         assert payment.payment_date.date().isoformat() == pay
-
-    def test_consultation_catch_up(self, client, auth_headers, seed_data, db_session):
-        svc = (date.today() - timedelta(days=3)).isoformat()
-        pay = svc
-        res = client.post(
-            "/api/admin/catch-up/consultation",
-            headers=auth_headers,
-            json={
-                "patient_id": seed_data["patient_id"],
-                "doctor_id": seed_data["doctor_user_id"],
-                "consultation_fee": 400,
-                "registration_fee": 50,
-                "service_date": svc,
-                "payment_date": pay,
-                "reason": "Missed OPD entry",
-            },
-        )
-        assert res.status_code == 200, res.text
-        body = res.json()
-        assert body["total"] == 450.0
-        bill = db_session.query(Bill).filter(Bill.id == body["bill_id"]).first()
-        assert bill.bill_type == "consultation"
-        assert bill.bill_date.date().isoformat() == svc
 
 
 class TestCatchUpInpatient:
@@ -167,8 +144,7 @@ class TestCatchUpInpatient:
                     }
                 ],
                 "ancillary": [],
-                "canteen_orders": [],
-                "deposits": [],
+                                "deposits": [],
             },
         )
         assert res.status_code == 200, res.text
@@ -202,9 +178,8 @@ class TestCatchUpInpatient:
         db_session.commit()
 
     def test_inpatient_all_charge_fields_generate_bill(self, client, auth_headers, seed_data, db_session):
-        """Exercise every IP catch-up input: visits, nurse, ancillary, food, meds, package."""
+        """Exercise IP catch-up input: visits, nurse, ancillary, meds, package."""
         from app.models.billing import BillItem
-        from app.models.canteen import CanteenOrder
         from app.models.inpatient import (
             AdmissionAncillaryCharge,
             AdmissionPackage,
@@ -277,14 +252,6 @@ class TestCatchUpInpatient:
         assert pkg.status_code == 201, pkg.text
         package_id = pkg.json()["id"]
 
-        food_item = client.post(
-            "/api/canteen/items",
-            headers=auth_headers,
-            json={"name": "CatchUp Meal Tray", "price": 120.0, "is_veg": True, "is_active": True},
-        )
-        assert food_item.status_code == 201, food_item.text
-        food_item_id = food_item.json()["id"]
-
         admit_dt = datetime.now() - timedelta(days=4)
         discharge_dt = datetime.now() - timedelta(days=1)
         svc = discharge_dt.date().isoformat()
@@ -325,19 +292,6 @@ class TestCatchUpInpatient:
                         "charged_at": mid.isoformat(),
                     }
                 ],
-                "canteen_orders": [
-                    {
-                        "serve_date": mid.date().isoformat(),
-                        "items": [
-                            {
-                                "item_id": food_item_id,
-                                "item_name": "CatchUp Meal Tray",
-                                "quantity": 2,
-                                "unit_price": 120,
-                            }
-                        ],
-                    }
-                ],
                 "pharmacy_lines": [
                     {"item_name": "Inj. Ceftriaxone 1g", "quantity": 3, "unit_price": 80},
                     {"item_name": "Tab. Paracetamol 500mg", "quantity": 10, "unit_price": 2},
@@ -352,11 +306,11 @@ class TestCatchUpInpatient:
         assert prev["room_total"] == 6000.0  # 3 * 2000
         assert prev["visit_total"] == 650.0  # 500 + 150
         assert prev["ancillary_total"] == 600.0  # 2 * 300
-        assert prev["food_total"] == 240.0  # 2 * 120
+        assert prev["food_total"] == 0.0
         assert prev["pharmacy_total"] == 260.0  # 3*80 + 10*2
         assert prev["package_total"] == 15000.0
         # Preview sums components (package overlay may differ on real bill)
-        assert prev["grand_total"] == pytest.approx(6000 + 650 + 600 + 240 + 260 + 15000)
+        assert prev["grand_total"] == pytest.approx(6000 + 650 + 600 + 260 + 15000)
 
         res = client.post(
             "/api/admin/catch-up/inpatient-stay",
@@ -399,20 +353,6 @@ class TestCatchUpInpatient:
                         "notes": "O2",
                     }
                 ],
-                "canteen_orders": [
-                    {
-                        "serve_date": mid.date().isoformat(),
-                        "notes": "Lunch",
-                        "items": [
-                            {
-                                "item_id": food_item_id,
-                                "item_name": "CatchUp Meal Tray",
-                                "quantity": 2,
-                                "unit_price": 120,
-                            }
-                        ],
-                    }
-                ],
                 "pharmacy_lines": [
                     {"item_name": "Inj. Ceftriaxone 1g", "quantity": 3, "unit_price": 80},
                     {"item_name": "Tab. Paracetamol 500mg", "quantity": 10, "unit_price": 2},
@@ -444,10 +384,6 @@ class TestCatchUpInpatient:
         assert len(ancs) == 1
         assert float(ancs[0].total_amount) == 600.0
 
-        foods = db_session.query(CanteenOrder).filter(CanteenOrder.admission_id == admission_id).all()
-        assert len(foods) == 1
-        assert foods[0].status == "delivered"
-
         sales = db_session.query(PharmacySale).filter(
             PharmacySale.admission_id == admission_id,
             PharmacySale.billing_mode == "inpatient_bill",
@@ -472,11 +408,6 @@ class TestCatchUpInpatient:
         types = {it.item_type for it in items}
         # Package fee should appear; other lines depend on package overlay
         assert "package" in types or any("Package" in (it.item_name or "") for it in items)
-        food_bill_items = [
-            it for it in items if it.item_type == "food" or "Canteen" in (it.item_name or "")
-        ]
-        assert len(food_bill_items) >= 1
-        assert sum(float(it.total_price or 0) for it in food_bill_items) == pytest.approx(240.0)
         assert float(bill.total_amount) == pytest.approx(float(body["total"]))
 
         payment = db_session.query(Payment).filter(Payment.id == body["payment_id"]).first()
@@ -687,7 +618,6 @@ class TestCatchUpAppendCharges:
                 "payment_date": pay,
                 "visits": [],
                 "ancillary": [],
-                "canteen_orders": [],
                 "pharmacy_lines": [],
                 "deposits": [],
             },
@@ -797,8 +727,7 @@ class TestCatchUpPackageRoomExcess:
             "surgery_package_price": 10000,
             "visits": [],
             "ancillary": [],
-            "canteen_orders": [],
-            "pharmacy_lines": [],
+                        "pharmacy_lines": [],
         }
 
         preview = client.post(

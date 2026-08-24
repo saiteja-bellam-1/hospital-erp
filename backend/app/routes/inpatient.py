@@ -161,7 +161,6 @@ from app.models.inpatient import (
     RoomTypeRateConfig, DoctorRoomTypeRate, RoomType,
     MealPlan, FoodOrder,
 )
-from app.models.canteen import CanteenOrder, CanteenOrderItem
 from app.models.pharmacy import Prescription, PrescriptionItem, Medicine, PharmacySale, PharmacySaleItem
 from app.models.prescriptions_simple import SimplePrescription
 from app.models.lab import PatientLabOrder, LabTest, LabReport
@@ -5177,7 +5176,7 @@ def _compute_admission_charges(db: Session, admission: Admission, unbilled_only:
             "included_in_package": False,
         })
 
-    # Food orders — legacy MealPlan slots + new canteen à-la-carte.
+    # Food orders — legacy MealPlan slots.
     # Non-cancelled. When unbilled_only, exclude already-billed.
     food_q = db.query(FoodOrder).filter(
         FoodOrder.admission_id == admission.id,
@@ -5204,47 +5203,7 @@ def _compute_admission_charges(db: Session, admission: Admission, unbilled_only:
         for f in food_orders
     ]
 
-    canteen_q = (
-        db.query(CanteenOrder)
-        .options(joinedload(CanteenOrder.items))
-        .filter(
-            CanteenOrder.admission_id == admission.id,
-            CanteenOrder.status != "cancelled",
-        )
-    )
-    if unbilled_only:
-        canteen_q = canteen_q.filter(CanteenOrder.billed == False)
-    canteen_orders = canteen_q.order_by(CanteenOrder.ordered_at.asc()).all()
-    canteen_total = 0.0
-    for co in canteen_orders:
-        # Re-query lines if the relationship collection is empty/stale in-session.
-        line_items = list(co.items or [])
-        if not line_items:
-            line_items = (
-                db.query(CanteenOrderItem)
-                .filter(CanteenOrderItem.order_id == co.id)
-                .all()
-            )
-        for li in line_items:
-            line_amt = float(li.line_total or 0)
-            canteen_total += line_amt
-            food_entries.append({
-                "id": li.id,
-                "order_id": co.id,
-                "source": "canteen",
-                "meal_date": co.serve_date.isoformat() if co.serve_date else (
-                    co.ordered_at.date().isoformat() if co.ordered_at else None
-                ),
-                "meal_type": "canteen",
-                "item_name": li.item_name,
-                "quantity": int(li.quantity or 1),
-                "unit_price": float(li.unit_price or 0),
-                "status": co.status,
-                "price": line_amt,
-                "diet_preference": "",
-                "billed": bool(co.billed),
-            })
-    food_total = round(legacy_food_total + canteen_total, 2)
+    food_total = round(legacy_food_total, 2)
 
     # ---- Package overlay --------------------------------------------------
     # When an admission has an active package, the agreed_price covers all
@@ -5506,7 +5465,6 @@ def _compute_admission_charges(db: Session, admission: Admission, unbilled_only:
         "_pharmacy_pos_sales": pharmacy_pos_sales,
         "_lab_orders": lab_orders,
         "_food_orders": food_orders,
-        "_canteen_orders": canteen_orders,
         "_room_unbilled_total": room_total if unbilled_only else 0.0,
         "_room_charge_per_day": room_charge_per_day,
         "_room": room,
@@ -5744,10 +5702,6 @@ async def cancel_admission_bill(
         food_released = food_q.count()
         food_q.update({FoodOrder.billed: False, FoodOrder.bill_id: None}, synchronize_session=False)
 
-        canteen_q = db.query(CanteenOrder).filter(CanteenOrder.bill_id == bill.id)
-        canteen_released = canteen_q.count()
-        canteen_q.update({CanteenOrder.billed: False, CanteenOrder.bill_id: None}, synchronize_session=False)
-
         bill.status = "cancelled"
         cancel_note = f"[CANCELLED by user {current_user.id} on {datetime.now().isoformat()}]: {data.reason}"
         bill.notes = (bill.notes + "\n" if bill.notes else "") + cancel_note
@@ -5770,7 +5724,6 @@ async def cancel_admission_bill(
                        "pharmacy_pos_sales": pos_released,
                        "lab_orders": lab_released,
                        "food_orders": food_released,
-                       "canteen_orders": canteen_released,
                    },
                })
 
@@ -5910,9 +5863,6 @@ def _create_admission_bill_record_inner(
         for f in breakdown.get("_food_orders", []):
             f.billed = True
             f.bill_id = bill.id
-        for co in breakdown.get("_canteen_orders", []):
-            co.billed = True
-            co.bill_id = bill.id
         db.commit()
         db.refresh(bill)
         return bill
@@ -6158,32 +6108,6 @@ def _create_admission_bill_record_inner(
         ))
         f.billed = True
         f.bill_id = bill.id
-
-    for co in breakdown.get("_canteen_orders", []):
-        serve = co.serve_date.isoformat() if co.serve_date else (
-            co.ordered_at.date().isoformat() if co.ordered_at else ""
-        )
-        # Prefer a fresh query — the identity map can leave `co.items` empty
-        # when lines were inserted via FK in the same session without appending
-        # to the relationship collection.
-        line_items = (
-            db.query(CanteenOrderItem)
-            .filter(CanteenOrderItem.order_id == co.id)
-            .all()
-        ) or list(co.items or [])
-        for li in line_items:
-            db.add(BillItem(
-                bill_id=bill.id,
-                item_type="food",
-                item_name=f"Canteen: {li.item_name}" + (f" — {serve}" if serve else ""),
-                quantity=int(li.quantity or 1),
-                unit_price=float(li.unit_price or 0),
-                total_price=float(li.line_total or 0),
-                source_ref_type="canteen_order_item",
-                source_ref_id=li.id,
-            ))
-        co.billed = True
-        co.bill_id = bill.id
 
     db.commit()
     db.refresh(bill)
@@ -6744,35 +6668,22 @@ async def get_bill_pdf(
             }
             (bucket_lab_included if covered else bucket_lab_excluded).append(row)
 
-        # Catering — legacy meal slots + canteen à-la-carte lines (excluded section).
+        # Catering — legacy meal slots (excluded section).
         food_entries = breakdown.get("food_entries") or []
         if food_entries:
-            legacy = [f for f in food_entries if f.get("source") != "canteen"]
-            canteen_lines = [f for f in food_entries if f.get("source") == "canteen"]
-            if legacy:
-                food_by_type: dict = {}
-                for f in legacy:
-                    mt = f.get("meal_type", "meal")
-                    food_by_type.setdefault(mt, {"count": 0, "total": 0.0})
-                    food_by_type[mt]["count"] += 1
-                    food_by_type[mt]["total"] += float(f.get("price") or 0)
-                for mt, info in food_by_type.items():
-                    rate = info["total"] / info["count"] if info["count"] else 0
-                    bucket_excluded.append({
-                        "description": f"Catering — {mt.title()}",
-                        "qty": f"× {info['count']}",
-                        "rate": rate,
-                        "amount": info["total"],
-                    })
-            for f in canteen_lines:
-                qty = int(f.get("quantity") or 1)
+            food_by_type: dict = {}
+            for f in food_entries:
+                mt = f.get("meal_type", "meal")
+                food_by_type.setdefault(mt, {"count": 0, "total": 0.0})
+                food_by_type[mt]["count"] += 1
+                food_by_type[mt]["total"] += float(f.get("price") or 0)
+            for mt, info in food_by_type.items():
+                rate = info["total"] / info["count"] if info["count"] else 0
                 bucket_excluded.append({
-                    "description": f"Canteen — {f.get('item_name', 'Item')}" + (
-                        f" ({f.get('meal_date')})" if f.get("meal_date") else ""
-                    ),
-                    "qty": str(qty),
-                    "rate": float(f.get("unit_price") or 0),
-                    "amount": float(f.get("price") or 0),
+                    "description": f"Catering — {mt.title()}",
+                    "qty": f"× {info['count']}",
+                    "rate": rate,
+                    "amount": info["total"],
                 })
 
         # ---- Package fee line (always at the very top when present).

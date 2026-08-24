@@ -65,7 +65,7 @@ def test_set_and_read_detailed_billing_false(db_session):
 def test_bill_pdf_gen_kwargs_includes_detailed_billing(db_session):
     set_hospital_detailed_billing(db_session, detailed_billing=False, created_by=1)
     db_session.commit()
-    kw = bill_pdf_gen_kwargs(db_session, 1, "opd_bill")
+    kw = bill_pdf_gen_kwargs(db_session, 1, "inpatient_bill")
     assert kw["detailed_billing"] is False
     assert "include_header" in kw
 
@@ -147,7 +147,7 @@ def test_resolve_include_header_per_report(db_session):
         global_default=True, report_type="prescription", overrides={"prescription": "off"}
     ) is False
     assert resolve_include_header(
-        global_default=True, report_type="opd_bill", overrides={"prescription": "off"}
+        global_default=True, report_type="inpatient_bill", overrides={"prescription": "off"}
     ) is True
     # Request-time query wins over per-report override (print preview toggle).
     assert resolve_include_header(
@@ -168,7 +168,7 @@ def test_resolve_print_options_uses_gap(db_session):
     set_hospital_pdf_include_header(db_session, include_header=False, created_by=1)
     set_letterhead_gap_mm(db_session, gap_mm=40, created_by=1)
     db_session.commit()
-    opts = resolve_print_options(db_session, 1, "opd_bill")
+    opts = resolve_print_options(db_session, 1, "inpatient_bill")
     assert opts.include_header is False
     assert opts.letterhead_gap_pt > 0
 
@@ -218,7 +218,7 @@ def test_generate_print_preview_pdf(db_session):
     buf = generate_print_preview_pdf(
         db_session,
         1,
-        report_type="opd_bill",
+        report_type="inpatient_bill",
         include_header_on_pdfs=False,
         detailed_billing_on_pdfs=False,
         letterhead_gap_mm=40,
@@ -234,14 +234,17 @@ def test_update_print_settings_payload(db_session):
         include_header_on_pdfs=False,
         detailed_billing_on_pdfs=False,
         letterhead_gap_mm=30,
-        report_header_overrides={"opd_bill": "on"},
+        report_header_overrides={"inpatient_bill": "on"},
         created_by=1,
     )
     assert payload["include_header_on_pdfs"] is False
     assert payload["detailed_billing_on_pdfs"] is False
     assert payload["letterhead_gap_mm"] == 30.0
-    assert payload["report_header_overrides"]["opd_bill"] == "on"
-    assert any(r["key"] == "prescription" for r in payload["report_catalog"])
+    assert payload["report_header_overrides"]["inpatient_bill"] == "on"
+    assert any(
+        r["key"] == "prescription" and r["module"] == "pharmacy"
+        for r in payload["report_catalog"]
+    )
 
 
 def test_default_include_footer_true_when_unset(db_session):
@@ -254,22 +257,23 @@ def test_set_and_read_include_footer_false(db_session):
     assert get_hospital_pdf_include_footer(db_session, 1) is False
 
 
-def test_report_footer_overrides_limited_to_reception_lab(db_session):
+def test_report_footer_overrides_limited_to_lab(db_session):
     set_report_footer_overrides(
         db_session,
-        overrides={"opd_bill": "off", "lab_report": "on", "prescription": "off"},
+        overrides={"inpatient_bill": "off", "lab_report": "on", "prescription": "off"},
         created_by=1,
     )
     db_session.commit()
     ov = get_report_footer_overrides(db_session, 1)
-    assert ov == {"opd_bill": "off", "lab_report": "on"}
+    # Only FOOTER_REPORT_KEYS (lab_bill / lab_report) are persisted.
+    assert ov == {"lab_report": "on"}
 
 
 def test_pdf_gen_kwargs_include_footer_for_lab_and_bills(db_session):
     set_hospital_pdf_include_footer(db_session, include_footer=False, created_by=1)
     set_report_footer_overrides(db_session, overrides={}, created_by=1)
     db_session.commit()
-    assert pdf_gen_kwargs(db_session, 1, "opd_bill")["include_footer"] is False
+    assert "include_footer" not in pdf_gen_kwargs(db_session, 1, "inpatient_bill")
     assert pdf_gen_kwargs(db_session, 1, "lab_report")["include_footer"] is False
     assert "include_footer" not in pdf_gen_kwargs(db_session, 1, "prescription")
 
@@ -394,7 +398,7 @@ def test_pdf_gen_kwargs_includes_prescription_vitals(db_session):
     assert kw["vitals_layout"] == "remove"
     assert kw["vitals_column_width_in"] == 1.5
     assert kw["vital_fields"] == ["temperature", "weight"]
-    assert "include_vitals" not in pdf_gen_kwargs(db_session, 1, "opd_bill")
+    assert "include_vitals" not in pdf_gen_kwargs(db_session, 1, "inpatient_bill")
 
 
 def test_generate_prescription_pdf_respects_vital_settings(db_session):

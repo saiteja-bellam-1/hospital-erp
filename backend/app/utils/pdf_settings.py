@@ -17,7 +17,7 @@ PRINT_REPORT_OVERRIDES_KEY = "report_header_overrides"
 PRINT_REPORT_FOOTER_OVERRIDES_KEY = "report_footer_overrides"
 
 # Reports where staff-name / signature footers can be toggled (phase 1: reception + lab).
-FOOTER_REPORT_KEYS = frozenset({"opd_bill", "lab_bill", "lab_report"})
+FOOTER_REPORT_KEYS = frozenset({"lab_bill", "lab_report"})
 PRINT_DETAILED_BILLING_KEY = "detailed_billing_on_pdfs"
 PRINT_PRESCRIPTION_INCLUDE_VITALS_KEY = "prescription_include_vitals"
 PRINT_PRESCRIPTION_VITAL_FIELDS_KEY = "prescription_vital_fields"
@@ -71,9 +71,7 @@ DEFAULT_PRESCRIPTION_VITAL_FIELDS: list[str] = [
 ]
 
 REPORT_CATALOG: list[dict[str, str]] = [
-    {"key": "opd_bill", "label": "OPD Bill", "module": "outpatient"},
-    {"key": "doctor_appointments", "label": "Doctor Appointments List", "module": "outpatient"},
-    {"key": "prescription", "label": "Prescription", "module": "outpatient"},
+  {"key": "prescription", "label": "Prescription", "module": "pharmacy"},
     {"key": "lab_report", "label": "Lab Report", "module": "laboratory"},
     {"key": "lab_bill", "label": "Lab Bill", "module": "laboratory"},
     {"key": "inpatient_bill", "label": "Inpatient Bill", "module": "inpatient"},
@@ -94,7 +92,6 @@ REPORT_CATALOG: list[dict[str, str]] = [
     {"key": "monthly_outcomes", "label": "Monthly Outcomes", "module": "inpatient"},
     {"key": "doctor_productivity", "label": "Doctor Productivity", "module": "inpatient"},
     {"key": "pharmacy_sale_invoice", "label": "Pharmacy Sale Invoice", "module": "pharmacy"},
-    {"key": "canteen_sale_receipt", "label": "Canteen Sale Receipt", "module": "canteen"},
     {"key": "pharmacy_purchase", "label": "Pharmacy Purchase", "module": "pharmacy"},
     {"key": "pharmacy_dispense", "label": "Dispense Slip", "module": "pharmacy"},
     {"key": "narcotic_register", "label": "Narcotic Register", "module": "pharmacy"},

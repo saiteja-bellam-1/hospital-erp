@@ -1,26 +1,45 @@
 """Tests for billing Excel/CSV export (filter-aware, hospital-branded)."""
-from datetime import datetime, date, time
+from datetime import datetime, date
 from io import BytesIO
 
 
-def _paid_consultation(db_session, seed_data, fee=500.0):
-    from app.models.outpatient import Appointment
+def _paid_pharmacy_bill(db_session, seed_data, total=500.0):
+    from app.models.billing import Bill, BillItem, Payment
     ts = datetime.now().timestamp()
-    a = Appointment(
-        appointment_number=f"XLS-{ts}",
+    bill = Bill(
+        bill_number=f"XLS-{ts}",
         patient_id=seed_data["patient_id"],
-        doctor_id=seed_data["doctor_user_id"],
-        appointment_date=datetime.now(),
-        appointment_time=time(10, 0),
-        consultation_fee=fee,
-        registration_fee=0,
-        final_amount=fee,
-        payment_status="paid",
-        payment_method="cash",
+        bill_type="pharmacy",
+        reference_id=0,
+        subtotal=total,
+        tax_amount=0,
+        discount_amount=0,
+        total_amount=total,
+        status="paid",
+        bill_date=datetime.now(),
+        created_by_id=seed_data["admin_user_id"],
+        hospital_id=seed_data["hospital_id"],
     )
-    db_session.add(a)
+    db_session.add(bill)
+    db_session.flush()
+    db_session.add(BillItem(
+        bill_id=bill.id,
+        item_type="pharmacy",
+        item_name="Test Medicine",
+        quantity=1,
+        unit_price=total,
+        total_price=total,
+    ))
+    db_session.add(Payment(
+        payment_number=f"XP-{ts}",
+        bill_id=bill.id,
+        amount_paid=total,
+        payment_method_name="cash",
+        payment_date=datetime.now(),
+        received_by_id=seed_data["admin_user_id"],
+    ))
     db_session.commit()
-    return a
+    return bill
 
 
 def _find_header_row(ws, expected="Date"):
@@ -34,7 +53,7 @@ def _find_header_row(ws, expected="Date"):
 class TestBillingExcelExport:
 
     def test_export_returns_xlsx(self, client, auth_headers, db_session, seed_data):
-        _paid_consultation(db_session, seed_data)
+        _paid_pharmacy_bill(db_session, seed_data)
         today = date.today().isoformat()
         r = client.get(
             f"/api/hospital/billing/export.xlsx?date_from={today}&date_to={today}",
@@ -97,11 +116,11 @@ class TestBillingExcelExport:
         assert any("42 Care Lane" in str(v) for v in values)
 
     def test_export_respects_bill_type_filter(self, client, auth_headers, db_session, seed_data):
-        _paid_consultation(db_session, seed_data, fee=400)
+        _paid_pharmacy_bill(db_session, seed_data, total=400)
         today = date.today().isoformat()
-        # Lab-only filter should not include the consultation row
+        # Inpatient-only filter should not include the pharmacy row
         r = client.get(
-            f"/api/hospital/billing/export.xlsx?date_from={today}&date_to={today}&bill_type=lab",
+            f"/api/hospital/billing/export.xlsx?date_from={today}&date_to={today}&bill_type=admission",
             headers=auth_headers,
         )
         assert r.status_code == 200, r.text
@@ -116,13 +135,13 @@ class TestBillingExcelExport:
             if bills.cell(row=i, column=1).value == "Module":
                 module_val = bills.cell(row=i, column=2).value
                 break
-        assert module_val == "Lab"
+        assert module_val == "Inpatient"
         types = [
             bills.cell(row=i, column=2).value
             for i in range(header_row + 1, bills.max_row + 1)
             if bills.cell(row=i, column=2).value
         ]
-        assert "consultation" not in types
+        assert "pharmacy" not in [str(t).lower() for t in types]
 
     def test_export_empty_range_still_xlsx(self, client, auth_headers):
         r = client.get(
@@ -191,10 +210,10 @@ class TestBillingCsvExport:
         hospital.address = "9 Export Road"
         db_session.commit()
 
-        _paid_consultation(db_session, seed_data)
+        _paid_pharmacy_bill(db_session, seed_data)
         today = date.today().isoformat()
         r = client.get(
-            f"/api/hospital/billing/export.csv?date_from={today}&date_to={today}&bill_type=consultation",
+            f"/api/hospital/billing/export.csv?date_from={today}&date_to={today}&bill_type=pharmacy",
             headers=auth_headers,
         )
         assert r.status_code == 200, r.text
@@ -204,6 +223,6 @@ class TestBillingCsvExport:
         assert "9 Export Road" in text
         assert "Date range" in text
         assert "Module" in text
-        assert "Outpatient" in text
+        assert "Pharmacy" in text
         assert "Total billed" in text
         assert "Date,Type,Reference,Patient" in text.replace('"', '')

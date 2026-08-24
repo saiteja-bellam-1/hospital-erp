@@ -9,7 +9,6 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useLayoutPreferences } from '../../contexts/LayoutPreferencesContext';
 import { useToast } from '../../hooks/use-toast';
 import axios from 'axios';
-import PayerSchemesAdmin from './inpatient/PayerSchemesAdmin';
 import {
   Building2,
   UserCheck,
@@ -25,7 +24,6 @@ const HOSPITAL_PAGE_TITLES = {
   info: 'Hospital Info',
   doctors: 'Doctor Profiles',
   billing: 'Registration Fee',
-  payers: 'Payer Schemes',
   appearance: 'Appearance',
 };
 
@@ -247,13 +245,12 @@ const HospitalAdminModule = () => {
   const aliases = {
     'hospital-info': '/dashboard/hospital-admin/info',
     'billing-settings': '/dashboard/hospital-admin/billing',
-    'payer-schemes': '/dashboard/hospital-admin/payers',
     'print-settings': '/dashboard/print-settings',
   };
   if (aliases[lastSegment]) {
     return <Navigate to={aliases[lastSegment]} replace />;
   }
-  const allowedPages = ['info', 'doctors', 'billing', 'payers', 'appearance'];
+  const allowedPages = ['info', 'doctors', 'billing', 'appearance'];
   if (lastSegment === 'hospital-admin' || !allowedPages.includes(lastSegment)) {
     return <Navigate to="/dashboard/hospital-admin/info" replace />;
   }
@@ -264,8 +261,6 @@ const HospitalAdminModule = () => {
       <div className="flex items-center justify-between">
         <h1 className="text-3xl font-bold">{HOSPITAL_PAGE_TITLES[activeTab]}</h1>
       </div>
-
-      {activeTab === 'payers' && <PayerSchemesAdmin />}
 
       {/* Appearance */}
       {activeTab === 'appearance' && (

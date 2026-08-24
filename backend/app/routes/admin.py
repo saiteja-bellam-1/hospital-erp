@@ -1011,7 +1011,7 @@ async def bulk_import_staff(
     Optional: phone, additional_roles (semicolon-separated).
 
     Allowed roles match the installer CSV allow-list (hospital_admin, lab_*,
-    pharmacy_*, billing_admin, inpatient_admin, canteen_*, frontdesk,
+    pharmacy_*, billing_admin, inpatient_admin, frontdesk,
     receptionist). Doctor and nurse must use their dedicated importers.
     """
     from app.services.user_csv_import import (

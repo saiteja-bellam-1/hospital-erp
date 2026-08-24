@@ -47,7 +47,7 @@ const ROLE_META = {
       'Required: username, email, first_name, last_name, role, password. ' +
       'Optional: phone, additional_roles (semicolon-separated). ' +
       'Allowed roles: hospital_admin, lab_admin, lab_technician, pharmacy_admin, pharmacist, ' +
-      'billing_admin, inpatient_admin, canteen_admin, canteen_sales, frontdesk, receptionist. ' +
+      'billing_admin, inpatient_admin, frontdesk, receptionist. ' +
       'Doctors and nurses use their own tabs.',
     endpoint: '/api/admin/users/bulk-import-staff',
     sampleFile: 'staff_sample.csv',

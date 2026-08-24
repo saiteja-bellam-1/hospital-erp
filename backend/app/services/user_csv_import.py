@@ -52,14 +52,10 @@ MAX_PHONE_LEN = 15
 # created from the wizard's AdminPage and must not be duplicated here.
 INSTALLER_ALLOWED_ROLES = frozenset({
     "hospital_admin",
-    "lab_admin",
-    "lab_technician",
     "pharmacy_admin",
     "pharmacist",
     "billing_admin",
     "inpatient_admin",
-    "canteen_admin",
-    "canteen_sales",
     "frontdesk",
     "receptionist",
 })

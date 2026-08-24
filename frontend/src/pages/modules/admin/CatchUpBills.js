@@ -17,7 +17,7 @@ import PatientSearchPicker from '../../../components/PatientSearchPicker';
 import PdfPreviewDialog from '../../../components/PdfPreviewDialog';
 import { Textarea } from '../../../components/ui/textarea';
 import {
-  CalendarClock, FileText, Loader2, Plus, RefreshCw, Search, Trash2,
+  CalendarClock, Loader2, Plus, Trash2,
 } from 'lucide-react';
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
@@ -30,14 +30,8 @@ const emptyDates = () => ({
 });
 
 const TYPES = [
-  { id: 'consultation', label: 'Consultation' },
-  { id: 'lab', label: 'Lab' },
-  { id: 'lab_reports', label: 'Saved lab reports' },
   { id: 'pharmacy', label: 'Pharmacy' },
-  { id: 'canteen', label: 'Canteen' },
   { id: 'misc', label: 'Misc bill' },
-  { id: 'inpatient', label: 'Inpatient stay' },
-  { id: 'append', label: 'Append to stay' },
 ];
 
 const parseFee = (v) => {
@@ -107,24 +101,18 @@ function ChargeSection({ title, onAdd, children }) {
 
 const CatchUpBills = () => {
   const { toast } = useToast();
-  const [type, setType] = useState('consultation');
+  const [type, setType] = useState('pharmacy');
   const [dates, setDates] = useState(emptyDates());
   const [saving, setSaving] = useState(false);
   const [history, setHistory] = useState([]);
   const [doctors, setDoctors] = useState([]);
   const [nurses, setNurses] = useState([]);
-  const [labTests, setLabTests] = useState([]);
   const [rooms, setRooms] = useState([]);
   const [ancillaryServices, setAncillaryServices] = useState([]);
-  const [canteenItems, setCanteenItems] = useState([]);
   const [packages, setPackages] = useState([]);
 
   const [patientId, setPatientId] = useState(null);
   const [selectedPatient, setSelectedPatient] = useState(null);
-  const [doctorId, setDoctorId] = useState('');
-  const [consultFee, setConsultFee] = useState('');
-  const [regFee, setRegFee] = useState('0');
-  const [selectedTests, setSelectedTests] = useState([]);
   const [lines, setLines] = useState([{ item_name: '', quantity: 1, unit_price: '' }]);
   const [affectStock, setAffectStock] = useState(false);
 
@@ -137,7 +125,6 @@ const CatchUpBills = () => {
   const [doctorVisits, setDoctorVisits] = useState([]);
   const [nurseVisits, setNurseVisits] = useState([]);
   const [ancillaryRows, setAncillaryRows] = useState([]);
-  const [foodOrders, setFoodOrders] = useState([]);
   const [pharmacyIpLines, setPharmacyIpLines] = useState([]);
   const [packageId, setPackageId] = useState('');
   const [packagePrice, setPackagePrice] = useState('');
@@ -149,33 +136,18 @@ const CatchUpBills = () => {
   const [previewing, setPreviewing] = useState(false);
   const [pdfPreview, setPdfPreview] = useState(null);
 
-  // Persisted catch-up lab archive: result entry + future report downloads
-  const [labReports, setLabReports] = useState([]);
-  const [labReportSearch, setLabReportSearch] = useState('');
-  const [labEntryForm, setLabEntryForm] = useState(null);
-  const [labEntryValues, setLabEntryValues] = useState({});
-  const [labRemarkValues, setLabRemarkValues] = useState({});
-  const [labManualAbnormal, setLabManualAbnormal] = useState({});
-  const [labInterpretation, setLabInterpretation] = useState('');
-  const [labEntryOpen, setLabEntryOpen] = useState(false);
-  const [labSubmitting, setLabSubmitting] = useState(false);
-
   const doctorById = (id) => doctors.find((d) => String(d.id) === String(id));
   const nurseById = (id) => nurses.find((n) => String(n.id) === String(id));
   const ipFeeForDoctor = (id) => parseFee(doctorById(id)?.inpatient_fee_inr);
-  const consultFeeForDoctor = (id) => parseFee(doctorById(id)?.consultation_fee_inr);
 
   const loadMeta = async () => {
     try {
-      const [docRes, histRes, labReportRes] = await Promise.all([
+      const [docRes, histRes] = await Promise.all([
         axios.get('/api/hospital/doctors').catch(() => ({ data: [] })),
         axios.get('/api/admin/catch-up/history', { params: { limit: 30 } }).catch(() => ({ data: [] })),
-        axios.get('/api/admin/catch-up/lab/reports', { params: { limit: 200 } })
-          .catch(() => ({ data: [] })),
       ]);
       setDoctors(Array.isArray(docRes.data) ? docRes.data : (docRes.data?.doctors || []));
       setHistory(Array.isArray(histRes.data) ? histRes.data : []);
-      setLabReports(Array.isArray(labReportRes.data) ? labReportRes.data : []);
     } catch {
       /* ignore */
     }
@@ -186,35 +158,20 @@ const CatchUpBills = () => {
   }, []);
 
   useEffect(() => {
-    if (type === 'lab') {
-      axios.get('/api/lab/tests').then((r) => {
-        setLabTests(Array.isArray(r.data) ? r.data : (r.data?.tests || []));
-      }).catch(() => setLabTests([]));
-    }
     if (type === 'inpatient' || type === 'append') {
       Promise.all([
         axios.get('/api/inpatient/rooms').catch(() => ({ data: [] })),
         axios.get('/api/inpatient/nurses').catch(() => ({ data: [] })),
         axios.get('/api/inpatient/ancillary-services', { params: { active_only: true } }).catch(() => ({ data: [] })),
         axios.get('/api/inpatient/packages', { params: { active_only: true } }).catch(() => ({ data: [] })),
-        axios.get('/api/admin/catch-up/canteen-catalog')
-          .catch(() => axios.get('/api/canteen/items', { params: { active_only: true } }))
-          .catch(() => ({ data: [] })),
-      ]).then(([roomRes, nurseRes, ancRes, pkgRes, foodRes]) => {
+      ]).then(([roomRes, nurseRes, ancRes, pkgRes]) => {
         setRooms(Array.isArray(roomRes.data) ? roomRes.data : (roomRes.data?.rooms || []));
         setNurses(Array.isArray(nurseRes.data) ? nurseRes.data : []);
         setAncillaryServices(Array.isArray(ancRes.data) ? ancRes.data : []);
         setPackages(Array.isArray(pkgRes.data) ? pkgRes.data : []);
-        setCanteenItems(Array.isArray(foodRes.data) ? foodRes.data : (foodRes.data?.items || []));
       });
     }
   }, [type]);
-
-  const selectConsultDoctor = (id) => {
-    setDoctorId(id);
-    const fee = consultFeeForDoctor(id);
-    if (fee !== '') setConsultFee(fee);
-  };
 
   const datesPayload = () => ({
     service_date: dates.service_date,
@@ -252,21 +209,6 @@ const CatchUpBills = () => {
         charged_at: a.charged_at ? new Date(a.charged_at).toISOString() : null,
       }));
 
-    const canteen_orders = foodOrders
-      .map((o) => ({
-        serve_date: o.serve_date || dates.service_date,
-        notes: o.notes || null,
-        items: (o.items || [])
-          .map((i) => ({
-            item_id: i.item_id ? Number(i.item_id) : null,
-            item_name: String(i.item_name || '').trim(),
-            quantity: Number(i.quantity || 1),
-            unit_price: i.unit_price === '' || i.unit_price == null ? null : Number(i.unit_price),
-          }))
-          .filter((i) => i.item_name && i.unit_price != null && !Number.isNaN(i.unit_price)),
-      }))
-      .filter((o) => o.items.length > 0);
-
     const pharmacy_lines = pharmacyIpLines
       .filter((l) => l.item_name && l.unit_price !== '')
       .map((l) => ({
@@ -286,7 +228,6 @@ const CatchUpBills = () => {
       is_observation: isObservation,
       visits,
       ancillary,
-      canteen_orders,
       pharmacy_lines,
       surgery_package_id: packageId ? Number(packageId) : null,
       surgery_package_price: packageId && packagePrice !== '' ? Number(packagePrice) : null,
@@ -305,33 +246,6 @@ const CatchUpBills = () => {
 
   /** Build create/preview request for the active tab. Throws on validation. */
   const buildRequestBody = () => {
-    if (type === 'consultation') {
-      if (!patientId || !doctorId) throw new Error('Patient and doctor are required');
-      return {
-        url: '/api/admin/catch-up/consultation',
-        previewUrl: '/api/admin/catch-up/consultation/preview',
-        body: {
-          ...datesPayload(),
-          patient_id: patientId,
-          doctor_id: Number(doctorId),
-          consultation_fee: Number(consultFee || 0),
-          registration_fee: Number(regFee || 0),
-        },
-      };
-    }
-    if (type === 'lab') {
-      if (!patientId || selectedTests.length === 0) throw new Error('Patient and at least one test required');
-      return {
-        url: '/api/admin/catch-up/lab',
-        previewUrl: '/api/admin/catch-up/lab/preview',
-        body: {
-          ...datesPayload(),
-          patient_id: patientId,
-          test_ids: selectedTests.map(Number),
-          doctor_id: doctorId ? Number(doctorId) : null,
-        },
-      };
-    }
     if (type === 'pharmacy') {
       if (!patientId) throw new Error('Patient is required for pharmacy catch-up');
       const items = lineItemsPayload();
@@ -344,19 +258,6 @@ const CatchUpBills = () => {
           patient_id: patientId,
           items,
           affect_stock: affectStock,
-        },
-      };
-    }
-    if (type === 'canteen') {
-      const items = lineItemsPayload();
-      if (!items.length) throw new Error('Add at least one line');
-      return {
-        url: '/api/admin/catch-up/canteen-sale',
-        previewUrl: '/api/admin/catch-up/canteen-sale/preview',
-        body: {
-          ...datesPayload(),
-          patient_id: patientId || null,
-          items,
         },
       };
     }
@@ -391,11 +292,10 @@ const CatchUpBills = () => {
         ...datesPayload(),
         visits: ip.visits,
         ancillary: ip.ancillary,
-        canteen_orders: ip.canteen_orders,
         pharmacy_lines: ip.pharmacy_lines,
       };
       if (!body.visits.length && !body.ancillary.length
-          && !body.canteen_orders.length && !body.pharmacy_lines.length) {
+          && !body.pharmacy_lines.length) {
         throw new Error('Add at least one charge to append');
       }
       const items = [];
@@ -416,17 +316,6 @@ const CatchUpBills = () => {
           quantity: qty,
           unit_price: unit,
           total_price: Math.round(unit * qty * 100) / 100,
-        });
-      });
-      (body.canteen_orders || []).forEach((o) => {
-        (o.items || []).forEach((li) => {
-          const total = Math.round(Number(li.unit_price) * Number(li.quantity) * 100) / 100;
-          items.push({
-            item_name: li.item_name,
-            quantity: li.quantity,
-            unit_price: li.unit_price,
-            total_price: total,
-          });
         });
       });
       body.pharmacy_lines.forEach((li) => {
@@ -528,13 +417,11 @@ const CatchUpBills = () => {
       }
       setDates(emptyDates());
       setLines([{ item_name: '', quantity: 1, unit_price: '' }]);
-      setSelectedTests([]);
       setSelectedPatient(null);
       setPatientId(null);
       setDoctorVisits([]);
       setNurseVisits([]);
       setAncillaryRows([]);
-      setFoodOrders([]);
       setPharmacyIpLines([]);
       setPackageId('');
       setPackagePrice('');
@@ -548,59 +435,6 @@ const CatchUpBills = () => {
     }
   };
 
-  const openLabEntry = async (orderId) => {
-    try {
-      const { data } = await axios.get(`/api/admin/catch-up/lab/orders/${orderId}/entry-form`);
-      setLabEntryForm(data);
-      const initial = {};
-      (data.parameters || []).forEach((p) => { initial[p.id] = ''; });
-      setLabEntryValues(initial);
-      setLabRemarkValues({});
-      setLabManualAbnormal({});
-      setLabInterpretation('');
-      setLabEntryOpen(true);
-      if (!(data.parameters || []).length) {
-        toast({
-          title: 'No parameters',
-          description: 'This test has no parameters configured. Configure them under Lab → Tests first.',
-          variant: 'destructive',
-        });
-      }
-    } catch (err) {
-      toast({ title: 'Failed to load entry form', description: errMsg(err), variant: 'destructive' });
-    }
-  };
-
-  const submitLabResults = async () => {
-    if (!labEntryForm) return;
-    setLabSubmitting(true);
-    try {
-      const results = Object.entries(labEntryValues)
-        .filter(([, value]) => value !== '')
-        .map(([paramId, value]) => ({
-          parameter_id: parseInt(paramId, 10),
-          value: String(value),
-          remarks: labRemarkValues[paramId] || null,
-          manual_abnormal: !!labManualAbnormal[paramId],
-        }));
-      if (!results.length) throw new Error('Enter at least one parameter value');
-      const { data } = await axios.post(
-        `/api/admin/catch-up/lab/orders/${labEntryForm.order_id}/results`,
-        { results, interpretation: labInterpretation || null },
-      );
-      toast({ title: 'Lab report saved', description: 'Opening report PDF…' });
-      setLabEntryOpen(false);
-      loadMeta();
-      if (data?.pdf?.path) {
-        setPdfPreview({ title: data.pdf.title || 'Lab report', path: data.pdf.path });
-      }
-    } catch (err) {
-      toast({ title: 'Failed to save results', description: errMsg(err), variant: 'destructive' });
-    } finally {
-      setLabSubmitting(false);
-    }
-  };
-
   const updateLine = (idx, key, val) => {
     setLines((prev) => prev.map((l, i) => (i === idx ? { ...l, [key]: val } : l)));
   };
@@ -608,15 +442,6 @@ const CatchUpBills = () => {
   const nurseLabel = (n) => n.first_name
     ? `${n.first_name} ${n.last_name || ''}`.trim()
     : (n.name || `Nurse #${n.id}`);
-
-  const filteredLabReports = labReports.filter((row) => {
-    const needle = labReportSearch.trim().toLowerCase();
-    if (!needle) return true;
-    return [
-      row.patient_name, row.mrn, row.test_name, row.test_code,
-      row.order_number, row.lab_bill_number, row.service_date,
-    ].some((value) => String(value || '').toLowerCase().includes(needle));
-  });
 
   return (
     <div className="space-y-6">
@@ -644,14 +469,13 @@ const CatchUpBills = () => {
         ))}
       </div>
 
-      {type !== 'lab_reports' && (
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Dates</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <DatesPanel dates={dates} setDates={setDates} />
-          {type !== 'canteen' && type !== 'append' && (
+          {type !== 'append' && (
             <PatientSearchPicker
               value={selectedPatient}
               onChange={(p) => {
@@ -663,93 +487,8 @@ const CatchUpBills = () => {
               compact
             />
           )}
-          {type === 'canteen' && (
-            <PatientSearchPicker
-              value={selectedPatient}
-              onChange={(p) => {
-                setSelectedPatient(p);
-                setPatientId(p?.id ?? null);
-              }}
-              label="Patient (optional — links to central bill)"
-              compact
-            />
-          )}
 
-          {type === 'consultation' && (
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              <div>
-                <Label>Doctor</Label>
-                <select
-                  className="w-full h-9 rounded-md border px-2 text-sm"
-                  value={doctorId}
-                  onChange={(e) => selectConsultDoctor(e.target.value)}
-                >
-                  <option value="">Select doctor</option>
-                  {doctors.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.first_name} {d.last_name}
-                      {d.consultation_fee_inr ? ` (₹${d.consultation_fee_inr})` : ''}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <Label>Consultation fee</Label>
-                <Input type="number" min="0" step="0.01" value={consultFee} onChange={(e) => setConsultFee(e.target.value)} />
-                {doctorId && consultFeeForDoctor(doctorId) !== '' && (
-                  <p className="text-xs text-muted-foreground mt-1">
-                    From doctor profile: ₹{consultFeeForDoctor(doctorId)}
-                  </p>
-                )}
-              </div>
-              <div>
-                <Label>Registration fee</Label>
-                <Input type="number" min="0" step="0.01" value={regFee} onChange={(e) => setRegFee(e.target.value)} />
-              </div>
-            </div>
-          )}
-
-          {type === 'lab' && (
-            <div className="space-y-2">
-              <Label>Lab tests</Label>
-              <div className="border rounded-md max-h-48 overflow-auto p-2 space-y-1">
-                {labTests.map((t) => (
-                  <label key={t.id} className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={selectedTests.includes(t.id)}
-                      onChange={(e) => {
-                        setSelectedTests((prev) =>
-                          e.target.checked ? [...prev, t.id] : prev.filter((id) => id !== t.id)
-                        );
-                      }}
-                    />
-                    <span>{t.name} — ₹{t.cost}</span>
-                  </label>
-                ))}
-                {labTests.length === 0 && (
-                  <p className="text-xs text-muted-foreground">No lab tests found</p>
-                )}
-              </div>
-              <div>
-                <Label>Ordering doctor (optional)</Label>
-                <select
-                  className="w-full h-9 rounded-md border px-2 text-sm"
-                  value={doctorId}
-                  onChange={(e) => setDoctorId(e.target.value)}
-                >
-                  <option value="">None</option>
-                  {doctors.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.first_name} {d.last_name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-          )}
-
-          {['pharmacy', 'canteen', 'misc'].includes(type) && (
+          {['pharmacy', 'misc'].includes(type) && (
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <Label>Line items</Label>
@@ -1095,122 +834,6 @@ const CatchUpBills = () => {
                 ))}
               </ChargeSection>
 
-              <ChargeSection
-                title="Food orders"
-                onAdd={() => setFoodOrders((p) => [...p, {
-                  serve_date: dates.service_date,
-                  items: [{ item_id: '', item_name: '', quantity: 1, unit_price: '' }],
-                }])}
-              >
-                {foodOrders.length === 0 && (
-                  <p className="text-xs text-muted-foreground">No food orders added</p>
-                )}
-                {foodOrders.map((o, oIdx) => (
-                  <div key={oIdx} className="border rounded p-2 space-y-2 bg-slate-50">
-                    <div className="flex gap-2 items-end">
-                      <div className="flex-1">
-                        <Label className="text-xs">Serve date</Label>
-                        <Input
-                          type="date"
-                          value={o.serve_date}
-                          onChange={(e) => setFoodOrders((p) => p.map((x, i) => i === oIdx ? { ...x, serve_date: e.target.value } : x))}
-                        />
-                      </div>
-                      <Button type="button" size="sm" variant="outline" onClick={() => {
-                        setFoodOrders((p) => p.map((x, i) => i === oIdx ? {
-                          ...x,
-                          items: [...x.items, { item_id: '', item_name: '', quantity: 1, unit_price: '' }],
-                        } : x));
-                      }}>
-                        <Plus className="h-3 w-3 mr-1" /> Item
-                      </Button>
-                      <Button type="button" size="icon" variant="ghost" onClick={() => setFoodOrders((p) => p.filter((_, i) => i !== oIdx))}>
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </div>
-                    {o.items.map((li, liIdx) => (
-                      <div key={liIdx} className="grid grid-cols-12 gap-2">
-                        <div className="col-span-5">
-                          <select
-                            className="w-full h-9 rounded-md border px-2 text-sm"
-                            value={li.item_id || ''}
-                            onChange={(e) => {
-                              const id = e.target.value;
-                              const cat = canteenItems.find((c) => String(c.id) === String(id));
-                              setFoodOrders((p) => p.map((x, i) => i === oIdx ? {
-                                ...x,
-                                items: x.items.map((it, j) => j === liIdx ? {
-                                  ...it,
-                                  item_id: id,
-                                  item_name: cat?.name || it.item_name,
-                                  unit_price: cat != null ? String(cat.price ?? '') : it.unit_price,
-                                } : it),
-                              } : x));
-                            }}
-                          >
-                            <option value="">Catalog / custom</option>
-                            {canteenItems.map((c) => (
-                              <option key={c.id} value={c.id}>{c.name} — ₹{c.price}</option>
-                            ))}
-                          </select>
-                          {canteenItems.length === 0 && (
-                            <p className="text-[10px] text-amber-700 mt-0.5">
-                              No catalog loaded — type item name and price below.
-                            </p>
-                          )}
-                        </div>
-                        <div className="col-span-3">
-                          <Input
-                            placeholder="Item name"
-                            value={li.item_name}
-                            onChange={(e) => setFoodOrders((p) => p.map((x, i) => i === oIdx ? {
-                              ...x,
-                              items: x.items.map((it, j) => j === liIdx ? { ...it, item_name: e.target.value } : it),
-                            } : x))}
-                          />
-                        </div>
-                        <div className="col-span-1">
-                          <QtyInput
-                            min="1"
-                            step="1"
-                            value={li.quantity}
-                            onChange={(e) => setFoodOrders((p) => p.map((x, i) => i === oIdx ? {
-                              ...x,
-                              items: x.items.map((it, j) => j === liIdx ? { ...it, quantity: e.target.value } : it),
-                            } : x))}
-                          />
-                        </div>
-                        <div className="col-span-2">
-                          <Input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            placeholder="Price"
-                            value={li.unit_price}
-                            onChange={(e) => setFoodOrders((p) => p.map((x, i) => i === oIdx ? {
-                              ...x,
-                              items: x.items.map((it, j) => j === liIdx ? { ...it, unit_price: e.target.value } : it),
-                            } : x))}
-                          />
-                        </div>
-                        <div className="col-span-1">
-                          <Button
-                            type="button"
-                            size="icon"
-                            variant="ghost"
-                            onClick={() => setFoodOrders((p) => p.map((x, i) => i === oIdx ? {
-                              ...x,
-                              items: x.items.filter((_, j) => j !== liIdx),
-                            } : x))}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ))}
-              </ChargeSection>
 
               <ChargeSection
                 title="Medicine bills (financial — no stock deduction)"
@@ -1283,9 +906,7 @@ const CatchUpBills = () => {
           </div>
         </CardContent>
       </Card>
-      )}
 
-      {type !== 'lab_reports' && (
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Recent catch-up entries</CardTitle>
@@ -1307,242 +928,6 @@ const CatchUpBills = () => {
           )}
         </CardContent>
       </Card>
-      )}
-
-      {type === 'lab_reports' && (
-        <Card className="border-blue-200">
-          <CardHeader>
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <CardTitle className="text-base flex items-center gap-2">
-                <FileText className="h-4 w-4 text-blue-600" />
-                Stored catch-up lab reports
-              </CardTitle>
-              <Button type="button" size="sm" variant="outline" onClick={loadMeta}>
-                <RefreshCw className="h-3.5 w-3.5 mr-1" /> Refresh
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            <p className="text-xs text-muted-foreground">
-              Reports are stored in the database and remain available here for future viewing,
-              printing, or downloading. Orders awaiting values can also be completed here.
-            </p>
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input
-                className="pl-9"
-                value={labReportSearch}
-                onChange={(e) => setLabReportSearch(e.target.value)}
-                placeholder="Search patient, MRN, test, order or bill number"
-              />
-            </div>
-            {filteredLabReports.map((o) => (
-              <div
-                key={o.id}
-                className="flex flex-wrap items-center justify-between gap-2 border rounded-md p-3"
-              >
-                <div className="text-sm">
-                  <div className="font-medium">{o.test_name || `Order #${o.id}`}</div>
-                  <div className="text-xs text-muted-foreground">
-                    {o.patient_name || 'Unknown patient'}
-                    {o.mrn ? ` · MRN ${o.mrn}` : ''}
-                    {o.service_date ? ` · Service ${o.service_date}` : ''}
-                  </div>
-                  <div className="text-xs text-muted-foreground">
-                    {o.order_number}
-                    {o.lab_bill_number ? ` · ${o.lab_bill_number}` : ''}
-                    {o.has_report ? ' · Report stored' : ' · Awaiting results'}
-                  </div>
-                </div>
-                <div className="flex gap-2">
-                  {!o.has_report ? (
-                    <Button type="button" size="sm" onClick={() => openLabEntry(o.id)}>
-                      Enter results
-                    </Button>
-                  ) : (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={() => setPdfPreview({
-                        title: `Lab report — ${o.order_number || o.test_name}`,
-                        path: o.pdf?.path || `/api/lab/reports/${o.report_id}/download`,
-                      })}
-                      disabled={!o.report_id}
-                    >
-                      View / print report
-                    </Button>
-                  )}
-                </div>
-              </div>
-            ))}
-            {filteredLabReports.length === 0 && (
-              <p className="text-sm text-muted-foreground py-3 text-center">
-                {labReports.length ? 'No reports match this search.' : 'No catch-up lab reports yet.'}
-              </p>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
-      <Dialog open={labEntryOpen} onOpenChange={(v) => { if (!v && !labSubmitting) setLabEntryOpen(false); }}>
-        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>
-              Enter results — {labEntryForm?.test_name || 'Lab test'}
-            </DialogTitle>
-          </DialogHeader>
-          {labEntryForm && (
-            <div className="space-y-3 text-sm">
-              <p className="text-muted-foreground">
-                Patient: <span className="text-foreground font-medium">{labEntryForm.patient_name}</span>
-                {labEntryForm.patient_gender ? ` (${labEntryForm.patient_gender})` : ''}
-                {' · '}Order #{labEntryForm.order_number}
-                {labEntryForm.service_date ? ` · Service ${labEntryForm.service_date}` : ''}
-              </p>
-              {(labEntryForm.parameters || []).length === 0 ? (
-                <p className="text-amber-700 text-xs">
-                  No parameters configured for this test. Add them under Lab → Tests, then try again.
-                </p>
-              ) : (
-                <div className="border rounded-md overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead className="bg-slate-50">
-                      <tr>
-                        <th className="text-left p-2">Parameter</th>
-                        <th className="text-left p-2">Value</th>
-                        <th className="text-left p-2">Unit</th>
-                        <th className="text-left p-2">Reference</th>
-                        <th className="text-left p-2">Remarks</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {labEntryForm.parameters.map((param) => {
-                        const value = labEntryValues[param.id] ?? '';
-                        const options = param.possible_values || [];
-                        return (
-                          <tr key={param.id} className="border-t">
-                            <td className="p-2 font-medium whitespace-nowrap">{param.parameter_name}</td>
-                            <td className="p-2">
-                              {options.length > 0 ? (
-                                <select
-                                  className="h-8 rounded-md border px-2 text-sm min-w-[140px]"
-                                  value={value}
-                                  onChange={(e) => setLabEntryValues({
-                                    ...labEntryValues,
-                                    [param.id]: e.target.value,
-                                  })}
-                                >
-                                  <option value="">Select</option>
-                                  {options.map((opt) => (
-                                    <option key={opt} value={opt}>{opt}</option>
-                                  ))}
-                                </select>
-                              ) : param.field_type === 'less_than' ? (
-                                <div className="flex items-center gap-1">
-                                  <span className="text-muted-foreground">&lt;</span>
-                                  <Input
-                                    type="number"
-                                    step="any"
-                                    className="h-8 w-[130px]"
-                                    value={value}
-                                    onChange={(e) => setLabEntryValues({
-                                      ...labEntryValues,
-                                      [param.id]: e.target.value,
-                                    })}
-                                  />
-                                </div>
-                              ) : param.field_type === 'greater_than' ? (
-                                <div className="flex items-center gap-1">
-                                  <span className="text-muted-foreground">&gt;</span>
-                                  <Input
-                                    type="number"
-                                    step="any"
-                                    className="h-8 w-[130px]"
-                                    value={value}
-                                    onChange={(e) => setLabEntryValues({
-                                      ...labEntryValues,
-                                      [param.id]: e.target.value,
-                                    })}
-                                  />
-                                </div>
-                              ) : (
-                                <Input
-                                  type={param.field_type === 'numeric' ? 'text' : 'text'}
-                                  inputMode={param.field_type === 'numeric' ? 'decimal' : undefined}
-                                  className="h-8 w-[150px]"
-                                  value={value}
-                                  onChange={(e) => setLabEntryValues({
-                                    ...labEntryValues,
-                                    [param.id]: e.target.value,
-                                  })}
-                                  placeholder="Value"
-                                />
-                              )}
-                            </td>
-                            <td className="p-2 text-muted-foreground">{param.unit || '—'}</td>
-                            <td className="p-2 text-xs text-muted-foreground">
-                              {param.reference_min != null && param.reference_max != null
-                                ? `${param.reference_min} – ${param.reference_max}`
-                                : (param.normal_value || '—')}
-                            </td>
-                            <td className="p-2">
-                              <div className="flex items-center gap-2">
-                                <label className="flex items-center gap-1 text-[10px] text-red-600 whitespace-nowrap">
-                                  <input
-                                    type="checkbox"
-                                    checked={!!labManualAbnormal[param.id]}
-                                    onChange={(e) => setLabManualAbnormal({
-                                      ...labManualAbnormal,
-                                      [param.id]: e.target.checked,
-                                    })}
-                                  />
-                                  Abnormal
-                                </label>
-                                <Input
-                                  className="h-8 w-[120px] text-xs"
-                                  value={labRemarkValues[param.id] || ''}
-                                  onChange={(e) => setLabRemarkValues({
-                                    ...labRemarkValues,
-                                    [param.id]: e.target.value,
-                                  })}
-                                  placeholder="Remarks"
-                                />
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-              <div>
-                <Label>Interpretation / notes</Label>
-                <Textarea
-                  value={labInterpretation}
-                  onChange={(e) => setLabInterpretation(e.target.value)}
-                  rows={3}
-                  placeholder="Optional"
-                />
-              </div>
-            </div>
-          )}
-          <DialogFooter className="gap-2">
-            <Button type="button" variant="outline" onClick={() => setLabEntryOpen(false)} disabled={labSubmitting}>
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              onClick={submitLabResults}
-              disabled={labSubmitting || !(labEntryForm?.parameters || []).length}
-            >
-              {labSubmitting && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-              Save report &amp; preview PDF
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       <Dialog open={confirmOpen} onOpenChange={(v) => { if (!v && !saving) setConfirmOpen(false); }}>
         <DialogContent className="max-w-2xl">

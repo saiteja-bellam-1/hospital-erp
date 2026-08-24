@@ -14,16 +14,6 @@ from .outpatient import Appointment, OutpatientVisit
 from .inpatient import Admission, RoomManagement, DischargeRecord
 from .settlement import Settlement, SettlementConfig
 from .system import SystemModule, SystemSettings
-from .physiotherapy import (  # noqa: F401 — register physio mappers with Base
-    PhysioService,
-    PhysioPackageTemplate,
-    PhysioPatientPackage,
-    PhysioPackageLedger,
-    PhysioTherapistAvailability,
-    PhysioTherapistSpecialSchedule,
-    PhysioAppointment,
-)
-
 __all__ = [
     "User", "UserRole", "UserPermission",
     "DoctorAvailability", "DoctorSpecialSchedule", "DoctorAvailabilityStatus",

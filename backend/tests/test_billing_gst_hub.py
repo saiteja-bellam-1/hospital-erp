@@ -2,11 +2,12 @@
 from datetime import datetime, date, timedelta
 from io import BytesIO
 
+import pytest
 from openpyxl import load_workbook
 
 
-def _bill(db_session, seed_data, *, bill_type="consultation", total=500.0, tax=0.0,
-          subtotal=None, status="paid", item_type=None, item_name="Consult",
+def _bill(db_session, seed_data, *, bill_type="admission", total=500.0, tax=0.0,
+          subtotal=None, status="paid", item_type=None, item_name="Room charge",
           sgst_pct=0.0, cgst_pct=0.0, igst_pct=0.0, tax_percentage=None,
           hsn_sac=None, tax_category=None):
     from app.models.billing import Bill, BillItem, Payment
@@ -240,7 +241,7 @@ class TestBillingHubReports:
 
     def test_sales_summary_all_equals_module_slices(self, client, auth_headers, db_session, seed_data):
         _bill(db_session, seed_data, bill_type="day_care", total=200, item_type="procedure")
-        _bill(db_session, seed_data, bill_type="physiotherapy", total=150, item_type="physiotherapy")
+        _bill(db_session, seed_data, bill_type="catch_up", total=150, item_type="misc")
         r = client.get("/api/hospital/billing/reports/sales-summary", headers=auth_headers)
         assert r.status_code == 200, r.text
         body = r.json()
@@ -257,6 +258,11 @@ class TestBillingHubReports:
 
     def test_ip_pharmacy_not_double_counted(self, client, auth_headers, db_session, seed_data):
         from app.models.billing import Bill, BillItem
+
+        before = client.get("/api/hospital/billing/reports/sales-summary", headers=auth_headers)
+        assert before.status_code == 200, before.text
+        before_mod = {m["module"]: m["billed"] for m in before.json()["by_module"]}
+
         sale, _ = _pharmacy_sale(db_session, seed_data, grand=118, billing_mode="inpatient_bill")
         ts = datetime.now().timestamp()
         bill = Bill(
@@ -288,13 +294,14 @@ class TestBillingHubReports:
         r = client.get("/api/hospital/billing/reports/sales-summary", headers=auth_headers)
         assert r.status_code == 200, r.text
         by_mod = {m["module"]: m["billed"] for m in r.json()["by_module"]}
+        ip_delta = by_mod.get("inpatient", 0) - before_mod.get("inpatient", 0)
+        ph_ip_delta = by_mod.get("pharmacy_ip", 0) - before_mod.get("pharmacy_ip", 0)
         # Inpatient billed excludes pharmacy lines; pharmacy_ip has the POS sale.
-        assert by_mod.get("inpatient", 0) >= 1000
-        assert by_mod.get("inpatient", 0) < 1118
-        assert by_mod.get("pharmacy_ip", 0) >= 118
+        assert ip_delta == pytest.approx(1000.0)
+        assert ph_ip_delta >= 118
         # Pharmacy 118 must not sit on both inpatient and pharmacy_ip.
-        assert by_mod.get("inpatient", 0) + by_mod.get("pharmacy_ip", 0) >= 1118
-        assert by_mod.get("inpatient", 0) + by_mod.get("pharmacy_ip", 0) < 1118 + 118
+        assert ip_delta + ph_ip_delta == pytest.approx(1000.0 + ph_ip_delta)
+        assert ip_delta + ph_ip_delta < 1118 + 118
 
     def test_gst_outward_hsn_matches_sale_snapshot(self, client, auth_headers, db_session, seed_data):
         _pharmacy_sale(db_session, seed_data, grand=118, tax=18, sgst=9, cgst=9)
@@ -367,8 +374,8 @@ class TestBillingHubReports:
         assert all(row["gstin"] for row in body["b2b"]["rows"])
         assert any(row["rate"] == 18 for row in body["b2cs"]["rows"]) or body["b2cs"]["summary"]["taxable_value"] >= 100
 
-    def test_exempt_opd_in_gstr1_table_8_and_3b(self, client, auth_headers, db_session, seed_data):
-        _bill(db_session, seed_data, bill_type="consultation", total=500, item_type="consultation")
+    def test_exempt_inpatient_in_gstr1_table_8_and_3b(self, client, auth_headers, db_session, seed_data):
+        _bill(db_session, seed_data, bill_type="admission", total=500, item_type="room_charge")
         r1 = client.get("/api/hospital/billing/reports/gst/gstr1", headers=auth_headers, params=_period())
         assert r1.status_code == 200, r1.text
         intra_unreg = next(
@@ -423,99 +430,6 @@ class TestBillingHubReports:
         wb = load_workbook(BytesIO(x9.content))
         assert "Table 4 Outward" in wb.sheetnames
 
-    def test_module_config_gstin_on_gst_reports(self, client, auth_headers, db_session, seed_data):
-        from app.models.hospital import Hospital
-        from app.models.permissions import HospitalSettings
-
-        hospital = db_session.query(Hospital).filter_by(id=seed_data["hospital_id"]).first()
-        hospital.gstin = "36HOSP0000H1Z5"
-        db_session.add(HospitalSettings(
-            setting_category="pharmacy_config",
-            setting_key="gst_number",
-            setting_value="36PHARM0000P1Z5",
-            setting_type="string",
-            created_by=seed_data["admin_user_id"],
-        ))
-        db_session.add(HospitalSettings(
-            setting_category="lab_config",
-            setting_key="gst_number",
-            setting_value="36LAB00000L1Z5",
-            setting_type="string",
-            created_by=seed_data["admin_user_id"],
-        ))
-        db_session.commit()
-
-        all_r = client.get("/api/hospital/billing/reports/gst/outward-hsn", headers=auth_headers)
-        assert all_r.status_code == 200, all_r.text
-        all_body = all_r.json()
-        assert all_body["gstin"] == "36HOSP0000H1Z5"
-        by_mod = {g["module"]: g["gstin"] for g in all_body["gstins"]}
-        assert by_mod["hospital"] == "36HOSP0000H1Z5"
-        assert by_mod["pharmacy"] == "36PHARM0000P1Z5"
-        assert by_mod["lab"] == "36LAB00000L1Z5"
-
-        ph = client.get(
-            "/api/hospital/billing/reports/gst/outward-hsn",
-            headers=auth_headers,
-            params={"module": "pharmacy"},
-        )
-        assert ph.status_code == 200, ph.text
-        assert ph.json()["gstin"] == "36PHARM0000P1Z5"
-        assert ph.json()["gstin_source"] == "pharmacy_config"
-
-        lab = client.get(
-            "/api/hospital/billing/reports/gst/exempt",
-            headers=auth_headers,
-            params={"module": "lab"},
-        )
-        assert lab.status_code == 200, lab.text
-        assert lab.json()["gstin"] == "36LAB00000L1Z5"
-        assert lab.json()["gstin_source"] == "lab_config"
-
-        gstr1 = client.get(
-            "/api/hospital/billing/reports/gst/gstr1",
-            headers=auth_headers,
-            params={**_period(), "module": "pharmacy"},
-        )
-        assert gstr1.status_code == 200, gstr1.text
-        assert gstr1.json()["hospital"]["gstin"] == "36PHARM0000P1Z5"
-
-        hosp = client.get(
-            "/api/hospital/billing/reports/gst/gstr1",
-            headers=auth_headers,
-            params={**_period(), "module": "hospital"},
-        )
-        assert hosp.status_code == 200, hosp.text
-        assert hosp.json()["hospital"]["gstin"] == "36HOSP0000H1Z5"
-        assert hosp.json()["hospital"]["module"] == "hospital"
-
-    def test_third_party_without_gstin_stays_blank(self, client, auth_headers, db_session, seed_data):
-        from app.models.hospital import Hospital
-
-        hospital = db_session.query(Hospital).filter_by(id=seed_data["hospital_id"]).first()
-        hospital.gstin = "36HOSP0000H1Z5"
-        _set_module_setting(db_session, seed_data, "lab_config", "provider_name", "Outsourced Diagnostics")
-        _set_module_setting(db_session, seed_data, "lab_config", "gst_number", "")
-        _set_module_setting(db_session, seed_data, "lab_config", "use_hospital_gstin", "false")
-        db_session.commit()
-
-        lab = client.get(
-            "/api/hospital/billing/reports/gst/exempt",
-            headers=auth_headers,
-            params={"module": "lab"},
-        )
-        assert lab.status_code == 200, lab.text
-        assert lab.json()["gstin"] in (None, "")
-        assert lab.json()["gstin_source"] == "none"
-
-        gstr1 = client.get(
-            "/api/hospital/billing/reports/gst/gstr1",
-            headers=auth_headers,
-            params={**_period(), "module": "lab"},
-        )
-        assert gstr1.status_code == 200, gstr1.text
-        assert gstr1.json()["hospital"]["gstin"] in (None, "")
-
     def test_use_hospital_gstin_when_module_has_no_gst(self, client, auth_headers, db_session, seed_data):
         from app.models.hospital import Hospital
 
@@ -554,8 +468,8 @@ class TestBillingHubReports:
         assert ph.json()["gstin"] == "36HOSP0000H1Z5"
         assert ph.json()["gstin_source"] == "hospital"
 
-    def test_gstr1_module_pharmacy_excludes_opd_exempt(self, client, auth_headers, db_session, seed_data):
-        _bill(db_session, seed_data, bill_type="consultation", total=500, item_type="consultation")
+    def test_gstr1_module_pharmacy_excludes_inpatient_exempt(self, client, auth_headers, db_session, seed_data):
+        _bill(db_session, seed_data, bill_type="admission", total=500, item_type="room_charge")
         _pharmacy_sale(db_session, seed_data, gstin=None, grand=118, tax=18, sgst=9, cgst=9)
         params = {**_period(), "module": "pharmacy"}
         r = client.get("/api/hospital/billing/reports/gst/gstr1", headers=auth_headers, params=params)
@@ -565,41 +479,8 @@ class TestBillingHubReports:
         assert body["totals"]["exempt_value"] < 500
         assert body["totals"]["outward_taxable"] >= 100
 
-    def test_gstr1_module_lab_excludes_pharmacy_b2cs(self, client, auth_headers, db_session, seed_data):
-        _pharmacy_sale(db_session, seed_data, gstin=None, grand=118, tax=18, sgst=9, cgst=9)
-        params = {**_period(), "module": "lab"}
-        r = client.get("/api/hospital/billing/reports/gst/gstr1", headers=auth_headers, params=params)
-        assert r.status_code == 200, r.text
-        body = r.json()
-        assert abs(body["totals"]["outward_taxable"]) < 0.05
-        assert not any(abs(float(row.get("rate") or 0) - 18) < 0.05 for row in body["b2cs"]["rows"])
 
-    def test_lab_gst_lines_in_gstr1(self, client, auth_headers, db_session, seed_data):
-        _bill(
-            db_session, seed_data, bill_type="lab", item_type="lab_test", item_name="CBC",
-            total=118, sgst_pct=9, cgst_pct=9, tax_category="taxable", hsn_sac="9987",
-        )
-        params = {**_period(), "module": "lab"}
-        r = client.get("/api/hospital/billing/reports/gst/gstr1", headers=auth_headers, params=params)
-        assert r.status_code == 200, r.text
-        body = r.json()
-        assert body["totals"]["outward_taxable"] >= 99
-        assert body["totals"]["outward_tax"] >= 17
-        assert any(abs(float(row.get("rate") or 0) - 18) < 0.05 for row in body["b2cs"]["rows"])
-        all_r = client.get("/api/hospital/billing/reports/gst/gstr1", headers=auth_headers, params=_period())
-        assert all_r.json()["totals"]["outward_taxable"] >= 99
 
-    def test_gstr2_lab_has_no_pharmacy_itc(self, client, auth_headers, db_session, seed_data):
-        _pharmacy_purchase(db_session, seed_data, qty=1, rate=100, sgst=9, cgst=9)
-        params = {**_period(), "module": "lab"}
-        r = client.get("/api/hospital/billing/reports/gst/gstr2", headers=auth_headers, params=params)
-        assert r.status_code == 200, r.text
-        body = r.json()
-        assert abs(body["itc"]["total"]) < 0.05
-        assert body["inward_note"]
-        r3 = client.get("/api/hospital/billing/reports/gst/gstr3b", headers=auth_headers, params=params)
-        assert r3.status_code == 200, r3.text
-        assert abs(r3.json()["table_4"]["a5_all_other"]["cgst"]) < 0.05
 
     def test_gstr2_pharmacy_ip_does_not_reuse_grn_itc(self, client, auth_headers, db_session, seed_data):
         _pharmacy_purchase(db_session, seed_data, qty=1, rate=100, sgst=9, cgst=9)
@@ -630,36 +511,6 @@ class TestBillingHubReports:
         assert bad.json()["hospital"]["module"] == "all"
         assert abs(good.json()["totals"]["outward_taxable"] - bad.json()["totals"]["outward_taxable"]) < 0.05
 
-    def test_cancelled_bill_excluded_from_gstr1(self, client, auth_headers, db_session, seed_data):
-        params = {**_period(), "module": "lab"}
-        before = client.get("/api/hospital/billing/reports/gst/gstr1", headers=auth_headers, params=params)
-        assert before.status_code == 200, before.text
-        before_tax = before.json()["totals"]["outward_taxable"]
-        _bill(
-            db_session, seed_data, bill_type="lab", item_type="lab_test",
-            total=9999, sgst_pct=9, cgst_pct=9, status="cancelled", tax_category="taxable",
-        )
-        after = client.get("/api/hospital/billing/reports/gst/gstr1", headers=auth_headers, params=params)
-        assert after.status_code == 200, after.text
-        assert abs(after.json()["totals"]["outward_taxable"] - before_tax) < 0.05
-
-    def test_hospital_gst_group_excludes_lab_and_pharmacy(self, client, auth_headers, db_session, seed_data):
-        _bill(db_session, seed_data, bill_type="consultation", total=500, item_type="consultation")
-        _bill(
-            db_session, seed_data, bill_type="lab", item_type="lab_test", item_name="CBC",
-            total=118, sgst_pct=9, cgst_pct=9, tax_category="taxable", hsn_sac="9987",
-        )
-        _pharmacy_sale(db_session, seed_data, gstin=None, grand=118, tax=18, sgst=9, cgst=9)
-        params = {**_period(), "module": "hospital"}
-        r = client.get("/api/hospital/billing/reports/gst/gstr1", headers=auth_headers, params=params)
-        assert r.status_code == 200, r.text
-        body = r.json()
-        assert body["hospital"]["module"] == "hospital"
-        assert body["hospital"]["module_label"] == "Hospital GST"
-        assert body["totals"]["exempt_value"] >= 500
-        assert abs(body["totals"]["outward_taxable"]) < 0.05
-        assert not any(abs(float(row.get("rate") or 0) - 18) < 0.05 for row in body["b2cs"]["rows"])
-
     def test_pharmacy_gst_group_includes_ip_sales(self, client, auth_headers, db_session, seed_data):
         _pharmacy_sale(db_session, seed_data, gstin=None, grand=118, tax=18, sgst=9, cgst=9,
                        billing_mode="inpatient_bill")
@@ -685,7 +536,7 @@ class TestBillingHubReports:
     def test_gst_reports_excel_and_pdf_export(self, client, auth_headers, db_session, seed_data):
         _pharmacy_sale(db_session, seed_data, gstin="36AAAAA0000A1Z5")
         _pharmacy_sale(db_session, seed_data, gstin=None)
-        _bill(db_session, seed_data, bill_type="consultation", total=500, item_type="consultation")
+        _bill(db_session, seed_data, bill_type="admission", total=500, item_type="room_charge")
 
         cases = [
             ("/api/hospital/billing/reports/gst/outward-hsn", ["Outward HSN"]),
