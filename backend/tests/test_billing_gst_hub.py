@@ -320,6 +320,19 @@ class TestBillingHubReports:
         assert r.status_code == 200, r.text
         assert "totals" in r.json()
 
+    def test_line_gst_rate_does_not_double_count_igst(self):
+        """HSN snapshots store IGST = SGST+CGST; rate columns must not add both."""
+        from types import SimpleNamespace
+        from app.services.gst_report_service import _line_gst_rate
+
+        # Typical local HSN snapshot: 9+9 with IGST mirror 18
+        assert _line_gst_rate(SimpleNamespace(sgst_pct=9, cgst_pct=9, igst_pct=18)) == 18
+        # Interstate-only line (no SGST/CGST halves)
+        assert _line_gst_rate(SimpleNamespace(sgst_pct=0, cgst_pct=0, igst_pct=12)) == 12
+        # Legacy single tax_pct
+        assert _line_gst_rate(SimpleNamespace(sgst_pct=0, cgst_pct=0, igst_pct=0, tax_pct=5)) == 5
+        assert _line_gst_rate(SimpleNamespace(sgst_pct=0, cgst_pct=0, igst_pct=0)) == 0
+
     def test_excel_pack_has_module_and_gstr_sheets(self, client, auth_headers, db_session, seed_data):
         _bill(db_session, seed_data, bill_type="day_care", total=250)
         _pharmacy_sale(db_session, seed_data, gstin="29BBBBB0000B1Z5")

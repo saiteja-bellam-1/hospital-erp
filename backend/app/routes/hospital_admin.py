@@ -1489,60 +1489,266 @@ class CancelBillRequest(BaseModel):
     reason: str = Field(..., min_length=1, max_length=500)
 
 
+_LEDGER_CANCEL_TYPES = frozenset({
+    "day_care", "consolidated", "catch_up", "canteen", "physiotherapy",
+    "pharmacy", "consultation", "misc", "procedure",
+})
+
+
+def _cancel_ledger_bill(
+    db: Session,
+    *,
+    bill: Bill,
+    reason: str,
+    user: User,
+) -> str:
+    """Soft-cancel a Bill-table invoice and release linked source rows.
+
+    Blocks when payments have been recorded (refund / credit-note first),
+    matching admission-bill cancel policy.
+    """
+    if bill.bill_type == "credit_note":
+        raise HTTPException(status_code=400, detail="Credit notes cannot be cancelled")
+    if bill.status == "cancelled":
+        raise HTTPException(status_code=400, detail="Bill is already cancelled")
+
+    paid = sum(float(p.amount_paid or 0) for p in (bill.payments or []))
+    if paid > 0:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "bill_has_payments",
+                "message": "Cannot cancel a bill with recorded payments. Issue a refund or credit note first.",
+                "amount_paid": round(paid, 2),
+            },
+        )
+
+    if bill.bill_type == "admission":
+        raise HTTPException(
+            status_code=400,
+            detail="Cancel admission bills via the inpatient admission bill cancel endpoint",
+        )
+
+    # Consolidated: restore source consult / lab rows so they can be re-billed.
+    if bill.bill_type == "consolidated":
+        items = db.query(BillItem).filter(BillItem.bill_id == bill.id).all()
+        for it in items:
+            code = (it.item_code or "").strip()
+            if code.startswith("APT-"):
+                try:
+                    aid = int(code.split("-", 1)[1])
+                except (ValueError, IndexError):
+                    continue
+                apt = db.query(Appointment).filter(Appointment.id == aid).first()
+                if apt and (apt.payment_status or "") == "consolidated":
+                    apt.payment_status = "pending"
+            elif code.startswith("LAB-"):
+                try:
+                    lid = int(code.split("-", 1)[1])
+                except (ValueError, IndexError):
+                    continue
+                order = db.query(PatientLabOrder).filter(PatientLabOrder.id == lid).first()
+                if order and (order.payment_status or "") == "consolidated":
+                    order.payment_status = "pending"
+
+    # Physiotherapy: clear bill links; block package cancel if sessions used.
+    if bill.bill_type == "physiotherapy":
+        from app.models.physiotherapy import PhysioAppointment, PhysioPatientPackage
+
+        pkgs = db.query(PhysioPatientPackage).filter(
+            PhysioPatientPackage.bill_id == bill.id
+        ).all()
+        for pkg in pkgs:
+            used = int(pkg.sessions_total or 0) - int(pkg.sessions_remaining or 0)
+            if used > 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Cannot cancel — package '{pkg.name}' already used "
+                        f"{used} session(s). Refund remaining sessions from Physiotherapy first."
+                    ),
+                )
+            pkg.status = "refunded"
+            pkg.bill_id = None
+
+        db.query(PhysioAppointment).filter(
+            PhysioAppointment.bill_id == bill.id
+        ).update({PhysioAppointment.bill_id: None}, synchronize_session=False)
+
+    # Canteen orders attached to this ledger bill become re-billable.
+    if bill.bill_type in ("canteen", "catch_up"):
+        try:
+            from app.models.canteen import CanteenOrder
+            db.query(CanteenOrder).filter(CanteenOrder.bill_id == bill.id).update(
+                {CanteenOrder.billed: False, CanteenOrder.bill_id: None},
+                synchronize_session=False,
+            )
+        except Exception:
+            pass
+
+    bill.status = "cancelled"
+    cancel_note = (
+        f"[CANCELLED by user {user.id} on {datetime.now().isoformat()}]: {reason}"
+    )
+    bill.notes = (bill.notes + "\n" if bill.notes else "") + cancel_note
+    return f"Bill {bill.bill_number}"
+
+
+def _cancel_lab_orders(orders, reason: str, user_id: int) -> str:
+    """Mark one or more lab order payment rows as cancelled."""
+    if not orders:
+        raise HTTPException(status_code=404, detail="Lab order not found")
+    if all((o.payment_status or "") == "cancelled" for o in orders):
+        raise HTTPException(status_code=400, detail="Bill is already cancelled")
+    now = datetime.now()
+    for record in orders:
+        if (record.payment_status or "") == "cancelled":
+            continue
+        record.payment_status = "cancelled"
+        record.bill_cancelled_reason = reason
+        record.bill_cancelled_by = user_id
+        record.bill_cancelled_at = now
+    if len(orders) == 1:
+        return f"Lab order {orders[0].order_number}"
+    gid = getattr(orders[0], "lab_bill_group_id", None) or orders[0].id
+    return f"Lab bill group {gid} ({len(orders)} orders)"
+
+
 @router.post("/billing/cancel/{bill_type}/{bill_id}")
 async def cancel_bill(
     bill_type: str,
     bill_id: int,
     data: CancelBillRequest,
+    lab_bill_group_id: Optional[str] = Query(None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Cancel a bill (appointment or lab order). Sets payment_status to 'cancelled'."""
+    """Cancel a bill across modules.
+
+    Supports: consultation (appointment or CU ledger), lab (single or group),
+    pharmacy ledger catch-up, physiotherapy, day_care, consolidated, canteen,
+    catch_up. Pharmacy POS sales must be voided via ``/api/pharmacy/sales/{id}/void``
+    (stock restore). Admission bills use the inpatient cancel endpoint.
+    """
     if not any(r in current_user.role_names for r in ['super_admin', 'hospital_admin']):
         raise HTTPException(status_code=403, detail="Only admins can cancel bills")
 
-    from datetime import datetime
+    hospital_id = current_user.hospital_id
+    label = None
 
     if bill_type == "consultation":
-        record = db.query(Appointment).join(Patient).filter(
-            Appointment.id == bill_id,
-            Patient.hospital_id == current_user.hospital_id
+        # Catch-up / CU consultation bills live on the Bill table.
+        bill = db.query(Bill).join(Patient, Bill.patient_id == Patient.id).filter(
+            Bill.id == bill_id,
+            Patient.hospital_id == hospital_id,
+            Bill.bill_type == "consultation",
         ).first()
-        if not record:
-            raise HTTPException(status_code=404, detail="Appointment not found")
-        if record.payment_status == "cancelled":
-            raise HTTPException(status_code=400, detail="Bill is already cancelled")
-        record.payment_status = "cancelled"
-        record.bill_cancelled_reason = data.reason
-        record.bill_cancelled_by = current_user.id
-        record.bill_cancelled_at = datetime.now()
-        label = f"Appointment {record.appointment_number}"
+        if bill:
+            label = _cancel_ledger_bill(db, bill=bill, reason=data.reason, user=current_user)
+        else:
+            record = db.query(Appointment).join(Patient).filter(
+                Appointment.id == bill_id,
+                Patient.hospital_id == hospital_id,
+            ).first()
+            if not record:
+                raise HTTPException(status_code=404, detail="Appointment not found")
+            if record.payment_status == "cancelled":
+                raise HTTPException(status_code=400, detail="Bill is already cancelled")
+            if (record.payment_status or "") == "consolidated":
+                raise HTTPException(
+                    status_code=400,
+                    detail="This consultation is on a consolidated bill; cancel that bill instead",
+                )
+            record.payment_status = "cancelled"
+            record.bill_cancelled_reason = data.reason
+            record.bill_cancelled_by = current_user.id
+            record.bill_cancelled_at = datetime.now()
+            label = f"Appointment {record.appointment_number}"
 
     elif bill_type == "lab":
-        record = db.query(PatientLabOrder).join(Patient).filter(
-            PatientLabOrder.id == bill_id,
-            Patient.hospital_id == current_user.hospital_id
+        if lab_bill_group_id:
+            orders = db.query(PatientLabOrder).join(Patient).filter(
+                PatientLabOrder.lab_bill_group_id == lab_bill_group_id,
+                Patient.hospital_id == hospital_id,
+            ).all()
+            label = _cancel_lab_orders(orders, data.reason, current_user.id)
+        else:
+            record = db.query(PatientLabOrder).join(Patient).filter(
+                PatientLabOrder.id == bill_id,
+                Patient.hospital_id == hospital_id,
+            ).first()
+            if not record:
+                raise HTTPException(status_code=404, detail="Lab order not found")
+            if (record.payment_status or "") == "consolidated":
+                raise HTTPException(
+                    status_code=400,
+                    detail="This lab bill is on a consolidated bill; cancel that bill instead",
+                )
+            # Prefer cancelling the whole bill group when present.
+            gid = getattr(record, "lab_bill_group_id", None)
+            if gid:
+                orders = db.query(PatientLabOrder).join(Patient).filter(
+                    PatientLabOrder.lab_bill_group_id == gid,
+                    Patient.hospital_id == hospital_id,
+                ).all()
+                label = _cancel_lab_orders(orders, data.reason, current_user.id)
+            else:
+                label = _cancel_lab_orders([record], data.reason, current_user.id)
+
+    elif bill_type == "pharmacy":
+        # Catch-up / ledger pharmacy bills on Bill table; POS sales void elsewhere.
+        bill = db.query(Bill).join(Patient, Bill.patient_id == Patient.id).filter(
+            Bill.id == bill_id,
+            Patient.hospital_id == hospital_id,
+            Bill.bill_type.in_(("pharmacy", "catch_up")),
         ).first()
-        if not record:
-            raise HTTPException(status_code=404, detail="Lab order not found")
-        if record.payment_status == "cancelled":
-            raise HTTPException(status_code=400, detail="Bill is already cancelled")
-        record.payment_status = "cancelled"
-        record.bill_cancelled_reason = data.reason
-        record.bill_cancelled_by = current_user.id
-        record.bill_cancelled_at = datetime.now()
-        label = f"Lab order {record.order_number}"
+        if bill:
+            label = _cancel_ledger_bill(db, bill=bill, reason=data.reason, user=current_user)
+        else:
+            sale = db.query(PharmacySale).filter(
+                PharmacySale.id == bill_id,
+                PharmacySale.hospital_id == hospital_id,
+            ).first()
+            if not sale:
+                raise HTTPException(status_code=404, detail="Pharmacy bill not found")
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Pharmacy counter sales must be voided (not soft-cancelled) so stock "
+                    "is restored. Use Cancel from Billing — the client calls the pharmacy void API."
+                ),
+            )
+
+    elif bill_type in _LEDGER_CANCEL_TYPES or bill_type == "admission":
+        bill = db.query(Bill).join(Patient, Bill.patient_id == Patient.id).filter(
+            Bill.id == bill_id,
+            Patient.hospital_id == hospital_id,
+        ).first()
+        if not bill:
+            raise HTTPException(status_code=404, detail="Bill not found")
+        label = _cancel_ledger_bill(db, bill=bill, reason=data.reason, user=current_user)
+
     else:
-        raise HTTPException(status_code=400, detail="Invalid bill type. Use 'consultation' or 'lab'.")
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Invalid bill type. Use consultation, lab, pharmacy, physiotherapy, "
+                "day_care, consolidated, catch_up, or canteen."
+            ),
+        )
 
     db.commit()
 
-    # Audit log
     try:
         from app.services.audit_service import log_action
         log_action(db, current_user, "cancel_bill", "billing", bill_type, bill_id,
             f"Cancelled bill for {label}: {data.reason}",
-            details={"bill_type": bill_type, "bill_id": bill_id, "reason": data.reason})
+            details={
+                "bill_type": bill_type,
+                "bill_id": bill_id,
+                "reason": data.reason,
+                "lab_bill_group_id": lab_bill_group_id,
+            })
     except Exception:
         pass
 

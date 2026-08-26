@@ -15,6 +15,16 @@ export function isPharmacyPosBill(bill) {
 export function canEditBill(bill) {
   if (!bill || !bill.bill_id) return false;
   if (bill.payment_status === 'cancelled') return false;
+  if (bill.type === 'credit_note') return false;
+  return true;
+}
+
+/** Whether Billing Management may show Cancel / Void for this row. */
+export function canCancelBill(bill) {
+  if (!bill || !bill.bill_id) return false;
+  if (bill.payment_status === 'cancelled') return false;
+  if (bill.type === 'credit_note') return false;
+  if (bill.type === 'admission') return Boolean(bill.admission_id);
   return true;
 }
 

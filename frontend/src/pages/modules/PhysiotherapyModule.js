@@ -290,7 +290,16 @@ function CatalogPage() {
           </div>
         )}
       </CardContent>
-      <Dialog open={open} onOpenChange={setOpen}>
+      <Dialog
+        open={open}
+        onOpenChange={(o) => {
+          setOpen(o);
+          if (!o) {
+            setEditing(null);
+            setForm({ name: '', code: '', default_price: '', duration_minutes: 30, description: '', is_active: true });
+          }
+        }}
+      >
         <DialogContent>
           <DialogHeader><DialogTitle>{editing ? 'Edit service' : 'New service'}</DialogTitle></DialogHeader>
           <div className="space-y-3">
@@ -301,6 +310,19 @@ function CatalogPage() {
               <div><Label>Duration (min)</Label><Input type="number" value={form.duration_minutes} onChange={(e) => setForm({ ...form, duration_minutes: e.target.value })} /></div>
             </div>
             <div><Label>Description</Label><Textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></div>
+            <div>
+              <Label>Status</Label>
+              <Select
+                value={form.is_active ? 'active' : 'inactive'}
+                onValueChange={(v) => setForm({ ...form, is_active: v === 'active' })}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="active">Active</SelectItem>
+                  <SelectItem value="inactive">Inactive</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
           <DialogFooter>
             <Button onClick={save}>Save</Button>
@@ -311,6 +333,10 @@ function CatalogPage() {
   );
 }
 
+const EMPTY_TEMPLATE_FORM = {
+  name: '', service_id: '', session_count: 10, price: '', validity_days: 90, description: '', is_active: true,
+};
+
 function PackagesPage() {
   const { toast } = useToast();
   const { canPackages, canSchedule } = usePhysioRoles();
@@ -319,11 +345,10 @@ function PackagesPage() {
   const [services, setServices] = useState([]);
   const [therapists, setTherapists] = useState([]);
   const [tmplOpen, setTmplOpen] = useState(false);
+  const [editingTemplate, setEditingTemplate] = useState(null);
   const [bookOpen, setBookOpen] = useState(false);
   const [bookPrefill, setBookPrefill] = useState({ package: null, patient: null });
-  const [tmplForm, setTmplForm] = useState({
-    name: '', service_id: '', session_count: 10, price: '', validity_days: 90, description: '', is_active: true,
-  });
+  const [tmplForm, setTmplForm] = useState({ ...EMPTY_TEMPLATE_FORM });
 
   const load = useCallback(async () => {
     try {
@@ -344,6 +369,26 @@ function PackagesPage() {
 
   useEffect(() => { load(); }, [load]);
 
+  const openNewTemplate = () => {
+    setEditingTemplate(null);
+    setTmplForm({ ...EMPTY_TEMPLATE_FORM });
+    setTmplOpen(true);
+  };
+
+  const openEditTemplate = (t) => {
+    setEditingTemplate(t);
+    setTmplForm({
+      name: t.name || '',
+      service_id: t.service_id ? String(t.service_id) : '',
+      session_count: t.session_count,
+      price: String(t.price ?? ''),
+      validity_days: t.validity_days,
+      description: t.description || '',
+      is_active: t.is_active !== false,
+    });
+    setTmplOpen(true);
+  };
+
   const openBookFromPackage = (pkg) => {
     setBookPrefill({
       package: pkg,
@@ -358,16 +403,22 @@ function PackagesPage() {
   };
   const saveTemplate = async () => {
     try {
-      await axios.post('/api/physiotherapy/package-templates', {
+      const payload = {
         ...tmplForm,
         service_id: tmplForm.service_id ? Number(tmplForm.service_id) : null,
         session_count: Number(tmplForm.session_count),
         price: Number(tmplForm.price || 0),
         validity_days: Number(tmplForm.validity_days),
-      });
+      };
+      if (editingTemplate) {
+        await axios.patch(`/api/physiotherapy/package-templates/${editingTemplate.id}`, payload);
+      } else {
+        await axios.post('/api/physiotherapy/package-templates', payload);
+      }
       setTmplOpen(false);
+      setEditingTemplate(null);
       load();
-      toast({ title: 'Package template created' });
+      toast({ title: editingTemplate ? 'Package template updated' : 'Package template created' });
     } catch (e) {
       toast({ title: 'Failed', description: errMsg(e), variant: 'destructive' });
     }
@@ -379,14 +430,20 @@ function PackagesPage() {
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle>Package templates</CardTitle>
           {canPackages && (
-            <Button size="sm" onClick={() => setTmplOpen(true)}><Plus className="h-4 w-4 mr-1" /> Template</Button>
+            <Button size="sm" onClick={openNewTemplate}><Plus className="h-4 w-4 mr-1" /> Template</Button>
           )}
         </CardHeader>
         <CardContent>
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left border-b">
-                <th className="py-2">Name</th><th>Service</th><th>Sessions</th><th>Price</th><th>Validity</th>
+                <th className="py-2">Name</th>
+                <th>Service</th>
+                <th>Sessions</th>
+                <th>Price</th>
+                <th>Validity</th>
+                <th>Status</th>
+                {canPackages && <th />}
               </tr>
             </thead>
             <tbody>
@@ -397,6 +454,16 @@ function PackagesPage() {
                   <td>{t.session_count}</td>
                   <td>{fmt(t.price)}</td>
                   <td>{t.validity_days} days</td>
+                  <td>
+                    <Badge variant="outline" className={t.is_active !== false ? 'text-green-700' : 'text-gray-500'}>
+                      {t.is_active !== false ? 'Active' : 'Inactive'}
+                    </Badge>
+                  </td>
+                  {canPackages && (
+                    <td>
+                      <Button variant="ghost" size="sm" onClick={() => openEditTemplate(t)}>Edit</Button>
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
@@ -447,9 +514,20 @@ function PackagesPage() {
         initialPatient={bookPrefill.patient}
       />
 
-      <Dialog open={tmplOpen} onOpenChange={setTmplOpen}>
+      <Dialog
+        open={tmplOpen}
+        onOpenChange={(o) => {
+          setTmplOpen(o);
+          if (!o) {
+            setEditingTemplate(null);
+            setTmplForm({ ...EMPTY_TEMPLATE_FORM });
+          }
+        }}
+      >
         <DialogContent>
-          <DialogHeader><DialogTitle>New package template</DialogTitle></DialogHeader>
+          <DialogHeader>
+            <DialogTitle>{editingTemplate ? 'Edit package template' : 'New package template'}</DialogTitle>
+          </DialogHeader>
           <div className="space-y-3">
             <div><Label>Name</Label><Input value={tmplForm.name} onChange={(e) => setTmplForm({ ...tmplForm, name: e.target.value })} /></div>
             <div>
@@ -467,8 +545,27 @@ function PackagesPage() {
               <div><Label>Price</Label><Input type="number" value={tmplForm.price} onChange={(e) => setTmplForm({ ...tmplForm, price: e.target.value })} /></div>
               <div><Label>Validity days</Label><Input type="number" value={tmplForm.validity_days} onChange={(e) => setTmplForm({ ...tmplForm, validity_days: e.target.value })} /></div>
             </div>
+            <div>
+              <Label>Description</Label>
+              <Textarea value={tmplForm.description} onChange={(e) => setTmplForm({ ...tmplForm, description: e.target.value })} />
+            </div>
+            <div>
+              <Label>Status</Label>
+              <Select
+                value={tmplForm.is_active ? 'active' : 'inactive'}
+                onValueChange={(v) => setTmplForm({ ...tmplForm, is_active: v === 'active' })}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="active">Active</SelectItem>
+                  <SelectItem value="inactive">Inactive</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
-          <DialogFooter><Button onClick={saveTemplate}>Create</Button></DialogFooter>
+          <DialogFooter>
+            <Button onClick={saveTemplate}>{editingTemplate ? 'Save' : 'Create'}</Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

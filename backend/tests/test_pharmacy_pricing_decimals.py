@@ -89,3 +89,56 @@ def test_purchase_line_prices_rounded(client, auth_headers, db_session, seed_dat
     assert item["mrp"] == 26.0
     assert item["purchase_rate"] == 18.88
     assert item["discount_pct"] == 5.55
+
+
+def _make_category(db_session, hospital_id):
+    from app.models.pharmacy import MedicineCategory
+    cat = MedicineCategory(name=f"Cat-{uuid.uuid4().hex[:6]}", hospital_id=hospital_id)
+    db_session.add(cat)
+    db_session.commit()
+    return cat
+
+
+def test_medicine_code_unique_on_create(client, auth_headers, db_session, seed_data):
+    cat = _make_category(db_session, seed_data["hospital_id"])
+    code = f"UQ{uuid.uuid4().hex[:6]}"
+    payload = {
+        "medicine_code": code,
+        "name": "Unique Med",
+        "category_id": cat.id,
+        "mrp": 10,
+        "rate_a": 10,
+    }
+    assert client.post("/api/pharmacy/medicines", headers=auth_headers, json=payload).status_code == 201
+    dup = client.post(
+        "/api/pharmacy/medicines",
+        headers=auth_headers,
+        json={**payload, "medicine_code": code.lower(), "name": "Other"},
+    )
+    assert dup.status_code == 400
+    assert "already exists" in dup.json()["detail"].lower()
+
+
+def test_medicine_code_unique_on_update(client, auth_headers, db_session, seed_data):
+    cat = _make_category(db_session, seed_data["hospital_id"])
+    code_a = f"UA{uuid.uuid4().hex[:6]}"
+    code_b = f"UB{uuid.uuid4().hex[:6]}"
+    base = {"category_id": cat.id, "mrp": 10, "rate_a": 10}
+    a = client.post(
+        "/api/pharmacy/medicines",
+        headers=auth_headers,
+        json={**base, "medicine_code": code_a, "name": "Med A"},
+    )
+    b = client.post(
+        "/api/pharmacy/medicines",
+        headers=auth_headers,
+        json={**base, "medicine_code": code_b, "name": "Med B"},
+    )
+    assert a.status_code == 201 and b.status_code == 201
+    steal = client.put(
+        f"/api/pharmacy/medicines/{b.json()['id']}",
+        headers=auth_headers,
+        json={**base, "medicine_code": code_a, "name": "Med B"},
+    )
+    assert steal.status_code == 400
+    assert "already exists" in steal.json()["detail"].lower()

@@ -135,14 +135,19 @@ def _rate_label_from_pcts(rates) -> str:
 
 
 def _line_gst_rate(item) -> float:
-    """Combined GST % from a sale/purchase/bill line (snapshot or legacy)."""
-    snap = (
-        float(getattr(item, "sgst_pct", 0) or 0)
-        + float(getattr(item, "cgst_pct", 0) or 0)
-        + float(getattr(item, "igst_pct", 0) or 0)
-    )
-    if snap > 0:
-        return snap
+    """Total GST % for rate-column bucketing (snapshot or legacy).
+
+    HSN / purchase / sale lines store IGST as the interstate *alternative*
+    (SGST+CGST), not an additive third component. Prefer CGST+SGST; use IGST
+    only when both halves are zero — same rule as split_gst_amounts / billing.
+    """
+    sgst = float(getattr(item, "sgst_pct", 0) or 0)
+    cgst = float(getattr(item, "cgst_pct", 0) or 0)
+    igst = float(getattr(item, "igst_pct", 0) or 0)
+    if sgst or cgst:
+        return sgst + cgst
+    if igst > 0:
+        return igst
     for attr in ("tax_pct", "tax_percentage"):
         v = getattr(item, attr, None)
         if v is not None and float(v or 0) > 0:

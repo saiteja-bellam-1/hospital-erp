@@ -19,7 +19,7 @@ import {
 import { printPdfFromUrl } from '../../utils/printPdf';
 import PdfPreviewDialog from '../../components/PdfPreviewDialog';
 import PatientSearchPicker from '../../components/PatientSearchPicker';
-import EditBillDialog, { canEditBill, isPharmacyPosBill } from '../../components/billing/EditBillDialog';
+import EditBillDialog, { canEditBill, canCancelBill, isPharmacyPosBill } from '../../components/billing/EditBillDialog';
 import { localDateString, localDateStringOffset, localWeekStart, localMonthStart, localLastMonthRange } from '../../utils/localDate';
 import {
   DropdownMenu,
@@ -247,10 +247,21 @@ const BillingModule = () => {
           `/api/inpatient/admissions/${cancelBill.admission_id}/bills/${cancelBill.bill_id}/cancel`,
           { reason: cancelReason.trim() }
         );
-      } else {
-        await axios.post(`/api/hospital/billing/cancel/${cancelBill.type}/${cancelBill.bill_id}`, {
+      } else if (isPharmacyPosBill(cancelBill)) {
+        // POS sales must void (stock restore), not soft-cancel.
+        await axios.post(`/api/pharmacy/sales/${cancelBill.bill_id}/void`, {
           reason: cancelReason.trim()
         });
+      } else {
+        const params = new URLSearchParams();
+        if (cancelBill.type === 'lab' && cancelBill.lab_bill_group_id) {
+          params.set('lab_bill_group_id', cancelBill.lab_bill_group_id);
+        }
+        const qs = params.toString() ? `?${params.toString()}` : '';
+        await axios.post(
+          `/api/hospital/billing/cancel/${cancelBill.type}/${cancelBill.bill_id}${qs}`,
+          { reason: cancelReason.trim() }
+        );
       }
       setCancelBill(null);
       setCancelReason('');
@@ -1010,19 +1021,15 @@ const BillingModule = () => {
                                     <Printer className="w-3 h-3" />
                                   </Button>
                                 )}
-                                {/* Cancel: admission allowed any non-cancelled state (backend blocks if paid);
-                                    consultation/lab keep prior guard */}
-                                {bill.payment_status !== 'cancelled' && (
-                                  bill.type === 'admission'
-                                    ? bill.admission_id
-                                    : bill.type !== 'pharmacy' && bill.payment_status !== 'pending'
-                                ) && (
+                                {/* Cancel / void — all modules; backend blocks paid ledger bills */}
+                                {canCancelBill(bill) && (
                                   <Button size="sm" variant="ghost" className="h-6 text-[10px] text-red-500 hover:text-red-700 hover:bg-red-50 px-2"
-                                    onClick={() => { setCancelBill(bill); setCancelReason(''); }}>
+                                    onClick={() => { setCancelBill(bill); setCancelReason(''); }}
+                                    title={isPharmacyPosBill(bill) ? 'Void pharmacy sale' : 'Cancel bill'}>
                                     <Ban className="w-3 h-3" />
                                   </Button>
                                 )}
-                                {bill.payment_status === 'cancelled' && bill.bill_id && (
+                                {(bill.payment_status === 'cancelled') && bill.bill_id && (
                                   <Button size="sm" variant="ghost" className="h-6 text-[10px] text-red-600 hover:text-red-800 hover:bg-red-50 px-2"
                                     onClick={() => setDeleteBill(bill)}
                                     title="Delete cancelled bill">
@@ -1234,6 +1241,12 @@ const BillingModule = () => {
                     <Pencil className="h-4 w-4 mr-1" /> Edit Bill
                   </Button>
                 )}
+                {canCancelBill(detailBill) && (
+                  <Button variant="outline" size="sm" className="text-red-600 border-red-300 hover:bg-red-50"
+                    onClick={() => { setCancelBill(detailBill); setCancelReason(''); }}>
+                    <Ban className="h-4 w-4 mr-1" /> Cancel Bill
+                  </Button>
+                )}
                 {detailData.status !== 'cancelled' && detailData.amount_paid === 0 && (
                   <>
                     <Button variant="outline" size="sm" onClick={() => openAdjustDialog('discount')}>
@@ -1373,7 +1386,8 @@ const BillingModule = () => {
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <Ban className="h-5 w-5 text-red-500" /> Cancel Bill
+              <Ban className="h-5 w-5 text-red-500" />
+              {cancelBill && isPharmacyPosBill(cancelBill) ? 'Void Pharmacy Sale' : 'Cancel Bill'}
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
@@ -1392,7 +1406,9 @@ const BillingModule = () => {
             <div className="flex justify-end gap-2 pt-2 border-t">
               <Button variant="outline" onClick={() => setCancelBill(null)}>Close</Button>
               <Button variant="destructive" disabled={cancelling || !cancelReason.trim()} onClick={handleCancelBill}>
-                {cancelling ? 'Cancelling...' : 'Cancel Bill'}
+                {cancelling
+                  ? (cancelBill && isPharmacyPosBill(cancelBill) ? 'Voiding...' : 'Cancelling...')
+                  : (cancelBill && isPharmacyPosBill(cancelBill) ? 'Void Sale' : 'Cancel Bill')}
               </Button>
             </div>
           </div>

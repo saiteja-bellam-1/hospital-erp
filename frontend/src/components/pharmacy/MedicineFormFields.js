@@ -47,6 +47,9 @@ export function patchMedicineForm(prev, patch) {
 
 export function prepareMedicinePayload(form) {
   const payload = { ...form, cost_pcs: costPcsFromMrp(form) };
+  if (typeof payload.medicine_code === 'string') {
+    payload.medicine_code = payload.medicine_code.trim();
+  }
   ['category_id', 'company_id', 'rack_id', 'salt_id', 'uom_id', 'hsn_id'].forEach((k) => {
     if (payload[k] === '' || payload[k] === undefined) payload[k] = null;
   });
@@ -136,7 +139,10 @@ export default function MedicineFormFields({
       {activeStep === 0 && (
         <Section title="Basic">
           <Grid>
-            <F label="Code *"><Input value={form.medicine_code} onChange={(e) => set('medicine_code', e.target.value)} /></F>
+            <F label="Code *">
+              <Input value={form.medicine_code} onChange={(e) => set('medicine_code', e.target.value)} />
+              <p className="text-[10px] text-gray-500 mt-0.5">Must be unique for each medicine</p>
+            </F>
             <F label="Name *">
               <Input
                 value={form.name}
@@ -172,10 +178,6 @@ export default function MedicineFormFields({
                 placeholder="(none)" allowEmpty
                 format={(u) => `${u.name}${u.abbreviation ? ` (${u.abbreviation})` : ''}`} />
             </F>
-            <F label="Dosage Form"><Input value={form.dosage_form || ''} onChange={(e) => set('dosage_form', e.target.value)} placeholder="tablet / syrup / inj" /></F>
-            <F label="Strength"><Input value={form.strength || ''} onChange={(e) => set('strength', e.target.value)} placeholder="500mg" /></F>
-            <F label="Barcode"><Input value={form.barcode || ''} onChange={(e) => set('barcode', e.target.value)} /></F>
-            <F label="Packaging (display only)"><Input value={form.packaging || ''} onChange={(e) => set('packaging', e.target.value)} placeholder="e.g. box of 10 strips" /></F>
             <F label="Tablets per strip (sheet)">
               <Input
                 className={pharmacyNoSpinInputClass}
@@ -188,6 +190,10 @@ export default function MedicineFormFields({
               />
               <p className="text-[10px] text-gray-500 mt-0.5">Tabs in one strip. MRP and Rate A/B are per strip; cost/tab = MRP ÷ this number.</p>
             </F>
+            <F label="Strength"><Input value={form.strength || ''} onChange={(e) => set('strength', e.target.value)} placeholder="500mg" /></F>
+            <F label="Barcode"><Input value={form.barcode || ''} onChange={(e) => set('barcode', e.target.value)} /></F>
+            <F label="Packaging (display only)"><Input value={form.packaging || ''} onChange={(e) => set('packaging', e.target.value)} placeholder="e.g. box of 10 strips" /></F>
+            <F label="Dosage Form"><Input value={form.dosage_form || ''} onChange={(e) => set('dosage_form', e.target.value)} placeholder="tablet / syrup / inj" /></F>
             <F label="Decimal supported">
               <Check checked={form.decimal_supported} onChange={(v) => set('decimal_supported', v)} />
             </F>

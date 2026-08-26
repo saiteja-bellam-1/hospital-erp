@@ -97,6 +97,16 @@ export default function MedicinesTab() {
       setActiveStep(0);
       return;
     }
+    const code = (form.medicine_code || '').trim().toLowerCase();
+    const codeTaken = rows.some(
+      (m) => m.is_active && m.medicine_code?.trim().toLowerCase() === code
+        && (!editing || m.id !== editing.id),
+    );
+    if (codeTaken) {
+      toast({ variant: 'destructive', title: 'Medicine code already exists' });
+      setActiveStep(0);
+      return;
+    }
     setSaving(true);
     try {
       const payload = prepareMedicinePayload(form);

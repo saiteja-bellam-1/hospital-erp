@@ -15,7 +15,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import or_
+from sqlalchemy import func as sa_func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -48,7 +48,6 @@ from app.models.pharmacy import (
     Prescription,
     PrescriptionItem,
 )
-from sqlalchemy import func as sa_func
 from app.utils.auth import Modules
 from app.utils.dependencies import get_current_user, require_feature_permission, require_feature_permission_any
 from app.services.audit_service import log_action
@@ -298,6 +297,28 @@ def _store_label(db: Session, store_id: Optional[int]) -> Optional[str]:
 def _ensure_active_or_404(obj, what: str):
     if not obj:
         raise HTTPException(status_code=404, detail=f"{what} not found")
+
+
+def _ensure_unique_medicine_code(
+    db: Session,
+    hospital_id: int,
+    medicine_code: str,
+    *,
+    exclude_id: Optional[int] = None,
+) -> None:
+    """Reject duplicate medicine_code per hospital (case-insensitive among active items)."""
+    code = (medicine_code or "").strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="Medicine code is required")
+    q = db.query(Medicine).filter(
+        Medicine.hospital_id == hospital_id,
+        Medicine.is_active == True,  # noqa: E712
+        sa_func.lower(Medicine.medicine_code) == code.lower(),
+    )
+    if exclude_id is not None:
+        q = q.filter(Medicine.id != exclude_id)
+    if q.first():
+        raise HTTPException(status_code=400, detail="Medicine code already exists")
 
 
 # ============================================================================
@@ -667,6 +688,13 @@ class MedicineIn(BaseModel):
             return 0.0
         return round_money(v)
 
+    @field_validator("medicine_code", mode="before")
+    @classmethod
+    def _trim_medicine_code(cls, v):
+        if v is None:
+            return v
+        return str(v).strip()
+
 
 class MedicineOut(MedicineIn):
     id: int
@@ -927,14 +955,7 @@ def create_medicine(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "manage_medicines")),
 ):
-    # Uniqueness on medicine_code per hospital
-    dup = db.query(Medicine).filter(
-        Medicine.medicine_code == data.medicine_code,
-        Medicine.hospital_id == current_user.hospital_id,
-        Medicine.is_active == True,  # noqa: E712
-    ).first()
-    if dup:
-        raise HTTPException(status_code=400, detail="Medicine code already exists")
+    _ensure_unique_medicine_code(db, current_user.hospital_id, data.medicine_code)
 
     row = Medicine(
         hospital_id=current_user.hospital_id,
@@ -958,6 +979,9 @@ def update_medicine(
         Medicine.id == mid, Medicine.hospital_id == current_user.hospital_id,
     ).first()
     _ensure_active_or_404(row, "Medicine")
+    _ensure_unique_medicine_code(
+        db, current_user.hospital_id, data.medicine_code, exclude_id=mid,
+    )
     for k, v in data.model_dump().items():
         setattr(row, k, v)
     apply_medicine_price_rounding(row)
