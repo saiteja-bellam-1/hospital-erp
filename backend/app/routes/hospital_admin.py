@@ -2593,6 +2593,17 @@ async def get_all_bills(
     lab_count = sum(1 for b in bills if b["type"] == "lab")
     pharmacy_count = sum(1 for b in bills if b["type"] == "pharmacy")
     adm_count = sum(1 for b in bills if b["type"] == "admission")
+    physio_count = sum(1 for b in bills if b["type"] == "physiotherapy")
+
+    from app.services.physio_revenue import (
+        classify_billing_hub_physio_rows,
+        package_bill_id_set,
+    )
+    physio_rows = [b for b in bills if b["type"] == "physiotherapy"]
+    physio_revenue_by_type = classify_billing_hub_physio_rows(
+        physio_rows,
+        package_bill_ids=package_bill_id_set(db, hospital_id),
+    )
 
     # Extract unique doctors from bills for filter dropdown
     doctor_ids_seen = set()
@@ -2638,6 +2649,8 @@ async def get_all_bills(
             "lab_count": lab_count,
             "pharmacy_count": pharmacy_count,
             "admission_count": adm_count,
+            "physiotherapy_count": physio_count,
+            "physio_revenue_by_type": physio_revenue_by_type,
             "cancelled_count": cancelled_count,
         },
         "doctors": doctor_list,
@@ -2786,6 +2799,7 @@ def _build_billing_export_xlsx(
         ("Lab bills", summary.get("lab_count", 0)),
         ("Pharmacy bills", summary.get("pharmacy_count", 0)),
         ("Admission bills", summary.get("admission_count", 0)),
+        ("Physiotherapy bills", summary.get("physiotherapy_count", 0)),
         ("Cancelled", summary.get("cancelled_count", 0)),
     ]
     by_type: dict = {}

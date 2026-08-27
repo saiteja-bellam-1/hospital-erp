@@ -17,6 +17,37 @@ export const BILLING_MODULES = [
   { id: 'catch_up', label: 'Catch-up' },
 ];
 
+/** Map /api/system/enabled-modules → BILLING_MODULES filter flags. */
+export function billingModuleEnabledMap(enabledModules = {}) {
+  const em = enabledModules || {};
+  return {
+    opd: !!em.outpatient,
+    lab: !!em.lab,
+    inpatient: !!em.inpatient,
+    pharmacy: !!em.pharmacy,
+    pharmacy_ip: !!em.pharmacy,
+    day_care: !!(em.outpatient || em.inpatient),
+    physiotherapy: !!em.physiotherapy,
+    canteen: !!em.inpatient,
+    catch_up: true,
+  };
+}
+
+/** Map enabled modules → GST_SCOPES filter flags. */
+export function gstScopeEnabledMap(enabledModules = {}) {
+  const em = enabledModules || {};
+  return {
+    hospital: !!(em.outpatient || em.inpatient || em.physiotherapy),
+    lab: !!em.lab,
+    pharmacy: !!em.pharmacy,
+  };
+}
+
+export function filterBillingModules(enabledModules = {}) {
+  const enabled = billingModuleEnabledMap(enabledModules);
+  return BILLING_MODULES.filter((m) => m.id === 'all' || enabled[m.id] !== false);
+}
+
 /** GST filing groups — Lab and Pharmacy keep their own GSTIN; the rest file as Hospital GST. */
 export const GST_SCOPES = [
   { id: 'all', label: 'All', hint: 'Combined working paper (not a filing)' },
@@ -104,10 +135,15 @@ export function GstinBanner({ data, module = 'all' }) {
   );
 }
 
-export function GstScopeChips({ value, onChange }) {
+export function GstScopeChips({ value, onChange, enabled = null }) {
+  const items = GST_SCOPES.filter((m) => {
+    if (!enabled) return true;
+    if (m.id === 'all') return true;
+    return enabled[m.id] !== false;
+  });
   return (
     <div className="flex flex-wrap gap-1.5">
-      {GST_SCOPES.map((m) => (
+      {items.map((m) => (
         <Button
           key={m.id}
           type="button"

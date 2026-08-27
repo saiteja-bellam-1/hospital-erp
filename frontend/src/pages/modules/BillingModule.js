@@ -34,6 +34,7 @@ const BillingModule = () => {
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('all');
+  const [enabledModules, setEnabledModules] = useState({});
 
   // Filters
   const today = localDateString();
@@ -144,6 +145,44 @@ const BillingModule = () => {
   }, [buildBillingParams]);
 
   useEffect(() => { fetchBills(); }, [fetchBills]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await axios.get('/api/system/enabled-modules');
+        const map = {};
+        (res.data || []).forEach((m) => {
+          map[m.module_name] = !!m.is_enabled;
+        });
+        if (!cancelled) setEnabledModules(map);
+      } catch {
+        if (!cancelled) setEnabledModules({});
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const billTabs = [
+    { id: 'all', label: 'All Bills', module: null },
+    { id: 'outpatient', label: 'Outpatient', module: 'outpatient', icon: Stethoscope },
+    { id: 'lab', label: 'Lab', module: 'lab', icon: FlaskConical },
+    { id: 'pharmacy', label: 'Pharmacy', module: 'pharmacy', icon: Pill },
+    { id: 'inpatient', label: 'Inpatient', module: 'inpatient', icon: BedDouble },
+    { id: 'physiotherapy', label: 'Physiotherapy', module: 'physiotherapy' },
+    { id: 'reports', label: 'Reports', module: null, icon: TrendingUp },
+  ];
+  // While enabledModules is still empty (loading), show all tabs.
+  const modulesLoaded = Object.keys(enabledModules).length > 0;
+  const shownBillTabIds = modulesLoaded
+    ? billTabs.filter((t) => !t.module || !!enabledModules[t.module]).map((t) => t.id)
+    : billTabs.map((t) => t.id);
+  const shownBillTabKey = shownBillTabIds.join(',');
+
+  useEffect(() => {
+    if (!modulesLoaded) return;
+    if (!shownBillTabIds.includes(activeTab)) setActiveTab('all');
+  }, [modulesLoaded, shownBillTabKey, activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const formatCurrency = (val) => `₹${Number(val || 0).toLocaleString('en-IN', { minimumFractionDigits: 0 })}`;
   const formatDate = (d) => {
@@ -738,92 +777,117 @@ const BillingModule = () => {
 
       {/* Summary Cards */}
       {summary && (
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-          <Card>
-            <CardContent className="pt-5 pb-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-xs text-gray-500">Total Billed</p>
-                  <p className="text-xl font-bold">{formatCurrency(summary.total_billed)}</p>
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+            <Card>
+              <CardContent className="pt-5 pb-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-xs text-gray-500">Total Billed</p>
+                    <p className="text-xl font-bold">{formatCurrency(summary.total_billed)}</p>
+                  </div>
+                  <DollarSign className="h-8 w-8 text-blue-500" />
                 </div>
-                <DollarSign className="h-8 w-8 text-blue-500" />
-              </div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="pt-5 pb-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-xs text-gray-500">Collected</p>
-                  <p className="text-xl font-bold text-green-600">{formatCurrency(summary.total_paid)}</p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="pt-5 pb-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-xs text-gray-500">Collected</p>
+                    <p className="text-xl font-bold text-green-600">{formatCurrency(summary.total_paid)}</p>
+                  </div>
+                  <CheckCircle2 className="h-8 w-8 text-green-500" />
                 </div>
-                <CheckCircle2 className="h-8 w-8 text-green-500" />
-              </div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="pt-5 pb-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-xs text-gray-500">Pending</p>
-                  <p className="text-xl font-bold text-orange-600">{formatCurrency(summary.total_pending)}</p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="pt-5 pb-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-xs text-gray-500">Pending</p>
+                    <p className="text-xl font-bold text-orange-600">{formatCurrency(summary.total_pending)}</p>
+                  </div>
+                  <Clock className="h-8 w-8 text-orange-500" />
                 </div>
-                <Clock className="h-8 w-8 text-orange-500" />
-              </div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="pt-5 pb-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-xs text-gray-500">Total Bills</p>
-                  <p className="text-xl font-bold">{summary.total_bills}</p>
-                  <p className="text-[10px] text-gray-400">
-                    {summary.appointment_count} consult + {summary.lab_count} lab
-                    {summary.pharmacy_count > 0 && ` + ${summary.pharmacy_count} pharmacy`}
-                    {summary.admission_count > 0 && ` + ${summary.admission_count} admission`}
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="pt-5 pb-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-xs text-gray-500">Total Bills</p>
+                    <p className="text-xl font-bold">{summary.total_bills}</p>
+                    <p className="text-[10px] text-gray-400">
+                      {summary.appointment_count} consult + {summary.lab_count} lab
+                      {summary.pharmacy_count > 0 && ` + ${summary.pharmacy_count} pharmacy`}
+                      {summary.admission_count > 0 && ` + ${summary.admission_count} admission`}
+                      {(summary.physiotherapy_count || 0) > 0 && ` + ${summary.physiotherapy_count} physio`}
+                    </p>
+                  </div>
+                  <Receipt className="h-8 w-8 text-purple-500" />
+                </div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="pt-5 pb-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-xs text-gray-500">Cancelled</p>
+                    <p className="text-xl font-bold text-red-600">{summary.cancelled_count}</p>
+                  </div>
+                  <XCircle className="h-8 w-8 text-red-400" />
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+          {activeTab === 'physiotherapy' && summary.physio_revenue_by_type && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <Card>
+                <CardContent className="pt-5 pb-4">
+                  <p className="text-xs text-gray-500">Package revenue</p>
+                  <p className="text-xl font-bold text-cyan-700">
+                    {formatCurrency(summary.physio_revenue_by_type.package?.collected)}
                   </p>
-                </div>
-                <Receipt className="h-8 w-8 text-purple-500" />
-              </div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="pt-5 pb-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-xs text-gray-500">Cancelled</p>
-                  <p className="text-xl font-bold text-red-600">{summary.cancelled_count}</p>
-                </div>
-                <XCircle className="h-8 w-8 text-red-400" />
-              </div>
-            </CardContent>
-          </Card>
+                  <p className="text-[10px] text-gray-400 mt-1">
+                    Billed {formatCurrency(summary.physio_revenue_by_type.package?.billed)}
+                    {summary.physio_revenue_by_type.package?.bill_count != null
+                      ? ` · ${summary.physio_revenue_by_type.package.bill_count} bill${summary.physio_revenue_by_type.package.bill_count === 1 ? '' : 's'}`
+                      : ''}
+                  </p>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardContent className="pt-5 pb-4">
+                  <p className="text-xs text-gray-500">À la carte revenue</p>
+                  <p className="text-xl font-bold text-cyan-700">
+                    {formatCurrency(summary.physio_revenue_by_type.a_la_carte?.collected)}
+                  </p>
+                  <p className="text-[10px] text-gray-400 mt-1">
+                    Billed {formatCurrency(summary.physio_revenue_by_type.a_la_carte?.billed)}
+                    {summary.physio_revenue_by_type.a_la_carte?.bill_count != null
+                      ? ` · ${summary.physio_revenue_by_type.a_la_carte.bill_count} bill${summary.physio_revenue_by_type.a_la_carte.bill_count === 1 ? '' : 's'}`
+                      : ''}
+                  </p>
+                </CardContent>
+              </Card>
+            </div>
+          )}
         </div>
       )}
 
       {/* Tabs + Filters */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
-          <TabsTrigger value="all">All Bills</TabsTrigger>
-          <TabsTrigger value="outpatient">
-            <Stethoscope className="h-3.5 w-3.5 mr-1" /> Outpatient
-          </TabsTrigger>
-          <TabsTrigger value="lab">
-            <FlaskConical className="h-3.5 w-3.5 mr-1" /> Lab
-          </TabsTrigger>
-          <TabsTrigger value="pharmacy">
-            <Pill className="h-3.5 w-3.5 mr-1" /> Pharmacy
-          </TabsTrigger>
-          <TabsTrigger value="inpatient">
-            <BedDouble className="h-3.5 w-3.5 mr-1" /> Inpatient
-          </TabsTrigger>
-          <TabsTrigger value="physiotherapy">
-            Physiotherapy
-          </TabsTrigger>
-          <TabsTrigger value="reports">
-            <TrendingUp className="h-3.5 w-3.5 mr-1" /> Reports
-          </TabsTrigger>
+          {billTabs.filter((t) => shownBillTabIds.includes(t.id)).map((t) => {
+            const Icon = t.icon;
+            return (
+              <TabsTrigger key={t.id} value={t.id}>
+                {Icon ? <Icon className="h-3.5 w-3.5 mr-1" /> : null}
+                {t.label}
+              </TabsTrigger>
+            );
+          })}
         </TabsList>
 
         {/* Filters - shared across all tabs (hidden on Reports) */}

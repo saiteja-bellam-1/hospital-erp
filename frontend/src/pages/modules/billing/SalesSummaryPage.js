@@ -11,7 +11,7 @@ import { ChevronDown, Download, FileSpreadsheet, FileText, Loader2 } from 'lucid
 import PdfPreviewDialog from '../../../components/PdfPreviewDialog';
 import {
   BILLING_MODULES, BillingDateRange, MoneyTable, formatInr, defaultReportRange,
-  rateAmountColumns, flattenRateRows,
+  rateAmountColumns, flattenRateRows, filterBillingModules,
 } from './BillingReportControls';
 
 export default function SalesSummaryPage() {
@@ -23,6 +23,33 @@ export default function SalesSummaryPage() {
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [pdfOpen, setPdfOpen] = useState(false);
+  const [enabledModules, setEnabledModules] = useState({});
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await axios.get('/api/system/enabled-modules');
+        const map = {};
+        (res.data || []).forEach((m) => { map[m.module_name] = !!m.is_enabled; });
+        if (!cancelled) setEnabledModules(map);
+      } catch {
+        if (!cancelled) setEnabledModules({});
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const moduleOptions = useMemo(
+    () => (Object.keys(enabledModules).length
+      ? filterBillingModules(enabledModules)
+      : BILLING_MODULES),
+    [enabledModules],
+  );
+
+  useEffect(() => {
+    if (!moduleOptions.some((m) => m.id === module)) setModule('all');
+  }, [moduleOptions, module]);
 
   const filterParams = useMemo(() => {
     const params = { date_from: dateFrom, date_to: dateTo };
@@ -109,7 +136,7 @@ export default function SalesSummaryPage() {
               <Select value={module} onValueChange={setModule}>
                 <SelectTrigger className="w-[160px] h-9"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {BILLING_MODULES.map((m) => (
+                  {moduleOptions.map((m) => (
                     <SelectItem key={m.id} value={m.id}>{m.label}</SelectItem>
                   ))}
                 </SelectContent>

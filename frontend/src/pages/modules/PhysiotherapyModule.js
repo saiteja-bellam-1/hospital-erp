@@ -15,7 +15,7 @@ import PatientSearchPicker from '../../components/PatientSearchPicker';
 import { printPdfFromUrl } from '../../utils/printPdf';
 import {
   Activity, Calendar, Package, BookOpen, Users, BarChart3, Plus, RefreshCw,
-  CheckCircle2, Play, UserX, XCircle, Loader2, Download,
+  CheckCircle2, Play, UserX, XCircle, Loader2, Download, LayoutDashboard,
 } from 'lucide-react';
 
 function errMsg(e) {
@@ -60,6 +60,7 @@ function NavTabs({ onSellPackage, canSellPackage }) {
   const loc = useLocation();
   const base = '/dashboard/physiotherapy';
   const tabs = [
+    { to: `${base}/dashboard`, label: 'Dashboard', icon: LayoutDashboard },
     { to: `${base}/today`, label: "Today's Board", icon: Activity },
     { to: `${base}/appointments`, label: 'Appointments', icon: Calendar },
     { to: `${base}/packages`, label: 'Packages', icon: Package },
@@ -1225,6 +1226,190 @@ function TherapistsPage() {
   );
 }
 
+function DashboardPage() {
+  const { toast } = useToast();
+  const { canPackages, canReports, canSchedule } = usePhysioRoles();
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await axios.get('/api/physiotherapy/dashboard');
+      setData(res.data);
+    } catch (e) {
+      toast({ title: 'Failed to load dashboard', description: errMsg(e), variant: 'destructive' });
+    } finally {
+      setLoading(false);
+    }
+  }, [toast]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const status = data?.sessions_by_status || {};
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div>
+          <h2 className="text-base font-semibold">Today&apos;s overview</h2>
+          <p className="text-sm text-muted-foreground">
+            Sessions, revenue, and recent bookings{data?.date ? ` · ${data.date}` : ''}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {canSchedule && (
+            <Button asChild size="sm" variant="outline">
+              <Link to="/dashboard/physiotherapy/today">Today&apos;s Board</Link>
+            </Button>
+          )}
+          {canReports && (
+            <Button asChild size="sm" variant="outline">
+              <Link to="/dashboard/physiotherapy/reports">Reports</Link>
+            </Button>
+          )}
+          <Button size="sm" variant="outline" onClick={load} disabled={loading}>
+            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+          </Button>
+        </div>
+      </div>
+
+      {loading && !data ? (
+        <Loader2 className="animate-spin" />
+      ) : (
+        <>
+          <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <Card>
+              <CardContent className="pt-6">
+                <p className="text-sm text-muted-foreground">Sessions today</p>
+                <p className="text-2xl font-bold">{data?.total_sessions ?? 0}</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {status.completed || 0} done · {status.scheduled || 0} scheduled
+                  {(status.checked_in || status.in_progress)
+                    ? ` · ${(status.checked_in || 0) + (status.in_progress || 0)} in clinic`
+                    : ''}
+                </p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="pt-6">
+                <p className="text-sm text-muted-foreground">Collections today</p>
+                <p className="text-2xl font-bold">{fmt(data?.collections?.total)}</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Cash {fmt(data?.collections?.cash)} · UPI {fmt(data?.collections?.upi)}
+                </p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="pt-6">
+                <p className="text-sm text-muted-foreground">Outstanding</p>
+                <p className="text-2xl font-bold">{fmt(data?.outstanding_dues)}</p>
+                <p className="text-xs text-muted-foreground mt-1">Unpaid physio bills today</p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="pt-6">
+                <p className="text-sm text-muted-foreground">Sessions owed</p>
+                <p className="text-2xl font-bold">{data?.package_liability?.sessions_owed ?? 0}</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {data?.package_liability?.active_packages ?? 0} active package
+                  {(data?.package_liability?.active_packages ?? 0) === 1 ? '' : 's'}
+                </p>
+              </CardContent>
+            </Card>
+          </div>
+
+          <div>
+            <h3 className="text-sm font-medium mb-2">Revenue split (today)</h3>
+            <div className="grid sm:grid-cols-2 gap-3">
+              <Card>
+                <CardContent className="pt-6">
+                  <p className="text-sm text-muted-foreground">Package revenue</p>
+                  <p className="text-2xl font-bold">{fmt(data?.revenue_by_type?.package?.collected)}</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Billed {fmt(data?.revenue_by_type?.package?.billed)}
+                    {data?.revenue_by_type?.package?.bill_count != null
+                      ? ` · ${data.revenue_by_type.package.bill_count} bill${data.revenue_by_type.package.bill_count === 1 ? '' : 's'}`
+                      : ''}
+                  </p>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardContent className="pt-6">
+                  <p className="text-sm text-muted-foreground">À la carte revenue</p>
+                  <p className="text-2xl font-bold">{fmt(data?.revenue_by_type?.a_la_carte?.collected)}</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Billed {fmt(data?.revenue_by_type?.a_la_carte?.billed)}
+                    {data?.revenue_by_type?.a_la_carte?.bill_count != null
+                      ? ` · ${data.revenue_by_type.a_la_carte.bill_count} bill${data.revenue_by_type.a_la_carte.bill_count === 1 ? '' : 's'}`
+                      : ''}
+                  </p>
+                </CardContent>
+              </Card>
+            </div>
+          </div>
+
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between flex-wrap gap-2 pb-2">
+              <CardTitle className="text-base">Recent booked appointments</CardTitle>
+              <Button asChild size="sm" variant="outline">
+                <Link to="/dashboard/physiotherapy/appointments">View all</Link>
+              </Button>
+            </CardHeader>
+            <CardContent>
+              {(data?.recent_appointments || []).length === 0 ? (
+                <p className="text-sm text-muted-foreground">No appointments yet.</p>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b text-left text-muted-foreground">
+                      <th className="py-2 font-medium">When</th>
+                      <th className="font-medium">Patient</th>
+                      <th className="font-medium">Therapist</th>
+                      <th className="font-medium">Service</th>
+                      <th className="font-medium">Billing</th>
+                      <th className="font-medium">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(data.recent_appointments || []).map((a) => (
+                      <tr key={a.id} className="border-b">
+                        <td className="py-2 whitespace-nowrap">
+                          {a.appointment_date}{a.appointment_time ? ` ${a.appointment_time}` : ''}
+                        </td>
+                        <td>{a.patient_name || '—'}</td>
+                        <td>{a.therapist_name || '—'}</td>
+                        <td>{a.service_name || a.session_type || '—'}</td>
+                        <td>
+                          {a.package_id
+                            ? 'Package'
+                            : a.bill_id
+                              ? 'À la carte'
+                              : '—'}
+                        </td>
+                        <td>
+                          <Badge className={STATUS_BADGE[a.status] || 'bg-gray-100 text-gray-700'}>
+                            {(a.status || '').replace(/_/g, ' ')}
+                          </Badge>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+              {canPackages && (
+                <p className="text-xs text-muted-foreground mt-3">
+                  Use Sell package in the header to prepaid-sell; book sessions from Today&apos;s Board.
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        </>
+      )}
+    </div>
+  );
+}
+
 function ReportsPage() {
   const { toast } = useToast();
   const [from, setFrom] = useState(todayISO());
@@ -1262,6 +1447,31 @@ function ReportsPage() {
               <div className="border rounded-md p-3"><div className="text-xs text-muted-foreground">Collections</div><div className="text-xl font-semibold">{fmt(data.collections?.total)}</div></div>
               <div className="border rounded-md p-3"><div className="text-xs text-muted-foreground">Outstanding</div><div className="text-xl font-semibold">{fmt(data.outstanding_dues)}</div></div>
               <div className="border rounded-md p-3"><div className="text-xs text-muted-foreground">Sessions owed</div><div className="text-xl font-semibold">{data.package_liability?.sessions_owed || 0}</div></div>
+            </div>
+            <div>
+              <h4 className="font-medium mb-2">Revenue split</h4>
+              <div className="grid sm:grid-cols-2 gap-3">
+                <div className="border rounded-md p-3">
+                  <div className="text-xs text-muted-foreground">Package revenue</div>
+                  <div className="text-xl font-semibold">{fmt(data.revenue_by_type?.package?.collected)}</div>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Billed {fmt(data.revenue_by_type?.package?.billed)}
+                    {data.revenue_by_type?.package?.bill_count != null
+                      ? ` · ${data.revenue_by_type.package.bill_count} bill${data.revenue_by_type.package.bill_count === 1 ? '' : 's'}`
+                      : ''}
+                  </p>
+                </div>
+                <div className="border rounded-md p-3">
+                  <div className="text-xs text-muted-foreground">À la carte revenue</div>
+                  <div className="text-xl font-semibold">{fmt(data.revenue_by_type?.a_la_carte?.collected)}</div>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Billed {fmt(data.revenue_by_type?.a_la_carte?.billed)}
+                    {data.revenue_by_type?.a_la_carte?.bill_count != null
+                      ? ` · ${data.revenue_by_type.a_la_carte.bill_count} bill${data.revenue_by_type.a_la_carte.bill_count === 1 ? '' : 's'}`
+                      : ''}
+                  </p>
+                </div>
+              </div>
             </div>
             <div>
               <h4 className="font-medium mb-2">Collections by method</h4>
@@ -1312,7 +1522,8 @@ export default function PhysiotherapyModule() {
         onSold={() => setSellTick((n) => n + 1)}
       />
       <Routes>
-        <Route index element={<Navigate to="today" replace />} />
+        <Route index element={<Navigate to="dashboard" replace />} />
+        <Route path="dashboard" element={<DashboardPage />} />
         <Route path="today" element={<AppointmentsBoard dateFilter={todayISO()} />} />
         <Route path="appointments" element={<AppointmentsBoard />} />
         <Route path="packages" element={<PackagesPage key={sellTick} />} />

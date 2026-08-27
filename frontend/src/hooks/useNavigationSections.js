@@ -289,6 +289,7 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
     'physiotherapist', 'billing_admin',
   )) {
     const items = [];
+    add(items, make('Dashboard', LayoutDashboard, '/dashboard/physiotherapy/dashboard'));
     add(items, make("Today's Board", Activity, '/dashboard/physiotherapy/today'));
     add(items, make('Appointments', Calendar, '/dashboard/physiotherapy/appointments'));
     add(items, make('Packages', Package, '/dashboard/physiotherapy/packages'));

@@ -30,6 +30,7 @@ from app.models.physiotherapy import (
 from app.utils.auth import Modules
 from app.utils.dependencies import require_feature_permission, require_feature_permission_any
 from app.services.audit_service import log_action
+from app.services.physio_revenue import physio_revenue_split
 from app.utils.pdf_service import pdf_service
 from app.utils.pdf_settings import pdf_gen_kwargs
 from app.utils.time import system_now
@@ -1418,6 +1419,68 @@ async def walk_in_complete(
 
 # ── Reports ───────────────────────────────────────────────────────────────────
 
+def _package_liability(db: Session, hid: int, d_from: date, d_to: date) -> dict:
+    active_pkgs = db.query(PhysioPatientPackage).filter(
+        PhysioPatientPackage.hospital_id == hid,
+        PhysioPatientPackage.status == "active",
+    ).all()
+    return {
+        "active_packages": len(active_pkgs),
+        "sessions_owed": sum(p.sessions_remaining for p in active_pkgs),
+        "sold_in_range": db.query(func.count(PhysioPatientPackage.id)).filter(
+            PhysioPatientPackage.hospital_id == hid,
+            func.date(PhysioPatientPackage.purchased_at) >= d_from,
+            func.date(PhysioPatientPackage.purchased_at) <= d_to,
+        ).scalar() or 0,
+    }
+
+
+@router.get("/dashboard")
+async def physio_dashboard(
+    current_user: User = Depends(require_feature_permission(Modules.PHYSIOTHERAPY, "view_physio")),
+    db: Session = Depends(get_db),
+):
+    """At-a-glance home: today's KPIs, revenue split, recent bookings."""
+    hid = _hospital_id(current_user)
+    today = date.today()
+    _expire_packages(db, hid)
+    db.commit()
+
+    appts = db.query(PhysioAppointment).filter(
+        PhysioAppointment.hospital_id == hid,
+        PhysioAppointment.appointment_date == today,
+    ).all()
+    by_status: dict = {}
+    for a in appts:
+        by_status[a.status] = by_status.get(a.status, 0) + 1
+
+    revenue = physio_revenue_split(db, hid, today, today)
+
+    recent = (
+        db.query(PhysioAppointment)
+        .options(
+            joinedload(PhysioAppointment.patient),
+            joinedload(PhysioAppointment.therapist),
+            joinedload(PhysioAppointment.service),
+        )
+        .filter(PhysioAppointment.hospital_id == hid)
+        .order_by(PhysioAppointment.id.desc())
+        .limit(10)
+        .all()
+    )
+
+    return {
+        "date": today.isoformat(),
+        "sessions_by_status": by_status,
+        "total_sessions": len(appts),
+        "collections": revenue["collections"],
+        "revenue_by_type": revenue["revenue_by_type"],
+        "outstanding_dues": revenue["outstanding_dues"],
+        "package_liability": _package_liability(db, hid, today, today),
+        "recent_appointments": [_serialize_appt(a) for a in recent],
+    }
+
+
 @router.get("/reports/summary")
 async def reports_summary(
     date_from: Optional[date] = None,
@@ -1457,52 +1520,16 @@ async def reports_summary(
         key = a.status if a.status in ("completed", "no_show", "cancelled") else "scheduled"
         by_therapist[tid][key] = by_therapist[tid].get(key, 0) + 1
 
-    bills = db.query(Bill).filter(
-        Bill.hospital_id == hid,
-        Bill.bill_type == "physiotherapy",
-        Bill.status != "cancelled",
-        func.date(Bill.bill_date) >= d_from,
-        func.date(Bill.bill_date) <= d_to,
-    ).all()
-
-    collections = {"cash": 0.0, "upi": 0.0, "card": 0.0, "other": 0.0, "total": 0.0}
-    outstanding = 0.0
-    for b in bills:
-        paid = sum(float(p.amount_paid or 0) for p in (b.payments or []))
-        outstanding += max(float(b.total_amount or 0) - paid, 0)
-        for p in (b.payments or []):
-            method = (p.payment_method_name or "other").lower()
-            amt = float(p.amount_paid or 0)
-            collections["total"] += amt
-            if "upi" in method or "gpay" in method or "phonepe" in method:
-                collections["upi"] += amt
-            elif "card" in method:
-                collections["card"] += amt
-            elif "cash" in method:
-                collections["cash"] += amt
-            else:
-                collections["other"] += amt
-
-    active_pkgs = db.query(PhysioPatientPackage).filter(
-        PhysioPatientPackage.hospital_id == hid,
-        PhysioPatientPackage.status == "active",
-    ).all()
+    revenue = physio_revenue_split(db, hid, d_from, d_to)
 
     return {
         "date_from": d_from.isoformat(),
         "date_to": d_to.isoformat(),
         "sessions_by_status": by_status,
         "therapist_utilization": list(by_therapist.values()),
-        "collections": collections,
-        "outstanding_dues": round(outstanding, 2),
-        "package_liability": {
-            "active_packages": len(active_pkgs),
-            "sessions_owed": sum(p.sessions_remaining for p in active_pkgs),
-            "sold_in_range": db.query(func.count(PhysioPatientPackage.id)).filter(
-                PhysioPatientPackage.hospital_id == hid,
-                func.date(PhysioPatientPackage.purchased_at) >= d_from,
-                func.date(PhysioPatientPackage.purchased_at) <= d_to,
-            ).scalar() or 0,
-        },
+        "collections": revenue["collections"],
+        "revenue_by_type": revenue["revenue_by_type"],
+        "outstanding_dues": revenue["outstanding_dues"],
+        "package_liability": _package_liability(db, hid, d_from, d_to),
         "total_sessions": len(appts),
     }

@@ -6,7 +6,7 @@ import { Label } from '../../../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../../components/ui/select';
 import { Download, FileSpreadsheet, FileText, Loader2 } from 'lucide-react';
 import PdfPreviewDialog from '../../../components/PdfPreviewDialog';
-import { formatInr, GstScopeChips as ModuleChips, GstinBanner } from './BillingReportControls';
+import { formatInr, GstScopeChips as ModuleChips, GstinBanner, gstScopeEnabledMap } from './BillingReportControls';
 import { Gst3bTables, SimpleRowsTable } from './GstReturnPreview';
 
 const RETURNS = [
@@ -92,6 +92,32 @@ export default function GstAuditExportPage() {
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState('');
   const [pdfOpen, setPdfOpen] = useState(false);
+  const [enabledModules, setEnabledModules] = useState({});
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await axios.get('/api/system/enabled-modules');
+        const map = {};
+        (res.data || []).forEach((m) => { map[m.module_name] = !!m.is_enabled; });
+        if (!cancelled) setEnabledModules(map);
+      } catch {
+        if (!cancelled) setEnabledModules({});
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const scopeEnabled = useMemo(
+    () => (Object.keys(enabledModules).length ? gstScopeEnabledMap(enabledModules) : null),
+    [enabledModules],
+  );
+
+  useEffect(() => {
+    if (!scopeEnabled) return;
+    if (module !== 'all' && scopeEnabled[module] === false) setModule('all');
+  }, [scopeEnabled, module]);
 
   const periodParams = useMemo(() => {
     const params = {};
@@ -251,7 +277,7 @@ export default function GstAuditExportPage() {
             <div>
               <Label className="text-xs">GST registration</Label>
               <div className="mt-1">
-                <ModuleChips value={module} onChange={setModule} />
+                <ModuleChips value={module} onChange={setModule} enabled={scopeEnabled} />
               </div>
             </div>
           </div>
