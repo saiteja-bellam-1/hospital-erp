@@ -51,44 +51,47 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
   const labEnabled = isLabStaff || !!enabledModules.lab;
   const outpatientEnabled = isDoctor || !!enabledModules.outpatient;
 
-  const [pharmacyPermState, setPharmacyPermState] = useState({
-    loaded: !enabledModules?.pharmacy,
+  const [permState, setPermState] = useState({
+    loaded: !(enabledModules?.pharmacy || enabledModules?.physiotherapy),
     isAdmin: false,
     modules: {},
   });
 
   useEffect(() => {
-    if (!enabledModules?.pharmacy) {
-      setPharmacyPermState({ loaded: true, isAdmin: false, modules: {} });
+    if (!enabledModules?.pharmacy && !enabledModules?.physiotherapy) {
+      setPermState({ loaded: true, isAdmin: false, modules: {} });
       return;
     }
     let cancelled = false;
     axios.get('/api/admin/me/permissions')
       .then((res) => {
         if (cancelled) return;
-        setPharmacyPermState({
+        setPermState({
           loaded: true,
           isAdmin: !!res.data?.is_admin,
           modules: res.data?.modules || {},
         });
       })
       .catch(() => {
-        if (!cancelled) setPharmacyPermState({ loaded: true, isAdmin: false, modules: {} });
+        if (!cancelled) setPermState({ loaded: true, isAdmin: false, modules: {} });
       });
     return () => { cancelled = true; };
-  }, [enabledModules?.pharmacy]);
+  }, [enabledModules?.pharmacy, enabledModules?.physiotherapy]);
 
-  const hasPharmacyPerm = (key) => {
-    if (pharmacyPermState.isAdmin) return true;
-    const mods = pharmacyPermState.modules || {};
+  const hasModulePerm = (moduleName, key) => {
+    if (permState.isAdmin) return true;
+    const mods = permState.modules || {};
     if (mods['*']?.includes('*')) return true;
-    const list = mods.pharmacy || [];
+    const list = mods[moduleName] || [];
     return list.includes('*') || list.includes(key);
   };
 
+  const hasPharmacyPerm = (key) => hasModulePerm('pharmacy', key);
+  const hasPhysioPerm = (key) => hasModulePerm('physiotherapy', key);
+
   const hasPharmacyAccess = enabledModules.pharmacy && (
     hasAnyRole(...PHARMACY_ROLE_NAMES)
-    || (pharmacyPermState.modules.pharmacy && pharmacyPermState.modules.pharmacy.length > 0)
+    || (permState.modules.pharmacy && permState.modules.pharmacy.length > 0)
   );
 
   const addedPaths = new Set();
@@ -148,6 +151,7 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
     const items = [];
     add(items, make('Bills', Receipt, '/dashboard/billing'));
     if (hasAnyRole('hospital_admin', 'super_admin', 'billing_admin')) {
+      add(items, make('Reports', BarChart3, '/dashboard/billing/reports'));
       add(items, make('Sales Summary', TrendingUp, '/dashboard/billing/sales-summary'));
       if (enabledModules.pharmacy) {
         add(items, make('Purchase Summary', Truck, '/dashboard/billing/purchase-summary'));
@@ -161,7 +165,7 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
       add(items, make('Payer Schemes', CreditCard, '/dashboard/hospital-admin/payers'));
       add(items, make('Registration Fee', Receipt, '/dashboard/hospital-admin/billing'));
     }
-    if (items.length > 0) sections.push({ label: 'Billing', items });
+    if (items.length > 0) sections.push({ label: 'Billing and Reports', items });
   }
 
   // ── CUSTOMISATIONS (reception staff only — admins get it under Administration) ──
@@ -293,9 +297,17 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
     add(items, make("Today's Board", Activity, '/dashboard/physiotherapy/today'));
     add(items, make('Appointments', Calendar, '/dashboard/physiotherapy/appointments'));
     add(items, make('Packages', Package, '/dashboard/physiotherapy/packages'));
-    add(items, make('Catalog', BookOpen, '/dashboard/physiotherapy/catalog'));
+    const showPhysioCatalog = permState.loaded
+      ? hasPhysioPerm('manage_catalog')
+      : hasAnyRole('hospital_admin', 'super_admin');
+    if (showPhysioCatalog) {
+      add(items, make('Catalog', BookOpen, '/dashboard/physiotherapy/catalog'));
+    }
     add(items, make('Therapists', Users, '/dashboard/physiotherapy/therapists'));
-    if (hasAnyRole('hospital_admin', 'super_admin', 'receptionist', 'billing_admin')) {
+    const showPhysioReports = permState.loaded
+      ? hasPhysioPerm('view_physio_reports')
+      : hasAnyRole('hospital_admin', 'super_admin', 'billing_admin');
+    if (showPhysioReports) {
       add(items, make('Reports', BarChart3, '/dashboard/physiotherapy/reports'));
     }
     if (items.length > 0) sections.push({ label: 'Physiotherapy', items });

@@ -3836,10 +3836,23 @@ def _parse_date_range(date_from: Optional[str], date_to: Optional[str]):
     return d_from, d_to
 
 
+def _filter_bills_by_module(query, module: Optional[str]):
+    from sqlalchemy.sql import false as sql_false
+    from app.services.gst_classification import bill_types_for_module
+    types = bill_types_for_module(module)
+    if types:
+        return query.filter(Bill.bill_type.in_(types))
+    if module and module not in ("all",):
+        return query.filter(sql_false())
+    return query
+
+
 @router.get("/billing/reports/daily-collection")
 async def report_daily_collection(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    module: Optional[str] = None,
+    patient_id: Optional[int] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -3848,11 +3861,15 @@ async def report_daily_collection(
     _report_auth(current_user)
     d_from, d_to = _parse_date_range(date_from, date_to)
 
-    payments = db.query(Payment).join(Bill, Payment.bill_id == Bill.id).filter(
+    pay_q = db.query(Payment).join(Bill, Payment.bill_id == Bill.id).filter(
         Bill.hospital_id == current_user.hospital_id,
         sql_func.date(Payment.payment_date) >= d_from,
         sql_func.date(Payment.payment_date) <= d_to,
-    ).all()
+    )
+    if patient_id:
+        pay_q = pay_q.filter(Bill.patient_id == patient_id)
+    pay_q = _filter_bills_by_module(pay_q, module)
+    payments = pay_q.all()
 
     by_day: dict = {}
     methods_seen = set()
@@ -3885,6 +3902,8 @@ async def report_daily_collection(
 async def report_doctor_revenue(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    module: Optional[str] = None,
+    patient_id: Optional[int] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -3892,16 +3911,24 @@ async def report_doctor_revenue(
     admissions. Lab orders are excluded (no single attributable doctor)."""
     _report_auth(current_user)
     d_from, d_to = _parse_date_range(date_from, date_to)
+    mod = (module or "all").strip().lower()
+    include_opd = mod in ("all", "opd")
+    include_ip = mod in ("all", "inpatient")
 
     by_doc: dict = {}
 
     # Consultations (Appointments)
-    appts = db.query(Appointment).join(Patient).filter(
-        Patient.hospital_id == current_user.hospital_id,
-        Appointment.appointment_date >= d_from,
-        Appointment.appointment_date <= datetime.combine(d_to, datetime.max.time()),
-        Appointment.payment_status != "cancelled",
-    ).all()
+    appts = []
+    if include_opd:
+        apt_q = db.query(Appointment).join(Patient).filter(
+            Patient.hospital_id == current_user.hospital_id,
+            Appointment.appointment_date >= d_from,
+            Appointment.appointment_date <= datetime.combine(d_to, datetime.max.time()),
+            Appointment.payment_status != "cancelled",
+        )
+        if patient_id:
+            apt_q = apt_q.filter(Appointment.patient_id == patient_id)
+        appts = apt_q.all()
     for a in appts:
         doc_id = a.doctor_id or 0
         amt = float((a.consultation_fee or 0) + (a.registration_fee or 0))
@@ -3913,13 +3940,18 @@ async def report_doctor_revenue(
         by_doc[doc_id]["consultation_count"] += 1
 
     # Admission bills
-    adm_bills = db.query(Bill).join(Patient).filter(
-        Patient.hospital_id == current_user.hospital_id,
-        Bill.bill_type == "admission",
-        sql_func.date(Bill.bill_date) >= d_from,
-        sql_func.date(Bill.bill_date) <= d_to,
-        Bill.status != "cancelled",
-    ).all()
+    adm_bills = []
+    if include_ip:
+        adm_q = db.query(Bill).join(Patient).filter(
+            Patient.hospital_id == current_user.hospital_id,
+            Bill.bill_type == "admission",
+            sql_func.date(Bill.bill_date) >= d_from,
+            sql_func.date(Bill.bill_date) <= d_to,
+            Bill.status != "cancelled",
+        )
+        if patient_id:
+            adm_q = adm_q.filter(Bill.patient_id == patient_id)
+        adm_bills = adm_q.all()
     for b in adm_bills:
         adm = db.query(Admission).filter(Admission.id == b.reference_id).first() if b.reference_id else None
         doc_id = adm.admitting_doctor_id if adm and adm.admitting_doctor_id else 0
@@ -3956,6 +3988,8 @@ async def report_doctor_revenue(
 async def report_tax_summary(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    module: Optional[str] = None,
+    patient_id: Optional[int] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -3963,13 +3997,17 @@ async def report_tax_summary(
     _report_auth(current_user)
     d_from, d_to = _parse_date_range(date_from, date_to)
 
-    bills = db.query(Bill).join(Patient).filter(
+    tax_q = db.query(Bill).join(Patient).filter(
         Patient.hospital_id == current_user.hospital_id,
         sql_func.date(Bill.bill_date) >= d_from,
         sql_func.date(Bill.bill_date) <= d_to,
         Bill.status != "cancelled",
         Bill.bill_type != "credit_note",
-    ).all()
+    )
+    if patient_id:
+        tax_q = tax_q.filter(Bill.patient_id == patient_id)
+    tax_q = _filter_bills_by_module(tax_q, module)
+    bills = tax_q.all()
 
     by_day: dict = {}
     for b in bills:
@@ -4004,28 +4042,37 @@ async def report_sales_summary(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     module: Optional[str] = None,
+    patient_id: Optional[int] = None,
     group_by: str = Query("day"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Hospital-wide sales with optional module filter (opd, lab, inpatient, pharmacy, ...)."""
+    """Hospital-wide sales with optional module and patient filters."""
     _report_auth(current_user)
     from app.services.gst_report_service import sales_summary
     d_from, d_to = _gst_dates(date_from, date_to)
-    return sales_summary(db, current_user.hospital_id, d_from, d_to, module=module, group_by=group_by)
+    return sales_summary(
+        db, current_user.hospital_id, d_from, d_to,
+        module=module, group_by=group_by, patient_id=patient_id,
+    )
 
 
 @router.get("/billing/reports/outstanding")
 async def report_outstanding(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    module: Optional[str] = None,
+    patient_id: Optional[int] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     _report_auth(current_user)
     from app.services.gst_report_service import outstanding_by_module
     d_from, d_to = _gst_dates(date_from, date_to)
-    return outstanding_by_module(db, current_user.hospital_id, d_from, d_to)
+    return outstanding_by_module(
+        db, current_user.hospital_id, d_from, d_to,
+        module=module, patient_id=patient_id,
+    )
 
 
 @router.get("/billing/reports/purchase-summary")
@@ -4040,6 +4087,203 @@ async def report_purchase_summary(
     from app.services.gst_report_service import purchase_summary
     d_from, d_to = _gst_dates(date_from, date_to)
     return purchase_summary(db, current_user.hospital_id, d_from, d_to, group_by=group_by)
+
+
+@router.get("/billing/reports/bed-occupancy")
+async def report_bed_occupancy(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Current bed occupancy snapshot (same census as inpatient management reports)."""
+    _report_auth(current_user)
+    from app.routes.inpatient import _build_census_payload
+    return _build_census_payload(db)
+
+
+@router.get("/billing/reports/doctor-efficiency")
+async def report_doctor_efficiency(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """IP productivity plus OPD consult counts per doctor."""
+    _report_auth(current_user)
+    from app.routes.inpatient import _build_doctor_productivity
+    d_from, d_to = _parse_date_range(date_from, date_to)
+    payload = _build_doctor_productivity(db, d_from, d_to, None)
+
+    appts = db.query(Appointment).join(Patient).filter(
+        Patient.hospital_id == current_user.hospital_id,
+        Appointment.appointment_date >= d_from,
+        Appointment.appointment_date <= datetime.combine(d_to, datetime.max.time()),
+        Appointment.payment_status != "cancelled",
+    ).all()
+    opd_by_doc: dict = {}
+    for a in appts:
+        doc_id = a.doctor_id or 0
+        row = opd_by_doc.setdefault(doc_id, {"opd_consults": 0, "opd_revenue": 0.0})
+        row["opd_consults"] += 1
+        row["opd_revenue"] += float((a.consultation_fee or 0) + (a.registration_fee or 0))
+
+    by_id = {r["doctor_id"]: r for r in payload.get("rows") or []}
+    for doc_id, opd in opd_by_doc.items():
+        if not doc_id:
+            continue
+        if doc_id in by_id:
+            by_id[doc_id]["opd_consults"] = opd["opd_consults"]
+            by_id[doc_id]["opd_revenue"] = round(opd["opd_revenue"], 2)
+        else:
+            u = db.query(User).filter(User.id == doc_id).first()
+            name = f"Dr. {u.first_name} {u.last_name}" if u else f"User #{doc_id}"
+            by_id[doc_id] = {
+                "doctor_id": doc_id,
+                "doctor_name": name,
+                "admissions": 0, "discharges": 0, "deaths": 0,
+                "readmissions_30d": 0, "ot_as_surgeon": 0, "ot_as_anaesthetist": 0,
+                "visits": 0, "average_los_days": None,
+                "visit_fees_billed": 0, "ot_surgeon_fees": 0, "ot_anaesthetist_fees": 0,
+                "total_billed_attributable": 0,
+                "opd_consults": opd["opd_consults"],
+                "opd_revenue": round(opd["opd_revenue"], 2),
+            }
+    for r in by_id.values():
+        r.setdefault("opd_consults", 0)
+        r.setdefault("opd_revenue", 0.0)
+    rows = sorted(by_id.values(), key=lambda r: -(r.get("opd_consults", 0) + r.get("admissions", 0) + r.get("visits", 0)))
+    payload["rows"] = rows
+    payload["totals"] = {
+        "opd_consults": sum(r.get("opd_consults", 0) for r in rows),
+        "opd_revenue": round(sum(r.get("opd_revenue", 0) for r in rows), 2),
+        "admissions": sum(r.get("admissions", 0) for r in rows),
+        "visits": sum(r.get("visits", 0) for r in rows),
+        "ot_as_surgeon": sum(r.get("ot_as_surgeon", 0) for r in rows),
+        "total_billed_attributable": round(sum(r.get("total_billed_attributable", 0) for r in rows), 2),
+    }
+    return payload
+
+
+@router.get("/billing/reports/monthly-outcomes")
+async def report_monthly_outcomes(
+    month: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """IP monthly occupancy, mortality, readmissions, and length of stay."""
+    _report_auth(current_user)
+    from app.routes.inpatient import _build_monthly_outcomes
+    return _build_monthly_outcomes(db, month)
+
+
+@router.get("/billing/reports/opd-activity")
+async def report_opd_activity(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _report_auth(current_user)
+    from app.services.hub_reports import opd_activity
+    d_from, d_to = _parse_date_range(date_from, date_to)
+    return opd_activity(db, current_user.hospital_id, d_from, d_to)
+
+
+@router.get("/billing/reports/lab-volume")
+async def report_lab_volume(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _report_auth(current_user)
+    from app.services.hub_reports import lab_volume
+    d_from, d_to = _parse_date_range(date_from, date_to)
+    return lab_volume(db, current_user.hospital_id, d_from, d_to)
+
+
+@router.get("/billing/reports/daycare-volume")
+async def report_daycare_volume(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _report_auth(current_user)
+    from app.services.hub_reports import daycare_volume
+    d_from, d_to = _parse_date_range(date_from, date_to)
+    return daycare_volume(db, current_user.hospital_id, d_from, d_to)
+
+
+@router.get("/billing/reports/canteen-activity")
+async def report_canteen_activity(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _report_auth(current_user)
+    from app.services.hub_reports import canteen_activity
+    d_from, d_to = _parse_date_range(date_from, date_to)
+    return canteen_activity(db, current_user.hospital_id, d_from, d_to)
+
+
+@router.get("/billing/reports/pharmacy-sales")
+async def report_pharmacy_sales_ops(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _report_auth(current_user)
+    from app.services.hub_reports import pharmacy_sales_ops
+    d_from, d_to = _parse_date_range(date_from, date_to)
+    return pharmacy_sales_ops(db, current_user.hospital_id, d_from, d_to)
+
+
+@router.get("/billing/reports/pharmacy-stock")
+async def report_pharmacy_stock_ops(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _report_auth(current_user)
+    from app.services.hub_reports import pharmacy_stock_ops
+    return pharmacy_stock_ops(db, current_user.hospital_id)
+
+
+@router.get("/billing/reports/physio-summary")
+async def report_physio_summary(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _report_auth(current_user)
+    from app.services.hub_reports import physio_summary
+    d_from, d_to = _parse_date_range(date_from, date_to)
+    return physio_summary(db, current_user.hospital_id, d_from, d_to)
+
+
+@router.get("/billing/reports/readmissions")
+async def report_readmissions(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _report_auth(current_user)
+    from app.services.hub_reports import readmissions
+    return readmissions(db, current_user.hospital_id)
+
+
+@router.get("/billing/reports/mortality")
+async def report_mortality_hub(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _report_auth(current_user)
+    from app.services.hub_reports import mortality
+    d_from, d_to = _parse_date_range(date_from, date_to)
+    return mortality(db, current_user.hospital_id, d_from, d_to)
 
 
 def _summary_hospital_info(db: Session, hospital_id: int, *, pharmacy: bool = False) -> dict:
@@ -4145,6 +4389,7 @@ async def report_sales_summary_pdf(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     module: Optional[str] = None,
+    patient_id: Optional[int] = None,
     group_by: str = Query("day"),
     include_header: Optional[bool] = Query(None),
     current_user: User = Depends(get_current_user),
@@ -4159,7 +4404,10 @@ async def report_sales_summary_pdf(
 
     _report_auth(current_user)
     d_from, d_to = _gst_dates(date_from, date_to)
-    data = sales_summary(db, current_user.hospital_id, d_from, d_to, module=module, group_by=group_by)
+    data = sales_summary(
+        db, current_user.hospital_id, d_from, d_to,
+        module=module, group_by=group_by, patient_id=patient_id,
+    )
     rates = data.get("tax_rate_columns") or []
     rows = flatten_tax_rate_rows(data.get("invoices") or [], rates, "amount")
     cols = sales_summary_export_columns(rates)
@@ -4168,6 +4416,8 @@ async def report_sales_summary_pdf(
         "Module": module or "all",
         "Bills": data.get("totals", {}).get("count", 0),
     }
+    if patient_id:
+        meta["Patient ID"] = patient_id
     pdf = PDFService()
     buf = pdf.generate_pharmacy_report_pdf(
         title="SALES SUMMARY",
@@ -4243,6 +4493,7 @@ async def report_sales_summary_xlsx(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     module: Optional[str] = None,
+    patient_id: Optional[int] = None,
     group_by: str = Query("day"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -4254,7 +4505,10 @@ async def report_sales_summary_xlsx(
 
     _report_auth(current_user)
     d_from, d_to = _gst_dates(date_from, date_to)
-    data = sales_summary(db, current_user.hospital_id, d_from, d_to, module=module, group_by=group_by)
+    data = sales_summary(
+        db, current_user.hospital_id, d_from, d_to,
+        module=module, group_by=group_by, patient_id=patient_id,
+    )
     rates = data.get("tax_rate_columns") or []
     hospital = hospital_brand_dict(db, current_user.hospital_id)
     meta = [
@@ -4262,6 +4516,8 @@ async def report_sales_summary_xlsx(
         ("Period", f"{d_from.isoformat()} to {d_to.isoformat()}"),
         ("Module", module or "all"),
     ]
+    if patient_id:
+        meta.append(("Patient ID", patient_id))
     invoices = flatten_tax_rate_rows(data.get("invoices") or [], rates, "amount")
     content = _build_summary_xlsx(
         [

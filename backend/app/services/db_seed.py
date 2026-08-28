@@ -101,13 +101,16 @@ _PHYSIO_ALL = [
     "view_physio", "manage_catalog", "manage_packages",
     "schedule_sessions", "record_attendance", "bill_sessions",
     "view_physio_reports", "manage_therapist_schedules",
+    "view_physio_documents", "upload_physio_documents", "delete_physio_documents",
 ]
 _PHYSIO_RECEPTION = [
     "view_physio", "manage_packages", "schedule_sessions",
-    "record_attendance", "bill_sessions", "view_physio_reports",
+    "record_attendance", "bill_sessions",
+    "view_physio_documents",
 ]
 _PHYSIO_THERAPIST = [
     "view_physio", "record_attendance", "schedule_sessions",
+    "view_physio_documents", "upload_physio_documents",
 ]
 
 # Full pharmacy permission set — kept in sync with the pharmacy permission catalog
@@ -364,6 +367,9 @@ def _seed_module_permissions(db, ModulePermission):
         {"module_name": "physiotherapy", "permission_name": "bill_sessions", "permission_description": "Create à la carte physio bills and collect payment", "category": "user"},
         {"module_name": "physiotherapy", "permission_name": "view_physio_reports", "permission_description": "View physio collections and utilization reports", "category": "user"},
         {"module_name": "physiotherapy", "permission_name": "manage_therapist_schedules", "permission_description": "Manage therapist weekly availability and leave", "category": "admin"},
+        {"module_name": "physiotherapy", "permission_name": "view_physio_documents", "permission_description": "View scanned documents on a physio patient chart or session", "category": "user"},
+        {"module_name": "physiotherapy", "permission_name": "upload_physio_documents", "permission_description": "Upload scanned documents for a physio patient or session", "category": "user"},
+        {"module_name": "physiotherapy", "permission_name": "delete_physio_documents", "permission_description": "Delete physio patient or session documents", "category": "admin"},
         # EHR
         {"module_name": "ehr", "permission_name": "view_records", "permission_description": "View patient electronic health records", "category": "user"},
         {"module_name": "ehr", "permission_name": "edit_records", "permission_description": "Edit patient records", "category": "user"},
@@ -482,7 +488,10 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
         },
         "billing_admin": {
             "billing": ["manage_rates", "process_payments", "generate_invoices", "view_financial_reports", "manage_insurance", "handle_refunds"],
-            "physiotherapy": ["view_physio", "bill_sessions", "view_physio_reports", "manage_packages"],
+            "physiotherapy": [
+                "view_physio", "bill_sessions", "view_physio_reports", "manage_packages",
+                "view_physio_documents",
+            ],
             "inpatient": [
                 "view_occupancy",
                 "view_bill", "generate_interim_bill", "finalize_bill",
@@ -500,7 +509,7 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
             "outpatient": ["schedule_appointments", "register_patients", "manage_queues", "view_appointments", "cancel_appointments"],
             "billing": ["process_payments", "generate_invoices", "view_financial_reports"],
             "ehr": ["view_records", "view_history"],
-            "physiotherapy": list(_PHYSIO_RECEPTION) + ["manage_catalog", "manage_therapist_schedules"],
+            "physiotherapy": list(_PHYSIO_RECEPTION) + ["upload_physio_documents"],
             "inpatient": [
                 "view_occupancy", "admit_patients", "update_admission", "discharge_patients",
                 "record_vitals", "view_vitals",
@@ -727,6 +736,7 @@ def init_database_and_seed(seed: Mapping, db_path: str) -> None:
     from app.models.physiotherapy import (  # noqa
         PhysioService, PhysioPackageTemplate, PhysioPatientPackage, PhysioPackageLedger,
         PhysioTherapistAvailability, PhysioTherapistSpecialSchedule, PhysioAppointment,
+        PhysioDocument,
     )
     from app.models.settlement import Settlement, SettlementConfig  # noqa
 

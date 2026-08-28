@@ -176,3 +176,28 @@ class PhysioAppointment(Base):
     therapist = relationship("User", foreign_keys=[therapist_id])
     service = relationship("PhysioService", foreign_keys=[service_id])
     package = relationship("PhysioPatientPackage", foreign_keys=[package_id])
+    documents = relationship("PhysioDocument", back_populates="appointment")
+
+
+class PhysioDocument(Base):
+    """Scanned file attached to a physio patient chart and optionally a session."""
+    __tablename__ = "physio_documents"
+
+    id = Column(Integer, primary_key=True, index=True)
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False, index=True)
+    patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False, index=True)
+    appointment_id = Column(Integer, ForeignKey("physio_appointments.id"), nullable=True, index=True)
+    document_type = Column(String(50), nullable=False, default="scan")
+    # referral, prescription, scan, consent, other
+    document_name = Column(String(200), nullable=False)
+    file_name = Column(String(255), nullable=False)
+    file_path = Column(String(500), nullable=False)
+    file_size = Column(Integer, nullable=True)
+    mime_type = Column(String(100), nullable=True)
+    uploaded_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=system_now)
+
+    patient = relationship("Patient", foreign_keys=[patient_id])
+    appointment = relationship("PhysioAppointment", back_populates="documents")
+    uploaded_by = relationship("User", foreign_keys=[uploaded_by_id])

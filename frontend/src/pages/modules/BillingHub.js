@@ -5,6 +5,7 @@ import SalesSummaryPage from './billing/SalesSummaryPage';
 import PurchaseSummaryPage from './billing/PurchaseSummaryPage';
 import GstReportsPage from './billing/GstReportsPage';
 import GstAuditExportPage from './billing/GstAuditExportPage';
+import ReportsPage from './billing/ReportsPage';
 
 /**
  * Top-level Billing hub. Bills stay on the index route so existing
@@ -14,6 +15,7 @@ export default function BillingHub() {
   return (
     <Routes>
       <Route index element={<BillingModule />} />
+      <Route path="reports" element={<ReportsPage />} />
       <Route path="sales-summary" element={<SalesSummaryPage />} />
       <Route path="purchase-summary" element={<PurchaseSummaryPage />} />
       <Route path="gst" element={<GstReportsPage />} />

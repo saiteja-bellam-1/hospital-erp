@@ -215,6 +215,14 @@ def module_for_bill_type(bill_type: str | None) -> str:
     return BILL_TYPE_TO_MODULE.get((bill_type or "").strip().lower(), "catch_up")
 
 
+def bill_types_for_module(module: str | None) -> list[str]:
+    """Ledger bill_type values that map to a billing-hub module key."""
+    m = (module or "").strip().lower()
+    if not m or m == "all":
+        return []
+    return [bt for bt, mapped in BILL_TYPE_TO_MODULE.items() if mapped == m]
+
+
 def is_pharmacy_sourced_item(item) -> bool:
     item_type = (getattr(item, "item_type", None) or "").strip().lower()
     ref = (getattr(item, "source_ref_type", None) or "").strip().lower()

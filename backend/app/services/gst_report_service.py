@@ -241,9 +241,53 @@ def _purchase_items_by_rate(items) -> dict:
     return by_rate
 
 
+def _norm_name(value) -> str:
+    return " ".join((value or "").strip().lower().split())
+
+
+def _patient_match_info(db: Session, hospital_id: int, patient_id: Optional[int]) -> Optional[dict]:
+    if not patient_id:
+        return None
+    p = db.query(Patient).filter(
+        Patient.id == patient_id,
+        Patient.hospital_id == hospital_id,
+    ).first()
+    if not p:
+        return {"id": int(patient_id), "name": "", "phone": "", "code": "", "mrn": ""}
+    return {
+        "id": p.id,
+        "name": _norm_name(f"{p.first_name or ''} {p.last_name or ''}"),
+        "phone": (p.primary_phone or "").strip(),
+        "code": (p.patient_id or "").strip(),
+        "mrn": (p.mrn or "").strip(),
+    }
+
+
+def _invoice_matches_patient(row: dict, info: Optional[dict]) -> bool:
+    if not info:
+        return True
+    pid = row.get("patient_id")
+    if pid is not None:
+        try:
+            return int(pid) == int(info["id"])
+        except (TypeError, ValueError):
+            return False
+    phone = (row.get("party_phone") or "").strip()
+    if info["phone"] and phone and phone == info["phone"]:
+        return True
+    code = (row.get("patient_code") or "").strip()
+    if code and ((info["code"] and code == info["code"]) or (info["mrn"] and code == info["mrn"])):
+        return True
+    party = _norm_name(row.get("party"))
+    if info["name"] and party and party == info["name"]:
+        return True
+    return False
+
+
 def _invoice_row(module, inv_date, number, billed, discount, tax, collected,
                  party="", gstin="", hsn="", taxable=None, tax_rates="",
-                 tax_by_rate=None, extra=None):
+                 tax_by_rate=None, extra=None, patient_id=None,
+                 party_phone="", patient_code=""):
     billed = _money(billed)
     collected = _money(collected)
     tax = _money(tax)
@@ -278,6 +322,9 @@ def _invoice_row(module, inv_date, number, billed, discount, tax, collected,
         "net": billed,
         "collected": collected,
         "outstanding": _money(max(billed - collected, 0)),
+        "patient_id": patient_id,
+        "party_phone": party_phone or "",
+        "patient_code": patient_code or "",
         **(extra or {}),
     }
 
@@ -308,6 +355,7 @@ def collect_sales_invoices(db: Session, hospital_id: int, d_from: date, d_to: da
             "opd", _as_date(a.appointment_date), a.appointment_number,
             billed, a.discount_amount or 0, 0, collected,
             party=name, gstin=gstin or "", hsn=SAC_HEALTHCARE,
+            patient_id=a.patient_id,
             extra={"tax_category": TAX_EXEMPT, "status": a.payment_status},
         ))
 
@@ -339,6 +387,7 @@ def collect_sales_invoices(db: Session, hospital_id: int, d_from: date, d_to: da
         rows.append(_invoice_row(
             "lab", _as_date(when), number, billed, 0, 0, collected,
             party=name, gstin=gstin or "", hsn=SAC_HEALTHCARE,
+            patient_id=orders[0].patient_id,
             extra={"tax_category": TAX_EXEMPT, "status": status},
         ))
 
@@ -402,6 +451,7 @@ def collect_sales_invoices(db: Session, hospital_id: int, d_from: date, d_to: da
             party=name, gstin=gstin or "", hsn=hsn,
             taxable=taxable,
             tax_by_rate=by_rate,
+            patient_id=b.patient_id,
             extra={"tax_category": cat, "status": b.status, "bill_id": b.id},
         ))
 
@@ -431,6 +481,8 @@ def collect_sales_invoices(db: Session, hospital_id: int, d_from: date, d_to: da
             party=s.patient_name or "", gstin=gstin, hsn="",
             taxable=taxable,
             tax_by_rate=by_rate,
+            party_phone=s.patient_phone or "",
+            patient_code=s.patient_ip_id or "",
             extra={"tax_category": TAX_TAXABLE, "status": s.status, "sale_id": s.id},
         ))
 
@@ -447,6 +499,7 @@ def collect_sales_invoices(db: Session, hospital_id: int, d_from: date, d_to: da
             "canteen", _as_date(s.sale_date), s.sale_number,
             billed, s.discount_amount or 0, 0, billed,
             party=s.customer_name or "", hsn="",
+            party_phone=s.customer_phone or "",
             extra={"tax_category": TAX_EXEMPT, "status": s.status},
         ))
 
@@ -454,10 +507,14 @@ def collect_sales_invoices(db: Session, hospital_id: int, d_from: date, d_to: da
 
 
 def sales_summary(db: Session, hospital_id: int, d_from: date, d_to: date,
-                  module: Optional[str] = None, group_by: str = "day") -> dict:
+                  module: Optional[str] = None, group_by: str = "day",
+                  patient_id: Optional[int] = None) -> dict:
     invoices = collect_sales_invoices(db, hospital_id, d_from, d_to)
     if module and module != "all":
         invoices = [r for r in invoices if r["module"] == module]
+    if patient_id:
+        match = _patient_match_info(db, hospital_id, patient_id)
+        invoices = [r for r in invoices if _invoice_matches_patient(r, match)]
 
     by_module = {m: _empty_totals() for m in ALL_MODULES}
     by_module_rates = {m: {} for m in ALL_MODULES}
@@ -512,6 +569,7 @@ def sales_summary(db: Session, hospital_id: int, d_from: date, d_to: date,
         "date_from": d_from.isoformat(),
         "date_to": d_to.isoformat(),
         "module": module or "all",
+        "patient_id": patient_id,
         "group_by": group_by,
         "tax_rate_columns": rate_cols,
         "by_module": module_rows,
@@ -521,8 +579,12 @@ def sales_summary(db: Session, hospital_id: int, d_from: date, d_to: date,
     }
 
 
-def outstanding_by_module(db: Session, hospital_id: int, d_from: date, d_to: date) -> dict:
-    summary = sales_summary(db, hospital_id, d_from, d_to, module=None)
+def outstanding_by_module(db: Session, hospital_id: int, d_from: date, d_to: date,
+                          module: Optional[str] = None,
+                          patient_id: Optional[int] = None) -> dict:
+    summary = sales_summary(
+        db, hospital_id, d_from, d_to, module=module, patient_id=patient_id,
+    )
     rows = [
         {
             "module": m["module"],

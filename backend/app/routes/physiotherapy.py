@@ -6,9 +6,11 @@ from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
 from typing import List, Optional
+import os
+import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
@@ -26,9 +28,14 @@ from app.models.physiotherapy import (
     PhysioTherapistAvailability,
     PhysioTherapistSpecialSchedule,
     PhysioAppointment,
+    PhysioDocument,
 )
-from app.utils.auth import Modules
-from app.utils.dependencies import require_feature_permission, require_feature_permission_any
+from app.utils.auth import Modules, UserRoles
+from app.utils.dependencies import (
+    require_feature_permission,
+    require_feature_permission_any,
+    user_has_feature_permission,
+)
 from app.services.audit_service import log_action
 from app.services.physio_revenue import physio_revenue_split
 from app.utils.pdf_service import pdf_service
@@ -38,6 +45,14 @@ from app.utils.time import system_now
 router = APIRouter()
 
 SESSION_TYPES = ("assessment", "treatment", "review")
+ALLOWED_PHYSIO_DOC_TYPES = {"referral", "prescription", "scan", "consent", "other"}
+ALLOWED_PHYSIO_MIME_TYPES = {
+    "application/pdf", "image/jpeg", "image/png", "image/gif", "image/webp",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
+ALLOWED_PHYSIO_DOC_EXT = {".pdf", ".jpg", ".jpeg", ".png", ".gif", ".webp", ".doc", ".docx"}
+MAX_PHYSIO_DOC_SIZE = 10 * 1024 * 1024  # 10MB
 DEFAULT_WEEKLY = {
     "monday": {"start_time": "09:00", "end_time": "17:00", "enabled": True},
     "tuesday": {"start_time": "09:00", "end_time": "17:00", "enabled": True},
@@ -62,6 +77,110 @@ def _get_patient(db: Session, patient_id: int, hospital_id: int) -> Patient:
     if not p:
         raise HTTPException(status_code=404, detail="Patient not found")
     return p
+
+
+def require_physio_template_admin(
+    current_user: User = Depends(
+        require_feature_permission(Modules.PHYSIOTHERAPY, "manage_packages")
+    ),
+) -> User:
+    """Package template pricing is hospital-admin only; selling uses manage_packages."""
+    roles = set(current_user.role_names or [])
+    if UserRoles.SUPER_ADMIN in roles or UserRoles.HOSPITAL_ADMIN in roles:
+        return current_user
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Only hospital administrators can manage package templates",
+    )
+
+
+def _get_appointment(db: Session, appointment_id: int, hospital_id: int) -> PhysioAppointment:
+    appt = db.query(PhysioAppointment).filter(
+        PhysioAppointment.id == appointment_id,
+        PhysioAppointment.hospital_id == hospital_id,
+    ).first()
+    if not appt:
+        raise HTTPException(status_code=404, detail="Appointment not found")
+    return appt
+
+
+def _serialize_document(doc: PhysioDocument, uploaded_by: Optional[User] = None) -> dict:
+    uploader = uploaded_by or getattr(doc, "uploaded_by", None)
+    return {
+        "id": doc.id,
+        "patient_id": doc.patient_id,
+        "appointment_id": doc.appointment_id,
+        "document_type": doc.document_type,
+        "document_name": doc.document_name,
+        "file_name": doc.file_name,
+        "file_size": doc.file_size,
+        "mime_type": doc.mime_type,
+        "notes": doc.notes,
+        "created_at": doc.created_at.isoformat() if doc.created_at else None,
+        "uploaded_by_id": doc.uploaded_by_id,
+        "uploaded_by_name": (
+            f"{uploader.first_name} {uploader.last_name}".strip() if uploader else None
+        ),
+    }
+
+
+async def _store_physio_document(
+    db: Session,
+    *,
+    file: UploadFile,
+    hospital_id: int,
+    patient_id: int,
+    uploaded_by_id: int,
+    document_type: str,
+    document_name: str,
+    notes: str,
+    appointment_id: Optional[int] = None,
+) -> PhysioDocument:
+    dtype = (document_type or "scan").strip().lower()
+    if dtype not in ALLOWED_PHYSIO_DOC_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid document type. Allowed: {', '.join(sorted(ALLOWED_PHYSIO_DOC_TYPES))}",
+        )
+    if file.content_type and file.content_type not in ALLOWED_PHYSIO_MIME_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail="File type not allowed. Supported: PDF, images, Word documents",
+        )
+    content = await file.read()
+    if len(content) > MAX_PHYSIO_DOC_SIZE:
+        raise HTTPException(status_code=400, detail="File too large. Max 10MB")
+
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in ALLOWED_PHYSIO_DOC_EXT:
+        ext = ".bin"
+    stored_name = f"physio_{patient_id}_{uuid.uuid4().hex[:8]}{ext}"
+    rel_path = os.path.join("physio_docs", stored_name)
+
+    from app.utils.paths import get_uploads_dir
+    upload_dir = os.path.join(get_uploads_dir(), "physio_docs")
+    os.makedirs(upload_dir, exist_ok=True)
+    full_path = os.path.join(upload_dir, stored_name)
+    with open(full_path, "wb") as fh:
+        fh.write(content)
+
+    doc = PhysioDocument(
+        hospital_id=hospital_id,
+        patient_id=patient_id,
+        appointment_id=appointment_id,
+        document_type=dtype,
+        document_name=(document_name or file.filename or "Untitled").strip()[:200],
+        file_name=stored_name,
+        file_path=rel_path,
+        file_size=len(content),
+        mime_type=file.content_type,
+        uploaded_by_id=uploaded_by_id,
+        notes=(notes or "").strip() or None,
+    )
+    db.add(doc)
+    db.commit()
+    db.refresh(doc)
+    return doc
 
 
 def _therapist_users(db: Session, hospital_id: int) -> List[User]:
@@ -415,7 +534,7 @@ async def list_package_templates(
 @router.post("/package-templates", status_code=201)
 async def create_package_template(
     data: PackageTemplateIn,
-    current_user: User = Depends(require_feature_permission(Modules.PHYSIOTHERAPY, "manage_packages")),
+    current_user: User = Depends(require_physio_template_admin),
     db: Session = Depends(get_db),
 ):
     hid = _hospital_id(current_user)
@@ -446,7 +565,7 @@ async def create_package_template(
 async def update_package_template(
     template_id: int,
     data: PackageTemplateIn,
-    current_user: User = Depends(require_feature_permission(Modules.PHYSIOTHERAPY, "manage_packages")),
+    current_user: User = Depends(require_physio_template_admin),
     db: Session = Depends(get_db),
 ):
     hid = _hospital_id(current_user)
@@ -1454,8 +1573,6 @@ async def physio_dashboard(
     for a in appts:
         by_status[a.status] = by_status.get(a.status, 0) + 1
 
-    revenue = physio_revenue_split(db, hid, today, today)
-
     recent = (
         db.query(PhysioAppointment)
         .options(
@@ -1469,16 +1586,26 @@ async def physio_dashboard(
         .all()
     )
 
-    return {
+    payload = {
         "date": today.isoformat(),
         "sessions_by_status": by_status,
         "total_sessions": len(appts),
-        "collections": revenue["collections"],
-        "revenue_by_type": revenue["revenue_by_type"],
-        "outstanding_dues": revenue["outstanding_dues"],
         "package_liability": _package_liability(db, hid, today, today),
         "recent_appointments": [_serialize_appt(a) for a in recent],
+        "collections": None,
+        "revenue_by_type": None,
+        "outstanding_dues": None,
+        "can_view_financials": False,
     }
+    if user_has_feature_permission(
+        db, current_user, Modules.PHYSIOTHERAPY, "view_physio_reports"
+    ):
+        revenue = physio_revenue_split(db, hid, today, today)
+        payload["collections"] = revenue["collections"]
+        payload["revenue_by_type"] = revenue["revenue_by_type"]
+        payload["outstanding_dues"] = revenue["outstanding_dues"]
+        payload["can_view_financials"] = True
+    return payload
 
 
 @router.get("/reports/summary")
@@ -1533,3 +1660,187 @@ async def reports_summary(
         "package_liability": _package_liability(db, hid, d_from, d_to),
         "total_sessions": len(appts),
     }
+
+
+def _parse_optional_int(value: Optional[str]) -> Optional[int]:
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid appointment_id")
+
+
+def _list_physio_documents(
+    db: Session,
+    hospital_id: int,
+    patient_id: int,
+    appointment_id: Optional[int] = None,
+) -> list:
+    q = db.query(PhysioDocument).options(
+        joinedload(PhysioDocument.uploaded_by),
+    ).filter(
+        PhysioDocument.hospital_id == hospital_id,
+        PhysioDocument.patient_id == patient_id,
+    )
+    if appointment_id is not None:
+        q = q.filter(PhysioDocument.appointment_id == appointment_id)
+    rows = q.order_by(PhysioDocument.created_at.desc()).all()
+    return [_serialize_document(d, d.uploaded_by) for d in rows]
+
+
+@router.get("/patients/{patient_id}/documents")
+async def list_patient_documents(
+    patient_id: int,
+    appointment_id: Optional[int] = None,
+    current_user: User = Depends(
+        require_feature_permission(Modules.PHYSIOTHERAPY, "view_physio_documents")
+    ),
+    db: Session = Depends(get_db),
+):
+    hid = _hospital_id(current_user)
+    _get_patient(db, patient_id, hid)
+    return _list_physio_documents(db, hid, patient_id, appointment_id)
+
+
+@router.post("/patients/{patient_id}/documents", status_code=201)
+async def upload_patient_document(
+    patient_id: int,
+    file: UploadFile = File(...),
+    document_type: str = Form(default="scan"),
+    document_name: str = Form(default=""),
+    notes: str = Form(default=""),
+    appointment_id: Optional[str] = Form(default=None),
+    current_user: User = Depends(
+        require_feature_permission(Modules.PHYSIOTHERAPY, "upload_physio_documents")
+    ),
+    db: Session = Depends(get_db),
+):
+    hid = _hospital_id(current_user)
+    _get_patient(db, patient_id, hid)
+    appt_id = _parse_optional_int(appointment_id)
+    if appt_id is not None:
+        appt = _get_appointment(db, appt_id, hid)
+        if appt.patient_id != patient_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Appointment does not belong to this patient",
+            )
+    doc = await _store_physio_document(
+        db,
+        file=file,
+        hospital_id=hid,
+        patient_id=patient_id,
+        uploaded_by_id=current_user.id,
+        document_type=document_type,
+        document_name=document_name,
+        notes=notes,
+        appointment_id=appt_id,
+    )
+    log_action(
+        db, current_user, "upload_physio_document", "physiotherapy",
+        "PhysioDocument", doc.id, f"Uploaded '{doc.document_name}'",
+    )
+    return _serialize_document(doc, current_user)
+
+
+@router.get("/appointments/{appointment_id}/documents")
+async def list_appointment_documents(
+    appointment_id: int,
+    current_user: User = Depends(
+        require_feature_permission(Modules.PHYSIOTHERAPY, "view_physio_documents")
+    ),
+    db: Session = Depends(get_db),
+):
+    hid = _hospital_id(current_user)
+    appt = _get_appointment(db, appointment_id, hid)
+    return _list_physio_documents(db, hid, appt.patient_id, appointment_id)
+
+
+@router.post("/appointments/{appointment_id}/documents", status_code=201)
+async def upload_appointment_document(
+    appointment_id: int,
+    file: UploadFile = File(...),
+    document_type: str = Form(default="scan"),
+    document_name: str = Form(default=""),
+    notes: str = Form(default=""),
+    current_user: User = Depends(
+        require_feature_permission(Modules.PHYSIOTHERAPY, "upload_physio_documents")
+    ),
+    db: Session = Depends(get_db),
+):
+    hid = _hospital_id(current_user)
+    appt = _get_appointment(db, appointment_id, hid)
+    doc = await _store_physio_document(
+        db,
+        file=file,
+        hospital_id=hid,
+        patient_id=appt.patient_id,
+        uploaded_by_id=current_user.id,
+        document_type=document_type,
+        document_name=document_name,
+        notes=notes,
+        appointment_id=appt.id,
+    )
+    log_action(
+        db, current_user, "upload_physio_document", "physiotherapy",
+        "PhysioDocument", doc.id, f"Uploaded '{doc.document_name}'",
+    )
+    return _serialize_document(doc, current_user)
+
+
+@router.get("/documents/{document_id}/download")
+async def download_physio_document(
+    document_id: int,
+    current_user: User = Depends(
+        require_feature_permission(Modules.PHYSIOTHERAPY, "view_physio_documents")
+    ),
+    db: Session = Depends(get_db),
+):
+    hid = _hospital_id(current_user)
+    doc = db.query(PhysioDocument).filter(
+        PhysioDocument.id == document_id,
+        PhysioDocument.hospital_id == hid,
+    ).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    from app.utils.paths import get_uploads_dir
+    full_path = os.path.join(get_uploads_dir(), doc.file_path)
+    if not os.path.exists(full_path):
+        raise HTTPException(status_code=404, detail="File not found on disk")
+    return FileResponse(
+        full_path,
+        media_type=doc.mime_type or "application/octet-stream",
+        filename=doc.document_name,
+    )
+
+
+@router.delete("/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_physio_document(
+    document_id: int,
+    current_user: User = Depends(
+        require_feature_permission(Modules.PHYSIOTHERAPY, "delete_physio_documents")
+    ),
+    db: Session = Depends(get_db),
+):
+    hid = _hospital_id(current_user)
+    doc = db.query(PhysioDocument).filter(
+        PhysioDocument.id == document_id,
+        PhysioDocument.hospital_id == hid,
+    ).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    from app.utils.paths import get_uploads_dir
+    full_path = os.path.join(get_uploads_dir(), doc.file_path)
+    if os.path.exists(full_path):
+        try:
+            os.remove(full_path)
+        except OSError:
+            pass
+    log_action(
+        db, current_user, "delete_physio_document", "physiotherapy",
+        "PhysioDocument", doc.id, f"Deleted '{doc.document_name}'",
+    )
+    db.delete(doc)
+    db.commit()
+

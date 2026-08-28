@@ -2,6 +2,7 @@ import React from 'react';
 import { Button } from '../../../components/ui/button';
 import { Input } from '../../../components/ui/input';
 import { Label } from '../../../components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../../components/ui/select';
 import { localDateString, localDateStringOffset, localWeekStart, localMonthStart, localLastMonthRange } from '../../../utils/localDate';
 
 export const BILLING_MODULES = [
@@ -97,6 +98,82 @@ export function BillingDateRange({ dateFrom, dateTo, onFrom, onTo, className }) 
           </Button>
         ))}
       </div>
+    </div>
+  );
+}
+
+/** Single calendar day or an inclusive from/to range. Period type is a dropdown. */
+export function BillingPeriodFilter({ mode, onMode, dateFrom, dateTo, onFrom, onTo, className }) {
+  const applyPreset = (id) => {
+    const today = localDateString();
+    if (id === 'today') { onFrom(today); onTo(today); return; }
+    if (id === 'week') { onFrom(localWeekStart()); onTo(today); return; }
+    if (id === 'month') { onFrom(localMonthStart()); onTo(today); return; }
+    if (id === 'last_month') {
+      const { from, to } = localLastMonthRange();
+      onFrom(from); onTo(to);
+    }
+  };
+  const onPeriodType = (v) => {
+    if (v === 'day') {
+      const day = dateTo || localDateString();
+      onMode('day');
+      onFrom(day);
+      onTo(day);
+      return;
+    }
+    onMode('range');
+    if (dateFrom === dateTo) {
+      onFrom(localDateStringOffset(-30));
+      onTo(dateTo || localDateString());
+    }
+  };
+  return (
+    <div className={className || 'flex flex-wrap gap-3 items-end'}>
+      <div>
+        <Label className="text-xs">Period</Label>
+        <Select value={mode} onValueChange={onPeriodType}>
+          <SelectTrigger className="w-[140px] h-9"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="day">Date</SelectItem>
+            <SelectItem value="range">Date range</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+      {mode === 'day' ? (
+        <div>
+          <Label className="text-xs">Date</Label>
+          <Input
+            type="date"
+            value={dateFrom}
+            onChange={(e) => { onFrom(e.target.value); onTo(e.target.value); }}
+            className="w-[150px] h-9"
+          />
+        </div>
+      ) : (
+        <>
+          <div>
+            <Label className="text-xs">From</Label>
+            <Input type="date" value={dateFrom} onChange={(e) => onFrom(e.target.value)} className="w-[150px] h-9" />
+          </div>
+          <div>
+            <Label className="text-xs">To</Label>
+            <Input type="date" value={dateTo} onChange={(e) => onTo(e.target.value)} className="w-[150px] h-9" />
+          </div>
+          <div>
+            <Label className="text-xs">Quick range</Label>
+            <Select onValueChange={applyPreset}>
+              <SelectTrigger className="w-[150px] h-9"><SelectValue placeholder="Choose…" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="today">Today</SelectItem>
+                <SelectItem value="week">This week</SelectItem>
+                <SelectItem value="month">This month</SelectItem>
+                <SelectItem value="last_month">Last month</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </>
+      )}
     </div>
   );
 }

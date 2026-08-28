@@ -115,7 +115,9 @@ export default function ReportsTab() {
         <CardTitle>Reports</CardTitle>
         <p className="text-sm text-gray-600 font-normal mt-1">
           Stock, narcotic, margin, and closeout stay here. Hospital-wide sales, GST HSN registers, and CA Excel exports are under{' '}
-          <Link to="/dashboard/billing/gst" className="text-blue-600 hover:underline">Billing → GST Reports</Link>
+          <Link to="/dashboard/billing/reports" className="text-blue-600 hover:underline">Billing → Reports</Link>
+          {', '}
+          <Link to="/dashboard/billing/gst" className="text-blue-600 hover:underline">GST Reports</Link>
           {' '}and{' '}
           <Link to="/dashboard/billing/sales-summary" className="text-blue-600 hover:underline">Sales Summary</Link>.
         </p>

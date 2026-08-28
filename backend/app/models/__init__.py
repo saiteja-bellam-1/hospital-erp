@@ -22,6 +22,7 @@ from .physiotherapy import (  # noqa: F401 — register physio mappers with Base
     PhysioTherapistAvailability,
     PhysioTherapistSpecialSchedule,
     PhysioAppointment,
+    PhysioDocument,
 )
 
 __all__ = [

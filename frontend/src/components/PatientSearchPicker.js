@@ -24,6 +24,7 @@ export default function PatientSearchPicker({
   id = 'patient_search',
   className = '',
   compact = false,
+  allowRegister = true,
 }) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
@@ -133,7 +134,9 @@ export default function PatientSearchPicker({
           </div>
 
           {!query.trim() && (
-            <p className="text-gray-400 text-xs mt-1.5">Start typing to search, or add a new patient.</p>
+            <p className="text-gray-400 text-xs mt-1.5">
+              {allowRegister ? 'Start typing to search, or add a new patient.' : 'Start typing to search by name, phone, or ID.'}
+            </p>
           )}
 
           {showResults && query.trim() && (
@@ -146,10 +149,12 @@ export default function PatientSearchPicker({
               ) : results.length === 0 ? (
                 <div className="py-4 px-3 text-center space-y-2">
                   <p className="text-gray-500 text-sm">No patients found for &ldquo;{query.trim()}&rdquo;</p>
-                  <Button type="button" size="sm" variant="outline" onClick={openRegister}>
-                    <UserPlus className="h-4 w-4 mr-1.5" />
-                    Add new patient
-                  </Button>
+                  {allowRegister && (
+                    <Button type="button" size="sm" variant="outline" onClick={openRegister}>
+                      <UserPlus className="h-4 w-4 mr-1.5" />
+                      Add new patient
+                    </Button>
+                  )}
                 </div>
               ) : (
                 <>
@@ -181,12 +186,14 @@ export default function PatientSearchPicker({
                       </button>
                     );
                   })}
-                  <div className="px-3 py-2 border-t bg-gray-50">
-                    <Button type="button" size="sm" variant="ghost" className="w-full text-blue-700" onClick={openRegister}>
-                      <UserPlus className="h-4 w-4 mr-1.5" />
-                      Add new patient
-                    </Button>
-                  </div>
+                  {allowRegister && (
+                    <div className="px-3 py-2 border-t bg-gray-50">
+                      <Button type="button" size="sm" variant="ghost" className="w-full text-blue-700" onClick={openRegister}>
+                        <UserPlus className="h-4 w-4 mr-1.5" />
+                        Add new patient
+                      </Button>
+                    </div>
+                  )}
                 </>
               )}
             </div>
@@ -194,12 +201,14 @@ export default function PatientSearchPicker({
         </>
       )}
 
-      <QuickPatientRegisterDialog
-        open={registerOpen}
-        onOpenChange={setRegisterOpen}
-        initialValues={registerPrefill}
-        onCreated={handleCreated}
-      />
+      {allowRegister && (
+        <QuickPatientRegisterDialog
+          open={registerOpen}
+          onOpenChange={setRegisterOpen}
+          initialValues={registerPrefill}
+          onCreated={handleCreated}
+        />
+      )}
     </div>
   );
 }

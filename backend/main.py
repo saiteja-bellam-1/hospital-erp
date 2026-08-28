@@ -40,6 +40,7 @@ from app.models.canteen import (  # noqa: F401
 from app.models.physiotherapy import (  # noqa: F401
     PhysioService, PhysioPackageTemplate, PhysioPatientPackage, PhysioPackageLedger,
     PhysioTherapistAvailability, PhysioTherapistSpecialSchedule, PhysioAppointment,
+    PhysioDocument,
 )
 from app.models.settlement import Settlement, SettlementConfig  # noqa: F401
 

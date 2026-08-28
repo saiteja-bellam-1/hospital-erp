@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Routes, Route, Navigate, useLocation, Link } from 'react-router-dom';
 import axios from 'axios';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
@@ -10,12 +10,13 @@ import { Badge } from '../../components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../../components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select';
 import { useToast } from '../../hooks/use-toast';
-import { useAuth } from '../../contexts/AuthContext';
+import { usePhysioPermissions } from '../../hooks/usePhysioPermissions';
 import PatientSearchPicker from '../../components/PatientSearchPicker';
 import { printPdfFromUrl } from '../../utils/printPdf';
 import {
   Activity, Calendar, Package, BookOpen, Users, BarChart3, Plus, RefreshCw,
   CheckCircle2, Play, UserX, XCircle, Loader2, Download, LayoutDashboard,
+  Paperclip, Upload, Trash2,
 } from 'lucide-react';
 
 function errMsg(e) {
@@ -37,26 +38,297 @@ const STATUS_BADGE = {
   cancelled: 'bg-red-100 text-red-700',
 };
 
-function usePhysioRoles() {
-  const { user } = useAuth();
-  const roles = useMemo(() => (
-    Array.isArray(user?.roles) ? user.roles
-      : typeof user?.role === 'string' ? [user.role] : []
-  ), [user]);
-  const isAdmin = roles.some((r) => ['super_admin', 'hospital_admin'].includes(r));
-  return {
-    roles,
-    isAdmin,
-    canCatalog: isAdmin || roles.some((r) => ['receptionist'].includes(r)),
-    canSchedule: isAdmin || roles.some((r) => ['receptionist', 'frontdesk', 'physiotherapist'].includes(r)),
-    canAttend: isAdmin || roles.some((r) => ['receptionist', 'frontdesk', 'physiotherapist'].includes(r)),
-    canPackages: isAdmin || roles.some((r) => ['receptionist', 'frontdesk', 'billing_admin'].includes(r)),
-    canReports: isAdmin || roles.some((r) => ['receptionist', 'billing_admin'].includes(r)),
-    canSchedules: isAdmin || roles.some((r) => ['receptionist'].includes(r)),
-  };
+const PHYSIO_DOC_TYPES = [
+  { value: 'scan', label: 'Scan' },
+  { value: 'referral', label: 'Referral' },
+  { value: 'prescription', label: 'Prescription' },
+  { value: 'consent', label: 'Consent' },
+  { value: 'other', label: 'Other' },
+];
+
+function docTypeLabel(t) {
+  return PHYSIO_DOC_TYPES.find((x) => x.value === t)?.label || t || 'Scan';
 }
 
-function NavTabs({ onSellPackage, canSellPackage }) {
+function PermRoute({ allow, loaded, children }) {
+  if (!loaded) {
+    return (
+      <div className="py-8 flex justify-center">
+        <Loader2 className="animate-spin h-5 w-5" />
+      </div>
+    );
+  }
+  if (!allow) return <Navigate to="/dashboard/physiotherapy/dashboard" replace />;
+  return children;
+}
+
+async function downloadPhysioDoc(doc) {
+  const res = await axios.get(`/api/physiotherapy/documents/${doc.id}/download`, {
+    responseType: 'blob',
+  });
+  const url = URL.createObjectURL(res.data);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = doc.document_name || doc.file_name || 'document';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function PhysioDocRow({ doc, canDelete, onDelete }) {
+  const { toast } = useToast();
+  return (
+    <div className="border rounded-lg p-3 text-sm flex items-center justify-between gap-2">
+      <div className="flex items-center gap-2 min-w-0">
+        <Paperclip className="h-4 w-4 text-gray-400 shrink-0" />
+        <div className="min-w-0">
+          <p className="font-medium truncate">{doc.document_name}</p>
+          <div className="flex items-center gap-2 text-xs text-gray-500 flex-wrap">
+            <Badge className="bg-gray-100 text-gray-700 text-xs">{docTypeLabel(doc.document_type)}</Badge>
+            <span>{doc.file_size ? `${(doc.file_size / 1024).toFixed(0)} KB` : ''}</span>
+            <span>{doc.uploaded_by_name || ''}</span>
+            <span>{doc.created_at ? new Date(doc.created_at).toLocaleDateString() : ''}</span>
+          </div>
+          {doc.notes && <p className="text-xs text-gray-400 mt-1">{doc.notes}</p>}
+        </div>
+      </div>
+      <div className="flex gap-1 shrink-0">
+        <Button
+          variant="ghost"
+          size="sm"
+          title="Download"
+          onClick={async () => {
+            try {
+              await downloadPhysioDoc(doc);
+            } catch (e) {
+              toast({ title: 'Download failed', description: errMsg(e), variant: 'destructive' });
+            }
+          }}
+        >
+          <Download className="h-4 w-4" />
+        </Button>
+        {canDelete && (
+          <Button variant="ghost" size="sm" className="text-red-500" title="Delete" onClick={() => onDelete(doc)}>
+            <Trash2 className="h-3 w-3" />
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PhysioDocumentsPanel({ patientId, appointmentId }) {
+  const { toast } = useToast();
+  const { canViewDocs, canUploadDocs, canDeleteDocs } = usePhysioPermissions();
+  const [docs, setDocs] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [docType, setDocType] = useState('scan');
+  const [scope, setScope] = useState(appointmentId ? 'session' : 'patient');
+  const fileRef = useRef(null);
+
+  useEffect(() => {
+    setScope(appointmentId ? 'session' : 'patient');
+  }, [appointmentId, patientId]);
+
+  const load = useCallback(async () => {
+    if (!patientId || !canViewDocs) {
+      setDocs([]);
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await axios.get(`/api/physiotherapy/patients/${patientId}/documents`);
+      setDocs(res.data || []);
+    } catch (e) {
+      toast({ title: 'Failed to load files', description: errMsg(e), variant: 'destructive' });
+    } finally {
+      setLoading(false);
+    }
+  }, [patientId, canViewDocs, toast]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const upload = async (file) => {
+    if (!file || !patientId) return;
+    if (file.size > 10 * 1024 * 1024) {
+      toast({ title: 'File too large', description: 'Max 10MB', variant: 'destructive' });
+      return;
+    }
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('document_type', docType);
+    fd.append('document_name', file.name);
+    if (scope === 'session' && appointmentId) {
+      fd.append('appointment_id', String(appointmentId));
+    }
+    setUploading(true);
+    try {
+      await axios.post(`/api/physiotherapy/patients/${patientId}/documents`, fd);
+      toast({ title: 'Uploaded' });
+      load();
+    } catch (e) {
+      toast({ title: 'Upload failed', description: errMsg(e), variant: 'destructive' });
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const remove = async (doc) => {
+    if (!window.confirm(`Delete "${doc.document_name}"?`)) return;
+    try {
+      await axios.delete(`/api/physiotherapy/documents/${doc.id}`);
+      toast({ title: 'Deleted' });
+      load();
+    } catch (e) {
+      toast({ title: 'Delete failed', description: errMsg(e), variant: 'destructive' });
+    }
+  };
+
+  const sessionDocs = appointmentId
+    ? docs.filter((d) => d.appointment_id === appointmentId)
+    : [];
+  const chartDocs = docs.filter((d) => !d.appointment_id);
+  const otherDocs = appointmentId
+    ? docs.filter((d) => d.appointment_id && d.appointment_id !== appointmentId)
+    : docs.filter((d) => d.appointment_id);
+
+  const renderList = (items, empty) => (
+    items.length === 0 ? (
+      <p className="text-sm text-gray-500 text-center py-3">{empty}</p>
+    ) : (
+      <div className="space-y-2">
+        {items.map((doc) => (
+          <PhysioDocRow
+            key={doc.id}
+            doc={doc}
+            canDelete={canDeleteDocs}
+            onDelete={remove}
+          />
+        ))}
+      </div>
+    )
+  );
+
+  if (!canViewDocs) {
+    return <p className="text-sm text-muted-foreground">You do not have permission to view files.</p>;
+  }
+
+  return (
+    <div className="space-y-3">
+      {canUploadDocs && (
+        <div className="border-2 border-dashed rounded-lg p-4 text-center space-y-2">
+          <div className={`grid gap-2 ${appointmentId ? 'grid-cols-2' : 'grid-cols-1'}`}>
+            {appointmentId && (
+              <Select value={scope} onValueChange={setScope}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="session">This session</SelectItem>
+                  <SelectItem value="patient">Patient chart</SelectItem>
+                </SelectContent>
+              </Select>
+            )}
+            <Select value={docType} onValueChange={setDocType}>
+              <SelectTrigger><SelectValue placeholder="Type" /></SelectTrigger>
+              <SelectContent>
+                {PHYSIO_DOC_TYPES.map((t) => (
+                  <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <input
+            ref={fileRef}
+            type="file"
+            className="hidden"
+            accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.doc,.docx"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) upload(file);
+              e.target.value = '';
+            }}
+          />
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={uploading}
+            onClick={() => fileRef.current?.click()}
+          >
+            <Upload className="h-4 w-4 mr-1" /> {uploading ? 'Uploading...' : 'Upload'}
+          </Button>
+          <p className="text-xs text-gray-400">PDF, images, Word docs (max 10MB)</p>
+        </div>
+      )}
+      {loading ? (
+        <Loader2 className="animate-spin h-5 w-5" />
+      ) : (
+        <>
+          {appointmentId && (
+            <div>
+              <h3 className="text-sm font-semibold text-gray-800">This session</h3>
+              {renderList(sessionDocs, 'No files attached to this session.')}
+            </div>
+          )}
+          <div>
+            <h3 className="text-sm font-semibold text-gray-800">Patient chart</h3>
+            {renderList(chartDocs, 'No patient-level files.')}
+          </div>
+          {otherDocs.length > 0 && (
+            <div>
+              <h3 className="text-sm font-semibold text-gray-800">Other sessions</h3>
+              {renderList(otherDocs, '')}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function PhysioDocumentsDialog({ open, onOpenChange, patientId, patientName, appointmentId }) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Files{patientName ? ` — ${patientName}` : ''}</DialogTitle>
+        </DialogHeader>
+        {open && patientId ? (
+          <PhysioDocumentsPanel patientId={patientId} appointmentId={appointmentId} />
+        ) : (
+          <p className="text-sm text-muted-foreground">Select a patient to view files.</p>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function PatientFilesPickerDialog({ open, onOpenChange, onPick }) {
+  const [patient, setPatient] = useState(null);
+  useEffect(() => {
+    if (!open) setPatient(null);
+  }, [open]);
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Patient files</DialogTitle></DialogHeader>
+        <PatientSearchPicker value={patient} onChange={setPatient} />
+        <DialogFooter>
+          <Button
+            disabled={!patient?.id}
+            onClick={() => {
+              const name = [patient.first_name, patient.last_name].filter(Boolean).join(' ');
+              onPick({ patientId: patient.id, patientName: name });
+              onOpenChange(false);
+            }}
+          >
+            Open files
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function NavTabs({ onSellPackage, canSellPackage, canCatalog, canReports }) {
   const loc = useLocation();
   const base = '/dashboard/physiotherapy';
   const tabs = [
@@ -64,10 +336,10 @@ function NavTabs({ onSellPackage, canSellPackage }) {
     { to: `${base}/today`, label: "Today's Board", icon: Activity },
     { to: `${base}/appointments`, label: 'Appointments', icon: Calendar },
     { to: `${base}/packages`, label: 'Packages', icon: Package },
-    { to: `${base}/catalog`, label: 'Catalog', icon: BookOpen },
+    canCatalog ? { to: `${base}/catalog`, label: 'Catalog', icon: BookOpen } : null,
     { to: `${base}/therapists`, label: 'Therapists', icon: Users },
-    { to: `${base}/reports`, label: 'Reports', icon: BarChart3 },
-  ];
+    canReports ? { to: `${base}/reports`, label: 'Reports', icon: BarChart3 } : null,
+  ].filter(Boolean);
   return (
     <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
       <div className="flex flex-wrap gap-2">
@@ -184,7 +456,7 @@ function SellPackageDialog({ open, onOpenChange, onSold }) {
 
 function CatalogPage() {
   const { toast } = useToast();
-  const { canCatalog } = usePhysioRoles();
+  const { canCatalog } = usePhysioPermissions();
   const [services, setServices] = useState([]);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
@@ -340,7 +612,7 @@ const EMPTY_TEMPLATE_FORM = {
 
 function PackagesPage() {
   const { toast } = useToast();
-  const { canPackages, canSchedule } = usePhysioRoles();
+  const { canManageTemplates, canSchedule } = usePhysioPermissions();
   const [templates, setTemplates] = useState([]);
   const [sold, setSold] = useState([]);
   const [services, setServices] = useState([]);
@@ -430,7 +702,7 @@ function PackagesPage() {
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle>Package templates</CardTitle>
-          {canPackages && (
+          {canManageTemplates && (
             <Button size="sm" onClick={openNewTemplate}><Plus className="h-4 w-4 mr-1" /> Template</Button>
           )}
         </CardHeader>
@@ -444,7 +716,7 @@ function PackagesPage() {
                 <th>Price</th>
                 <th>Validity</th>
                 <th>Status</th>
-                {canPackages && <th />}
+                {canManageTemplates && <th />}
               </tr>
             </thead>
             <tbody>
@@ -460,7 +732,7 @@ function PackagesPage() {
                       {t.is_active !== false ? 'Active' : 'Inactive'}
                     </Badge>
                   </td>
-                  {canPackages && (
+                  {canManageTemplates && (
                     <td>
                       <Button variant="ghost" size="sm" onClick={() => openEditTemplate(t)}>Edit</Button>
                     </td>
@@ -813,6 +1085,7 @@ function BookDialog({ open, onOpenChange, onSaved, therapists, services, initial
 
 function CompleteDialog({ appt, open, onOpenChange, onDone }) {
   const { toast } = useToast();
+  const { canViewDocs } = usePhysioPermissions();
   const [note, setNote] = useState('');
   const [usePackage, setUsePackage] = useState(true);
   const [packageId, setPackageId] = useState('');
@@ -860,7 +1133,7 @@ function CompleteDialog({ appt, open, onOpenChange, onDone }) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent className="max-h-[85vh] overflow-y-auto">
         <DialogHeader><DialogTitle>Complete session — {appt?.patient_name}</DialogTitle></DialogHeader>
         <div className="space-y-3">
           {prepaid && (
@@ -871,6 +1144,12 @@ function CompleteDialog({ appt, open, onOpenChange, onDone }) {
             </p>
           )}
           <div><Label>Session note</Label><Textarea value={note} onChange={(e) => setNote(e.target.value)} /></div>
+          {open && appt?.patient_id && canViewDocs && (
+            <div>
+              <h3 className="text-sm font-semibold mb-2">Scanned documents</h3>
+              <PhysioDocumentsPanel patientId={appt.patient_id} appointmentId={appt.id} />
+            </div>
+          )}
           {!prepaid && packages.length > 0 && (
             <>
               <label className="flex items-center gap-2 text-sm">
@@ -917,7 +1196,7 @@ function CompleteDialog({ appt, open, onOpenChange, onDone }) {
 
 function AppointmentsBoard({ dateFilter }) {
   const { toast } = useToast();
-  const { canSchedule, canAttend } = usePhysioRoles();
+  const { canSchedule, canAttend, canViewDocs } = usePhysioPermissions();
   const [rows, setRows] = useState([]);
   const [therapists, setTherapists] = useState([]);
   const [services, setServices] = useState([]);
@@ -926,6 +1205,8 @@ function AppointmentsBoard({ dateFilter }) {
   const [bookOpen, setBookOpen] = useState(false);
   const [bookPrefill, setBookPrefill] = useState({ package: null, patient: null });
   const [completeAppt, setCompleteAppt] = useState(null);
+  const [filesTarget, setFilesTarget] = useState(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const isTodayBoard = Boolean(dateFilter);
@@ -1027,6 +1308,11 @@ function AppointmentsBoard({ dateFilter }) {
             {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4 mr-1" />}
             Download PDF
           </Button>
+          {canViewDocs && isTodayBoard && (
+            <Button variant="outline" size="sm" onClick={() => setPickerOpen(true)}>
+              <Paperclip className="h-4 w-4 mr-1" /> Patient files
+            </Button>
+          )}
           {canSchedule && (
             <Button size="sm" onClick={() => { setBookPrefill({ package: null, patient: null }); setBookOpen(true); }}>
               <Plus className="h-4 w-4 mr-1" /> Book
@@ -1057,6 +1343,19 @@ function AppointmentsBoard({ dateFilter }) {
                   </div>
                 </div>
                 <div className="flex gap-1 flex-wrap">
+                  {canViewDocs && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setFilesTarget({
+                        patientId: r.patient_id,
+                        patientName: r.patient_name,
+                        appointmentId: r.id,
+                      })}
+                    >
+                      <Paperclip className="h-3.5 w-3.5 mr-1" /> Files
+                    </Button>
+                  )}
                   {canSchedule && r.status === 'scheduled' && (
                     <Button size="sm" variant="outline" onClick={() => act(r.id, 'check-in')}>
                       <CheckCircle2 className="h-3.5 w-3.5 mr-1" /> Check-in
@@ -1101,13 +1400,25 @@ function AppointmentsBoard({ dateFilter }) {
         initialPatient={bookPrefill.patient}
       />
       <CompleteDialog appt={completeAppt} open={!!completeAppt} onOpenChange={(o) => !o && setCompleteAppt(null)} onDone={load} />
+      <PhysioDocumentsDialog
+        open={!!filesTarget}
+        onOpenChange={(o) => { if (!o) setFilesTarget(null); }}
+        patientId={filesTarget?.patientId}
+        patientName={filesTarget?.patientName}
+        appointmentId={filesTarget?.appointmentId}
+      />
+      <PatientFilesPickerDialog
+        open={pickerOpen}
+        onOpenChange={setPickerOpen}
+        onPick={(p) => setFilesTarget({ ...p, appointmentId: null })}
+      />
     </Card>
   );
 }
 
 function TherapistsPage() {
   const { toast } = useToast();
-  const { canSchedules } = usePhysioRoles();
+  const { canSchedules } = usePhysioPermissions();
   const [therapists, setTherapists] = useState([]);
   const [selected, setSelected] = useState(null);
   const [avail, setAvail] = useState(null);
@@ -1228,7 +1539,7 @@ function TherapistsPage() {
 
 function DashboardPage() {
   const { toast } = useToast();
-  const { canPackages, canReports, canSchedule } = usePhysioRoles();
+  const { canPackages, canReports, canSchedule } = usePhysioPermissions();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -1254,7 +1565,8 @@ function DashboardPage() {
         <div>
           <h2 className="text-base font-semibold">Today&apos;s overview</h2>
           <p className="text-sm text-muted-foreground">
-            Sessions, revenue, and recent bookings{data?.date ? ` · ${data.date}` : ''}
+            {canReports ? 'Sessions, revenue, and recent bookings' : 'Today\'s sessions and recent bookings'}
+            {data?.date ? ` · ${data.date}` : ''}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -1278,7 +1590,7 @@ function DashboardPage() {
         <Loader2 className="animate-spin" />
       ) : (
         <>
-          <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className={`grid gap-3 ${canReports ? 'sm:grid-cols-2 lg:grid-cols-4' : 'sm:grid-cols-2'}`}>
             <Card>
               <CardContent className="pt-6">
                 <p className="text-sm text-muted-foreground">Sessions today</p>
@@ -1291,22 +1603,26 @@ function DashboardPage() {
                 </p>
               </CardContent>
             </Card>
-            <Card>
-              <CardContent className="pt-6">
-                <p className="text-sm text-muted-foreground">Collections today</p>
-                <p className="text-2xl font-bold">{fmt(data?.collections?.total)}</p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Cash {fmt(data?.collections?.cash)} · UPI {fmt(data?.collections?.upi)}
-                </p>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-6">
-                <p className="text-sm text-muted-foreground">Outstanding</p>
-                <p className="text-2xl font-bold">{fmt(data?.outstanding_dues)}</p>
-                <p className="text-xs text-muted-foreground mt-1">Unpaid physio bills today</p>
-              </CardContent>
-            </Card>
+            {canReports && data?.collections != null && (
+              <Card>
+                <CardContent className="pt-6">
+                  <p className="text-sm text-muted-foreground">Collections today</p>
+                  <p className="text-2xl font-bold">{fmt(data?.collections?.total)}</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Cash {fmt(data?.collections?.cash)} · UPI {fmt(data?.collections?.upi)}
+                  </p>
+                </CardContent>
+              </Card>
+            )}
+            {canReports && data?.outstanding_dues != null && (
+              <Card>
+                <CardContent className="pt-6">
+                  <p className="text-sm text-muted-foreground">Outstanding</p>
+                  <p className="text-2xl font-bold">{fmt(data?.outstanding_dues)}</p>
+                  <p className="text-xs text-muted-foreground mt-1">Unpaid physio bills today</p>
+                </CardContent>
+              </Card>
+            )}
             <Card>
               <CardContent className="pt-6">
                 <p className="text-sm text-muted-foreground">Sessions owed</p>
@@ -1319,6 +1635,7 @@ function DashboardPage() {
             </Card>
           </div>
 
+          {canReports && data?.revenue_by_type != null && (
           <div>
             <h3 className="text-sm font-medium mb-2">Revenue split (today)</h3>
             <div className="grid sm:grid-cols-2 gap-3">
@@ -1348,6 +1665,7 @@ function DashboardPage() {
               </Card>
             </div>
           </div>
+          )}
 
           <Card>
             <CardHeader className="flex flex-row items-center justify-between flex-wrap gap-2 pb-2">
@@ -1502,7 +1820,7 @@ function ReportsPage() {
 }
 
 export default function PhysiotherapyModule() {
-  const { canPackages } = usePhysioRoles();
+  const { loaded, canPackages, canCatalog, canReports } = usePhysioPermissions();
   const [sellOpen, setSellOpen] = useState(false);
   const [sellTick, setSellTick] = useState(0);
 
@@ -1514,6 +1832,8 @@ export default function PhysiotherapyModule() {
       </div>
       <NavTabs
         canSellPackage={canPackages}
+        canCatalog={canCatalog}
+        canReports={canReports}
         onSellPackage={() => setSellOpen(true)}
       />
       <SellPackageDialog
@@ -1527,9 +1847,23 @@ export default function PhysiotherapyModule() {
         <Route path="today" element={<AppointmentsBoard dateFilter={todayISO()} />} />
         <Route path="appointments" element={<AppointmentsBoard />} />
         <Route path="packages" element={<PackagesPage key={sellTick} />} />
-        <Route path="catalog" element={<CatalogPage />} />
+        <Route
+          path="catalog"
+          element={(
+            <PermRoute loaded={loaded} allow={canCatalog}>
+              <CatalogPage />
+            </PermRoute>
+          )}
+        />
         <Route path="therapists" element={<TherapistsPage />} />
-        <Route path="reports" element={<ReportsPage />} />
+        <Route
+          path="reports"
+          element={(
+            <PermRoute loaded={loaded} allow={canReports}>
+              <ReportsPage />
+            </PermRoute>
+          )}
+        />
       </Routes>
     </div>
   );
