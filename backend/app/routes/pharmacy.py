@@ -12,6 +12,8 @@ Section B adds catalog + master data CRUD.
 """
 from typing import List, Optional
 
+import io
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
@@ -23,7 +25,20 @@ from app.models.hospital import Hospital
 from app.utils.pdf_service import pdf_service
 
 from config.database import get_db
-from app.utils.pdf_settings import pdf_gen_kwargs
+from app.utils.pdf_settings import pdf_gen_kwargs, get_pharmacy_label_settings
+from app.services.barcode_service import (
+    assign_batch_barcode,
+    barcode_exists_for_medicine,
+    normalize_scanned_barcode,
+    resolve_medicine_barcode,
+)
+from app.utils.label_pdf_service import LabelLayoutConfig, build_label_pdf
+
+_LABEL_PDF_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate",
+    "Pragma": "no-cache",
+    "X-Label-Layout-Version": "pharmacy-retail-v4",
+}
 from app.models.user import User
 from datetime import date, datetime, timedelta
 
@@ -319,6 +334,34 @@ def _ensure_unique_medicine_code(
         q = q.filter(Medicine.id != exclude_id)
     if q.first():
         raise HTTPException(status_code=400, detail="Medicine code already exists")
+
+
+def _assign_medicine_barcode(
+    db: Session,
+    medicine: Medicine,
+    hospital_id: int,
+    raw_barcode: Optional[str],
+    user: User,
+    *,
+    is_new: bool,
+) -> None:
+    try:
+        code, source = resolve_medicine_barcode(
+            db, hospital_id, raw_barcode, medicine.id, auto_generate=True,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    changed = medicine.barcode != code
+    medicine.barcode = code
+    medicine.barcode_source = source
+    if is_new or changed:
+        _audit(
+            db, user,
+            "pharmacy_barcode_assigned" if is_new else "pharmacy_barcode_changed",
+            "medicine", medicine.id,
+            f"Medicine barcode {code} ({source})",
+            details={"barcode": code, "source": source},
+        )
 
 
 # ============================================================================
@@ -699,6 +742,7 @@ class MedicineIn(BaseModel):
 class MedicineOut(MedicineIn):
     id: int
     company_name: Optional[str] = None
+    barcode_source: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -707,6 +751,73 @@ class MedicineOut(MedicineIn):
 class MedicineLookupOut(MedicineOut):
     store_stock_qty: float = 0.0
     master_stock_qty: float = 0.0
+    matched_as: Optional[str] = None  # medicine | batch
+    inventory_id: Optional[int] = None
+    batch_id: Optional[int] = None
+    batch_number: Optional[str] = None
+    expiry_date: Optional[date] = None
+    batch_barcode: Optional[str] = None
+
+
+def _lookup_row_stock(
+    db: Session,
+    row: MedicineLookupOut,
+    med_id: int,
+    hospital_id: int,
+    lookup_store_id: Optional[int],
+    master_id: Optional[int],
+) -> None:
+    if lookup_store_id is not None:
+        row.store_stock_qty = sum_store_stock(
+            db, medicine_id=med_id, hospital_id=hospital_id, store_id=lookup_store_id,
+        )
+    if master_id is not None and master_id != lookup_store_id:
+        row.master_stock_qty = sum_store_stock(
+            db, medicine_id=med_id, hospital_id=hospital_id, store_id=master_id,
+        )
+    elif master_id is not None and lookup_store_id is None:
+        row.master_stock_qty = sum_store_stock(
+            db, medicine_id=med_id, hospital_id=hospital_id, store_id=master_id,
+        )
+
+
+def _lookup_by_exact_barcode(
+    db: Session,
+    hospital_id: int,
+    code: str,
+    lookup_store_id: Optional[int],
+    master_id: Optional[int],
+) -> Optional[List[MedicineLookupOut]]:
+    batch_row = db.query(PharmacyInventory).filter(
+        PharmacyInventory.hospital_id == hospital_id,
+        PharmacyInventory.batch_barcode == code,
+    ).first()
+    if batch_row:
+        med = db.query(Medicine).filter(Medicine.id == batch_row.medicine_id).first()
+        if not med or not med.is_active or med.is_hidden:
+            return []
+        base = _medicine_out(med)
+        row = MedicineLookupOut(**base.model_dump())
+        row.matched_as = "batch"
+        row.inventory_id = batch_row.id
+        row.batch_id = batch_row.id
+        row.batch_number = batch_row.batch_number
+        row.expiry_date = batch_row.expiry_date if batch_row.expiry_date else None
+        row.batch_barcode = batch_row.batch_barcode
+        _lookup_row_stock(db, row, med.id, hospital_id, lookup_store_id, master_id)
+        return [row]
+    med = db.query(Medicine).filter(
+        Medicine.hospital_id == hospital_id,
+        Medicine.barcode == code,
+        Medicine.is_active == True,  # noqa: E712
+        Medicine.is_hidden == False,  # noqa: E712
+    ).first()
+    if not med:
+        return None
+    base = _medicine_out(med)
+    row = MedicineLookupOut(**base.model_dump())
+    _lookup_row_stock(db, row, med.id, hospital_id, lookup_store_id, master_id)
+    return [row]
 
 
 def _medicine_out(med: Medicine) -> MedicineOut:
@@ -778,7 +889,7 @@ def lookup_medicine(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_catalog")),
 ):
-    """Lightweight search used by sales counter (name / code / barcode).
+    """Lightweight search used by sales counter (name / code / barcode digits).
 
     When store_id is supplied, each row includes stock at that store and at master
     (for transfer guidance — master qty is informational only).
@@ -788,45 +899,75 @@ def lookup_medicine(
         Medicine.is_active == True,  # noqa: E712
         Medicine.is_hidden == False,  # noqa: E712
     )
-    if barcode:
-        query = query.filter(Medicine.barcode == barcode)
-    elif q:
-        like = f"%{q.lower()}%"
-        query = query.filter(or_(
-            Medicine.name.ilike(like),
-            Medicine.generic_name.ilike(like),
-            Medicine.medicine_code.ilike(like),
-        ))
-    else:
-        return []
-    meds = query.order_by(Medicine.name).limit(limit).all()
-
     lookup_store_id = None
     if store_id is not None:
         lookup_store_id = resolve_store_id(db, current_user, store_id)
     master_id = get_master_store_id(db, current_user.hospital_id)
+    hospital_id = current_user.hospital_id
 
-    out = []
+    raw_q = (q or "").strip()
+    raw_barcode = (barcode or "").strip()
+
+    code = None
+    if raw_barcode:
+        code = normalize_scanned_barcode(raw_barcode)
+        if not code:
+            return []
+    elif raw_q:
+        code = normalize_scanned_barcode(raw_q)
+
+    if code:
+        exact = _lookup_by_exact_barcode(db, hospital_id, code, lookup_store_id, master_id)
+        if exact is not None:
+            return exact
+        if raw_barcode:
+            return []
+
+    if not raw_q:
+        return []
+
+    digits = "".join(c for c in raw_q if c.isdigit())
+    like = f"%{raw_q.lower()}%"
+    filters = [
+        Medicine.name.ilike(like),
+        Medicine.generic_name.ilike(like),
+        Medicine.medicine_code.ilike(like),
+        Medicine.barcode.ilike(like),
+    ]
+    if len(digits) >= 4:
+        digit_like = f"%{digits}%"
+        batch_med_ids = db.query(PharmacyInventory.medicine_id).filter(
+            PharmacyInventory.hospital_id == hospital_id,
+            PharmacyInventory.batch_barcode.ilike(digit_like),
+        )
+        filters.append(Medicine.barcode.ilike(digit_like))
+        filters.append(Medicine.id.in_(batch_med_ids))
+
+    meds = query.filter(or_(*filters)).order_by(Medicine.name).limit(limit).all()
+
+    out: List[MedicineLookupOut] = []
     for med in meds:
         base = _medicine_out(med)
         row = MedicineLookupOut(**base.model_dump())
-        if lookup_store_id is not None:
-            row.store_stock_qty = sum_store_stock(
-                db, medicine_id=med.id, hospital_id=current_user.hospital_id,
-                store_id=lookup_store_id,
-            )
-        if master_id is not None and master_id != lookup_store_id:
-            row.master_stock_qty = sum_store_stock(
-                db, medicine_id=med.id, hospital_id=current_user.hospital_id,
-                store_id=master_id,
-            )
-        elif master_id is not None and lookup_store_id is None:
-            row.master_stock_qty = sum_store_stock(
-                db, medicine_id=med.id, hospital_id=current_user.hospital_id,
-                store_id=master_id,
-            )
+        _lookup_row_stock(db, row, med.id, hospital_id, lookup_store_id, master_id)
         out.append(row)
     return out
+
+
+@router.post("/medicines/{mid}/generate-barcode", response_model=MedicineOut)
+def generate_medicine_barcode(
+    mid: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "manage_medicines")),
+):
+    row = db.query(Medicine).filter(
+        Medicine.id == mid, Medicine.hospital_id == current_user.hospital_id,
+    ).first()
+    _ensure_active_or_404(row, "Medicine")
+    _assign_medicine_barcode(db, row, current_user.hospital_id, None, current_user, is_new=not row.barcode)
+    db.commit()
+    db.refresh(row)
+    return _medicine_out(row)
 
 
 class UnmappedMedicineOut(BaseModel):
@@ -949,6 +1090,90 @@ def get_medicine(
     return _medicine_out(row)
 
 
+class MedicinePurchaseHistoryOut(BaseModel):
+    purchase_item_id: int
+    purchase_id: int
+    purchase_number: str
+    entry_date: date
+    supplier_id: int
+    supplier_name: str
+    batch_number: str
+    expiry_date: Optional[date] = None
+    quantity: float
+    free_quantity: float = 0.0
+    purchase_rate: float = 0.0
+    mrp: float = 0.0
+    rate_a: float = 0.0
+    rate_b: float = 0.0
+    strip_conversion_factor: int = 1
+    inventory_id: Optional[int] = None
+    quantity_in_stock: float = 0.0
+    hsn_id: Optional[int] = None
+
+    class Config:
+        from_attributes = True
+
+
+@router.get("/medicines/{mid}/purchase-history", response_model=List[MedicinePurchaseHistoryOut])
+def medicine_purchase_history(
+    mid: int,
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_purchases")),
+):
+    """Confirmed purchase lines for a medicine, newest first (for purchase-entry reference)."""
+    row = db.query(Medicine).filter(
+        Medicine.id == mid, Medicine.hospital_id == current_user.hospital_id,
+    ).first()
+    _ensure_active_or_404(row, "Medicine")
+
+    sentinel = date(2099, 12, 31)
+    rows = (
+        db.query(PharmacyPurchaseItem, PharmacyPurchase, PharmacySupplier, PharmacyInventory)
+        .join(PharmacyPurchase, PharmacyPurchaseItem.purchase_id == PharmacyPurchase.id)
+        .join(PharmacySupplier, PharmacyPurchase.supplier_id == PharmacySupplier.id)
+        .outerjoin(PharmacyInventory, PharmacyPurchaseItem.inventory_id == PharmacyInventory.id)
+        .filter(
+            PharmacyPurchaseItem.medicine_id == mid,
+            PharmacyPurchase.hospital_id == current_user.hospital_id,
+            PharmacyPurchase.status.in_(("confirmed", "revoked", "revoked_partial")),
+        )
+        .order_by(
+            PharmacyPurchase.entry_date.desc(),
+            PharmacyPurchase.id.desc(),
+            PharmacyPurchaseItem.id.desc(),
+        )
+        .limit(limit)
+        .all()
+    )
+    out: List[MedicinePurchaseHistoryOut] = []
+    for item, purchase, supplier, inv in rows:
+        expiry = item.expiry_date
+        if expiry and expiry == sentinel:
+            expiry = None
+        out.append(MedicinePurchaseHistoryOut(
+            purchase_item_id=item.id,
+            purchase_id=purchase.id,
+            purchase_number=purchase.purchase_number,
+            entry_date=purchase.entry_date,
+            supplier_id=supplier.id,
+            supplier_name=supplier.name or "",
+            batch_number=item.batch_number,
+            expiry_date=expiry,
+            quantity=float(item.quantity or 0),
+            free_quantity=float(item.free_quantity or 0),
+            purchase_rate=float(item.purchase_rate or 0),
+            mrp=float(item.mrp or 0),
+            rate_a=float(item.rate_a or 0),
+            rate_b=float(item.rate_b or 0),
+            strip_conversion_factor=max(1, int(item.strip_conversion_factor or 1)),
+            inventory_id=item.inventory_id,
+            quantity_in_stock=float(inv.quantity_in_stock or 0) if inv else 0.0,
+            hsn_id=item.hsn_id,
+        ))
+    return out
+
+
 @router.post("/medicines", response_model=MedicineOut, status_code=201)
 def create_medicine(
     data: MedicineIn,
@@ -957,13 +1182,19 @@ def create_medicine(
 ):
     _ensure_unique_medicine_code(db, current_user.hospital_id, data.medicine_code)
 
+    payload = data.model_dump()
+    barcode_input = payload.pop("barcode", None)
     row = Medicine(
         hospital_id=current_user.hospital_id,
-        **data.model_dump(),
+        **payload,
     )
     apply_medicine_price_rounding(row)
     apply_cost_pcs_from_mrp(row)
-    db.add(row); db.commit(); db.refresh(row)
+    db.add(row)
+    db.flush()
+    _assign_medicine_barcode(db, row, current_user.hospital_id, barcode_input, current_user, is_new=True)
+    db.commit()
+    db.refresh(row)
     _audit(db, current_user, "create_medicine", "medicine", row.id,
            f"Created medicine '{row.name}' ({row.medicine_code})")
     return row
@@ -982,11 +1213,18 @@ def update_medicine(
     _ensure_unique_medicine_code(
         db, current_user.hospital_id, data.medicine_code, exclude_id=mid,
     )
-    for k, v in data.model_dump().items():
+    payload = data.model_dump()
+    barcode_input = payload.pop("barcode", None)
+    for k, v in payload.items():
         setattr(row, k, v)
     apply_medicine_price_rounding(row)
     apply_cost_pcs_from_mrp(row)
-    db.commit(); db.refresh(row)
+    if barcode_input is not None:
+        _assign_medicine_barcode(db, row, current_user.hospital_id, barcode_input, current_user, is_new=False)
+    elif not row.barcode:
+        _assign_medicine_barcode(db, row, current_user.hospital_id, None, current_user, is_new=True)
+    db.commit()
+    db.refresh(row)
     _audit(db, current_user, "update_medicine", "medicine", row.id,
            f"Updated medicine #{row.id}")
     return row
@@ -1326,8 +1564,64 @@ class BatchOut(BaseModel):
     purchase_id: Optional[int] = None
     hsn_id: Optional[int] = None
     is_active: bool
+    batch_barcode: Optional[str] = None
 
     class Config: from_attributes = True
+
+
+def _pharmacy_label_dict(db: Session, inv: PharmacyInventory, med: Medicine, hospital_id: int) -> dict:
+    if not inv.batch_barcode:
+        assign_batch_barcode(db, inv, hospital_id)
+        db.flush()
+    expiry = inv.expiry_date
+    if expiry and expiry == _EXPIRY_SENTINEL:
+        expiry = None
+    return {
+        "inventory_id": inv.id,
+        "name": med.name,
+        "batch_number": inv.batch_number,
+        "expiry_date": expiry.isoformat() if expiry else "",
+        "batch_barcode": inv.batch_barcode or med.barcode or "",
+        "barcode": inv.batch_barcode or med.barcode or "",
+    }
+
+
+def _inventory_label_pdf(
+    db: Session,
+    hospital_id: int,
+    inventory_ids: List[int],
+    user: User,
+    *,
+    reprint: bool = False,
+) -> bytes:
+    labels: List[dict] = []
+    for iid in inventory_ids:
+        row = db.query(PharmacyInventory, Medicine).join(
+            Medicine, Medicine.id == PharmacyInventory.medicine_id,
+        ).filter(
+            PharmacyInventory.id == iid,
+            PharmacyInventory.hospital_id == hospital_id,
+        ).first()
+        if not row:
+            continue
+        inv, med = row
+        labels.append(_pharmacy_label_dict(db, inv, med, hospital_id))
+    if not labels:
+        raise HTTPException(status_code=400, detail="No inventory batches found for label print")
+    layout = LabelLayoutConfig.from_dict(get_pharmacy_label_settings(db, hospital_id))
+    pharmacy_info = _pharmacy_hospital_info_for_pdf(db, hospital_id)
+    pdf_bytes = build_label_pdf(
+        labels,
+        layout,
+        "pharmacy_batch",
+        pharmacy_display_name=pharmacy_info.get("name") or "",
+    )
+    _audit(
+        db, user, "pharmacy_label_printed", "pharmacy_inventory", inventory_ids[0],
+        f"Pharmacy labels ({len(labels)} batch/es)",
+        details={"inventory_ids": inventory_ids, "reprint": reprint, "count": len(labels)},
+    )
+    return pdf_bytes
 
 
 def _dedupe_joined_names(raw: Optional[str]) -> Optional[str]:
@@ -1472,8 +1766,55 @@ def list_batches(
             manufacturer=(co.name if co else None) or (med.manufacturer or None),
             supplier_id=inv.supplier_id, supplier_name=sup.name if sup else None,
             purchase_id=inv.purchase_id, hsn_id=inv.hsn_id, is_active=inv.is_active,
+            batch_barcode=inv.batch_barcode,
         ) for inv, med, sup, co in rows
     ]
+
+
+@router.get("/inventory/{inventory_id}/label.pdf")
+def download_inventory_label_pdf(
+    inventory_id: int,
+    reprint: bool = False,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_inventory")),
+):
+    pdf_bytes = _inventory_label_pdf(
+        db, current_user.hospital_id, [inventory_id], current_user, reprint=reprint,
+    )
+    db.commit()
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"inline; filename=batch_label_{inventory_id}.pdf",
+            **_LABEL_PDF_HEADERS,
+        },
+    )
+
+
+class InventoryLabelsIn(BaseModel):
+    inventory_ids: List[int] = Field(..., min_length=1)
+
+
+@router.post("/inventory/labels.pdf")
+def download_inventory_labels_batch_pdf(
+    body: InventoryLabelsIn,
+    reprint: bool = False,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_inventory")),
+):
+    pdf_bytes = _inventory_label_pdf(
+        db, current_user.hospital_id, body.inventory_ids, current_user, reprint=reprint,
+    )
+    db.commit()
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": "inline; filename=pharmacy_labels.pdf",
+            **_LABEL_PDF_HEADERS,
+        },
+    )
 
 
 @router.get("/inventory/low-stock", response_model=List[InventoryRowOut])
@@ -2562,6 +2903,20 @@ def _apply_purchase_item_to_inventory(
         )
         db.add(inv)
         db.flush()
+        assign_batch_barcode(db, inv, user.hospital_id)
+        _audit(
+            db, user, "pharmacy_batch_barcode_assigned", "pharmacy_inventory", inv.id,
+            f"Batch barcode {inv.batch_barcode}",
+            details={"batch_barcode": inv.batch_barcode, "medicine_id": item.medicine_id},
+        )
+
+    if existing and not inv.batch_barcode:
+        assign_batch_barcode(db, inv, user.hospital_id)
+        _audit(
+            db, user, "pharmacy_batch_barcode_assigned", "pharmacy_inventory", inv.id,
+            f"Batch barcode {inv.batch_barcode}",
+            details={"batch_barcode": inv.batch_barcode, "medicine_id": item.medicine_id},
+        )
 
     db.add(PharmacyStockLedger(
         medicine_id=item.medicine_id, batch_id=inv.id, txn_type="purchase",
@@ -5918,6 +6273,84 @@ def _split_sale_sgst_cgst(shaped: dict) -> tuple:
     return round(sgst_total, 2), round(cgst_total, 2)
 
 
+def _split_purchase_sgst_cgst(shaped: dict) -> tuple:
+    """Return (sgst_tax, cgst_tax) by splitting each line's tax_amount by snapshotted %."""
+    sgst_total = 0.0
+    cgst_total = 0.0
+    for it in shaped.get("items") or []:
+        tax_amt = float(it.get("tax_amount") or 0)
+        sgst = float(it.get("sgst_pct") or 0)
+        cgst = float(it.get("cgst_pct") or 0)
+        denom = sgst + cgst
+        if tax_amt <= 0 or denom <= 0:
+            continue
+        sgst_total += tax_amt * (sgst / denom)
+        cgst_total += tax_amt * (cgst / denom)
+    return round(sgst_total, 2), round(cgst_total, 2)
+
+
+def _enrich_purchase_invoice_payload(purchase: PharmacyPurchase, shaped: dict, db: Session) -> dict:
+    """Add retail-bill meta fields expected by generate_pharmacy_purchase_pdf."""
+    sup = purchase.supplier
+    if sup:
+        shaped["supplier_gstin"] = (
+            (getattr(sup, "gstin_no", None) or getattr(sup, "gstin", None) or "").strip()
+        )
+        shaped["supplier_address"] = (getattr(sup, "address", None) or "").strip()
+        shaped["supplier_phone"] = (
+            (getattr(sup, "mobile", None) or getattr(sup, "phone", None) or "").strip()
+        )
+    else:
+        shaped["supplier_gstin"] = ""
+        shaped["supplier_address"] = ""
+        shaped["supplier_phone"] = ""
+
+    prepared = "PHARMACY"
+    if getattr(purchase, "created_by", None):
+        u = db.query(User).filter(User.id == purchase.created_by).first()
+        if u and u.username:
+            prepared = u.username.upper()
+    shaped["prepared_by"] = prepared
+    shaped["printed_by"] = prepared
+
+    enriched_items = []
+    for row, it in zip(purchase.items, shaped.get("items") or []):
+        med = db.query(Medicine).filter(Medicine.id == it["medicine_id"]).first()
+        inv = None
+        if it.get("inventory_id"):
+            inv = db.query(PharmacyInventory).filter(
+                PharmacyInventory.id == it["inventory_id"],
+            ).first()
+        ei = dict(it)
+        ei["manufacturer"] = _medicine_manufacturer_name(db, med)
+        ei["schedule"] = _medicine_schedule_label(med)
+        ei["hsn_code"] = _resolve_line_hsn_code(db, med, inv)
+        if not ei["hsn_code"] and getattr(row, "hsn_id", None):
+            hsn = db.query(PharmacyHSN).filter(PharmacyHSN.id == row.hsn_id).first()
+            ei["hsn_code"] = (hsn.code if hsn else "") or ""
+        ei["sgst_pct"] = float(getattr(row, "sgst_pct", None) or 0)
+        ei["cgst_pct"] = float(getattr(row, "cgst_pct", None) or 0)
+        qty = float(it.get("quantity") or 0)
+        free = float(it.get("free_quantity") or 0)
+        ei["qty_display"] = f"{qty:g}+{free:g}" if free > 0 else f"{qty:g}"
+        enriched_items.append(ei)
+    shaped["items"] = enriched_items
+
+    sgst_tax, cgst_tax = _split_purchase_sgst_cgst(shaped)
+    shaped["sgst_tax"] = sgst_tax
+    shaped["cgst_tax"] = cgst_tax
+
+    line_sum = sum(float(it.get("line_total") or 0) for it in shaped.get("items") or [])
+    shaped["total_amt"] = round(line_sum, 2) if line_sum else round(
+        float(shaped.get("subtotal") or 0)
+        + float(shaped.get("total_tax") or 0)
+        - float(shaped.get("total_discount") or 0),
+        2,
+    )
+    shaped["net_amt"] = float(shaped.get("grand_total") or 0)
+    return shaped
+
+
 def _enrich_sale_invoice_payload(sale: PharmacySale, shaped: dict, db: Session) -> dict:
     """Add retail-bill meta fields expected by generate_pharmacy_sale_invoice_pdf."""
     meta = _resolve_sale_op_ip_meta(db, sale)
@@ -6010,8 +6443,10 @@ def purchase_pdf(
         raise HTTPException(status_code=404, detail="Purchase not found")
     shaped = _shape_purchase(p, db).model_dump()
     shaped["notes"] = p.notes
+    shaped["revoke_reason"] = p.revoke_reason
     shaped["store_name"] = _store_label(db, p.store_id)
-    hi = _hospital_info_for_pdf(db, current_user.hospital_id)
+    shaped = _enrich_purchase_invoice_payload(p, shaped, db)
+    hi = _pharmacy_hospital_info_for_pdf(db, current_user.hospital_id)
     buf = pdf_service.generate_pharmacy_purchase_pdf(shaped, hi, **pdf_gen_kwargs(db, current_user.hospital_id, 'pharmacy_purchase'))
     return _pdf_response(buf, f"{p.purchase_number}.pdf")
 

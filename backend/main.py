@@ -127,6 +127,13 @@ def _run_schema_bootstrap():
         raise RuntimeError(
             f"Schema migration migrate_pharmacy_stores failed — refusing to boot. Error: {e}"
         )
+    try:
+        from migrate_barcodes import migrate as _barcode_migrate
+        run_migration(_engine, "migrate_barcodes", _barcode_migrate)
+    except Exception as e:
+        raise RuntimeError(
+            f"Schema migration migrate_barcodes failed — refusing to boot. Error: {e}"
+        )
 
 
 def _run_operational_startup():

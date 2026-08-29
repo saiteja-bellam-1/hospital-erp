@@ -766,6 +766,8 @@ class PrintSettingsUpdate(BaseModel):
     letterhead_gap_mm: Optional[float] = None
     report_header_overrides: Optional[dict[str, str]] = None
     report_footer_overrides: Optional[dict[str, str]] = None
+    lab_label_settings: Optional[dict] = None
+    pharmacy_label_settings: Optional[dict] = None
 
 
 class PrintSettingsPreviewRequest(BaseModel):
@@ -901,6 +903,8 @@ async def update_print_settings(
         letterhead_gap_mm=data.letterhead_gap_mm,
         report_header_overrides=data.report_header_overrides,
         report_footer_overrides=data.report_footer_overrides,
+        lab_label_settings=data.lab_label_settings,
+        pharmacy_label_settings=data.pharmacy_label_settings,
         created_by=current_user.id,
     )
     db.commit()

@@ -9,11 +9,13 @@ import { Textarea } from '../../../components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../../components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../../components/ui/dialog';
 import { useToast } from '../../../hooks/use-toast';
-import { ArrowLeft, Plus, Trash2, Save, CheckCircle2, ScanLine, Pill, ChevronDown, ChevronUp, FileText, Pencil } from 'lucide-react';
+import { ArrowLeft, Plus, Trash2, Save, CheckCircle2, ScanLine, Pill, ChevronDown, ChevronUp, FileText, Pencil, Printer } from 'lucide-react';
 import { computeLineTax, formatHsnOption, hsnTotalTaxPct } from '../../../utils/pharmacyHsnTax';
 import PharmacyMasterSelectWithCreate from '../../../components/pharmacy/PharmacyMasterSelectWithCreate';
 import PharmacyMedicinePicker from '../../../components/pharmacy/PharmacyMedicinePicker';
 import QuickMedicineDialog from '../../../components/pharmacy/QuickMedicineDialog';
+import PurchaseHistoryPanel from '../../../components/pharmacy/PurchaseHistoryPanel';
+import PurchaseLabelsDialog, { buildPurchaseLabelLines } from '../../../components/pharmacy/PurchaseLabelsDialog';
 import { usePharmacyStore } from '../../../contexts/PharmacyStoreContext';
 import FormNavContainer from '../../../components/FormNavContainer';
 import { NAV_SKIP_ATTR } from '../../../utils/formNavigation';
@@ -34,7 +36,26 @@ const emptyLine = () => ({
   strip_conversion_factor: 1,
   discount_pct: '',
   hsn_id: null,
+  inventory_id: null,
+  medicine_name: null,
 });
+
+const mapPurchaseItemsFromApi = (apiItems) => (apiItems || []).map((it) => ({
+  medicine_id: it.medicine_id,
+  batch_number: it.batch_number || '',
+  expiry_mm_yyyy: expiryToDisplay(it.expiry_date),
+  mrp: it.mrp || '',
+  quantity: it.quantity ?? 1,
+  free_quantity: it.free_quantity || '',
+  purchase_rate: it.purchase_rate || '',
+  rate_a: it.rate_a || '',
+  rate_b: it.rate_b || '',
+  strip_conversion_factor: it.strip_conversion_factor || 1,
+  discount_pct: it.discount_pct || '',
+  hsn_id: it.hsn_id ?? null,
+  inventory_id: it.inventory_id ?? null,
+  medicine_name: it.medicine_name ?? null,
+}));
 
 const TODAY = localDateString();
 
@@ -93,6 +114,8 @@ export default function PurchaseEntry() {
   const [medicineCache, setMedicineCache] = useState({});
   const [hsnList, setHsnList] = useState([]);
   const [draftId, setDraftId] = useState(null);
+  const [purchaseLabelsOpen, setPurchaseLabelsOpen] = useState(false);
+  const [labelsNavigateOnClose, setLabelsNavigateOnClose] = useState(false);
   const [purchaseStatus, setPurchaseStatus] = useState(null);
   const [purchaseNumber, setPurchaseNumber] = useState('');
   const [editReason, setEditReason] = useState('');
@@ -110,6 +133,25 @@ export default function PurchaseEntry() {
   const scanRef = useRef(null);
 
   const isConfirmed = purchaseStatus === 'confirmed';
+
+  const purchaseLabelLines = useMemo(
+    () => buildPurchaseLabelLines(items, medicineCache),
+    [items, medicineCache],
+  );
+  const hasPrintableLabels = purchaseLabelLines.some((l) => l.inventoryId);
+
+  const openPurchaseLabels = (navigateOnClose = false) => {
+    setLabelsNavigateOnClose(navigateOnClose);
+    setPurchaseLabelsOpen(true);
+  };
+
+  const closePurchaseLabels = () => {
+    setPurchaseLabelsOpen(false);
+    if (labelsNavigateOnClose) {
+      setLabelsNavigateOnClose(false);
+      navigate('/dashboard/pharmacy/purchases');
+    }
+  };
 
   const companyById = useMemo(() => {
     const map = {};
@@ -234,20 +276,7 @@ export default function PurchaseEntry() {
           bill_discount_pct: Number(p.bill_discount_pct) > 0 ? p.bill_discount_pct : '',
           bill_discount_amount: Number(p.bill_discount_amount) > 0 ? p.bill_discount_amount : '',
         });
-        const loaded = (p.items || []).map((it) => ({
-          medicine_id: it.medicine_id,
-          batch_number: it.batch_number || '',
-          expiry_mm_yyyy: expiryToDisplay(it.expiry_date),
-          mrp: it.mrp || '',
-          quantity: it.quantity ?? 1,
-          free_quantity: it.free_quantity || '',
-          purchase_rate: it.purchase_rate || '',
-          rate_a: it.rate_a || '',
-          rate_b: it.rate_b || '',
-          strip_conversion_factor: it.strip_conversion_factor || 1,
-          discount_pct: it.discount_pct || '',
-          hsn_id: it.hsn_id ?? null,
-        }));
+        const loaded = mapPurchaseItemsFromApi(p.items);
         setItems(loaded);
         await loadMedicinesByIds(loaded.map((it) => it.medicine_id));
       })
@@ -414,13 +443,7 @@ export default function PurchaseEntry() {
     return match ? String(match.id) : '__new__';
   };
 
-  const onPurchaseBatchSelect = (v) => {
-    if (v === '__new__') {
-      setLineField('batch_number', '');
-      return;
-    }
-    const batch = lineBatches.find((b) => String(b.id) === v);
-    if (!batch) return;
+  const applyBatchPrefill = useCallback((batch) => {
     const mrp = batch.mrp ?? '';
     setLineForm((s) => ({
       ...(s || emptyLine()),
@@ -428,11 +451,28 @@ export default function PurchaseEntry() {
       expiry_mm_yyyy: expiryToDisplay(batch.expiry_date),
       mrp,
       purchase_rate: batch.purchase_rate ?? '',
-      rate_a: mrp,
-      rate_b: mrp,
+      rate_a: batch.rate_a != null && batch.rate_a !== '' ? batch.rate_a : mrp,
+      rate_b: batch.rate_b != null && batch.rate_b !== '' ? batch.rate_b : mrp,
       strip_conversion_factor: batch.strip_conversion_factor || 1,
       hsn_id: batch.hsn_id ?? s?.hsn_id ?? null,
     }));
+  }, []);
+
+  const onPurchaseHistorySelect = useCallback((row) => {
+    const invBatch = row.inventory_id
+      ? lineBatches.find((b) => b.id === row.inventory_id)
+      : null;
+    applyBatchPrefill(invBatch || row);
+  }, [lineBatches, applyBatchPrefill]);
+
+  const onPurchaseBatchSelect = (v) => {
+    if (v === '__new__') {
+      setLineField('batch_number', '');
+      return;
+    }
+    const batch = lineBatches.find((b) => String(b.id) === v);
+    if (!batch) return;
+    applyBatchPrefill(batch);
   };
 
   const applyMedicineToForm = (med) => {
@@ -750,8 +790,18 @@ export default function PurchaseEntry() {
         await axios.put(`/api/pharmacy/purchases/${id}`, payload);
       }
       const r2 = await axios.post(`/api/pharmacy/purchases/${id}/confirm`);
+      setPurchaseStatus('confirmed');
+      setPurchaseNumber(r2.data.purchase_number || '');
+      setDraftId(r2.data.id || id);
+      const confirmedItems = mapPurchaseItemsFromApi(r2.data.items);
+      setItems(confirmedItems);
+      await loadMedicinesByIds(confirmedItems.map((it) => it.medicine_id));
       toast({ title: `Confirmed ${r2.data.purchase_number}` });
-      navigate('/dashboard/pharmacy/purchases');
+      if (confirmedItems.some((it) => it.inventory_id)) {
+        openPurchaseLabels(true);
+      } else {
+        navigate('/dashboard/pharmacy/purchases');
+      }
     } catch (e) {
       toast({ variant: 'destructive', title: 'Confirm failed', description: errMsg(e) });
     } finally { setSubmitting(false); }
@@ -843,6 +893,11 @@ export default function PurchaseEntry() {
         <Button size="sm" variant="outline" onClick={() => openMedicineCreate()}>
           <Plus className="h-3 w-3 mr-1" /> New medicine
         </Button>
+        {isConfirmed && hasPrintableLabels && (
+          <Button size="sm" variant="outline" onClick={() => openPurchaseLabels(false)}>
+            <Printer className="h-3 w-3 mr-1" /> Print labels
+          </Button>
+        )}
       </div>
 
       <FormNavContainer mode="grid" className="grid grid-cols-1 xl:grid-cols-[minmax(340px,420px)_minmax(0,1fr)] gap-2 items-start">
@@ -1137,9 +1192,16 @@ export default function PurchaseEntry() {
 
       <div className="flex justify-end gap-2 xl:col-span-2 xl:order-3">
         {isConfirmed ? (
-          <Button onClick={saveConfirmedEdit} disabled={submitting || items.length === 0}>
-            <Save className="h-4 w-4 mr-2" /> Save Changes
-          </Button>
+          <>
+            {hasPrintableLabels && (
+              <Button variant="outline" onClick={() => openPurchaseLabels(false)} disabled={submitting}>
+                <Printer className="h-4 w-4 mr-2" /> Print labels
+              </Button>
+            )}
+            <Button onClick={saveConfirmedEdit} disabled={submitting || items.length === 0}>
+              <Save className="h-4 w-4 mr-2" /> Save Changes
+            </Button>
+          </>
         ) : (
           <>
             <Button variant="outline" onClick={saveDraft} disabled={submitting}><Save className="h-4 w-4 mr-2" /> Save Draft</Button>
@@ -1372,6 +1434,14 @@ export default function PurchaseEntry() {
                   </div>
                 </div>
 
+                {lineForm.medicine_id ? (
+                  <PurchaseHistoryPanel
+                    medicineId={lineForm.medicine_id}
+                    currentBatchNumber={lineForm.batch_number}
+                    onSelectRow={onPurchaseHistorySelect}
+                  />
+                ) : null}
+
                 {selectedMed && (
                   <div className="mt-auto rounded-md border border-blue-100 bg-blue-50/60 px-4 py-3">
                     <div className="font-medium text-blue-900 text-base mb-3">Catalog</div>
@@ -1414,6 +1484,13 @@ export default function PurchaseEntry() {
           </div>
         </DialogContent>
       </Dialog>
+
+      <PurchaseLabelsDialog
+        open={purchaseLabelsOpen}
+        onClose={closePurchaseLabels}
+        title={purchaseNumber ? `Print labels — ${purchaseNumber}` : 'Print batch labels'}
+        lines={purchaseLabelLines}
+      />
     </div>
   );
 }

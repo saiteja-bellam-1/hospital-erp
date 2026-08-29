@@ -1,9 +1,11 @@
 import React from 'react';
+import axios from 'axios';
 import { formatHsnOption } from '../../utils/pharmacyHsnTax';
 import FormNavContainer from '../FormNavContainer';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
 import { Textarea } from '../ui/textarea';
+import { Button } from '../ui/button';
 import PharmacyMasterSelectWithCreate from './PharmacyMasterSelectWithCreate';
 import { costPcsFromMrp, displayPharmacyNumericInput, pharmacyNoSpinInputClass, roundMoney } from '../../utils/pharmacyUnits';
 
@@ -119,6 +121,7 @@ export default function MedicineFormFields({
   onMastersChange,
   activeStep = 0,
   nameReadOnly = false,
+  medicineId = null,
 }) {
   const set = (k, v) => onChange({ ...form, [k]: v });
   const patch = (updates) => onChange(patchMedicineForm(form, updates));
@@ -191,7 +194,32 @@ export default function MedicineFormFields({
               <p className="text-[10px] text-gray-500 mt-0.5">Tabs in one strip. MRP and Rate A/B are per strip; cost/tab = MRP ÷ this number.</p>
             </F>
             <F label="Strength"><Input value={form.strength || ''} onChange={(e) => set('strength', e.target.value)} placeholder="500mg" /></F>
-            <F label="Barcode"><Input value={form.barcode || ''} onChange={(e) => set('barcode', e.target.value)} /></F>
+            <F label="Barcode (EAN-13)">
+              <div className="flex gap-2">
+                <Input
+                  className="font-mono text-sm"
+                  value={form.barcode || ''}
+                  onChange={(e) => set('barcode', e.target.value)}
+                  placeholder="Manufacturer or auto-generated"
+                />
+                {medicineId && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={async () => {
+                      const r = await axios.post(`/api/pharmacy/medicines/${medicineId}/generate-barcode`);
+                      set('barcode', r.data.barcode || '');
+                    }}
+                  >
+                    Generate
+                  </Button>
+                )}
+              </div>
+              {form.barcode_source && (
+                <p className="text-[10px] text-gray-500 mt-0.5">Source: {form.barcode_source}</p>
+              )}
+            </F>
             <F label="Packaging (display only)"><Input value={form.packaging || ''} onChange={(e) => set('packaging', e.target.value)} placeholder="e.g. box of 10 strips" /></F>
             <F label="Dosage Form"><Input value={form.dosage_form || ''} onChange={(e) => set('dosage_form', e.target.value)} placeholder="tablet / syrup / inj" /></F>
             <F label="Decimal supported">

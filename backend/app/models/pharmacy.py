@@ -257,7 +257,8 @@ class Medicine(Base):
     item_discount_pct = Column(Float, default=0.0)
 
     # Catalog metadata (Section B)
-    barcode = Column(String(50), index=True)
+    barcode = Column(String(13), index=True)
+    barcode_source = Column(String(20), nullable=True)  # manufacturer | internal
     packaging = Column(String(100))  # e.g. "10 tabs x 10 strips" (display only)
     decimal_supported = Column(Boolean, default=False)
     strip_conversion_factor = Column(Integer, default=1)  # tablets per strip/sheet
@@ -323,6 +324,9 @@ class PharmacyInventory(Base):
     # so model order at create_all() doesn't depend on Section E. SQLite does
     # not enforce FK constraints by default; reporting joins are explicit.
     purchase_id = Column(Integer, nullable=True)
+
+    batch_barcode = Column(String(13), nullable=True, index=True)
+    batch_barcode_source = Column(String(20), nullable=True)  # manufacturer | internal
 
     store_id = Column(Integer, ForeignKey("pharmacy_stores.id"), nullable=True, index=True)
     is_active = Column(Boolean, default=True)

@@ -9,8 +9,9 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter,
   DialogHeader, DialogTitle,
 } from '../../../../components/ui/dialog';
-import { Plus, RefreshCw, Printer, Undo2, Pencil, Upload, Trash2, RotateCcw } from 'lucide-react';
+import { Plus, RefreshCw, Printer, Undo2, Pencil, Upload, Trash2, RotateCcw, Tag } from 'lucide-react';
 import { printPdfFromUrl } from '../../../../utils/printPdf';
+import PurchaseLabelsDialog, { buildPurchaseLabelLines } from '../../../../components/pharmacy/PurchaseLabelsDialog';
 import { useToast } from '../../../../hooks/use-toast';
 import { errMsg } from '../../PharmacyModule';
 import { usePharmacyStore } from '../../../../contexts/PharmacyStoreContext';
@@ -28,6 +29,7 @@ export default function PurchasesTab() {
   const [revokeReason, setRevokeReason] = useState('');
   const [revoking, setRevoking] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [labelsPurchase, setLabelsPurchase] = useState(null);
 
   const load = async () => {
     setLoading(true);
@@ -136,6 +138,12 @@ export default function PurchasesTab() {
                           <RotateCcw className="h-3 w-3 text-amber-600" />
                         </Button>
                       )}
+                      {p.status === 'confirmed' && buildPurchaseLabelLines(p.items).some((l) => l.inventoryId) && (
+                        <Button size="sm" variant="ghost" title="Print batch labels"
+                          onClick={() => setLabelsPurchase(p)}>
+                          <Tag className="h-3 w-3" />
+                        </Button>
+                      )}
                       <Button size="sm" variant="ghost" title="Print purchase"
                         onClick={() => printPdfFromUrl(`/api/pharmacy/purchases/${p.id}/pdf`)}>
                         <Printer className="h-3 w-3" />
@@ -196,6 +204,13 @@ export default function PurchasesTab() {
           setImportOpen(false);
           navigate('/dashboard/pharmacy/purchases/new', { state: { importDraft: form } });
         }}
+      />
+
+      <PurchaseLabelsDialog
+        open={!!labelsPurchase}
+        onClose={() => setLabelsPurchase(null)}
+        title={labelsPurchase ? `Print labels — ${labelsPurchase.purchase_number}` : 'Print batch labels'}
+        lines={labelsPurchase ? buildPurchaseLabelLines(labelsPurchase.items) : []}
       />
     </Card>
   );

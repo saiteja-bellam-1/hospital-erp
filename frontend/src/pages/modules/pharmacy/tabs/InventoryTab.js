@@ -9,7 +9,8 @@ import { Badge } from '../../../../components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../../../../components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../../../components/ui/select';
 import { useToast } from '../../../../hooks/use-toast';
-import { Search, RefreshCw, Sliders, ScrollText, Upload, Download, Loader2, X, Trash2 } from 'lucide-react';
+import { Search, RefreshCw, Sliders, ScrollText, Upload, Download, Loader2, X, Trash2, Printer } from 'lucide-react';
+import LabelPreviewDialog from '../../../../components/LabelPreviewDialog';
 import PharmacyImportDialog, { downloadPharmacyBlob } from '../../../../components/pharmacy/PharmacyImportDialog';
 import PharmacyMedicinePicker from '../../../../components/pharmacy/PharmacyMedicinePicker';
 import { errMsg } from '../../PharmacyModule';
@@ -66,6 +67,9 @@ export default function InventoryTab() {
   const [correctUpdateMedicine, setCorrectUpdateMedicine] = useState(true);
   const [correctUpdatePurchase, setCorrectUpdatePurchase] = useState(true);
   const [correctSaving, setCorrectSaving] = useState(false);
+
+  const [selectedBatchIds, setSelectedBatchIds] = useState([]);
+  const [labelPreview, setLabelPreview] = useState(null);
 
   useEffect(() => {
     if (view !== 'ledger' || !ledgerMedicine?.id) {
@@ -203,6 +207,30 @@ export default function InventoryTab() {
     }
   };
 
+  const toggleBatchSelect = (id) => {
+    setSelectedBatchIds((prev) => (
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    ));
+  };
+
+  const printBatchLabel = (batchId) => {
+    setLabelPreview({
+      inventoryIds: [batchId],
+      title: 'Batch label',
+      filename: `batch_label_${batchId}.pdf`,
+    });
+  };
+
+  const printSelectedLabels = () => {
+    if (!selectedBatchIds.length) return;
+    setLabelPreview({
+      inventoryIds: selectedBatchIds,
+      title: `Batch labels (${selectedBatchIds.length})`,
+      filename: 'pharmacy_labels.pdf',
+      bulk: true,
+    });
+  };
+
   const showStockImportExport = view === 'stock' || view === 'batches';
 
   const tabBtn = (v, label, Icon) => (
@@ -229,6 +257,11 @@ export default function InventoryTab() {
                 </div>
               )}
               <Button size="sm" variant="outline" onClick={load}><RefreshCw className="h-3 w-3" /></Button>
+              {view === 'batches' && selectedBatchIds.length > 0 && (
+                <Button size="sm" variant="outline" onClick={printSelectedLabels}>
+                  <Printer className="h-3 w-3 mr-1" /> Print {selectedBatchIds.length} label(s)
+                </Button>
+              )}
               {showStockImportExport && (
                 <>
                   {canAdjustStock && (
@@ -348,6 +381,9 @@ export default function InventoryTab() {
                 onCorrect={canAdjustStock ? openCorrect : null}
                 canAdjust={canAdjustStock}
                 onDeleteLedger={canAdjustStock ? deleteLegacyLedger : null}
+                selectedBatchIds={selectedBatchIds}
+                onToggleBatch={view === 'batches' ? toggleBatchSelect : null}
+                onPrintLabel={view === 'batches' ? printBatchLabel : null}
               />
             )}
         </CardContent>
@@ -480,11 +516,28 @@ export default function InventoryTab() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <LabelPreviewDialog
+        open={!!labelPreview}
+        onClose={() => setLabelPreview(null)}
+        title={labelPreview?.title || 'Batch label'}
+        path={labelPreview?.bulk ? '/api/pharmacy/inventory/labels.pdf' : (
+          labelPreview?.inventoryIds?.[0]
+            ? `/api/pharmacy/inventory/${labelPreview.inventoryIds[0]}/label.pdf`
+            : null
+        )}
+        params={{ reprint: true }}
+        filename={labelPreview?.filename || 'label.pdf'}
+        bulkBody={labelPreview?.bulk ? { inventory_ids: labelPreview.inventoryIds } : null}
+      />
     </div>
   );
 }
 
-function TableForView({ view, data, onAdjust, onCorrect, canAdjust, onDeleteLedger }) {
+function TableForView({
+  view, data, onAdjust, onCorrect, canAdjust, onDeleteLedger,
+  selectedBatchIds = [], onToggleBatch, onPrintLabel,
+}) {
   if (view === 'stock') {
     return (
       <table className="w-full text-sm">
@@ -533,6 +586,7 @@ function TableForView({ view, data, onAdjust, onCorrect, canAdjust, onDeleteLedg
     return (
       <table className="w-full text-sm">
         <thead><tr className="border-b text-left text-gray-600">
+          {onToggleBatch ? <th className="py-2 pr-2 w-8" /> : null}
           <th className="py-2 pr-4">Medicine</th>
           <th className="py-2 pr-4">Manufacturer</th>
           <th className="py-2 pr-4">Batch</th>
@@ -542,15 +596,21 @@ function TableForView({ view, data, onAdjust, onCorrect, canAdjust, onDeleteLedg
           <th className="py-2 pr-4">MRP</th><th className="py-2 pr-4">P-Rate</th>
           <th className="py-2 pr-4">Rate A</th>
           <th className="py-2 pr-4">Supplier</th>
-          {canAdjust ? <th className="py-2 text-right">Actions</th> : null}
+          {canAdjust || onPrintLabel ? <th className="py-2 text-right">Actions</th> : null}
         </tr></thead>
         <tbody>
           {data.map(b => {
             const scf = Math.max(1, parseInt(b.strip_conversion_factor, 10) || 1);
             const tabs = Number(b.quantity_in_stock) || 0;
             const free = Number(b.free_quantity) || 0;
+            const selected = selectedBatchIds.includes(b.id);
             return (
-              <tr key={b.id} className="border-b hover:bg-gray-50">
+              <tr key={b.id} className={`border-b hover:bg-gray-50 ${selected ? 'bg-blue-50/40' : ''}`}>
+                {onToggleBatch ? (
+                  <td className="py-2 pr-2">
+                    <input type="checkbox" checked={selected} onChange={() => onToggleBatch(b.id)} />
+                  </td>
+                ) : null}
                 <td className="py-2 pr-4">{b.medicine_name}</td>
                 <td className="py-2 pr-4 text-xs">{b.manufacturer || '—'}</td>
                 <td className="py-2 pr-4 font-mono text-xs">{b.batch_number}</td>
@@ -568,10 +628,17 @@ function TableForView({ view, data, onAdjust, onCorrect, canAdjust, onDeleteLedg
                 <td className="py-2 pr-4">₹{formatMoney(b.purchase_rate)}</td>
                 <td className="py-2 pr-4">₹{formatMoney(b.rate_a)}</td>
                 <td className="py-2 pr-4 text-xs">{b.supplier_name || '—'}</td>
-                {canAdjust ? (
+                {(canAdjust || onPrintLabel) ? (
                   <td className="py-2 text-right whitespace-nowrap space-x-1">
-                    <Button size="sm" variant="outline" onClick={() => onAdjust(b)}>Adjust</Button>
-                    {onCorrect ? (
+                    {onPrintLabel ? (
+                      <Button size="sm" variant="ghost" onClick={() => onPrintLabel(b.id)}>
+                        <Printer className="h-3 w-3 mr-1" /> Label
+                      </Button>
+                    ) : null}
+                    {canAdjust && onAdjust ? (
+                      <Button size="sm" variant="outline" onClick={() => onAdjust(b)}>Adjust</Button>
+                    ) : null}
+                    {canAdjust && onCorrect ? (
                       <Button size="sm" variant="outline" onClick={() => onCorrect(b)}>Correct strip</Button>
                     ) : null}
                   </td>

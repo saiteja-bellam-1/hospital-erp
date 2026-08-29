@@ -761,3 +761,59 @@ def test_purchase_bill_discount_pct_wins_over_amount(client, auth_headers, pharm
     assert data["bill_discount_pct"] == pytest.approx(10)
     assert data["bill_discount_amount"] == pytest.approx(22.4)
     assert data["grand_total"] == pytest.approx(201.6)
+
+
+def test_medicine_purchase_history(client, auth_headers, pharmacy_setup):
+    """Confirmed purchase lines appear on medicine purchase-history (newest first)."""
+    batch_a = f"B-A-{uuid.uuid4().hex[:4]}"
+    batch_b = f"B-B-{uuid.uuid4().hex[:4]}"
+    body_a = _purchase_payload(
+        pharmacy_setup,
+        invoice_number=f"INV-{uuid.uuid4().hex[:6]}",
+        entry_date=date.today() - timedelta(days=2),
+        qty=10,
+        free=2,
+        rate=95.55,
+    )
+    body_a["items"][0]["batch_number"] = batch_a
+    r_a = client.post("/api/pharmacy/purchases", headers=auth_headers, json=body_a)
+    assert r_a.status_code == 201, r_a.text
+    assert client.post(f"/api/pharmacy/purchases/{r_a.json()['id']}/confirm",
+                       headers=auth_headers).status_code == 200
+
+    body_b = _purchase_payload(
+        pharmacy_setup,
+        invoice_number=f"INV-{uuid.uuid4().hex[:6]}",
+        entry_date=date.today() - timedelta(days=1),
+        qty=5,
+        rate=88.0,
+    )
+    body_b["items"][0]["batch_number"] = batch_b
+    r_b = client.post("/api/pharmacy/purchases", headers=auth_headers, json=body_b)
+    assert r_b.status_code == 201, r_b.text
+    assert client.post(f"/api/pharmacy/purchases/{r_b.json()['id']}/confirm",
+                       headers=auth_headers).status_code == 200
+
+    mid = pharmacy_setup["medicine_id"]
+    hist = client.get(f"/api/pharmacy/medicines/{mid}/purchase-history", headers=auth_headers)
+    assert hist.status_code == 200, hist.text
+    rows = hist.json()
+    assert len(rows) >= 2
+    assert rows[0]["batch_number"] == batch_b
+    assert rows[0]["quantity"] == pytest.approx(5)
+    assert rows[0]["quantity_in_stock"] > 0
+
+    older = next(r for r in rows if r["batch_number"] == batch_a)
+    assert older["quantity"] == pytest.approx(10)
+    assert older["free_quantity"] == pytest.approx(2)
+    assert older["purchase_rate"] == pytest.approx(95.55)
+
+    draft = client.post(
+        "/api/pharmacy/purchases",
+        headers=auth_headers,
+        json=_purchase_payload(pharmacy_setup, invoice_number=f"INV-{uuid.uuid4().hex[:6]}"),
+    )
+    assert draft.status_code == 201
+    draft_batch = draft.json()["items"][0]["batch_number"]
+    hist2 = client.get(f"/api/pharmacy/medicines/{mid}/purchase-history", headers=auth_headers)
+    assert not any(r["batch_number"] == draft_batch for r in hist2.json())

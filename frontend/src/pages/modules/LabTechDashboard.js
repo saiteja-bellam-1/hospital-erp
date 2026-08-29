@@ -15,9 +15,9 @@ import {
 import { useAuth } from '../../contexts/AuthContext';
 import axios from 'axios';
 import { format } from 'date-fns';
-import JsBarcode from 'jsbarcode';
 import { localDateString, localDateStringOffset } from '../../utils/localDate';
 import PdfPreviewDialog from '../../components/PdfPreviewDialog';
+import LabelPreviewDialog from '../../components/LabelPreviewDialog';
 
 const LabTechDashboard = () => {
   const { user } = useAuth();
@@ -72,30 +72,8 @@ const LabTechDashboard = () => {
   const [showCollectDialog, setShowCollectDialog] = useState(false);
   const [collectDialogData, setCollectDialogData] = useState(null); // { order, groupedOrders }
 
-  // Sample barcode dialog
-  const [showBarcodeDialog, setShowBarcodeDialog] = useState(false);
-  const [barcodeData, setBarcodeData] = useState(null);
-
-  // Generate barcode as data URL when dialog opens
-  const [barcodeImgSrc, setBarcodeImgSrc] = useState('');
-  useEffect(() => {
-    if (showBarcodeDialog && barcodeData?.sample_id) {
-      try {
-        const canvas = document.createElement('canvas');
-        JsBarcode(canvas, barcodeData.sample_id, {
-          format: 'CODE128',
-          width: 1.5,
-          height: 35,
-          displayValue: false,
-          margin: 0,
-        });
-        setBarcodeImgSrc(canvas.toDataURL('image/png'));
-      } catch (e) {
-        console.error('Barcode generation error:', e);
-        setBarcodeImgSrc('');
-      }
-    }
-  }, [showBarcodeDialog, barcodeData]);
+  // Sample label preview (server PDF)
+  const [labelPreview, setLabelPreview] = useState(null);
 
   // Feedback
   const [feedback, setFeedback] = useState({ message: '', type: '' });
@@ -221,20 +199,12 @@ const LabTechDashboard = () => {
         : 'Order marked as collected';
       showFeedback(msg);
       fetchOrders();
-      // Show barcode popup
       if (res.data.sample_id) {
-        const testNames = [res.data.test_name];
-        if (res.data.grouped_orders) {
-          res.data.grouped_orders.forEach(g => testNames.push(g.test_name));
-        }
-        setBarcodeData({
-          sample_id: res.data.sample_id,
-          order_number: res.data.order_number,
-          patient_name: res.data.patient_name,
-          test_name: testNames.join(', '),
-          test_count: testNames.length,
+        setLabelPreview({
+          orderId: orderId,
+          title: `Sample ${res.data.sample_id}`,
+          filename: `sample_${res.data.sample_id}.pdf`,
         });
-        setShowBarcodeDialog(true);
       }
     } catch (err) {
       showFeedback(err.response?.data?.detail || 'Failed to update status', 'error');
@@ -242,6 +212,15 @@ const LabTechDashboard = () => {
   };
 
   // ============ Result entry ============
+
+  const openSampleLabel = (orderId, sampleId) => {
+    setLabelPreview({
+      orderId,
+      title: sampleId ? `Sample ${sampleId}` : 'Sample label',
+      filename: sampleId ? `sample_${sampleId}.pdf` : 'sample_label.pdf',
+      reprint: true,
+    });
+  };
 
   const openEntryForm = async (orderId) => {
     try {
@@ -642,6 +621,11 @@ const LabTechDashboard = () => {
                 Start Processing
               </Button>
             )}
+            {order.sample_id && (
+              <Button size="sm" variant="ghost" onClick={() => openSampleLabel(order.id, order.sample_id)}>
+                <Printer className="h-3 w-3 mr-1" /> Label
+              </Button>
+            )}
             {(order.status === 'collected' || order.status === 'processing') && (
               <Button size="sm" onClick={() => openEntryForm(order.id)}>
                 <FileText className="h-3 w-3 mr-1" /> Enter Results
@@ -717,6 +701,11 @@ const LabTechDashboard = () => {
                   {order.status === 'collected' && (
                     <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => handleUpdateStatus(order.id, 'processing')}>
                       Start Processing
+                    </Button>
+                  )}
+                  {order.sample_id && (
+                    <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => openSampleLabel(order.id, order.sample_id)}>
+                      <Printer className="h-3 w-3 mr-1" /> Label
                     </Button>
                   )}
                   {(order.status === 'collected' || order.status === 'processing') && (
@@ -802,6 +791,11 @@ const LabTechDashboard = () => {
                 {order.status === 'collected' && (
                   <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => handleUpdateStatus(order.id, 'processing')}>
                     Start Processing
+                  </Button>
+                )}
+                {order.sample_id && (
+                  <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => openSampleLabel(order.id, order.sample_id)}>
+                    <Printer className="h-3 w-3 mr-1" /> Label
                   </Button>
                 )}
                 {(order.status === 'collected' || order.status === 'processing') && (
@@ -1308,62 +1302,14 @@ const LabTechDashboard = () => {
         </DialogContent>
       </Dialog>
 
-      {/* Sample Barcode Dialog */}
-      <Dialog open={showBarcodeDialog} onOpenChange={setShowBarcodeDialog}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <TestTube className="h-5 w-5" /> Sample Label
-            </DialogTitle>
-          </DialogHeader>
-          {barcodeData && (
-            <div className="space-y-4">
-              {/* Label preview */}
-              <div className="border-2 border-dashed border-gray-300 rounded-lg p-4 bg-white text-center">
-                <p className="text-sm font-semibold">{barcodeData.patient_name}</p>
-                {barcodeData.test_count > 1 && (
-                  <p className="text-[10px] text-amber-600 font-medium">{barcodeData.test_count} tests grouped</p>
-                )}
-                <p className="text-xs text-gray-500">{barcodeData.test_name}</p>
-                <div className="mt-2 mb-1">
-                  {barcodeImgSrc && <img src={barcodeImgSrc} alt="barcode" className="mx-auto" style={{ height: 45, maxWidth: '80%' }} />}
-                </div>
-                <p className="text-sm font-bold font-mono tracking-widest">{barcodeData.sample_id}</p>
-                <p className="text-[10px] text-gray-400 mt-0.5">#{barcodeData.order_number}</p>
-              </div>
-              <div className="flex gap-2 justify-center">
-                <Button onClick={() => {
-                  const printWin = window.open('', '_blank', 'width=400,height=300');
-                  printWin.document.write(`<html><head><title>Sample Label</title>
-                    <style>
-                      @page { size: 50mm 30mm; margin: 0; }
-                      * { box-sizing: border-box; margin: 0; padding: 0; }
-                      body { width: 50mm; height: 30mm; font-family: Arial, sans-serif; text-align: center; padding: 1.5mm 2mm; overflow: hidden; }
-                      .name { font-size: 7pt; font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-                      .test { font-size: 5.5pt; color: #555; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 0.5mm; }
-                      .barcode { margin: 1mm auto; }
-                      .barcode img { height: 10mm; max-width: 44mm; }
-                      .sid { font-size: 8pt; font-weight: bold; font-family: monospace; letter-spacing: 0.8px; margin-top: 0.5mm; }
-                      .order { font-size: 4.5pt; color: #888; margin-top: 0.3mm; }
-                    </style></head><body>
-                    <div class="name">${barcodeData.patient_name}</div>
-                    <div class="test">${barcodeData.test_name}</div>
-                    <div class="barcode"><img src="${barcodeImgSrc}" /></div>
-                    <div class="sid">${barcodeData.sample_id}</div>
-                    <div class="order">#${barcodeData.order_number}</div>
-                    </body></html>`);
-                  printWin.document.close();
-                  printWin.focus();
-                  setTimeout(() => { printWin.print(); printWin.close(); }, 400);
-                }} className="gap-1">
-                  <Printer className="h-4 w-4" /> Print Label
-                </Button>
-                <Button variant="outline" onClick={() => setShowBarcodeDialog(false)}>Close</Button>
-              </div>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
+      <LabelPreviewDialog
+        open={!!labelPreview}
+        onClose={() => setLabelPreview(null)}
+        title={labelPreview?.title || 'Sample label'}
+        path={labelPreview?.orderId ? `/api/lab/orders/${labelPreview.orderId}/sample-label.pdf` : null}
+        params={labelPreview?.reprint ? { reprint: true } : {}}
+        filename={labelPreview?.filename || 'sample_label.pdf'}
+      />
 
       <PdfPreviewDialog
         open={!!reportPreview}

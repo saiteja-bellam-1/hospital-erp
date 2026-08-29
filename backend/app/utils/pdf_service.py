@@ -5499,125 +5499,286 @@ class PDFService:
         return buffer
 
     def generate_pharmacy_purchase_pdf(self, purchase_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
-        """GRN / purchase order document for `pharmacy_purchases`.
+        """GRN / purchase receipt — retail layout matching the pharmacy sale invoice.
 
-        Expected keys: purchase_number, entry_date, supplier_name, invoice_number,
-        bill_date, payment_type, purchase_type, status,
-        items: [{medicine_name, batch_number, expiry_date, mrp, quantity,
-                 free_quantity, purchase_rate, discount_pct, tax_amount, line_total}],
-        subtotal, total_discount, total_tax, grand_total, notes
+        Expected `purchase_data` keys (enriched by purchase_pdf route):
+          purchase_number, entry_date, bill_date, supplier_name, supplier_gstin,
+          invoice_number, payment_type, purchase_type, status, store_name,
+          items: [{medicine_name, manufacturer, schedule, batch_number,
+                   expiry_date, hsn_code, sgst_pct, cgst_pct, quantity,
+                   free_quantity, qty_display, purchase_rate, mrp,
+                   discount_pct, line_total}],
+          sgst_tax, cgst_tax, subtotal, total_discount, bill_discount_amount,
+          total_tax, total_amt, net_amt, prepared_by, printed_by, notes,
+          revoke_reason
         """
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4,
-            rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=20)
+        page = landscape(A5)
+        doc = SimpleDocTemplate(buffer, pagesize=page,
+            rightMargin=18, leftMargin=18, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=16)
         elements = []
-        page_width = A4[0] - 60
+        page_width = page[0] - 36
 
-        self._pharmacy_header(elements, hospital_info, include_header,
-                              "PURCHASE / GOODS RECEIPT", page_width, letterhead_gap_pt)
+        status = (purchase_data.get('status') or '').lower()
+        watermark = None
+        if status == 'draft':
+            watermark = "DRAFT"
+        elif status in ('revoked', 'revoked_partial'):
+            watermark = "REVOKED"
 
-        cell = ParagraphStyle('C', parent=self.styles['Normal'], fontSize=8,
-            fontName='Helvetica', textColor=colors.black, leading=11)
+        cell = ParagraphStyle('PhPurchC', parent=self.styles['Normal'], fontSize=6.5,
+            fontName='Helvetica', textColor=colors.black, leading=7.5)
+        cell_sm = ParagraphStyle('PhPurchSm', parent=cell, fontSize=6, leading=7)
+        header_p = ParagraphStyle('PhPurchH', parent=cell_sm, fontName='Helvetica-Bold')
+        center_title = ParagraphStyle('PhPurchTitle', parent=self.styles['Normal'],
+            fontSize=11, alignment=1, fontName='Helvetica-Bold',
+            textColor=colors.black, spaceAfter=1)
+        center_sub = ParagraphStyle('PhPurchSub', parent=self.styles['Normal'],
+            fontSize=7, alignment=1, fontName='Helvetica',
+            textColor=colors.black, spaceAfter=0)
+        center_bill = ParagraphStyle('PhPurchType', parent=self.styles['Normal'],
+            fontSize=8, alignment=1, fontName='Helvetica-Bold',
+            textColor=colors.black, spaceAfter=1)
+
+        def esc(v):
+            return _escape_pdf_inline(v if v is not None else '')
+
         def lv(label, value):
-            return Paragraph(f"<b>{label}:</b> {value}", cell)
+            return Paragraph(f"<b>{esc(label)} :</b> {esc(value)}", cell)
 
-        # Meta
+        # ── Header (pharmacy letterhead + PURCHASE / GOODS RECEIPT + GSTIN) ─
+        if include_header:
+            name = (hospital_info.get('name') or 'PHARMACY').upper()
+            elements.append(Paragraph(esc(name), center_title))
+            addr = hospital_info.get('address')
+            if addr:
+                elements.append(Paragraph(esc(addr), center_sub))
+            phone = hospital_info.get('phone')
+            if phone:
+                elements.append(Paragraph(f"Phone No : {esc(phone)}", center_sub))
+            elements.append(Spacer(1, 1))
+            elements.append(Paragraph("<u>PURCHASE / GOODS RECEIPT</u>", center_bill))
+            gstin = hospital_info.get('gstin') or ''
+            elements.append(Paragraph(f"GSTINNO : {esc(gstin)}", center_sub))
+            elements.append(Spacer(1, 2))
+            elements.append(HRFlowable(width="100%", thickness=0.75, color=colors.black))
+        else:
+            elements.append(Spacer(1, letterhead_gap_pt))
+            elements.append(Paragraph("<u>PURCHASE / GOODS RECEIPT</u>", center_bill))
+            gstin = hospital_info.get('gstin') or ''
+            if gstin:
+                elements.append(Paragraph(f"GSTINNO : {esc(gstin)}", center_sub))
+            elements.append(HRFlowable(width="100%", thickness=0.75, color=colors.black))
+
+        elements.append(Spacer(1, 2))
+
+        # ── Meta: Supplier / invoice / purchase # ───────────────────────────
+        entry_str = _fmt_bill_date(purchase_data.get('entry_date'), empty="")
+        bill_str = _fmt_bill_date(purchase_data.get('bill_date'), empty="") or entry_str
+
+        left_w = page_width * 0.38
+        mid_w = page_width * 0.24
+        right_w = page_width * 0.38
         meta_rows = [
-            [lv("Purchase #", purchase_data.get('purchase_number', '')),
-             lv("Entry Date", str(purchase_data.get('entry_date') or '')),
+            [lv("Supplier Name", purchase_data.get('supplier_name') or ''),
+             lv("Supplier GSTIN", purchase_data.get('supplier_gstin') or ''),
+             lv("Purchase No", purchase_data.get('purchase_number') or '')],
+            [lv("Invoice No", purchase_data.get('invoice_number') or ''),
+             lv("Bill Date", bill_str),
+             lv("Entry Date", entry_str)],
+            [lv("Payment Type", (purchase_data.get('payment_type') or 'CASH').upper()),
+             lv("Purchase Type", purchase_data.get('purchase_type') or '—'),
              lv("Status", (purchase_data.get('status') or '—').upper())],
-            [lv("Supplier", purchase_data.get('supplier_name') or '—'),
-             lv("Invoice #", purchase_data.get('invoice_number') or '—'),
-             lv("Payment", (purchase_data.get('payment_type') or '—').upper())],
+            [lv("Store", purchase_data.get('store_name') or ''),
+             lv("Tax Mode", (purchase_data.get('tax_mode') or 'exclusive').upper()),
+             lv("Category", (purchase_data.get('payment_type') or 'CASH').upper())],
         ]
-        if purchase_data.get('store_name'):
-            meta_rows.append([lv("Store", purchase_data.get('store_name', '')),
-                              Paragraph('', cell), Paragraph('', cell)])
-        meta = Table(meta_rows, colWidths=[page_width / 3] * 3)
+        meta = Table(meta_rows, colWidths=[left_w, mid_w, right_w])
         meta.setStyle(TableStyle([
-            ('BOX', (0, 0), (-1, -1), 0.5, colors.black),
-            ('INNERGRID', (0, 0), (-1, -1), 0.25, colors.grey),
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ('LEFTPADDING', (0, 0), (-1, -1), 6),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
-            ('TOPPADDING', (0, 0), (-1, -1), 4),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 1),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 1),
+            ('TOPPADDING', (0, 0), (-1, -1), 0),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
         ]))
         elements.append(meta)
-        elements.append(Spacer(1, 6))
+        elements.append(Spacer(1, 2))
+        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
+        elements.append(Spacer(1, 2))
 
-        # Items
-        header_p = ParagraphStyle('H', parent=cell, fontName='Helvetica-Bold')
+        # ── Items: 12 columns matching sale invoice ─────────────────────────
+        col_ws = [22, 108, 58, 22, 48, 42, 38, 32, 32, 32, 42, 50]
+        col_sum = sum(col_ws)
+        if abs(col_sum - page_width) > 0.5:
+            scale = page_width / col_sum
+            col_ws = [w * scale for w in col_ws]
+
         rows = [[
-            Paragraph("#", header_p), Paragraph("Medicine", header_p),
-            Paragraph("Batch", header_p),
-            Paragraph("MRP", header_p), Paragraph("Qty", header_p),
-            Paragraph("Free", header_p), Paragraph("P-Rate", header_p),
-            Paragraph("Disc%", header_p), Paragraph("Tax", header_p),
-            Paragraph("Line", header_p),
+            Paragraph("SNo", header_p),
+            Paragraph("Medicine Name", header_p),
+            Paragraph("Manufacturer", header_p),
+            Paragraph("Sch", header_p),
+            Paragraph("Batchno", header_p),
+            Paragraph("Exp.Date", header_p),
+            Paragraph("Hsn", header_p),
+            Paragraph("SGST%", header_p),
+            Paragraph("CGST%", header_p),
+            Paragraph("Qty", header_p),
+            Paragraph("P-Rate", header_p),
+            Paragraph("Total Amt", header_p),
         ]]
+
+        def _fmt_exp(val):
+            if not val:
+                return ''
+            try:
+                if isinstance(val, str):
+                    raw = val[:10]
+                    dt = datetime.strptime(raw, '%Y-%m-%d')
+                else:
+                    dt = val
+                return dt.strftime('%b-%Y')
+            except Exception:
+                return str(val)[:8]
+
         for i, it in enumerate(purchase_data.get('items') or [], start=1):
+            qty_text = it.get('qty_display')
+            if not qty_text:
+                qty = float(it.get('quantity') or 0)
+                free = float(it.get('free_quantity') or 0)
+                qty_text = f"{qty:g}+{free:g}" if free > 0 else f"{qty:g}"
+            sgst = float(it.get('sgst_pct') or 0)
+            cgst = float(it.get('cgst_pct') or 0)
+            rate = float(it.get('purchase_rate') or it.get('rate') or 0)
             rows.append([
-                Paragraph(str(i), cell),
-                Paragraph(str(it.get('medicine_name') or ''), cell),
-                Paragraph(str(it.get('batch_number') or '—'), cell),
-                Paragraph(f"Rs. {it.get('mrp', 0):.2f}", cell),
-                Paragraph(f"{it.get('quantity', 0)}", cell),
-                Paragraph(f"{it.get('free_quantity', 0)}", cell),
-                Paragraph(f"Rs. {it.get('purchase_rate', 0):.2f}", cell),
-                Paragraph(f"{it.get('discount_pct', 0):g}", cell),
-                Paragraph(f"Rs. {it.get('tax_amount', 0):.2f}", cell),
-                Paragraph(f"Rs. {it.get('line_total', 0):.2f}", cell),
+                Paragraph(str(i), cell_sm),
+                Paragraph(esc(it.get('medicine_name') or ''), cell_sm),
+                Paragraph(esc(it.get('manufacturer') or ''), cell_sm),
+                Paragraph(esc(it.get('schedule') or ''), cell_sm),
+                Paragraph(esc(it.get('batch_number') or ''), cell_sm),
+                Paragraph(esc(_fmt_exp(it.get('expiry_date'))), cell_sm),
+                Paragraph(esc(it.get('hsn_code') or ''), cell_sm),
+                Paragraph(f"{sgst:g}", cell_sm),
+                Paragraph(f"{cgst:g}", cell_sm),
+                Paragraph(str(qty_text), cell_sm),
+                Paragraph(f"{rate:.2f}", cell_sm),
+                Paragraph(f"{float(it.get('line_total') or 0):.2f}", cell_sm),
             ])
-        items_tbl = Table(rows, colWidths=[
-            18, page_width * 0.28, 70, 50, 35, 35, 50, 35, 50, 60,
-        ])
+
+        items_tbl = Table(rows, colWidths=col_ws, repeatRows=1)
         items_tbl.setStyle(TableStyle([
-            ('BOX', (0, 0), (-1, -1), 0.5, colors.black),
-            ('INNERGRID', (0, 0), (-1, -1), 0.25, colors.grey),
-            ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
-            ('ALIGN', (3, 1), (-1, -1), 'RIGHT'),
-            ('FONTSIZE', (0, 0), (-1, -1), 7),
+            ('LINEABOVE', (0, 0), (-1, 0), 0.5, colors.black),
+            ('LINEBELOW', (0, 0), (-1, 0), 0.5, colors.black),
+            ('LINEBELOW', (0, -1), (-1, -1), 0.5, colors.black),
+            ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
+            ('ALIGN', (0, 1), (0, -1), 'CENTER'),
+            ('ALIGN', (7, 1), (-1, -1), 'RIGHT'),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 1),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 1),
+            ('TOPPADDING', (0, 0), (-1, -1), 0.5),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 0.5),
         ]))
         elements.append(items_tbl)
-        elements.append(Spacer(1, 8))
+        elements.append(Spacer(1, 3))
 
-        # Totals
-        bill_disc = float(purchase_data.get("bill_discount_amount") or 0)
-        line_disc = max(0.0, float(purchase_data.get("total_discount") or 0) - bill_disc)
-        tot_rows = [
-            [Paragraph("Subtotal", cell), Paragraph(f"Rs. {purchase_data.get('subtotal', 0):.2f}", cell)],
-            [Paragraph("Discount", cell), Paragraph(f"−Rs. {line_disc:.2f}", cell)],
+        # ── Totals: SGST/CGST left; discounts + grand total right ─────────
+        sgst_tax = float(purchase_data.get('sgst_tax') or 0)
+        cgst_tax = float(purchase_data.get('cgst_tax') or 0)
+        total_amt = float(purchase_data.get('total_amt') if purchase_data.get('total_amt') is not None
+                          else purchase_data.get('subtotal') or 0)
+        net_amt = float(purchase_data.get('net_amt') if purchase_data.get('net_amt') is not None
+                        else purchase_data.get('grand_total') or 0)
+        prepared = purchase_data.get('prepared_by') or 'PHARMACY'
+        printed = purchase_data.get('printed_by') or prepared
+
+        bill_disc = float(purchase_data.get('bill_discount_amount') or 0)
+        line_disc = max(0.0, float(purchase_data.get('total_discount') or 0) - bill_disc)
+
+        left_tot = [
+            Paragraph(f"<b>SGST TAX :</b> {sgst_tax:.2f}", cell),
+            Paragraph(f"<b>CGST TAX :</b> {cgst_tax:.2f}", cell),
+            Spacer(1, 2),
+            Paragraph(f"<b>Prepared By :</b> {esc(prepared)}", cell),
+            Paragraph(f"<b>Printed By :</b> {esc(printed)}", cell),
         ]
+        right_lines = [
+            Paragraph(f"<b>Subtotal :</b> {float(purchase_data.get('subtotal') or 0):.2f}", cell),
+        ]
+        if line_disc > 0:
+            right_lines.append(Paragraph(f"<b>Line Discount :</b> {line_disc:.2f}", cell))
         if bill_disc > 0:
-            tot_rows.append([
-                Paragraph("Bill discount", cell),
-                Paragraph(f"−Rs. {bill_disc:.2f}", cell),
-            ])
-        tot_rows.extend([
-            [Paragraph("Tax", cell), Paragraph(f"+Rs. {purchase_data.get('total_tax', 0):.2f}", cell)],
-            [Paragraph("<b>Grand Total</b>", cell),
-             Paragraph(f"<b>Rs. {purchase_data.get('grand_total', 0):.2f}</b>", cell)],
+            right_lines.append(Paragraph(f"<b>Bill Discount :</b> {bill_disc:.2f}", cell))
+        total_tax = float(purchase_data.get('total_tax') or 0)
+        if total_tax > 0 and (sgst_tax + cgst_tax) < 0.01:
+            right_lines.append(Paragraph(f"<b>Tax :</b> {total_tax:.2f}", cell))
+        right_lines.extend([
+            Paragraph(f"<b>Total Amt :</b> {total_amt:.2f}", cell),
+            Paragraph(f"<b>Net Amt :</b> {net_amt:.2f}", cell),
         ])
-        tot = Table(tot_rows, colWidths=[120, 90], hAlign='RIGHT')
-        tot.setStyle(TableStyle([
-            ('BOX', (0, -1), (-1, -1), 0.75, colors.black),
-            ('LINEABOVE', (0, -1), (-1, -1), 0.75, colors.black),
-            ('FONTSIZE', (0, 0), (-1, -1), 8),
-            ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
-            ('LEFTPADDING', (0, 0), (-1, -1), 6),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+        tot_tbl = Table(
+            [[left_tot, right_lines]],
+            colWidths=[page_width * 0.55, page_width * 0.45],
+        )
+        tot_tbl.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 1),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 1),
+            ('TOPPADDING', (0, 0), (-1, -1), 0),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
         ]))
-        elements.append(tot)
+        elements.append(tot_tbl)
+
+        if status in ('revoked', 'revoked_partial'):
+            elements.append(Spacer(1, 3))
+            elements.append(Paragraph(
+                f"<i>REVOKED — {esc(purchase_data.get('revoke_reason') or 'no reason recorded')}</i>",
+                ParagraphStyle('PhPurchRev', parent=cell, fontSize=8, textColor=colors.red),
+            ))
 
         if purchase_data.get('notes'):
-            elements.append(Spacer(1, 10))
-            elements.append(Paragraph(f"<b>Notes:</b> {purchase_data['notes']}",
-                ParagraphStyle('N', parent=cell, fontSize=8, leading=11)))
+            elements.append(Spacer(1, 2))
+            elements.append(Paragraph(
+                f"<b>Notes :</b> {esc(purchase_data.get('notes'))}",
+                ParagraphStyle('PhPurchNotes', parent=cell, fontSize=6.5),
+            ))
 
-        watermark = None
-        if (purchase_data.get('status') or '').lower() == 'draft':
-            watermark = "DRAFT"
+        elements.append(Spacer(1, 3))
+        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black))
+        elements.append(Spacer(1, 2))
+
+        # ── Footer: Terms | *purchase#* | Signature ───────────────────────
+        terms_style = ParagraphStyle('PhPurchTerms', parent=cell, fontSize=6, leading=7)
+        terms = Paragraph(
+            "<b>Terms and Conditions:</b><br/>"
+            "* Goods received in good condition and as per invoice.<br/>"
+            "* Discrepancies must be reported within 24 hours.<br/>"
+            "* Subject to local jurisdiction.",
+            terms_style,
+        )
+        purch_star = Paragraph(
+            f"*{esc(purchase_data.get('purchase_number') or '')}*",
+            ParagraphStyle('PhPurchStar', parent=cell, alignment=1, fontSize=7),
+        )
+        sig = Paragraph(
+            "<br/>Signature",
+            ParagraphStyle('PhPurchSig', parent=cell, alignment=2, fontSize=7),
+        )
+        foot = Table(
+            [[terms, purch_star, sig]],
+            colWidths=[page_width * 0.52, page_width * 0.24, page_width * 0.24],
+        )
+        foot.setStyle(TableStyle([
+            ('BOX', (0, 0), (-1, -1), 0.5, colors.black),
+            ('VALIGN', (0, 0), (-1, -1), 'BOTTOM'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 2),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 2),
+            ('TOPPADDING', (0, 0), (-1, -1), 2),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+        ]))
+        elements.append(foot)
+
         _finalize(doc, elements, hospital_info, watermark=watermark)
         buffer.seek(0)
         return buffer

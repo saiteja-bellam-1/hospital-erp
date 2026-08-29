@@ -13,6 +13,7 @@ class Patient(Base):
     id = Column(Integer, primary_key=True, index=True)
     patient_id = Column(String(36), unique=True, default=lambda: str(uuid.uuid4()), nullable=False)
     mrn = Column(String(32), nullable=True, index=True)
+    mrn_ean13 = Column(String(13), nullable=True, index=True)
     first_name = Column(String(50), nullable=False)
     last_name = Column(String(50), nullable=False)
     date_of_birth = Column(Date)

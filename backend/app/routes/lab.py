@@ -9,7 +9,12 @@ import uuid
 import io
 
 from config.database import get_db
-from app.utils.pdf_settings import bill_pdf_gen_kwargs, pdf_gen_kwargs
+from app.utils.pdf_settings import bill_pdf_gen_kwargs, pdf_gen_kwargs, get_lab_label_settings
+from app.services.barcode_service import (
+    ensure_patient_mrn_ean13,
+    ensure_sample_ean13_for_order,
+)
+from app.services.audit_service import log_action
 from app.models.user import User
 from app.models.patient import Patient
 from app.models.hospital import Hospital
@@ -22,6 +27,7 @@ from app.models.lab import (
 from app.utils.dependencies import get_current_user, require_permission
 from app.utils.auth import Modules
 from app.utils.pdf_service import pdf_service
+from app.utils.label_pdf_service import LabelLayoutConfig, build_label_pdf
 from app.utils.lab_reference import (
     match_reference_range as _match_reference_range,
     filter_reference_ranges,
@@ -32,6 +38,12 @@ from app.utils.lab_reference import (
     uses_tiered_abnormal_check,
     _coerce_float,
 )
+
+_LABEL_PDF_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate",
+    "Pragma": "no-cache",
+    "X-Label-Layout-Version": "pharmacy-retail-v4",
+}
 
 router = APIRouter()
 
@@ -1675,11 +1687,14 @@ async def update_order_status(
 
                 new_sample_id = _generate_sample_id(db)
                 order.sample_id = new_sample_id
+                sample_ean = ensure_sample_ean13_for_order(db, order, current_user.hospital_id)
+                ensure_patient_mrn_ean13(db, order.patient)
 
                 for sibling in sibling_orders:
                     sibling.status = "collected"
                     sibling.collection_date = datetime.now()
                     sibling.sample_id = new_sample_id
+                    sibling.sample_ean13 = sample_ean
                     grouped_orders.append({
                         "id": sibling.id,
                         "order_number": sibling.order_number,
@@ -1687,19 +1702,151 @@ async def update_order_status(
                     })
             else:
                 order.sample_id = _generate_sample_id(db)
+                ensure_sample_ean13_for_order(db, order, current_user.hospital_id)
+                ensure_patient_mrn_ean13(db, order.patient)
+        else:
+            ensure_patient_mrn_ean13(db, order.patient)
         sample_id = order.sample_id
     elif status == "completed":
         order.completion_date = datetime.now()
 
     db.commit()
+    sample_ean13 = order.sample_ean13
+    mrn_ean13 = order.patient.mrn_ean13 if order.patient else None
     return {
         "message": f"Order status updated to {status}",
         "sample_id": sample_id,
+        "sample_ean13": sample_ean13,
+        "mrn_ean13": mrn_ean13,
         "order_number": order.order_number,
         "patient_name": f"{order.patient.first_name} {order.patient.last_name}" if order.patient else "",
+        "patient_mrn": order.patient.mrn if order.patient else "",
         "test_name": order.test.name if order.test else "",
         "grouped_orders": grouped_orders,
     }
+
+
+def _lab_label_dict(order: PatientLabOrder) -> dict:
+    patient = order.patient
+    return {
+        "order_id": order.id,
+        "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "",
+        "mrn": patient.mrn if patient else "",
+        "sample_id": order.sample_id or "",
+        "sample_ean13": order.sample_ean13 or "",
+        "mrn_ean13": patient.mrn_ean13 if patient else "",
+    }
+
+
+def _lab_labels_for_order(db: Session, order: PatientLabOrder, hospital_id: int) -> list[dict]:
+    if not order.sample_id:
+        raise HTTPException(status_code=400, detail="Sample not collected — label unavailable")
+    if not order.sample_ean13:
+        ensure_sample_ean13_for_order(db, order, hospital_id)
+    if order.patient and not order.patient.mrn_ean13:
+        ensure_patient_mrn_ean13(db, order.patient)
+    db.flush()
+    # One label per unique sample_id for this patient collection.
+    siblings = db.query(PatientLabOrder).filter(
+        PatientLabOrder.sample_id == order.sample_id,
+        PatientLabOrder.patient_id == order.patient_id,
+    ).all()
+    if not siblings:
+        siblings = [order]
+    return [_lab_label_dict(siblings[0])]
+
+
+@router.get("/orders/{order_id}/sample-label.pdf")
+async def download_sample_label_pdf(
+    order_id: int,
+    reprint: bool = False,
+    current_user: User = Depends(require_permission(Modules.LAB, "read")),
+    db: Session = Depends(get_db),
+):
+    order = db.query(PatientLabOrder).join(Patient).filter(
+        PatientLabOrder.id == order_id,
+        Patient.hospital_id == current_user.hospital_id,
+    ).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    labels = _lab_labels_for_order(db, order, current_user.hospital_id)
+    hospital = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
+    layout = LabelLayoutConfig.from_dict(get_lab_label_settings(db, current_user.hospital_id))
+    pdf_bytes = build_label_pdf(
+        labels,
+        layout,
+        "lab_sample",
+        lab_display_name=hospital.name if hospital else "Laboratory",
+    )
+    log_action(
+        db, current_user, "lab_sample_label_printed", "lab",
+        resource_type="patient_lab_order", resource_id=order.id,
+        description=f"Sample label PDF for {order.sample_id}",
+        details={"order_id": order.id, "sample_id": order.sample_id, "reprint": reprint},
+    )
+    db.commit()
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"inline; filename=sample_label_{order.sample_id}.pdf",
+            **_LABEL_PDF_HEADERS,
+        },
+    )
+
+
+class SampleLabelBatchIn(BaseModel):
+    order_ids: List[int] = Field(..., min_length=1)
+
+
+@router.post("/orders/sample-labels.pdf")
+async def download_sample_labels_batch_pdf(
+    body: SampleLabelBatchIn,
+    reprint: bool = False,
+    current_user: User = Depends(require_permission(Modules.LAB, "read")),
+    db: Session = Depends(get_db),
+):
+    seen_samples: set[str] = set()
+    labels: list[dict] = []
+    for oid in body.order_ids:
+        order = db.query(PatientLabOrder).join(Patient).filter(
+            PatientLabOrder.id == oid,
+            Patient.hospital_id == current_user.hospital_id,
+        ).first()
+        if not order:
+            continue
+        for label in _lab_labels_for_order(db, order, current_user.hospital_id):
+            sid = label.get("sample_id")
+            if sid and sid in seen_samples:
+                continue
+            if sid:
+                seen_samples.add(sid)
+            labels.append(label)
+    if not labels:
+        raise HTTPException(status_code=400, detail="No collected samples found for label print")
+    hospital = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
+    layout = LabelLayoutConfig.from_dict(get_lab_label_settings(db, current_user.hospital_id))
+    pdf_bytes = build_label_pdf(
+        labels,
+        layout,
+        "lab_sample",
+        lab_display_name=hospital.name if hospital else "Laboratory",
+    )
+    log_action(
+        db, current_user, "lab_sample_label_printed", "lab",
+        resource_type="patient_lab_order", resource_id=body.order_ids[0],
+        description=f"Batch sample labels ({len(labels)} label(s))",
+        details={"order_ids": body.order_ids, "reprint": reprint, "count": len(labels)},
+    )
+    db.commit()
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": "inline; filename=sample_labels.pdf",
+            **_LABEL_PDF_HEADERS,
+        },
+    )
 
 
 @router.post("/orders/{order_id}/cancel", response_model=OrderResponse)

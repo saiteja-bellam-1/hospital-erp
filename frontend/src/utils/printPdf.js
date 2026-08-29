@@ -65,7 +65,10 @@ export const printPdfFromUrl = async (urlOrPath, options = {}) => {
   let createdBlobHere = false;
 
   if (!urlOrPath.startsWith('blob:')) {
-    const params = { ...(options.params || {}) };
+    const params = {
+      ...(options.params || {}),
+      _v: options.params?._v ?? Date.now(),
+    };
 
     try {
       const res = await axios.get(urlOrPath, { responseType: 'blob', params });
@@ -150,7 +153,10 @@ export const printPdfFromUrl = async (urlOrPath, options = {}) => {
  * @returns {Promise<string>}
  */
 export async function fetchPdfBlobUrl(urlOrPath, options = {}) {
-  const params = { ...(options.params || {}) };
+  const params = {
+    ...(options.params || {}),
+    _v: options.params?._v ?? Date.now(),
+  };
   const res = await axios.get(urlOrPath, { responseType: 'blob', params });
   const contentType = res.headers['content-type'] || '';
   if (!(await isPdfBlob(res.data, contentType))) {

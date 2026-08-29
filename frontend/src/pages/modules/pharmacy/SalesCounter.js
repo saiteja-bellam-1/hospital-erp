@@ -39,6 +39,16 @@ import FormNavContainer from '../../../components/FormNavContainer';
 import { NAV_SKIP_ATTR, navCellProps } from '../../../utils/formNavigation';
 import { groupSaleItemsForCart, lineHasStockIssue, lineEditStoreStock } from './saleEditUtils';
 
+const BARCODE_DIGIT_MIN = 12;
+
+function barcodeDigitCount(value) {
+  return (value || '').replace(/\D/g, '').length;
+}
+
+function isLikelyFullBarcode(value) {
+  return barcodeDigitCount(value) >= BARCODE_DIGIT_MIN;
+}
+
 const CART_KEY = 'pharmacy_pos_cart_v1';
 
 function loadCart() {
@@ -292,14 +302,19 @@ export default function SalesCounter() {
     saveCart(activeStoreId, items, customer, activePrescription);
   }, [items, customer, activePrescription, activeStoreId, cartRestored, isEditing]);
 
-  const lookup = useCallback(async (q, isBarcode = false) => {
+  const lookup = useCallback(async (q) => {
     if (!q || q.length < 2) { setLookupResults([]); return; }
     if (!counterStoreId) { setLookupResults([]); return; }
     setSearching(true);
     try {
-      const params = isBarcode
-        ? { barcode: q, store_id: counterStoreId }
-        : { q, store_id: counterStoreId };
+      const trimmed = q.trim();
+      const params = { store_id: counterStoreId };
+      if (isLikelyFullBarcode(trimmed)) {
+        params.barcode = trimmed;
+        params.q = trimmed;
+      } else {
+        params.q = trimmed;
+      }
       const r = await axios.get('/api/pharmacy/medicines/lookup', { params });
       setLookupResults(r.data || []);
     } catch { setLookupResults([]); }
@@ -450,9 +465,19 @@ export default function SalesCounter() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isEditing, selectedPatient?.patient_id, counterStoreId]);
 
-  const addLine = async (med) => {
+  const addLine = async (med, { barcodeScanned = false, batchFromScan = null } = {}) => {
     const batches = await loadBatchesForMedicine(med.id);
-    const nearest = batches[0] || null;
+    let nearest = batches[0] || null;
+    if (batchFromScan) {
+      nearest = batches.find((b) => b.id === batchFromScan.id) || batchFromScan;
+    } else if (med.matched_as === 'batch' && med.batch_id) {
+      nearest = batches.find((b) => b.id === med.batch_id) || {
+        id: med.batch_id,
+        batch_number: med.batch_number,
+        expiry_date: med.expiry_date,
+        quantity_in_stock: med.store_stock_qty ?? 0,
+      };
+    }
     const lineIndex = items.length;
     const defaultTier = defaultTierFor(customer.payment_type);
     setItems(s => [...s, {
@@ -461,17 +486,35 @@ export default function SalesCounter() {
       qty_strips: '',
       rate_tier: defaultTier,
       discount_pct: med.item_discount_pct || med.default_discount_pct || '',
-      batch_id: null,
+      batch_id: nearest?.id || null,
       batch: nearest,
       batches,
-      auto_batch: true,
+      auto_batch: !nearest,
       batch_number: nearest?.batch_number || null,
-      barcode_scanned: false,
+      barcode_scanned: barcodeScanned,
     }]);
-    if (batches.length > 0) {
+    if (batches.length > 0 && !nearest) {
       setBatchPick({ lineIndex, medicine: med, batches, loading: false, rateOnly: false });
     }
     setLookupQ(''); setLookupResults([]);
+  };
+
+  const tryBarcodeScan = async (code) => {
+    const trimmed = (code || '').trim();
+    if (!trimmed || !counterStoreId) return false;
+    try {
+      const params = { store_id: counterStoreId, barcode: trimmed };
+      if (!isLikelyFullBarcode(trimmed)) {
+        params.q = trimmed;
+      }
+      const r = await axios.get('/api/pharmacy/medicines/lookup', { params });
+      const matches = r.data || [];
+      if (matches.length === 1) {
+        await addLine(matches[0], { barcodeScanned: isLikelyFullBarcode(trimmed) });
+        return true;
+      }
+    } catch { /* fall through */ }
+    return false;
   };
 
   const updateLine = (i, patch) => setItems(s => s.map((x, idx) => idx === i ? { ...x, ...patch } : x));
@@ -817,11 +860,22 @@ export default function SalesCounter() {
             <div className="flex-1 relative">
               <Label className="text-xs">Search / Scan barcode</Label>
               <Search className="absolute left-2 top-8 h-4 w-4 text-gray-400" />
-              <Input className={`pl-8 ${compactInput}`} placeholder="Type name / code / scan barcode…"
+              <Input className={`pl-8 ${compactInput}`} placeholder="Name, code, or barcode digits…"
                 value={lookupQ}
                 disabled={!counterStoreId}
                 onChange={e => onLookupChange(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter' && lookupResults.length === 1) addLine(lookupResults[0]); }}
+                onKeyDown={async (e) => {
+                  if (e.key !== 'Enter') return;
+                  e.preventDefault();
+                  if (lookupResults.length === 1) {
+                    addLine(lookupResults[0]);
+                    return;
+                  }
+                  const scanned = await tryBarcodeScan(lookupQ);
+                  if (!scanned && lookupQ.trim().length >= 8) {
+                    openMedicineCreate();
+                  }
+                }}
                 {...{ [NAV_SKIP_ATTR]: '' }}
               />
               {lookupResults.length > 0 && (
@@ -836,6 +890,12 @@ export default function SalesCounter() {
                       </div>
                       <div className="text-xs text-gray-500">
                         {m.medicine_code} · {formatRatesHint(m)}
+                        {m.matched_as === 'batch' && m.batch_number && (
+                          <span className="text-blue-700"> · Batch {m.batch_number}</span>
+                        )}
+                        {(m.barcode || m.batch_barcode) && (
+                          <span> · {m.batch_barcode || m.barcode}</span>
+                        )}
                         {(m.master_stock_qty ?? 0) > 0 && m.store_stock_qty <= 0 && (
                           <span className="text-amber-600"> · Master: {m.master_stock_qty}</span>
                         )}

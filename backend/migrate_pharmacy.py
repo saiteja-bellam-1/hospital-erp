@@ -112,6 +112,10 @@ NEW_COLUMNS = [
     ("pharmacy_suppliers", "ledger_type", "VARCHAR(30) DEFAULT 'unregistered'"),
     ("pharmacy_suppliers", "color_tag", "VARCHAR(20) DEFAULT 'normal'"),
     ("pharmacy_suppliers", "is_hidden", "BOOLEAN DEFAULT 0"),
+    # Barcode labels — medicine + per-batch EAN-13
+    ("medicines", "barcode_source", "VARCHAR(20)"),
+    ("pharmacy_inventory", "batch_barcode", "VARCHAR(13)"),
+    ("pharmacy_inventory", "batch_barcode_source", "VARCHAR(20)"),
 ]
 
 

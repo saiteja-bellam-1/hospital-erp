@@ -6,12 +6,12 @@ import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/ca
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/tabs';
 import { useToast } from '../../hooks/use-toast';
 import { useAuth } from '../../contexts/AuthContext';
-import { Printer, Save, ArrowLeft, Eye, ChevronUp, ChevronDown } from 'lucide-react';
+import { Printer, Save, ArrowLeft, Eye, ChevronUp, ChevronDown, Receipt, FileText, LayoutTemplate, Users } from 'lucide-react';
 import { invalidatePdfPrintSettingsCache, resolveIncludeHeaderForReport, resolveIncludeFooterForReport } from '../../hooks/usePdfPrintSettings';
 import PrintSettingsPreviewDialog from '../../components/PrintSettingsPreviewDialog';
-import { cn } from '../../lib/utils';
 
 const MODULE_ORDER = ['outpatient', 'laboratory', 'billing', 'inpatient', 'pharmacy'];
 const FOOTER_MODULE_ORDER = ['outpatient', 'laboratory'];
@@ -96,17 +96,6 @@ const BillSummaryPreview = ({ detailed }) => {
   );
 };
 
-const SettingsSection = ({ title, children, className }) => (
-  <div className="break-inside-avoid mb-6">
-    <Card className={cn('w-full', className)}>
-      <CardHeader className="pb-3">
-        <CardTitle className="text-lg">{title}</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">{children}</CardContent>
-    </Card>
-  </div>
-);
-
 const DocumentOverrideTable = ({ groups, overrides, onChange, namePrefix, onPreview }) => (
   <div className="space-y-4">
     {groups.map((group) => (
@@ -171,6 +160,7 @@ const PrintSettingsPage = () => {
   const queryClient = useQueryClient();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [settingsTab, setSettingsTab] = useState('bills');
   const [includeHeaderOnPdfs, setIncludeHeaderOnPdfs] = useState(true);
   const [includeFooterOnPdfs, setIncludeFooterOnPdfs] = useState(true);
   const [detailedBillingOnPdfs, setDetailedBillingOnPdfs] = useState(true);
@@ -299,11 +289,8 @@ const PrintSettingsPage = () => {
   const setOverride = (key, value) => {
     setOverrides((prev) => {
       const next = { ...prev };
-      if (value === 'inherit') {
-        delete next[key];
-      } else {
-        next[key] = value;
-      }
+      if (value === 'inherit') delete next[key];
+      else next[key] = value;
       return next;
     });
   };
@@ -311,11 +298,8 @@ const PrintSettingsPage = () => {
   const setFooterOverride = (key, value) => {
     setFooterOverrides((prev) => {
       const next = { ...prev };
-      if (value === 'inherit') {
-        delete next[key];
-      } else {
-        next[key] = value;
-      }
+      if (value === 'inherit') delete next[key];
+      else next[key] = value;
       return next;
     });
   };
@@ -439,8 +423,8 @@ const PrintSettingsPage = () => {
               Customisations
             </h1>
             <p className="text-sm text-muted-foreground mt-1 max-w-xl">
-              Letterhead, bill summaries, prescription vitals, and print layout.
-              Use preview to check alignment before saving.
+              Bills, letterhead, prescription vitals, and per-document overrides.
+              Label sizes live under Administration → Appearance.
             </p>
           </div>
         </div>
@@ -452,7 +436,7 @@ const PrintSettingsPage = () => {
           disabled={loading}
         >
           <Eye className="h-4 w-4 mr-2" />
-          Preview
+          Preview bill
         </Button>
       </div>
 
@@ -460,273 +444,269 @@ const PrintSettingsPage = () => {
         <p className="text-sm text-muted-foreground">Loading…</p>
       ) : (
         <>
-        <div className="columns-1 lg:columns-2 2xl:columns-3 gap-6">
-          <SettingsSection title="Bill payment summary">
-            <label className="flex items-start gap-3 cursor-pointer">
-              <input
-                type="checkbox"
-                className="mt-1 w-4 h-4 shrink-0"
-                checked={detailedBillingOnPdfs}
-                onChange={(e) => setDetailedBillingOnPdfs(e.target.checked)}
-              />
-              <div>
-                <p className="text-sm font-medium">Detailed billing on printed bills</p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  When enabled, bills show net total, paid amount, and balance.
-                  When disabled, only total amount and discount are shown — discount is
-                  deducted from the total; net total, paid, and balance lines are hidden.
-                </p>
-              </div>
-            </label>
+          <Tabs value={settingsTab} onValueChange={setSettingsTab} className="w-full">
+            <TabsList className="grid w-full grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 h-auto gap-1">
+              <TabsTrigger value="bills" className="gap-1.5 text-xs sm:text-sm">
+                <Receipt className="h-4 w-4 shrink-0" /> Bills
+              </TabsTrigger>
+              <TabsTrigger value="letterhead" className="gap-1.5 text-xs sm:text-sm">
+                <LayoutTemplate className="h-4 w-4 shrink-0" /> Letterhead
+              </TabsTrigger>
+              <TabsTrigger value="prescription" className="gap-1.5 text-xs sm:text-sm">
+                <FileText className="h-4 w-4 shrink-0" /> Prescription
+              </TabsTrigger>
+              <TabsTrigger value="documents" className="gap-1.5 text-xs sm:text-sm">
+                <Printer className="h-4 w-4 shrink-0" /> Documents
+              </TabsTrigger>
+              <TabsTrigger value="footers" className="gap-1.5 text-xs sm:text-sm">
+                <Users className="h-4 w-4 shrink-0" /> Footers
+              </TabsTrigger>
+            </TabsList>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="flex flex-col">
-                <p className="text-xs font-medium text-muted-foreground mb-2">Current setting</p>
-                <BillSummaryPreview detailed={detailedBillingOnPdfs} />
-              </div>
-              <div className="flex flex-col">
-                <p className="text-xs font-medium text-muted-foreground mb-2">
-                  {detailedBillingOnPdfs ? 'Simple layout (when unchecked)' : 'Detailed layout (when checked)'}
-                </p>
-                <BillSummaryPreview detailed={!detailedBillingOnPdfs} />
-              </div>
-            </div>
+            <TabsContent value="bills" className="mt-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-lg">Bill payment summary</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <label className="flex items-start gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      className="mt-1 w-4 h-4 shrink-0"
+                      checked={detailedBillingOnPdfs}
+                      onChange={(e) => setDetailedBillingOnPdfs(e.target.checked)}
+                    />
+                    <div>
+                      <p className="text-sm font-medium">Detailed billing on printed bills</p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        When enabled, bills show net total, paid amount, and balance.
+                        When disabled, only subtotal, discount, and total are shown.
+                      </p>
+                    </div>
+                  </label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="flex flex-col">
+                      <p className="text-xs font-medium text-muted-foreground mb-2">Current setting</p>
+                      <BillSummaryPreview detailed={detailedBillingOnPdfs} />
+                    </div>
+                    <div className="flex flex-col">
+                      <p className="text-xs font-medium text-muted-foreground mb-2">
+                        {detailedBillingOnPdfs ? 'Simple layout (when unchecked)' : 'Detailed layout (when checked)'}
+                      </p>
+                      <BillSummaryPreview detailed={!detailedBillingOnPdfs} />
+                    </div>
+                  </div>
+                  <Button type="button" variant="secondary" size="sm" onClick={() => openPreview('opd_bill', 'OPD Bill')}>
+                    <Eye className="h-4 w-4 mr-2" />
+                    Preview full bill PDF
+                  </Button>
+                </CardContent>
+              </Card>
+            </TabsContent>
 
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              onClick={() => openPreview('opd_bill', 'OPD Bill')}
-            >
-              <Eye className="h-4 w-4 mr-2" />
-              Preview full bill PDF
-            </Button>
-          </SettingsSection>
-
-          <SettingsSection title="Global defaults">
-            <label className="flex items-start gap-3 cursor-pointer">
-              <input
-                type="checkbox"
-                className="mt-1 w-4 h-4 shrink-0"
-                checked={includeHeaderOnPdfs}
-                onChange={(e) => setIncludeHeaderOnPdfs(e.target.checked)}
-              />
-              <div>
-                <p className="text-sm font-medium">Include hospital letterhead on PDFs (default)</p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  When enabled, logo and hospital details from Administration → Hospital Info appear at the top.
-                  Individual documents below can override this.
-                </p>
-              </div>
-            </label>
-
-            <div className="w-48">
-              <Label htmlFor="letterhead-gap">Letterhead gap when header is off (mm)</Label>
-              <Input
-                id="letterhead-gap"
-                type="number"
-                min={0}
-                max={80}
-                step={1}
-                value={letterheadGapMm}
-                onChange={(e) => setLetterheadGapMm(e.target.value)}
-                className="mt-1"
-              />
-              <p className="text-xs text-muted-foreground mt-1">
-                Blank space at the top for pre-printed letterhead. Default 35 mm (~3.5 cm).
-              </p>
-            </div>
-
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              onClick={() => openPreview('opd_bill', 'OPD Bill')}
-            >
-              <Eye className="h-4 w-4 mr-2" />
-              Preview with these settings
-            </Button>
-          </SettingsSection>
-
-          <SettingsSection title="Prescription vitals">
-            <div className="space-y-4">
-              <div className="space-y-3">
-                <p className="text-sm font-medium">Vitals column layout</p>
-                <div className="grid gap-2">
-                  {VITALS_LAYOUT_OPTIONS.map((opt) => (
-                    <label
-                      key={opt.value}
-                      className={`flex items-start gap-3 cursor-pointer rounded-lg border p-3 ${
-                        prescriptionVitalsLayout === opt.value ? 'border-foreground/30 bg-muted/30' : ''
-                      }`}
-                    >
-                      <input
-                        type="radio"
-                        name="prescription-vitals-layout"
-                        className="mt-1 w-4 h-4 shrink-0"
-                        checked={prescriptionVitalsLayout === opt.value}
-                        onChange={() => setPrescriptionVitalsLayout(opt.value)}
-                      />
-                      <div>
-                        <p className="text-sm font-medium">{opt.label}</p>
-                        <p className="text-xs text-muted-foreground mt-0.5">{opt.description}</p>
-                      </div>
-                    </label>
-                  ))}
-                </div>
-
-                {prescriptionVitalsLayout !== 'remove' ? (
+            <TabsContent value="letterhead" className="mt-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-lg">Global letterhead defaults</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <label className="flex items-start gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      className="mt-1 w-4 h-4 shrink-0"
+                      checked={includeHeaderOnPdfs}
+                      onChange={(e) => setIncludeHeaderOnPdfs(e.target.checked)}
+                    />
+                    <div>
+                      <p className="text-sm font-medium">Include hospital letterhead on PDFs (default)</p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Logo and hospital details from Administration → Hospital Info.
+                        Individual documents can override on the Documents tab.
+                      </p>
+                    </div>
+                  </label>
                   <div className="max-w-xs">
-                    <Label htmlFor="vitals-column-width">
-                      {prescriptionVitalsLayout === 'blank' ? 'Blank column width (inches)' : 'Left column width (inches)'}
-                    </Label>
+                    <Label htmlFor="letterhead-gap">Letterhead gap when header is off (mm)</Label>
                     <Input
-                      id="vitals-column-width"
+                      id="letterhead-gap"
                       type="number"
-                      min={prescriptionVitalsColumnWidthMinIn}
-                      max={prescriptionVitalsColumnWidthMaxIn}
-                      step={0.05}
-                      value={prescriptionVitalsColumnWidthIn}
-                      onChange={(e) => setPrescriptionVitalsColumnWidthIn(e.target.value)}
+                      min={0}
+                      max={80}
+                      step={1}
+                      value={letterheadGapMm}
+                      onChange={(e) => setLetterheadGapMm(e.target.value)}
                       className="mt-1"
                     />
                     <p className="text-xs text-muted-foreground mt-1">
-                      Fixed minimum {prescriptionVitalsColumnWidthMinIn}&quot;.
-                      Maximum {prescriptionVitalsColumnWidthMaxIn}&quot; (40% of usable page width).
-                      Default 1.75&quot;.
+                      Blank space at the top for pre-printed letterhead. Default 35 mm.
                     </p>
                   </div>
-                ) : null}
-              </div>
+                  <Button type="button" variant="secondary" size="sm" onClick={() => openPreview('opd_bill', 'OPD Bill')}>
+                    <Eye className="h-4 w-4 mr-2" />
+                    Preview with these settings
+                  </Button>
+                </CardContent>
+              </Card>
+            </TabsContent>
 
-              <div>
-                <p className="text-sm font-medium mb-1">Vitals to collect &amp; display</p>
-                <p className="text-xs text-muted-foreground mb-3">
-                  Reception and nurses only see these fields when recording vitals after an appointment.
-                  When layout is &quot;Show vitals&quot;, the same fields print on the prescription (use arrows for print order).
-                </p>
-                <div className="border rounded-lg divide-y">
-                  {[...selectedRows, ...unselectedRows].map((item) => {
-                    const selected = prescriptionVitalFields.includes(item.key);
-                    const orderIdx = prescriptionVitalFields.indexOf(item.key);
-                    return (
-                      <div
-                        key={item.key}
-                        className="flex items-center gap-3 px-3 py-2"
-                      >
-                        <input
-                          type="checkbox"
-                          className="w-4 h-4 shrink-0"
-                          checked={selected}
-                          onChange={() => toggleVitalField(item.key)}
-                          aria-label={`Show ${item.label}`}
-                        />
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-medium">{item.label}</p>
-                          {item.unit ? (
-                            <p className="text-xs text-muted-foreground">{item.unit}</p>
-                          ) : null}
-                        </div>
-                        {selected ? (
-                          <div className="flex items-center gap-1 shrink-0">
-                            <span className="text-xs text-muted-foreground w-5 text-right">
-                              {orderIdx + 1}
-                            </span>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              className="h-7 w-7 p-0"
-                              disabled={orderIdx <= 0}
-                              onClick={() => moveVitalField(item.key, -1)}
-                              aria-label={`Move ${item.label} up`}
-                            >
-                              <ChevronUp className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              className="h-7 w-7 p-0"
-                              disabled={orderIdx >= prescriptionVitalFields.length - 1}
-                              onClick={() => moveVitalField(item.key, 1)}
-                              aria-label={`Move ${item.label} down`}
-                            >
-                              <ChevronDown className="h-4 w-4" />
-                            </Button>
+            <TabsContent value="prescription" className="mt-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-lg">Prescription vitals</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="space-y-3">
+                    <p className="text-sm font-medium">Vitals column layout</p>
+                    <div className="grid gap-2 max-w-2xl">
+                      {VITALS_LAYOUT_OPTIONS.map((opt) => (
+                        <label
+                          key={opt.value}
+                          className={`flex items-start gap-3 cursor-pointer rounded-lg border p-3 ${
+                            prescriptionVitalsLayout === opt.value ? 'border-primary/40 bg-muted/30' : ''
+                          }`}
+                        >
+                          <input
+                            type="radio"
+                            name="prescription-vitals-layout"
+                            className="mt-1 w-4 h-4 shrink-0"
+                            checked={prescriptionVitalsLayout === opt.value}
+                            onChange={() => setPrescriptionVitalsLayout(opt.value)}
+                          />
+                          <div>
+                            <p className="text-sm font-medium">{opt.label}</p>
+                            <p className="text-xs text-muted-foreground mt-0.5">{opt.description}</p>
                           </div>
-                        ) : null}
+                        </label>
+                      ))}
+                    </div>
+                    {prescriptionVitalsLayout !== 'remove' ? (
+                      <div className="max-w-xs">
+                        <Label htmlFor="vitals-column-width">
+                          {prescriptionVitalsLayout === 'blank' ? 'Blank column width (inches)' : 'Left column width (inches)'}
+                        </Label>
+                        <Input
+                          id="vitals-column-width"
+                          type="number"
+                          min={prescriptionVitalsColumnWidthMinIn}
+                          max={prescriptionVitalsColumnWidthMaxIn}
+                          step={0.05}
+                          value={prescriptionVitalsColumnWidthIn}
+                          onChange={(e) => setPrescriptionVitalsColumnWidthIn(e.target.value)}
+                          className="mt-1"
+                        />
+                        <p className="text-xs text-muted-foreground mt-1">
+                          {prescriptionVitalsColumnWidthMinIn}&quot; – {prescriptionVitalsColumnWidthMaxIn}&quot;. Default 1.75&quot;.
+                        </p>
                       </div>
-                    );
-                  })}
-                </div>
-              </div>
+                    ) : null}
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium mb-1">Vitals to collect &amp; display</p>
+                    <p className="text-xs text-muted-foreground mb-3">
+                      Reception and nurses only see these fields when recording vitals.
+                    </p>
+                    <div className="border rounded-lg divide-y max-w-2xl">
+                      {[...selectedRows, ...unselectedRows].map((item) => {
+                        const selected = prescriptionVitalFields.includes(item.key);
+                        const orderIdx = prescriptionVitalFields.indexOf(item.key);
+                        return (
+                          <div key={item.key} className="flex items-center gap-3 px-3 py-2">
+                            <input
+                              type="checkbox"
+                              className="w-4 h-4 shrink-0"
+                              checked={selected}
+                              onChange={() => toggleVitalField(item.key)}
+                              aria-label={`Show ${item.label}`}
+                            />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium">{item.label}</p>
+                              {item.unit ? <p className="text-xs text-muted-foreground">{item.unit}</p> : null}
+                            </div>
+                            {selected ? (
+                              <div className="flex items-center gap-1 shrink-0">
+                                <span className="text-xs text-muted-foreground w-5 text-right">{orderIdx + 1}</span>
+                                <Button type="button" variant="ghost" size="sm" className="h-7 w-7 p-0"
+                                  disabled={orderIdx <= 0} onClick={() => moveVitalField(item.key, -1)}
+                                  aria-label={`Move ${item.label} up`}>
+                                  <ChevronUp className="h-4 w-4" />
+                                </Button>
+                                <Button type="button" variant="ghost" size="sm" className="h-7 w-7 p-0"
+                                  disabled={orderIdx >= prescriptionVitalFields.length - 1}
+                                  onClick={() => moveVitalField(item.key, 1)}
+                                  aria-label={`Move ${item.label} down`}>
+                                  <ChevronDown className="h-4 w-4" />
+                                </Button>
+                              </div>
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <Button type="button" variant="secondary" size="sm" onClick={() => openPreview('prescription', 'Prescription')}>
+                    <Eye className="h-4 w-4 mr-2" />
+                    Preview prescription PDF
+                  </Button>
+                </CardContent>
+              </Card>
+            </TabsContent>
 
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                onClick={() => openPreview('prescription', 'Prescription')}
-              >
-                <Eye className="h-4 w-4 mr-2" />
-                Preview prescription PDF
-              </Button>
-            </div>
-          </SettingsSection>
+            <TabsContent value="documents" className="mt-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-lg">Per-document letterhead</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <p className="text-sm text-muted-foreground">
+                    Override letterhead per document type. Lab report settings apply to single, package, and combined prints.
+                  </p>
+                  <DocumentOverrideTable
+                    groups={groupedCatalog}
+                    overrides={overrides}
+                    onChange={setOverride}
+                    namePrefix="override"
+                    onPreview={openPreview}
+                  />
+                </CardContent>
+              </Card>
+            </TabsContent>
 
-          <SettingsSection title="Per-document letterhead">
-            <p className="text-sm text-muted-foreground">
-              Choose whether each printable document uses the digital letterhead, leaves gap only,
-              or follows the global default above. Click Preview on any row to see that layout.
-              Lab Report settings apply to single, package, and multi-select combined lab prints;
-              techs can still override letterhead for one print from the preview dialog.
-            </p>
-            <DocumentOverrideTable
-              groups={groupedCatalog}
-              overrides={overrides}
-              onChange={setOverride}
-              namePrefix="override"
-              onPreview={openPreview}
-            />
-          </SettingsSection>
+            <TabsContent value="footers" className="mt-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-lg">Staff footers (reception &amp; lab)</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <label className="flex items-start gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      className="mt-1 w-4 h-4 shrink-0"
+                      checked={includeFooterOnPdfs}
+                      onChange={(e) => setIncludeFooterOnPdfs(e.target.checked)}
+                    />
+                    <div>
+                      <p className="text-sm font-medium">Show staff names on PDF footers (default)</p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Bills show Prepared by / Printed by. Lab reports show technician and pathologist blocks.
+                      </p>
+                    </div>
+                  </label>
+                  <DocumentOverrideTable
+                    groups={groupedFooterCatalog}
+                    overrides={footerOverrides}
+                    onChange={setFooterOverride}
+                    namePrefix="footer-override"
+                    onPreview={openPreview}
+                  />
+                </CardContent>
+              </Card>
+            </TabsContent>
+          </Tabs>
 
-          <SettingsSection title="Staff footers (reception & lab)">
-            <label className="flex items-start gap-3 cursor-pointer">
-              <input
-                type="checkbox"
-                className="mt-1 w-4 h-4 shrink-0"
-                checked={includeFooterOnPdfs}
-                onChange={(e) => setIncludeFooterOnPdfs(e.target.checked)}
-              />
-              <div>
-                <p className="text-sm font-medium">Show staff names on PDF footers (default)</p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  When enabled, bills show Prepared by / Printed by (receptionist name).
-                  Lab reports show Lab Technician and pathologist signature block plus a generated timestamp.
-                  The vendor line at the very bottom of the page is always shown.
-                </p>
-              </div>
-            </label>
-
-            <p className="text-sm text-muted-foreground">
-              Override per document for OPD bills, lab bills, and lab reports.
-            </p>
-            <DocumentOverrideTable
-              groups={groupedFooterCatalog}
-              overrides={footerOverrides}
-              onChange={setFooterOverride}
-              namePrefix="footer-override"
-              onPreview={openPreview}
-            />
-          </SettingsSection>
-        </div>
-
-        <div>
           <Button onClick={handleSave} disabled={saving}>
             <Save className="h-4 w-4 mr-2" />
             {saving ? 'Saving…' : 'Save customisations'}
           </Button>
-        </div>
         </>
       )}
 

@@ -281,6 +281,9 @@ NEW_COLUMNS = [
     ("bill_items", "cgst_amount", "FLOAT DEFAULT 0.0"),
     ("bill_items", "igst_amount", "FLOAT DEFAULT 0.0"),
     ("pharmacy_sales", "customer_gstin", "VARCHAR(20)"),
+    # Barcode labels — lab samples + pharmacy batch labels
+    ("patients", "mrn_ean13", "VARCHAR(13)"),
+    ("patient_lab_orders", "sample_ean13", "VARCHAR(13)"),
 ]
 
 # B6 — body release table is created via create_all on startup; no column adds.

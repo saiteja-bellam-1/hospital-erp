@@ -340,6 +340,7 @@ export default function MedicinesTab() {
           masters={masters}
           onMastersChange={setMasters}
           activeStep={activeStep}
+          medicineId={editing?.id}
         />
       </PharmacyFormDialog>
     </Card>

@@ -25,8 +25,47 @@ PRINT_PRESCRIPTION_VITALS_LAYOUT_KEY = "prescription_vitals_layout"
 PRINT_PRESCRIPTION_VITALS_COLUMN_WIDTH_KEY = "prescription_vitals_column_width_in"
 # Legacy key (percent); still read for migration when inches not set.
 PRINT_PRESCRIPTION_VITALS_COLUMN_WIDTH_PCT_KEY = "prescription_vitals_column_width_pct"
+PRINT_LAB_LABEL_SETTINGS_KEY = "lab_label_settings"
+PRINT_PHARMACY_LABEL_SETTINGS_KEY = "pharmacy_label_settings"
 
 DEFAULT_LETTERHEAD_GAP_MM = 35.0  # ~100 pt
+
+DEFAULT_LAB_LABEL_SETTINGS: dict[str, Any] = {
+    "width_mm": 50.0,
+    "height_mm": 30.0,
+    "labels_per_row": 1,
+    "labels_per_column": 1,
+    "margin_top_mm": 2.0,
+    "margin_left_mm": 2.0,
+    "gutter_mm": 2.0,
+    "sheet_mode": "thermal",
+    "sheet_width_mm": 210.0,
+    "sheet_height_mm": 297.0,
+    "show_lab_name": True,
+    "lab_name_override": None,
+}
+
+DEFAULT_PHARMACY_LABEL_SETTINGS: dict[str, Any] = {
+    "width_mm": 38.0,
+    "height_mm": 25.0,
+    "labels_per_row": 1,
+    "labels_per_column": 1,
+    "margin_top_mm": 2.0,
+    "margin_left_mm": 2.0,
+    "gutter_mm": 2.0,
+    "sheet_mode": "thermal",
+    "sheet_width_mm": 210.0,
+    "sheet_height_mm": 297.0,
+    "show_lab_name": False,
+    "lab_name_override": None,
+    "show_pharmacy_name": True,
+    "pharmacy_name_override": None,
+}
+
+LABEL_SHEET_MODES = frozenset({"thermal", "avery"})
+MIN_LABEL_DIM_MM = 20.0
+MAX_LABEL_DIM_MM = 120.0
+MAX_LABELS_PER_AXIS = 10
 MIN_LETTERHEAD_GAP_MM = 0.0
 MAX_LETTERHEAD_GAP_MM = 80.0
 MM_TO_PT = 72.0 / 25.4
@@ -517,6 +556,87 @@ def resolve_print_options(
     )
 
 
+def normalize_label_settings(raw: dict[str, Any] | None, defaults: dict[str, Any]) -> dict[str, Any]:
+    merged = {**defaults, **(raw or {})}
+    merged["width_mm"] = max(MIN_LABEL_DIM_MM, min(MAX_LABEL_DIM_MM, float(merged.get("width_mm", defaults["width_mm"]))))
+    merged["height_mm"] = max(MIN_LABEL_DIM_MM, min(MAX_LABEL_DIM_MM, float(merged.get("height_mm", defaults["height_mm"]))))
+    merged["labels_per_row"] = max(1, min(MAX_LABELS_PER_AXIS, int(merged.get("labels_per_row", 1))))
+    merged["labels_per_column"] = max(1, min(MAX_LABELS_PER_AXIS, int(merged.get("labels_per_column", 1))))
+    merged["margin_top_mm"] = max(0.0, min(40.0, float(merged.get("margin_top_mm", 2))))
+    merged["margin_left_mm"] = max(0.0, min(40.0, float(merged.get("margin_left_mm", 2))))
+    merged["gutter_mm"] = max(0.0, min(20.0, float(merged.get("gutter_mm", 2))))
+    mode = str(merged.get("sheet_mode", "thermal")).lower()
+    merged["sheet_mode"] = mode if mode in LABEL_SHEET_MODES else "thermal"
+    merged["sheet_width_mm"] = max(50.0, min(500.0, float(merged.get("sheet_width_mm", 210))))
+    merged["sheet_height_mm"] = max(50.0, min(500.0, float(merged.get("sheet_height_mm", 297))))
+    merged["show_lab_name"] = bool(merged.get("show_lab_name", defaults.get("show_lab_name", True)))
+    override = merged.get("lab_name_override")
+    merged["lab_name_override"] = str(override).strip() if override else None
+    if "show_pharmacy_name" in defaults:
+        merged["show_pharmacy_name"] = bool(
+            merged.get("show_pharmacy_name", defaults.get("show_pharmacy_name", True))
+        )
+        ph_override = merged.get("pharmacy_name_override")
+        merged["pharmacy_name_override"] = str(ph_override).strip() if ph_override else None
+    return merged
+
+
+def get_lab_label_settings(db: Session, hospital_id: int | None) -> dict[str, Any]:
+    row = _get_setting_row(db, PRINT_LAB_LABEL_SETTINGS_KEY)
+    if not row or not row.setting_value:
+        return dict(DEFAULT_LAB_LABEL_SETTINGS)
+    try:
+        parsed = json.loads(row.setting_value)
+    except json.JSONDecodeError:
+        return dict(DEFAULT_LAB_LABEL_SETTINGS)
+    return normalize_label_settings(parsed, DEFAULT_LAB_LABEL_SETTINGS)
+
+
+def get_pharmacy_label_settings(db: Session, hospital_id: int | None) -> dict[str, Any]:
+    row = _get_setting_row(db, PRINT_PHARMACY_LABEL_SETTINGS_KEY)
+    if not row or not row.setting_value:
+        return dict(DEFAULT_PHARMACY_LABEL_SETTINGS)
+    try:
+        parsed = json.loads(row.setting_value)
+    except json.JSONDecodeError:
+        return dict(DEFAULT_PHARMACY_LABEL_SETTINGS)
+    return normalize_label_settings(parsed, DEFAULT_PHARMACY_LABEL_SETTINGS)
+
+
+def set_lab_label_settings(
+    db: Session,
+    settings: dict[str, Any],
+    created_by: int | None = None,
+) -> dict[str, Any]:
+    cleaned = normalize_label_settings(settings, DEFAULT_LAB_LABEL_SETTINGS)
+    _upsert_setting(
+        db,
+        key=PRINT_LAB_LABEL_SETTINGS_KEY,
+        value=json.dumps(cleaned),
+        setting_type="json",
+        description="Lab sample label layout (thermal / Avery)",
+        created_by=created_by,
+    )
+    return cleaned
+
+
+def set_pharmacy_label_settings(
+    db: Session,
+    settings: dict[str, Any],
+    created_by: int | None = None,
+) -> dict[str, Any]:
+    cleaned = normalize_label_settings(settings, DEFAULT_PHARMACY_LABEL_SETTINGS)
+    _upsert_setting(
+        db,
+        key=PRINT_PHARMACY_LABEL_SETTINGS_KEY,
+        value=json.dumps(cleaned),
+        setting_type="json",
+        description="Pharmacy batch label layout (thermal / Avery)",
+        created_by=created_by,
+    )
+    return cleaned
+
+
 def get_print_settings_payload(db: Session, hospital_id: int | None) -> dict[str, Any]:
     footer_catalog = [r for r in REPORT_CATALOG if r["key"] in FOOTER_REPORT_KEYS]
     return {
@@ -537,6 +657,12 @@ def get_print_settings_payload(db: Session, hospital_id: int | None) -> dict[str
         "footer_report_catalog": footer_catalog,
         "report_header_overrides": get_report_header_overrides(db, hospital_id),
         "report_footer_overrides": get_report_footer_overrides(db, hospital_id),
+        "lab_label_settings": get_lab_label_settings(db, hospital_id),
+        "pharmacy_label_settings": get_pharmacy_label_settings(db, hospital_id),
+        "label_sheet_modes": sorted(LABEL_SHEET_MODES),
+        "label_dim_min_mm": MIN_LABEL_DIM_MM,
+        "label_dim_max_mm": MAX_LABEL_DIM_MM,
+        "label_max_per_axis": MAX_LABELS_PER_AXIS,
     }
 
 
@@ -738,6 +864,8 @@ def update_print_settings(
     letterhead_gap_mm: float | None = None,
     report_header_overrides: dict[str, str] | None = None,
     report_footer_overrides: dict[str, str] | None = None,
+    lab_label_settings: dict[str, Any] | None = None,
+    pharmacy_label_settings: dict[str, Any] | None = None,
     created_by: int | None = None,
 ) -> dict[str, Any]:
     if include_header_on_pdfs is not None:
@@ -780,4 +908,8 @@ def update_print_settings(
         set_report_footer_overrides(
             db, overrides=report_footer_overrides, created_by=created_by
         )
+    if lab_label_settings is not None:
+        set_lab_label_settings(db, lab_label_settings, created_by=created_by)
+    if pharmacy_label_settings is not None:
+        set_pharmacy_label_settings(db, pharmacy_label_settings, created_by=created_by)
     return get_print_settings_payload(db, hospital_id)

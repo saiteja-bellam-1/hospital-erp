@@ -165,6 +165,7 @@ class PatientLabOrder(Base):
     payment_method = Column(String(50), nullable=True)  # cash, card, online
     payment_date = Column(DateTime, nullable=True)
     sample_id = Column(String(50), nullable=True, index=True)
+    sample_ean13 = Column(String(13), nullable=True, index=True)
     referred_by = Column(String(100), nullable=True)
     package_id = Column(Integer, ForeignKey("lab_test_packages.id"), nullable=True)
     package_booking_id = Column(String(50), nullable=True)  # Groups orders from same package booking
