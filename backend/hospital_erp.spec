@@ -5,23 +5,32 @@ Build with: pyinstaller hospital_erp.spec --clean
 """
 
 import os
+from PyInstaller.utils.hooks import collect_all
 
 block_cipher = None
 
 # Path to frontend build output
 frontend_build = os.path.join('..', 'frontend', 'build')
 
+# ReportLab barcode widgets (code128, eanbc, …) are loaded from
+# reportlab.graphics.barcode.__init__ via a dynamic _reset() import graph
+# that PyInstaller does not follow. Without collect_all, a frozen build
+# crashes on startup with:
+#   ModuleNotFoundError: No module named 'reportlab.graphics.barcode.code128'
+# as soon as lab/pharmacy import label_pdf_service.
+reportlab_datas, reportlab_binaries, reportlab_hiddenimports = collect_all('reportlab')
+
 a = Analysis(
     ['launcher.py'],
     pathex=['.'],
-    binaries=[],
+    binaries=reportlab_binaries,
     datas=[
         # Bundle the React frontend build
         (frontend_build, 'frontend_build'),
         # Bundle the app icon
         ('assets/icon.ico', 'assets'),
         ('assets/icon.png', 'assets'),
-    ],
+    ] + reportlab_datas,
     hiddenimports=[
         # Uvicorn internals
         'uvicorn.logging',
@@ -88,6 +97,7 @@ a = Analysis(
         'app.utils.auth',
         'app.utils.dependencies',
         'app.utils.pdf_service',
+        'app.utils.label_pdf_service',
         'app.utils.machine_id',
         'app.middleware.license_middleware',
         'app.middleware.audit_middleware',
@@ -99,6 +109,19 @@ a = Analysis(
         'reportlab',
         'reportlab.lib.pagesizes',
         'reportlab.platypus',
+        'reportlab.graphics',
+        'reportlab.graphics.barcode',
+        'reportlab.graphics.barcode.code128',
+        'reportlab.graphics.barcode.code39',
+        'reportlab.graphics.barcode.code93',
+        'reportlab.graphics.barcode.eanbc',
+        'reportlab.graphics.barcode.widgets',
+        'reportlab.graphics.barcode.common',
+        'reportlab.graphics.barcode.qr',
+        'reportlab.graphics.barcode.usps',
+        'reportlab.graphics.barcode.usps4s',
+        'reportlab.graphics.barcode.fourstate',
+        'reportlab.graphics.barcode.ecc200datamatrix',
         'PyPDF2',
         'multipart',
         'jose',
@@ -106,7 +129,7 @@ a = Analysis(
         'pandas',
         'openpyxl',
         'dateutil',
-    ],
+    ] + reportlab_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
