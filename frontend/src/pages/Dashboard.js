@@ -4,7 +4,6 @@ import {
   Shield,
   Phone,
   Headphones,
-  MapPin,
   Mail,
   X as XIcon,
   Wifi,
@@ -464,11 +463,6 @@ const DashboardShell = () => {
           <footer className="flex-shrink-0 py-2 px-3 text-center text-xs text-gray-400 bg-white border-t border-gray-100 flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
             <span>
               <span className="font-medium text-gray-500">{hospitalName}</span>
-              {' — Powered by '}
-              <span className="font-medium text-gray-500">KT HEALTH ERP</span>
-              {licenseStatus?.seller_info?.name && (
-                <> &mdash; Sold by <span className="font-medium text-gray-500">{licenseStatus.seller_info.name}</span></>
-              )}
             </span>
             {licenseStatus?.days_remaining != null && (
               <span className="inline-flex items-center gap-1.5">
@@ -522,30 +516,9 @@ const DashboardShell = () => {
                 </button>
               </div>
               <div className="p-4 space-y-4 max-h-[60vh] overflow-y-auto">
-                {licenseStatus?.seller_info?.name && (
-                  <div className="space-y-2.5">
-                    <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Your Vendor</p>
-                    <div className="bg-gray-50 rounded-xl p-3.5 space-y-2">
-                      <p className="font-semibold text-sm text-gray-900">{licenseStatus.seller_info.name}</p>
-                      {licenseStatus.seller_info.address && (
-                        <div className="flex items-start gap-2">
-                          <MapPin className="h-3.5 w-3.5 text-gray-400 mt-0.5 flex-shrink-0" />
-                          <p className="text-xs text-gray-600">{licenseStatus.seller_info.address}</p>
-                        </div>
-                      )}
-                      {licenseStatus.seller_info.phone && (
-                        <div className="flex items-center gap-2">
-                          <Phone className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />
-                          <a href={`tel:${licenseStatus.seller_info.phone}`} className="text-xs text-blue-600 font-medium hover:underline">{licenseStatus.seller_info.phone}</a>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-
                 <div className="space-y-2.5">
                   <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
-                    {licenseStatus?.seller_info?.name ? 'Product Support' : 'Support'}
+                    Support
                   </p>
                   <div className="bg-gray-50 rounded-xl p-3.5 space-y-2">
                     <p className="font-semibold text-sm text-gray-900">KT Health Soft</p>

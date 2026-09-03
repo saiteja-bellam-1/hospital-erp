@@ -47,7 +47,7 @@ export default function AppearanceSettingsPanel() {
   const { user } = useAuth();
   const { refreshBranding } = useBranding();
   const { navLayout, setNavLayout } = useLayoutPreferences();
-  const isSuperAdmin = user?.role === 'super_admin';
+  const isSuperAdmin = (user?.roles || [user?.role]).includes('super_admin');
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -60,6 +60,7 @@ export default function AppearanceSettingsPanel() {
     logo_url: '',
     favicon_url: '',
   });
+  const [customisationLicensed, setCustomisationLicensed] = useState(false);
 
   useEffect(() => {
     setAppearanceLayout(navLayout === 'header' ? 'header' : 'sidebar');
@@ -81,6 +82,7 @@ export default function AppearanceSettingsPanel() {
           setPharmacyLabelSettings(mergeLabelSettings(DEFAULT_PHARMACY_LABELS, printRes.data.pharmacy_label_settings));
         }
         if (isSuperAdmin && results[1]) {
+          setCustomisationLicensed(!!results[1].data.customisation_licensed);
           setBrandingForm({
             name: results[1].data.name || '',
             logo_url: results[1].data.logo_url || '',
@@ -135,6 +137,14 @@ export default function AppearanceSettingsPanel() {
           description: 'Layout applies to all users on this hospital.',
         });
       } else if (activeTab === 'branding') {
+        if (!customisationLicensed) {
+          toast({
+            variant: 'destructive',
+            title: 'Not licensed',
+            description: 'Customisation is not included in this license.',
+          });
+          return;
+        }
         await axios.put('/api/hospital/branding', brandingForm);
         await refreshBranding();
         toast({
@@ -163,13 +173,15 @@ export default function AppearanceSettingsPanel() {
     }
   };
 
+  const showBrandingTab = isSuperAdmin && customisationLicensed;
+
   const saveLabel = activeTab === 'navigation'
     ? 'Save navigation'
     : activeTab === 'branding'
       ? 'Save branding'
       : 'Save label settings';
 
-  const tabCount = isSuperAdmin ? 3 : 2;
+  const tabCount = showBrandingTab ? 3 : 2;
 
   if (loading) {
     return <p className="text-sm text-muted-foreground">Loading appearance settings…</p>;
@@ -187,7 +199,7 @@ export default function AppearanceSettingsPanel() {
           <TabsTrigger value="navigation" className="gap-1.5">
             <PanelTop className="h-4 w-4" /> Navigation
           </TabsTrigger>
-          {isSuperAdmin && (
+          {showBrandingTab && (
             <TabsTrigger value="branding" className="gap-1.5">
               <Image className="h-4 w-4" /> Branding
             </TabsTrigger>
@@ -249,7 +261,7 @@ export default function AppearanceSettingsPanel() {
           </Card>
         </TabsContent>
 
-        {isSuperAdmin && (
+        {showBrandingTab && (
           <TabsContent value="branding" className="mt-4 space-y-4">
             <Card>
               <CardHeader>
@@ -356,7 +368,7 @@ export default function AppearanceSettingsPanel() {
                     <span className="text-muted-foreground">— browser tab</span>
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    {previewName} — Powered by KT HEALTH ERP
+                    {previewName} — app footer
                   </p>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                     <div className="rounded-md border bg-white p-3">

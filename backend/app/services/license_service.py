@@ -36,9 +36,25 @@ def _build_gdrive_config(license_data: dict):
     return None
 
 
+# Optional paid add-on (not a SystemModule). Issued from License Manager.
+FEATURE_CUSTOMISATION = "customisation"
+
+
 def get_current_license(db: Session) -> License | None:
     """Get the most recent license from DB."""
     return db.query(License).order_by(License.id.desc()).first()
+
+
+def license_has_feature(db: Session, feature: str) -> bool:
+    """True when the installed license lists ``feature`` in its features array."""
+    license_record = get_current_license(db)
+    features = license_record.features if license_record and license_record.features else []
+    return feature in features
+
+
+def license_allows_customisation(db: Session) -> bool:
+    """White-label branding + document customisations require this license add-on."""
+    return license_has_feature(db, FEATURE_CUSTOMISATION)
 
 
 def build_rebind_request_payload(

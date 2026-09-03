@@ -16,16 +16,27 @@ class TestBrandingApi:
         res = client.get("/api/hospital/branding/public")
         assert res.status_code == 200
         data = res.json()
-        assert data["name"] == "Test Hospital"
+        assert data["name"] == "KT HEALTH ERP"
         assert data["logo_url"] is None
         assert data["favicon_url"] is None
+        assert data["customisation_licensed"] is False
 
     def test_branding_get_authenticated(self, client, auth_headers, seed_data):
         res = client.get("/api/hospital/branding", headers=auth_headers)
         assert res.status_code == 200
-        assert res.json()["name"] == "Test Hospital"
+        assert res.json()["name"] == "KT HEALTH ERP"
+        assert res.json()["customisation_licensed"] is False
 
-    def test_branding_put_super_admin(self, client, auth_headers, db_session, seed_data):
+    def test_branding_put_requires_license(self, client, auth_headers, seed_data):
+        res = client.put(
+            "/api/hospital/branding",
+            headers=auth_headers,
+            json={"name": "Blocked Hospital"},
+        )
+        assert res.status_code == 403
+        assert "not included" in res.json()["detail"].lower()
+
+    def test_branding_put_super_admin(self, client, auth_headers, customisation_license, seed_data):
         res = client.put(
             "/api/hospital/branding",
             headers=auth_headers,
@@ -40,6 +51,7 @@ class TestBrandingApi:
         assert data["name"] == "Custom Hospital"
         assert data["logo_url"] == "/uploads/module-config/logo.png"
         assert data["favicon_url"] == "/uploads/module-config/favicon.png"
+        assert data["customisation_licensed"] is True
 
         public = client.get("/api/hospital/branding/public")
         assert public.json()["name"] == "Custom Hospital"
@@ -96,7 +108,16 @@ class TestBrandingApi:
         hospital = db_session.query(Hospital).first()
         assert hospital.logo_url != "/uploads/module-config/should-not-apply.png"
 
-    def test_logo_upload_accepts_landscape_wordmark(self, client, auth_headers, seed_data):
+    def test_logo_upload_requires_license(self, client, auth_headers, seed_data):
+        png = _png_bytes(800, 200)
+        res = client.post(
+            "/api/hospital/branding/upload?kind=logo",
+            headers=auth_headers,
+            files={"file": ("logo.png", png, "image/png")},
+        )
+        assert res.status_code == 403
+
+    def test_logo_upload_accepts_landscape_wordmark(self, client, auth_headers, customisation_license, seed_data):
         png = _png_bytes(800, 200)
         res = client.post(
             "/api/hospital/branding/upload?kind=logo",
@@ -109,7 +130,7 @@ class TestBrandingApi:
         assert data["height"] == 200
         assert data["url"].startswith("/uploads/module-config/")
 
-    def test_logo_upload_rejects_portrait(self, client, auth_headers, seed_data):
+    def test_logo_upload_rejects_portrait(self, client, auth_headers, customisation_license, seed_data):
         png = _png_bytes(200, 400)
         res = client.post(
             "/api/hospital/branding/upload?kind=logo",
@@ -119,7 +140,7 @@ class TestBrandingApi:
         assert res.status_code == 400
         assert "200×400" in res.json()["detail"]
 
-    def test_logo_upload_rejects_extreme_banner(self, client, auth_headers, seed_data):
+    def test_logo_upload_rejects_extreme_banner(self, client, auth_headers, customisation_license, seed_data):
         png = _png_bytes(2000, 80)
         res = client.post(
             "/api/hospital/branding/upload?kind=logo",
@@ -128,7 +149,7 @@ class TestBrandingApi:
         )
         assert res.status_code == 400
 
-    def test_favicon_upload_accepts_square(self, client, auth_headers, seed_data):
+    def test_favicon_upload_accepts_square(self, client, auth_headers, customisation_license, seed_data):
         png = _png_bytes(64, 64)
         res = client.post(
             "/api/hospital/branding/upload?kind=favicon",
@@ -138,7 +159,7 @@ class TestBrandingApi:
         assert res.status_code == 200
         assert res.json()["width"] == 64
 
-    def test_favicon_upload_rejects_wide_image(self, client, auth_headers, seed_data):
+    def test_favicon_upload_rejects_wide_image(self, client, auth_headers, customisation_license, seed_data):
         png = _png_bytes(200, 50)
         res = client.post(
             "/api/hospital/branding/upload?kind=favicon",

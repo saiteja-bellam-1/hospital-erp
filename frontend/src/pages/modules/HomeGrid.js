@@ -11,7 +11,7 @@ import { useNavigationSections } from '../../hooks/useNavigationSections';
  */
 const HomeGrid = ({ enabledModules, pwaInstallPrompt, onOpenSupport }) => {
   const navigate = useNavigate();
-  const { user, logout, licenseStatus } = useAuth();
+  const { user, logout } = useAuth();
 
   const roles = (() => {
     const r = user?.roles;
@@ -43,9 +43,7 @@ const HomeGrid = ({ enabledModules, pwaInstallPrompt, onOpenSupport }) => {
     { text: 'Stats Dashboard', icon: <LayoutDashboard className="h-5 w-5" />, onClick: () => navigate('/dashboard') },
     { text: 'Help & Docs', icon: <BookOpen className="h-5 w-5" />, onClick: () => navigate('/help/docs') },
     { text: 'Add to Desktop', icon: <Monitor className="h-5 w-5" />, onClick: handleAddToDesktop },
-    ...(licenseStatus?.seller_info?.name
-      ? [{ text: 'Support Contact', icon: <Headphones className="h-5 w-5" />, onClick: () => navigate('/dashboard/support-contact') }]
-      : [{ text: 'Support', icon: <Headphones className="h-5 w-5" />, onClick: () => onOpenSupport && onOpenSupport() }]),
+    { text: 'Support', icon: <Headphones className="h-5 w-5" />, onClick: () => onOpenSupport && onOpenSupport() },
     { text: 'Log out', icon: <LogOut className="h-5 w-5" />, onClick: logout, danger: true },
   ];
 

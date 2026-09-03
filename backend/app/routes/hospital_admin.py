@@ -139,6 +139,29 @@ def require_print_settings_editor(current_user: User = Depends(get_current_user)
     return current_user
 
 
+CUSTOMISATION_DENIED = "Customisation is not included in this license"
+
+# Fields on PUT /print-settings that are the licensed Customisations page.
+# Label sizes live under Appearance and stay available without the add-on.
+PRINT_CUSTOMISATION_FIELDS = {
+    "include_header_on_pdfs",
+    "include_footer_on_pdfs",
+    "detailed_billing_on_pdfs",
+    "prescription_include_vitals",
+    "prescription_vitals_layout",
+    "prescription_vitals_column_width_in",
+    "prescription_vital_fields",
+    "letterhead_gap_mm",
+    "report_header_overrides",
+    "report_footer_overrides",
+}
+
+
+    from app.services.license_service import license_allows_customisation
+    if not license_allows_customisation(db):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=CUSTOMISATION_DENIED)
+
+
 def _category_split(items) -> dict:
     """Group saved inpatient bill lines into settlement reporting buckets."""
     totals = {"lab": 0.0, "pharmacy": 0.0, "canteen": 0.0, "hospital": 0.0}
@@ -381,7 +404,8 @@ async def update_hospital_info(
         code = (hospital_data.gst_state_code or "").strip()
         hospital.gst_state_code = code[:2] or None
     if hospital_data.logo_url is not None:
-        if 'super_admin' in current_user.role_names:
+        from app.services.license_service import license_allows_customisation
+        if 'super_admin' in current_user.role_names and license_allows_customisation(db):
             hospital.logo_url = hospital_data.logo_url
     if hospital_data.description is not None:
         hospital.description = hospital_data.description
@@ -745,8 +769,11 @@ async def get_print_settings(
 ):
     """Hospital print settings: letterhead default, gap, per-report overrides."""
     from app.utils.pdf_settings import get_print_settings_payload
+    from app.services.license_service import license_allows_customisation
 
-    return get_print_settings_payload(db, current_user.hospital_id)
+    payload = get_print_settings_payload(db, current_user.hospital_id)
+    payload["customisation_licensed"] = license_allows_customisation(db)
+    return payload
 
 
 @router.get("/vitals-config")
@@ -806,6 +833,7 @@ async def preview_print_settings(
     db: Session = Depends(get_db),
 ):
     """Return a sample PDF using draft settings (no save required)."""
+    _require_customisation_license(db)
     from fastapi.responses import Response
     from app.utils.pdf_settings import (
         MAX_LETTERHEAD_GAP_MM,
@@ -879,6 +907,10 @@ async def update_print_settings(
         normalize_prescription_vitals_layout,
         update_print_settings as save_print_settings,
     )
+
+    submitted = data.model_dump(exclude_unset=True)
+    if any(field in PRINT_CUSTOMISATION_FIELDS for field in submitted):
+        _require_customisation_license(db)
 
     if data.letterhead_gap_mm is not None:
         if not (MIN_LETTERHEAD_GAP_MM <= data.letterhead_gap_mm <= MAX_LETTERHEAD_GAP_MM):
@@ -996,8 +1028,10 @@ async def upload_branding_image(
     kind: str = Query(..., description="logo or favicon"),
     file: UploadFile = File(...),
     current_user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
 ):
     """Upload a hospital logo or tab icon after dimension checks."""
+    _require_customisation_license(db)
     from app.utils.branding import validate_branding_image
 
     kind = (kind or "").strip().lower()
@@ -1058,6 +1092,7 @@ async def update_branding(
     db: Session = Depends(get_db),
 ):
     """Update hospital app branding (super_admin only)."""
+    _require_customisation_license(db)
     hospital = db.query(Hospital).first()
     if not hospital:
         raise HTTPException(status_code=404, detail="Hospital not found")
@@ -1078,7 +1113,7 @@ async def update_branding(
     from app.utils.branding import resolve_branding
     from app.services.audit_service import log_action
 
-    payload = resolve_branding(hospital)
+    payload = resolve_branding(hospital, customisation_licensed=True)
     log_action(db, current_user, "update_branding", "hospital", details=payload)
     db.commit()
     return {"message": "Branding updated", **payload}

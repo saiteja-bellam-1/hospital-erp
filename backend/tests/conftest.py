@@ -212,6 +212,43 @@ def seed_data(db_engine, TestSessionLocal):
         session.close()
 
 
+@pytest.fixture()
+def customisation_license(db_session):
+    """Temporarily grant the customisation add-on on the session test DB."""
+    from datetime import datetime, timedelta
+    from app.models.license import License
+    from app.services.license_service import FEATURE_CUSTOMISATION
+
+    existing = db_session.query(License).order_by(License.id.desc()).first()
+    if existing:
+        old_features = list(existing.features or [])
+        if FEATURE_CUSTOMISATION not in old_features:
+            existing.features = old_features + [FEATURE_CUSTOMISATION]
+            db_session.commit()
+        yield existing
+        existing.features = old_features
+        db_session.commit()
+        return
+
+    lic = License(
+        license_id="TEST-CUSTOMISATION",
+        hospital_id="TEST01",
+        hospital_name="Test Hospital",
+        plan="standard",
+        max_users=100,
+        features=[FEATURE_CUSTOMISATION],
+        issued_at=datetime.utcnow(),
+        expires_at=datetime.utcnow() + timedelta(days=365),
+        status="active",
+        raw_license_data="",
+    )
+    db_session.add(lic)
+    db_session.commit()
+    yield lic
+    db_session.delete(lic)
+    db_session.commit()
+
+
 @pytest.fixture(scope="session")
 def auth_headers(seed_data):
     """Return Authorization headers using a super_admin JWT."""

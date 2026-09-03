@@ -6,7 +6,7 @@ from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, model_validator, field_validator
 from typing import Optional, List
 from datetime import datetime, timedelta, timezone
 import calendar
@@ -16,6 +16,8 @@ import json
 import os
 import sys
 import base64
+import re
+from urllib.parse import quote
 
 app = FastAPI(title="KT HEALTH ERP — License Manager", version="1.0.0")
 
@@ -188,12 +190,32 @@ def sign_license_data(license_data: dict) -> str:
     return f"{license_b64}\n{signature_b64}"
 
 
+def _ascii_filename_token(value: str, fallback: str) -> str:
+    cleaned = re.sub(r"[^\w.\-]+", "_", value or "", flags=re.ASCII).strip("._")
+    return cleaned or fallback
+
+
+def license_content_disposition(hospital_name: str, machine_id: str) -> str:
+    """RFC 5987 Content-Disposition so names with &, quotes, or Unicode don't crash Starlette headers."""
+    ascii_name = (
+        f"{_ascii_filename_token(hospital_name, 'kthealth')}"
+        f"_{_ascii_filename_token(machine_id, 'machine')}.lic"
+    )
+    display = re.sub(
+        r'[\x00-\x1f\\/:*?"<>|]+',
+        "_",
+        f"{hospital_name or 'kthealth'}_{machine_id or 'machine'}.lic",
+    )
+    display = re.sub(r"\s+", "_", display)
+    return f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{quote(display)}'
+
+
 # ============================================================
 # Schemas
 # ============================================================
 
 class CustomerCreate(BaseModel):
-    hospital_name: str = Field(..., max_length=100)
+    hospital_name: str = Field(..., min_length=1, max_length=200)
     hospital_id: Optional[str] = None
     contact_person: Optional[str] = None
     phone: Optional[str] = None
@@ -203,9 +225,17 @@ class CustomerCreate(BaseModel):
     machine_id: Optional[str] = None
     notes: Optional[str] = None
 
+    @field_validator("hospital_name")
+    @classmethod
+    def _strip_hospital_name(cls, v: str) -> str:
+        name = (v or "").strip()
+        if not name:
+            raise ValueError("Hospital name is required")
+        return name
+
 
 class CustomerUpdate(BaseModel):
-    hospital_name: Optional[str] = None
+    hospital_name: Optional[str] = Field(default=None, min_length=1, max_length=200)
     hospital_id: Optional[str] = None
     contact_person: Optional[str] = None
     phone: Optional[str] = None
@@ -215,6 +245,16 @@ class CustomerUpdate(BaseModel):
     machine_id: Optional[str] = None
     notes: Optional[str] = None
     is_active: Optional[int] = None
+
+    @field_validator("hospital_name")
+    @classmethod
+    def _strip_hospital_name(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        name = v.strip()
+        if not name:
+            raise ValueError("Hospital name is required")
+        return name
 
 
 class PaymentCreate(BaseModel):
@@ -252,7 +292,7 @@ def compute_expiry(start: datetime, months: int = 0, days: int = 0) -> datetime:
 class LicenseCreate(BaseModel):
     customer_id: Optional[int] = None
     hospital_id: str = Field(..., max_length=20)
-    hospital_name: str = Field(..., max_length=100)
+    hospital_name: str = Field(..., min_length=1, max_length=200)
     machine_id: str = Field(..., max_length=20)
     plan: str = Field(default="standard")
     max_users: int = Field(default=50)
@@ -265,6 +305,14 @@ class LicenseCreate(BaseModel):
     notes: Optional[str] = None
     seller: Optional[SellerInfo] = None
     gdrive_backup_enabled: bool = False
+
+    @field_validator("hospital_name")
+    @classmethod
+    def _strip_hospital_name(cls, v: str) -> str:
+        name = (v or "").strip()
+        if not name:
+            raise ValueError("Hospital name is required")
+        return name
 
     @model_validator(mode="after")
     def _check_duration(self):
@@ -596,15 +644,16 @@ async def process_rebind_request(file: UploadFile = File(...)):
     conn.commit()
     conn.close()
 
-    safe_name = (row["hospital_name"] or "kthealth").replace(" ", "_")
-    filename = f"{safe_name}_{new_machine_id}.lic"
+    safe_name = _ascii_filename_token(row["hospital_name"] or "kthealth", "kthealth")
+    filename = f"{safe_name}_{_ascii_filename_token(new_machine_id, 'machine')}.lic"
     return Response(
         content=new_lic,
         media_type="application/octet-stream",
         headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Disposition": license_content_disposition(row["hospital_name"], new_machine_id),
             "X-New-License-Id": new_license_id,
             "X-Rebound-From": license_id,
+            "X-Filename": filename,
         },
     )
 
@@ -617,11 +666,10 @@ def download_license(license_id: str):
     if not row:
         raise HTTPException(status_code=404, detail="License not found")
 
-    filename = f"{row['hospital_name'].replace(' ', '_')}_{row['machine_id']}.lic"
     return Response(
         content=row["lic_file_content"],
         media_type="application/octet-stream",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
+        headers={"Content-Disposition": license_content_disposition(row["hospital_name"], row["machine_id"])}
     )
 
 

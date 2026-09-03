@@ -45,6 +45,12 @@ async def get_enabled_modules(
 
         result.append(EnabledModule(module_name=module.module_name, is_enabled=enabled))
 
+    from app.services.license_service import FEATURE_CUSTOMISATION, license_allows_customisation
+    result.append(EnabledModule(
+        module_name=FEATURE_CUSTOMISATION,
+        is_enabled=license_allows_customisation(db),
+    ))
+
     return result
 
 

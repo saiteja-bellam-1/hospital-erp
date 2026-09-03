@@ -52,9 +52,14 @@ const DaysLeft = ({ days }) => {
   );
 };
 
+const FEATURE_LABELS = {
+  physiotherapy: 'Physiotherapy',
+  customisation: 'Customisation',
+};
+
 const FeatureTag = ({ name }) => (
   <span className="px-1.5 py-0.5 bg-slate-700/50 text-slate-300 rounded text-[10px] font-medium capitalize tracking-wide">
-    {name === 'physiotherapy' ? 'Physiotherapy' : name}
+    {FEATURE_LABELS[name] || name}
   </span>
 );
 
@@ -73,14 +78,105 @@ const Modal = ({ open, onClose, children, wide }) => {
 
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
 
-const Input = ({ label, required, ...props }) => (
+const EMPTY_LICENSE_FORM = {
+  hospital_id: '', hospital_name: '', machine_id: '', plan: 'standard',
+  max_users: 50, months: 12, days: 0,
+  features: ['outpatient', 'lab', 'ehr', 'admin', 'billing', 'physiotherapy'],
+  modules: [], notes: '',
+  seller_id: '', seller_name: '', seller_address: '', seller_phone: '',
+  gdrive_backup_enabled: false,
+};
+
+const LICENSE_STEPS = [
+  { id: 'hospital', label: 'Hospital' },
+  { id: 'plan', label: 'Plan' },
+  { id: 'modules', label: 'Modules' },
+  { id: 'options', label: 'Options' },
+];
+
+const CUSTOMISATION_ADDON = 'customisation';
+
+function withFeature(features, key, on) {
+  const next = (features || []).filter((f) => f !== key);
+  if (on) next.push(key);
+  return next;
+}
+
+function apiErrorMessage(payload, fallback) {
+  const d = payload?.detail;
+  if (typeof d === 'string' && d) return d;
+  if (Array.isArray(d)) {
+    const parts = d.map((x) => (typeof x === 'string' ? x : x.msg || x.message)).filter(Boolean);
+    if (parts.length) return parts.join('; ');
+  }
+  return fallback;
+}
+
+function filenameFromDisposition(disposition, fallback) {
+  if (!disposition) return fallback;
+  const star = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (star) {
+    try { return decodeURIComponent(star[1]); } catch { return star[1]; }
+  }
+  const quoted = disposition.match(/filename="([^"]+)"/i);
+  if (quoted) return quoted[1];
+  const plain = disposition.match(/filename=([^;]+)/i);
+  return plain ? plain[1].trim().replace(/^["']|["']$/g, '') : fallback;
+}
+
+const Stepper = ({ steps, current, onSelect }) => (
+  <ol className="flex items-center gap-1.5">
+    {steps.map((step, i) => {
+      const done = i < current;
+      const active = i === current;
+      const clickable = done && typeof onSelect === 'function';
+      return (
+        <li key={step.id} className="flex items-center gap-1.5 min-w-0 flex-1">
+          <div className={`flex items-center gap-2 min-w-0 ${i < steps.length - 1 ? 'flex-1' : ''}`}>
+            <button type="button" disabled={!clickable} onClick={() => clickable && onSelect(i)}
+              className={`shrink-0 w-6 h-6 rounded-full text-[11px] font-bold flex items-center justify-center ${
+                done ? 'bg-emerald-500/20 text-emerald-400' : active ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-500'
+              } ${clickable ? 'hover:ring-1 hover:ring-emerald-400/40' : ''}`}>
+              {done ? '✓' : i + 1}
+            </button>
+            <span className={`text-[11px] font-medium truncate ${
+              active ? 'text-white' : done ? 'text-emerald-400' : 'text-slate-500'
+            }`}>{step.label}</span>
+            {i < steps.length - 1 && (
+              <span className={`hidden sm:block flex-1 h-px ${done ? 'bg-emerald-500/30' : 'bg-slate-800'}`} />
+            )}
+          </div>
+        </li>
+      );
+    })}
+  </ol>
+);
+
+const Input = ({ label, required, hint, ...props }) => (
   <div>
     <label className="block text-xs font-medium text-slate-400 mb-1.5">
       {label} {required && <span className="text-amber-400">*</span>}
     </label>
     <input {...props}
       className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/20 transition-colors" />
+    {hint && <p className="text-[10px] text-slate-500 mt-1">{hint}</p>}
   </div>
+);
+
+const ToggleRow = ({ checked, onChange, title, description }) => (
+  <button type="button" onClick={() => onChange(!checked)}
+    className={`w-full flex items-center justify-between gap-4 rounded-xl border px-4 py-3 text-left transition-colors ${
+      checked ? 'bg-amber-500/10 border-amber-500/30' : 'bg-slate-800/30 border-slate-700/40 hover:border-slate-600'
+    }`}>
+    <div className="min-w-0">
+      <p className={`text-sm font-semibold ${checked ? 'text-amber-300' : 'text-white'}`}>{title}</p>
+      {description && <p className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">{description}</p>}
+    </div>
+    <span className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${checked ? 'bg-amber-500' : 'bg-slate-600'}`}
+      role="switch" aria-checked={checked}>
+      <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-5' : ''}`} />
+    </span>
+  </button>
 );
 
 function App() {
@@ -90,19 +186,13 @@ function App() {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [showForm, setShowForm] = useState(false);
+  const [formStep, setFormStep] = useState(0);
   const [processingRebind, setProcessingRebind] = useState(false);
   const [showRenew, setShowRenew] = useState(null);
   const [renewForm, setRenewForm] = useState({ months: 12, days: 0, plan: 'standard', max_users: 50, features: [], gdrive_backup_enabled: false, seller_id: '' });
   const [customDuration, setCustomDuration] = useState(false);
   const [renewCustomDuration, setRenewCustomDuration] = useState(false);
-  const [form, setForm] = useState({
-    hospital_id: '', hospital_name: '', machine_id: '', plan: 'standard',
-    max_users: 50, months: 12, days: 0,
-    features: ['outpatient', 'lab', 'ehr', 'admin', 'billing', 'physiotherapy'],
-    modules: [], notes: '',
-    seller_id: '', seller_name: '', seller_address: '', seller_phone: '',
-    gdrive_backup_enabled: false
-  });
+  const [form, setForm] = useState({ ...EMPTY_LICENSE_FORM });
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState(null);
   const [gdriveSettings, setGdriveSettings] = useState(null);
@@ -179,12 +269,49 @@ function App() {
     setTimeout(() => setMsg(null), 4000);
   };
 
+  const closeGenerateForm = () => {
+    setShowForm(false);
+    setFormStep(0);
+    setCustomDuration(false);
+  };
+
+  const openGenerateForm = (prefill = {}) => {
+    setForm({ ...EMPTY_LICENSE_FORM, ...prefill });
+    setFormStep(0);
+    setCustomDuration(false);
+    setShowForm(true);
+  };
+
+  const generateStepError = (step = formStep) => {
+    if (step === 0) {
+      if (!form.hospital_id?.trim()) return 'Hospital ID is required';
+      if (!form.hospital_name?.trim()) return 'Hospital name is required';
+      if (!form.machine_id?.trim()) return 'Machine ID is required';
+    }
+    if (step === 1) {
+      if ((form.months || 0) <= 0 && (form.days || 0) <= 0) return 'Validity must be at least 1 day';
+    }
+    if (step === 2) {
+      if (!form.features?.length) return 'Select at least one module';
+    }
+    return null;
+  };
+
+  const nextGenerateStep = () => {
+    const err = generateStepError();
+    if (err) { showMessage(err, 'error'); return; }
+    setFormStep((s) => Math.min(s + 1, LICENSE_STEPS.length - 1));
+  };
+
   const createLicense = async () => {
-    if (!form.hospital_id || !form.hospital_name || !form.machine_id) return;
-    if ((form.months || 0) <= 0 && (form.days || 0) <= 0) { showMessage('Validity must be at least 1 day', 'error'); return; }
+    const err = generateStepError(0) || generateStepError(1) || generateStepError(2);
+    if (err) { showMessage(err, 'error'); return; }
     setSaving(true);
     try {
       const payload = { ...form };
+      payload.hospital_id = payload.hospital_id.trim();
+      payload.hospital_name = payload.hospital_name.trim();
+      payload.machine_id = payload.machine_id.trim();
       // Build seller object if name is provided
       if (payload.seller_name) {
         payload.seller = { name: payload.seller_name, address: payload.seller_address || null, phone: payload.seller_phone || null };
@@ -196,14 +323,13 @@ function App() {
       });
       if (r.ok) {
         showMessage('License generated successfully');
-        setShowForm(false);
-        setCustomDuration(false);
-        setForm({ hospital_id: '', hospital_name: '', machine_id: '', plan: 'standard', max_users: 50, months: 12, days: 0, features: ['outpatient', 'lab', 'ehr', 'admin', 'billing', 'physiotherapy'], modules: [], notes: '', seller_id: '', seller_name: '', seller_address: '', seller_phone: '', gdrive_backup_enabled: false });
+        closeGenerateForm();
+        setForm({ ...EMPTY_LICENSE_FORM });
         fetchLicenses(); fetchDash();
         if (selectedCust) fetchCustDetail(selectedCust);
       } else {
         const e = await r.json();
-        showMessage(e.detail || 'Generation failed', 'error');
+        showMessage(apiErrorMessage(e, 'Generation failed'), 'error');
       }
     } catch { showMessage('Failed to create license', 'error'); }
     finally { setSaving(false); }
@@ -248,8 +374,7 @@ function App() {
       // Success — the response is the rebound .lic file. Download it for the vendor to send back.
       const blob = await r.blob();
       const disposition = r.headers.get('Content-Disposition') || '';
-      const match = disposition.match(/filename\*?=(?:UTF-8'')?["']?([^"';]+)/i);
-      const filename = match ? decodeURIComponent(match[1]) : 'rebound.lic';
+      const filename = filenameFromDisposition(disposition, 'rebound.lic');
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -271,8 +396,7 @@ function App() {
       if (!r.ok) { showMessage('Failed to download license', 'error'); return; }
       const blob = await r.blob();
       const disposition = r.headers.get('Content-Disposition') || '';
-      const match = disposition.match(/filename\*?=(?:UTF-8'')?["']?([^"';]+)/i);
-      const filename = match ? decodeURIComponent(match[1]) : `${licenseId}.lic`;
+      const filename = filenameFromDisposition(disposition, `${licenseId}.lic`);
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -385,7 +509,7 @@ function App() {
     } catch { showMessage('Failed', 'error'); }
   };
 
-  const allFeatures = ['outpatient', 'inpatient', 'lab', 'pharmacy', 'physiotherapy', 'ehr', 'admin', 'billing'];
+  const allModules = ['outpatient', 'inpatient', 'lab', 'pharmacy', 'physiotherapy', 'ehr', 'admin', 'billing'];
 
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: Icons.dashboard },
@@ -528,7 +652,7 @@ function App() {
                       disabled={processingRebind}
                       onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) processRebind(f); }} />
                   </label>
-                  <button onClick={() => setShowForm(true)}
+                  <button onClick={() => openGenerateForm()}
                     className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-sm font-semibold transition-colors shadow-lg shadow-blue-600/20">
                     <Icon d={Icons.plus} className="w-4 h-4" />
                     Generate License
@@ -728,10 +852,12 @@ function App() {
               <div className="bg-slate-925 border border-slate-800/50 rounded-xl overflow-hidden">
                 <div className="flex items-center justify-between px-5 py-3 border-b border-slate-800/30">
                   <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">Licenses</h3>
-                  <button onClick={() => {
-                    setForm({ ...form, customer_id: selectedCust, hospital_id: custDetail.customer.hospital_id || '', hospital_name: custDetail.customer.hospital_name, machine_id: custDetail.customer.machine_id || '', gdrive_backup_enabled: false });
-                    setShowForm(true);
-                  }} className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold rounded-lg transition-colors">
+                  <button onClick={() => openGenerateForm({
+                    customer_id: selectedCust,
+                    hospital_id: custDetail.customer.hospital_id || '',
+                    hospital_name: custDetail.customer.hospital_name,
+                    machine_id: custDetail.customer.machine_id || '',
+                  })} className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold rounded-lg transition-colors">
                     + Generate License
                   </button>
                 </div>
@@ -1064,163 +1190,211 @@ function App() {
       </div>
 
       {/* ═══════ GENERATE MODAL ═══════ */}
-      <Modal open={showForm} onClose={() => setShowForm(false)} wide>
+      <Modal open={showForm} onClose={closeGenerateForm} wide>
         <div className="p-6 space-y-5">
           <div className="flex items-center justify-between">
             <div>
               <h2 className="text-lg font-bold text-white">Generate License</h2>
-              <p className="text-xs text-slate-500 mt-0.5">Create a new signed license file</p>
+              <p className="text-xs text-slate-500 mt-0.5">Step {formStep + 1} of {LICENSE_STEPS.length} — {LICENSE_STEPS[formStep].label}</p>
             </div>
-            <button onClick={() => setShowForm(false)} className="p-1 text-slate-500 hover:text-white">
+            <button onClick={closeGenerateForm} className="p-1 text-slate-500 hover:text-white">
               <Icon d={Icons.x} className="w-5 h-5" />
             </button>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <Input label="Hospital ID" required value={form.hospital_id}
-              onChange={e => setForm({...form, hospital_id: e.target.value})} placeholder="HOSP01" />
-            <Input label="Hospital Name" required value={form.hospital_name}
-              onChange={e => setForm({...form, hospital_name: e.target.value})} placeholder="City Hospital" />
-          </div>
+          <Stepper steps={LICENSE_STEPS} current={formStep} onSelect={setFormStep} />
 
-          <div className="grid grid-cols-2 gap-4">
-            <Input label="Machine ID" required value={form.machine_id}
-              onChange={e => setForm({...form, machine_id: e.target.value})} placeholder="CA86-C087-6261" />
-            <div>
-              <label className="block text-xs font-medium text-slate-400 mb-1.5">Validity</label>
-              <select value={customDuration ? 'custom' : String(form.months)}
-                onChange={e => {
-                  if (e.target.value === 'custom') { setCustomDuration(true); }
-                  else { setCustomDuration(false); setForm({...form, months: parseInt(e.target.value), days: 0}); }
-                }}
-                className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500/50">
-                <option value="1">1 Month</option>
-                <option value="3">3 Months</option>
-                <option value="6">6 Months</option>
-                <option value="12">1 Year</option>
-                <option value="24">2 Years</option>
-                <option value="36">3 Years</option>
-                <option value="custom">Custom</option>
-              </select>
-              {customDuration && (
-                <div className="grid grid-cols-2 gap-2 mt-2">
-                  <div>
-                    <label className="block text-[10px] text-slate-500 mb-1">Months</label>
-                    <input type="number" min={0} value={form.months}
-                      onChange={e => setForm({...form, months: parseInt(e.target.value) || 0})}
-                      className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500/50" />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] text-slate-500 mb-1">Days</label>
-                    <input type="number" min={0} value={form.days}
-                      onChange={e => setForm({...form, days: parseInt(e.target.value) || 0})}
-                      className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500/50" />
-                  </div>
-                </div>
-              )}
+          {formStep === 0 && (
+            <div className="space-y-4 min-h-[220px]">
+              <Input label="Hospital ID" required value={form.hospital_id}
+                onChange={e => setForm({...form, hospital_id: e.target.value})} placeholder="HOSP01" />
+              <Input label="Hospital Name" required value={form.hospital_name} maxLength={200}
+                onChange={e => setForm({...form, hospital_name: e.target.value})}
+                placeholder="St. Mary's Hospital & Research (P) Ltd."
+                hint="Ampersands, apostrophes, brackets, and other punctuation are allowed." />
+              <Input label="Machine ID" required value={form.machine_id}
+                onChange={e => setForm({...form, machine_id: e.target.value})} placeholder="CA86-C087-6261" />
             </div>
-          </div>
+          )}
 
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-medium text-slate-400 mb-1.5">Plan</label>
-              <select value={form.plan} onChange={e => setForm({...form, plan: e.target.value})}
-                className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500/50">
-                <option value="standard">Standard</option>
-                <option value="professional">Professional</option>
-                <option value="enterprise">Enterprise</option>
-              </select>
-            </div>
-            <Input label="Max Users" type="number" value={form.max_users}
-              onChange={e => setForm({...form, max_users: parseInt(e.target.value) || 50})} />
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-slate-400 mb-2">Modules</label>
-            <div className="flex flex-wrap gap-2">
-              {allFeatures.map(f => {
-                const active = form.features.includes(f);
-                return (
-                  <button key={f} type="button" onClick={() => {
-                    const feats = active ? form.features.filter(x => x !== f) : [...form.features, f];
-                    setForm({...form, features: feats});
+          {formStep === 1 && (
+            <div className="space-y-4 min-h-[220px]">
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1.5">Validity</label>
+                <select value={customDuration ? 'custom' : String(form.months)}
+                  onChange={e => {
+                    if (e.target.value === 'custom') { setCustomDuration(true); }
+                    else { setCustomDuration(false); setForm({...form, months: parseInt(e.target.value), days: 0}); }
                   }}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition-all border ${
-                      active
-                        ? 'bg-blue-500/15 border-blue-500/30 text-blue-400'
-                        : 'bg-slate-800/30 border-slate-700/30 text-slate-500 hover:text-slate-300'
-                    }`}>
-                    {active && <span className="mr-1">✓</span>}
-                    {f}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-slate-400 mb-1.5">Notes</label>
-            <textarea value={form.notes} onChange={e => setForm({...form, notes: e.target.value})} rows={2}
-              placeholder="Optional notes about this license..."
-              className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/50 resize-none" />
-          </div>
-
-          {/* Seller / 3rd Party Vendor (Optional) */}
-          <div className="border-t border-slate-700/30 pt-4">
-            <label className="block text-xs font-medium text-slate-400 mb-2">Sold via 3rd Party Vendor (Optional)</label>
-            <select value={form.seller_id || ''} onChange={e => {
-              const id = e.target.value;
-              if (!id) {
-                setForm({...form, seller_id: '', seller_name: '', seller_address: '', seller_phone: ''});
-              } else {
-                const s = sellers.find(s => String(s.id) === id);
-                if (s) setForm({...form, seller_id: id, seller_name: s.name, seller_address: s.address || '', seller_phone: s.phone || ''});
-              }
-            }}
-              className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500/50">
-              <option value="">No vendor (direct sale)</option>
-              {sellers.map(s => (
-                <option key={s.id} value={s.id}>{s.name}</option>
-              ))}
-            </select>
-            {form.seller_name && (
-              <div className="mt-2 p-2.5 bg-slate-800/50 rounded-lg text-xs text-slate-400 space-y-0.5">
-                <p className="text-white font-medium">{form.seller_name}</p>
-                {form.seller_address && <p>{form.seller_address}</p>}
-                {form.seller_phone && <p>{form.seller_phone}</p>}
+                  className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500/50">
+                  <option value="1">1 Month</option>
+                  <option value="3">3 Months</option>
+                  <option value="6">6 Months</option>
+                  <option value="12">1 Year</option>
+                  <option value="24">2 Years</option>
+                  <option value="36">3 Years</option>
+                  <option value="custom">Custom</option>
+                </select>
+                {customDuration && (
+                  <div className="grid grid-cols-2 gap-2 mt-2">
+                    <div>
+                      <label className="block text-[10px] text-slate-500 mb-1">Months</label>
+                      <input type="number" min={0} value={form.months}
+                        onChange={e => setForm({...form, months: parseInt(e.target.value) || 0})}
+                        className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500/50" />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-slate-500 mb-1">Days</label>
+                      <input type="number" min={0} value={form.days}
+                        onChange={e => setForm({...form, days: parseInt(e.target.value) || 0})}
+                        className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500/50" />
+                    </div>
+                  </div>
+                )}
               </div>
-            )}
-          </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-slate-400 mb-1.5">Plan</label>
+                  <select value={form.plan} onChange={e => setForm({...form, plan: e.target.value})}
+                    className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500/50">
+                    <option value="standard">Standard</option>
+                    <option value="professional">Professional</option>
+                    <option value="enterprise">Enterprise</option>
+                  </select>
+                </div>
+                <Input label="Max Users" type="number" value={form.max_users}
+                  onChange={e => setForm({...form, max_users: parseInt(e.target.value) || 50})} />
+              </div>
+            </div>
+          )}
 
-          {/* Google Drive Backup */}
-          <div className="border-t border-slate-700/30 pt-4">
-            <label className="flex items-center gap-2.5 cursor-pointer">
-              <input type="checkbox" checked={form.gdrive_backup_enabled}
-                onChange={(e) => setForm({...form, gdrive_backup_enabled: e.target.checked})}
-                disabled={!gdriveSettings?.configured}
-                className="w-4 h-4 rounded border-slate-600" />
-              <span className="text-sm text-slate-300">Enable Google Drive Backup</span>
-            </label>
-            {!gdriveSettings?.configured && (
-              <p className="text-[11px] text-amber-400/70 mt-1.5 ml-6">
-                {!gdriveSettings?.connected ? 'Connect Google Drive in Key Settings first' : 'Set folder ID in Key Settings first'}
-              </p>
-            )}
-            {form.gdrive_backup_enabled && gdriveSettings?.configured && (
-              <p className="text-[11px] text-green-400/70 mt-1.5 ml-6">Service account: {gdriveSettings.service_account_email}</p>
-            )}
-          </div>
+          {formStep === 2 && (
+            <div className="space-y-4 min-h-[220px]">
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-2">Modules</label>
+                <div className="flex flex-wrap gap-2">
+                  {allModules.map(f => {
+                    const active = form.features.includes(f);
+                    return (
+                      <button key={f} type="button" onClick={() => {
+                        const feats = active ? form.features.filter(x => x !== f) : [...form.features, f];
+                        setForm({...form, features: feats});
+                      }}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition-all border ${
+                          active
+                            ? 'bg-blue-500/15 border-blue-500/30 text-blue-400'
+                            : 'bg-slate-800/30 border-slate-700/30 text-slate-500 hover:text-slate-300'
+                        }`}>
+                        {active && <span className="mr-1">✓</span>}
+                        {FEATURE_LABELS[f] || f}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-2">Add-ons</label>
+                <ToggleRow
+                  checked={form.features.includes(CUSTOMISATION_ADDON)}
+                  onChange={(on) => setForm({ ...form, features: withFeature(form.features, CUSTOMISATION_ADDON, on) })}
+                  title="Customisation"
+                  description="Unlocks hospital branding, logo, letterhead, and print customisation. Leave off unless this customer bought the add-on."
+                />
+              </div>
+            </div>
+          )}
 
-          <div className="flex justify-end gap-3 pt-3 border-t border-slate-700/30">
-            <button onClick={() => setShowForm(false)}
+          {formStep === 3 && (
+            <div className="space-y-4 min-h-[220px]">
+              <div className="bg-slate-800/30 border border-slate-700/30 rounded-xl p-4 space-y-1.5">
+                <p className="text-sm font-semibold text-white">{form.hospital_name || '—'}</p>
+                <div className="flex flex-wrap gap-3 text-xs text-slate-400">
+                  <span className="font-mono">{form.hospital_id || '—'}</span>
+                  <span className="font-mono">{form.machine_id || '—'}</span>
+                  <span className="capitalize">{form.plan}</span>
+                  <span>{form.max_users} users</span>
+                  <span>{form.months || 0} mo {form.days || 0} d</span>
+                </div>
+                <div className="flex flex-wrap gap-1 pt-1">
+                  {form.features.map(f => <FeatureTag key={f} name={f} />)}
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1.5">Notes</label>
+                <textarea value={form.notes} onChange={e => setForm({...form, notes: e.target.value})} rows={2}
+                  placeholder="Optional notes about this license..."
+                  className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/50 resize-none" />
+              </div>
+              <div className="border-t border-slate-700/30 pt-4">
+                <label className="block text-xs font-medium text-slate-400 mb-2">Sold via 3rd Party Vendor (Optional)</label>
+                <select value={form.seller_id || ''} onChange={e => {
+                  const id = e.target.value;
+                  if (!id) {
+                    setForm({...form, seller_id: '', seller_name: '', seller_address: '', seller_phone: ''});
+                  } else {
+                    const s = sellers.find(s => String(s.id) === id);
+                    if (s) setForm({...form, seller_id: id, seller_name: s.name, seller_address: s.address || '', seller_phone: s.phone || ''});
+                  }
+                }}
+                  className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500/50">
+                  <option value="">No vendor (direct sale)</option>
+                  {sellers.map(s => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+                {form.seller_name && (
+                  <div className="mt-2 p-2.5 bg-slate-800/50 rounded-lg text-xs text-slate-400 space-y-0.5">
+                    <p className="text-white font-medium">{form.seller_name}</p>
+                    {form.seller_address && <p>{form.seller_address}</p>}
+                    {form.seller_phone && <p>{form.seller_phone}</p>}
+                  </div>
+                )}
+              </div>
+              <div className="border-t border-slate-700/30 pt-4 space-y-3">
+                <label className="block text-xs font-medium text-slate-400">Add-ons</label>
+                <ToggleRow
+                  checked={form.features.includes(CUSTOMISATION_ADDON)}
+                  onChange={(on) => setForm({ ...form, features: withFeature(form.features, CUSTOMISATION_ADDON, on) })}
+                  title="Customisation"
+                  description="Hospital branding, logo, letterhead, and print customisation."
+                />
+              </div>
+              <div className="border-t border-slate-700/30 pt-4">
+                <label className="flex items-center gap-2.5 cursor-pointer">
+                  <input type="checkbox" checked={form.gdrive_backup_enabled}
+                    onChange={(e) => setForm({...form, gdrive_backup_enabled: e.target.checked})}
+                    disabled={!gdriveSettings?.configured}
+                    className="w-4 h-4 rounded border-slate-600" />
+                  <span className="text-sm text-slate-300">Enable Google Drive Backup</span>
+                </label>
+                {!gdriveSettings?.configured && (
+                  <p className="text-[11px] text-amber-400/70 mt-1.5 ml-6">
+                    {!gdriveSettings?.connected ? 'Connect Google Drive in Key Settings first' : 'Set folder ID in Key Settings first'}
+                  </p>
+                )}
+                {form.gdrive_backup_enabled && gdriveSettings?.configured && (
+                  <p className="text-[11px] text-green-400/70 mt-1.5 ml-6">Service account: {gdriveSettings.service_account_email}</p>
+                )}
+              </div>
+            </div>
+          )}
+
+          <div className="flex justify-between gap-3 pt-3 border-t border-slate-700/30">
+            <button onClick={formStep === 0 ? closeGenerateForm : () => setFormStep((s) => s - 1)}
               className="px-4 py-2.5 text-sm text-slate-400 hover:text-white rounded-lg transition-colors">
-              Cancel
+              {formStep === 0 ? 'Cancel' : 'Back'}
             </button>
-            <button onClick={createLicense}
-              disabled={saving || !form.hospital_id || !form.hospital_name || !form.machine_id}
-              className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:hover:bg-blue-600 text-white text-sm font-semibold rounded-xl transition-colors shadow-lg shadow-blue-600/20">
-              {saving ? 'Generating...' : 'Generate License'}
-            </button>
+            {formStep < LICENSE_STEPS.length - 1 ? (
+              <button onClick={nextGenerateStep}
+                className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold rounded-xl transition-colors shadow-lg shadow-blue-600/20">
+                Next
+              </button>
+            ) : (
+              <button onClick={createLicense} disabled={saving}
+                className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:hover:bg-blue-600 text-white text-sm font-semibold rounded-xl transition-colors shadow-lg shadow-blue-600/20">
+                {saving ? 'Generating...' : 'Generate License'}
+              </button>
+            )}
           </div>
         </div>
       </Modal>
@@ -1303,7 +1477,7 @@ function App() {
             <div>
               <label className="block text-xs font-medium text-slate-400 mb-1.5">Modules</label>
               <div className="flex flex-wrap gap-2">
-                {allFeatures.map(f => {
+                {allModules.map(f => {
                   const active = renewForm.features.includes(f);
                   return (
                     <button key={f} onClick={() => {
@@ -1314,11 +1488,21 @@ function App() {
                         active ? 'bg-blue-600/20 border-blue-500/40 text-blue-400' : 'bg-slate-800/50 border-slate-700/30 text-slate-500 hover:text-slate-300'
                       }`}>
                       {active && <span className="mr-1">✓</span>}
-                      {f}
+                      {FEATURE_LABELS[f] || f}
                     </button>
                   );
                 })}
               </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-400 mb-1.5">Add-ons</label>
+              <ToggleRow
+                checked={renewForm.features.includes(CUSTOMISATION_ADDON)}
+                onChange={(on) => setRenewForm({ ...renewForm, features: withFeature(renewForm.features, CUSTOMISATION_ADDON, on) })}
+                title="Customisation"
+                description="Unlocks hospital branding, logo, letterhead, and print customisation."
+              />
             </div>
 
             {/* Seller */}
@@ -1371,7 +1555,9 @@ function App() {
           </div>
           <div className="grid grid-cols-2 gap-4">
             <Input label="Hospital Name" required value={custForm.hospital_name}
-              onChange={e => setCustForm({...custForm, hospital_name: e.target.value})} placeholder="City Hospital" />
+              onChange={e => setCustForm({...custForm, hospital_name: e.target.value})}
+              placeholder="St. Mary's Hospital & Research (P) Ltd."
+              hint="Ampersands, apostrophes, brackets, and other punctuation are allowed." />
             <Input label="Hospital ID" value={custForm.hospital_id}
               onChange={e => setCustForm({...custForm, hospital_id: e.target.value})} placeholder="HOSP01" />
           </div>

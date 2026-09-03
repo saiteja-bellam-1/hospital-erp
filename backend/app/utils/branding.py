@@ -93,14 +93,27 @@ def _first_hospital(db: Session) -> Hospital | None:
     return db.query(Hospital).first()
 
 
-def resolve_branding(hospital: Hospital | None) -> dict[str, Any]:
-    """Build branding payload for API responses."""
-    if not hospital:
-        return {
-            "name": DEFAULT_APP_NAME,
-            "logo_url": None,
-            "favicon_url": None,
-        }
+def _stock_branding(*, customisation_licensed: bool) -> dict[str, Any]:
+    return {
+        "name": DEFAULT_APP_NAME,
+        "logo_url": None,
+        "favicon_url": None,
+        "customisation_licensed": customisation_licensed,
+    }
+
+
+def resolve_branding(
+    hospital: Hospital | None,
+    *,
+    customisation_licensed: bool = False,
+) -> dict[str, Any]:
+    """Build branding payload for API responses.
+
+    Unlicensed hospitals always get stock KT HEALTH ERP chrome even if a
+    previous license left a custom name/logo in the hospital row.
+    """
+    if not customisation_licensed or not hospital:
+        return _stock_branding(customisation_licensed=customisation_licensed)
     name = (hospital.name or "").strip() or DEFAULT_APP_NAME
     logo_url = (hospital.logo_url or "").strip() or None
     favicon_url = (hospital.favicon_url or "").strip() or None
@@ -108,8 +121,14 @@ def resolve_branding(hospital: Hospital | None) -> dict[str, Any]:
         "name": name,
         "logo_url": logo_url,
         "favicon_url": favicon_url,
+        "customisation_licensed": True,
     }
 
 
 def get_branding_payload(db: Session) -> dict[str, Any]:
-    return resolve_branding(_first_hospital(db))
+    from app.services.license_service import license_allows_customisation
+
+    return resolve_branding(
+        _first_hospital(db),
+        customisation_licensed=license_allows_customisation(db),
+    )

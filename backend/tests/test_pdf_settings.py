@@ -294,10 +294,10 @@ def test_generate_bill_pdf_hides_staff_footer_when_disabled(db_session):
         "balance_due": 0,
         "prepared_by": "Reception User",
     }
-    hi = {"name": "Test Hospital", "address": "", "phone": "", "email": ""}
+    hi = {"name": "Test Hospital", "address": "", "phone": "", "email": "", "seller_info": {"name": "Acme Vendor"}}
+    on_pdf = svc.generate_bill_pdf(bill, hi, include_header=False, include_footer=True).getvalue()
     on_text = "".join(
-        PdfReader(BytesIO(svc.generate_bill_pdf(bill, hi, include_header=False, include_footer=True).getvalue()))
-        .pages[0].extract_text() or ""
+        PdfReader(BytesIO(on_pdf)).pages[0].extract_text() or ""
     )
     off_text = "".join(
         PdfReader(BytesIO(svc.generate_bill_pdf(bill, hi, include_header=False, include_footer=False).getvalue()))
@@ -305,6 +305,9 @@ def test_generate_bill_pdf_hides_staff_footer_when_disabled(db_session):
     )
     assert "Prepared by" in on_text
     assert "Prepared by" not in off_text
+    assert b"Powered by" not in on_pdf
+    assert b"Sold by" not in on_pdf
+    assert b"Developed by KT Health Soft" not in on_pdf
 
 
 def test_generate_lab_report_pdf_hides_technician_when_disabled(db_session):

@@ -169,7 +169,7 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
   }
 
   // ── CUSTOMISATIONS (reception staff only — admins get it under Administration) ──
-  if (hasRole('receptionist') && !hasAnyRole('hospital_admin', 'super_admin')) {
+  if (enabledModules.customisation && hasRole('receptionist') && !hasAnyRole('hospital_admin', 'super_admin')) {
     const items = [];
     add(items, make('Customisations', Printer, '/dashboard/print-settings'));
     if (items.length > 0) sections.push({ label: 'Settings', items });
@@ -346,7 +346,9 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
     add(admin, make('Doctor Profiles', UserCheck, '/dashboard/hospital-admin/doctors'));
     add(admin, make('Hospital Info', Building2, '/dashboard/hospital-admin/info'));
     add(admin, make('Appearance', PanelTop, '/dashboard/hospital-admin/appearance'));
-    add(admin, make('Customisations', Printer, '/dashboard/print-settings'));
+    if (enabledModules.customisation) {
+      add(admin, make('Customisations', Printer, '/dashboard/print-settings'));
+    }
     add(admin, make('Guided Setup', ClipboardList, '/dashboard/setup'));
     if (admin.length > 0) sections.push({ label: 'Administration', items: admin });
 

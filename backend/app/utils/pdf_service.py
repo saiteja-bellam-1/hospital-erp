@@ -59,47 +59,6 @@ def _get_uploads_base():
         return os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
 
 
-def _load_seller_info_safe():
-    """Best-effort fetch of seller_info from the License table.
-
-    Used as a fallback when callers don't pass seller_info via hospital_info.
-    Failures are swallowed — the footer simply falls back to the generic line.
-    """
-    try:
-        from app.config.database import SessionLocal
-        from app.models.license import License
-        db = SessionLocal()
-        try:
-            lic = db.query(License).order_by(License.id.desc()).first()
-            return lic.seller_info if (lic and lic.seller_info) else None
-        finally:
-            db.close()
-    except Exception:
-        return None
-
-
-def _draw_footer(canvas_obj, doc, seller_info=None):
-    """Draws the standard footer line on every page.
-
-    "Powered by KT HEALTH ERP — Sold by {vendor}" when a seller_info dict
-    with a non-empty name is supplied; otherwise the generic
-    "Developed by KT Health Soft" line.
-    """
-    try:
-        if seller_info and seller_info.get('name'):
-            text = f"Powered by KT HEALTH ERP — Sold by {seller_info['name']}"
-        else:
-            text = "Developed by KT Health Soft"
-        canvas_obj.saveState()
-        canvas_obj.setFont('Helvetica', 7)
-        canvas_obj.setFillGray(0.4)
-        page_width = doc.pagesize[0] if hasattr(doc, 'pagesize') else A4[0]
-        canvas_obj.drawCentredString(page_width / 2, 12, text)
-        canvas_obj.restoreState()
-    except Exception:
-        pass
-
-
 def _draw_watermark(canvas_obj, doc, text):
     """Draws a large semi-transparent diagonal watermark across the page."""
     if not text:
@@ -122,9 +81,10 @@ def _draw_watermark(canvas_obj, doc, text):
         pass
 
 
-def _make_page_callback(seller_info, header_cb=None, watermark=None):
+def _make_page_callback(header_cb=None, watermark=None):
     """Returns a SimpleDocTemplate onPage callback chaining the optional
-    header callback, watermark, then the footer."""
+    header callback then watermark. Product/vendor attribution is omitted
+    so customer-branded deployments stay white-labelled."""
     def _cb(canvas_obj, doc):
         if watermark:
             _draw_watermark(canvas_obj, doc, watermark)
@@ -133,7 +93,6 @@ def _make_page_callback(seller_info, header_cb=None, watermark=None):
                 header_cb(canvas_obj, doc)
             except Exception:
                 pass
-        _draw_footer(canvas_obj, doc, seller_info)
     return _cb
 
 
@@ -230,25 +189,15 @@ def _discharge_running_header(canvas_obj, doc, patient_label: str):
         pass
 
 
-def _resolve_seller(hospital_info):
-    """Extract seller_info from hospital_info dict (preferred) or fall back
-    to a one-shot DB lookup."""
-    if isinstance(hospital_info, dict):
-        si = hospital_info.get('seller_info')
-        if si:
-            return si
-    return _load_seller_info_safe()
-
-
 def _finalize(doc, elements, hospital_info, header_cb=None, watermark=None):
-    """Build the PDF with the footer (and optional header) wired in.
+    """Build the PDF with the optional header and watermark wired in.
 
-    Use this in place of `doc.build(elements)` so every generated PDF
-    carries the consistent vendor footer. ``watermark`` (e.g. ``"CANCELLED"``,
-    ``"INTERIM"``) renders a diagonal stamp behind the content.
+    Use this in place of `doc.build(elements)`. ``watermark`` (e.g.
+    ``"CANCELLED"``, ``"INTERIM"``) renders a diagonal stamp behind the
+    content. Product/vendor lines are not drawn — customer branding owns
+    the letterhead instead.
     """
-    seller_info = _resolve_seller(hospital_info)
-    cb = _make_page_callback(seller_info, header_cb, watermark)
+    cb = _make_page_callback(header_cb, watermark)
     doc.build(elements, onFirstPage=cb, onLaterPages=cb)
 
 

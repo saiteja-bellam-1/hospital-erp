@@ -417,7 +417,7 @@ const HospitalAdminModule = () => {
               <div className="rounded-md border border-dashed border-muted-foreground/30 bg-muted/20 px-4 py-3">
                 <p className="text-sm text-muted-foreground">
                   App logo and browser tab icon are managed under{' '}
-                  <strong>Appearance → Branding</strong> (super admin only).
+                  <strong>Appearance → Branding</strong> when Customisation is included in the license.
                 </p>
               </div>
 

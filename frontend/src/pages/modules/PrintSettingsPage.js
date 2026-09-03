@@ -177,6 +177,7 @@ const PrintSettingsPage = () => {
   const [footerOverrides, setFooterOverrides] = useState({});
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewReport, setPreviewReport] = useState({ key: 'opd_bill', label: 'OPD Bill' });
+  const [customisationLicensed, setCustomisationLicensed] = useState(null);
 
   const roles = user?.roles || [user?.role];
   const canEdit = roles.some((r) =>
@@ -245,6 +246,7 @@ const PrintSettingsPage = () => {
         setFooterReportCatalog(res.data.footer_report_catalog || []);
         setOverrides(res.data.report_header_overrides || {});
         setFooterOverrides(res.data.report_footer_overrides || {});
+        setCustomisationLicensed(!!res.data.customisation_licensed);
       } catch {
         toast({
           variant: 'destructive',
@@ -398,6 +400,25 @@ const PrintSettingsPage = () => {
       <p className="text-sm text-muted-foreground">
         You do not have permission to edit customisations.
       </p>
+    );
+  }
+
+  if (!loading && customisationLicensed === false) {
+    return (
+      <div className="space-y-3 max-w-xl">
+        <h1 className="text-2xl font-bold flex items-center gap-2">
+          <Printer className="h-6 w-6 shrink-0" />
+          Customisations
+        </h1>
+        <p className="text-sm text-muted-foreground">
+          Document customisations are not included in this license. Ask your vendor to issue a license with the Customisation add-on.
+        </p>
+        {roles.some((r) => ['super_admin', 'hospital_admin'].includes(r)) && (
+          <Button asChild variant="outline">
+            <Link to="/dashboard/license">Open License</Link>
+          </Button>
+        )}
+      </div>
     );
   }
 

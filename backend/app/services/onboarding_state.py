@@ -48,6 +48,9 @@ def get_enabled_module_names(db: Session) -> set[str]:
             is_on = module.is_enabled
         if is_on or module.is_always_enabled:
             enabled.add(module.module_name)
+    from app.services.license_service import FEATURE_CUSTOMISATION, license_allows_customisation
+    if license_allows_customisation(db):
+        enabled.add(FEATURE_CUSTOMISATION)
     return enabled
 
 
@@ -76,8 +79,9 @@ STEP_DEFINITIONS = (
         "label": "Hospital logo",
         "description": "Upload a PNG, JPEG or WebP logo (maximum 2 MB).",
         "required": True,
-        "path": "/dashboard/hospital-admin/info",
+        "path": "/dashboard/hospital-admin/appearance",
         "minutes": 5,
+        "module": "customisation",
     },
     {
         "key": "print_settings",
@@ -86,6 +90,7 @@ STEP_DEFINITIONS = (
         "required": True,
         "path": "/dashboard/print-settings",
         "minutes": 10,
+        "module": "customisation",
     },
     {
         "key": "departments",
