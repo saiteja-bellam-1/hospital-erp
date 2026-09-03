@@ -8,7 +8,7 @@ import {
   Monitor,
   X,
 } from 'lucide-react';
-import hospitalLogo from '../../assets/Final Logo KT (1).jpg';
+import HospitalLogo from '../../components/HospitalLogo';
 import UniversalSearch from './UniversalSearch';
 
 /**
@@ -48,10 +48,8 @@ export default function AppSidebar({
         style={{ borderBottom: '1px solid hsl(var(--sidebar-border))' }}
       >
         <Link to="/dashboard" className="flex items-center gap-2" title="Dashboard" aria-label="Dashboard">
-          <img
-            src={hospitalLogo}
-            alt="KT Health Soft"
-            className="h-9 w-auto max-w-[180px] rounded"
+          <HospitalLogo
+            variant="sidebar"
             style={{ filter: 'brightness(1.1) contrast(1.05)' }}
           />
         </Link>

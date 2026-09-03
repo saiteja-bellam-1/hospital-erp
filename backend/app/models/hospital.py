@@ -24,6 +24,7 @@ class Hospital(Base):
     gstin = Column(String(20))
     gst_state_code = Column(String(2))
     logo_url = Column(String(255))
+    favicon_url = Column(String(255))
     description = Column(Text)
     established_date = Column(DateTime)
     mrn_prefix = Column(String(8), nullable=True)

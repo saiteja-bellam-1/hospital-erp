@@ -284,6 +284,7 @@ NEW_COLUMNS = [
     # Barcode labels — lab samples + pharmacy batch labels
     ("patients", "mrn_ean13", "VARCHAR(13)"),
     ("patient_lab_orders", "sample_ean13", "VARCHAR(13)"),
+    ("hospitals", "favicon_url", "VARCHAR(255)"),
 ]
 
 # B6 — body release table is created via create_all on startup; no column adds.

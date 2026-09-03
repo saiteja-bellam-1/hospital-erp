@@ -7,8 +7,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
-import hospitalLogo from '../../assets/Final Logo KT (1).jpg';
-import UniversalSearch from './UniversalSearch';
+import HospitalLogo from '../../components/HospitalLogo';
 
 const idleLinkClass =
   'header-nav-link px-2.5 py-1.5 rounded-md text-sm font-medium whitespace-nowrap transition-colors flex-shrink-0';
@@ -76,10 +75,8 @@ export default function AppHeader({
           title="Dashboard"
           aria-label="Dashboard"
         >
-          <img
-            src={hospitalLogo}
-            alt="KT Health Soft"
-            className="h-8 w-auto max-w-[140px] rounded"
+          <HospitalLogo
+            variant="header"
             style={{ filter: 'brightness(1.1) contrast(1.05)' }}
           />
         </Link>
@@ -128,19 +125,6 @@ export default function AppHeader({
         </nav>
 
         <div className="flex items-center gap-2 ml-auto flex-shrink-0">
-          <div className="hidden sm:block">
-            <UniversalSearch
-              navigationSections={navigationSections}
-              triggerVariant="header"
-            />
-          </div>
-          <div className="sm:hidden">
-            <UniversalSearch
-              navigationSections={navigationSections}
-              triggerVariant="header-compact"
-            />
-          </div>
-
           <div
             className="hidden md:flex items-center gap-2 pl-2"
             style={{ borderLeft: '1px solid hsl(var(--sidebar-border))' }}

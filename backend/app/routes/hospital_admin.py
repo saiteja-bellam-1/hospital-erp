@@ -53,6 +53,7 @@ class HospitalInfoResponse(BaseModel):
     gstin: Optional[str] = None
     gst_state_code: Optional[str] = None
     logo_url: Optional[str]
+    favicon_url: Optional[str] = None
     description: Optional[str]
     established_date: Optional[datetime]
     mrn_prefix: Optional[str] = None
@@ -111,6 +112,16 @@ def require_hospital_admin(current_user: User = Depends(get_current_user)):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Hospital admin access required"
+        )
+    return current_user
+
+
+def require_super_admin(current_user: User = Depends(get_current_user)):
+    """Only super_admin may change app branding (logo, favicon, display name)."""
+    if 'super_admin' not in current_user.role_names:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Super admin access required",
         )
     return current_user
 
@@ -370,7 +381,8 @@ async def update_hospital_info(
         code = (hospital_data.gst_state_code or "").strip()
         hospital.gst_state_code = code[:2] or None
     if hospital_data.logo_url is not None:
-        hospital.logo_url = hospital_data.logo_url
+        if 'super_admin' in current_user.role_names:
+            hospital.logo_url = hospital_data.logo_url
     if hospital_data.description is not None:
         hospital.description = hospital_data.description
     if hospital_data.established_date is not None:
@@ -575,7 +587,10 @@ async def upload_module_file(
     current_user: User = Depends(require_hospital_admin),
 ):
     """Upload a file (logo, signature image) for module config."""
-    allowed_types = ["image/png", "image/jpeg", "image/jpg", "image/webp"]
+    allowed_types = [
+        "image/png", "image/jpeg", "image/jpg", "image/webp",
+        "image/x-icon", "image/vnd.microsoft.icon",
+    ]
     if file.content_type not in allowed_types:
         raise HTTPException(status_code=400, detail="Only PNG, JPEG, and WebP images are allowed")
 
@@ -959,6 +974,114 @@ async def update_ui_settings(
     log_action(db, current_user, "update_ui_settings", "hospital", details=payload)
     db.commit()
     return {"message": "UI settings updated", **payload}
+
+
+# BRANDING (app chrome: name, logo, favicon)
+class BrandingUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    logo_url: Optional[str] = None
+    favicon_url: Optional[str] = None
+
+
+@router.get("/branding/public")
+async def get_branding_public(db: Session = Depends(get_db)):
+    """Public branding for login page — no auth required."""
+    from app.utils.branding import get_branding_payload
+
+    return get_branding_payload(db)
+
+
+@router.post("/branding/upload")
+async def upload_branding_image(
+    kind: str = Query(..., description="logo or favicon"),
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_super_admin),
+):
+    """Upload a hospital logo or tab icon after dimension checks."""
+    from app.utils.branding import validate_branding_image
+
+    kind = (kind or "").strip().lower()
+    if kind not in ("logo", "favicon"):
+        raise HTTPException(status_code=400, detail="kind must be logo or favicon")
+
+    allowed_types = {
+        "image/png", "image/jpeg", "image/jpg", "image/webp",
+        "image/x-icon", "image/vnd.microsoft.icon",
+    }
+    if kind == "logo":
+        allowed_types = {"image/png", "image/jpeg", "image/jpg", "image/webp"}
+    if file.content_type not in allowed_types:
+        raise HTTPException(
+            status_code=400,
+            detail="Logo must be PNG, JPEG, or WebP" if kind == "logo"
+            else "Tab icon must be PNG, JPEG, WebP, or ICO",
+        )
+
+    content = await file.read()
+    try:
+        width, height = validate_branding_image(content, kind)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    ext = file.filename.rsplit(".", 1)[-1] if file.filename and "." in file.filename else "png"
+    filename = f"{uuid.uuid4().hex}.{ext.lower()}"
+    filepath = os.path.join(UPLOAD_DIR, filename)
+    with open(filepath, "wb") as fh:
+        fh.write(content)
+
+    return {
+        "url": f"/uploads/module-config/{filename}",
+        "filename": filename,
+        "width": width,
+        "height": height,
+        "kind": kind,
+    }
+
+
+@router.get("/branding")
+async def get_branding(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Authenticated branding payload for app chrome."""
+    from app.utils.branding import get_branding_payload
+
+    _ = current_user
+    return get_branding_payload(db)
+
+
+@router.put("/branding")
+async def update_branding(
+    data: BrandingUpdateRequest,
+    current_user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    """Update hospital app branding (super_admin only)."""
+    hospital = db.query(Hospital).first()
+    if not hospital:
+        raise HTTPException(status_code=404, detail="Hospital not found")
+
+    if data.name is not None:
+        name = data.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Hospital name cannot be empty")
+        hospital.name = name
+    if data.logo_url is not None:
+        hospital.logo_url = data.logo_url.strip() or None
+    if data.favicon_url is not None:
+        hospital.favicon_url = data.favicon_url.strip() or None
+
+    db.commit()
+    db.refresh(hospital)
+
+    from app.utils.branding import resolve_branding
+    from app.services.audit_service import log_action
+
+    payload = resolve_branding(hospital)
+    log_action(db, current_user, "update_branding", "hospital", details=payload)
+    db.commit()
+    return {"message": "Branding updated", **payload}
 
 
 @router.get("/dashboard-overview")

@@ -7,7 +7,7 @@ import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { useToast } from '../hooks/use-toast';
 import axios from 'axios';
-import hospitalLogo from '../assets/Final Logo KT (1).jpg';
+import HospitalLogo from '../components/HospitalLogo';
 
 const Login = () => {
   const [loading, setLoading] = useState(false);
@@ -75,11 +75,7 @@ const Login = () => {
             }}
           >
             <div className="flex justify-center mb-4">
-              <img
-                src={hospitalLogo}
-                alt="KT Health Soft - Hospital Management System"
-                className="h-24 w-auto max-w-[280px]"
-              />
+              <HospitalLogo variant="login" />
             </div>
             <p className="text-sm font-medium" style={{ color: 'hsl(220 10% 46%)' }}>
               Sign in to your account

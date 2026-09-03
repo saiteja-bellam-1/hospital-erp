@@ -4,6 +4,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../ui/dialog';
 import { Button } from '../ui/button';
 import { Download, Eye, Loader2, Printer } from 'lucide-react';
 import { fetchPdfBlobUrl, printPdfFromUrl } from '../../utils/printPdf';
+import { useLabelPageSize } from '../../hooks/useLabelPageSize';
 
 const labelPath = (inventoryId) => `/api/pharmacy/inventory/${inventoryId}/label.pdf`;
 const BULK_LABEL_PATH = '/api/pharmacy/inventory/labels.pdf';
@@ -48,6 +49,8 @@ export default function PurchaseLabelsDialog({
   const [loadingPreview, setLoadingPreview] = React.useState(false);
   const [busy, setBusy] = React.useState(null);
   const [error, setError] = React.useState('');
+  const { aspectRatio, pageLabel, isLandscape, stickersAcross } = useLabelPageSize('pharmacy');
+  const useBulkPreview = printable.length > 1;
 
   React.useEffect(() => {
     if (!open) {
@@ -69,7 +72,14 @@ export default function PurchaseLabelsDialog({
     let cancelled = false;
     let createdUrl = null;
     const load = async () => {
-      if (!open || !selectedId) {
+      if (!open) {
+        setPdfUrl((prev) => {
+          if (prev) window.URL.revokeObjectURL(prev);
+          return null;
+        });
+        return;
+      }
+      if (!useBulkPreview && !selectedId) {
         setPdfUrl((prev) => {
           if (prev) window.URL.revokeObjectURL(prev);
           return null;
@@ -79,7 +89,18 @@ export default function PurchaseLabelsDialog({
       setLoadingPreview(true);
       setError('');
       try {
-        const url = await fetchPdfBlobUrl(labelPath(selectedId), { params: labelRequestParams() });
+        let url;
+        if (useBulkPreview) {
+          const ids = printable.map((l) => l.inventoryId);
+          const res = await axios.post(
+            BULK_LABEL_PATH,
+            { inventory_ids: ids },
+            { params: labelRequestParams(), responseType: 'blob' },
+          );
+          url = window.URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+        } else {
+          url = await fetchPdfBlobUrl(labelPath(selectedId), { params: labelRequestParams() });
+        }
         if (cancelled) {
           window.URL.revokeObjectURL(url);
           return;
@@ -102,7 +123,7 @@ export default function PurchaseLabelsDialog({
       cancelled = true;
       if (createdUrl) window.URL.revokeObjectURL(createdUrl);
     };
-  }, [open, selectedId]);
+  }, [open, selectedId, useBulkPreview, printable]);
 
   const printOne = async (inventoryId) => {
     setError('');
@@ -176,7 +197,7 @@ export default function PurchaseLabelsDialog({
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose?.()}>
-      <DialogContent className="max-w-3xl max-h-[90vh] flex flex-col gap-3">
+      <DialogContent className={`max-w-3xl max-h-[90vh] flex flex-col gap-3 ${isLandscape ? 'sm:max-w-4xl' : ''}`}>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
         </DialogHeader>
@@ -242,7 +263,8 @@ export default function PurchaseLabelsDialog({
 
               <div className="border rounded-lg flex flex-col min-h-[12rem] md:min-h-[22rem] bg-white">
                 <p className="text-xs font-medium text-muted-foreground px-3 py-2 border-b bg-muted/30 flex items-center gap-1">
-                  <Eye className="h-3.5 w-3.5" /> Preview
+                  <Eye className="h-3.5 w-3.5" />
+                  {useBulkPreview ? `Preview — all ${printable.length} in one row` : 'Preview'}
                 </p>
                 <div className="flex-1 p-2 min-h-0">
                   {loadingPreview && (
@@ -252,7 +274,8 @@ export default function PurchaseLabelsDialog({
                     <iframe
                       title="Label preview"
                       src={pdfUrl}
-                      className="w-full h-full min-h-[10rem] border rounded"
+                      className="w-full border rounded"
+                      style={{ aspectRatio, maxHeight: '14rem' }}
                     />
                   )}
                   {!loadingPreview && !pdfUrl && selectedId && (
@@ -266,9 +289,15 @@ export default function PurchaseLabelsDialog({
             </div>
 
             <p className="text-xs text-muted-foreground">
-              Thermal: choose your label printer and matching paper size in each OS print dialog.
-              &ldquo;Print all in sequence&rdquo; opens one dialog per label; &ldquo;Print combined PDF&rdquo;
-              sends every label in a single print job (best for Avery sheets).
+              PDF page: {pageLabel}.
+              {stickersAcross > 1 && printable.length > 1 ? (
+                <>
+                  {' '}With {stickersAcross} across the roll, use <strong>Print combined PDF</strong> so all
+                  barcodes print side-by-side on one peel line.
+                </>
+              ) : (
+                <> In the print dialog use that custom paper size at 100% scale.</>
+              )}
             </p>
           </>
         )}
@@ -294,6 +323,19 @@ export default function PurchaseLabelsDialog({
               </Button>
               <Button
                 type="button"
+                size="sm"
+                disabled={isBusy}
+                onClick={printAllCombined}
+              >
+                {busy === 'combined' ? (
+                  <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                ) : (
+                  <Printer className="h-4 w-4 mr-1" />
+                )}
+                {stickersAcross > 1 ? 'Print all (one row)' : 'Print combined PDF'}
+              </Button>
+              <Button
+                type="button"
                 variant="outline"
                 size="sm"
                 disabled={isBusy || printable.length < 2}
@@ -304,20 +346,7 @@ export default function PurchaseLabelsDialog({
                 ) : (
                   <Printer className="h-4 w-4 mr-1" />
                 )}
-                Print all in sequence
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                disabled={isBusy}
-                onClick={printAllCombined}
-              >
-                {busy === 'combined' ? (
-                  <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                ) : (
-                  <Printer className="h-4 w-4 mr-1" />
-                )}
-                Print combined PDF
+                Print one-by-one
               </Button>
             </>
           )}

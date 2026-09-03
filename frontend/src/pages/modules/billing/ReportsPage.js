@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../../../components/ui
 import { Button } from '../../../components/ui/button';
 import { Input } from '../../../components/ui/input';
 import { Label } from '../../../components/ui/label';
-import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '../../../components/ui/select';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../../components/ui/select';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from '../../../components/ui/dropdown-menu';
@@ -12,36 +12,45 @@ import { ChevronDown, Download, FileSpreadsheet, FileText, Loader2 } from 'lucid
 import PdfPreviewDialog from '../../../components/PdfPreviewDialog';
 import PatientSearchPicker from '../../../components/PatientSearchPicker';
 import {
-  BILLING_MODULES, BillingPeriodFilter, MoneyTable, formatInr, defaultReportRange,
-  rateAmountColumns, flattenRateRows, filterBillingModules,
+  BILLING_MODULES, BillingPeriodFilter, MoneyTable, ModuleChips, formatInr, defaultReportRange,
+  rateAmountColumns, flattenRateRows, billingModuleEnabledMap,
 } from './BillingReportControls';
 import { localMonthStart } from '../../../utils/localDate';
 
+/** Billing-style reports that accept a module query param — scoped when a module is selected. */
+const BILLING_MODULES_WITH_SCOPE = [
+  'all', 'opd', 'lab', 'inpatient', 'pharmacy', 'pharmacy_ip', 'day_care', 'physiotherapy', 'canteen', 'catch_up',
+];
+
+/**
+ * Catalog keyed by report id. `modules` = which module tabs show this report.
+ * `scopesModule` = pass selected module as API filter when not "all".
+ */
 const REPORT_CATALOG = [
-  { id: 'sales', label: 'Sales register', group: 'Hospital-wide', passthrough: true, uses: ['period', 'module', 'patient'], hint: 'Invoices across modules' },
-  { id: 'daily-collection', label: 'Daily collection', group: 'Hospital-wide', passthrough: true, uses: ['period', 'module', 'patient'], hint: 'Cash / UPI / card by day' },
-  { id: 'doctor-efficiency', label: 'Doctor efficiency', group: 'Hospital-wide', requires: 'inpatient', uses: ['period'], hint: 'OPD consults, IP admissions, visits, OT, LOS' },
-  { id: 'doctor-revenue', label: 'Doctor revenue', group: 'Hospital-wide', uses: ['period', 'module', 'patient'], hint: 'OPD and IP billed to each doctor' },
-  { id: 'tax-summary', label: 'Tax summary', group: 'Hospital-wide', passthrough: true, uses: ['period', 'module', 'patient'], hint: 'GST register by day' },
-  { id: 'outstanding', label: 'Outstanding', group: 'Hospital-wide', passthrough: true, uses: ['period', 'module', 'patient'], hint: 'Unpaid billed amounts' },
+  { id: 'sales', label: 'Sales register', modules: BILLING_MODULES_WITH_SCOPE, scopesModule: true, uses: ['period', 'patient'], hint: 'Invoices for the selected module' },
+  { id: 'daily-collection', label: 'Daily collection', modules: BILLING_MODULES_WITH_SCOPE, scopesModule: true, uses: ['period', 'patient'], hint: 'Cash / UPI / card by day' },
+  { id: 'tax-summary', label: 'Tax summary', modules: BILLING_MODULES_WITH_SCOPE, scopesModule: true, uses: ['period', 'patient'], hint: 'GST register by day' },
+  { id: 'outstanding', label: 'Outstanding', modules: BILLING_MODULES_WITH_SCOPE, scopesModule: true, uses: ['period', 'patient'], hint: 'Unpaid billed amounts' },
+  { id: 'doctor-revenue', label: 'Doctor revenue', modules: ['all', 'opd', 'inpatient'], scopesModule: true, uses: ['period', 'patient', 'doctor'], hint: 'OPD and IP billed to each doctor' },
+  { id: 'doctor-efficiency', label: 'Doctor efficiency', modules: ['all', 'opd', 'inpatient'], requires: 'inpatient', uses: ['period', 'doctor'], hint: 'OPD consults, IP admissions, visits, OT, LOS' },
 
-  { id: 'opd-activity', label: 'OPD activity', group: 'OPD', moduleScope: 'opd', requires: 'outpatient', uses: ['period'], hint: 'Appointments, no-shows, and doctor load' },
+  { id: 'opd-activity', label: 'OPD activity', modules: ['opd'], requires: 'outpatient', uses: ['period', 'doctor'], hint: 'Appointments, no-shows, and doctor load' },
 
-  { id: 'lab-volume', label: 'Lab volume & TAT', group: 'Laboratory', moduleScope: 'lab', requires: 'lab', uses: ['period'], hint: 'Orders, pending vs completed, average turnaround' },
+  { id: 'lab-volume', label: 'Lab volume & TAT', modules: ['lab'], requires: 'lab', uses: ['period'], hint: 'Orders, pending vs completed, average turnaround' },
 
-  { id: 'bed-occupancy', label: 'Bed occupancy', group: 'Inpatient', moduleScope: 'inpatient', requires: 'inpatient', uses: [], hint: 'Live occupancy by ward and room type' },
-  { id: 'monthly-outcomes', label: 'Monthly outcomes', group: 'Inpatient', moduleScope: 'inpatient', requires: 'inpatient', uses: ['month'], hint: 'Occupancy, mortality, readmissions, LOS' },
-  { id: 'readmissions', label: 'Readmissions (30-day)', group: 'Inpatient', moduleScope: 'inpatient', requires: 'inpatient', uses: [], hint: 'Patients readmitted within 30 days' },
-  { id: 'mortality', label: 'Mortality', group: 'Inpatient', moduleScope: 'inpatient', requires: 'inpatient', uses: ['period'], hint: 'Deaths in the selected period' },
+  { id: 'bed-occupancy', label: 'Bed occupancy', modules: ['inpatient'], requires: 'inpatient', uses: [], hint: 'Live occupancy by ward and room type' },
+  { id: 'monthly-outcomes', label: 'Monthly outcomes', modules: ['inpatient'], requires: 'inpatient', uses: ['month'], hint: 'Occupancy, mortality, readmissions, LOS' },
+  { id: 'readmissions', label: 'Readmissions (30-day)', modules: ['inpatient'], requires: 'inpatient', uses: [], hint: 'Patients readmitted within 30 days' },
+  { id: 'mortality', label: 'Mortality', modules: ['inpatient'], requires: 'inpatient', uses: ['period'], hint: 'Deaths in the selected period' },
 
-  { id: 'pharmacy-sales', label: 'Pharmacy sales', group: 'Pharmacy', moduleScope: 'pharmacy', requires: 'pharmacy', uses: ['period'], hint: 'POS sales by day' },
-  { id: 'pharmacy-stock', label: 'Stock on hand', group: 'Pharmacy', moduleScope: 'pharmacy', requires: 'pharmacy', uses: [], hint: 'Current stock value and low-stock items' },
+  { id: 'pharmacy-sales', label: 'Pharmacy sales', modules: ['pharmacy', 'pharmacy_ip'], requires: 'pharmacy', uses: ['period'], hint: 'POS sales by day' },
+  { id: 'pharmacy-stock', label: 'Stock on hand', modules: ['pharmacy', 'pharmacy_ip'], requires: 'pharmacy', uses: [], hint: 'Current stock value and low-stock items' },
 
-  { id: 'daycare-volume', label: 'Day care volume', group: 'Day Care', moduleScope: 'day_care', uses: ['period'], hint: 'Procedure / day-care bills' },
+  { id: 'daycare-volume', label: 'Day care volume', modules: ['day_care'], uses: ['period'], hint: 'Procedure / day-care bills' },
 
-  { id: 'physio-summary', label: 'Physio utilization', group: 'Physiotherapy', moduleScope: 'physiotherapy', requires: 'physiotherapy', uses: ['period'], hint: 'Sessions, no-shows, therapist load, collections' },
+  { id: 'physio-summary', label: 'Physio utilization', modules: ['physiotherapy'], requires: 'physiotherapy', uses: ['period'], hint: 'Sessions, no-shows, therapist load, collections' },
 
-  { id: 'canteen-activity', label: 'Canteen activity', group: 'Canteen', moduleScope: 'canteen', requires: 'inpatient', uses: ['period'], hint: 'POS sales and IP food orders' },
+  { id: 'canteen-activity', label: 'Canteen activity', modules: ['canteen'], requires: 'inpatient', uses: ['period'], hint: 'POS sales and IP food orders' },
 ];
 
 const PATHS = {
@@ -84,15 +93,28 @@ function KpiCards({ items }) {
   );
 }
 
+function doctorLabel(d) {
+  const name = [d.first_name, d.last_name].filter(Boolean).join(' ') || d.username || `User #${d.id}`;
+  return name.startsWith('Dr.') ? name : `Dr. ${name}`;
+}
+
+function filterRowsByDoctor(rows, doctorId) {
+  if (!doctorId || !rows?.length) return rows || [];
+  const id = Number(doctorId);
+  return rows.filter((r) => Number(r.doctor_id) === id);
+}
+
 export default function ReportsPage() {
   const range = defaultReportRange();
-  const [kind, setKind] = useState('doctor-efficiency');
+  const [module, setModule] = useState('all');
+  const [kind, setKind] = useState('sales');
   const [periodMode, setPeriodMode] = useState('range');
   const [dateFrom, setDateFrom] = useState(range.from);
   const [dateTo, setDateTo] = useState(range.to);
   const [month, setMonth] = useState(localMonthStart().slice(0, 7));
-  const [module, setModule] = useState('all');
   const [patient, setPatient] = useState(null);
+  const [doctorId, setDoctorId] = useState('');
+  const [doctors, setDoctors] = useState([]);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -114,22 +136,34 @@ export default function ReportsPage() {
     return () => { cancelled = true; };
   }, []);
 
-  const moduleOptions = useMemo(
-    () => (Object.keys(enabledModules).length
-      ? filterBillingModules(enabledModules)
-      : BILLING_MODULES),
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await axios.get('/api/appointments/doctors');
+        if (!cancelled) setDoctors(res.data || []);
+      } catch {
+        if (!cancelled) setDoctors([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const moduleEnabled = useMemo(
+    () => (Object.keys(enabledModules).length ? billingModuleEnabledMap(enabledModules) : null),
     [enabledModules],
   );
 
+  const moduleOptions = useMemo(() => {
+    if (!moduleEnabled) return BILLING_MODULES;
+    return BILLING_MODULES.filter((m) => m.id === 'all' || moduleEnabled[m.id] !== false);
+  }, [moduleEnabled]);
+
   const reportOptions = useMemo(() => {
     const loaded = Object.keys(enabledModules).length > 0;
-    const moduleKey = module === 'pharmacy_ip' ? 'pharmacy' : module;
     return REPORT_CATALOG.filter((r) => {
       if (r.requires && loaded && !enabledModules[r.requires]) return false;
-      if (moduleKey === 'all') return true;
-      if (r.passthrough) return true;
-      if (r.moduleScope === moduleKey) return true;
-      return false;
+      return (r.modules || []).includes(module);
     });
   }, [enabledModules, module]);
 
@@ -139,23 +173,32 @@ export default function ReportsPage() {
 
   useEffect(() => {
     if (!reportOptions.some((r) => r.id === kind)) {
-      const scoped = reportOptions.find((r) => r.moduleScope);
-      setKind(scoped?.id || reportOptions[0]?.id || 'sales');
+      setKind(reportOptions[0]?.id || 'sales');
     }
   }, [reportOptions, kind]);
 
-  const kindMeta = reportOptions.find((k) => k.id === kind) || REPORT_CATALOG[0];
+  // Clear patient/doctor when switching report if that filter no longer applies
+  useEffect(() => {
+    const meta = REPORT_CATALOG.find((r) => r.id === kind);
+    const uses = meta?.uses || [];
+    if (!uses.includes('patient')) setPatient(null);
+    if (!uses.includes('doctor')) setDoctorId('');
+  }, [kind]);
+
+  const kindMeta = reportOptions.find((k) => k.id === kind) || REPORT_CATALOG.find((r) => r.id === kind) || REPORT_CATALOG[0];
   const uses = kindMeta.uses || [];
+  const showFilters = uses.includes('period') || uses.includes('month') || uses.includes('patient') || uses.includes('doctor');
 
   const filterParams = useMemo(() => {
     const params = {};
-    const needed = (REPORT_CATALOG.find((k) => k.id === kind) || {}).uses || [];
+    const meta = REPORT_CATALOG.find((k) => k.id === kind) || {};
+    const needed = meta.uses || [];
     if (needed.includes('period')) {
       params.date_from = dateFrom;
       params.date_to = dateTo;
     }
     if (needed.includes('month')) params.month = month;
-    if (needed.includes('module') && module && module !== 'all') params.module = module;
+    if (meta.scopesModule && module && module !== 'all') params.module = module;
     if (needed.includes('patient') && patient?.id) params.patient_id = patient.id;
     return params;
   }, [kind, dateFrom, dateTo, month, module, patient]);
@@ -176,10 +219,48 @@ export default function ReportsPage() {
 
   useEffect(() => { run(); }, [run]);
 
+  const displayData = useMemo(() => {
+    if (!data || !doctorId || !uses.includes('doctor')) return data;
+    const rows = filterRowsByDoctor(data.rows, doctorId);
+    const next = { ...data, rows };
+    if (kind === 'doctor-efficiency') {
+      next.totals = {
+        opd_consults: rows.reduce((s, r) => s + Number(r.opd_consults || 0), 0),
+        opd_revenue: Math.round(rows.reduce((s, r) => s + Number(r.opd_revenue || 0), 0) * 100) / 100,
+        admissions: rows.reduce((s, r) => s + Number(r.admissions || 0), 0),
+        visits: rows.reduce((s, r) => s + Number(r.visits || 0), 0),
+        ot_as_surgeon: rows.reduce((s, r) => s + Number(r.ot_as_surgeon || 0), 0),
+        total_billed_attributable: Math.round(rows.reduce((s, r) => s + Number(r.total_billed_attributable || 0), 0) * 100) / 100,
+      };
+    } else if (kind === 'doctor-revenue') {
+      next.totals = {
+        consultation_total: Math.round(rows.reduce((s, r) => s + Number(r.consultation_revenue || 0), 0) * 100) / 100,
+        admission_total: Math.round(rows.reduce((s, r) => s + Number(r.admission_revenue || 0), 0) * 100) / 100,
+        grand_total: Math.round(rows.reduce((s, r) => s + Number(r.total_revenue || 0), 0) * 100) / 100,
+      };
+    } else if (kind === 'opd-activity') {
+      next.totals = {
+        ...data.totals,
+        appointments: rows.reduce((s, r) => s + Number(r.count || 0), 0),
+        completed: rows.reduce((s, r) => s + Number(r.completed || 0), 0),
+        no_show: rows.reduce((s, r) => s + Number(r.no_show || 0), 0),
+        billed: Math.round(rows.reduce((s, r) => s + Number(r.billed || 0), 0) * 100) / 100,
+        collected: Math.round(rows.reduce((s, r) => s + Number(r.collected || 0), 0) * 100) / 100,
+      };
+      const appts = next.totals.appointments;
+      next.totals.no_show_pct = appts ? Math.round(next.totals.no_show * 1000 / appts) / 10 : 0;
+    }
+    return next;
+  }, [data, doctorId, uses, kind]);
+
+  const view = displayData || data;
+  const t = view?.totals || {};
+
   const fileStem = [
     kind.replace(/-/g, '_'),
     module || 'all',
     patient?.id ? `p${patient.id}` : null,
+    doctorId ? `d${doctorId}` : null,
     uses.includes('month') ? month : `${dateFrom}_to_${dateTo}`,
   ].filter(Boolean).join('_');
 
@@ -206,7 +287,8 @@ export default function ReportsPage() {
   };
 
   const downloadCsv = () => {
-    if (!data) return;
+    if (!displayData) return;
+    const data = displayData;
     let header = [];
     let lines = [];
     if (kind === 'daily-collection') {
@@ -310,8 +392,7 @@ export default function ReportsPage() {
     URL.revokeObjectURL(url);
   };
 
-  const t = data?.totals || {};
-  const groups = [...new Set(reportOptions.map((r) => r.group))];
+  const moduleLabel = moduleOptions.find((m) => m.id === module)?.label || 'All';
   const pdfPath = kind === 'sales'
     ? '/api/hospital/billing/reports/sales-summary.pdf'
     : kind === 'bed-occupancy'
@@ -328,7 +409,7 @@ export default function ReportsPage() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Reports</h1>
           <p className="text-sm text-gray-600">
-            One catalog for every module — occupancy, doctor load, lab volume, pharmacy stock, and billing.
+            Choose a module, pick a report, then set filters.
           </p>
         </div>
         <DropdownMenu>
@@ -350,7 +431,7 @@ export default function ReportsPage() {
                 <FileSpreadsheet className="h-4 w-4 mr-2" /> Export Excel (.xlsx)
               </DropdownMenuItem>
             )}
-            <DropdownMenuItem onSelect={() => downloadCsv()} disabled={!data}>
+            <DropdownMenuItem onSelect={() => downloadCsv()} disabled={!displayData && !data}>
               <FileText className="h-4 w-4 mr-2" /> Export CSV
             </DropdownMenuItem>
           </DropdownMenuContent>
@@ -358,67 +439,105 @@ export default function ReportsPage() {
       </div>
 
       <Card>
-        <CardContent className="pt-4">
-          <div className="flex flex-wrap items-end gap-3">
-            <div>
-              <Label className="text-xs">Report</Label>
-              <Select value={kind} onValueChange={setKind}>
-                <SelectTrigger className="w-[260px] h-9"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {groups.map((g) => (
-                    <SelectGroup key={g}>
-                      <SelectLabel>{g}</SelectLabel>
-                      {reportOptions.filter((r) => r.group === g).map((r) => (
-                        <SelectItem key={r.id} value={r.id}>{r.label}</SelectItem>
-                      ))}
-                    </SelectGroup>
-                  ))}
-                </SelectContent>
-              </Select>
+        <CardContent className="pt-4 space-y-4">
+          <div>
+            <Label className="text-xs text-gray-500 uppercase tracking-wide">1. Module</Label>
+            <div className="mt-1.5">
+              <ModuleChips value={module} onChange={setModule} enabled={moduleEnabled} />
             </div>
-            <div>
-              <Label className="text-xs">Module</Label>
-              <Select value={module} onValueChange={setModule}>
-                <SelectTrigger className="w-[160px] h-9"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {moduleOptions.map((m) => (
-                    <SelectItem key={m.id} value={m.id}>{m.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            {uses.includes('period') && (
-              <BillingPeriodFilter
-                mode={periodMode}
-                onMode={setPeriodMode}
-                dateFrom={dateFrom}
-                dateTo={dateTo}
-                onFrom={setDateFrom}
-                onTo={setDateTo}
-              />
-            )}
-            {uses.includes('month') && (
-              <div>
-                <Label className="text-xs">Month</Label>
-                <Input type="month" value={month} onChange={(e) => setMonth(e.target.value)} className="w-[160px] h-9" />
-              </div>
-            )}
-            {uses.includes('patient') && (
-              <div className="min-w-[240px] flex-1 max-w-sm">
-                <PatientSearchPicker
-                  value={patient}
-                  onChange={setPatient}
-                  label="Patient"
-                  compact
-                  allowRegister={false}
-                  placeholder="Name, phone, or ID…"
-                />
-              </div>
-            )}
-            <Button onClick={run} disabled={loading} size="sm" className="h-9">
-              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Run'}
-            </Button>
           </div>
+
+          <div className="border-t pt-4">
+            <Label className="text-xs text-gray-500 uppercase tracking-wide">2. Report</Label>
+            <p className="text-xs text-gray-500 mt-0.5 mb-2">
+              Reports for {moduleLabel}
+              {reportOptions.length ? ` · ${reportOptions.length} available` : ''}
+            </p>
+            {reportOptions.length === 0 ? (
+              <p className="text-sm text-amber-700">No reports available for this module.</p>
+            ) : (
+              <div className="flex flex-wrap gap-1.5">
+                {reportOptions.map((r) => (
+                  <Button
+                    key={r.id}
+                    type="button"
+                    size="sm"
+                    variant={kind === r.id ? 'default' : 'outline'}
+                    className="h-8 px-2.5 text-xs"
+                    title={r.hint}
+                    onClick={() => setKind(r.id)}
+                  >
+                    {r.label}
+                  </Button>
+                ))}
+              </div>
+            )}
+            {kindMeta?.hint && (
+              <p className="text-xs text-gray-500 mt-2">{kindMeta.hint}</p>
+            )}
+          </div>
+
+          {showFilters && (
+            <div className="border-t pt-4">
+              <Label className="text-xs text-gray-500 uppercase tracking-wide">3. Filters</Label>
+              <div className="mt-2 flex flex-wrap items-end gap-3">
+                {uses.includes('period') && (
+                  <BillingPeriodFilter
+                    mode={periodMode}
+                    onMode={setPeriodMode}
+                    dateFrom={dateFrom}
+                    dateTo={dateTo}
+                    onFrom={setDateFrom}
+                    onTo={setDateTo}
+                  />
+                )}
+                {uses.includes('month') && (
+                  <div>
+                    <Label className="text-xs">Month</Label>
+                    <Input type="month" value={month} onChange={(e) => setMonth(e.target.value)} className="w-[160px] h-9" />
+                  </div>
+                )}
+                {uses.includes('patient') && (
+                  <div className="min-w-[240px] flex-1 max-w-sm">
+                    <PatientSearchPicker
+                      value={patient}
+                      onChange={setPatient}
+                      label="Patient"
+                      compact
+                      allowRegister={false}
+                      placeholder="Name, phone, or ID…"
+                    />
+                  </div>
+                )}
+                {uses.includes('doctor') && (
+                  <div>
+                    <Label className="text-xs">Doctor</Label>
+                    <Select value={doctorId || 'all'} onValueChange={(v) => setDoctorId(v === 'all' ? '' : v)}>
+                      <SelectTrigger className="w-[200px] h-9"><SelectValue placeholder="All doctors" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All doctors</SelectItem>
+                        {doctors.map((d) => (
+                          <SelectItem key={d.id} value={String(d.id)}>{doctorLabel(d)}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+                <Button onClick={run} disabled={loading || !reportOptions.length} size="sm" className="h-9">
+                  {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Run'}
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {!showFilters && reportOptions.length > 0 && (
+            <div className="border-t pt-4 flex items-center gap-3">
+              <p className="text-xs text-gray-500">This report has no date or person filters.</p>
+              <Button onClick={run} disabled={loading} size="sm" className="h-9">
+                {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Refresh'}
+              </Button>
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -462,7 +581,7 @@ export default function ReportsPage() {
                     { key: 'deaths', label: 'Deaths', align: 'right' },
                     { key: 'total_billed_attributable', label: 'IP ₹', align: 'right', money: true },
                   ]}
-                  rows={data?.rows || []}
+                  rows={view?.rows || []}
                   totals={{
                     opd_consults: t.opd_consults,
                     opd_revenue: t.opd_revenue,
@@ -512,7 +631,7 @@ export default function ReportsPage() {
                       { key: 'free', label: 'Free', align: 'right' },
                       { key: 'occupancy_pct', label: 'Occ %', align: 'right', pct: true },
                     ]}
-                    rows={(data?.by_department || []).map((r) => ({
+                    rows={(view?.by_department || []).map((r) => ({
                       ...r,
                       occupancy_pct: occupancyPct(r.occupied, r.total_beds),
                     }))}
@@ -534,7 +653,7 @@ export default function ReportsPage() {
                       { key: 'free', label: 'Free', align: 'right' },
                       { key: 'occupancy_pct', label: 'Occ %', align: 'right', pct: true },
                     ]}
-                    rows={(data?.by_room_type || []).map((r) => ({
+                    rows={(view?.by_room_type || []).map((r) => ({
                       ...r,
                       occupancy_pct: occupancyPct(r.occupied, r.total_beds),
                     }))}
@@ -570,7 +689,7 @@ export default function ReportsPage() {
             <CardHeader>
               <CardTitle className="text-base">Monthly outcomes</CardTitle>
               <p className="text-xs font-normal text-gray-500 mt-1">
-                {kindMeta.hint}{data?.month ? ` · ${data.month}` : ''}.
+                {kindMeta.hint}{view?.month ? ` · ${view.month}` : ''}.
               </p>
             </CardHeader>
             <CardContent>
@@ -583,7 +702,7 @@ export default function ReportsPage() {
                         { key: 'window', label: 'Days since discharge' },
                         { key: 'count', label: 'Count', align: 'right' },
                       ]}
-                      rows={Object.entries(data?.readmissions?.by_window_days || {}).map(([window, count]) => ({ window, count }))}
+                      rows={Object.entries(view?.readmissions?.by_window_days || {}).map(([window, count]) => ({ window, count }))}
                     />
                   </div>
                   <div>
@@ -596,8 +715,8 @@ export default function ReportsPage() {
                         { key: 'median', label: 'Median', align: 'right' },
                       ]}
                       rows={[
-                        { scope: 'Overall', ...(data?.length_of_stay?.overall || {}) },
-                        ...Object.entries(data?.length_of_stay?.by_department || {}).map(([scope, s]) => ({ scope, ...s })),
+                        { scope: 'Overall', ...(view?.length_of_stay?.overall || {}) },
+                        ...Object.entries(view?.length_of_stay?.by_department || {}).map(([scope, s]) => ({ scope, ...s })),
                       ]}
                     />
                   </div>
@@ -647,13 +766,13 @@ export default function ReportsPage() {
                     { key: 'number', label: 'Number' },
                     { key: 'module_label', label: 'Module' },
                     { key: 'party', label: 'Party' },
-                    ...rateAmountColumns(data?.tax_rate_columns, 'amount'),
+                    ...rateAmountColumns(view?.tax_rate_columns, 'amount'),
                     { key: 'tax', label: 'Tax', align: 'right', money: true },
                     { key: 'billed', label: 'Grand', align: 'right', money: true },
                     { key: 'status', label: 'Status' },
                   ]}
-                  rows={flattenRateRows(data?.invoices, data?.tax_rate_columns, 'amount')}
-                  totals={flattenRateRows([t], data?.tax_rate_columns, 'amount')[0] || t}
+                  rows={flattenRateRows(view?.invoices, view?.tax_rate_columns, 'amount')}
+                  totals={flattenRateRows([t], view?.tax_rate_columns, 'amount')[0] || t}
                 />
               )}
             </CardContent>
@@ -676,22 +795,22 @@ export default function ReportsPage() {
               <MoneyTable
                 columns={[
                   { key: 'date', label: 'Date' },
-                  ...(data?.methods || []).map((m) => ({
+                  ...(view?.methods || []).map((m) => ({
                     key: `m_${m}`, label: m, align: 'right', money: true,
                   })),
                   { key: 'refunds', label: 'Refunds', align: 'right', money: true },
                   { key: 'total', label: 'Net', align: 'right', money: true },
                 ]}
-                rows={(data?.rows || []).map((r) => ({
+                rows={(view?.rows || []).map((r) => ({
                   ...r,
-                  ...Object.fromEntries((data?.methods || []).map((m) => [`m_${m}`, r.by_method?.[m] || 0])),
+                  ...Object.fromEntries((view?.methods || []).map((m) => [`m_${m}`, r.by_method?.[m] || 0])),
                 }))}
                 totals={{
                   total: t.net_collected,
                   refunds: t.refunds,
-                  ...Object.fromEntries((data?.methods || []).map((m) => [
+                  ...Object.fromEntries((view?.methods || []).map((m) => [
                     `m_${m}`,
-                    (data?.rows || []).reduce((s, r) => s + Number(r.by_method?.[m] || 0), 0),
+                    (view?.rows || []).reduce((s, r) => s + Number(r.by_method?.[m] || 0), 0),
                   ])),
                 }}
               />
@@ -721,11 +840,11 @@ export default function ReportsPage() {
                   { key: 'admission_revenue', label: 'Admission revenue', align: 'right', money: true },
                   { key: 'total_revenue', label: 'Total', align: 'right', money: true },
                 ]}
-                rows={data?.rows || []}
+                rows={view?.rows || []}
                 totals={{
-                  consultation_count: (data?.rows || []).reduce((s, r) => s + Number(r.consultation_count || 0), 0),
+                  consultation_count: (view?.rows || []).reduce((s, r) => s + Number(r.consultation_count || 0), 0),
                   consultation_revenue: t.consultation_total,
-                  admission_count: (data?.rows || []).reduce((s, r) => s + Number(r.admission_count || 0), 0),
+                  admission_count: (view?.rows || []).reduce((s, r) => s + Number(r.admission_count || 0), 0),
                   admission_revenue: t.admission_total,
                   total_revenue: t.grand_total,
                 }}
@@ -754,7 +873,7 @@ export default function ReportsPage() {
                   { key: 'taxable_value', label: 'Taxable', align: 'right', money: true },
                   { key: 'tax_amount', label: 'Tax', align: 'right', money: true },
                 ]}
-                rows={data?.rows || []}
+                rows={view?.rows || []}
                 totals={{
                   bill_count: t.bill_count,
                   taxable_value: t.taxable_value,
@@ -786,7 +905,7 @@ export default function ReportsPage() {
                   { key: 'collected', label: 'Collected', align: 'right', money: true },
                   { key: 'outstanding', label: 'Outstanding', align: 'right', money: true },
                 ]}
-                rows={data?.rows || []}
+                rows={view?.rows || []}
                 totals={t}
               />
             )}
@@ -815,7 +934,7 @@ export default function ReportsPage() {
                       { key: 'status', label: 'Status' },
                       { key: 'count', label: 'Count', align: 'right' },
                     ]}
-                    rows={data?.by_status || []}
+                    rows={view?.by_status || []}
                   />
                 )}
               </CardContent>
@@ -831,7 +950,7 @@ export default function ReportsPage() {
                       { key: 'type', label: 'Type' },
                       { key: 'count', label: 'Count', align: 'right' },
                     ]}
-                    rows={data?.by_type || []}
+                    rows={view?.by_type || []}
                   />
                 )}
               </CardContent>
@@ -855,7 +974,7 @@ export default function ReportsPage() {
                     { key: 'billed', label: 'Billed', align: 'right', money: true },
                     { key: 'collected', label: 'Collected', align: 'right', money: true },
                   ]}
-                  rows={data?.rows || []}
+                  rows={view?.rows || []}
                   totals={{
                     count: t.appointments,
                     completed: t.completed,
@@ -891,7 +1010,7 @@ export default function ReportsPage() {
                       { key: 'status', label: 'Status' },
                       { key: 'count', label: 'Count', align: 'right' },
                     ]}
-                    rows={data?.by_status || []}
+                    rows={view?.by_status || []}
                   />
                 )}
               </CardContent>
@@ -911,7 +1030,7 @@ export default function ReportsPage() {
                       { key: 'pending', label: 'Pending', align: 'right' },
                       { key: 'billed', label: 'Billed', align: 'right', money: true },
                     ]}
-                    rows={data?.rows || []}
+                    rows={view?.rows || []}
                     totals={{
                       count: t.orders,
                       completed: t.completed,
@@ -945,7 +1064,7 @@ export default function ReportsPage() {
                     { key: 'reason', label: 'Reason' },
                     { key: 'status', label: 'Status' },
                   ]}
-                  rows={data?.rows || []}
+                  rows={view?.rows || []}
                 />
               )}
             </CardContent>
@@ -975,7 +1094,7 @@ export default function ReportsPage() {
                     { key: 'mlc_required', label: 'MLC' },
                     { key: 'autopsy_done', label: 'Autopsy' },
                   ]}
-                  rows={(data?.rows || []).map((r) => ({
+                  rows={(view?.rows || []).map((r) => ({
                     ...r,
                     mlc_required: r.mlc_required ? 'Yes' : 'No',
                     autopsy_done: r.autopsy_done ? 'Yes' : 'No',
@@ -1010,7 +1129,7 @@ export default function ReportsPage() {
                     { key: 'tax', label: 'Tax', align: 'right', money: true },
                     { key: 'discount', label: 'Discount', align: 'right', money: true },
                   ]}
-                  rows={data?.rows || []}
+                  rows={view?.rows || []}
                   totals={t}
                 />
               )}
@@ -1043,7 +1162,7 @@ export default function ReportsPage() {
                     { key: 'nearest_expiry', label: 'Nearest expiry' },
                     { key: 'low_stock', label: 'Low' },
                   ]}
-                  rows={(data?.rows || []).map((r) => ({
+                  rows={(view?.rows || []).map((r) => ({
                     ...r,
                     low_stock: r.low_stock ? 'Yes' : '',
                   }))}
@@ -1075,7 +1194,7 @@ export default function ReportsPage() {
                       { key: 'count', label: 'Count', align: 'right' },
                       { key: 'billed', label: 'Billed', align: 'right', money: true },
                     ]}
-                    rows={data?.by_status || []}
+                    rows={view?.by_status || []}
                   />
                 )}
               </CardContent>
@@ -1095,7 +1214,7 @@ export default function ReportsPage() {
                       { key: 'billed', label: 'Billed', align: 'right', money: true },
                       { key: 'status', label: 'Status' },
                     ]}
-                    rows={data?.rows || []}
+                    rows={view?.rows || []}
                     totals={{ billed: t.billed }}
                   />
                 )}
@@ -1126,7 +1245,7 @@ export default function ReportsPage() {
                       { key: 'status', label: 'Status' },
                       { key: 'count', label: 'Count', align: 'right' },
                     ]}
-                    rows={data?.by_status || []}
+                    rows={view?.by_status || []}
                   />
                 )}
               </CardContent>
@@ -1146,7 +1265,7 @@ export default function ReportsPage() {
                       { key: 'cancelled', label: 'Cancelled', align: 'right' },
                       { key: 'scheduled', label: 'Scheduled', align: 'right' },
                     ]}
-                    rows={data?.rows || []}
+                    rows={view?.rows || []}
                     totals={{
                       completed: t.completed,
                       no_show: t.no_show,
@@ -1181,7 +1300,7 @@ export default function ReportsPage() {
                       { key: 'count', label: 'Bills', align: 'right' },
                       { key: 'amount', label: 'Amount', align: 'right', money: true },
                     ]}
-                    rows={data?.by_payment || []}
+                    rows={view?.by_payment || []}
                   />
                 )}
               </CardContent>
@@ -1197,7 +1316,7 @@ export default function ReportsPage() {
                       { key: 'status', label: 'Status' },
                       { key: 'count', label: 'Count', align: 'right' },
                     ]}
-                    rows={data?.ip_by_status || []}
+                    rows={view?.ip_by_status || []}
                   />
                 )}
               </CardContent>
@@ -1218,7 +1337,7 @@ export default function ReportsPage() {
                     { key: 'billed', label: 'Billed', align: 'right', money: true },
                     { key: 'status', label: 'Status' },
                   ]}
-                  rows={data?.rows || []}
+                  rows={view?.rows || []}
                   totals={{ billed: t.pos_amount }}
                 />
               )}

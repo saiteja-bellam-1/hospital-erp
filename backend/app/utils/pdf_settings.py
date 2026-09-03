@@ -556,6 +556,20 @@ def resolve_print_options(
     )
 
 
+def apply_thermal_roll_layout(settings: dict[str, Any]) -> dict[str, Any]:
+    """Thermal rolls only vary across the feed; never stack multiple rows on one peel line."""
+    if str(settings.get("sheet_mode", "thermal")).lower() != "thermal":
+        return settings
+    row = max(1, int(settings.get("labels_per_row", 1)))
+    col = max(1, int(settings.get("labels_per_column", 1)))
+    out = dict(settings)
+    # Common misconfiguration: "3" entered in labels/column meaning across the roll.
+    if col > 1 and row == 1:
+        out["labels_per_row"] = col
+    out["labels_per_column"] = 1
+    return out
+
+
 def normalize_label_settings(raw: dict[str, Any] | None, defaults: dict[str, Any]) -> dict[str, Any]:
     merged = {**defaults, **(raw or {})}
     merged["width_mm"] = max(MIN_LABEL_DIM_MM, min(MAX_LABEL_DIM_MM, float(merged.get("width_mm", defaults["width_mm"]))))
@@ -578,6 +592,7 @@ def normalize_label_settings(raw: dict[str, Any] | None, defaults: dict[str, Any
         )
         ph_override = merged.get("pharmacy_name_override")
         merged["pharmacy_name_override"] = str(ph_override).strip() if ph_override else None
+    merged = apply_thermal_roll_layout(merged)
     return merged
 
 

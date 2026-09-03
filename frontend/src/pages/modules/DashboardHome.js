@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 
 import { useAuth } from '../../contexts/AuthContext';
+import { useBranding } from '../../contexts/BrandingContext';
 
 const StatCard = ({ title, value, icon, color = 'blue' }) => (
   <Card>
@@ -28,6 +29,7 @@ const StatCard = ({ title, value, icon, color = 'blue' }) => (
 
 const DashboardHome = () => {
   const { user } = useAuth();
+  const { hospitalName } = useBranding();
 
   const getDashboardTitle = () => {
     switch (user.role) {
@@ -44,7 +46,7 @@ const DashboardHome = () => {
       case 'billing_admin':
         return 'Billing Management';
       default:
-        return 'KT HEALTH ERP Dashboard';
+        return `${hospitalName} Dashboard`;
     }
   };
 

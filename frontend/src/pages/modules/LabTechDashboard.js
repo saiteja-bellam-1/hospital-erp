@@ -1309,6 +1309,7 @@ const LabTechDashboard = () => {
         path={labelPreview?.orderId ? `/api/lab/orders/${labelPreview.orderId}/sample-label.pdf` : null}
         params={labelPreview?.reprint ? { reprint: true } : {}}
         filename={labelPreview?.filename || 'sample_label.pdf'}
+        labelKind="lab"
       />
 
       <PdfPreviewDialog

@@ -18,6 +18,7 @@ CACHE_TTL_SECONDS = 300
 # Paths that skip license check
 SKIP_PATHS = [
     "/api/auth/login",
+    "/api/hospital/branding/public",
     "/api/license/upload",
     "/api/license/status",
     "/health",

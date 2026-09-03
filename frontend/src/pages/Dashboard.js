@@ -14,6 +14,7 @@ import {
 import axios from 'axios';
 
 import { useAuth } from '../contexts/AuthContext';
+import { useBranding } from '../contexts/BrandingContext';
 import {
   LayoutPreferencesProvider,
   useLayoutPreferences,
@@ -98,6 +99,7 @@ const backupSupportLine = (health) => {
 
 const DashboardShell = () => {
   const { user, logout, licenseStatus, setLicenseStatus } = useAuth();
+  const { hospitalName } = useBranding();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showSupportPopup, setShowSupportPopup] = useState(false);
   const [pwaInstallPrompt, setPwaInstallPrompt] = useState(null);
@@ -461,11 +463,12 @@ const DashboardShell = () => {
 
           <footer className="flex-shrink-0 py-2 px-3 text-center text-xs text-gray-400 bg-white border-t border-gray-100 flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
             <span>
-              Powered by <span className="font-medium text-gray-500">KT HEALTH ERP</span>
-              {licenseStatus?.seller_info?.name
-                ? <> &mdash; Sold by <span className="font-medium text-gray-500">{licenseStatus.seller_info.name}</span></>
-                : <> &mdash; Developed by KT Health Soft</>
-              }
+              <span className="font-medium text-gray-500">{hospitalName}</span>
+              {' — Powered by '}
+              <span className="font-medium text-gray-500">KT HEALTH ERP</span>
+              {licenseStatus?.seller_info?.name && (
+                <> &mdash; Sold by <span className="font-medium text-gray-500">{licenseStatus.seller_info.name}</span></>
+              )}
             </span>
             {licenseStatus?.days_remaining != null && (
               <span className="inline-flex items-center gap-1.5">

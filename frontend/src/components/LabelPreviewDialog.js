@@ -4,6 +4,7 @@ import { Button } from './ui/button';
 import { Download, Printer } from 'lucide-react';
 import axios from 'axios';
 import { printPdfFromUrl } from '../utils/printPdf';
+import { useLabelPageSize } from '../hooks/useLabelPageSize';
 
 const EMPTY_QUERY_PARAMS = {};
 
@@ -18,7 +19,9 @@ export default function LabelPreviewDialog({
   params = {},
   filename = 'label.pdf',
   bulkBody = null,
+  labelKind = 'pharmacy',
 }) {
+  const { page, aspectRatio, isLandscape, pageLabel } = useLabelPageSize(labelKind);
   const [pdfUrl, setPdfUrl] = React.useState(null);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState('');
@@ -121,7 +124,7 @@ export default function LabelPreviewDialog({
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose?.()}>
-      <DialogContent className="max-w-md">
+      <DialogContent className={isLandscape ? 'max-w-2xl' : 'max-w-md'}>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
         </DialogHeader>
@@ -133,11 +136,16 @@ export default function LabelPreviewDialog({
               title={title}
               src={pdfUrl}
               className="w-full border rounded bg-white"
-              style={{ height: 'min(320px, 70vh)', aspectRatio: '38 / 25' }}
+              style={{ aspectRatio, maxHeight: 'min(280px, 50vh)' }}
             />
           )}
           <p className="text-xs text-gray-500">
-            Thermal: pick your label printer and matching paper size in the OS print dialog.
+            PDF page size: <span className="font-medium text-gray-700">{pageLabel}</span>
+            {isLandscape ? ' (landscape)' : ''}.
+            {' '}In the OS print dialog pick this exact custom paper size, scale 100%, not Fit to page.
+            {page.width_mm > 50 && (
+              <> With 2-column settings, one label prints in the left slot; the right slot stays blank.</>
+            )}
           </p>
           <div className="flex gap-2 justify-end">
             <Button variant="outline" size="sm" onClick={handleDownload} disabled={!pdfUrl}>

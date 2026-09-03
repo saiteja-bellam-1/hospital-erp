@@ -21,7 +21,8 @@ import {
   Menu,
   X,
 } from 'lucide-react';
-import hospitalLogo from '../assets/Final Logo KT (1).jpg';
+import HospitalLogo from '../components/HospitalLogo';
+import { useBranding } from '../contexts/BrandingContext';
 
 // ─── Documentation Content ────────────────────────────────────────────────────
 
@@ -1971,6 +1972,7 @@ If you encounter issues not listed here:
 
 const HelpDocs = () => {
   const navigate = useNavigate();
+  const { hospitalName } = useBranding();
   const [searchParams, setSearchParams] = useSearchParams();
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedSections, setExpandedSections] = useState({});
@@ -2326,8 +2328,8 @@ const HelpDocs = () => {
         {/* Footer */}
         <div className="px-4 py-3 border-t border-gray-200 flex-shrink-0">
           <div className="flex items-center gap-2">
-            <img src={hospitalLogo} alt="KT Health Soft" className="h-6 w-auto rounded" />
-            <span className="text-[11px] text-gray-400">KT Health Soft Documentation</span>
+            <HospitalLogo className="h-6 w-auto rounded" />
+            <span className="text-[11px] text-gray-400">{hospitalName} Documentation</span>
           </div>
         </div>
       </aside>

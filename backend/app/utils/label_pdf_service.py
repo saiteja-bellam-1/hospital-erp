@@ -12,6 +12,7 @@ from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
 
 from app.services.barcode_service import validate_ean13
+from app.utils.pdf_settings import apply_thermal_roll_layout
 
 # Pharmacy label layout ratios (retail-style: header / barcode / footer).
 PHARMACY_SIDE_MARGIN_RATIO = 0.01
@@ -57,21 +58,22 @@ class LabelLayoutConfig:
     def from_dict(cls, data: Optional[dict[str, Any]]) -> "LabelLayoutConfig":
         if not data:
             return cls()
+        normalized = apply_thermal_roll_layout(dict(data))
         return cls(
-            width_mm=float(data.get("width_mm", 50)),
-            height_mm=float(data.get("height_mm", 30)),
-            labels_per_row=max(1, int(data.get("labels_per_row", 1))),
-            labels_per_column=max(1, int(data.get("labels_per_column", 1))),
-            margin_top_mm=float(data.get("margin_top_mm", 2)),
-            margin_left_mm=float(data.get("margin_left_mm", 2)),
-            gutter_mm=float(data.get("gutter_mm", 2)),
-            sheet_mode=str(data.get("sheet_mode", "thermal")),
-            sheet_width_mm=float(data.get("sheet_width_mm", 210)),
-            sheet_height_mm=float(data.get("sheet_height_mm", 297)),
-            show_lab_name=bool(data.get("show_lab_name", True)),
-            lab_name_override=data.get("lab_name_override") or None,
-            show_pharmacy_name=bool(data.get("show_pharmacy_name", True)),
-            pharmacy_name_override=data.get("pharmacy_name_override") or None,
+            width_mm=float(normalized.get("width_mm", 50)),
+            height_mm=float(normalized.get("height_mm", 30)),
+            labels_per_row=max(1, int(normalized.get("labels_per_row", 1))),
+            labels_per_column=max(1, int(normalized.get("labels_per_column", 1))),
+            margin_top_mm=float(normalized.get("margin_top_mm", 2)),
+            margin_left_mm=float(normalized.get("margin_left_mm", 2)),
+            gutter_mm=float(normalized.get("gutter_mm", 2)),
+            sheet_mode=str(normalized.get("sheet_mode", "thermal")),
+            sheet_width_mm=float(normalized.get("sheet_width_mm", 210)),
+            sheet_height_mm=float(normalized.get("sheet_height_mm", 297)),
+            show_lab_name=bool(normalized.get("show_lab_name", True)),
+            lab_name_override=normalized.get("lab_name_override") or None,
+            show_pharmacy_name=bool(normalized.get("show_pharmacy_name", True)),
+            pharmacy_name_override=normalized.get("pharmacy_name_override") or None,
         )
 
 

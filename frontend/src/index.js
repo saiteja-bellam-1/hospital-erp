@@ -6,6 +6,7 @@ import './index.css';
 
 import App from './App';
 import { AuthProvider } from './contexts/AuthContext';
+import { BrandingProvider } from './contexts/BrandingContext';
 import { FormNavProvider } from './components/FormNavProvider';
 import { installNumberInputWheelGuard } from './utils/numberInputWheelGuard';
 
@@ -26,9 +27,11 @@ root.render(
     <BrowserRouter>
       <QueryClientProvider client={queryClient}>
         <AuthProvider>
-          <FormNavProvider>
-            <App />
-          </FormNavProvider>
+          <BrandingProvider>
+            <FormNavProvider>
+              <App />
+            </FormNavProvider>
+          </BrandingProvider>
         </AuthProvider>
       </QueryClientProvider>
     </BrowserRouter>

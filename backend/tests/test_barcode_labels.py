@@ -8,6 +8,8 @@ from app.services.barcode_service import (
     normalize_scanned_barcode,
     validate_ean13,
 )
+from reportlab.lib.units import mm
+
 from app.utils.label_pdf_service import LabelLayoutConfig, build_label_pdf, _label_positions
 
 
@@ -80,6 +82,48 @@ def test_thermal_label_position_not_negative_with_margins():
     for x, y in _label_positions(layout):
         assert x >= 0
         assert y >= 0
+
+
+def test_three_labels_across_one_thermal_row():
+    """Three batches with 3-across roll land on one horizontal peel line."""
+    layout = LabelLayoutConfig.from_dict({
+        "width_mm": 38,
+        "height_mm": 25,
+        "labels_per_row": 3,
+        "labels_per_column": 1,
+        "gutter_mm": 2,
+        "sheet_mode": "thermal",
+    })
+    positions = _label_positions(layout)
+    assert len(positions) == 3
+    ys = {round(y / mm, 2) for _, y in positions}
+    assert len(ys) == 1, "all slots must share one row (same y)"
+    xs = sorted(round(x / mm, 2) for x, _ in positions)
+    assert xs == [0.0, 40.0, 80.0]
+
+    labels = [
+        {"name": f"Med {i}", "batch_number": f"B{i}", "expiry_date": "2027-01-01",
+         "batch_barcode": generate_batch_ean13(i)}
+        for i in (1, 2, 3)
+    ]
+    pdf = build_label_pdf(labels, layout, "pharmacy_batch", pharmacy_display_name="Test")
+    assert pdf[:4] == b"%PDF"
+
+
+def test_thermal_misconfigured_column_becomes_row():
+    """labels_per_column=3 with row=1 is treated as 3 across (not stacked)."""
+    layout = LabelLayoutConfig.from_dict({
+        "width_mm": 38,
+        "height_mm": 25,
+        "labels_per_row": 1,
+        "labels_per_column": 3,
+        "sheet_mode": "thermal",
+    })
+    assert layout.labels_per_row == 3
+    assert layout.labels_per_column == 1
+    positions = _label_positions(layout)
+    ys = {y for _, y in positions}
+    assert len(ys) == 1
 
 
 def test_build_pharmacy_label_pdf_with_margins():
