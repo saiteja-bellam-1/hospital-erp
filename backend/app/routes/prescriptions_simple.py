@@ -456,8 +456,15 @@ def _hospital_info_for_pdf(db: Session, hospital_id: int) -> dict:
     }
 
 
-def _build_patient_prescription_fields(patient: Patient) -> dict:
+def _build_patient_prescription_fields(patient: Patient, db: Optional[Session] = None) -> dict:
     """Patient fields shared by filled and blank prescription PDFs."""
+    mrn_ean13 = getattr(patient, "mrn_ean13", None) or ""
+    if db is not None:
+        from app.services.barcode_service import ensure_patient_mrn_ean13
+        try:
+            mrn_ean13 = ensure_patient_mrn_ean13(db, patient) or ""
+        except Exception:
+            mrn_ean13 = getattr(patient, "mrn_ean13", None) or ""
     return {
         "patient_name": f"{patient.first_name} {patient.last_name}",
         "patient_age": patient_age_years_int(patient),
@@ -466,6 +473,7 @@ def _build_patient_prescription_fields(patient: Patient) -> dict:
         "patient_phone": patient.primary_phone or '',
         "patient_blood_group": patient.blood_group or '',
         "mrn": patient.mrn or "",
+        "mrn_ean13": mrn_ean13,
         "village": patient.village or "",
         "mandal": patient.mandal or "",
         "district": patient.district or "",
@@ -593,7 +601,7 @@ def _build_blank_prescription_pdf_data(
     apt_id = appointment.id if appointment else None
 
     return {
-        **_build_patient_prescription_fields(patient),
+        **_build_patient_prescription_fields(patient, db),
         "prescription_number": None,
         "appointment_number": appointment.appointment_number if appointment else None,
         "appointment_id": appointment.id if appointment else None,
@@ -1065,12 +1073,14 @@ async def download_prescription_pdf(
     patient_gender = ''
     patient_phone = ''
     patient_blood_group = ''
+    patient_fields = {}
     if patient:
-        patient_phone = patient.primary_phone or ''
-        patient_gender = (patient.gender or '').capitalize()
-        patient_blood_group = patient.blood_group or ''
-        patient_age = patient_age_years_int(patient)
-        patient_age_display = format_patient_age(patient)
+        patient_fields = _build_patient_prescription_fields(patient, db)
+        patient_phone = patient_fields.get("patient_phone", "")
+        patient_gender = patient_fields.get("patient_gender", "")
+        patient_blood_group = patient_fields.get("patient_blood_group", "")
+        patient_age = patient_fields.get("patient_age")
+        patient_age_display = patient_fields.get("patient_age_display", "")
 
     # Get appointment reason if linked
     appointment_reason = ''
@@ -1092,16 +1102,17 @@ async def download_prescription_pdf(
     prescription_pdf_data = {
         "prescription_number": prescription.prescription_id,
         "prescription_date": prescription.prescription_date.isoformat(),
-        "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "Unknown",
+        "patient_name": patient_fields.get("patient_name", "Unknown") if patient else "Unknown",
         "patient_age": patient_age,
         "patient_age_display": patient_age_display,
         "patient_gender": patient_gender,
         "patient_phone": patient_phone,
         "patient_blood_group": patient_blood_group,
-        "mrn": (patient.mrn or "") if patient else "",
-        "village": (patient.village or "") if patient else "",
-        "mandal": (patient.mandal or "") if patient else "",
-        "district": (patient.district or "") if patient else "",
+        "mrn": patient_fields.get("mrn", "") if patient else "",
+        "mrn_ean13": patient_fields.get("mrn_ean13", "") if patient else "",
+        "village": patient_fields.get("village", "") if patient else "",
+        "mandal": patient_fields.get("mandal", "") if patient else "",
+        "district": patient_fields.get("district", "") if patient else "",
         "patient_id_display": prescription.patient_id,
         "doctor_name": f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else "Unknown",
         "doctor_specialization": doctor.specialization if doctor and hasattr(doctor, 'specialization') else '',

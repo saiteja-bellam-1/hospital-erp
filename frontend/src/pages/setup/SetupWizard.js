@@ -343,6 +343,7 @@ export default function SetupWizard() {
         include_footer_on_pdfs: !!printForm.include_footer_on_pdfs,
         detailed_billing_on_pdfs: !!printForm.detailed_billing_on_pdfs,
         prescription_vitals_layout: layout,
+        prescription_vitals_position: printForm.prescription_vitals_position || 'left',
         prescription_vital_fields: Array.isArray(printForm.prescription_vital_fields)
           ? printForm.prescription_vital_fields
           : undefined,
@@ -597,8 +598,8 @@ export default function SetupWizard() {
                   <p className="text-sm font-medium text-slate-800">Prescription vitals column</p>
                   {[
                     ['show', 'Show vitals on prescription'],
-                    ['blank', 'Leave blank column (pre-printed stationery)'],
-                    ['remove', 'Remove column (medicines full width)'],
+                    ['blank', 'Leave blank space (pre-printed stationery)'],
+                    ['remove', 'Remove vitals area (medicines full width)'],
                   ].map(([value, label]) => (
                     <label key={value} className="flex items-center gap-2 text-sm text-slate-700">
                       <input
@@ -614,6 +615,29 @@ export default function SetupWizard() {
                       {label}
                     </label>
                   ))}
+                  {(printForm.prescription_vitals_layout || 'show') !== 'remove' ? (
+                    <div className="mt-3 space-y-2 border-t pt-3">
+                      <p className="text-sm font-medium text-slate-800">Vitals placement</p>
+                      {[
+                        ['left', 'Left of medicines'],
+                        ['right', 'Right of medicines'],
+                        ['top', 'Top (horizontal strip)'],
+                      ].map(([value, label]) => (
+                        <label key={value} className="flex items-center gap-2 text-sm text-slate-700">
+                          <input
+                            type="radio"
+                            name="setup-vitals-position"
+                            checked={(printForm.prescription_vitals_position || 'left') === value}
+                            onChange={() => setPrintForm((form) => ({
+                              ...form,
+                              prescription_vitals_position: value,
+                            }))}
+                          />
+                          {label}
+                        </label>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
 
                 <div className="space-y-2 rounded-lg border p-3">

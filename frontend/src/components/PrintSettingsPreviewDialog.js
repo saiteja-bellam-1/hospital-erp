@@ -46,6 +46,7 @@ const PrintSettingsPreviewDialog = ({
           detailed_billing_on_pdfs: draftSettings.detailedBillingOnPdfs !== false,
           prescription_include_vitals: draftSettings.prescriptionIncludeVitals !== false,
           prescription_vitals_layout: draftSettings.prescriptionVitalsLayout || 'show',
+          prescription_vitals_position: draftSettings.prescriptionVitalsPosition || 'left',
           prescription_vitals_column_width_in:
             draftSettings.prescriptionVitalsColumnWidthIn != null
               ? Number(draftSettings.prescriptionVitalsColumnWidthIn)

@@ -22,6 +22,7 @@ from app.utils.pdf_settings import (
     PRINT_LETTERHEAD_GAP_MM_KEY,
     PRINT_REPORT_OVERRIDES_KEY,
     PRINT_SETTING_CATEGORY,
+    PRINT_SHOW_PATIENT_BARCODE_KEY,
     bill_pdf_gen_kwargs,
     get_hospital_detailed_billing,
     get_hospital_pdf_include_header,
@@ -31,8 +32,10 @@ from app.utils.pdf_settings import (
     get_prescription_vital_fields,
     get_prescription_vitals_column_width_in,
     get_prescription_vitals_layout,
+    get_prescription_vitals_position,
     get_report_footer_overrides,
     get_report_header_overrides,
+    get_show_patient_barcode_on_pdfs,
     normalize_prescription_vital_fields,
     pdf_gen_kwargs,
     resolve_include_footer,
@@ -46,8 +49,10 @@ from app.utils.pdf_settings import (
     set_prescription_vital_fields,
     set_prescription_vitals_column_width_in,
     set_prescription_vitals_layout,
+    set_prescription_vitals_position,
     set_report_footer_overrides,
     set_report_header_overrides,
+    set_show_patient_barcode_on_pdfs,
     update_print_settings,
 )
 
@@ -344,12 +349,14 @@ def test_generate_lab_report_pdf_hides_technician_when_disabled(db_session):
 def test_default_prescription_vitals_settings(db_session):
     assert get_prescription_include_vitals(db_session, 1) is True
     assert get_prescription_vitals_layout(db_session, 1) == "show"
+    assert get_prescription_vitals_position(db_session, 1) == "left"
     assert get_prescription_vitals_column_width_in(db_session, 1) == DEFAULT_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN
     assert get_prescription_vital_fields(db_session, 1) == list(DEFAULT_PRESCRIPTION_VITAL_FIELDS)
 
 
 def test_set_and_read_prescription_vitals_settings(db_session):
     set_prescription_vitals_layout(db_session, layout="blank", created_by=1)
+    set_prescription_vitals_position(db_session, position="right", created_by=1)
     set_prescription_vitals_column_width_in(db_session, width_in=2.0, created_by=1)
     set_prescription_vital_fields(
         db_session,
@@ -359,6 +366,7 @@ def test_set_and_read_prescription_vitals_settings(db_session):
     db_session.commit()
     assert get_prescription_include_vitals(db_session, 1) is False
     assert get_prescription_vitals_layout(db_session, 1) == "blank"
+    assert get_prescription_vitals_position(db_session, 1) == "right"
     assert get_prescription_vitals_column_width_in(db_session, 1) == 2.0
     assert get_prescription_vital_fields(db_session, 1) == [
         "blood_pressure",
@@ -387,6 +395,7 @@ def test_normalize_prescription_vital_fields_falls_back_on_empty():
 
 def test_pdf_gen_kwargs_includes_prescription_vitals(db_session):
     set_prescription_vitals_layout(db_session, layout="remove", created_by=1)
+    set_prescription_vitals_position(db_session, position="top", created_by=1)
     set_prescription_vitals_column_width_in(db_session, width_in=1.5, created_by=1)
     set_prescription_vital_fields(
         db_session, vital_fields=["temperature", "weight"], created_by=1
@@ -395,6 +404,7 @@ def test_pdf_gen_kwargs_includes_prescription_vitals(db_session):
     kw = pdf_gen_kwargs(db_session, 1, "prescription")
     assert kw["include_vitals"] is False
     assert kw["vitals_layout"] == "remove"
+    assert kw["vitals_position"] == "top"
     assert kw["vitals_column_width_in"] == 1.5
     assert kw["vital_fields"] == ["temperature", "weight"]
     assert "include_vitals" not in pdf_gen_kwargs(db_session, 1, "opd_bill")
@@ -501,12 +511,32 @@ def test_generate_prescription_pdf_respects_vital_settings(db_session):
     assert "120/80" not in remove_text
     assert "Paracetamol" in remove_text
 
+    for position in ("left", "right", "top"):
+        pos_text = "".join(
+            PdfReader(
+                BytesIO(
+                    svc.generate_prescription_pdf(
+                        rx,
+                        hi,
+                        include_header=False,
+                        vitals_layout="show",
+                        vitals_position=position,
+                    ).getvalue()
+                )
+            ).pages[0].extract_text()
+            or ""
+        )
+        assert "Vitals" in pos_text
+        assert "120/80" in pos_text
+        assert "Paracetamol" in pos_text
+
 
 def test_update_print_settings_persists_prescription_vitals(db_session):
     payload = update_print_settings(
         db_session,
         1,
         prescription_vitals_layout="blank",
+        prescription_vitals_position="top",
         prescription_vitals_column_width_in=2.0,
         prescription_vital_fields=["bmi", "spo2"],
         created_by=1,
@@ -514,8 +544,108 @@ def test_update_print_settings_persists_prescription_vitals(db_session):
     db_session.commit()
     assert payload["prescription_include_vitals"] is False
     assert payload["prescription_vitals_layout"] == "blank"
+    assert payload["prescription_vitals_position"] == "top"
     assert payload["prescription_vitals_column_width_in"] == 2.0
     assert payload["prescription_vitals_column_width_min_in"] == MIN_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN
     assert payload["prescription_vitals_column_width_max_in"] == MAX_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN
     assert payload["prescription_vital_fields"] == ["bmi", "spo2"]
     assert "prescription_vital_catalog" in payload
+
+
+def test_default_show_patient_barcode_false_when_unset(db_session):
+    assert get_show_patient_barcode_on_pdfs(db_session, 1) is False
+
+
+def test_set_and_read_show_patient_barcode(db_session):
+    set_show_patient_barcode_on_pdfs(db_session, show_barcode=True, created_by=1)
+    db_session.commit()
+    assert get_show_patient_barcode_on_pdfs(db_session, 1) is True
+    row = db_session.query(HospitalSettings).filter(
+        HospitalSettings.setting_category == PRINT_SETTING_CATEGORY,
+        HospitalSettings.setting_key == PRINT_SHOW_PATIENT_BARCODE_KEY,
+    ).first()
+    assert row is not None
+    assert row.setting_value == "true"
+
+
+def test_pdf_gen_kwargs_includes_patient_barcode_for_rx_and_lab_only(db_session):
+    set_show_patient_barcode_on_pdfs(db_session, show_barcode=True, created_by=1)
+    db_session.commit()
+    assert pdf_gen_kwargs(db_session, 1, "prescription")["show_patient_barcode"] is True
+    assert pdf_gen_kwargs(db_session, 1, "lab_report")["show_patient_barcode"] is True
+    assert "show_patient_barcode" not in pdf_gen_kwargs(db_session, 1, "opd_bill")
+    assert "show_patient_barcode" not in pdf_gen_kwargs(db_session, 1, "discharge_summary")
+
+
+def test_update_print_settings_persists_patient_barcode(db_session):
+    payload = update_print_settings(
+        db_session,
+        1,
+        show_patient_barcode_on_pdfs=True,
+        created_by=1,
+    )
+    db_session.commit()
+    assert payload["show_patient_barcode_on_pdfs"] is True
+    assert get_show_patient_barcode_on_pdfs(db_session, 1) is True
+
+
+def test_generate_prescription_and_lab_pdf_with_patient_barcode(db_session):
+    from app.services.barcode_service import generate_patient_mrn_ean13
+    from app.utils.pdf_service import PDFService
+
+    code = generate_patient_mrn_ean13(99)
+    svc = PDFService()
+    hi = {"name": "Test Hospital", "address": "", "phone": "", "email": ""}
+
+    rx_buf = svc.generate_prescription_pdf(
+        {
+            "patient_name": "Barcode Patient",
+            "mrn": "KTH-2026-00099",
+            "mrn_ean13": code,
+            "patient_age": 40,
+            "patient_gender": "Female",
+            "patient_phone": "9000000000",
+            "patient_blood_group": "A+",
+            "doctor_name": "Dr. Test",
+            "prescription_date": "2026-01-01",
+            "items": [],
+        },
+        hi,
+        show_patient_barcode=True,
+    )
+    assert rx_buf.getvalue()[:4] == b"%PDF"
+
+    lab_buf = svc.generate_lab_report_pdf(
+        {
+            "patient_name": "Barcode Patient",
+            "mrn": "KTH-2026-00099",
+            "mrn_ean13": code,
+            "patient_age": 40,
+            "patient_gender": "Female",
+            "patient_phone": "9000000000",
+            "order_number": "LAB-1",
+            "test_name": "CBC",
+            "results": [],
+        },
+        hi,
+        show_patient_barcode=True,
+    )
+    assert lab_buf.getvalue()[:4] == b"%PDF"
+
+    off_buf = svc.generate_prescription_pdf(
+        {
+            "patient_name": "Barcode Patient",
+            "mrn": "KTH-2026-00099",
+            "mrn_ean13": code,
+            "patient_age": 40,
+            "patient_gender": "Female",
+            "doctor_name": "Dr. Test",
+            "prescription_date": "2026-01-01",
+            "items": [],
+        },
+        hi,
+        show_patient_barcode=False,
+    )
+    assert off_buf.getvalue()[:4] == b"%PDF"
+    # With barcode enabled the PDF should be larger (embedded barcode drawing).
+    assert len(rx_buf.getvalue()) > len(off_buf.getvalue())

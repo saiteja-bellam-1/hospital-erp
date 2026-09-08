@@ -13,7 +13,7 @@ import { invalidatePdfPrintSettingsCache } from '../../../hooks/usePdfPrintSetti
 import LabelSettingsFields from '../../../components/LabelSettingsFields';
 import { DEFAULT_APP_NAME } from '../../../contexts/BrandingContext';
 import { FAVICON_HINT, LOGO_HINT, validateBrandingImageFile } from '../../../utils/brandingImage';
-import { Image, PanelLeft, PanelTop, Save, Tag } from 'lucide-react';
+import { Image, PanelLeft, PanelTop, Save, Tag, ScanLine } from 'lucide-react';
 import HospitalLogo from '../../../components/HospitalLogo';
 
 const DEFAULT_LAB_LABELS = {
@@ -55,6 +55,7 @@ export default function AppearanceSettingsPanel() {
   const [appearanceLayout, setAppearanceLayout] = useState('sidebar');
   const [labLabelSettings, setLabLabelSettings] = useState(DEFAULT_LAB_LABELS);
   const [pharmacyLabelSettings, setPharmacyLabelSettings] = useState(DEFAULT_PHARMACY_LABELS);
+  const [showPatientBarcodeOnPdfs, setShowPatientBarcodeOnPdfs] = useState(false);
   const [brandingForm, setBrandingForm] = useState({
     name: '',
     logo_url: '',
@@ -81,6 +82,7 @@ export default function AppearanceSettingsPanel() {
         if (printRes.data.pharmacy_label_settings) {
           setPharmacyLabelSettings(mergeLabelSettings(DEFAULT_PHARMACY_LABELS, printRes.data.pharmacy_label_settings));
         }
+        setShowPatientBarcodeOnPdfs(!!printRes.data.show_patient_barcode_on_pdfs);
         if (isSuperAdmin && results[1]) {
           setCustomisationLicensed(!!results[1].data.customisation_licensed);
           setBrandingForm({
@@ -151,6 +153,15 @@ export default function AppearanceSettingsPanel() {
           title: 'Branding saved',
           description: 'App name, logo, and tab icon updated for all users.',
         });
+      } else if (activeTab === 'documents') {
+        await axios.put('/api/hospital/print-settings', {
+          show_patient_barcode_on_pdfs: !!showPatientBarcodeOnPdfs,
+        });
+        invalidatePdfPrintSettingsCache();
+        toast({
+          title: 'Document barcode settings saved',
+          description: 'Prescription and lab report barcode preference updated.',
+        });
       } else {
         await axios.put('/api/hospital/print-settings', {
           lab_label_settings: labLabelSettings,
@@ -179,9 +190,11 @@ export default function AppearanceSettingsPanel() {
     ? 'Save navigation'
     : activeTab === 'branding'
       ? 'Save branding'
-      : 'Save label settings';
+      : activeTab === 'documents'
+        ? 'Save document barcodes'
+        : 'Save label settings';
 
-  const tabCount = showBrandingTab ? 3 : 2;
+  const tabCount = showBrandingTab ? 4 : 3;
 
   if (loading) {
     return <p className="text-sm text-muted-foreground">Loading appearance settings…</p>;
@@ -204,6 +217,9 @@ export default function AppearanceSettingsPanel() {
               <Image className="h-4 w-4" /> Branding
             </TabsTrigger>
           )}
+          <TabsTrigger value="documents" className="gap-1.5">
+            <ScanLine className="h-4 w-4" /> Documents
+          </TabsTrigger>
           <TabsTrigger value="labels" className="gap-1.5">
             <Tag className="h-4 w-4" /> Label printing
           </TabsTrigger>
@@ -387,6 +403,37 @@ export default function AppearanceSettingsPanel() {
             </Card>
           </TabsContent>
         )}
+
+        <TabsContent value="documents" className="mt-4 space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center text-lg">
+                <ScanLine className="h-5 w-5 mr-2" />
+                Document barcodes
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 max-w-2xl">
+              <p className="text-sm text-muted-foreground">
+                When enabled, prescriptions and lab reports print the patient&apos;s MRN barcode
+                (same EAN-13 as sample labels) next to the MRN.
+              </p>
+              <label className="flex items-start gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  className="mt-1 h-4 w-4 rounded border-gray-300"
+                  checked={showPatientBarcodeOnPdfs}
+                  onChange={(e) => setShowPatientBarcodeOnPdfs(e.target.checked)}
+                />
+                <span>
+                  <span className="font-medium text-sm">Show patient barcode on prescriptions and lab reports</span>
+                  <span className="block text-xs text-muted-foreground mt-0.5">
+                    Off by default. Re-print documents after changing this setting.
+                  </span>
+                </span>
+              </label>
+            </CardContent>
+          </Card>
+        </TabsContent>
 
         <TabsContent value="labels" className="mt-4 space-y-4">
           <Card>

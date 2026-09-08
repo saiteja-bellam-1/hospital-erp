@@ -90,7 +90,6 @@ STEP_DEFINITIONS = (
         "required": True,
         "path": "/dashboard/print-settings",
         "minutes": 10,
-        "module": "customisation",
     },
     {
         "key": "departments",

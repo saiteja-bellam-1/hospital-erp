@@ -1298,7 +1298,7 @@ function App() {
                   checked={form.features.includes(CUSTOMISATION_ADDON)}
                   onChange={(on) => setForm({ ...form, features: withFeature(form.features, CUSTOMISATION_ADDON, on) })}
                   title="Customisation"
-                  description="Unlocks hospital branding, logo, letterhead, and print customisation. Leave off unless this customer bought the add-on."
+                  description="Unlocks white-label branding (app name, logo, favicon). Print customisations are always included. Leave off unless this customer bought the add-on."
                 />
               </div>
             </div>
@@ -1356,7 +1356,7 @@ function App() {
                   checked={form.features.includes(CUSTOMISATION_ADDON)}
                   onChange={(on) => setForm({ ...form, features: withFeature(form.features, CUSTOMISATION_ADDON, on) })}
                   title="Customisation"
-                  description="Hospital branding, logo, letterhead, and print customisation."
+                  description="White-label branding: app name, logo, and favicon."
                 />
               </div>
               <div className="border-t border-slate-700/30 pt-4">
@@ -1501,7 +1501,7 @@ function App() {
                 checked={renewForm.features.includes(CUSTOMISATION_ADDON)}
                 onChange={(on) => setRenewForm({ ...renewForm, features: withFeature(renewForm.features, CUSTOMISATION_ADDON, on) })}
                 title="Customisation"
-                description="Unlocks hospital branding, logo, letterhead, and print customisation."
+                description="Unlocks white-label branding (app name, logo, favicon)."
               />
             </div>
 

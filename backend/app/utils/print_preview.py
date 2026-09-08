@@ -448,6 +448,7 @@ def generate_print_preview_pdf(
     include_footer_on_pdfs: bool = True,
     prescription_include_vitals: bool = True,
     prescription_vitals_layout: str | None = None,
+    prescription_vitals_position: str | None = None,
     prescription_vitals_column_width_in: float | None = None,
     prescription_vital_fields: list[str] | None = None,
     letterhead_gap_mm: float,
@@ -472,10 +473,12 @@ def generate_print_preview_pdf(
     from app.utils.pdf_settings import (
         DEFAULT_PRESCRIPTION_VITAL_FIELDS,
         DEFAULT_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN,
+        DEFAULT_PRESCRIPTION_VITALS_POSITION,
         FOOTER_REPORT_KEYS,
         clamp_prescription_vitals_column_width_in,
         normalize_prescription_vital_fields,
         normalize_prescription_vitals_layout,
+        normalize_prescription_vitals_position,
     )
     if report_type in FOOTER_REPORT_KEYS:
         kwargs["include_footer"] = opts.include_footer
@@ -493,6 +496,11 @@ def generate_print_preview_pdf(
             normalize_prescription_vital_fields(prescription_vital_fields)
             if prescription_vital_fields is not None
             else list(DEFAULT_PRESCRIPTION_VITAL_FIELDS)
+        )
+        kwargs["vitals_position"] = (
+            normalize_prescription_vitals_position(prescription_vitals_position)
+            if prescription_vitals_position is not None
+            else DEFAULT_PRESCRIPTION_VITALS_POSITION
         )
         kwargs["vitals_column_width_in"] = (
             clamp_prescription_vitals_column_width_in(prescription_vitals_column_width_in)

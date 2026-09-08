@@ -1,4 +1,4 @@
-"""License gating for branding and document customisations."""
+"""License gating for white-label branding only (not print customisations)."""
 
 
 def test_enabled_modules_omits_customisation_without_license(client, auth_headers, seed_data):
@@ -41,14 +41,13 @@ def test_print_settings_get_reports_license_flag(client, auth_headers, seed_data
     assert res.json()["customisation_licensed"] is False
 
 
-def test_print_settings_put_letterhead_requires_license(client, auth_headers, seed_data):
+def test_print_settings_put_letterhead_allowed_without_license(client, auth_headers, seed_data):
     res = client.put(
         "/api/hospital/print-settings",
         headers=auth_headers,
         json={"letterhead_gap_mm": 40},
     )
-    assert res.status_code == 403
-    assert "not included" in res.json()["detail"].lower()
+    assert res.status_code == 200
 
 
 def test_print_settings_put_labels_allowed_without_license(client, auth_headers, seed_data):
@@ -75,9 +74,7 @@ def test_print_settings_put_labels_allowed_without_license(client, auth_headers,
     assert res.status_code == 200
 
 
-def test_print_settings_put_letterhead_when_licensed(
-    client, auth_headers, customisation_license, seed_data
-):
+def test_print_settings_put_headers_allowed_without_license(client, auth_headers, seed_data):
     res = client.put(
         "/api/hospital/print-settings",
         headers=auth_headers,
@@ -86,10 +83,11 @@ def test_print_settings_put_letterhead_when_licensed(
     assert res.status_code == 200
 
 
-def test_print_settings_preview_requires_license(client, auth_headers, seed_data):
+def test_print_settings_preview_allowed_without_license(client, auth_headers, seed_data):
     res = client.post(
         "/api/hospital/print-settings/preview",
         headers=auth_headers,
         json={"report_type": "opd_bill"},
     )
-    assert res.status_code == 403
+    assert res.status_code == 200
+    assert res.headers.get("content-type", "").startswith("application/pdf")

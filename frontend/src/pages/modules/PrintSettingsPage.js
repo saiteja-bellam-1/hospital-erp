@@ -49,19 +49,89 @@ const VITALS_LAYOUT_OPTIONS = [
   {
     value: 'show',
     label: 'Show vitals',
-    description: 'Print selected vitals in the left column.',
+    description: 'Print selected vitals on the Rx.',
   },
   {
     value: 'blank',
-    label: 'Leave column blank',
-    description: 'Keep an empty left column for pre-printed vitals stationery.',
+    label: 'Leave blank',
+    description: 'Reserve space for pre-printed stationery.',
   },
   {
     value: 'remove',
-    label: 'Remove column',
-    description: 'Drop the left column so medicines start from the left edge.',
+    label: 'Remove area',
+    description: 'Medicines use the full page width.',
   },
 ];
+
+const VITALS_POSITION_OPTIONS = [
+  {
+    value: 'left',
+    label: 'Left',
+    description: 'Column beside medicines.',
+  },
+  {
+    value: 'right',
+    label: 'Right',
+    description: 'Column beside medicines.',
+  },
+  {
+    value: 'top',
+    label: 'Top',
+    description: 'Horizontal strip above medicines.',
+  },
+];
+
+const VitalsPlacementSketch = ({ position }) => {
+  const bar = 'bg-foreground/70 rounded-[1px]';
+  const meds = 'bg-muted-foreground/25 rounded-[1px]';
+  return (
+    <div
+      className="h-10 w-14 shrink-0 rounded border border-border bg-background p-1 flex gap-0.5"
+      aria-hidden="true"
+    >
+      {position === 'left' ? (
+        <>
+          <div className={`${bar} w-[28%] h-full`} />
+          <div className={`${meds} flex-1 h-full`} />
+        </>
+      ) : null}
+      {position === 'right' ? (
+        <>
+          <div className={`${meds} flex-1 h-full`} />
+          <div className={`${bar} w-[28%] h-full`} />
+        </>
+      ) : null}
+      {position === 'top' ? (
+        <div className="flex flex-col gap-0.5 w-full h-full">
+          <div className={`${bar} h-[30%] w-full`} />
+          <div className={`${meds} flex-1 w-full`} />
+        </div>
+      ) : null}
+    </div>
+  );
+};
+
+const OptionCard = ({ name, value, checked, onChange, label, description, leading }) => (
+  <label
+    className={`flex h-full min-h-[5.5rem] cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors ${
+      checked ? 'border-primary/50 bg-muted/40' : 'border-border hover:bg-muted/20'
+    }`}
+  >
+    <input
+      type="radio"
+      name={name}
+      className="mt-1 h-4 w-4 shrink-0"
+      checked={checked}
+      onChange={onChange}
+      value={value}
+    />
+    {leading || null}
+    <div className="min-w-0 flex-1">
+      <p className="text-sm font-medium leading-5">{label}</p>
+      <p className="mt-1 text-xs leading-4 text-muted-foreground">{description}</p>
+    </div>
+  </label>
+);
 
 const BILL_PREVIEW_ROWS = {
   detailed: [
@@ -165,6 +235,7 @@ const PrintSettingsPage = () => {
   const [includeFooterOnPdfs, setIncludeFooterOnPdfs] = useState(true);
   const [detailedBillingOnPdfs, setDetailedBillingOnPdfs] = useState(true);
   const [prescriptionVitalsLayout, setPrescriptionVitalsLayout] = useState('show');
+  const [prescriptionVitalsPosition, setPrescriptionVitalsPosition] = useState('left');
   const [prescriptionVitalsColumnWidthIn, setPrescriptionVitalsColumnWidthIn] = useState(1.75);
   const [prescriptionVitalsColumnWidthMinIn, setPrescriptionVitalsColumnWidthMinIn] = useState(0.5);
   const [prescriptionVitalsColumnWidthMaxIn, setPrescriptionVitalsColumnWidthMaxIn] = useState(2.86);
@@ -177,7 +248,6 @@ const PrintSettingsPage = () => {
   const [footerOverrides, setFooterOverrides] = useState({});
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewReport, setPreviewReport] = useState({ key: 'opd_bill', label: 'OPD Bill' });
-  const [customisationLicensed, setCustomisationLicensed] = useState(null);
 
   const roles = user?.roles || [user?.role];
   const canEdit = roles.some((r) =>
@@ -190,6 +260,7 @@ const PrintSettingsPage = () => {
     detailedBillingOnPdfs,
     prescriptionIncludeVitals: prescriptionVitalsLayout === 'show',
     prescriptionVitalsLayout,
+    prescriptionVitalsPosition,
     prescriptionVitalsColumnWidthIn,
     prescriptionVitalFields,
     letterheadGapMm,
@@ -210,6 +281,7 @@ const PrintSettingsPage = () => {
     includeFooterOnPdfs,
     detailedBillingOnPdfs,
     prescriptionVitalsLayout,
+    prescriptionVitalsPosition,
     prescriptionVitalsColumnWidthIn,
     prescriptionVitalFields,
     letterheadGapMm,
@@ -232,6 +304,8 @@ const PrintSettingsPage = () => {
         const layout = res.data.prescription_vitals_layout
           || (res.data.prescription_include_vitals === false ? 'blank' : 'show');
         setPrescriptionVitalsLayout(['show', 'blank', 'remove'].includes(layout) ? layout : 'show');
+        const position = res.data.prescription_vitals_position || 'left';
+        setPrescriptionVitalsPosition(['left', 'right', 'top'].includes(position) ? position : 'left');
         setPrescriptionVitalsColumnWidthIn(res.data.prescription_vitals_column_width_in ?? 1.75);
         setPrescriptionVitalsColumnWidthMinIn(res.data.prescription_vitals_column_width_min_in ?? 0.5);
         setPrescriptionVitalsColumnWidthMaxIn(res.data.prescription_vitals_column_width_max_in ?? 2.86);
@@ -246,7 +320,6 @@ const PrintSettingsPage = () => {
         setFooterReportCatalog(res.data.footer_report_catalog || []);
         setOverrides(res.data.report_header_overrides || {});
         setFooterOverrides(res.data.report_footer_overrides || {});
-        setCustomisationLicensed(!!res.data.customisation_licensed);
       } catch {
         toast({
           variant: 'destructive',
@@ -344,8 +417,9 @@ const PrintSettingsPage = () => {
       return;
     }
     const widthIn = parseFloat(prescriptionVitalsColumnWidthIn);
+    const needsColumnWidth = prescriptionVitalsLayout !== 'remove' && prescriptionVitalsPosition !== 'top';
     if (
-      prescriptionVitalsLayout !== 'remove'
+      needsColumnWidth
       && (
         Number.isNaN(widthIn)
         || widthIn < prescriptionVitalsColumnWidthMinIn
@@ -374,6 +448,7 @@ const PrintSettingsPage = () => {
         include_footer_on_pdfs: includeFooterOnPdfs,
         detailed_billing_on_pdfs: detailedBillingOnPdfs,
         prescription_vitals_layout: prescriptionVitalsLayout,
+        prescription_vitals_position: prescriptionVitalsPosition,
         prescription_vitals_column_width_in: Number.isNaN(widthIn) ? 1.75 : widthIn,
         prescription_vital_fields: prescriptionVitalFields,
         letterhead_gap_mm: gap,
@@ -400,25 +475,6 @@ const PrintSettingsPage = () => {
       <p className="text-sm text-muted-foreground">
         You do not have permission to edit customisations.
       </p>
-    );
-  }
-
-  if (!loading && customisationLicensed === false) {
-    return (
-      <div className="space-y-3 max-w-xl">
-        <h1 className="text-2xl font-bold flex items-center gap-2">
-          <Printer className="h-6 w-6 shrink-0" />
-          Customisations
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          Document customisations are not included in this license. Ask your vendor to issue a license with the Customisation add-on.
-        </p>
-        {roles.some((r) => ['super_admin', 'hospital_admin'].includes(r)) && (
-          <Button asChild variant="outline">
-            <Link to="/dashboard/license">Open License</Link>
-          </Button>
-        )}
-      </div>
     );
   }
 
@@ -575,63 +631,92 @@ const PrintSettingsPage = () => {
                 <CardHeader>
                   <CardTitle className="text-lg">Prescription vitals</CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="space-y-3">
-                    <p className="text-sm font-medium">Vitals column layout</p>
-                    <div className="grid gap-2 max-w-2xl">
+                <CardContent className="space-y-6">
+                  <section className="space-y-3">
+                    <div>
+                      <p className="text-sm font-medium">Print mode</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        Choose whether vitals are printed, left blank, or omitted.
+                      </p>
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-3 max-w-3xl">
                       {VITALS_LAYOUT_OPTIONS.map((opt) => (
-                        <label
+                        <OptionCard
                           key={opt.value}
-                          className={`flex items-start gap-3 cursor-pointer rounded-lg border p-3 ${
-                            prescriptionVitalsLayout === opt.value ? 'border-primary/40 bg-muted/30' : ''
-                          }`}
-                        >
-                          <input
-                            type="radio"
-                            name="prescription-vitals-layout"
-                            className="mt-1 w-4 h-4 shrink-0"
-                            checked={prescriptionVitalsLayout === opt.value}
-                            onChange={() => setPrescriptionVitalsLayout(opt.value)}
-                          />
-                          <div>
-                            <p className="text-sm font-medium">{opt.label}</p>
-                            <p className="text-xs text-muted-foreground mt-0.5">{opt.description}</p>
-                          </div>
-                        </label>
+                          name="prescription-vitals-layout"
+                          value={opt.value}
+                          checked={prescriptionVitalsLayout === opt.value}
+                          onChange={() => setPrescriptionVitalsLayout(opt.value)}
+                          label={opt.label}
+                          description={opt.description}
+                        />
                       ))}
                     </div>
-                    {prescriptionVitalsLayout !== 'remove' ? (
-                      <div className="max-w-xs">
-                        <Label htmlFor="vitals-column-width">
-                          {prescriptionVitalsLayout === 'blank' ? 'Blank column width (inches)' : 'Left column width (inches)'}
-                        </Label>
-                        <Input
-                          id="vitals-column-width"
-                          type="number"
-                          min={prescriptionVitalsColumnWidthMinIn}
-                          max={prescriptionVitalsColumnWidthMaxIn}
-                          step={0.05}
-                          value={prescriptionVitalsColumnWidthIn}
-                          onChange={(e) => setPrescriptionVitalsColumnWidthIn(e.target.value)}
-                          className="mt-1"
-                        />
-                        <p className="text-xs text-muted-foreground mt-1">
-                          {prescriptionVitalsColumnWidthMinIn}&quot; – {prescriptionVitalsColumnWidthMaxIn}&quot;. Default 1.75&quot;.
+                  </section>
+
+                  {prescriptionVitalsLayout !== 'remove' ? (
+                    <section className="space-y-3 border-t pt-6">
+                      <div>
+                        <p className="text-sm font-medium">Placement on prescription</p>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          Where the vitals block sits relative to medicines.
                         </p>
                       </div>
-                    ) : null}
-                  </div>
-                  <div>
-                    <p className="text-sm font-medium mb-1">Vitals to collect &amp; display</p>
-                    <p className="text-xs text-muted-foreground mb-3">
-                      Reception and nurses only see these fields when recording vitals.
-                    </p>
-                    <div className="border rounded-lg divide-y max-w-2xl">
+                      <div className="grid gap-3 sm:grid-cols-3 max-w-3xl">
+                        {VITALS_POSITION_OPTIONS.map((opt) => (
+                          <OptionCard
+                            key={opt.value}
+                            name="prescription-vitals-position"
+                            value={opt.value}
+                            checked={prescriptionVitalsPosition === opt.value}
+                            onChange={() => setPrescriptionVitalsPosition(opt.value)}
+                            label={opt.label}
+                            description={opt.description}
+                            leading={<VitalsPlacementSketch position={opt.value} />}
+                          />
+                        ))}
+                      </div>
+                      {prescriptionVitalsPosition !== 'top' ? (
+                        <div className="max-w-3xl grid gap-3 sm:grid-cols-3">
+                          <div className="sm:col-span-1">
+                            <Label htmlFor="vitals-column-width">
+                              {prescriptionVitalsLayout === 'blank'
+                                ? 'Blank column width'
+                                : 'Column width'}
+                              {' '}(inches)
+                            </Label>
+                            <Input
+                              id="vitals-column-width"
+                              type="number"
+                              min={prescriptionVitalsColumnWidthMinIn}
+                              max={prescriptionVitalsColumnWidthMaxIn}
+                              step={0.05}
+                              value={prescriptionVitalsColumnWidthIn}
+                              onChange={(e) => setPrescriptionVitalsColumnWidthIn(e.target.value)}
+                              className="mt-1"
+                            />
+                            <p className="text-xs text-muted-foreground mt-1">
+                              {prescriptionVitalsColumnWidthMinIn}&quot; – {prescriptionVitalsColumnWidthMaxIn}&quot;. Default 1.75&quot;.
+                            </p>
+                          </div>
+                        </div>
+                      ) : null}
+                    </section>
+                  ) : null}
+
+                  <section className="space-y-3 border-t pt-6">
+                    <div>
+                      <p className="text-sm font-medium">Vitals to collect &amp; display</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        Reception and nurses only see these fields when recording vitals.
+                      </p>
+                    </div>
+                    <div className="border rounded-lg divide-y max-w-3xl">
                       {[...selectedRows, ...unselectedRows].map((item) => {
                         const selected = prescriptionVitalFields.includes(item.key);
                         const orderIdx = prescriptionVitalFields.indexOf(item.key);
                         return (
-                          <div key={item.key} className="flex items-center gap-3 px-3 py-2">
+                          <div key={item.key} className="flex items-center gap-3 px-3 py-2.5">
                             <input
                               type="checkbox"
                               className="w-4 h-4 shrink-0"
@@ -663,7 +748,8 @@ const PrintSettingsPage = () => {
                         );
                       })}
                     </div>
-                  </div>
+                  </section>
+
                   <Button type="button" variant="secondary" size="sm" onClick={() => openPreview('prescription', 'Prescription')}>
                     <Eye className="h-4 w-4 mr-2" />
                     Preview prescription PDF

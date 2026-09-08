@@ -141,22 +141,9 @@ def require_print_settings_editor(current_user: User = Depends(get_current_user)
 
 CUSTOMISATION_DENIED = "Customisation is not included in this license"
 
-# Fields on PUT /print-settings that are the licensed Customisations page.
-# Label sizes live under Appearance and stay available without the add-on.
-PRINT_CUSTOMISATION_FIELDS = {
-    "include_header_on_pdfs",
-    "include_footer_on_pdfs",
-    "detailed_billing_on_pdfs",
-    "prescription_include_vitals",
-    "prescription_vitals_layout",
-    "prescription_vitals_column_width_in",
-    "prescription_vital_fields",
-    "letterhead_gap_mm",
-    "report_header_overrides",
-    "report_footer_overrides",
-}
 
-
+def _require_customisation_license(db):
+    """Paid add-on for white-label branding only (not print/document settings)."""
     from app.services.license_service import license_allows_customisation
     if not license_allows_customisation(db):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=CUSTOMISATION_DENIED)
@@ -803,6 +790,7 @@ class PrintSettingsUpdate(BaseModel):
     detailed_billing_on_pdfs: Optional[bool] = None
     prescription_include_vitals: Optional[bool] = None
     prescription_vitals_layout: Optional[str] = None
+    prescription_vitals_position: Optional[str] = None
     prescription_vitals_column_width_in: Optional[float] = None
     prescription_vital_fields: Optional[list[str]] = None
     letterhead_gap_mm: Optional[float] = None
@@ -810,6 +798,7 @@ class PrintSettingsUpdate(BaseModel):
     report_footer_overrides: Optional[dict[str, str]] = None
     lab_label_settings: Optional[dict] = None
     pharmacy_label_settings: Optional[dict] = None
+    show_patient_barcode_on_pdfs: Optional[bool] = None
 
 
 class PrintSettingsPreviewRequest(BaseModel):
@@ -819,6 +808,7 @@ class PrintSettingsPreviewRequest(BaseModel):
     detailed_billing_on_pdfs: bool = True
     prescription_include_vitals: bool = True
     prescription_vitals_layout: Optional[str] = None
+    prescription_vitals_position: Optional[str] = None
     prescription_vitals_column_width_in: Optional[float] = None
     prescription_vital_fields: Optional[list[str]] = None
     letterhead_gap_mm: float = 35.0
@@ -833,7 +823,6 @@ async def preview_print_settings(
     db: Session = Depends(get_db),
 ):
     """Return a sample PDF using draft settings (no save required)."""
-    _require_customisation_license(db)
     from fastapi.responses import Response
     from app.utils.pdf_settings import (
         MAX_LETTERHEAD_GAP_MM,
@@ -841,7 +830,9 @@ async def preview_print_settings(
         MIN_LETTERHEAD_GAP_MM,
         MIN_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN,
         PRESCRIPTION_VITALS_LAYOUTS,
+        PRESCRIPTION_VITALS_POSITIONS,
         normalize_prescription_vitals_layout,
+        normalize_prescription_vitals_position,
     )
     from app.utils.print_preview import generate_print_preview_pdf
 
@@ -856,6 +847,9 @@ async def preview_print_settings(
     layout = normalize_prescription_vitals_layout(layout)
     if layout not in PRESCRIPTION_VITALS_LAYOUTS:
         raise HTTPException(status_code=400, detail="Invalid prescription_vitals_layout")
+    position = normalize_prescription_vitals_position(data.prescription_vitals_position)
+    if position not in PRESCRIPTION_VITALS_POSITIONS:
+        raise HTTPException(status_code=400, detail="Invalid prescription_vitals_position")
     width_in = data.prescription_vitals_column_width_in
     if width_in is not None and not (
         MIN_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN
@@ -879,6 +873,7 @@ async def preview_print_settings(
         detailed_billing_on_pdfs=data.detailed_billing_on_pdfs,
         prescription_include_vitals=data.prescription_include_vitals,
         prescription_vitals_layout=layout,
+        prescription_vitals_position=position,
         prescription_vitals_column_width_in=width_in,
         prescription_vital_fields=data.prescription_vital_fields,
         letterhead_gap_mm=data.letterhead_gap_mm,
@@ -904,13 +899,11 @@ async def update_print_settings(
         MIN_LETTERHEAD_GAP_MM,
         MIN_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN,
         PRESCRIPTION_VITALS_LAYOUTS,
+        PRESCRIPTION_VITALS_POSITIONS,
         normalize_prescription_vitals_layout,
+        normalize_prescription_vitals_position,
         update_print_settings as save_print_settings,
     )
-
-    submitted = data.model_dump(exclude_unset=True)
-    if any(field in PRINT_CUSTOMISATION_FIELDS for field in submitted):
-        _require_customisation_license(db)
 
     if data.letterhead_gap_mm is not None:
         if not (MIN_LETTERHEAD_GAP_MM <= data.letterhead_gap_mm <= MAX_LETTERHEAD_GAP_MM):
@@ -923,6 +916,11 @@ async def update_print_settings(
         layout = normalize_prescription_vitals_layout(layout)
         if layout not in PRESCRIPTION_VITALS_LAYOUTS:
             raise HTTPException(status_code=400, detail="Invalid prescription_vitals_layout")
+    position = data.prescription_vitals_position
+    if position is not None:
+        position = normalize_prescription_vitals_position(position)
+        if position not in PRESCRIPTION_VITALS_POSITIONS:
+            raise HTTPException(status_code=400, detail="Invalid prescription_vitals_position")
     if data.prescription_vitals_column_width_in is not None:
         if not (
             MIN_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN
@@ -945,6 +943,7 @@ async def update_print_settings(
         detailed_billing_on_pdfs=data.detailed_billing_on_pdfs,
         prescription_include_vitals=data.prescription_include_vitals,
         prescription_vitals_layout=layout,
+        prescription_vitals_position=position,
         prescription_vitals_column_width_in=data.prescription_vitals_column_width_in,
         prescription_vital_fields=data.prescription_vital_fields,
         letterhead_gap_mm=data.letterhead_gap_mm,
@@ -952,6 +951,7 @@ async def update_print_settings(
         report_footer_overrides=data.report_footer_overrides,
         lab_label_settings=data.lab_label_settings,
         pharmacy_label_settings=data.pharmacy_label_settings,
+        show_patient_barcode_on_pdfs=data.show_patient_barcode_on_pdfs,
         created_by=current_user.id,
     )
     db.commit()

@@ -53,7 +53,11 @@ def license_has_feature(db: Session, feature: str) -> bool:
 
 
 def license_allows_customisation(db: Session) -> bool:
-    """White-label branding + document customisations require this license add-on."""
+    """White-label branding (app name, logo, favicon) requires this license add-on.
+
+    Document / print customisations (letterhead, bills, vitals, etc.) are always
+    available and are not gated by this feature.
+    """
     return license_has_feature(db, FEATURE_CUSTOMISATION)
 
 

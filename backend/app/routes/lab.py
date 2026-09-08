@@ -702,6 +702,13 @@ def _build_report_response(report: LabReport, db: Session) -> dict:
     elif patient and patient.referred_by:
         referral_name = patient.referred_by
 
+    mrn_ean13 = ""
+    if patient:
+        try:
+            mrn_ean13 = ensure_patient_mrn_ean13(db, patient) or ""
+        except Exception:
+            mrn_ean13 = patient.mrn_ean13 or ""
+
     return {
         "id": report.id,
         "order_id": order.id,
@@ -711,6 +718,7 @@ def _build_report_response(report: LabReport, db: Session) -> dict:
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "Unknown",
         "patient_phone": patient.primary_phone if patient else "",
         "mrn": (patient.mrn or "") if patient else "",
+        "mrn_ean13": mrn_ean13,
         "patient_gender": patient.gender if patient else None,
         "patient_age": patient_age_years_int(patient),
         "patient_age_display": _patient_age_display(patient),
