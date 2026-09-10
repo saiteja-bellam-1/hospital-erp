@@ -498,6 +498,12 @@ class SupportLogUpdate(BaseModel):
 # API Endpoints
 # ============================================================
 
+@app.get("/api/health")
+def health():
+    """Unauthenticated liveness check for packaging smoke tests / probes."""
+    return {"status": "ok"}
+
+
 @app.post("/api/auth/login")
 def login(data: LoginRequest):
     conn = get_db()
