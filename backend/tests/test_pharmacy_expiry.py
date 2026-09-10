@@ -259,3 +259,7 @@ def test_dashboard_surfaces_expiring_counts(client, auth_headers):
     assert "already_expired_count" in body
     assert isinstance(body["expiring_soon_count"], int)
     assert isinstance(body["already_expired_count"], int)
+    assert "today_sale_returns_count" in body
+    assert "unmapped_medicines_count" in body
+    assert isinstance(body["today_sale_returns_count"], int)
+    assert isinstance(body["unmapped_medicines_count"], int)

@@ -1612,22 +1612,28 @@ async def physio_dashboard(
 async def reports_summary(
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
+    therapist_id: Optional[int] = None,
     current_user: User = Depends(
         require_feature_permission(Modules.PHYSIOTHERAPY, "view_physio_reports")
     ),
     db: Session = Depends(get_db),
 ):
+    from app.services.physio_revenue import classify_physio_bills, package_bill_id_set
+
     hid = _hospital_id(current_user)
     d_from = date_from or date.today()
     d_to = date_to or date.today()
     _expire_packages(db, hid)
     db.commit()
 
-    appts = db.query(PhysioAppointment).filter(
+    q = db.query(PhysioAppointment).filter(
         PhysioAppointment.hospital_id == hid,
         PhysioAppointment.appointment_date >= d_from,
         PhysioAppointment.appointment_date <= d_to,
-    ).all()
+    )
+    if therapist_id is not None:
+        q = q.filter(PhysioAppointment.therapist_id == therapist_id)
+    appts = q.all()
 
     by_status = {}
     by_therapist = {}
@@ -1647,11 +1653,36 @@ async def reports_summary(
         key = a.status if a.status in ("completed", "no_show", "cancelled") else "scheduled"
         by_therapist[tid][key] = by_therapist[tid].get(key, 0) + 1
 
-    revenue = physio_revenue_split(db, hid, d_from, d_to)
+    if therapist_id is not None:
+        bill_ids = {a.bill_id for a in appts if a.bill_id}
+        if bill_ids:
+            bills = db.query(Bill).options(
+                joinedload(Bill.items),
+                joinedload(Bill.payments),
+            ).filter(
+                Bill.hospital_id == hid,
+                Bill.id.in_(bill_ids),
+                Bill.status != "cancelled",
+            ).all()
+            revenue = classify_physio_bills(
+                bills, package_bill_ids=package_bill_id_set(db, hid)
+            )
+        else:
+            revenue = {
+                "collections": {"cash": 0.0, "upi": 0.0, "card": 0.0, "other": 0.0, "total": 0.0},
+                "revenue_by_type": {
+                    "package": {"billed": 0.0, "collected": 0.0, "bill_count": 0},
+                    "a_la_carte": {"billed": 0.0, "collected": 0.0, "bill_count": 0},
+                },
+                "outstanding_dues": 0.0,
+            }
+    else:
+        revenue = physio_revenue_split(db, hid, d_from, d_to)
 
     return {
         "date_from": d_from.isoformat(),
         "date_to": d_to.isoformat(),
+        "therapist_id": therapist_id,
         "sessions_by_status": by_status,
         "therapist_utilization": list(by_therapist.values()),
         "collections": revenue["collections"],

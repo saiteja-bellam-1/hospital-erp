@@ -2,6 +2,47 @@ import React, { useState, useEffect, useCallback } from 'react';
 import ktLogo from './assets/Final Logo KT (1).jpg';
 
 const API = '/api';
+const AUTH_KEY = 'kt_license_manager_auth';
+
+function loadStoredAuth() {
+  try {
+    const raw = localStorage.getItem(AUTH_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed?.token || !parsed?.user) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+async function apiFetch(path, options = {}, token) {
+  const headers = { ...(options.headers || {}) };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  if (options.body && !(options.body instanceof FormData) && !headers['Content-Type']) {
+    headers['Content-Type'] = 'application/json';
+  }
+  const r = await fetch(`${API}${path}`, { ...options, headers });
+  if (r.status === 401) {
+    const err = new Error('Unauthorized');
+    err.status = 401;
+    throw err;
+  }
+  return r;
+}
+
+const SUPPORT_STATUS_OPTIONS = [
+  { value: 'open', label: 'Open' },
+  { value: 'in_progress', label: 'In Progress' },
+  { value: 'resolved', label: 'Resolved' },
+  { value: 'closed', label: 'Closed' },
+];
+
+const EMPTY_SUPPORT_FORM = {
+  operator_name: '',
+  cell_no: '',
+  problem: '',
+};
 
 /* ─── Icons (inline SVGs) ─── */
 const Icon = ({ d, className = "w-5 h-5" }) => (
@@ -22,6 +63,9 @@ const Icons = {
   shield: "M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z",
   key: "M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z",
   upload: "M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12",
+  users: "M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z",
+  support: "M18.364 5.636l-3.536 3.536m0 5.656l3.536 3.536M9.172 9.172L5.636 5.636m3.536 9.192l-3.536 3.536M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-5 0a4 4 0 11-8 0 4 4 0 018 0z",
+  logout: "M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1",
 };
 
 /* ─── Reusable Components (defined outside App to prevent re-mount on re-render) ─── */
@@ -79,12 +123,18 @@ const Modal = ({ open, onClose, children, wide }) => {
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
 
 const EMPTY_LICENSE_FORM = {
+  customer_id: '',
   hospital_id: '', hospital_name: '', machine_id: '', plan: 'standard',
   max_users: 50, months: 12, days: 0,
   features: ['outpatient', 'lab', 'ehr', 'admin', 'billing', 'physiotherapy'],
   modules: [], notes: '',
   seller_id: '', seller_name: '', seller_address: '', seller_phone: '',
   gdrive_backup_enabled: false,
+};
+
+const EMPTY_CUST_FORM = {
+  hospital_name: '', hospital_id: '', contact_person: '', phone: '',
+  email: '', address: '', gst_number: '', machine_id: '', notes: '',
 };
 
 const LICENSE_STEPS = [
@@ -180,6 +230,16 @@ const ToggleRow = ({ checked, onChange, title, description }) => (
 );
 
 function App() {
+  const [auth, setAuth] = useState(() => loadStoredAuth());
+  const token = auth?.token || null;
+  const currentUser = auth?.user || null;
+  const isAdmin = currentUser?.role === 'admin';
+  const isAgent = currentUser?.role === 'support_agent';
+
+  const [loginForm, setLoginForm] = useState({ username: '', password: '' });
+  const [loginError, setLoginError] = useState('');
+  const [loggingIn, setLoggingIn] = useState(false);
+
   const [page, setPage] = useState('dashboard');
   const [dash, setDash] = useState(null);
   const [licenses, setLicenses] = useState([]);
@@ -202,7 +262,7 @@ function App() {
   const [custSearch, setCustSearch] = useState('');
   const [showCustForm, setShowCustForm] = useState(false);
   const [editingCust, setEditingCust] = useState(null);
-  const [custForm, setCustForm] = useState({ hospital_name: '', hospital_id: '', contact_person: '', phone: '', email: '', address: '', gst_number: '', machine_id: '', notes: '' });
+  const [custForm, setCustForm] = useState({ ...EMPTY_CUST_FORM });
 
   // Seller state
   const [sellers, setSellers] = useState([]);
@@ -214,55 +274,196 @@ function App() {
   const [showPayForm, setShowPayForm] = useState(false);
   const [payForm, setPayForm] = useState({ payment_type: 'license', payment_mode: 'cash', amount: '', invoice_number: '', description: '' });
 
+  // Support log state
+  const [supportLogs, setSupportLogs] = useState([]);
+  const [allSupportLogs, setAllSupportLogs] = useState([]);
+  const [supportSearch, setSupportSearch] = useState('');
+  const [supportStatusFilter, setSupportStatusFilter] = useState('active');
+  const [supportAgentFilter, setSupportAgentFilter] = useState('all');
+  const [showSupportForm, setShowSupportForm] = useState(false);
+  const [editingSupport, setEditingSupport] = useState(null);
+  const [supportForm, setSupportForm] = useState({ ...EMPTY_SUPPORT_FORM });
+  const [mineOnlyLogs, setMineOnlyLogs] = useState(false);
+
+  // Users (admin)
+  const [users, setUsers] = useState([]);
+  const [showUserForm, setShowUserForm] = useState(false);
+  const [editingUser, setEditingUser] = useState(null);
+  const [userForm, setUserForm] = useState({ username: '', password: '', full_name: '', role: 'support_agent' });
+
   // Key management state
   const [keyStatus, setKeyStatus] = useState(null);
 
-  const fetchDash = useCallback(async () => {
-    try { const r = await fetch(`${API}/dashboard`); setDash(await r.json()); } catch {}
+  const handleUnauthorized = useCallback(() => {
+    localStorage.removeItem(AUTH_KEY);
+    setAuth(null);
+    setLoginError('Session expired. Please sign in again.');
   }, []);
 
+  const persistAuth = (next) => {
+    localStorage.setItem(AUTH_KEY, JSON.stringify(next));
+    setAuth(next);
+  };
+
+  const logout = () => {
+    localStorage.removeItem(AUTH_KEY);
+    setAuth(null);
+    setPage('dashboard');
+    setSelectedCust(null);
+    setCustDetail(null);
+  };
+
+  const doLogin = async (e) => {
+    e?.preventDefault?.();
+    setLoggingIn(true);
+    setLoginError('');
+    try {
+      const r = await fetch(`${API}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(loginForm),
+      });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setLoginError(apiErrorMessage(body, 'Login failed'));
+        return;
+      }
+      persistAuth({ token: body.access_token, user: body.user });
+      setLoginForm({ username: '', password: '' });
+      setPage(body.user.role === 'support_agent' ? 'customers' : 'dashboard');
+    } catch {
+      setLoginError('Could not reach server');
+    } finally {
+      setLoggingIn(false);
+    }
+  };
+
+  const fetchDash = useCallback(async () => {
+    if (!token) return;
+    try {
+      const r = await apiFetch('/dashboard', {}, token);
+      if (r.status === 401) return handleUnauthorized();
+      setDash(await r.json());
+    } catch (e) { if (e.status === 401) handleUnauthorized(); }
+  }, [token, handleUnauthorized]);
+
   const fetchLicenses = useCallback(async () => {
+    if (!token || currentUser?.role !== 'admin') return;
     try {
       const params = new URLSearchParams();
       if (search) params.set('search', search);
       if (statusFilter !== 'all') params.set('status', statusFilter);
-      const r = await fetch(`${API}/licenses?${params}`);
+      const r = await apiFetch(`/licenses?${params}`, {}, token);
+      if (r.status === 401) return handleUnauthorized();
       setLicenses(await r.json());
-    } catch {}
-  }, [search, statusFilter]);
+    } catch (e) { if (e.status === 401) handleUnauthorized(); }
+  }, [token, currentUser?.role, search, statusFilter, handleUnauthorized]);
 
   const fetchCustomers = useCallback(async () => {
+    if (!token) return;
     try {
-      const params = custSearch ? `?search=${custSearch}` : '';
-      const r = await fetch(`${API}/customers${params}`);
+      const params = custSearch ? `?search=${encodeURIComponent(custSearch)}` : '';
+      const r = await apiFetch(`/customers${params}`, {}, token);
+      if (r.status === 401) return handleUnauthorized();
       setCustomers(await r.json());
-    } catch {}
-  }, [custSearch]);
+    } catch (e) { if (e.status === 401) handleUnauthorized(); }
+  }, [token, custSearch, handleUnauthorized]);
 
   const fetchCustDetail = async (id) => {
+    if (!token) return;
     try {
-      const r = await fetch(`${API}/customers/${id}`);
+      const r = await apiFetch(`/customers/${id}`, {}, token);
+      if (r.status === 401) return handleUnauthorized();
       setCustDetail(await r.json());
-    } catch {}
+    } catch (e) { if (e.status === 401) handleUnauthorized(); }
   };
+
+  const fetchSupportLogs = async (customerId, mineOnly = mineOnlyLogs) => {
+    if (!token || !customerId) return;
+    try {
+      const q = mineOnly ? '?mine_only=true' : '';
+      const r = await apiFetch(`/customers/${customerId}/support-logs${q}`, {}, token);
+      if (r.status === 401) return handleUnauthorized();
+      setSupportLogs(await r.json());
+    } catch (e) { if (e.status === 401) handleUnauthorized(); }
+  };
+
+  const fetchAllSupportLogs = useCallback(async () => {
+    if (!token) return;
+    try {
+      const params = new URLSearchParams();
+      if (supportStatusFilter && supportStatusFilter !== 'all') params.set('status', supportStatusFilter);
+      if (supportSearch.trim()) params.set('search', supportSearch.trim());
+      if (isAdmin && supportAgentFilter !== 'all') params.set('assistant_user_id', supportAgentFilter);
+      if (!isAdmin) params.set('mine_only', 'true');
+      const q = params.toString() ? `?${params}` : '';
+      const r = await apiFetch(`/support-logs${q}`, {}, token);
+      if (r.status === 401) return handleUnauthorized();
+      setAllSupportLogs(await r.json());
+    } catch (e) { if (e.status === 401) handleUnauthorized(); }
+  }, [token, supportStatusFilter, supportSearch, supportAgentFilter, isAdmin, handleUnauthorized]);
+
+  const fetchUsers = useCallback(async (all = false) => {
+    if (!token) return;
+    try {
+      const q = all && currentUser?.role === 'admin' ? '?active_only=false' : '';
+      const r = await apiFetch(`/users${q}`, {}, token);
+      if (r.status === 401) return handleUnauthorized();
+      setUsers(await r.json());
+    } catch (e) { if (e.status === 401) handleUnauthorized(); }
+  }, [token, currentUser?.role, handleUnauthorized]);
 
   const fetchKeyStatus = useCallback(async () => {
-    try { const r = await fetch(`${API}/keys/status`); setKeyStatus(await r.json()); } catch {}
-  }, []);
+    if (!token || currentUser?.role !== 'admin') return;
+    try {
+      const r = await apiFetch('/keys/status', {}, token);
+      if (r.status === 401) return handleUnauthorized();
+      setKeyStatus(await r.json());
+    } catch (e) { if (e.status === 401) handleUnauthorized(); }
+  }, [token, currentUser?.role, handleUnauthorized]);
 
   const fetchSellers = useCallback(async () => {
-    try { const r = await fetch(`${API}/sellers`); setSellers(await r.json()); } catch {}
-  }, []);
+    if (!token || currentUser?.role !== 'admin') return;
+    try {
+      const r = await apiFetch('/sellers', {}, token);
+      if (r.status === 401) return handleUnauthorized();
+      setSellers(await r.json());
+    } catch (e) { if (e.status === 401) handleUnauthorized(); }
+  }, [token, currentUser?.role, handleUnauthorized]);
 
   const fetchGdriveSettings = async () => {
-    try { const r = await fetch(`${API}/settings/gdrive`); setGdriveSettings(await r.json()); } catch {}
+    if (!token || currentUser?.role !== 'admin') return;
+    try {
+      const r = await apiFetch('/settings/gdrive', {}, token);
+      if (r.status === 401) return handleUnauthorized();
+      setGdriveSettings(await r.json());
+    } catch (e) { if (e.status === 401) handleUnauthorized(); }
   };
 
-  useEffect(() => { fetchDash(); fetchGdriveSettings(); }, [fetchDash]);
-  useEffect(() => { fetchLicenses(); }, [fetchLicenses]);
-  useEffect(() => { fetchCustomers(); }, [fetchCustomers]);
-  useEffect(() => { fetchKeyStatus(); }, [fetchKeyStatus]);
-  useEffect(() => { fetchSellers(); }, [fetchSellers]);
+  useEffect(() => {
+    if (!token) return;
+    fetchDash();
+    if (isAdmin) fetchGdriveSettings();
+  }, [token, isAdmin, fetchDash]);
+  useEffect(() => { if (token && isAdmin) fetchLicenses(); }, [fetchLicenses, token, isAdmin]);
+  useEffect(() => { if (token) fetchCustomers(); }, [fetchCustomers, token]);
+  useEffect(() => { if (token && isAdmin) fetchKeyStatus(); }, [fetchKeyStatus, token, isAdmin]);
+  useEffect(() => { if (token && isAdmin) fetchSellers(); }, [fetchSellers, token, isAdmin]);
+  useEffect(() => { if (token) fetchUsers(isAdmin); }, [fetchUsers, token, isAdmin]);
+  useEffect(() => {
+    if (selectedCust && token) fetchSupportLogs(selectedCust, mineOnlyLogs);
+  }, [selectedCust, token, mineOnlyLogs]);
+
+  useEffect(() => {
+    if (token && page === 'support') fetchAllSupportLogs();
+  }, [token, page, fetchAllSupportLogs]);
+
+  // Redirect agents away from admin-only pages
+  useEffect(() => {
+    if (isAgent && ['licenses', 'sellers', 'settings', 'users'].includes(page)) {
+      setPage('customers');
+    }
+  }, [isAgent, page]);
 
   const showMessage = (text, type = 'success') => {
     setMsg({ text, type });
@@ -303,6 +504,25 @@ function App() {
     setFormStep((s) => Math.min(s + 1, LICENSE_STEPS.length - 1));
   };
 
+  const applyCustomerToLicenseForm = (customerId) => {
+    if (!customerId) {
+      setForm((prev) => ({ ...prev, customer_id: '' }));
+      return;
+    }
+    const c = customers.find((x) => String(x.id) === String(customerId));
+    if (!c) {
+      setForm((prev) => ({ ...prev, customer_id: customerId }));
+      return;
+    }
+    setForm((prev) => ({
+      ...prev,
+      customer_id: c.id,
+      hospital_id: c.hospital_id || '',
+      hospital_name: c.hospital_name || '',
+      machine_id: c.machine_id || '',
+    }));
+  };
+
   const createLicense = async () => {
     const err = generateStepError(0) || generateStepError(1) || generateStepError(2);
     if (err) { showMessage(err, 'error'); return; }
@@ -312,21 +532,29 @@ function App() {
       payload.hospital_id = payload.hospital_id.trim();
       payload.hospital_name = payload.hospital_name.trim();
       payload.machine_id = payload.machine_id.trim();
+      if (payload.customer_id === '' || payload.customer_id == null) {
+        payload.customer_id = null;
+      } else {
+        payload.customer_id = Number(payload.customer_id);
+      }
       // Build seller object if name is provided
       if (payload.seller_name) {
         payload.seller = { name: payload.seller_name, address: payload.seller_address || null, phone: payload.seller_phone || null };
       }
       delete payload.seller_name; delete payload.seller_address; delete payload.seller_phone; delete payload.seller_id;
-      const r = await fetch(`${API}/licenses`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
+      const r = await apiFetch('/licenses', {
+        method: 'POST', body: JSON.stringify(payload)
+      }, token);
       if (r.ok) {
-        showMessage('License generated successfully');
+        const linked = !!payload.customer_id;
+        showMessage(linked
+          ? 'License generated — download it from this customer’s licenses'
+          : 'License generated successfully');
         closeGenerateForm();
         setForm({ ...EMPTY_LICENSE_FORM });
         fetchLicenses(); fetchDash();
-        if (selectedCust) fetchCustDetail(selectedCust);
+        const custId = payload.customer_id || selectedCust;
+        if (custId) fetchCustDetail(custId);
       } else {
         const e = await r.json();
         showMessage(apiErrorMessage(e, 'Generation failed'), 'error');
@@ -344,10 +572,9 @@ function App() {
       if (s) payload.seller = { name: s.name, address: s.address || null, phone: s.phone || null };
     }
     delete payload.seller_id;
-    const r = await fetch(`${API}/licenses/${licenseId}/renew`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
+    const r = await apiFetch(`/licenses/${licenseId}/renew`, {
+      method: 'POST', body: JSON.stringify(payload)
+    }, token);
     if (r.ok) {
       showMessage('License renewed — new file ready for download');
       setShowRenew(null);
@@ -364,7 +591,7 @@ function App() {
     try {
       const fd = new FormData();
       fd.append('file', file);
-      const r = await fetch(`${API}/licenses/process-rebind`, { method: 'POST', body: fd });
+      const r = await apiFetch('/licenses/process-rebind', { method: 'POST', body: fd }, token);
       if (!r.ok) {
         let detail = 'Could not process rebind request';
         try { detail = (await r.json()).detail || detail; } catch {}
@@ -392,7 +619,7 @@ function App() {
 
   const downloadLicense = async (licenseId) => {
     try {
-      const r = await fetch(`${API}/licenses/${licenseId}/download`);
+      const r = await apiFetch(`/licenses/${licenseId}/download`, {}, token);
       if (!r.ok) { showMessage('Failed to download license', 'error'); return; }
       const blob = await r.blob();
       const disposition = r.headers.get('Content-Disposition') || '';
@@ -412,30 +639,60 @@ function App() {
 
   const deleteLicense = async (licenseId) => {
     if (!window.confirm('Delete this license record permanently?')) return;
-    await fetch(`${API}/licenses/${licenseId}`, { method: 'DELETE' });
+    await apiFetch(`/licenses/${licenseId}`, { method: 'DELETE' }, token);
     showMessage('License record deleted');
     fetchLicenses(); fetchDash();
   };
 
   // Customer functions
-  const saveCust = async () => {
+  const saveCust = async ({ generateAfter = false } = {}) => {
     if (!custForm.hospital_name) return;
     if (custForm.gst_number && !GSTIN_RE.test(custForm.gst_number)) {
       showMessage('Invalid GST number — expected 15-char GSTIN (e.g. 22AAAAA0000A1Z5)', 'error');
       return;
     }
     setSaving(true);
+    const isEdit = !!editingCust;
     try {
-      const url = editingCust ? `${API}/customers/${editingCust.id}` : `${API}/customers`;
-      const method = editingCust ? 'PUT' : 'POST';
-      const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(custForm) });
+      const path = isEdit ? `/customers/${editingCust.id}` : '/customers';
+      const method = isEdit ? 'PUT' : 'POST';
+      const savedForm = { ...custForm };
+      const r = await apiFetch(path, { method, body: JSON.stringify(custForm) }, token);
       if (r.ok) {
-        showMessage(editingCust ? 'Customer updated' : 'Customer created');
+        const body = await r.json().catch(() => ({}));
         setShowCustForm(false); setEditingCust(null);
-        setCustForm({ hospital_name: '', hospital_id: '', contact_person: '', phone: '', email: '', address: '', gst_number: '', machine_id: '', notes: '' });
+        setCustForm({ ...EMPTY_CUST_FORM });
         fetchCustomers(); fetchDash();
-        if (selectedCust) fetchCustDetail(selectedCust);
-      } else { const e = await r.json(); showMessage(e.detail || 'Failed', 'error'); }
+
+        if (!isEdit && generateAfter && body.id) {
+          showMessage('Customer created — finish the license wizard');
+          const newCust = {
+            id: body.id,
+            hospital_name: savedForm.hospital_name,
+            hospital_id: savedForm.hospital_id || null,
+            contact_person: savedForm.contact_person || null,
+            phone: savedForm.phone || null,
+            email: savedForm.email || null,
+            address: savedForm.address || null,
+            gst_number: savedForm.gst_number || null,
+            machine_id: savedForm.machine_id || null,
+            notes: savedForm.notes || null,
+            is_active: 1,
+          };
+          setCustomers((prev) => [newCust, ...prev.filter((c) => c.id !== body.id)]);
+          setSelectedCust(body.id);
+          fetchCustDetail(body.id);
+          openGenerateForm({
+            customer_id: body.id,
+            hospital_id: savedForm.hospital_id || '',
+            hospital_name: savedForm.hospital_name,
+            machine_id: savedForm.machine_id || '',
+          });
+        } else {
+          showMessage(isEdit ? 'Customer updated' : 'Customer created');
+          if (selectedCust) fetchCustDetail(selectedCust);
+        }
+      } else { const e = await r.json(); showMessage(apiErrorMessage(e, 'Failed'), 'error'); }
     } catch { showMessage('Failed', 'error'); }
     finally { setSaving(false); }
   };
@@ -448,7 +705,7 @@ function App() {
 
   const deleteCust = async (id) => {
     if (!window.confirm('Delete this customer and all related records?')) return;
-    await fetch(`${API}/customers/${id}`, { method: 'DELETE' });
+    await apiFetch(`/customers/${id}`, { method: 'DELETE' }, token);
     showMessage('Customer deleted');
     fetchCustomers(); fetchDash();
     if (selectedCust === id) { setSelectedCust(null); setCustDetail(null); }
@@ -458,10 +715,10 @@ function App() {
     if (!payForm.amount || !selectedCust) return;
     setSaving(true);
     try {
-      const r = await fetch(`${API}/payments`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+      const r = await apiFetch('/payments', {
+        method: 'POST',
         body: JSON.stringify({ ...payForm, customer_id: selectedCust, amount: parseFloat(payForm.amount) })
-      });
+      }, token);
       if (r.ok) {
         showMessage('Payment recorded');
         setShowPayForm(false);
@@ -474,7 +731,7 @@ function App() {
 
   const deletePayment = async (payId) => {
     if (!window.confirm('Delete this payment record?')) return;
-    await fetch(`${API}/payments/${payId}`, { method: 'DELETE' });
+    await apiFetch(`/payments/${payId}`, { method: 'DELETE' }, token);
     showMessage('Payment deleted');
     fetchCustDetail(selectedCust);
   };
@@ -488,9 +745,9 @@ function App() {
   const saveSeller = async () => {
     if (!sellerForm.name) return;
     try {
-      const url = editingSeller ? `${API}/sellers/${editingSeller.id}` : `${API}/sellers`;
+      const path = editingSeller ? `/sellers/${editingSeller.id}` : '/sellers';
       const method = editingSeller ? 'PUT' : 'POST';
-      const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sellerForm) });
+      const r = await apiFetch(path, { method, body: JSON.stringify(sellerForm) }, token);
       if (r.ok) {
         showMessage(editingSeller ? 'Seller updated' : 'Seller created');
         setShowSellerForm(false); setEditingSeller(null);
@@ -503,21 +760,222 @@ function App() {
   const deleteSeller = async (id) => {
     if (!window.confirm('Deactivate this seller?')) return;
     try {
-      await fetch(`${API}/sellers/${id}`, { method: 'DELETE' });
+      await apiFetch(`/sellers/${id}`, { method: 'DELETE' }, token);
       showMessage('Seller deactivated');
       fetchSellers();
     } catch { showMessage('Failed', 'error'); }
   };
 
+  const formatDateTime = (d) => {
+    if (!d) return '—';
+    try {
+      return new Date(d).toLocaleString('en-IN', {
+        day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+      });
+    } catch { return d; }
+  };
+
+  const openSupportForm = (log = null) => {
+    if (log) {
+      setEditingSupport(log);
+      setSupportForm({
+        operator_name: log.operator_name || '',
+        cell_no: log.cell_no || '',
+        problem: log.problem || '',
+      });
+    } else {
+      setEditingSupport(null);
+      setSupportForm({ ...EMPTY_SUPPORT_FORM });
+    }
+    setShowSupportForm(true);
+  };
+
+  const saveSupportLog = async () => {
+    if (!supportForm.operator_name?.trim() || !supportForm.cell_no?.trim() || !supportForm.problem?.trim() || !selectedCust) {
+      showMessage('Caller name, phone number, and problem are required', 'error');
+      return;
+    }
+    setSaving(true);
+    try {
+      const payload = {
+        operator_name: supportForm.operator_name.trim(),
+        cell_no: supportForm.cell_no.trim(),
+        problem: supportForm.problem.trim(),
+      };
+      if (!editingSupport) {
+        payload.status = 'open';
+        payload.assistant_user_id = currentUser?.id;
+      }
+      const path = editingSupport
+        ? `/support-logs/${editingSupport.id}`
+        : `/customers/${selectedCust}/support-logs`;
+      const method = editingSupport ? 'PUT' : 'POST';
+      const r = await apiFetch(path, { method, body: JSON.stringify(payload) }, token);
+      if (r.ok) {
+        showMessage(editingSupport ? 'Support log updated' : 'Support ticket opened — received time recorded');
+        setShowSupportForm(false);
+        setEditingSupport(null);
+        setSupportForm({ ...EMPTY_SUPPORT_FORM });
+        if (selectedCust) {
+          fetchSupportLogs(selectedCust, mineOnlyLogs);
+          fetchCustDetail(selectedCust);
+        }
+        fetchDash();
+        if (page === 'support') fetchAllSupportLogs();
+      } else {
+        const e = await r.json();
+        showMessage(apiErrorMessage(e, 'Failed to save support log'), 'error');
+      }
+    } catch (e) {
+      if (e.status === 401) handleUnauthorized();
+      else showMessage('Failed to save support log', 'error');
+    } finally { setSaving(false); }
+  };
+
+  const updateSupportStatus = async (log, nextStatus) => {
+    if (!log || log.status === nextStatus) return;
+    const canEdit = isAdmin || log.created_by_user_id === currentUser?.id || log.assistant_user_id === currentUser?.id;
+    if (!canEdit) {
+      showMessage('You can only update your own support tickets', 'error');
+      return;
+    }
+    // Optimistic UI
+    const patch = (prev) => prev.map((row) => (
+      row.id === log.id ? { ...row, status: nextStatus } : row
+    ));
+    setSupportLogs(patch);
+    setAllSupportLogs(patch);
+    try {
+      const r = await apiFetch(`/support-logs/${log.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ status: nextStatus }),
+      }, token);
+      if (r.ok) {
+        const body = await r.json();
+        const apply = (prev) => prev.map((row) => (row.id === log.id ? { ...row, ...body.log } : row));
+        setSupportLogs(apply);
+        setAllSupportLogs(apply);
+        if (nextStatus === 'closed') {
+          showMessage('Ticket closed — closed time recorded');
+        }
+        fetchDash();
+      } else {
+        const e = await r.json();
+        showMessage(apiErrorMessage(e, 'Failed to update status'), 'error');
+        if (selectedCust) fetchSupportLogs(selectedCust, mineOnlyLogs);
+        if (page === 'support') fetchAllSupportLogs();
+      }
+    } catch (e) {
+      if (e.status === 401) handleUnauthorized();
+      else showMessage('Failed to update status', 'error');
+      if (selectedCust) fetchSupportLogs(selectedCust, mineOnlyLogs);
+      if (page === 'support') fetchAllSupportLogs();
+    }
+  };
+
+  const deleteSupportLog = async (logId) => {
+    if (!window.confirm('Delete this support log?')) return;
+    try {
+      const r = await apiFetch(`/support-logs/${logId}`, { method: 'DELETE' }, token);
+      if (r.ok) {
+        showMessage('Support log deleted');
+        setAllSupportLogs((prev) => prev.filter((row) => row.id !== logId));
+        if (selectedCust) {
+          fetchSupportLogs(selectedCust, mineOnlyLogs);
+          fetchCustDetail(selectedCust);
+        }
+        fetchDash();
+      } else {
+        const e = await r.json();
+        showMessage(apiErrorMessage(e, 'Delete failed'), 'error');
+      }
+    } catch (e) {
+      if (e.status === 401) handleUnauthorized();
+      else showMessage('Delete failed', 'error');
+    }
+  };
+
+  const saveUser = async () => {
+    if (!userForm.full_name?.trim() || (!editingUser && (!userForm.username?.trim() || !userForm.password))) {
+      showMessage('Fill required user fields', 'error');
+      return;
+    }
+    setSaving(true);
+    try {
+      const path = editingUser ? `/users/${editingUser.id}` : '/users';
+      const method = editingUser ? 'PUT' : 'POST';
+      const payload = editingUser
+        ? {
+            full_name: userForm.full_name.trim(),
+            role: userForm.role,
+            ...(userForm.password ? { password: userForm.password } : {}),
+          }
+        : {
+            username: userForm.username.trim(),
+            password: userForm.password,
+            full_name: userForm.full_name.trim(),
+            role: userForm.role,
+          };
+      const r = await apiFetch(path, { method, body: JSON.stringify(payload) }, token);
+      if (r.ok) {
+        showMessage(editingUser ? 'User updated' : 'User created');
+        setShowUserForm(false);
+        setEditingUser(null);
+        setUserForm({ username: '', password: '', full_name: '', role: 'support_agent' });
+        fetchUsers(true);
+      } else {
+        const e = await r.json();
+        showMessage(apiErrorMessage(e, 'Failed'), 'error');
+      }
+    } catch { showMessage('Failed to save user', 'error'); }
+    finally { setSaving(false); }
+  };
+
   const allModules = ['outpatient', 'inpatient', 'lab', 'pharmacy', 'physiotherapy', 'ehr', 'admin', 'billing'];
 
   const navItems = [
-    { id: 'dashboard', label: 'Dashboard', icon: Icons.dashboard },
-    { id: 'licenses', label: 'Licenses', icon: Icons.license },
-    { id: 'customers', label: 'Customers', icon: "M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" },
-    { id: 'sellers', label: 'Sellers', icon: "M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" },
-    { id: 'settings', label: 'Key Settings', icon: Icons.key },
-  ];
+    { id: 'dashboard', label: 'Dashboard', icon: Icons.dashboard, roles: ['admin', 'support_agent'] },
+    { id: 'support', label: 'Support', icon: Icons.support, roles: ['admin', 'support_agent'] },
+    { id: 'licenses', label: 'Licenses', icon: Icons.license, roles: ['admin'] },
+    { id: 'customers', label: 'Customers', icon: "M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z", roles: ['admin', 'support_agent'] },
+    { id: 'sellers', label: 'Sellers', icon: "M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4", roles: ['admin'] },
+    { id: 'users', label: 'Users', icon: Icons.users, roles: ['admin'] },
+    { id: 'settings', label: 'Key Settings', icon: Icons.key, roles: ['admin'] },
+  ].filter((item) => item.roles.includes(currentUser?.role));
+
+  if (!auth) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6">
+        <div className="w-full max-w-md bg-slate-925 border border-slate-800/50 rounded-2xl p-8 shadow-2xl">
+          <div className="flex items-center gap-3 mb-8">
+            <div className="w-11 h-11 bg-white rounded-lg overflow-hidden">
+              <img src={ktLogo} alt="KT Health" className="w-full h-full object-contain" />
+            </div>
+            <div>
+              <h1 className="text-lg font-bold text-white">KT License Manager</h1>
+              <p className="text-xs text-slate-500 uppercase tracking-widest">Sign in</p>
+            </div>
+          </div>
+          <form onSubmit={doLogin} className="space-y-4">
+            <Input label="Username" required value={loginForm.username}
+              onChange={(e) => setLoginForm({ ...loginForm, username: e.target.value })}
+              autoComplete="username" placeholder="admin" />
+            <Input label="Password" required type="password" value={loginForm.password}
+              onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })}
+              autoComplete="current-password" placeholder="••••••••" />
+            {loginError && <p className="text-sm text-red-400">{loginError}</p>}
+            <button type="submit" disabled={loggingIn}
+              className="w-full py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-xl text-sm font-semibold">
+              {loggingIn ? 'Signing in…' : 'Sign in'}
+            </button>
+          </form>
+          <p className="text-[11px] text-slate-600 mt-6 text-center">
+            Default admin: <span className="text-slate-400">admin / admin123</span> — change after first login
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen bg-slate-950">
@@ -538,7 +996,7 @@ function App() {
 
         <nav className="flex-1 p-3 space-y-1">
           {navItems.map(item => (
-            <button key={item.id} onClick={() => setPage(item.id)}
+            <button key={item.id} onClick={() => { setPage(item.id); if (item.id !== 'customers') { setSelectedCust(null); setCustDetail(null); } }}
               className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] font-medium transition-all duration-150
                 ${page === item.id
                   ? 'bg-blue-600/15 text-blue-400 shadow-sm shadow-blue-500/5'
@@ -549,8 +1007,15 @@ function App() {
           ))}
         </nav>
 
-        <div className="p-4 border-t border-slate-800/50">
-          <p className="text-[10px] text-slate-600 text-center">KT Health Soft v1.0</p>
+        <div className="p-4 border-t border-slate-800/50 space-y-3">
+          <div className="px-1">
+            <p className="text-xs font-medium text-white truncate">{currentUser?.full_name}</p>
+            <p className="text-[10px] text-slate-500 capitalize">{currentUser?.role?.replace('_', ' ')}</p>
+          </div>
+          <button onClick={logout}
+            className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-[12px] text-slate-400 hover:text-white hover:bg-slate-800/50">
+            <Icon d={Icons.logout} className="w-4 h-4" /> Sign out
+          </button>
         </div>
       </aside>
 
@@ -577,30 +1042,90 @@ function App() {
             <div className="space-y-6 animate-fadeIn">
               <div>
                 <h2 className="text-2xl font-bold text-white">Dashboard</h2>
-                <p className="text-sm text-slate-500 mt-1">License overview and recent activity</p>
+                <p className="text-sm text-slate-500 mt-1">
+                  {isAdmin ? 'License overview, revenue, and live support activity' : 'Customers and your support activity'}
+                </p>
               </div>
 
               {/* Stats */}
               {dash && (
-                <div className="grid grid-cols-3 md:grid-cols-6 gap-4">
-                  {[
+                <div className={`grid gap-4 ${isAdmin ? 'grid-cols-2 md:grid-cols-4 xl:grid-cols-7' : 'grid-cols-2 md:grid-cols-4'}`}>
+                  {(isAdmin ? [
                     { label: 'Customers', value: dash.total_customers || 0, color: 'from-blue-600/20 to-blue-700/10', accent: 'text-blue-400' },
                     { label: 'Total Licenses', value: dash.total, color: 'from-slate-600 to-slate-700', accent: 'text-white' },
                     { label: 'Active', value: dash.active, color: 'from-emerald-600/20 to-emerald-700/10', accent: 'text-emerald-400' },
                     { label: 'Expiring Soon', value: dash.expiring_soon, color: 'from-amber-600/20 to-amber-700/10', accent: 'text-amber-400' },
                     { label: 'Expired', value: dash.expired, color: 'from-red-600/20 to-red-700/10', accent: 'text-red-400' },
+                    { label: 'Open Support', value: dash.open_support || 0, color: 'from-violet-600/20 to-violet-700/10', accent: 'text-violet-300', onClick: () => setPage('support') },
                     { label: 'Revenue', value: `₹${(dash.total_revenue || 0).toLocaleString('en-IN')}`, color: 'from-cyan-600/20 to-cyan-700/10', accent: 'text-cyan-400' },
-                  ].map((c, i) => (
-                    <div key={i} className={`bg-gradient-to-br ${c.color} rounded-xl p-5 stat-glow`}
+                  ] : [
+                    { label: 'Customers', value: dash.total_customers || 0, color: 'from-blue-600/20 to-blue-700/10', accent: 'text-blue-400' },
+                    { label: 'My Support Logs', value: dash.my_support_logs || 0, color: 'from-violet-600/20 to-violet-700/10', accent: 'text-violet-300', onClick: () => setPage('support') },
+                    { label: 'My Open Tickets', value: dash.my_open_support || 0, color: 'from-amber-600/20 to-amber-700/10', accent: 'text-amber-400', onClick: () => setPage('support') },
+                    { label: 'In Progress', value: dash.support_in_progress || 0, color: 'from-blue-600/20 to-blue-700/10', accent: 'text-blue-400', onClick: () => setPage('support') },
+                  ]).map((c, i) => (
+                    <button
+                      key={i}
+                      type="button"
+                      onClick={c.onClick}
+                      disabled={!c.onClick}
+                      className={`bg-gradient-to-br ${c.color} rounded-xl p-5 stat-glow text-left ${c.onClick ? 'hover:ring-1 hover:ring-white/10 cursor-pointer' : 'cursor-default'}`}
                       style={{ animationDelay: `${i * 0.05}s` }}>
                       <p className="text-xs font-medium text-slate-400 uppercase tracking-wider">{c.label}</p>
-                      <p className={`text-4xl font-bold mt-2 font-mono ${c.accent}`}>{c.value}</p>
-                    </div>
+                      <p className={`text-3xl xl:text-4xl font-bold mt-2 font-mono ${c.accent}`}>{c.value}</p>
+                    </button>
                   ))}
                 </div>
               )}
 
-              {/* Recent Licenses */}
+              {/* Recent Support — both roles */}
+              {dash?.recent_support?.length > 0 && (
+                <div>
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">
+                      {isAdmin ? 'Recent Support Activity' : 'My Recent Tickets'}
+                    </h3>
+                    <button onClick={() => setPage('support')} className="text-xs text-blue-400 hover:text-blue-300">
+                      Support dashboard →
+                    </button>
+                  </div>
+                  <div className="bg-slate-925 border border-slate-800/50 rounded-xl overflow-hidden">
+                    {dash.recent_support.slice(0, 6).map((log, i) => (
+                      <button
+                        key={log.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedCust(log.customer_id);
+                          setPage('customers');
+                          fetchCustDetail(log.customer_id);
+                        }}
+                        className={`w-full flex items-center justify-between gap-4 px-5 py-3.5 text-left hover:bg-slate-800/30 ${
+                          i < Math.min(dash.recent_support.length, 6) - 1 ? 'border-b border-slate-800/30' : ''
+                        }`}
+                      >
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold text-white truncate">{log.hospital_name || 'Customer'}</p>
+                          <p className="text-xs text-slate-500 truncate mt-0.5">{log.problem}</p>
+                        </div>
+                        <div className="flex items-center gap-3 shrink-0">
+                          <span className="text-[11px] text-slate-500 hidden sm:inline">{formatDateTime(log.start_time)}</span>
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-semibold uppercase ${
+                            log.status === 'open' ? 'bg-amber-500/10 text-amber-400'
+                              : log.status === 'in_progress' ? 'bg-blue-500/10 text-blue-400'
+                              : log.status === 'resolved' ? 'bg-emerald-500/10 text-emerald-400'
+                              : 'bg-slate-500/10 text-slate-400'
+                          }`}>
+                            {SUPPORT_STATUS_OPTIONS.find(s => s.value === log.status)?.label || log.status}
+                          </span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Recent Licenses — admin only */}
+              {isAdmin && (
               <div>
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">Recent Licenses</h3>
@@ -633,11 +1158,257 @@ function App() {
                   )}
                 </div>
               </div>
+              )}
+
+              {isAgent && (
+                <div className="bg-slate-925 border border-slate-800/50 rounded-xl p-6">
+                  <p className="text-sm text-slate-300">Open a customer to log support calls, or review all your tickets on the Support dashboard.</p>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <button onClick={() => setPage('customers')}
+                      className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold rounded-xl">
+                      Go to Customers
+                    </button>
+                    <button onClick={() => setPage('support')}
+                      className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-semibold rounded-xl border border-slate-700/50">
+                      Support Dashboard
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ═══════ SUPPORT DASHBOARD ═══════ */}
+          {page === 'support' && (
+            <div className="space-y-6 animate-fadeIn">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h2 className="text-2xl font-bold text-white">Support Dashboard</h2>
+                  <p className="text-sm text-slate-500 mt-1">
+                    {isAdmin
+                      ? 'All support tickets across customers — status, agents, and recent activity'
+                      : 'Your support tickets and open workload'}
+                  </p>
+                </div>
+                <button
+                  onClick={() => { fetchDash(); fetchAllSupportLogs(); }}
+                  className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-sm font-semibold border border-slate-700/50 flex items-center gap-2"
+                >
+                  <Icon d={Icons.refresh} className="w-4 h-4" /> Refresh
+                </button>
+              </div>
+
+              {dash && (
+                <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4">
+                  {[
+                    { label: 'Open', value: dash.support_open || 0, color: 'from-amber-600/20 to-amber-700/10', accent: 'text-amber-400', filter: 'open' },
+                    { label: 'In Progress', value: dash.support_in_progress || 0, color: 'from-blue-600/20 to-blue-700/10', accent: 'text-blue-400', filter: 'in_progress' },
+                    { label: 'Active', value: dash.open_support || 0, color: 'from-violet-600/20 to-violet-700/10', accent: 'text-violet-300', filter: 'active' },
+                    { label: 'Resolved', value: dash.support_resolved || 0, color: 'from-emerald-600/20 to-emerald-700/10', accent: 'text-emerald-400', filter: 'resolved' },
+                    { label: 'Closed', value: dash.support_closed || 0, color: 'from-slate-600/30 to-slate-700/10', accent: 'text-slate-300', filter: 'closed' },
+                    { label: 'Total', value: dash.support_total || 0, color: 'from-cyan-600/20 to-cyan-700/10', accent: 'text-cyan-400', filter: 'all' },
+                  ].map((c) => (
+                    <button
+                      key={c.filter}
+                      type="button"
+                      onClick={() => setSupportStatusFilter(c.filter)}
+                      className={`bg-gradient-to-br ${c.color} rounded-xl p-5 text-left transition-all ${
+                        supportStatusFilter === c.filter ? 'ring-1 ring-blue-400/50' : 'hover:ring-1 hover:ring-white/10'
+                      }`}
+                    >
+                      <p className="text-xs font-medium text-slate-400 uppercase tracking-wider">{c.label}</p>
+                      <p className={`text-3xl font-bold mt-2 font-mono ${c.accent}`}>{c.value}</p>
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {isAdmin && dash?.support_by_agent?.length > 0 && (
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-3">By Agent</h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {dash.support_by_agent.map((agent) => (
+                      <button
+                        key={agent.id}
+                        type="button"
+                        onClick={() => setSupportAgentFilter(String(agent.id))}
+                        className={`bg-slate-925 border rounded-xl p-4 text-left transition-colors ${
+                          supportAgentFilter === String(agent.id)
+                            ? 'border-blue-500/40 bg-blue-600/10'
+                            : 'border-slate-800/50 hover:border-slate-700'
+                        }`}
+                      >
+                        <p className="text-sm font-semibold text-white">{agent.full_name}</p>
+                        <p className="text-[11px] text-slate-500 mt-0.5">@{agent.username}</p>
+                        <div className="flex gap-4 mt-3">
+                          <div>
+                            <p className="text-[10px] uppercase tracking-wider text-slate-500">Open</p>
+                            <p className="text-lg font-mono font-bold text-amber-400">{agent.open_logs}</p>
+                          </div>
+                          <div>
+                            <p className="text-[10px] uppercase tracking-wider text-slate-500">Total</p>
+                            <p className="text-lg font-mono font-bold text-slate-200">{agent.total_logs}</p>
+                          </div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="bg-slate-925 border border-slate-800/50 rounded-xl overflow-hidden">
+                <div className="flex flex-wrap items-center gap-3 px-5 py-3 border-b border-slate-800/30">
+                  <div className="relative flex-1 min-w-[180px]">
+                    <Icon d={Icons.search} className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+                    <input
+                      value={supportSearch}
+                      onChange={(e) => setSupportSearch(e.target.value)}
+                      placeholder="Search hospital, caller, phone, problem…"
+                      className="w-full bg-slate-900 border border-slate-700/50 rounded-lg pl-9 pr-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/50"
+                    />
+                  </div>
+                  <select
+                    value={supportStatusFilter}
+                    onChange={(e) => setSupportStatusFilter(e.target.value)}
+                    className="bg-slate-900 border border-slate-700/50 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none"
+                  >
+                    <option value="active">Active (open + in progress)</option>
+                    <option value="all">All statuses</option>
+                    {SUPPORT_STATUS_OPTIONS.map((s) => (
+                      <option key={s.value} value={s.value}>{s.label}</option>
+                    ))}
+                  </select>
+                  {isAdmin && (
+                    <select
+                      value={supportAgentFilter}
+                      onChange={(e) => setSupportAgentFilter(e.target.value)}
+                      className="bg-slate-900 border border-slate-700/50 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none"
+                    >
+                      <option value="all">All agents</option>
+                      {users.map((u) => (
+                        <option key={u.id} value={String(u.id)}>{u.full_name}</option>
+                      ))}
+                    </select>
+                  )}
+                  {(supportSearch || supportStatusFilter !== 'active' || supportAgentFilter !== 'all') && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSupportSearch('');
+                        setSupportStatusFilter('active');
+                        setSupportAgentFilter('all');
+                      }}
+                      className="text-xs text-slate-400 hover:text-white"
+                    >
+                      Clear filters
+                    </button>
+                  )}
+                </div>
+
+                {allSupportLogs.length === 0 ? (
+                  <p className="text-center py-12 text-slate-600 text-sm">No support tickets match these filters</p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm">
+                      <thead>
+                        <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800/40">
+                          <th className="px-4 py-2.5 font-medium">Hospital</th>
+                          <th className="px-4 py-2.5 font-medium">Caller</th>
+                          <th className="px-4 py-2.5 font-medium">Problem</th>
+                          <th className="px-4 py-2.5 font-medium">Status</th>
+                          <th className="px-4 py-2.5 font-medium">Received</th>
+                          <th className="px-4 py-2.5 font-medium">Closed</th>
+                          <th className="px-4 py-2.5 font-medium">Assistant</th>
+                          <th className="px-4 py-2.5 font-medium" />
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/30">
+                        {allSupportLogs.map((log) => {
+                          const canEditStatus = isAdmin || log.created_by_user_id === currentUser?.id || log.assistant_user_id === currentUser?.id;
+                          return (
+                            <tr key={log.id} className="hover:bg-slate-800/20">
+                              <td className="px-4 py-3">
+                                <button
+                                  type="button"
+                                  className="text-left"
+                                  onClick={() => {
+                                    setSelectedCust(log.customer_id);
+                                    setPage('customers');
+                                    fetchCustDetail(log.customer_id);
+                                  }}
+                                >
+                                  <p className="text-white font-medium whitespace-nowrap hover:text-blue-300">{log.hospital_name || '—'}</p>
+                                  {log.hospital_id && (
+                                    <p className="text-[11px] text-slate-500 font-mono">{log.hospital_id}</p>
+                                  )}
+                                </button>
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap">
+                                <p className="text-white font-medium">{log.operator_name}</p>
+                                <p className="text-[11px] text-slate-500">{log.cell_no || '—'}</p>
+                              </td>
+                              <td className="px-4 py-3 text-slate-300 max-w-xs truncate" title={log.problem}>{log.problem}</td>
+                              <td className="px-4 py-3">
+                                {canEditStatus ? (
+                                  <select
+                                    value={log.status}
+                                    onChange={(e) => updateSupportStatus(log, e.target.value)}
+                                    className={`px-2 py-1 rounded-lg text-[11px] font-semibold uppercase border-0 focus:outline-none focus:ring-1 focus:ring-blue-500/40 cursor-pointer ${
+                                      log.status === 'open' ? 'bg-amber-500/10 text-amber-400'
+                                        : log.status === 'in_progress' ? 'bg-blue-500/10 text-blue-400'
+                                        : log.status === 'resolved' ? 'bg-emerald-500/10 text-emerald-400'
+                                        : 'bg-slate-500/10 text-slate-400'
+                                    }`}
+                                  >
+                                    {SUPPORT_STATUS_OPTIONS.map((s) => (
+                                      <option key={s.value} value={s.value} className="bg-slate-900 text-white normal-case">{s.label}</option>
+                                    ))}
+                                  </select>
+                                ) : (
+                                  <span className={`px-2 py-0.5 rounded text-[10px] font-semibold uppercase ${
+                                    log.status === 'open' ? 'bg-amber-500/10 text-amber-400'
+                                      : log.status === 'in_progress' ? 'bg-blue-500/10 text-blue-400'
+                                      : log.status === 'resolved' ? 'bg-emerald-500/10 text-emerald-400'
+                                      : 'bg-slate-500/10 text-slate-400'
+                                  }`}>
+                                    {SUPPORT_STATUS_OPTIONS.find(s => s.value === log.status)?.label || log.status}
+                                  </span>
+                                )}
+                              </td>
+                              <td className="px-4 py-3 text-xs text-slate-400 whitespace-nowrap">{formatDateTime(log.start_time)}</td>
+                              <td className="px-4 py-3 text-xs text-slate-400 whitespace-nowrap">{formatDateTime(log.end_time)}</td>
+                              <td className="px-4 py-3 text-slate-300 whitespace-nowrap">{log.assistant?.full_name || '—'}</td>
+                              <td className="px-4 py-3 whitespace-nowrap">
+                                <div className="flex gap-1 justify-end">
+                                  <button
+                                    onClick={() => {
+                                      setSelectedCust(log.customer_id);
+                                      setPage('customers');
+                                      fetchCustDetail(log.customer_id);
+                                    }}
+                                    className="px-2 py-1 text-[11px] bg-slate-800 text-slate-300 rounded-lg hover:bg-slate-700"
+                                  >
+                                    Open
+                                  </button>
+                                  {(isAdmin || log.created_by_user_id === currentUser?.id) && (
+                                    <button onClick={() => deleteSupportLog(log.id)}
+                                      className="px-2 py-1 text-[11px] bg-red-500/10 text-red-400 rounded-lg hover:bg-red-500/20">Delete</button>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
           {/* ═══════ LICENSES ═══════ */}
-          {page === 'licenses' && (
+          {page === 'licenses' && isAdmin && (
             <div className="space-y-5 animate-fadeIn">
               <div className="flex items-center justify-between">
                 <div>
@@ -755,10 +1526,12 @@ function App() {
                   <h2 className="text-2xl font-bold text-white">Customers</h2>
                   <p className="text-sm text-slate-500 mt-1">{customers.length} customer{customers.length !== 1 ? 's' : ''}</p>
                 </div>
-                <button onClick={() => { setEditingCust(null); setCustForm({ hospital_name: '', hospital_id: '', contact_person: '', phone: '', email: '', address: '', gst_number: '', machine_id: '', notes: '' }); setShowCustForm(true); }}
+                {isAdmin && (
+                <button onClick={() => { setEditingCust(null); setCustForm({ ...EMPTY_CUST_FORM }); setShowCustForm(true); }}
                   className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-sm font-semibold transition-colors shadow-lg shadow-blue-600/20">
                   <Icon d={Icons.plus} className="w-4 h-4" /> Add Customer
                 </button>
+                )}
               </div>
 
               <div className="relative max-w-xs">
@@ -785,8 +1558,16 @@ function App() {
                       {c.machine_id && <span className="font-mono">{c.machine_id}</span>}
                     </div>
                     <div className="flex gap-1.5 mt-3" onClick={e => e.stopPropagation()}>
-                      <button onClick={() => openEditCust(c)} className="px-2 py-1 text-[11px] bg-slate-800 text-slate-300 rounded-lg hover:bg-slate-700">Edit</button>
-                      <button onClick={() => deleteCust(c.id)} className="px-2 py-1 text-[11px] bg-red-500/10 text-red-400 rounded-lg hover:bg-red-500/20">Delete</button>
+                      {isAdmin && (
+                        <>
+                          <button onClick={() => openEditCust(c)} className="px-2 py-1 text-[11px] bg-slate-800 text-slate-300 rounded-lg hover:bg-slate-700">Edit</button>
+                          <button onClick={() => deleteCust(c.id)} className="px-2 py-1 text-[11px] bg-red-500/10 text-red-400 rounded-lg hover:bg-red-500/20">Delete</button>
+                        </>
+                      )}
+                      <button onClick={() => { setSelectedCust(c.id); fetchCustDetail(c.id); }}
+                        className="px-2 py-1 text-[11px] bg-blue-500/10 text-blue-400 rounded-lg hover:bg-blue-500/20">
+                        Support Log
+                      </button>
                     </div>
                   </div>
                 ))}
@@ -815,8 +1596,10 @@ function App() {
                     </div>
                   </div>
                 </div>
+                {isAdmin && (
                 <button onClick={() => openEditCust(custDetail.customer)}
                   className="px-3 py-2 text-xs bg-slate-800 text-slate-300 rounded-lg hover:bg-slate-700">Edit Customer</button>
+                )}
               </div>
 
               {/* Customer Info + Summary */}
@@ -833,13 +1616,18 @@ function App() {
                 </div>
 
                 {/* Summary Stats */}
-                <div className="lg:col-span-2 grid grid-cols-4 gap-3">
-                  {[
+                <div className="lg:col-span-2 grid grid-cols-2 md:grid-cols-4 gap-3">
+                  {(isAdmin ? [
                     { label: 'Licenses', value: custDetail.summary.total_licenses, accent: 'text-blue-400' },
                     { label: 'Active', value: custDetail.summary.active_licenses, accent: 'text-emerald-400' },
                     { label: 'Payments', value: custDetail.summary.total_payments, accent: 'text-cyan-400' },
                     { label: 'Total Paid', value: `₹${custDetail.summary.total_paid.toLocaleString('en-IN')}`, accent: 'text-amber-400' },
-                  ].map((c, i) => (
+                  ] : [
+                    { label: 'Support Logs', value: custDetail.summary.support_logs || supportLogs.length, accent: 'text-blue-400' },
+                    { label: 'My Logs', value: custDetail.summary.my_support_logs || 0, accent: 'text-violet-300' },
+                    { label: 'License Status', value: custDetail.summary.active_licenses > 0 ? 'Active' : '—', accent: 'text-emerald-400' },
+                    { label: 'Expires Soon', value: (custDetail.licenses || []).filter(l => l.computed_status === 'expiring_soon').length, accent: 'text-amber-400' },
+                  ]).map((c, i) => (
                     <div key={i} className="bg-slate-925 border border-slate-800/50 rounded-xl p-4">
                       <p className="text-[11px] text-slate-500 uppercase tracking-wider">{c.label}</p>
                       <p className={`text-xl font-bold mt-1 font-mono ${c.accent}`}>{c.value}</p>
@@ -848,7 +1636,102 @@ function App() {
                 </div>
               </div>
 
-              {/* Licenses */}
+              {/* Support Given Log */}
+              <div className="bg-slate-925 border border-slate-800/50 rounded-xl overflow-hidden">
+                <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3 border-b border-slate-800/30">
+                  <div className="flex items-center gap-3">
+                    <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">Support Given Log</h3>
+                    {isAgent && (
+                      <label className="flex items-center gap-2 text-[11px] text-slate-400">
+                        <input type="checkbox" checked={mineOnlyLogs} onChange={(e) => setMineOnlyLogs(e.target.checked)}
+                          className="rounded border-slate-600" />
+                        My activity only
+                      </label>
+                    )}
+                  </div>
+                  <button onClick={() => openSupportForm()}
+                    className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold rounded-lg transition-colors">
+                    + Log Support
+                  </button>
+                </div>
+                {supportLogs.length === 0 ? (
+                  <p className="text-center py-8 text-slate-600 text-sm">No support logs yet</p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm">
+                      <thead>
+                        <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800/40">
+                          <th className="px-4 py-2.5 font-medium">Caller Name</th>
+                          <th className="px-4 py-2.5 font-medium">Phone</th>
+                          <th className="px-4 py-2.5 font-medium">Problem</th>
+                          <th className="px-4 py-2.5 font-medium">Status</th>
+                          <th className="px-4 py-2.5 font-medium">Received</th>
+                          <th className="px-4 py-2.5 font-medium">Closed At</th>
+                          <th className="px-4 py-2.5 font-medium">Assistant</th>
+                          <th className="px-4 py-2.5 font-medium" />
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/30">
+                        {supportLogs.map((log) => {
+                          const canEditStatus = isAdmin || log.created_by_user_id === currentUser?.id || log.assistant_user_id === currentUser?.id;
+                          return (
+                          <tr key={log.id} className="hover:bg-slate-800/20">
+                            <td className="px-4 py-3 text-white font-medium whitespace-nowrap">{log.operator_name}</td>
+                            <td className="px-4 py-3 text-slate-400 whitespace-nowrap">{log.cell_no || '—'}</td>
+                            <td className="px-4 py-3 text-slate-300 max-w-xs truncate" title={log.problem}>{log.problem}</td>
+                            <td className="px-4 py-3">
+                              {canEditStatus ? (
+                                <select
+                                  value={log.status}
+                                  onChange={(e) => updateSupportStatus(log, e.target.value)}
+                                  className={`px-2 py-1 rounded-lg text-[11px] font-semibold uppercase border-0 focus:outline-none focus:ring-1 focus:ring-blue-500/40 cursor-pointer ${
+                                    log.status === 'open' ? 'bg-amber-500/10 text-amber-400'
+                                      : log.status === 'in_progress' ? 'bg-blue-500/10 text-blue-400'
+                                      : log.status === 'resolved' ? 'bg-emerald-500/10 text-emerald-400'
+                                      : 'bg-slate-500/10 text-slate-400'
+                                  }`}
+                                >
+                                  {SUPPORT_STATUS_OPTIONS.map((s) => (
+                                    <option key={s.value} value={s.value} className="bg-slate-900 text-white normal-case">{s.label}</option>
+                                  ))}
+                                </select>
+                              ) : (
+                                <span className={`px-2 py-0.5 rounded text-[10px] font-semibold uppercase ${
+                                  log.status === 'open' ? 'bg-amber-500/10 text-amber-400'
+                                    : log.status === 'in_progress' ? 'bg-blue-500/10 text-blue-400'
+                                    : log.status === 'resolved' ? 'bg-emerald-500/10 text-emerald-400'
+                                    : 'bg-slate-500/10 text-slate-400'
+                                }`}>
+                                  {SUPPORT_STATUS_OPTIONS.find(s => s.value === log.status)?.label || log.status}
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-4 py-3 text-xs text-slate-400 whitespace-nowrap">{formatDateTime(log.start_time)}</td>
+                            <td className="px-4 py-3 text-xs text-slate-400 whitespace-nowrap">{formatDateTime(log.end_time)}</td>
+                            <td className="px-4 py-3 text-slate-300 whitespace-nowrap">{log.assistant?.full_name || '—'}</td>
+                            <td className="px-4 py-3 whitespace-nowrap">
+                              <div className="flex gap-1 justify-end">
+                                {canEditStatus && (
+                                  <button onClick={() => openSupportForm(log)}
+                                    className="px-2 py-1 text-[11px] bg-slate-800 text-slate-300 rounded-lg hover:bg-slate-700">Edit</button>
+                                )}
+                                {(isAdmin || log.created_by_user_id === currentUser?.id) && (
+                                  <button onClick={() => deleteSupportLog(log.id)}
+                                    className="px-2 py-1 text-[11px] bg-red-500/10 text-red-400 rounded-lg hover:bg-red-500/20">Delete</button>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              {/* Licenses — admin manages; agents see status only */}
+              {isAdmin && (
               <div className="bg-slate-925 border border-slate-800/50 rounded-xl overflow-hidden">
                 <div className="flex items-center justify-between px-5 py-3 border-b border-slate-800/30">
                   <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">Licenses</h3>
@@ -903,8 +1786,10 @@ function App() {
                   </div>
                 )}
               </div>
+              )}
 
-              {/* Payments */}
+              {/* Payments — admin only */}
+              {isAdmin && (
               <div className="bg-slate-925 border border-slate-800/50 rounded-xl overflow-hidden">
                 <div className="flex items-center justify-between px-5 py-3 border-b border-slate-800/30">
                   <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">Payment History</h3>
@@ -938,11 +1823,65 @@ function App() {
                   </div>
                 )}
               </div>
+              )}
+            </div>
+          )}
+
+          {/* ═══════ USERS (admin) ═══════ */}
+          {page === 'users' && isAdmin && (
+            <div className="space-y-5 animate-fadeIn">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-2xl font-bold text-white">Users & Access</h2>
+                  <p className="text-sm text-slate-500 mt-1">Admins manage licenses; support agents log customer support</p>
+                </div>
+                <button onClick={() => {
+                  setEditingUser(null);
+                  setUserForm({ username: '', password: '', full_name: '', role: 'support_agent' });
+                  setShowUserForm(true);
+                }} className="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold rounded-xl">
+                  + Add User
+                </button>
+              </div>
+              <div className="bg-slate-925 border border-slate-800/50 rounded-xl overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800/40">
+                      <th className="px-5 py-3 text-left font-medium">Name</th>
+                      <th className="px-5 py-3 text-left font-medium">Username</th>
+                      <th className="px-5 py-3 text-left font-medium">Role</th>
+                      <th className="px-5 py-3 text-left font-medium">Status</th>
+                      <th className="px-5 py-3 text-right font-medium">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/30">
+                    {users.map((u) => (
+                      <tr key={u.id}>
+                        <td className="px-5 py-3 text-white font-medium">{u.full_name}</td>
+                        <td className="px-5 py-3 text-slate-400 font-mono text-xs">{u.username}</td>
+                        <td className="px-5 py-3 capitalize text-slate-300">{u.role.replace('_', ' ')}</td>
+                        <td className="px-5 py-3">
+                          <span className={`text-[11px] font-semibold ${u.is_active ? 'text-emerald-400' : 'text-slate-500'}`}>
+                            {u.is_active ? 'Active' : 'Inactive'}
+                          </span>
+                        </td>
+                        <td className="px-5 py-3 text-right">
+                          <button onClick={() => {
+                            setEditingUser(u);
+                            setUserForm({ username: u.username, password: '', full_name: u.full_name, role: u.role });
+                            setShowUserForm(true);
+                          }} className="px-2 py-1 text-[11px] bg-slate-800 text-slate-300 rounded-lg hover:bg-slate-700">Edit</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
 
           {/* ═══════ SELLERS ═══════ */}
-          {page === 'sellers' && (
+          {page === 'sellers' && isAdmin && (
             <div className="space-y-6 animate-fadeIn">
               <div className="flex items-center justify-between">
                 <div>
@@ -1022,7 +1961,7 @@ function App() {
           )}
 
           {/* ═══════ KEY SETTINGS ═══════ */}
-          {page === 'settings' && (
+          {page === 'settings' && isAdmin && (
             <div className="space-y-6 animate-fadeIn max-w-2xl">
               <div>
                 <h2 className="text-2xl font-bold text-white">Key Settings</h2>
@@ -1087,7 +2026,7 @@ function App() {
                       </div>
                     </div>
                     <button onClick={async () => {
-                      try { await fetch(`${API}/settings/gdrive/disconnect`, { method: 'POST' }); showMessage('Disconnected'); fetchGdriveSettings(); } catch {}
+                      try { await apiFetch('/settings/gdrive/disconnect', { method: 'POST' }, token); showMessage('Disconnected'); fetchGdriveSettings(); } catch {}
                     }} className="text-xs text-red-400 hover:text-red-300">Disconnect</button>
                   </div>
                 ) : (
@@ -1117,10 +2056,10 @@ function App() {
                         const cs = document.getElementById('gdrive-client-secret').value;
                         if (!cid || !cs) { showMessage('Enter both Client ID and Secret', 'error'); return; }
                         try {
-                          const r = await fetch(`${API}/settings/gdrive/oauth-credentials`, {
-                            method: 'POST', headers: {'Content-Type':'application/json'},
+                          const r = await apiFetch('/settings/gdrive/oauth-credentials', {
+                            method: 'POST',
                             body: JSON.stringify({ client_id: cid, client_secret: cs })
-                          });
+                          }, token);
                           if (r.ok) { showMessage('OAuth credentials saved'); fetchGdriveSettings(); }
                           else { const d = await r.json(); showMessage(d.detail || 'Failed', 'error'); }
                         } catch { showMessage('Failed', 'error'); }
@@ -1135,7 +2074,7 @@ function App() {
                       <label className="block text-xs font-medium text-slate-400 mb-1.5">Step 2: Connect Google Drive</label>
                       <button onClick={async () => {
                         try {
-                          const r = await fetch(`${API}/settings/gdrive/auth-url`);
+                          const r = await apiFetch('/settings/gdrive/auth-url', {}, token);
                           const d = await r.json();
                           if (d.auth_url) window.open(d.auth_url, '_blank');
                         } catch { showMessage('Failed to get auth URL', 'error'); }
@@ -1156,10 +2095,10 @@ function App() {
                       <button onClick={async () => {
                         if (!gdriveSettings?.folder_id) return;
                         try {
-                          const r = await fetch(`${API}/settings/gdrive`, {
-                            method: 'POST', headers: {'Content-Type':'application/json'},
+                          const r = await apiFetch('/settings/gdrive', {
+                            method: 'POST',
                             body: JSON.stringify({ folder_id: gdriveSettings.folder_id })
-                          });
+                          }, token);
                           if (r.ok) { showMessage('Folder ID saved'); fetchGdriveSettings(); }
                         } catch {}
                       }} className="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold rounded-xl transition-colors">Save</button>
@@ -1171,7 +2110,7 @@ function App() {
                   <div>
                     <button onClick={async () => {
                       try {
-                        const r = await fetch(`${API}/settings/gdrive/health`);
+                        const r = await apiFetch('/settings/gdrive/health', {}, token);
                         const d = await r.json();
                         if (d.healthy) showMessage(`Connected! Folder: "${d.folder_name}"`);
                         else showMessage(`Failed: ${d.error}`, 'error');
@@ -1206,6 +2145,20 @@ function App() {
 
           {formStep === 0 && (
             <div className="space-y-4 min-h-[220px]">
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1.5">Customer (optional)</label>
+                <select
+                  value={form.customer_id === '' || form.customer_id == null ? '' : String(form.customer_id)}
+                  onChange={(e) => applyCustomerToLicenseForm(e.target.value)}
+                  className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500/50"
+                >
+                  <option value="">No customer (orphan license)</option>
+                  {customers.map((c) => (
+                    <option key={c.id} value={c.id}>{c.hospital_name}{c.hospital_id ? ` (${c.hospital_id})` : ''}</option>
+                  ))}
+                </select>
+                <p className="text-[10px] text-slate-500 mt-1">Selecting a customer prefills hospital fields below.</p>
+              </div>
               <Input label="Hospital ID" required value={form.hospital_id}
                 onChange={e => setForm({...form, hospital_id: e.target.value})} placeholder="HOSP01" />
               <Input label="Hospital Name" required value={form.hospital_name} maxLength={200}
@@ -1587,10 +2540,23 @@ function App() {
           </div>
           <div className="flex justify-end gap-3 pt-3 border-t border-slate-700/30">
             <button onClick={() => setShowCustForm(false)} className="px-4 py-2.5 text-sm text-slate-400 hover:text-white rounded-lg">Cancel</button>
-            <button onClick={saveCust} disabled={saving || !custForm.hospital_name}
-              className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-sm font-semibold rounded-xl shadow-lg shadow-blue-600/20">
-              {saving ? 'Saving...' : editingCust ? 'Update' : 'Add Customer'}
-            </button>
+            {editingCust ? (
+              <button onClick={() => saveCust()} disabled={saving || !custForm.hospital_name}
+                className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-sm font-semibold rounded-xl shadow-lg shadow-blue-600/20">
+                {saving ? 'Saving...' : 'Update'}
+              </button>
+            ) : (
+              <>
+                <button onClick={() => saveCust({ generateAfter: false })} disabled={saving || !custForm.hospital_name}
+                  className="px-4 py-2.5 text-sm text-slate-300 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 rounded-xl transition-colors">
+                  {saving ? 'Saving...' : 'Add only'}
+                </button>
+                <button onClick={() => saveCust({ generateAfter: true })} disabled={saving || !custForm.hospital_name}
+                  className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-sm font-semibold rounded-xl shadow-lg shadow-blue-600/20">
+                  {saving ? 'Saving...' : 'Add & Generate License'}
+                </button>
+              </>
+            )}
           </div>
         </div>
       </Modal>
@@ -1646,6 +2612,89 @@ function App() {
             <button onClick={recordPayment} disabled={saving || !payForm.amount}
               className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-sm font-semibold rounded-xl shadow-lg shadow-emerald-600/20">
               {saving ? 'Recording...' : 'Record Payment'}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* ═══════ SUPPORT LOG MODAL ═══════ */}
+      <Modal open={showSupportForm} onClose={() => setShowSupportForm(false)} wide>
+        <div className="p-6 space-y-5">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-lg font-bold text-white">{editingSupport ? 'Edit Support Details' : 'New Support Ticket'}</h2>
+              {!editingSupport && (
+                <p className="text-xs text-slate-500 mt-1">Received time is recorded automatically when you save</p>
+              )}
+              {editingSupport && (
+                <p className="text-xs text-slate-500 mt-1">
+                  Received {formatDateTime(editingSupport.start_time)}
+                  {editingSupport.end_time ? ` · Closed ${formatDateTime(editingSupport.end_time)}` : ''}
+                </p>
+              )}
+            </div>
+            <button onClick={() => setShowSupportForm(false)} className="p-1 text-slate-500 hover:text-white">
+              <Icon d={Icons.x} className="w-5 h-5" />
+            </button>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <Input label="Caller Name" required value={supportForm.operator_name}
+              onChange={(e) => setSupportForm({ ...supportForm, operator_name: e.target.value })}
+              placeholder="Who is calling?" autoFocus />
+            <Input label="Phone Number" required value={supportForm.cell_no}
+              onChange={(e) => setSupportForm({ ...supportForm, cell_no: e.target.value })}
+              placeholder="Caller mobile number" />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-400 mb-1.5">Problem <span className="text-amber-400">*</span></label>
+            <textarea value={supportForm.problem} onChange={(e) => setSupportForm({ ...supportForm, problem: e.target.value })}
+              rows={4} placeholder="What issue did they report?"
+              className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/50 resize-none" />
+          </div>
+          <div className="flex justify-end gap-3 pt-3 border-t border-slate-700/30">
+            <button onClick={() => setShowSupportForm(false)} className="px-4 py-2.5 text-sm text-slate-400 hover:text-white rounded-lg">Cancel</button>
+            <button onClick={saveSupportLog} disabled={saving}
+              className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-sm font-semibold rounded-xl">
+              {saving ? 'Saving…' : (editingSupport ? 'Update Details' : 'Open Ticket')}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* ═══════ USER FORM MODAL ═══════ */}
+      <Modal open={showUserForm} onClose={() => setShowUserForm(false)}>
+        <div className="p-6 space-y-5">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-bold text-white">{editingUser ? 'Edit User' : 'Add User'}</h2>
+            <button onClick={() => setShowUserForm(false)} className="p-1 text-slate-500 hover:text-white">
+              <Icon d={Icons.x} className="w-5 h-5" />
+            </button>
+          </div>
+          {!editingUser && (
+            <Input label="Username" required value={userForm.username}
+              onChange={(e) => setUserForm({ ...userForm, username: e.target.value })}
+              placeholder="login username" />
+          )}
+          <Input label="Full Name" required value={userForm.full_name}
+            onChange={(e) => setUserForm({ ...userForm, full_name: e.target.value })}
+            placeholder="Display name" />
+          <div>
+            <label className="block text-xs font-medium text-slate-400 mb-1.5">Role</label>
+            <select value={userForm.role} onChange={(e) => setUserForm({ ...userForm, role: e.target.value })}
+              className="w-full bg-slate-925 border border-slate-700/50 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500/50">
+              <option value="support_agent">Support Agent</option>
+              <option value="admin">Admin</option>
+            </select>
+          </div>
+          <Input label={editingUser ? 'New Password (optional)' : 'Password'} required={!editingUser} type="password"
+            value={userForm.password}
+            onChange={(e) => setUserForm({ ...userForm, password: e.target.value })}
+            placeholder={editingUser ? 'Leave blank to keep' : 'Min 6 characters'} />
+          <div className="flex justify-end gap-3 pt-3 border-t border-slate-700/30">
+            <button onClick={() => setShowUserForm(false)} className="px-4 py-2.5 text-sm text-slate-400 hover:text-white rounded-lg">Cancel</button>
+            <button onClick={saveUser} disabled={saving}
+              className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-sm font-semibold rounded-xl">
+              {saving ? 'Saving…' : (editingUser ? 'Update User' : 'Create User')}
             </button>
           </div>
         </div>

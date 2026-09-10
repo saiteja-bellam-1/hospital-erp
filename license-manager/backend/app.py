@@ -2,12 +2,12 @@
 KT HEALTH ERP — License Manager
 Standalone internal tool for generating and managing license files.
 """
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field, model_validator, field_validator
-from typing import Optional, List
+from typing import Optional, List, Literal
 from datetime import datetime, timedelta, timezone
 import calendar
 import sqlite3
@@ -18,6 +18,8 @@ import sys
 import base64
 import re
 from urllib.parse import quote
+import jwt
+import bcrypt
 
 app = FastAPI(title="KT HEALTH ERP — License Manager", version="1.0.0")
 
@@ -38,6 +40,13 @@ else:
 
 DB_PATH = os.path.join(DATA_DIR, "licenses.db")
 
+# JWT for login sessions (local internal tool)
+JWT_SECRET = os.environ.get("LICENSE_MANAGER_JWT_SECRET", "kt-license-manager-dev-secret-change-me")
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRE_HOURS = 24
+VALID_ROLES = ("admin", "support_agent")
+SUPPORT_STATUSES = ("open", "in_progress", "resolved", "closed")
+
 
 # ============================================================
 # Database
@@ -47,6 +56,28 @@ def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def _verify_password(password: str, password_hash: str) -> bool:
+    try:
+        return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
+    except Exception:
+        return False
+
+
+def _seed_default_admin(conn):
+    """Create default admin if no users exist yet."""
+    count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    if count:
+        return
+    conn.execute(
+        "INSERT INTO users (username, password_hash, full_name, role, is_active) VALUES (?, ?, ?, ?, 1)",
+        ("admin", _hash_password("admin123"), "Administrator", "admin"),
+    )
 
 
 def init_db():
@@ -120,6 +151,36 @@ def init_db():
             value TEXT
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            full_name TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'support_agent',
+            is_active INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS support_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_id INTEGER NOT NULL,
+            operator_name TEXT NOT NULL,
+            cell_no TEXT,
+            problem TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'open',
+            start_time TEXT,
+            end_time TEXT,
+            assistant_user_id INTEGER,
+            created_by_user_id INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (customer_id) REFERENCES customers(id),
+            FOREIGN KEY (assistant_user_id) REFERENCES users(id),
+            FOREIGN KEY (created_by_user_id) REFERENCES users(id)
+        )
+    """)
     # Add customer_id column to licenses if missing (migration for existing DBs)
     try:
         conn.execute("ALTER TABLE licenses ADD COLUMN customer_id INTEGER REFERENCES customers(id)")
@@ -130,11 +191,64 @@ def init_db():
         conn.execute("ALTER TABLE customers ADD COLUMN gst_number TEXT")
     except Exception:
         pass
+    _seed_default_admin(conn)
     conn.commit()
     conn.close()
 
 
 init_db()
+
+
+# ============================================================
+# Auth / RBAC
+# ============================================================
+
+def _user_public(row) -> dict:
+    return {
+        "id": row["id"],
+        "username": row["username"],
+        "full_name": row["full_name"],
+        "role": row["role"],
+        "is_active": row["is_active"],
+        "created_at": row["created_at"] if "created_at" in row.keys() else None,
+    }
+
+
+def create_access_token(user_id: int, role: str) -> str:
+    payload = {
+        "sub": str(user_id),
+        "role": role,
+        "exp": datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRE_HOURS),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authentication required")
+    token = authorization[7:].strip()
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        user_id = int(payload.get("sub", 0))
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    conn = get_db()
+    row = conn.execute("SELECT * FROM users WHERE id = ? AND is_active = 1", (user_id,)).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=401, detail="User not found or inactive")
+    return _user_public(row)
+
+
+def require_admin(user: dict = Depends(get_current_user)) -> dict:
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user
+
+
+def is_admin(user: dict) -> bool:
+    return user.get("role") == "admin"
 
 
 # ============================================================
@@ -337,42 +451,495 @@ class LicenseRenew(BaseModel):
         return self
 
 
+class LoginRequest(BaseModel):
+    username: str = Field(..., min_length=1, max_length=80)
+    password: str = Field(..., min_length=1, max_length=200)
+
+
+class UserCreate(BaseModel):
+    username: str = Field(..., min_length=2, max_length=80)
+    password: str = Field(..., min_length=6, max_length=200)
+    full_name: str = Field(..., min_length=1, max_length=200)
+    role: Literal["admin", "support_agent"] = "support_agent"
+
+
+class UserUpdate(BaseModel):
+    full_name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    role: Optional[Literal["admin", "support_agent"]] = None
+    is_active: Optional[int] = None
+    password: Optional[str] = Field(default=None, min_length=6, max_length=200)
+
+
+class SupportLogCreate(BaseModel):
+    operator_name: str = Field(..., min_length=1, max_length=200)
+    cell_no: str = Field(..., min_length=1, max_length=30)
+    problem: str = Field(..., min_length=1, max_length=4000)
+    status: Literal["open", "in_progress", "resolved", "closed"] = "open"
+    assistant_user_id: Optional[int] = None
+
+    @field_validator("operator_name", "cell_no", "problem")
+    @classmethod
+    def _strip_required(cls, v: str) -> str:
+        text = (v or "").strip()
+        if not text:
+            raise ValueError("Required")
+        return text
+
+
+class SupportLogUpdate(BaseModel):
+    operator_name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    cell_no: Optional[str] = Field(default=None, min_length=1, max_length=30)
+    problem: Optional[str] = Field(default=None, min_length=1, max_length=4000)
+    status: Optional[Literal["open", "in_progress", "resolved", "closed"]] = None
+    assistant_user_id: Optional[int] = None
+
+
 # ============================================================
 # API Endpoints
 # ============================================================
 
+@app.post("/api/auth/login")
+def login(data: LoginRequest):
+    conn = get_db()
+    row = conn.execute(
+        "SELECT * FROM users WHERE username = ? COLLATE NOCASE",
+        (data.username.strip(),),
+    ).fetchone()
+    conn.close()
+    if not row or not row["is_active"] or not _verify_password(data.password, row["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    user = _user_public(row)
+    return {"access_token": create_access_token(user["id"], user["role"]), "token_type": "bearer", "user": user}
+
+
+@app.get("/api/auth/me")
+def auth_me(user: dict = Depends(get_current_user)):
+    return user
+
+
+@app.get("/api/users")
+def list_users(user: dict = Depends(get_current_user), active_only: bool = True):
+    """List users for assistant picker (all roles) and user management (admin)."""
+    conn = get_db()
+    if is_admin(user) and not active_only:
+        rows = conn.execute("SELECT * FROM users ORDER BY full_name").fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM users WHERE is_active = 1 ORDER BY full_name").fetchall()
+    conn.close()
+    return [_user_public(r) for r in rows]
+
+
+@app.post("/api/users")
+def create_user(data: UserCreate, _admin: dict = Depends(require_admin)):
+    username = data.username.strip().lower()
+    conn = get_db()
+    existing = conn.execute("SELECT id FROM users WHERE username = ? COLLATE NOCASE", (username,)).fetchone()
+    if existing:
+        conn.close()
+        raise HTTPException(status_code=400, detail="Username already exists")
+    cur = conn.execute(
+        "INSERT INTO users (username, password_hash, full_name, role, is_active) VALUES (?, ?, ?, ?, 1)",
+        (username, _hash_password(data.password), data.full_name.strip(), data.role),
+    )
+    conn.commit()
+    uid = cur.lastrowid
+    row = conn.execute("SELECT * FROM users WHERE id = ?", (uid,)).fetchone()
+    conn.close()
+    return {"message": "User created", "user": _user_public(row)}
+
+
+@app.put("/api/users/{user_id}")
+def update_user(user_id: int, data: UserUpdate, _admin: dict = Depends(require_admin)):
+    conn = get_db()
+    existing = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    if not existing:
+        conn.close()
+        raise HTTPException(status_code=404, detail="User not found")
+    updates = data.model_dump(exclude_unset=True)
+    if "password" in updates:
+        updates["password_hash"] = _hash_password(updates.pop("password"))
+    if "full_name" in updates and updates["full_name"] is not None:
+        updates["full_name"] = updates["full_name"].strip()
+    if updates:
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        conn.execute(f"UPDATE users SET {set_clause} WHERE id = ?", (*updates.values(), user_id))
+        conn.commit()
+    row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    conn.close()
+    return {"message": "User updated", "user": _user_public(row)}
+
+
+def _support_log_row(conn, row) -> dict:
+    rec = dict(row)
+    assistant = None
+    if rec.get("assistant_user_id"):
+        a = conn.execute(
+            "SELECT id, username, full_name, role FROM users WHERE id = ?",
+            (rec["assistant_user_id"],),
+        ).fetchone()
+        if a:
+            assistant = {"id": a["id"], "username": a["username"], "full_name": a["full_name"], "role": a["role"]}
+    created_by = None
+    if rec.get("created_by_user_id"):
+        c = conn.execute(
+            "SELECT id, username, full_name, role FROM users WHERE id = ?",
+            (rec["created_by_user_id"],),
+        ).fetchone()
+        if c:
+            created_by = {"id": c["id"], "username": c["username"], "full_name": c["full_name"], "role": c["role"]}
+    rec["assistant"] = assistant
+    rec["created_by"] = created_by
+    return rec
+
+
+@app.get("/api/customers/{customer_id}/support-logs")
+def list_support_logs(
+    customer_id: int,
+    mine_only: bool = False,
+    user: dict = Depends(get_current_user),
+):
+    conn = get_db()
+    customer = conn.execute("SELECT id FROM customers WHERE id = ?", (customer_id,)).fetchone()
+    if not customer:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    # Support agents see their own activity by default when mine_only; otherwise full customer history
+    if mine_only or (user["role"] == "support_agent" and mine_only):
+        rows = conn.execute(
+            """SELECT * FROM support_logs
+               WHERE customer_id = ? AND (assistant_user_id = ? OR created_by_user_id = ?)
+               ORDER BY COALESCE(start_time, created_at) DESC""",
+            (customer_id, user["id"], user["id"]),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """SELECT * FROM support_logs WHERE customer_id = ?
+               ORDER BY COALESCE(start_time, created_at) DESC""",
+            (customer_id,),
+        ).fetchall()
+    results = [_support_log_row(conn, r) for r in rows]
+    conn.close()
+    return results
+
+
+@app.post("/api/customers/{customer_id}/support-logs")
+def create_support_log(customer_id: int, data: SupportLogCreate, user: dict = Depends(get_current_user)):
+    conn = get_db()
+    customer = conn.execute("SELECT id FROM customers WHERE id = ?", (customer_id,)).fetchone()
+    if not customer:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    assistant_id = data.assistant_user_id or user["id"]
+    assistant = conn.execute(
+        "SELECT id FROM users WHERE id = ? AND is_active = 1", (assistant_id,)
+    ).fetchone()
+    if not assistant:
+        conn.close()
+        raise HTTPException(status_code=400, detail="Assistant user not found")
+
+    now = datetime.now(timezone.utc).isoformat()
+    status = data.status or "open"
+    # Received time is stamped at create; closed time only when opened already closed
+    end_time = now if status == "closed" else None
+    cur = conn.execute(
+        """INSERT INTO support_logs
+           (customer_id, operator_name, cell_no, problem, status, start_time, end_time,
+            assistant_user_id, created_by_user_id, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            customer_id,
+            data.operator_name,
+            data.cell_no,
+            data.problem,
+            status,
+            now,  # received time
+            end_time,
+            assistant_id,
+            user["id"],
+            now,
+            now,
+        ),
+    )
+    conn.commit()
+    row = conn.execute("SELECT * FROM support_logs WHERE id = ?", (cur.lastrowid,)).fetchone()
+    result = _support_log_row(conn, row)
+    conn.close()
+    return {"message": "Support log created", "log": result}
+
+
+@app.put("/api/support-logs/{log_id}")
+def update_support_log(log_id: int, data: SupportLogUpdate, user: dict = Depends(get_current_user)):
+    conn = get_db()
+    existing = conn.execute("SELECT * FROM support_logs WHERE id = ?", (log_id,)).fetchone()
+    if not existing:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Support log not found")
+
+    # Agents may edit only logs they created or assisted on
+    if not is_admin(user):
+        if existing["created_by_user_id"] != user["id"] and existing["assistant_user_id"] != user["id"]:
+            conn.close()
+            raise HTTPException(status_code=403, detail="You can only edit your own support logs")
+
+    updates = data.model_dump(exclude_unset=True)
+    if "assistant_user_id" in updates and updates["assistant_user_id"] is not None:
+        a = conn.execute(
+            "SELECT id FROM users WHERE id = ? AND is_active = 1",
+            (updates["assistant_user_id"],),
+        ).fetchone()
+        if not a:
+            conn.close()
+            raise HTTPException(status_code=400, detail="Assistant user not found")
+
+    now = datetime.now(timezone.utc).isoformat()
+    if "status" in updates:
+        new_status = updates["status"]
+        # Stamp closed time when ticket is closed; clear it if reopened
+        if new_status == "closed" and existing["status"] != "closed":
+            updates["end_time"] = now
+        elif new_status != "closed" and existing["status"] == "closed":
+            updates["end_time"] = None
+
+    if updates:
+        updates["updated_at"] = now
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        conn.execute(f"UPDATE support_logs SET {set_clause} WHERE id = ?", (*updates.values(), log_id))
+        conn.commit()
+    row = conn.execute("SELECT * FROM support_logs WHERE id = ?", (log_id,)).fetchone()
+    result = _support_log_row(conn, row)
+    conn.close()
+    return {"message": "Support log updated", "log": result}
+
+
+@app.delete("/api/support-logs/{log_id}")
+def delete_support_log(log_id: int, user: dict = Depends(get_current_user)):
+    conn = get_db()
+    existing = conn.execute("SELECT * FROM support_logs WHERE id = ?", (log_id,)).fetchone()
+    if not existing:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Support log not found")
+    if not is_admin(user) and existing["created_by_user_id"] != user["id"]:
+        conn.close()
+        raise HTTPException(status_code=403, detail="You can only delete support logs you created")
+    conn.execute("DELETE FROM support_logs WHERE id = ?", (log_id,))
+    conn.commit()
+    conn.close()
+    return {"message": "Support log deleted"}
+
+
+def _support_log_with_customer(conn, row) -> dict:
+    """Hydrate a support_logs join row (must include customer hospital fields if selected)."""
+    rec = _support_log_row(conn, row)
+    # sqlite3.Row may already expose hospital_* from JOIN; keep explicit for clarity
+    keys = row.keys()
+    rec["hospital_name"] = row["hospital_name"] if "hospital_name" in keys else None
+    rec["hospital_id"] = row["hospital_id"] if "hospital_id" in keys else None
+    rec["customer_phone"] = row["customer_phone"] if "customer_phone" in keys else None
+    return rec
+
+
+def _support_dashboard_stats(conn, user: dict = None, mine_only: bool = False) -> dict:
+    """Aggregate support KPIs. When mine_only, scope to the given user's tickets."""
+    where = ""
+    params: list = []
+    if mine_only and user:
+        where = " WHERE (assistant_user_id = ? OR created_by_user_id = ?)"
+        params = [user["id"], user["id"]]
+
+    def _count(extra_sql="", extra_params=()):
+        clause = where
+        all_params = list(params)
+        if extra_sql:
+            clause = f"{where}{' AND' if where else ' WHERE'} {extra_sql}"
+            all_params.extend(extra_params)
+        return conn.execute(f"SELECT COUNT(*) FROM support_logs{clause}", all_params).fetchone()[0]
+
+    by_status = {
+        s: _count("status = ?", (s,))
+        for s in SUPPORT_STATUSES
+    }
+    total = _count()
+    open_active = by_status.get("open", 0) + by_status.get("in_progress", 0)
+
+    # Per-agent breakdown (full roster for admin; agent view skipped)
+    by_agent = []
+    if not mine_only:
+        agent_rows = conn.execute(
+            """SELECT u.id, u.full_name, u.username,
+                      COUNT(s.id) AS total_logs,
+                      SUM(CASE WHEN s.status IN ('open', 'in_progress') THEN 1 ELSE 0 END) AS open_logs
+               FROM users u
+               LEFT JOIN support_logs s
+                 ON (s.assistant_user_id = u.id OR s.created_by_user_id = u.id)
+               WHERE u.role IN ('admin', 'support_agent') AND u.is_active = 1
+               GROUP BY u.id
+               HAVING total_logs > 0
+               ORDER BY open_logs DESC, total_logs DESC"""
+        ).fetchall()
+        by_agent = [
+            {
+                "id": r["id"],
+                "full_name": r["full_name"],
+                "username": r["username"],
+                "total_logs": r["total_logs"] or 0,
+                "open_logs": r["open_logs"] or 0,
+            }
+            for r in agent_rows
+        ]
+
+    # Recent tickets with customer name
+    recent_sql = f"""
+        SELECT s.*, c.hospital_name, c.hospital_id, c.phone AS customer_phone
+        FROM support_logs s
+        JOIN customers c ON c.id = s.customer_id
+        {"WHERE (s.assistant_user_id = ? OR s.created_by_user_id = ?)" if mine_only and user else ""}
+        ORDER BY COALESCE(s.start_time, s.created_at) DESC
+        LIMIT 15
+    """
+    recent_rows = conn.execute(
+        recent_sql,
+        ([user["id"], user["id"]] if mine_only and user else []),
+    ).fetchall()
+    recent = [_support_log_with_customer(conn, r) for r in recent_rows]
+
+    return {
+        "support_total": total,
+        "support_open": by_status.get("open", 0),
+        "support_in_progress": by_status.get("in_progress", 0),
+        "support_resolved": by_status.get("resolved", 0),
+        "support_closed": by_status.get("closed", 0),
+        "open_support": open_active,
+        "support_by_status": by_status,
+        "support_by_agent": by_agent,
+        "recent_support": recent,
+    }
+
+
+@app.get("/api/support-logs")
+def list_all_support_logs(
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    assistant_user_id: Optional[int] = None,
+    mine_only: bool = False,
+    user: dict = Depends(get_current_user),
+):
+    """Global support ticket list for the Support dashboard."""
+    conn = get_db()
+    clauses = []
+    params: list = []
+
+    # Agents default to their own tickets; admins see everything unless mine_only
+    if mine_only or not is_admin(user):
+        clauses.append("(s.assistant_user_id = ? OR s.created_by_user_id = ?)")
+        params.extend([user["id"], user["id"]])
+    elif assistant_user_id:
+        clauses.append("(s.assistant_user_id = ? OR s.created_by_user_id = ?)")
+        params.extend([assistant_user_id, assistant_user_id])
+
+    if status:
+        if status not in SUPPORT_STATUSES and status != "active":
+            conn.close()
+            raise HTTPException(status_code=400, detail="Invalid status filter")
+        if status == "active":
+            clauses.append("s.status IN ('open', 'in_progress')")
+        else:
+            clauses.append("s.status = ?")
+            params.append(status)
+
+    if search:
+        q = f"%{search.strip()}%"
+        clauses.append(
+            "(c.hospital_name LIKE ? OR c.hospital_id LIKE ? OR s.operator_name LIKE ? "
+            "OR s.cell_no LIKE ? OR s.problem LIKE ?)"
+        )
+        params.extend([q, q, q, q, q])
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    rows = conn.execute(
+        f"""SELECT s.*, c.hospital_name, c.hospital_id, c.phone AS customer_phone
+            FROM support_logs s
+            JOIN customers c ON c.id = s.customer_id
+            {where}
+            ORDER BY
+              CASE s.status
+                WHEN 'open' THEN 0
+                WHEN 'in_progress' THEN 1
+                WHEN 'resolved' THEN 2
+                ELSE 3
+              END,
+              COALESCE(s.start_time, s.created_at) DESC""",
+        params,
+    ).fetchall()
+    results = [_support_log_with_customer(conn, r) for r in rows]
+    conn.close()
+    return results
+
+
 @app.get("/api/dashboard")
-def dashboard():
+def dashboard(user: dict = Depends(get_current_user)):
     conn = get_db()
     now = datetime.now(timezone.utc).isoformat()
-
-    total = conn.execute("SELECT COUNT(*) FROM licenses").fetchone()[0]
-    active = conn.execute("SELECT COUNT(*) FROM licenses WHERE expires_at > ? AND status='active'", (now,)).fetchone()[0]
-
-    soon_date = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
-    expiring_soon = conn.execute(
-        "SELECT COUNT(*) FROM licenses WHERE expires_at <= ? AND expires_at > ? AND status='active'",
-        (soon_date, now)
-    ).fetchone()[0]
-
-    expired = conn.execute("SELECT COUNT(*) FROM licenses WHERE expires_at <= ? OR status='expired'", (now,)).fetchone()[0]
-
     total_customers = conn.execute("SELECT COUNT(*) FROM customers WHERE is_active=1").fetchone()[0]
-    total_revenue = conn.execute("SELECT COALESCE(SUM(amount),0) FROM payments").fetchone()[0]
 
+    if is_admin(user):
+        total = conn.execute("SELECT COUNT(*) FROM licenses").fetchone()[0]
+        active = conn.execute("SELECT COUNT(*) FROM licenses WHERE expires_at > ? AND status='active'", (now,)).fetchone()[0]
+        soon_date = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+        expiring_soon = conn.execute(
+            "SELECT COUNT(*) FROM licenses WHERE expires_at <= ? AND expires_at > ? AND status='active'",
+            (soon_date, now)
+        ).fetchone()[0]
+        expired = conn.execute("SELECT COUNT(*) FROM licenses WHERE expires_at <= ? OR status='expired'", (now,)).fetchone()[0]
+        total_revenue = conn.execute("SELECT COALESCE(SUM(amount),0) FROM payments").fetchone()[0]
+        support = _support_dashboard_stats(conn)
+        conn.close()
+        return {
+            "total": total,
+            "active": active,
+            "expiring_soon": expiring_soon,
+            "expired": expired,
+            "total_customers": total_customers,
+            "total_revenue": total_revenue,
+            "role": user["role"],
+            **support,
+        }
+
+    # Support agent dashboard — customers + their support activity
+    my_logs = conn.execute(
+        """SELECT COUNT(*) FROM support_logs
+           WHERE assistant_user_id = ? OR created_by_user_id = ?""",
+        (user["id"], user["id"]),
+    ).fetchone()[0]
+    my_open = conn.execute(
+        """SELECT COUNT(*) FROM support_logs
+           WHERE (assistant_user_id = ? OR created_by_user_id = ?)
+             AND status IN ('open', 'in_progress')""",
+        (user["id"], user["id"]),
+    ).fetchone()[0]
+    support = _support_dashboard_stats(conn, user=user, mine_only=True)
     conn.close()
     return {
-        "total": total,
-        "active": active,
-        "expiring_soon": expiring_soon,
-        "expired": expired,
+        "total": 0,
+        "active": 0,
+        "expiring_soon": 0,
+        "expired": 0,
         "total_customers": total_customers,
-        "total_revenue": total_revenue,
+        "total_revenue": 0,
+        "my_support_logs": my_logs,
+        "my_open_support": my_open,
+        "role": user["role"],
+        **support,
     }
 
 
 @app.get("/api/licenses")
-def list_licenses(search: Optional[str] = None, status: Optional[str] = None):
+def list_licenses(
+    search: Optional[str] = None,
+    status: Optional[str] = None,
+    _admin: dict = Depends(require_admin),
+):
     conn = get_db()
     query = "SELECT * FROM licenses ORDER BY created_at DESC"
     rows = conn.execute(query).fetchall()
@@ -407,9 +974,16 @@ def list_licenses(search: Optional[str] = None, status: Optional[str] = None):
 
 
 @app.post("/api/licenses")
-def create_license(data: LicenseCreate):
+def create_license(data: LicenseCreate, _admin: dict = Depends(require_admin)):
     now = datetime.now(timezone.utc)
     conn = get_db()
+
+    if data.customer_id is not None:
+        customer = conn.execute("SELECT id FROM customers WHERE id = ?", (data.customer_id,)).fetchone()
+        if not customer:
+            conn.close()
+            raise HTTPException(status_code=404, detail="Customer not found")
+
     license_id = generate_unique_license_id(conn)
     expires_at = compute_expiry(now, data.months, data.days)
     total_days = (expires_at - now).days
@@ -463,7 +1037,7 @@ def create_license(data: LicenseCreate):
 
 
 @app.post("/api/licenses/{license_id}/renew")
-def renew_license(license_id: str, data: LicenseRenew):
+def renew_license(license_id: str, data: LicenseRenew, _admin: dict = Depends(require_admin)):
     conn = get_db()
     row = conn.execute("SELECT * FROM licenses WHERE license_id = ?", (license_id,)).fetchone()
     if not row:
@@ -550,7 +1124,7 @@ def renew_license(license_id: str, data: LicenseRenew):
 
 
 @app.post("/api/licenses/process-rebind")
-async def process_rebind_request(file: UploadFile = File(...)):
+async def process_rebind_request(file: UploadFile = File(...), _admin: dict = Depends(require_admin)):
     """Consume a .rebind.json request file produced by a hospital running this
     product, verify it against the original license stored in this manager's
     DB, then re-issue a fresh .lic for the new machine ID. The original
@@ -659,7 +1233,7 @@ async def process_rebind_request(file: UploadFile = File(...)):
 
 
 @app.get("/api/licenses/{license_id}/download")
-def download_license(license_id: str):
+def download_license(license_id: str, _admin: dict = Depends(require_admin)):
     conn = get_db()
     row = conn.execute("SELECT * FROM licenses WHERE license_id = ?", (license_id,)).fetchone()
     conn.close()
@@ -674,7 +1248,7 @@ def download_license(license_id: str):
 
 
 @app.delete("/api/licenses/{license_id}")
-def delete_license(license_id: str):
+def delete_license(license_id: str, _admin: dict = Depends(require_admin)):
     conn = get_db()
     conn.execute("DELETE FROM licenses WHERE license_id = ?", (license_id,))
     conn.commit()
@@ -683,7 +1257,7 @@ def delete_license(license_id: str):
 
 
 @app.get("/api/keys/status")
-def keys_status():
+def keys_status(_admin: dict = Depends(require_admin)):
     return {
         "private_key_exists": True,
         "public_key_exists": True,
@@ -696,7 +1270,7 @@ def keys_status():
 # ============================================================
 
 @app.get("/api/customers")
-def list_customers(search: Optional[str] = None):
+def list_customers(search: Optional[str] = None, _user: dict = Depends(get_current_user)):
     conn = get_db()
     rows = conn.execute("SELECT * FROM customers ORDER BY created_at DESC").fetchall()
     conn.close()
@@ -712,7 +1286,7 @@ def list_customers(search: Optional[str] = None):
 
 
 @app.post("/api/customers")
-def create_customer(data: CustomerCreate):
+def create_customer(data: CustomerCreate, _admin: dict = Depends(require_admin)):
     conn = get_db()
     cur = conn.execute("""
         INSERT INTO customers (hospital_name, hospital_id, contact_person, phone, email, address, gst_number, machine_id, notes)
@@ -725,7 +1299,7 @@ def create_customer(data: CustomerCreate):
 
 
 @app.get("/api/customers/{customer_id}")
-def get_customer(customer_id: int):
+def get_customer(customer_id: int, user: dict = Depends(get_current_user)):
     conn = get_db()
     customer = conn.execute("SELECT * FROM customers WHERE id = ?", (customer_id,)).fetchone()
     if not customer:
@@ -734,7 +1308,15 @@ def get_customer(customer_id: int):
 
     now = datetime.now(timezone.utc)
     licenses = conn.execute("SELECT * FROM licenses WHERE customer_id = ? ORDER BY created_at DESC", (customer_id,)).fetchall()
-    payments = conn.execute("SELECT * FROM payments WHERE customer_id = ? ORDER BY payment_date DESC", (customer_id,)).fetchall()
+    payments = conn.execute("SELECT * FROM payments WHERE customer_id = ? ORDER BY payment_date DESC", (customer_id,)).fetchall() if is_admin(user) else []
+    support_count = conn.execute(
+        "SELECT COUNT(*) FROM support_logs WHERE customer_id = ?", (customer_id,)
+    ).fetchone()[0]
+    my_support_count = conn.execute(
+        """SELECT COUNT(*) FROM support_logs
+           WHERE customer_id = ? AND (assistant_user_id = ? OR created_by_user_id = ?)""",
+        (customer_id, user["id"], user["id"]),
+    ).fetchone()[0]
     conn.close()
 
     lic_list = []
@@ -746,26 +1328,41 @@ def get_customer(customer_id: int):
         if rec["status"] == "renewed":
             rec["computed_status"] = "renewed"
         rec["features"] = json.loads(rec["features"]) if rec["features"] else []
+        # Support agents get license status only — never the signed file
+        if not is_admin(user):
+            rec.pop("lic_file_content", None)
         lic_list.append(rec)
 
-    total_paid = sum(dict(p)["amount"] for p in payments)
+    total_paid = sum(dict(p)["amount"] for p in payments) if is_admin(user) else 0
     active_licenses = sum(1 for l in lic_list if l["computed_status"] in ("active", "expiring_soon"))
 
     return {
         "customer": dict(customer),
-        "licenses": lic_list,
+        "licenses": lic_list if is_admin(user) else [
+            {
+                "license_id": l["license_id"],
+                "plan": l["plan"],
+                "computed_status": l["computed_status"],
+                "days_left": l["days_left"],
+                "expires_at": l["expires_at"],
+                "issued_at": l["issued_at"],
+            }
+            for l in lic_list
+        ],
         "payments": [dict(p) for p in payments],
         "summary": {
             "total_licenses": len(lic_list),
             "active_licenses": active_licenses,
             "total_paid": total_paid,
             "total_payments": len(payments),
+            "support_logs": support_count,
+            "my_support_logs": my_support_count,
         }
     }
 
 
 @app.put("/api/customers/{customer_id}")
-def update_customer(customer_id: int, data: CustomerUpdate):
+def update_customer(customer_id: int, data: CustomerUpdate, _admin: dict = Depends(require_admin)):
     conn = get_db()
     existing = conn.execute("SELECT * FROM customers WHERE id = ?", (customer_id,)).fetchone()
     if not existing:
@@ -784,8 +1381,9 @@ def update_customer(customer_id: int, data: CustomerUpdate):
 
 
 @app.delete("/api/customers/{customer_id}")
-def delete_customer(customer_id: int):
+def delete_customer(customer_id: int, _admin: dict = Depends(require_admin)):
     conn = get_db()
+    conn.execute("DELETE FROM support_logs WHERE customer_id = ?", (customer_id,))
     conn.execute("DELETE FROM payments WHERE customer_id = ?", (customer_id,))
     conn.execute("DELETE FROM licenses WHERE customer_id = ?", (customer_id,))
     conn.execute("DELETE FROM customers WHERE id = ?", (customer_id,))
@@ -805,7 +1403,7 @@ class SellerCreate(BaseModel):
 
 
 @app.get("/api/sellers")
-def list_sellers():
+def list_sellers(_admin: dict = Depends(require_admin)):
     conn = get_db()
     rows = conn.execute("SELECT * FROM sellers WHERE is_active=1 ORDER BY name").fetchall()
     conn.close()
@@ -813,7 +1411,7 @@ def list_sellers():
 
 
 @app.post("/api/sellers")
-def create_seller(data: SellerCreate):
+def create_seller(data: SellerCreate, _admin: dict = Depends(require_admin)):
     conn = get_db()
     conn.execute("INSERT INTO sellers (name, address, phone) VALUES (?, ?, ?)",
                  (data.name, data.address, data.phone))
@@ -823,7 +1421,7 @@ def create_seller(data: SellerCreate):
 
 
 @app.put("/api/sellers/{seller_id}")
-def update_seller(seller_id: int, data: SellerCreate):
+def update_seller(seller_id: int, data: SellerCreate, _admin: dict = Depends(require_admin)):
     conn = get_db()
     conn.execute("UPDATE sellers SET name=?, address=?, phone=? WHERE id=?",
                  (data.name, data.address, data.phone, seller_id))
@@ -833,7 +1431,7 @@ def update_seller(seller_id: int, data: SellerCreate):
 
 
 @app.delete("/api/sellers/{seller_id}")
-def delete_seller(seller_id: int):
+def delete_seller(seller_id: int, _admin: dict = Depends(require_admin)):
     conn = get_db()
     conn.execute("UPDATE sellers SET is_active=0 WHERE id=?", (seller_id,))
     conn.commit()
@@ -846,7 +1444,7 @@ def delete_seller(seller_id: int):
 # ============================================================
 
 @app.get("/api/settings/gdrive")
-def get_gdrive_settings():
+def get_gdrive_settings(_admin: dict = Depends(require_admin)):
     conn = get_db()
     folder_id = conn.execute("SELECT value FROM settings WHERE key='gdrive_folder_id'").fetchone()
     refresh_token = conn.execute("SELECT value FROM settings WHERE key='gdrive_refresh_token'").fetchone()
@@ -862,7 +1460,7 @@ def get_gdrive_settings():
 
 
 @app.post("/api/settings/gdrive")
-def update_gdrive_settings(data: dict):
+def update_gdrive_settings(data: dict, _admin: dict = Depends(require_admin)):
     conn = get_db()
     if "folder_id" in data:
         conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('gdrive_folder_id', ?)", (data["folder_id"],))
@@ -872,7 +1470,7 @@ def update_gdrive_settings(data: dict):
 
 
 @app.post("/api/settings/gdrive/oauth-credentials")
-def save_oauth_credentials(data: dict):
+def save_oauth_credentials(data: dict, _admin: dict = Depends(require_admin)):
     """Save OAuth client ID and secret from Google Cloud Console."""
     client_id = data.get("client_id", "").strip()
     client_secret = data.get("client_secret", "").strip()
@@ -887,7 +1485,7 @@ def save_oauth_credentials(data: dict):
 
 
 @app.get("/api/settings/gdrive/auth-url")
-def get_gdrive_auth_url():
+def get_gdrive_auth_url(_admin: dict = Depends(require_admin)):
     """Generate Google OAuth URL for admin to authorize Drive access."""
     conn = get_db()
     client_id = conn.execute("SELECT value FROM settings WHERE key='gdrive_client_id'").fetchone()
@@ -944,7 +1542,7 @@ def gdrive_oauth_callback(code: str = ""):
 
 
 @app.post("/api/settings/gdrive/disconnect")
-def disconnect_gdrive():
+def disconnect_gdrive(_admin: dict = Depends(require_admin)):
     """Remove OAuth tokens."""
     conn = get_db()
     conn.execute("DELETE FROM settings WHERE key='gdrive_refresh_token'")
@@ -954,7 +1552,7 @@ def disconnect_gdrive():
 
 
 @app.get("/api/settings/gdrive/health")
-def check_gdrive_health():
+def check_gdrive_health(_admin: dict = Depends(require_admin)):
     """Test Google Drive connection using OAuth refresh token."""
     conn = get_db()
     folder_id_row = conn.execute("SELECT value FROM settings WHERE key='gdrive_folder_id'").fetchone()
@@ -1001,7 +1599,7 @@ def check_gdrive_health():
 # ============================================================
 
 @app.post("/api/payments")
-def create_payment(data: PaymentCreate):
+def create_payment(data: PaymentCreate, _admin: dict = Depends(require_admin)):
     conn = get_db()
     customer = conn.execute("SELECT * FROM customers WHERE id = ?", (data.customer_id,)).fetchone()
     if not customer:
@@ -1018,7 +1616,7 @@ def create_payment(data: PaymentCreate):
 
 
 @app.delete("/api/payments/{payment_id}")
-def delete_payment(payment_id: int):
+def delete_payment(payment_id: int, _admin: dict = Depends(require_admin)):
     conn = get_db()
     conn.execute("DELETE FROM payments WHERE id = ?", (payment_id,))
     conn.commit()

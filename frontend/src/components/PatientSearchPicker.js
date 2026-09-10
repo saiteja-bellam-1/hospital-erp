@@ -94,22 +94,24 @@ export default function PatientSearchPicker({
 
   return (
     <div className={className}>
-      <Label htmlFor={id}>
+      <Label htmlFor={id} className={compact ? 'text-xs text-gray-500' : undefined}>
         {label}{required ? ' *' : ''}
       </Label>
 
       {value ? (
-        <div className={`mt-1 p-3 bg-green-50 border border-green-200 rounded-lg flex justify-between items-center ${compact ? 'py-2' : ''}`}>
-          <div>
-            <p className={`font-medium text-green-900 ${compact ? 'text-sm' : ''}`}>
+        <div className={`mt-1 p-3 bg-green-50 border border-green-200 rounded-lg flex justify-between items-center ${compact ? 'py-1.5 px-2 h-9' : ''}`}>
+          <div className={compact ? 'min-w-0' : undefined}>
+            <p className={`font-medium text-green-900 ${compact ? 'text-xs truncate' : ''}`}>
               {value.first_name} {value.last_name}
             </p>
-            <p className="text-sm text-green-600">
-              {value.primary_phone}
-              {value.patient_id ? ` • ID: ${String(value.patient_id).slice(0, 8)}…` : ''}
-            </p>
+            {!compact && (
+              <p className="text-sm text-green-600">
+                {value.primary_phone}
+                {value.patient_id ? ` • ID: ${String(value.patient_id).slice(0, 8)}…` : ''}
+              </p>
+            )}
           </div>
-          <Button type="button" variant="ghost" size="sm" onClick={clearSelection} aria-label="Change patient">
+          <Button type="button" variant="ghost" size="sm" onClick={clearSelection} aria-label="Change patient" className={compact ? 'h-7 w-7 p-0' : undefined}>
             <XCircle className="h-4 w-4" />
           </Button>
         </div>
@@ -119,7 +121,7 @@ export default function PatientSearchPicker({
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
             <Input
               id={id}
-              className="pl-9"
+              className={`pl-9 ${compact ? 'h-9' : ''}`}
               placeholder={placeholder}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
@@ -133,7 +135,7 @@ export default function PatientSearchPicker({
             )}
           </div>
 
-          {!query.trim() && (
+          {!query.trim() && !compact && (
             <p className="text-gray-400 text-xs mt-1.5">
               {allowRegister ? 'Start typing to search, or add a new patient.' : 'Start typing to search by name, phone, or ID.'}
             </p>

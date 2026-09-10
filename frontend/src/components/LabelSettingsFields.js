@@ -11,6 +11,7 @@ import {
 
 const PRESETS = {
   thermal_50x30: { width_mm: 50, height_mm: 30, labels_per_row: 1, labels_per_column: 1, sheet_mode: 'thermal' },
+  thermal_70x40: { width_mm: 70, height_mm: 40, labels_per_row: 1, labels_per_column: 1, sheet_mode: 'thermal' },
   thermal_40x30: { width_mm: 40, height_mm: 30, labels_per_row: 1, labels_per_column: 1, sheet_mode: 'thermal' },
   thermal_38x25: { width_mm: 38, height_mm: 25, labels_per_row: 1, labels_per_column: 1, sheet_mode: 'thermal' },
   thermal_38x25_2up: { width_mm: 38, height_mm: 25, labels_per_row: 2, labels_per_column: 1, gutter_mm: 2, sheet_mode: 'thermal' },
@@ -57,6 +58,7 @@ function LabelSettingsFields({ title, settings, onChange, showLabName = false })
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="thermal_50x30">Thermal 50×30 mm (1 across)</SelectItem>
+            <SelectItem value="thermal_70x40">Thermal 70×40 mm (1 across)</SelectItem>
             <SelectItem value="thermal_40x30">Thermal 40×30 mm (1 across)</SelectItem>
             <SelectItem value="thermal_38x25">Thermal 38×25 mm (1 across)</SelectItem>
             <SelectItem value="thermal_38x25_2up">Thermal 38×25 mm (2 across)</SelectItem>

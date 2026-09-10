@@ -96,8 +96,14 @@ def opd_activity(db: Session, hospital_id: int, d_from: date, d_to: date) -> dic
     }
 
 
-def lab_volume(db: Session, hospital_id: int, d_from: date, d_to: date) -> dict:
-    orders = (
+def lab_volume(
+    db: Session,
+    hospital_id: int,
+    d_from: date,
+    d_to: date,
+    test_id: Optional[int] = None,
+) -> dict:
+    q = (
         db.query(PatientLabOrder)
         .options(joinedload(PatientLabOrder.test))
         .join(Patient)
@@ -107,8 +113,10 @@ def lab_volume(db: Session, hospital_id: int, d_from: date, d_to: date) -> dict:
             sql_func.date(PatientLabOrder.created_at) <= d_to,
             PatientLabOrder.status != "deleted",
         )
-        .all()
     )
+    if test_id:
+        q = q.filter(PatientLabOrder.test_id == int(test_id))
+    orders = q.all()
     by_status = defaultdict(int)
     by_test = {}
     billed = 0.0
@@ -129,7 +137,14 @@ def lab_volume(db: Session, hospital_id: int, d_from: date, d_to: date) -> dict:
         else:
             pending += 1
         name = o.test.name if o.test else f"Test #{o.test_id}"
-        trow = by_test.setdefault(name, {"test": name, "count": 0, "completed": 0, "pending": 0, "billed": 0.0})
+        trow = by_test.setdefault(name, {
+            "test": name,
+            "test_id": o.test_id,
+            "count": 0,
+            "completed": 0,
+            "pending": 0,
+            "billed": 0.0,
+        })
         trow["count"] += 1
         trow["billed"] += float(o.amount or 0)
         if st == "completed":
@@ -138,11 +153,14 @@ def lab_volume(db: Session, hospital_id: int, d_from: date, d_to: date) -> dict:
             trow["pending"] += 1
     for r in by_test.values():
         r["billed"] = _money(r["billed"])
-    tests = sorted(by_test.values(), key=lambda r: -r["count"])[:40]
+    # Full list when scoped to one test; otherwise keep the top-volume slice.
+    ranked = sorted(by_test.values(), key=lambda r: -r["count"])
+    tests = ranked if test_id else ranked[:40]
     avg_tat = round(sum(tat_hours) / len(tat_hours), 1) if tat_hours else None
     return {
         "date_from": d_from.isoformat(),
         "date_to": d_to.isoformat(),
+        "test_id": int(test_id) if test_id else None,
         "totals": {
             "orders": len(orders),
             "completed": completed,
@@ -362,6 +380,7 @@ def readmissions(db: Session, hospital_id: int, within_days: int = 30) -> dict:
     for a in q.all():
         rows.append({
             "admission_number": a.admission_number,
+            "patient_id": a.patient_id,
             "patient_name": f"{a.patient.first_name} {a.patient.last_name}" if a.patient else "",
             "admission_date": a.admission_date.isoformat() if a.admission_date else "",
             "days_since_last_discharge": a.days_since_last_discharge,
@@ -393,6 +412,7 @@ def mortality(db: Session, hospital_id: int, d_from: date, d_to: date) -> dict:
             mlc += 1
         rows.append({
             "admission_number": adm.admission_number if adm else "",
+            "patient_id": adm.patient_id if adm else None,
             "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "",
             "discharge_date": d.discharge_date.isoformat() if d.discharge_date else "",
             "cause_of_death": d.cause_of_death or "",

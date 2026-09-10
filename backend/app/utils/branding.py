@@ -9,7 +9,6 @@ from sqlalchemy.orm import Session
 from app.models.hospital import Hospital
 
 DEFAULT_APP_NAME = "KT HEALTH ERP"
-MAX_BRANDING_BYTES = 2 * 1024 * 1024
 
 # Landscape wordmarks (login / nav). Portrait logos overflow the header.
 LOGO_CONSTRAINTS = {
@@ -34,8 +33,8 @@ FAVICON_CONSTRAINTS = {
 
 def branding_constraints() -> dict[str, Any]:
     return {
-        "logo": {**LOGO_CONSTRAINTS, "max_bytes": MAX_BRANDING_BYTES},
-        "favicon": {**FAVICON_CONSTRAINTS, "max_bytes": MAX_BRANDING_BYTES},
+        "logo": {**LOGO_CONSTRAINTS},
+        "favicon": {**FAVICON_CONSTRAINTS},
     }
 
 
@@ -59,8 +58,6 @@ def validate_branding_image(content: bytes, kind: str) -> tuple[int, int]:
     """Return (width, height) or raise ValueError with a user-facing message."""
     if kind not in ("logo", "favicon"):
         raise ValueError("kind must be logo or favicon")
-    if len(content) > MAX_BRANDING_BYTES:
-        raise ValueError("File size must be under 2MB")
 
     try:
         from PIL import Image
@@ -115,7 +112,8 @@ def resolve_branding(
     if not customisation_licensed or not hospital:
         return _stock_branding(customisation_licensed=customisation_licensed)
     name = (hospital.name or "").strip() or DEFAULT_APP_NAME
-    logo_url = (hospital.logo_url or "").strip() or None
+    # App chrome uses app_logo_url only (hospital.logo_url is for PDF letterhead).
+    logo_url = (getattr(hospital, "app_logo_url", None) or "").strip() or None
     favicon_url = (hospital.favicon_url or "").strip() or None
     return {
         "name": name,

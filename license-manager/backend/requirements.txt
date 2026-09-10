@@ -3,3 +3,5 @@ uvicorn
 cryptography
 python-multipart
 requests
+PyJWT
+bcrypt

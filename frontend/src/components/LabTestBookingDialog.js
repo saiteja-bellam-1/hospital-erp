@@ -9,6 +9,7 @@ import { Search, X, TestTube, Loader2, Plus, Printer } from 'lucide-react';
 import { printPdfFromUrl } from '../utils/printPdf';
 import PatientSearchPicker from './PatientSearchPicker';
 import ReferralSelectWithCreate from './ReferralSelectWithCreate';
+import PatientFileLabelDialog from './PatientFileLabelDialog';
 
 const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = [], onReferralsChange }) => {
   const token = localStorage.getItem('token');
@@ -30,6 +31,9 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
 
   const [billPdfUrl, setBillPdfUrl] = useState(null);
   const [showBillPreview, setShowBillPreview] = useState(false);
+  const [bookingComplete, setBookingComplete] = useState(false);
+  const [fileLabelPatientId, setFileLabelPatientId] = useState(null);
+  const [fileLabelContext, setFileLabelContext] = useState({ source: 'lab' });
 
   useEffect(() => {
     if (open) {
@@ -42,6 +46,8 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
       setReferredBy('');
       setBillPdfUrl(null);
       setShowBillPreview(false);
+      setBookingComplete(false);
+      setFileLabelPatientId(null);
       fetchDoctors();
       fetchTests();
     }
@@ -118,6 +124,17 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
         if (billPdfUrl) window.URL.revokeObjectURL(billPdfUrl);
         setBillPdfUrl(window.URL.createObjectURL(new Blob([blob], { type: 'application/pdf' })));
         setShowBillPreview(true);
+        setBookingComplete(true);
+        const orderIdsHeader = res.headers.get('X-Order-Ids') || '';
+        const firstOrderId = orderIdsHeader.split(',').map((s) => s.trim()).filter(Boolean)[0];
+        if (selectedPatient?.id) {
+          setFileLabelContext({
+            source: 'lab',
+            orderId: firstOrderId ? parseInt(firstOrderId, 10) : undefined,
+            paymentMethod,
+          });
+          setFileLabelPatientId(selectedPatient.id);
+        }
       } else if (res.status === 409) {
         const err = await res.json();
         setDuplicateWarning(err.detail?.duplicates || []);
@@ -142,8 +159,26 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
       setBillPdfUrl(null);
     }
     setShowBillPreview(false);
+    if (!fileLabelPatientId) {
+      setBookingComplete(false);
+      onClose(true);
+    }
+  };
+
+  const closeFileLabel = () => {
+    setFileLabelPatientId(null);
+    setBookingComplete(false);
     onClose(true);
   };
+
+  const fileLabelDialog = (
+    <PatientFileLabelDialog
+      open={!!fileLabelPatientId}
+      patientId={fileLabelPatientId}
+      context={fileLabelContext}
+      onClose={closeFileLabel}
+    />
+  );
 
   const filteredTests = tests.filter(t => {
     if (!testSearch) return true;
@@ -153,6 +188,7 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
 
   if (showBillPreview) {
     return (
+      <>
       <Dialog open={true} onOpenChange={closeBillPreview}>
         <DialogContent className="max-w-4xl max-h-[90vh] overflow-hidden">
           <DialogHeader>
@@ -188,10 +224,17 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
           </div>
         </DialogContent>
       </Dialog>
+      {fileLabelDialog}
+      </>
     );
   }
 
+  if (bookingComplete && fileLabelPatientId) {
+    return fileLabelDialog;
+  }
+
   return (
+    <>
     <Dialog open={open} onOpenChange={() => onClose(false)}>
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
@@ -345,6 +388,8 @@ const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = []
         </div>
       </DialogContent>
     </Dialog>
+    {fileLabelDialog}
+    </>
   );
 };
 

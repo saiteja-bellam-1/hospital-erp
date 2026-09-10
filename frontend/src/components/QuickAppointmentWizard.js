@@ -31,6 +31,7 @@ import {
   validateAppointmentBooking,
 } from '../utils/appointmentBooking';
 import { localDateString } from '../utils/localDate';
+import PatientFileLabelDialog from './PatientFileLabelDialog';
 
 const EMPTY_APPOINTMENT = {
   doctor_id: '',
@@ -79,6 +80,8 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
   const [currentBill, setCurrentBill] = useState(null);
   const [bookedAppointment, setBookedAppointment] = useState(null);
   const [billLoading, setBillLoading] = useState(false);
+  const [fileLabelPatientId, setFileLabelPatientId] = useState(null);
+  const [fileLabelContext, setFileLabelContext] = useState({ source: 'appointment' });
 
   const baseSteps = registerMode === 'register' ? REGISTER_STEPS : SEARCH_STEPS;
   const steps = useMemo(
@@ -221,6 +224,16 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
     onBooked?.(appointmentData);
   };
 
+  const openFileLabelForAppointment = (appointmentData) => {
+    if (!appointmentData?.patient_id) return;
+    setFileLabelContext({
+      source: 'appointment',
+      appointmentId: appointmentData.id,
+      paymentMethod: appointmentData.payment_method || appointmentForm.payment_method,
+    });
+    setFileLabelPatientId(appointmentData.patient_id);
+  };
+
   const loadBillPreview = async (appointmentData) => {
     setBillLoading(true);
     setBookedAppointment(appointmentData);
@@ -282,9 +295,11 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
       }));
 
       if (shouldShowAppointmentBill(res.data)) {
+        openFileLabelForAppointment(res.data);
         await loadBillPreview(res.data);
       } else {
         toast({ title: 'Success', description: 'Appointment booked successfully!' });
+        openFileLabelForAppointment(res.data);
         finishBooking(res.data);
       }
     } catch (e) {
@@ -317,8 +332,18 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
     })
     : canProceedPatient;
 
+  const fileLabelDialog = (
+    <PatientFileLabelDialog
+      open={!!fileLabelPatientId}
+      patientId={fileLabelPatientId}
+      context={fileLabelContext}
+      onClose={() => setFileLabelPatientId(null)}
+    />
+  );
+
   if (showBillPreview) {
     return (
+      <>
       <Dialog open={true} onOpenChange={closeBillPreview}>
         <DialogContent className="max-w-4xl max-h-[90vh] overflow-hidden">
           <DialogHeader>
@@ -371,10 +396,13 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
           </div>
         </DialogContent>
       </Dialog>
+      {fileLabelDialog}
+      </>
     );
   }
 
   return (
+    <>
     <SteppedFormDialog
       open={open}
       onOpenChange={onOpenChange}
@@ -579,5 +607,7 @@ export default function QuickAppointmentWizard({ open, onOpenChange, onBooked })
         </div>
       )}
     </SteppedFormDialog>
+    {fileLabelDialog}
+    </>
   );
 }

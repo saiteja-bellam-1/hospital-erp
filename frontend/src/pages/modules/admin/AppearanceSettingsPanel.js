@@ -28,6 +28,12 @@ const DEFAULT_PHARMACY_LABELS = {
   sheet_width_mm: 210, sheet_height_mm: 297, show_lab_name: false, lab_name_override: null,
 };
 
+const DEFAULT_PATIENT_FILE_LABELS = {
+  width_mm: 70, height_mm: 40, labels_per_row: 1, labels_per_column: 1,
+  margin_top_mm: 2, margin_left_mm: 2, gutter_mm: 2, sheet_mode: 'thermal',
+  sheet_width_mm: 210, sheet_height_mm: 297, show_lab_name: false, lab_name_override: null,
+};
+
 function mergeLabelSettings(defaults, raw) {
   if (!raw) return { ...defaults };
   return { ...defaults, ...raw };
@@ -55,6 +61,7 @@ export default function AppearanceSettingsPanel() {
   const [appearanceLayout, setAppearanceLayout] = useState('sidebar');
   const [labLabelSettings, setLabLabelSettings] = useState(DEFAULT_LAB_LABELS);
   const [pharmacyLabelSettings, setPharmacyLabelSettings] = useState(DEFAULT_PHARMACY_LABELS);
+  const [patientFileLabelSettings, setPatientFileLabelSettings] = useState(DEFAULT_PATIENT_FILE_LABELS);
   const [showPatientBarcodeOnPdfs, setShowPatientBarcodeOnPdfs] = useState(false);
   const [brandingForm, setBrandingForm] = useState({
     name: '',
@@ -81,6 +88,9 @@ export default function AppearanceSettingsPanel() {
         }
         if (printRes.data.pharmacy_label_settings) {
           setPharmacyLabelSettings(mergeLabelSettings(DEFAULT_PHARMACY_LABELS, printRes.data.pharmacy_label_settings));
+        }
+        if (printRes.data.patient_file_label_settings) {
+          setPatientFileLabelSettings(mergeLabelSettings(DEFAULT_PATIENT_FILE_LABELS, printRes.data.patient_file_label_settings));
         }
         setShowPatientBarcodeOnPdfs(!!printRes.data.show_patient_barcode_on_pdfs);
         if (isSuperAdmin && results[1]) {
@@ -166,11 +176,12 @@ export default function AppearanceSettingsPanel() {
         await axios.put('/api/hospital/print-settings', {
           lab_label_settings: labLabelSettings,
           pharmacy_label_settings: pharmacyLabelSettings,
+          patient_file_label_settings: patientFileLabelSettings,
         });
         invalidatePdfPrintSettingsCache();
         toast({
           title: 'Label settings saved',
-          description: 'Lab and pharmacy label dimensions updated.',
+          description: 'Lab, pharmacy, and patient file label dimensions updated.',
         });
       }
     } catch (error) {
@@ -285,8 +296,9 @@ export default function AppearanceSettingsPanel() {
               </CardHeader>
               <CardContent className="space-y-5 max-w-2xl">
                 <p className="text-sm text-muted-foreground">
-                  Customise the hospital name, logo, and browser tab icon shown across the app.
-                  PDFs and bills continue to use the hospital name from Hospital Info.
+                  Customise the app name, login/navigation logo, and browser tab icon.
+                  PDFs and bills use the hospital logo from Hospital Info — upload a separate
+                  app logo here when you want different artwork in the product UI.
                 </p>
 
                 <div>
@@ -336,6 +348,7 @@ export default function AppearanceSettingsPanel() {
                         </Button>
                       )}
                       <p className="text-[10px] text-gray-400 mt-1">{LOGO_HINT}</p>
+                      <p className="text-[10px] text-gray-400">Does not change the hospital logo on PDFs or bills.</p>
                     </div>
                   </div>
                 </div>
@@ -455,6 +468,11 @@ export default function AppearanceSettingsPanel() {
                 title="Pharmacy batch labels"
                 settings={pharmacyLabelSettings}
                 onChange={setPharmacyLabelSettings}
+              />
+              <LabelSettingsFields
+                title="Patient file labels"
+                settings={patientFileLabelSettings}
+                onChange={setPatientFileLabelSettings}
               />
             </CardContent>
           </Card>

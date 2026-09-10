@@ -28,6 +28,7 @@ PRINT_PRESCRIPTION_VITALS_COLUMN_WIDTH_KEY = "prescription_vitals_column_width_i
 PRINT_PRESCRIPTION_VITALS_COLUMN_WIDTH_PCT_KEY = "prescription_vitals_column_width_pct"
 PRINT_LAB_LABEL_SETTINGS_KEY = "lab_label_settings"
 PRINT_PHARMACY_LABEL_SETTINGS_KEY = "pharmacy_label_settings"
+PRINT_PATIENT_FILE_LABEL_SETTINGS_KEY = "patient_file_label_settings"
 PRINT_SHOW_PATIENT_BARCODE_KEY = "show_patient_barcode_on_pdfs"
 
 # Report types that may draw the patient MRN EAN-13 barcode.
@@ -65,6 +66,21 @@ DEFAULT_PHARMACY_LABEL_SETTINGS: dict[str, Any] = {
     "lab_name_override": None,
     "show_pharmacy_name": True,
     "pharmacy_name_override": None,
+}
+
+DEFAULT_PATIENT_FILE_LABEL_SETTINGS: dict[str, Any] = {
+    "width_mm": 70.0,
+    "height_mm": 40.0,
+    "labels_per_row": 1,
+    "labels_per_column": 1,
+    "margin_top_mm": 2.0,
+    "margin_left_mm": 2.0,
+    "gutter_mm": 2.0,
+    "sheet_mode": "thermal",
+    "sheet_width_mm": 210.0,
+    "sheet_height_mm": 297.0,
+    "show_lab_name": False,
+    "lab_name_override": None,
 }
 
 LABEL_SHEET_MODES = frozenset({"thermal", "avery"})
@@ -722,6 +738,34 @@ def set_pharmacy_label_settings(
     return cleaned
 
 
+def get_patient_file_label_settings(db: Session, hospital_id: int | None) -> dict[str, Any]:
+    row = _get_setting_row(db, PRINT_PATIENT_FILE_LABEL_SETTINGS_KEY)
+    if not row or not row.setting_value:
+        return dict(DEFAULT_PATIENT_FILE_LABEL_SETTINGS)
+    try:
+        parsed = json.loads(row.setting_value)
+    except json.JSONDecodeError:
+        return dict(DEFAULT_PATIENT_FILE_LABEL_SETTINGS)
+    return normalize_label_settings(parsed, DEFAULT_PATIENT_FILE_LABEL_SETTINGS)
+
+
+def set_patient_file_label_settings(
+    db: Session,
+    settings: dict[str, Any],
+    created_by: int | None = None,
+) -> dict[str, Any]:
+    cleaned = normalize_label_settings(settings, DEFAULT_PATIENT_FILE_LABEL_SETTINGS)
+    _upsert_setting(
+        db,
+        key=PRINT_PATIENT_FILE_LABEL_SETTINGS_KEY,
+        value=json.dumps(cleaned),
+        setting_type="json",
+        description="Patient file sticker layout (thermal / Avery)",
+        created_by=created_by,
+    )
+    return cleaned
+
+
 def get_print_settings_payload(db: Session, hospital_id: int | None) -> dict[str, Any]:
     footer_catalog = [r for r in REPORT_CATALOG if r["key"] in FOOTER_REPORT_KEYS]
     return {
@@ -745,6 +789,7 @@ def get_print_settings_payload(db: Session, hospital_id: int | None) -> dict[str
         "report_footer_overrides": get_report_footer_overrides(db, hospital_id),
         "lab_label_settings": get_lab_label_settings(db, hospital_id),
         "pharmacy_label_settings": get_pharmacy_label_settings(db, hospital_id),
+        "patient_file_label_settings": get_patient_file_label_settings(db, hospital_id),
         "show_patient_barcode_on_pdfs": get_show_patient_barcode_on_pdfs(db, hospital_id),
         "label_sheet_modes": sorted(LABEL_SHEET_MODES),
         "label_dim_min_mm": MIN_LABEL_DIM_MM,
@@ -957,6 +1002,7 @@ def update_print_settings(
     report_footer_overrides: dict[str, str] | None = None,
     lab_label_settings: dict[str, Any] | None = None,
     pharmacy_label_settings: dict[str, Any] | None = None,
+    patient_file_label_settings: dict[str, Any] | None = None,
     show_patient_barcode_on_pdfs: bool | None = None,
     created_by: int | None = None,
 ) -> dict[str, Any]:
@@ -1012,4 +1058,8 @@ def update_print_settings(
         set_lab_label_settings(db, lab_label_settings, created_by=created_by)
     if pharmacy_label_settings is not None:
         set_pharmacy_label_settings(db, pharmacy_label_settings, created_by=created_by)
+    if patient_file_label_settings is not None:
+        set_patient_file_label_settings(
+            db, patient_file_label_settings, created_by=created_by
+        )
     return get_print_settings_payload(db, hospital_id)

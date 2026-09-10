@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Routes, Route, Navigate, useLocation, Link } from 'react-router-dom';
+import { Routes, Route, Navigate, Link } from 'react-router-dom';
 import axios from 'axios';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
@@ -14,8 +14,8 @@ import { usePhysioPermissions } from '../../hooks/usePhysioPermissions';
 import PatientSearchPicker from '../../components/PatientSearchPicker';
 import { printPdfFromUrl } from '../../utils/printPdf';
 import {
-  Activity, Calendar, Package, BookOpen, Users, BarChart3, Plus, RefreshCw,
-  CheckCircle2, Play, UserX, XCircle, Loader2, Download, LayoutDashboard,
+  Package, Plus, RefreshCw,
+  CheckCircle2, Play, UserX, XCircle, Loader2, Download,
   Paperclip, Upload, Trash2,
 } from 'lucide-react';
 
@@ -325,43 +325,6 @@ function PatientFilesPickerDialog({ open, onOpenChange, onPick }) {
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  );
-}
-
-function NavTabs({ onSellPackage, canSellPackage, canCatalog, canReports }) {
-  const loc = useLocation();
-  const base = '/dashboard/physiotherapy';
-  const tabs = [
-    { to: `${base}/dashboard`, label: 'Dashboard', icon: LayoutDashboard },
-    { to: `${base}/today`, label: "Today's Board", icon: Activity },
-    { to: `${base}/appointments`, label: 'Appointments', icon: Calendar },
-    { to: `${base}/packages`, label: 'Packages', icon: Package },
-    canCatalog ? { to: `${base}/catalog`, label: 'Catalog', icon: BookOpen } : null,
-    { to: `${base}/therapists`, label: 'Therapists', icon: Users },
-    canReports ? { to: `${base}/reports`, label: 'Reports', icon: BarChart3 } : null,
-  ].filter(Boolean);
-  return (
-    <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
-      <div className="flex flex-wrap gap-2">
-        {tabs.map(({ to, label, icon: Icon }) => {
-          const active = loc.pathname.startsWith(to);
-          return (
-            <Link key={to} to={to}>
-              <Button variant={active ? 'default' : 'outline'} size="sm" className="gap-1.5">
-                <Icon className="h-4 w-4" />
-                {label}
-              </Button>
-            </Link>
-          );
-        })}
-      </div>
-      {canSellPackage && (
-        <Button size="sm" onClick={onSellPackage} className="gap-1.5">
-          <Package className="h-4 w-4" />
-          Sell package
-        </Button>
-      )}
-    </div>
   );
 }
 
@@ -1732,18 +1695,26 @@ function ReportsPage() {
   const { toast } = useToast();
   const [from, setFrom] = useState(todayISO());
   const [to, setTo] = useState(todayISO());
+  const [therapistId, setTherapistId] = useState('');
+  const [therapists, setTherapists] = useState([]);
   const [data, setData] = useState(null);
+
+  useEffect(() => {
+    axios.get('/api/physiotherapy/therapists')
+      .then((r) => setTherapists(r.data || []))
+      .catch(() => setTherapists([]));
+  }, []);
 
   const load = useCallback(async () => {
     try {
-      const res = await axios.get('/api/physiotherapy/reports/summary', {
-        params: { date_from: from, date_to: to },
-      });
+      const params = { date_from: from, date_to: to };
+      if (therapistId) params.therapist_id = Number(therapistId);
+      const res = await axios.get('/api/physiotherapy/reports/summary', { params });
       setData(res.data);
     } catch (e) {
       toast({ title: 'Failed to load report', description: errMsg(e), variant: 'destructive' });
     }
-  }, [from, to, toast]);
+  }, [from, to, therapistId, toast]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -1751,9 +1722,20 @@ function ReportsPage() {
     <Card>
       <CardHeader className="flex flex-row items-center justify-between flex-wrap gap-2">
         <CardTitle>Ops reports</CardTitle>
-        <div className="flex gap-2 items-center">
+        <div className="flex gap-2 items-center flex-wrap">
           <Input type="date" className="w-36" value={from} onChange={(e) => setFrom(e.target.value)} />
           <Input type="date" className="w-36" value={to} onChange={(e) => setTo(e.target.value)} />
+          <Select value={therapistId || 'all'} onValueChange={(v) => setTherapistId(v === 'all' ? '' : v)}>
+            <SelectTrigger className="w-[200px]">
+              <SelectValue placeholder="All therapists" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All therapists</SelectItem>
+              {therapists.map((t) => (
+                <SelectItem key={t.id} value={String(t.id)}>{t.full_name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <Button size="sm" variant="outline" onClick={load}><RefreshCw className="h-4 w-4" /></Button>
         </div>
       </CardHeader>
@@ -1800,15 +1782,19 @@ function ReportsPage() {
               <table className="w-full text-sm">
                 <thead><tr className="border-b text-left"><th className="py-1">Therapist</th><th>Completed</th><th>No-show</th><th>Cancelled</th><th>Scheduled</th></tr></thead>
                 <tbody>
-                  {(data.therapist_utilization || []).map((t) => (
-                    <tr key={t.therapist_id} className="border-b">
-                      <td className="py-1">{t.therapist_name}</td>
-                      <td>{t.completed}</td>
-                      <td>{t.no_show}</td>
-                      <td>{t.cancelled}</td>
-                      <td>{t.scheduled}</td>
-                    </tr>
-                  ))}
+                  {(data.therapist_utilization || []).length === 0 ? (
+                    <tr><td colSpan={5} className="py-3 text-muted-foreground">No sessions for this filter.</td></tr>
+                  ) : (
+                    (data.therapist_utilization || []).map((t) => (
+                      <tr key={t.therapist_id} className="border-b">
+                        <td className="py-1">{t.therapist_name}</td>
+                        <td>{t.completed}</td>
+                        <td>{t.no_show}</td>
+                        <td>{t.cancelled}</td>
+                        <td>{t.scheduled}</td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>
@@ -1826,16 +1812,18 @@ export default function PhysiotherapyModule() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Physiotherapy</h1>
-        <p className="text-sm text-muted-foreground">Clinic sessions, packages, and billing</p>
+      <div className="flex items-start justify-between gap-2 flex-wrap">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Physiotherapy</h1>
+          <p className="text-sm text-muted-foreground">Clinic sessions, packages, and billing</p>
+        </div>
+        {canPackages && (
+          <Button size="sm" onClick={() => setSellOpen(true)} className="gap-1.5">
+            <Package className="h-4 w-4" />
+            Sell package
+          </Button>
+        )}
       </div>
-      <NavTabs
-        canSellPackage={canPackages}
-        canCatalog={canCatalog}
-        canReports={canReports}
-        onSellPackage={() => setSellOpen(true)}
-      />
       <SellPackageDialog
         open={sellOpen}
         onOpenChange={setSellOpen}

@@ -414,10 +414,78 @@ const HospitalAdminModule = () => {
                 </div>
               </div>
 
+              <div>
+                <Label>Hospital logo (PDFs &amp; letterhead)</Label>
+                <div className="mt-1 flex items-center gap-4">
+                  {hospitalInfo.logo_url ? (
+                    <img
+                      src={hospitalInfo.logo_url}
+                      alt="Hospital logo"
+                      className="h-16 w-40 object-contain border rounded p-1 bg-white"
+                    />
+                  ) : (
+                    <div className="h-16 w-40 border rounded flex items-center justify-center bg-muted/30 text-xs text-muted-foreground">
+                      No logo
+                    </div>
+                  )}
+                  <div>
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      id="hospital-logo-upload"
+                      className="hidden"
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        e.target.value = '';
+                        if (!file) return;
+                        try {
+                          const formData = new FormData();
+                          formData.append('file', file);
+                          const res = await axios.post('/api/hospital/upload-file', formData, {
+                            headers: { 'Content-Type': 'multipart/form-data' },
+                          });
+                          setHospitalInfo((prev) => ({ ...prev, logo_url: res.data.url }));
+                          toast({ title: 'Hospital logo uploaded' });
+                        } catch (error) {
+                          toast({
+                            variant: 'destructive',
+                            title: 'Upload failed',
+                            description: error?.response?.data?.detail || 'Could not upload logo',
+                          });
+                        }
+                      }}
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => document.getElementById('hospital-logo-upload').click()}
+                    >
+                      {hospitalInfo.logo_url ? 'Change logo' : 'Upload logo'}
+                    </Button>
+                    {hospitalInfo.logo_url && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="text-red-500 ml-1"
+                        onClick={() => setHospitalInfo((prev) => ({ ...prev, logo_url: '' }))}
+                      >
+                        Remove
+                      </Button>
+                    )}
+                    <p className="text-[10px] text-gray-400 mt-1">
+                      PNG, JPEG, or WebP. Used on bills, reports, and other printed documents.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
               <div className="rounded-md border border-dashed border-muted-foreground/30 bg-muted/20 px-4 py-3">
                 <p className="text-sm text-muted-foreground">
-                  App logo and browser tab icon are managed under{' '}
+                  Login, navigation, and browser tab branding are managed under{' '}
                   <strong>Appearance → Branding</strong> when Customisation is included in the license.
+                  That app logo is separate from this hospital logo.
                 </p>
               </div>
 

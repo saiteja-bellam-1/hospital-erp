@@ -5,7 +5,6 @@ export const LOGO_CONSTRAINTS = {
   maxHeight: 800,
   minRatio: 1.0,
   maxRatio: 6.0,
-  maxBytes: 2 * 1024 * 1024,
 };
 
 export const FAVICON_CONSTRAINTS = {
@@ -15,14 +14,13 @@ export const FAVICON_CONSTRAINTS = {
   maxHeight: 512,
   minRatio: 0.9,
   maxRatio: 1.15,
-  maxBytes: 2 * 1024 * 1024,
 };
 
 export const LOGO_HINT =
-  'Landscape PNG, JPEG, or WebP. 200–2400px wide, 40–800px tall, up to 6:1. Max 2MB.';
+  'Landscape PNG, JPEG, or WebP. 200–2400px wide, 40–800px tall, up to 6:1.';
 
 export const FAVICON_HINT =
-  'Nearly square PNG, JPEG, WebP, or ICO. 32–512px. Max 2MB.';
+  'Nearly square PNG, JPEG, WebP, or ICO. 32–512px.';
 
 function readImageSize(file) {
   return new Promise((resolve, reject) => {
@@ -48,9 +46,6 @@ function describe(kind) {
 
 export async function validateBrandingImageFile(file, kind) {
   const constraints = kind === 'favicon' ? FAVICON_CONSTRAINTS : LOGO_CONSTRAINTS;
-  if (file.size > constraints.maxBytes) {
-    throw new Error('File size must be under 2MB');
-  }
   const { width, height } = await readImageSize(file);
   const ratio = width / height;
   if (

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import axios from 'axios';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '../../../../components/ui/card';
 import { Button } from '../../../../components/ui/button';
 import { Badge } from '../../../../components/ui/badge';
@@ -19,6 +19,7 @@ import { usePharmacyPermissions } from '../../../../hooks/usePharmacyPermissions
 export default function SalesTab() {
   const { toast } = useToast();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { storeParams } = usePharmacyStore();
   const { hasPerm } = usePharmacyPermissions();
   const [rows, setRows] = useState([]);
@@ -30,16 +31,23 @@ export default function SalesTab() {
   const [previewSaleId, setPreviewSaleId] = useState(null);
   const [importOpen, setImportOpen] = useState(false);
 
+  const dateFrom = searchParams.get('date_from') || '';
+  const dateTo = searchParams.get('date_to') || '';
+  const billingMode = searchParams.get('billing_mode') || '';
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const params = { ...storeParams };
       if (search) params.search = search;
+      if (dateFrom) params.date_from = dateFrom;
+      if (dateTo) params.date_to = dateTo;
+      if (billingMode) params.billing_mode = billingMode;
       const r = await axios.get('/api/pharmacy/sales', { params });
       setRows(r.data || []);
     } catch { /* ignore */ }
     finally { setLoading(false); }
-  }, [search, storeParams]);
+  }, [search, storeParams, dateFrom, dateTo, billingMode]);
   useEffect(() => { load(); }, [load]);
 
   const submitVoid = async () => {
@@ -56,7 +64,16 @@ export default function SalesTab() {
     <Card>
       <CardHeader>
         <CardTitle className="flex flex-wrap justify-between items-center gap-2">
-          <span>Sales ({rows.length})</span>
+          <span>
+            Sales ({rows.length})
+            {(dateFrom || dateTo || billingMode) && (
+              <span className="ml-2 text-xs font-normal text-gray-500">
+                {dateFrom || dateTo ? `· ${dateFrom || '…'} → ${dateTo || '…'}` : ''}
+                {billingMode === 'cash_at_pharmacy' ? ' · POS' : ''}
+                {billingMode === 'inpatient_bill' ? ' · Inpatient' : ''}
+              </span>
+            )}
+          </span>
           <div className="flex gap-2 items-center">
             <Input className="h-8 w-56" placeholder="Search sale # / patient / doctor…"
               value={search} onChange={e => setSearch(e.target.value)}

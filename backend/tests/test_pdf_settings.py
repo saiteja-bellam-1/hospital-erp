@@ -13,6 +13,7 @@ if BACKEND_DIR not in sys.path:
 from app.models.permissions import HospitalSettings
 from app.utils.pdf_settings import (
     DEFAULT_LETTERHEAD_GAP_MM,
+    DEFAULT_PATIENT_FILE_LABEL_SETTINGS,
     DEFAULT_PRESCRIPTION_VITAL_FIELDS,
     DEFAULT_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN,
     MAX_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN,
@@ -28,11 +29,13 @@ from app.utils.pdf_settings import (
     get_hospital_pdf_include_header,
     get_hospital_pdf_include_footer,
     get_letterhead_gap_mm,
+    get_patient_file_label_settings,
     get_prescription_include_vitals,
     get_prescription_vital_fields,
     get_prescription_vitals_column_width_in,
     get_prescription_vitals_layout,
     get_prescription_vitals_position,
+    get_print_settings_payload,
     get_report_footer_overrides,
     get_report_header_overrides,
     get_show_patient_barcode_on_pdfs,
@@ -45,6 +48,7 @@ from app.utils.pdf_settings import (
     set_hospital_pdf_include_footer,
     set_hospital_pdf_include_header,
     set_letterhead_gap_mm,
+    set_patient_file_label_settings,
     set_prescription_include_vitals,
     set_prescription_vital_fields,
     set_prescription_vitals_column_width_in,
@@ -587,6 +591,42 @@ def test_update_print_settings_persists_patient_barcode(db_session):
     db_session.commit()
     assert payload["show_patient_barcode_on_pdfs"] is True
     assert get_show_patient_barcode_on_pdfs(db_session, 1) is True
+
+
+def test_patient_file_label_settings_defaults_and_round_trip(db_session):
+    defaults = get_patient_file_label_settings(db_session, 1)
+    assert defaults["width_mm"] == DEFAULT_PATIENT_FILE_LABEL_SETTINGS["width_mm"]
+    assert defaults["height_mm"] == DEFAULT_PATIENT_FILE_LABEL_SETTINGS["height_mm"]
+    assert defaults["sheet_mode"] == "thermal"
+
+    updated = {
+        **DEFAULT_PATIENT_FILE_LABEL_SETTINGS,
+        "width_mm": 80.0,
+        "height_mm": 50.0,
+        "margin_top_mm": 3.0,
+    }
+    set_patient_file_label_settings(db_session, updated, created_by=1)
+    db_session.commit()
+    got = get_patient_file_label_settings(db_session, 1)
+    assert got["width_mm"] == 80.0
+    assert got["height_mm"] == 50.0
+    assert got["margin_top_mm"] == 3.0
+
+    payload = update_print_settings(
+        db_session,
+        1,
+        patient_file_label_settings={
+            "width_mm": 70.0,
+            "height_mm": 40.0,
+            "sheet_mode": "thermal",
+            "labels_per_row": 1,
+            "labels_per_column": 1,
+        },
+        created_by=1,
+    )
+    db_session.commit()
+    assert payload["patient_file_label_settings"]["width_mm"] == 70.0
+    assert get_print_settings_payload(db_session, 1)["patient_file_label_settings"]["height_mm"] == 40.0
 
 
 def test_generate_prescription_and_lab_pdf_with_patient_barcode(db_session):

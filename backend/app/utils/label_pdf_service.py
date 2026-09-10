@@ -398,6 +398,105 @@ def _draw_pharmacy_label(
     )
 
 
+def _draw_patient_file_label(
+    c: canvas.Canvas,
+    layout: LabelLayoutConfig,
+    x0: float,
+    y0: float,
+    label: dict[str, Any],
+) -> None:
+    """Patient file sticker: horizontal patient MRN barcode on top + demographics."""
+    w = layout.width_mm * mm
+    h = layout.height_mm * mm
+    pad = 1.8 * mm
+
+    mrn = (label.get("mrn") or "").strip()
+    mrn_ean = (label.get("mrn_ean13") or "").strip()
+    patient_name = (label.get("patient_name") or "").strip()
+    pat_type = (label.get("pat_type") or "Self Paying").strip()
+    age_gender = (label.get("age_gender") or "").strip()
+    bill_date = (label.get("bill_date") or "").strip()
+    order_no = (label.get("order_no") or "").strip()
+    ref_name = (label.get("ref_name") or "").strip()
+
+    # Top band: horizontal EAN-13 + MRN text to the right / under.
+    bar_h = min(12.0 * mm, h * 0.32)
+    bar_top = y0 + h - pad
+    bar_bottom = bar_top - bar_h
+    usable_w = w - 2 * pad
+    mrn_text_w = min(usable_w * 0.32, 28 * mm) if mrn else 0.0
+    bar_max_w = usable_w - mrn_text_w - (2 * mm if mrn else 0.0)
+
+    if mrn_ean and validate_ean13(mrn_ean) and bar_h >= 4.0 * mm:
+        _draw_ean13(
+            c,
+            mrn_ean,
+            x0 + pad,
+            bar_bottom + 0.5 * mm,
+            bar_max_w,
+            bar_h - 1.0 * mm,
+            area_width=bar_max_w,
+            align="left",
+        )
+
+    if mrn:
+        c.setFont("Helvetica-Bold", 7)
+        c.drawRightString(x0 + w - pad, bar_bottom + bar_h * 0.35, _truncate(mrn, 18))
+
+    # Body text below barcode band.
+    y = bar_bottom - 2.5 * mm
+    line = max(3.2 * mm, min(4.2 * mm, h * 0.09))
+    body_pt = max(5.5, min(7.5, (h / mm) * 0.18))
+    label_pt = body_pt
+
+    def draw_line(text: str, *, bold: bool = False) -> None:
+        nonlocal y
+        if y < y0 + pad:
+            return
+        font = "Helvetica-Bold" if bold else "Helvetica"
+        c.setFont(font, label_pt)
+        c.drawString(
+            x0 + pad,
+            y,
+            _truncate_to_width(c, text, font, label_pt, usable_w),
+        )
+        y -= line
+
+    def draw_split(left: str, right: str) -> None:
+        nonlocal y
+        if y < y0 + pad:
+            return
+        c.setFont("Helvetica", label_pt)
+        half = usable_w * 0.52
+        c.drawString(
+            x0 + pad,
+            y,
+            _truncate_to_width(c, left, "Helvetica", label_pt, half),
+        )
+        if right:
+            c.drawRightString(
+                x0 + w - pad,
+                y,
+                _truncate_to_width(c, right, "Helvetica", label_pt, usable_w - half - 1 * mm),
+            )
+        y -= line
+
+    draw_line(f"Pat Type:  {pat_type}")
+    draw_line(f"YHNO :  {mrn}" if mrn else "YHNO :  —")
+    draw_line(f"Patient Name :  {patient_name}", bold=True)
+    draw_split(
+        f"Age: {age_gender}" if age_gender else "Age: —",
+        f"Bill Date : {bill_date}" if bill_date else "",
+    )
+    if order_no or ref_name:
+        draw_split(
+            f"Order No : {order_no}" if order_no else "",
+            f"Ref Name: {_truncate(ref_name, 28)}" if ref_name else "",
+        )
+    elif ref_name:
+        draw_line(f"Ref Name: {_truncate(ref_name, 40)}")
+
+
 def _page_size(layout: LabelLayoutConfig) -> tuple[float, float]:
     if layout.sheet_mode == "avery":
         return layout.sheet_width_mm * mm, layout.sheet_height_mm * mm
@@ -461,6 +560,8 @@ def build_label_pdf(
         x0, y0 = slots[slot_idx]
         if label_type == "lab_sample":
             _draw_lab_label(c, layout, x0, y0, label, lab_display_name)
+        elif label_type == "patient_file":
+            _draw_patient_file_label(c, layout, x0, y0, label)
         else:
             _draw_pharmacy_label(c, layout, x0, y0, label, pharmacy_display_name)
 

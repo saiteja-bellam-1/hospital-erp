@@ -58,6 +58,7 @@ from app.models.pharmacy import (
     PharmacyPurchaseItem,
     PharmacySale,
     PharmacySaleItem,
+    PharmacySaleReturn,
     PharmacyStore,
     PharmacyTransferItem,
     Prescription,
@@ -4478,6 +4479,7 @@ def edit_sale(
 def list_sales(
     status: Optional[str] = None,
     payment_type: Optional[str] = None,
+    billing_mode: Optional[str] = None,
     store_id: Optional[int] = None,
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
@@ -4494,6 +4496,13 @@ def list_sales(
         q = q.filter(PharmacySale.status == status)
     if payment_type:
         q = q.filter(PharmacySale.payment_type == payment_type)
+    if billing_mode == "cash_at_pharmacy":
+        q = q.filter(or_(
+            PharmacySale.billing_mode == "cash_at_pharmacy",
+            PharmacySale.billing_mode.is_(None),
+        ))
+    elif billing_mode:
+        q = q.filter(PharmacySale.billing_mode == billing_mode)
     if date_from:
         q = q.filter(PharmacySale.sale_date >= datetime.combine(date_from, datetime.min.time()))
     if date_to:
@@ -5319,6 +5328,8 @@ class DashboardSummaryOut(BaseModel):
     # within the next 90 days (or already past). Drives the dashboard tile.
     expiring_soon_count: int = 0
     already_expired_count: int = 0
+    today_sale_returns_count: int = 0
+    unmapped_medicines_count: int = 0
 
 
 def _sale_totals_today(
@@ -5416,7 +5427,18 @@ def dashboard_summary(
     low = sum(1 for r in list_inventory(
         search=None, low_only=True, store_id=report_store, db=db, current_user=current_user,
     ))
-    pending = db.query(Prescription).filter(Prescription.status.in_(["pending", "partial"])).count()
+
+    # Hospital-scoped pending Rx (same join as /prescriptions/pending)
+    pending = (
+        db.query(sa_func.count(Prescription.id))
+        .join(Patient, Patient.id == Prescription.patient_id)
+        .filter(
+            Patient.hospital_id == hid,
+            Prescription.status.in_(["pending", "partial"]),
+        )
+        .scalar()
+        or 0
+    )
 
     today = date.today()
     expiring_threshold = today + timedelta(days=90)
@@ -5436,6 +5458,22 @@ def dashboard_summary(
         *([PharmacyInventory.store_id == report_store] if report_store is not None else []),
     ).scalar() or 0
 
+    returns_q = db.query(sa_func.count(PharmacySaleReturn.id)).filter(
+        PharmacySaleReturn.hospital_id == hid,
+        PharmacySaleReturn.return_date == today,
+        PharmacySaleReturn.status != "cancelled",
+    )
+    if report_store is not None:
+        returns_q = returns_q.filter(PharmacySaleReturn.store_id == report_store)
+    today_sale_returns = returns_q.scalar() or 0
+
+    unmapped = db.query(sa_func.count(Medicine.id)).filter(
+        Medicine.hospital_id == hid,
+        Medicine.is_active == True,  # noqa: E712
+        Medicine.is_hidden == True,  # noqa: E712
+        Medicine.medicine_code.like("TXT-%"),
+    ).scalar() or 0
+
     return DashboardSummaryOut(
         today_sales_total=sales_total,
         today_sales_count=sales_count,
@@ -5446,9 +5484,11 @@ def dashboard_summary(
         today_purchases_total=float(purchases_q[0] or 0),
         today_purchases_count=int(purchases_q[1] or 0),
         low_stock_count=low,
-        pending_rx_count=pending,
+        pending_rx_count=int(pending),
         expiring_soon_count=int(expiring_soon),
         already_expired_count=int(already_expired),
+        today_sale_returns_count=int(today_sale_returns),
+        unmapped_medicines_count=int(unmapped),
     )
 
 

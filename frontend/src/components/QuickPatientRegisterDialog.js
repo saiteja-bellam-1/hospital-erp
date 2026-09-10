@@ -10,6 +10,7 @@ import PatientRegisterFormFields, {
   patientStepCanProceed,
   validatePatientForm,
 } from './PatientRegisterFormFields';
+import PatientFileLabelDialog from './PatientFileLabelDialog';
 
 export default function QuickPatientRegisterDialog({
   open,
@@ -21,6 +22,7 @@ export default function QuickPatientRegisterDialog({
   const [form, setForm] = useState(EMPTY_PATIENT_FORM);
   const [saving, setSaving] = useState(false);
   const [activeStep, setActiveStep] = useState(0);
+  const [fileLabelPatientId, setFileLabelPatientId] = useState(null);
 
   useEffect(() => {
     if (!open) return;
@@ -59,6 +61,7 @@ export default function QuickPatientRegisterDialog({
       });
       onCreated?.(res.data);
       onOpenChange(false);
+      if (res.data?.id) setFileLabelPatientId(res.data.id);
     } catch (e) {
       toast({
         variant: 'destructive',
@@ -71,20 +74,28 @@ export default function QuickPatientRegisterDialog({
   };
 
   return (
-    <SteppedFormDialog
-      open={open}
-      onOpenChange={onOpenChange}
-      title="Register New Patient"
-      steps={steps}
-      activeStep={activeStep}
-      onStepChange={setActiveStep}
-      onNext={handleNext}
-      onSave={handleSave}
-      saving={saving}
-      canProceed={activeStep !== 0 || patientStepCanProceed(form, 0)}
-      saveLabel="Register & select"
-    >
-      <PatientRegisterFormFields form={form} onChange={setForm} activeStep={activeStep} />
-    </SteppedFormDialog>
+    <>
+      <SteppedFormDialog
+        open={open}
+        onOpenChange={onOpenChange}
+        title="Register New Patient"
+        steps={steps}
+        activeStep={activeStep}
+        onStepChange={setActiveStep}
+        onNext={handleNext}
+        onSave={handleSave}
+        saving={saving}
+        canProceed={activeStep !== 0 || patientStepCanProceed(form, 0)}
+        saveLabel="Register & select"
+      >
+        <PatientRegisterFormFields form={form} onChange={setForm} activeStep={activeStep} />
+      </SteppedFormDialog>
+      <PatientFileLabelDialog
+        open={!!fileLabelPatientId}
+        patientId={fileLabelPatientId}
+        context={{ source: 'registration' }}
+        onClose={() => setFileLabelPatientId(null)}
+      />
+    </>
   );
 }

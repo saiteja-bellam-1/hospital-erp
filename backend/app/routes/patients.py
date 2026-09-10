@@ -183,6 +183,15 @@ async def create_patient(
 
     patient = patient_service.create_patient(patient_dict)
 
+    # Assign patient MRN EAN-13 so file labels / sample labels are ready immediately.
+    try:
+        from app.services.barcode_service import ensure_patient_mrn_ean13
+        ensure_patient_mrn_ean13(db, patient)
+        db.commit()
+        db.refresh(patient)
+    except Exception:
+        pass
+
     # Audit log
     try:
         from app.services.audit_service import log_action
@@ -553,6 +562,153 @@ def _resolve_patient(db: Session, patient_ref: str) -> Patient:
     if not p:
         raise HTTPException(status_code=404, detail="Patient not found")
     return p
+
+
+def _pat_type_from_payment_method(payment_method: Optional[str]) -> str:
+    pm = (payment_method or "").strip().lower()
+    if pm in ("insurance", "tpa", "credit"):
+        return "Insurance"
+    return "Self Paying"
+
+
+def _format_file_label_bill_date(value) -> str:
+    from app.utils.time import format_system_dt, system_now
+    if value is None:
+        return format_system_dt(system_now(), fmt="%d-%b-%Y %H:%M", empty="")
+    if hasattr(value, "strftime"):
+        try:
+            return value.strftime("%d-%b-%Y %H:%M")
+        except Exception:
+            pass
+    return format_system_dt(value, fmt="%d-%b-%Y %H:%M", empty="") or str(value)
+
+
+@router.get("/{patient_ref}/file-label.pdf")
+async def download_patient_file_label_pdf(
+    patient_ref: str,
+    source: Optional[str] = None,
+    appointment_id: Optional[int] = None,
+    order_id: Optional[int] = None,
+    pat_type: Optional[str] = None,
+    bill_date: Optional[str] = None,
+    payment_method: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Thermal/Avery patient-file sticker PDF (MRN barcode + demographics)."""
+    import io
+    from fastapi.responses import StreamingResponse
+    from app.services.barcode_service import ensure_patient_mrn_ean13
+    from app.utils.label_pdf_service import LabelLayoutConfig, build_label_pdf
+    from app.utils.pdf_settings import get_patient_file_label_settings
+    from app.utils.patient_age import format_patient_age
+    from app.utils.time import system_now
+
+    if not current_user.hospital_id:
+        raise HTTPException(status_code=400, detail="User not assigned to a hospital")
+
+    patient = _resolve_patient(db, patient_ref)
+    if patient.hospital_id != current_user.hospital_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    ensure_patient_mrn_ean13(db, patient)
+    db.flush()
+
+    order_no = ""
+    ref_name = (patient.referred_by or "").strip()
+    resolved_payment = payment_method
+    resolved_bill_dt = None
+
+    src = (source or "").strip().lower()
+    if appointment_id or src == "appointment":
+        from app.models.outpatient import Appointment
+        apt = None
+        if appointment_id:
+            apt = db.query(Appointment).filter(
+                Appointment.id == appointment_id,
+                Appointment.patient_id == patient.id,
+            ).first()
+        if not apt:
+            apt = (
+                db.query(Appointment)
+                .filter(Appointment.patient_id == patient.id)
+                .order_by(Appointment.created_at.desc())
+                .first()
+            )
+        if apt:
+            order_no = apt.appointment_number or ""
+            if apt.referred_by:
+                ref_name = apt.referred_by.strip()
+            resolved_payment = resolved_payment or getattr(apt, "payment_method", None)
+            resolved_bill_dt = apt.appointment_date or apt.created_at
+
+    if order_id or src == "lab":
+        from app.models.lab import PatientLabOrder
+        order = None
+        if order_id:
+            order = (
+                db.query(PatientLabOrder)
+                .filter(
+                    PatientLabOrder.id == order_id,
+                    PatientLabOrder.patient_id == patient.id,
+                )
+                .first()
+            )
+        if not order:
+            order = (
+                db.query(PatientLabOrder)
+                .filter(PatientLabOrder.patient_id == patient.id)
+                .order_by(PatientLabOrder.order_date.desc())
+                .first()
+            )
+        if order:
+            order_no = order.order_number or order_no
+            if order.referred_by:
+                ref_name = order.referred_by.strip()
+            resolved_bill_dt = order.order_date or resolved_bill_dt
+
+    if bill_date:
+        resolved_bill_dt = bill_date
+    if resolved_bill_dt is None:
+        resolved_bill_dt = patient.created_at or system_now()
+
+    gender = (patient.gender or "").strip()
+    gender_disp = gender.upper() if len(gender) <= 3 else gender.capitalize()
+    age_disp = format_patient_age(patient) or ""
+    if age_disp and gender_disp:
+        age_gender = f"{age_disp} / {gender_disp}"
+    else:
+        age_gender = age_disp or gender_disp
+
+    label = {
+        "patient_name": f"{patient.first_name} {patient.last_name}".strip(),
+        "mrn": patient.mrn or "",
+        "mrn_ean13": patient.mrn_ean13 or "",
+        "pat_type": (pat_type or "").strip() or _pat_type_from_payment_method(resolved_payment),
+        "age_gender": age_gender,
+        "bill_date": _format_file_label_bill_date(resolved_bill_dt),
+        "order_no": order_no if src != "registration" else "",
+        "ref_name": ref_name,
+    }
+    # Registration / reprint without context: omit order number.
+    if src in ("", "registration", "reprint") and not appointment_id and not order_id:
+        label["order_no"] = ""
+
+    layout = LabelLayoutConfig.from_dict(
+        get_patient_file_label_settings(db, current_user.hospital_id)
+    )
+    pdf_bytes = build_label_pdf([label], layout, "patient_file")
+    db.commit()
+
+    safe_mrn = (patient.mrn or str(patient.id)).replace("/", "-")
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"inline; filename=patient_file_label_{safe_mrn}.pdf",
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @router.get("/{patient_ref}/allergies", response_model=List[AllergyResponse])

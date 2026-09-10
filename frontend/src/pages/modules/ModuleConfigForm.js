@@ -56,11 +56,6 @@ const ImageUploadField = ({ label, configKey, value, onChange }) => {
     const file = e.target.files[0];
     if (!file) return;
 
-    if (file.size > 2 * 1024 * 1024) {
-      toast({ variant: 'destructive', title: 'Error', description: 'File must be under 2MB' });
-      return;
-    }
-
     setUploading(true);
     const formData = new FormData();
     formData.append('file', file);

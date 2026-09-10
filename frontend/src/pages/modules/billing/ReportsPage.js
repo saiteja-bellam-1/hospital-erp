@@ -12,8 +12,8 @@ import { ChevronDown, Download, FileSpreadsheet, FileText, Loader2 } from 'lucid
 import PdfPreviewDialog from '../../../components/PdfPreviewDialog';
 import PatientSearchPicker from '../../../components/PatientSearchPicker';
 import {
-  BILLING_MODULES, BillingPeriodFilter, MoneyTable, ModuleChips, formatInr, defaultReportRange,
-  rateAmountColumns, flattenRateRows, billingModuleEnabledMap,
+  BILLING_MODULES, BillingPeriodFilter, MoneyTable, ModuleSelect, formatInr, defaultReportRange,
+  rateAmountColumns, flattenRateRows, billingModuleEnabledMap, selectFitStyle,
 } from './BillingReportControls';
 import { localMonthStart } from '../../../utils/localDate';
 
@@ -25,6 +25,7 @@ const BILLING_MODULES_WITH_SCOPE = [
 /**
  * Catalog keyed by report id. `modules` = which module tabs show this report.
  * `scopesModule` = pass selected module as API filter when not "all".
+ * `uses` = which filters apply: period | month | patient | doctor | test | therapist
  */
 const REPORT_CATALOG = [
   { id: 'sales', label: 'Sales register', modules: BILLING_MODULES_WITH_SCOPE, scopesModule: true, uses: ['period', 'patient'], hint: 'Invoices for the selected module' },
@@ -36,19 +37,19 @@ const REPORT_CATALOG = [
 
   { id: 'opd-activity', label: 'OPD activity', modules: ['opd'], requires: 'outpatient', uses: ['period', 'doctor'], hint: 'Appointments, no-shows, and doctor load' },
 
-  { id: 'lab-volume', label: 'Lab volume & TAT', modules: ['lab'], requires: 'lab', uses: ['period'], hint: 'Orders, pending vs completed, average turnaround' },
+  { id: 'lab-volume', label: 'Lab volume & TAT', modules: ['lab'], requires: 'lab', uses: ['period', 'test'], hint: 'Orders, pending vs completed, average turnaround' },
 
   { id: 'bed-occupancy', label: 'Bed occupancy', modules: ['inpatient'], requires: 'inpatient', uses: [], hint: 'Live occupancy by ward and room type' },
   { id: 'monthly-outcomes', label: 'Monthly outcomes', modules: ['inpatient'], requires: 'inpatient', uses: ['month'], hint: 'Occupancy, mortality, readmissions, LOS' },
-  { id: 'readmissions', label: 'Readmissions (30-day)', modules: ['inpatient'], requires: 'inpatient', uses: [], hint: 'Patients readmitted within 30 days' },
-  { id: 'mortality', label: 'Mortality', modules: ['inpatient'], requires: 'inpatient', uses: ['period'], hint: 'Deaths in the selected period' },
+  { id: 'readmissions', label: 'Readmissions (30-day)', modules: ['inpatient'], requires: 'inpatient', uses: ['patient'], hint: 'Patients readmitted within 30 days' },
+  { id: 'mortality', label: 'Mortality', modules: ['inpatient'], requires: 'inpatient', uses: ['period', 'patient'], hint: 'Deaths in the selected period' },
 
-  { id: 'pharmacy-sales', label: 'Pharmacy sales', modules: ['pharmacy', 'pharmacy_ip'], requires: 'pharmacy', uses: ['period'], hint: 'POS sales by day' },
+  { id: 'pharmacy-sales', label: 'Pharmacy sales', modules: ['pharmacy', 'pharmacy_ip'], requires: 'pharmacy', uses: ['period'], hint: 'POS sales by day — use Sales register under Pharmacy to filter by patient' },
   { id: 'pharmacy-stock', label: 'Stock on hand', modules: ['pharmacy', 'pharmacy_ip'], requires: 'pharmacy', uses: [], hint: 'Current stock value and low-stock items' },
 
   { id: 'daycare-volume', label: 'Day care volume', modules: ['day_care'], uses: ['period'], hint: 'Procedure / day-care bills' },
 
-  { id: 'physio-summary', label: 'Physio utilization', modules: ['physiotherapy'], requires: 'physiotherapy', uses: ['period'], hint: 'Sessions, no-shows, therapist load, collections' },
+  { id: 'physio-summary', label: 'Physio utilization', modules: ['physiotherapy'], requires: 'physiotherapy', uses: ['period', 'therapist'], hint: 'Sessions, no-shows, therapist load, collections' },
 
   { id: 'canteen-activity', label: 'Canteen activity', modules: ['canteen'], requires: 'inpatient', uses: ['period'], hint: 'POS sales and IP food orders' },
 ];
@@ -104,6 +105,18 @@ function filterRowsByDoctor(rows, doctorId) {
   return rows.filter((r) => Number(r.doctor_id) === id);
 }
 
+function filterRowsByTherapist(rows, therapistId) {
+  if (!therapistId || !rows?.length) return rows || [];
+  const id = Number(therapistId);
+  return rows.filter((r) => Number(r.therapist_id) === id);
+}
+
+function filterRowsByPatient(rows, patientId) {
+  if (!patientId || !rows?.length) return rows || [];
+  const id = Number(patientId);
+  return rows.filter((r) => Number(r.patient_id) === id);
+}
+
 export default function ReportsPage() {
   const range = defaultReportRange();
   const [module, setModule] = useState('all');
@@ -114,7 +127,11 @@ export default function ReportsPage() {
   const [month, setMonth] = useState(localMonthStart().slice(0, 7));
   const [patient, setPatient] = useState(null);
   const [doctorId, setDoctorId] = useState('');
+  const [testId, setTestId] = useState('');
+  const [therapistId, setTherapistId] = useState('');
   const [doctors, setDoctors] = useState([]);
+  const [labTests, setLabTests] = useState([]);
+  const [therapists, setTherapists] = useState([]);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -149,6 +166,32 @@ export default function ReportsPage() {
     return () => { cancelled = true; };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await axios.get('/api/lab/tests');
+        if (!cancelled) setLabTests(res.data || []);
+      } catch {
+        if (!cancelled) setLabTests([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await axios.get('/api/physiotherapy/therapists');
+        if (!cancelled) setTherapists(res.data || []);
+      } catch {
+        if (!cancelled) setTherapists([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   const moduleEnabled = useMemo(
     () => (Object.keys(enabledModules).length ? billingModuleEnabledMap(enabledModules) : null),
     [enabledModules],
@@ -177,17 +220,23 @@ export default function ReportsPage() {
     }
   }, [reportOptions, kind]);
 
-  // Clear patient/doctor when switching report if that filter no longer applies
+  // Clear context filters when the report no longer supports them
   useEffect(() => {
     const meta = REPORT_CATALOG.find((r) => r.id === kind);
     const uses = meta?.uses || [];
     if (!uses.includes('patient')) setPatient(null);
     if (!uses.includes('doctor')) setDoctorId('');
+    if (!uses.includes('test')) setTestId('');
+    if (!uses.includes('therapist')) setTherapistId('');
   }, [kind]);
 
   const kindMeta = reportOptions.find((k) => k.id === kind) || REPORT_CATALOG.find((r) => r.id === kind) || REPORT_CATALOG[0];
   const uses = kindMeta.uses || [];
-  const showFilters = uses.includes('period') || uses.includes('month') || uses.includes('patient') || uses.includes('doctor');
+  const showPeriod = uses.includes('period') || uses.includes('month');
+  const showContext = uses.includes('patient') || uses.includes('doctor') || uses.includes('test') || uses.includes('therapist');
+
+  /** Reports that send patient_id to the API (vs client-side row filter). */
+  const patientViaApi = ['sales', 'daily-collection', 'tax-summary', 'outstanding', 'doctor-revenue'].includes(kind);
 
   const filterParams = useMemo(() => {
     const params = {};
@@ -199,9 +248,10 @@ export default function ReportsPage() {
     }
     if (needed.includes('month')) params.month = month;
     if (meta.scopesModule && module && module !== 'all') params.module = module;
-    if (needed.includes('patient') && patient?.id) params.patient_id = patient.id;
+    if (needed.includes('patient') && patientViaApi && patient?.id) params.patient_id = patient.id;
+    if (needed.includes('test') && testId) params.test_id = Number(testId);
     return params;
-  }, [kind, dateFrom, dateTo, month, module, patient]);
+  }, [kind, dateFrom, dateTo, month, module, patient, patientViaApi, testId]);
 
   const endpoint = PATHS[kind] || PATHS.sales;
 
@@ -220,38 +270,74 @@ export default function ReportsPage() {
   useEffect(() => { run(); }, [run]);
 
   const displayData = useMemo(() => {
-    if (!data || !doctorId || !uses.includes('doctor')) return data;
-    const rows = filterRowsByDoctor(data.rows, doctorId);
-    const next = { ...data, rows };
-    if (kind === 'doctor-efficiency') {
-      next.totals = {
-        opd_consults: rows.reduce((s, r) => s + Number(r.opd_consults || 0), 0),
-        opd_revenue: Math.round(rows.reduce((s, r) => s + Number(r.opd_revenue || 0), 0) * 100) / 100,
-        admissions: rows.reduce((s, r) => s + Number(r.admissions || 0), 0),
-        visits: rows.reduce((s, r) => s + Number(r.visits || 0), 0),
-        ot_as_surgeon: rows.reduce((s, r) => s + Number(r.ot_as_surgeon || 0), 0),
-        total_billed_attributable: Math.round(rows.reduce((s, r) => s + Number(r.total_billed_attributable || 0), 0) * 100) / 100,
-      };
-    } else if (kind === 'doctor-revenue') {
-      next.totals = {
-        consultation_total: Math.round(rows.reduce((s, r) => s + Number(r.consultation_revenue || 0), 0) * 100) / 100,
-        admission_total: Math.round(rows.reduce((s, r) => s + Number(r.admission_revenue || 0), 0) * 100) / 100,
-        grand_total: Math.round(rows.reduce((s, r) => s + Number(r.total_revenue || 0), 0) * 100) / 100,
-      };
-    } else if (kind === 'opd-activity') {
-      next.totals = {
-        ...data.totals,
-        appointments: rows.reduce((s, r) => s + Number(r.count || 0), 0),
-        completed: rows.reduce((s, r) => s + Number(r.completed || 0), 0),
-        no_show: rows.reduce((s, r) => s + Number(r.no_show || 0), 0),
-        billed: Math.round(rows.reduce((s, r) => s + Number(r.billed || 0), 0) * 100) / 100,
-        collected: Math.round(rows.reduce((s, r) => s + Number(r.collected || 0), 0) * 100) / 100,
-      };
-      const appts = next.totals.appointments;
-      next.totals.no_show_pct = appts ? Math.round(next.totals.no_show * 1000 / appts) / 10 : 0;
+    if (!data) return data;
+    let next = data;
+    let rows = data.rows;
+
+    if (uses.includes('doctor') && doctorId) {
+      rows = filterRowsByDoctor(rows, doctorId);
+      next = { ...next, rows };
+      if (kind === 'doctor-efficiency') {
+        next.totals = {
+          opd_consults: rows.reduce((s, r) => s + Number(r.opd_consults || 0), 0),
+          opd_revenue: Math.round(rows.reduce((s, r) => s + Number(r.opd_revenue || 0), 0) * 100) / 100,
+          admissions: rows.reduce((s, r) => s + Number(r.admissions || 0), 0),
+          visits: rows.reduce((s, r) => s + Number(r.visits || 0), 0),
+          ot_as_surgeon: rows.reduce((s, r) => s + Number(r.ot_as_surgeon || 0), 0),
+          total_billed_attributable: Math.round(rows.reduce((s, r) => s + Number(r.total_billed_attributable || 0), 0) * 100) / 100,
+        };
+      } else if (kind === 'doctor-revenue') {
+        next.totals = {
+          consultation_total: Math.round(rows.reduce((s, r) => s + Number(r.consultation_revenue || 0), 0) * 100) / 100,
+          admission_total: Math.round(rows.reduce((s, r) => s + Number(r.admission_revenue || 0), 0) * 100) / 100,
+          grand_total: Math.round(rows.reduce((s, r) => s + Number(r.total_revenue || 0), 0) * 100) / 100,
+        };
+      } else if (kind === 'opd-activity') {
+        next.totals = {
+          ...data.totals,
+          appointments: rows.reduce((s, r) => s + Number(r.count || 0), 0),
+          completed: rows.reduce((s, r) => s + Number(r.completed || 0), 0),
+          no_show: rows.reduce((s, r) => s + Number(r.no_show || 0), 0),
+          billed: Math.round(rows.reduce((s, r) => s + Number(r.billed || 0), 0) * 100) / 100,
+          collected: Math.round(rows.reduce((s, r) => s + Number(r.collected || 0), 0) * 100) / 100,
+        };
+        const appts = next.totals.appointments;
+        next.totals.no_show_pct = appts ? Math.round(next.totals.no_show * 1000 / appts) / 10 : 0;
+      }
     }
+
+    if (uses.includes('therapist') && therapistId) {
+      rows = filterRowsByTherapist(next.rows, therapistId);
+      next = {
+        ...next,
+        rows,
+        totals: {
+          ...next.totals,
+          sessions: rows.reduce((s, r) => s + Number(r.completed || 0) + Number(r.no_show || 0) + Number(r.cancelled || 0) + Number(r.scheduled || 0), 0),
+          completed: rows.reduce((s, r) => s + Number(r.completed || 0), 0),
+          no_show: rows.reduce((s, r) => s + Number(r.no_show || 0), 0),
+          cancelled: rows.reduce((s, r) => s + Number(r.cancelled || 0), 0),
+        },
+      };
+    }
+
+    if (uses.includes('patient') && !patientViaApi && patient?.id) {
+      rows = filterRowsByPatient(next.rows, patient.id);
+      next = {
+        ...next,
+        rows,
+        totals: {
+          ...next.totals,
+          count: rows.length,
+          mlc: kind === 'mortality'
+            ? rows.filter((r) => r.mlc_required === true || r.mlc_required === 'Yes').length
+            : next.totals?.mlc,
+        },
+      };
+    }
+
     return next;
-  }, [data, doctorId, uses, kind]);
+  }, [data, doctorId, therapistId, patient, uses, kind, patientViaApi]);
 
   const view = displayData || data;
   const t = view?.totals || {};
@@ -261,6 +347,8 @@ export default function ReportsPage() {
     module || 'all',
     patient?.id ? `p${patient.id}` : null,
     doctorId ? `d${doctorId}` : null,
+    testId ? `t${testId}` : null,
+    therapistId ? `th${therapistId}` : null,
     uses.includes('month') ? month : `${dateFrom}_to_${dateTo}`,
   ].filter(Boolean).join('_');
 
@@ -409,7 +497,7 @@ export default function ReportsPage() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Reports</h1>
           <p className="text-sm text-gray-600">
-            Choose a module, pick a report, then set filters.
+            Module, report, range, then filters — all in one bar.
           </p>
         </div>
         <DropdownMenu>
@@ -439,104 +527,155 @@ export default function ReportsPage() {
       </div>
 
       <Card>
-        <CardContent className="pt-4 space-y-4">
-          <div>
-            <Label className="text-xs text-gray-500 uppercase tracking-wide">1. Module</Label>
-            <div className="mt-1.5">
-              <ModuleChips value={module} onChange={setModule} enabled={moduleEnabled} />
+        <CardContent className="pt-4 pb-4">
+          <div className="flex flex-wrap items-end gap-3 pl-4 md:pl-8 lg:pl-12">
+            <div className="shrink-0">
+              <Label className="text-xs text-gray-500">Module</Label>
+              <ModuleSelect
+                value={module}
+                onChange={setModule}
+                enabled={moduleEnabled}
+                triggerClassName="h-9 w-auto"
+              />
             </div>
-          </div>
 
-          <div className="border-t pt-4">
-            <Label className="text-xs text-gray-500 uppercase tracking-wide">2. Report</Label>
-            <p className="text-xs text-gray-500 mt-0.5 mb-2">
-              Reports for {moduleLabel}
-              {reportOptions.length ? ` · ${reportOptions.length} available` : ''}
-            </p>
-            {reportOptions.length === 0 ? (
-              <p className="text-sm text-amber-700">No reports available for this module.</p>
-            ) : (
-              <div className="flex flex-wrap gap-1.5">
-                {reportOptions.map((r) => (
-                  <Button
-                    key={r.id}
-                    type="button"
-                    size="sm"
-                    variant={kind === r.id ? 'default' : 'outline'}
-                    className="h-8 px-2.5 text-xs"
-                    title={r.hint}
-                    onClick={() => setKind(r.id)}
+            <div className="shrink-0">
+              <Label className="text-xs text-gray-500">Report</Label>
+              {reportOptions.length === 0 ? (
+                <p className="text-sm text-amber-700 h-9 flex items-center">None for {moduleLabel}</p>
+              ) : (
+                <Select value={kind} onValueChange={setKind}>
+                  <SelectTrigger
+                    className="h-9 w-auto"
+                    style={selectFitStyle(kindMeta?.label || 'Select report', { minCh: 12, maxCh: 28 })}
                   >
-                    {r.label}
-                  </Button>
-                ))}
+                    <SelectValue placeholder="Select report" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {reportOptions.map((r) => (
+                      <SelectItem key={r.id} value={r.id}>{r.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            </div>
+
+            {uses.includes('period') && (
+              <BillingPeriodFilter
+                mode={periodMode}
+                onMode={setPeriodMode}
+                dateFrom={dateFrom}
+                dateTo={dateTo}
+                onFrom={setDateFrom}
+                onTo={setDateTo}
+                compact
+                className="flex flex-wrap items-end gap-3"
+              />
+            )}
+
+            {uses.includes('month') && (
+              <div className="shrink-0">
+                <Label className="text-xs text-gray-500">Month</Label>
+                <Input type="month" value={month} onChange={(e) => setMonth(e.target.value)} className="w-[148px] h-9" />
               </div>
             )}
-            {kindMeta?.hint && (
-              <p className="text-xs text-gray-500 mt-2">{kindMeta.hint}</p>
+
+            {uses.includes('doctor') && (() => {
+              const found = doctors.find((d) => String(d.id) === String(doctorId));
+              const docLabel = doctorId && found ? doctorLabel(found) : 'All doctors';
+              return (
+                <div className="shrink-0">
+                  <Label className="text-xs text-gray-500">Doctor</Label>
+                  <Select value={doctorId || 'all'} onValueChange={(v) => setDoctorId(v === 'all' ? '' : v)}>
+                    <SelectTrigger className="h-9 w-auto" style={selectFitStyle(docLabel, { minCh: 11, maxCh: 28 })}>
+                      <SelectValue placeholder="All doctors" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All doctors</SelectItem>
+                      {doctors.map((d) => (
+                        <SelectItem key={d.id} value={String(d.id)}>{doctorLabel(d)}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              );
+            })()}
+
+            {uses.includes('test') && (() => {
+              const testOptions = labTests.length
+                ? labTests
+                : (data?.rows || []).filter((r) => r.test_id).map((r) => ({ id: r.test_id, name: r.test }));
+              const testLabel = testId
+                ? (testOptions.find((t) => String(t.id) === String(testId))?.name || 'Test')
+                : 'All tests';
+              return (
+                <div className="shrink-0">
+                  <Label className="text-xs text-gray-500">Test</Label>
+                  <Select value={testId || 'all'} onValueChange={(v) => setTestId(v === 'all' ? '' : v)}>
+                    <SelectTrigger className="h-9 w-auto" style={selectFitStyle(testLabel, { minCh: 10, maxCh: 40 })}>
+                      <SelectValue placeholder="All tests" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All tests</SelectItem>
+                      {testOptions.map((t) => (
+                        <SelectItem key={t.id} value={String(t.id)}>{t.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              );
+            })()}
+
+            {uses.includes('therapist') && (() => {
+              const therapistOptions = therapists.length
+                ? therapists
+                : (data?.rows || []).filter((r) => r.therapist_id).map((r) => ({
+                  id: r.therapist_id,
+                  full_name: r.therapist_name,
+                }));
+              const th = therapistOptions.find((t) => String(t.id) === String(therapistId));
+              const thLabel = therapistId
+                ? (th?.full_name || [th?.first_name, th?.last_name].filter(Boolean).join(' ') || 'Therapist')
+                : 'All therapists';
+              return (
+                <div className="shrink-0">
+                  <Label className="text-xs text-gray-500">Therapist</Label>
+                  <Select value={therapistId || 'all'} onValueChange={(v) => setTherapistId(v === 'all' ? '' : v)}>
+                    <SelectTrigger className="h-9 w-auto" style={selectFitStyle(thLabel, { minCh: 12, maxCh: 28 })}>
+                      <SelectValue placeholder="All therapists" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All therapists</SelectItem>
+                      {therapistOptions.map((t) => (
+                        <SelectItem key={t.id} value={String(t.id)}>
+                          {t.full_name || [t.first_name, t.last_name].filter(Boolean).join(' ') || `User #${t.id}`}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              );
+            })()}
+
+            {uses.includes('patient') && (
+              <div className="min-w-[12rem] w-[14rem] max-w-[18rem] shrink-0">
+                <PatientSearchPicker
+                  value={patient}
+                  onChange={setPatient}
+                  label="Patient"
+                  compact
+                  allowRegister={false}
+                  placeholder="Name, phone, or ID…"
+                />
+              </div>
             )}
+
+            <Button onClick={run} disabled={loading || !reportOptions.length} size="sm" className="h-9 shrink-0">
+              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : (showPeriod || showContext ? 'Run' : 'Refresh')}
+            </Button>
           </div>
-
-          {showFilters && (
-            <div className="border-t pt-4">
-              <Label className="text-xs text-gray-500 uppercase tracking-wide">3. Filters</Label>
-              <div className="mt-2 flex flex-wrap items-end gap-3">
-                {uses.includes('period') && (
-                  <BillingPeriodFilter
-                    mode={periodMode}
-                    onMode={setPeriodMode}
-                    dateFrom={dateFrom}
-                    dateTo={dateTo}
-                    onFrom={setDateFrom}
-                    onTo={setDateTo}
-                  />
-                )}
-                {uses.includes('month') && (
-                  <div>
-                    <Label className="text-xs">Month</Label>
-                    <Input type="month" value={month} onChange={(e) => setMonth(e.target.value)} className="w-[160px] h-9" />
-                  </div>
-                )}
-                {uses.includes('patient') && (
-                  <div className="min-w-[240px] flex-1 max-w-sm">
-                    <PatientSearchPicker
-                      value={patient}
-                      onChange={setPatient}
-                      label="Patient"
-                      compact
-                      allowRegister={false}
-                      placeholder="Name, phone, or ID…"
-                    />
-                  </div>
-                )}
-                {uses.includes('doctor') && (
-                  <div>
-                    <Label className="text-xs">Doctor</Label>
-                    <Select value={doctorId || 'all'} onValueChange={(v) => setDoctorId(v === 'all' ? '' : v)}>
-                      <SelectTrigger className="w-[200px] h-9"><SelectValue placeholder="All doctors" /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="all">All doctors</SelectItem>
-                        {doctors.map((d) => (
-                          <SelectItem key={d.id} value={String(d.id)}>{doctorLabel(d)}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                )}
-                <Button onClick={run} disabled={loading || !reportOptions.length} size="sm" className="h-9">
-                  {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Run'}
-                </Button>
-              </div>
-            </div>
-          )}
-
-          {!showFilters && reportOptions.length > 0 && (
-            <div className="border-t pt-4 flex items-center gap-3">
-              <p className="text-xs text-gray-500">This report has no date or person filters.</p>
-              <Button onClick={run} disabled={loading} size="sm" className="h-9">
-                {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Refresh'}
-              </Button>
-            </div>
+          {kindMeta?.hint && (
+            <p className="text-xs text-gray-500 mt-2 pl-4 md:pl-8 lg:pl-12">{kindMeta.hint}</p>
           )}
         </CardContent>
       </Card>

@@ -36,7 +36,13 @@ class TestBrandingApi:
         assert res.status_code == 403
         assert "not included" in res.json()["detail"].lower()
 
-    def test_branding_put_super_admin(self, client, auth_headers, customisation_license, seed_data):
+    def test_branding_put_super_admin(self, client, auth_headers, customisation_license, db_session, seed_data):
+        from app.models.hospital import Hospital
+
+        hospital = db_session.query(Hospital).first()
+        hospital.logo_url = "/uploads/module-config/hospital-letterhead.png"
+        db_session.commit()
+
         res = client.put(
             "/api/hospital/branding",
             headers=auth_headers,
@@ -53,8 +59,14 @@ class TestBrandingApi:
         assert data["favicon_url"] == "/uploads/module-config/favicon.png"
         assert data["customisation_licensed"] is True
 
+        db_session.refresh(hospital)
+        assert hospital.app_logo_url == "/uploads/module-config/logo.png"
+        # Branding must not overwrite the hospital/PDF letterhead logo
+        assert hospital.logo_url == "/uploads/module-config/hospital-letterhead.png"
+
         public = client.get("/api/hospital/branding/public")
         assert public.json()["name"] == "Custom Hospital"
+        assert public.json()["logo_url"] == "/uploads/module-config/logo.png"
 
     def test_branding_put_rejects_hospital_admin(self, client, db_session, seed_data):
         from app.models.user import User
@@ -71,7 +83,7 @@ class TestBrandingApi:
         )
         assert res.status_code == 403
 
-    def test_hospital_info_logo_ignored_for_hospital_admin(self, client, db_session, seed_data):
+    def test_hospital_info_logo_allowed_for_hospital_admin(self, client, db_session, seed_data):
         from app.models.hospital import Hospital
         from app.models.user import User, UserRole
         from app.utils.auth import create_access_token, get_password_hash
@@ -101,12 +113,14 @@ class TestBrandingApi:
         res = client.put(
             "/api/hospital/info",
             headers=headers,
-            json={"logo_url": "/uploads/module-config/should-not-apply.png"},
+            json={"logo_url": "/uploads/module-config/hospital-logo.png"},
         )
         assert res.status_code == 200
 
         hospital = db_session.query(Hospital).first()
-        assert hospital.logo_url != "/uploads/module-config/should-not-apply.png"
+        db_session.refresh(hospital)
+        assert hospital.logo_url == "/uploads/module-config/hospital-logo.png"
+        assert hospital.app_logo_url != "/uploads/module-config/hospital-logo.png"
 
     def test_logo_upload_requires_license(self, client, auth_headers, seed_data):
         png = _png_bytes(800, 200)

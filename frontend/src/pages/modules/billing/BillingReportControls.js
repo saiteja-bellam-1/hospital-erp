@@ -61,6 +61,16 @@ export function formatInr(val) {
   return `₹${Number(val || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+/**
+ * Size a Select trigger to fit its current label (+ room for the chevron).
+ * Caps keep very long names from dominating the filter bar.
+ */
+export function selectFitStyle(label, { minCh = 8, maxCh = 36 } = {}) {
+  const len = String(label || '').length;
+  const ch = Math.min(maxCh, Math.max(minCh, len + 1));
+  return { width: `calc(${ch}ch + 2.5rem)` };
+}
+
 export function defaultReportRange() {
   return { from: localDateStringOffset(-30), to: localDateString() };
 }
@@ -103,7 +113,7 @@ export function BillingDateRange({ dateFrom, dateTo, onFrom, onTo, className }) 
 }
 
 /** Single calendar day or an inclusive from/to range. Period type is a dropdown. */
-export function BillingPeriodFilter({ mode, onMode, dateFrom, dateTo, onFrom, onTo, className }) {
+export function BillingPeriodFilter({ mode, onMode, dateFrom, dateTo, onFrom, onTo, className, compact = false }) {
   const applyPreset = (id) => {
     const today = localDateString();
     if (id === 'today') { onFrom(today); onTo(today); return; }
@@ -128,12 +138,17 @@ export function BillingPeriodFilter({ mode, onMode, dateFrom, dateTo, onFrom, on
       onTo(dateTo || localDateString());
     }
   };
+  const trigger = 'h-9 w-auto';
+  const dateW = compact ? 'w-[138px] h-9' : 'w-[150px] h-9';
+  const periodLabel = mode === 'day' ? 'Date' : 'Date range';
   return (
-    <div className={className || 'flex flex-wrap gap-3 items-end'}>
+    <div className={className || `flex flex-wrap items-end ${compact ? 'gap-2.5' : 'gap-3'}`}>
       <div>
         <Label className="text-xs">Period</Label>
         <Select value={mode} onValueChange={onPeriodType}>
-          <SelectTrigger className="w-[140px] h-9"><SelectValue /></SelectTrigger>
+          <SelectTrigger className={trigger} style={selectFitStyle(periodLabel, { minCh: 10, maxCh: 14 })}>
+            <SelectValue />
+          </SelectTrigger>
           <SelectContent>
             <SelectItem value="day">Date</SelectItem>
             <SelectItem value="range">Date range</SelectItem>
@@ -147,23 +162,25 @@ export function BillingPeriodFilter({ mode, onMode, dateFrom, dateTo, onFrom, on
             type="date"
             value={dateFrom}
             onChange={(e) => { onFrom(e.target.value); onTo(e.target.value); }}
-            className="w-[150px] h-9"
+            className={dateW}
           />
         </div>
       ) : (
         <>
           <div>
             <Label className="text-xs">From</Label>
-            <Input type="date" value={dateFrom} onChange={(e) => onFrom(e.target.value)} className="w-[150px] h-9" />
+            <Input type="date" value={dateFrom} onChange={(e) => onFrom(e.target.value)} className={dateW} />
           </div>
           <div>
             <Label className="text-xs">To</Label>
-            <Input type="date" value={dateTo} onChange={(e) => onTo(e.target.value)} className="w-[150px] h-9" />
+            <Input type="date" value={dateTo} onChange={(e) => onTo(e.target.value)} className={dateW} />
           </div>
           <div>
-            <Label className="text-xs">Quick range</Label>
+            <Label className="text-xs">Quick</Label>
             <Select onValueChange={applyPreset}>
-              <SelectTrigger className="w-[150px] h-9"><SelectValue placeholder="Choose…" /></SelectTrigger>
+              <SelectTrigger className={trigger} style={selectFitStyle('Choose…', { minCh: 9, maxCh: 12 })}>
+                <SelectValue placeholder="Choose…" />
+              </SelectTrigger>
               <SelectContent>
                 <SelectItem value="today">Today</SelectItem>
                 <SelectItem value="week">This week</SelectItem>
@@ -258,6 +275,31 @@ export function ModuleChips({ value, onChange, enabled = null }) {
         </Button>
       ))}
     </div>
+  );
+}
+
+/** Module picker as a Select — preferred on the Reports hub to avoid chip wrap. */
+export function ModuleSelect({ value, onChange, enabled = null, className, triggerClassName, triggerStyle }) {
+  const items = BILLING_MODULES.filter((m) => {
+    if (!enabled) return true;
+    if (m.id === 'all') return true;
+    return enabled[m.id] !== false;
+  });
+  const label = items.find((m) => m.id === value)?.label || 'Module';
+  return (
+    <Select value={value} onValueChange={onChange}>
+      <SelectTrigger
+        className={triggerClassName || 'h-9 w-auto'}
+        style={triggerStyle || selectFitStyle(label)}
+      >
+        <SelectValue placeholder="Module" />
+      </SelectTrigger>
+      <SelectContent className={className}>
+        {items.map((m) => (
+          <SelectItem key={m.id} value={m.id}>{m.label}</SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }
 

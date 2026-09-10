@@ -17,10 +17,12 @@ import {
   RefreshCw,
   Calendar,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Tag,
 } from 'lucide-react';
 import VitalsForm from '../../../components/vitals/VitalsForm';
 import LabTestBookingDialog from '../../../components/LabTestBookingDialog';
+import PatientFileLabelDialog from '../../../components/PatientFileLabelDialog';
 import ReferralSelectWithCreate from '../../../components/ReferralSelectWithCreate';
 import SteppedFormDialog from '../../../components/SteppedFormDialog';
 import PatientRegisterFormFields, {
@@ -91,6 +93,8 @@ const ReceptionPatientsPage = () => {
 
   // Lab test booking
   const [showLabBooking, setShowLabBooking] = useState(false);
+  const [fileLabelPatientId, setFileLabelPatientId] = useState(null);
+  const [fileLabelContext, setFileLabelContext] = useState({ source: 'registration' });
   const [labBookingPatient, setLabBookingPatient] = useState(null);
 
   // Enabled modules
@@ -227,6 +231,10 @@ const ReceptionPatientsPage = () => {
         setPatientForm(EMPTY_PATIENT_FORM);
         setRegisterStep(0);
         toast({ title: 'Success', description: 'Patient registered successfully!' });
+        if (newPatient?.id) {
+          setFileLabelContext({ source: 'registration' });
+          setFileLabelPatientId(newPatient.id);
+        }
       } else {
         const errorData = await response.json();
         console.error('Patient creation failed:', errorData);
@@ -541,6 +549,17 @@ const ReceptionPatientsPage = () => {
                         </Button>
                         <Button size="sm" variant="outline" onClick={() => openEditPatient(patient)}>
                           Edit
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setFileLabelContext({ source: 'reprint' });
+                            setFileLabelPatientId(patient.id);
+                          }}
+                        >
+                          <Tag className="h-3.5 w-3.5 mr-1" />
+                          File label
                         </Button>
                         {enabledModules.outpatient && (
                           <Button size="sm" onClick={() => navigate(
@@ -888,6 +907,13 @@ const ReceptionPatientsPage = () => {
         onClose={(success) => { setShowLabBooking(false); setLabBookingPatient(null); }}
         referralList={referralList}
         onReferralsChange={setReferralList}
+      />
+
+      <PatientFileLabelDialog
+        open={!!fileLabelPatientId}
+        patientId={fileLabelPatientId}
+        context={fileLabelContext}
+        onClose={() => setFileLabelPatientId(null)}
       />
     </div>
   );

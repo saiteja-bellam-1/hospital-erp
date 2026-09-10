@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '../../../../components/ui/card';
 import { Button } from '../../../../components/ui/button';
 import { Badge } from '../../../../components/ui/badge';
@@ -20,6 +20,7 @@ import PurchaseImportDialog from '../../../../components/pharmacy/PurchaseImport
 
 export default function PurchasesTab() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { toast } = useToast();
   const { storeParams } = usePharmacyStore();
   const { hasPerm } = usePharmacyPermissions();
@@ -31,15 +32,21 @@ export default function PurchasesTab() {
   const [importOpen, setImportOpen] = useState(false);
   const [labelsPurchase, setLabelsPurchase] = useState(null);
 
+  const dateFrom = searchParams.get('date_from') || '';
+  const dateTo = searchParams.get('date_to') || '';
+
   const load = async () => {
     setLoading(true);
     try {
-      const r = await axios.get('/api/pharmacy/purchases', { params: storeParams });
+      const params = { ...storeParams };
+      if (dateFrom) params.date_from = dateFrom;
+      if (dateTo) params.date_to = dateTo;
+      const r = await axios.get('/api/pharmacy/purchases', { params });
       setRows(r.data || []);
     } catch { /* ignore */ }
     finally { setLoading(false); }
   };
-  useEffect(() => { load(); }, [storeParams]);
+  useEffect(() => { load(); }, [storeParams, dateFrom, dateTo]);
 
   const submitRevoke = async () => {
     if (!revokeTarget) return;

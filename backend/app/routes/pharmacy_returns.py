@@ -512,6 +512,8 @@ def list_sale_returns(
     status: Optional[str] = None,
     search: Optional[str] = None,
     store_id: Optional[int] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_sale_returns")),
 ):
@@ -520,6 +522,10 @@ def list_sale_returns(
         q = q.filter(PharmacySaleReturn.status == status)
     if store_id is not None:
         q = q.filter(PharmacySaleReturn.store_id == store_id)
+    if date_from:
+        q = q.filter(PharmacySaleReturn.return_date >= date_from)
+    if date_to:
+        q = q.filter(PharmacySaleReturn.return_date <= date_to)
     if search:
         like = f"%{search}%"
         q = q.filter(

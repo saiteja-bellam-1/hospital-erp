@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import axios from 'axios';
+import { useSearchParams } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '../../../../components/ui/card';
 import { Button } from '../../../../components/ui/button';
 import { Input } from '../../../../components/ui/input';
@@ -9,7 +10,7 @@ import { Badge } from '../../../../components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../../../../components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../../../components/ui/select';
 import { useToast } from '../../../../hooks/use-toast';
-import { Search, RefreshCw, Sliders, ScrollText, Upload, Download, Loader2, X, Trash2, Printer } from 'lucide-react';
+import { Search, RefreshCw, Sliders, ScrollText, Upload, Download, Loader2, X, Trash2, Printer, AlertTriangle, CalendarX2 } from 'lucide-react';
 import LabelPreviewDialog from '../../../../components/LabelPreviewDialog';
 import PharmacyImportDialog, { downloadPharmacyBlob } from '../../../../components/pharmacy/PharmacyImportDialog';
 import PharmacyMedicinePicker from '../../../../components/pharmacy/PharmacyMedicinePicker';
@@ -37,13 +38,30 @@ const LEDGER_TXN_TYPES = [
 
 export default function InventoryTab() {
   const { toast } = useToast();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { storeParams } = usePharmacyStore();
   const { hasPerm } = usePharmacyPermissions();
   const canAdjustStock = hasPerm('adjust_stock');
-  const [view, setView] = useState('stock');     // stock | batches | ledger
+  const initialView = (() => {
+    if (searchParams.get('low') === '1') return 'low';
+    if (searchParams.get('expiring') != null) return 'expiring';
+    return 'stock';
+  })();
+  const [view, setView] = useState(initialView); // stock | batches | ledger | low | expiring
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
+  const expiringDays = Math.max(1, parseInt(searchParams.get('expiring') || '90', 10) || 90);
+
+  const setInventoryView = (next) => {
+    setView(next);
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.delete('low');
+    nextParams.delete('expiring');
+    if (next === 'low') nextParams.set('low', '1');
+    if (next === 'expiring') nextParams.set('expiring', String(expiringDays));
+    setSearchParams(nextParams, { replace: true });
+  };
 
   const [ledgerMedicine, setLedgerMedicine] = useState(null);
   const [ledgerBatchId, setLedgerBatchId] = useState('');
@@ -92,6 +110,11 @@ export default function InventoryTab() {
     try {
       let url; const params = {};
       if (view === 'stock') { url = '/api/pharmacy/inventory'; if (search) params.search = search; }
+      else if (view === 'low') { url = '/api/pharmacy/inventory/low-stock'; }
+      else if (view === 'expiring') {
+        url = '/api/pharmacy/inventory/expiring';
+        params.days = expiringDays;
+      }
       else if (view === 'batches') { url = '/api/pharmacy/inventory/batches'; }
       else if (view === 'ledger') {
         url = '/api/pharmacy/inventory/ledger';
@@ -107,7 +130,7 @@ export default function InventoryTab() {
     } catch (e) {
       toast({ variant: 'destructive', title: 'Load failed', description: errMsg(e) });
     } finally { setLoading(false); }
-  }, [view, search, toast, storeParams, ledgerMedicine, ledgerBatchId, ledgerTxnType, ledgerDateFrom, ledgerDateTo]);
+  }, [view, search, toast, storeParams, ledgerMedicine, ledgerBatchId, ledgerTxnType, ledgerDateFrom, ledgerDateTo, expiringDays]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -234,7 +257,7 @@ export default function InventoryTab() {
   const showStockImportExport = view === 'stock' || view === 'batches';
 
   const tabBtn = (v, label, Icon) => (
-    <Button size="sm" variant={view === v ? 'default' : 'outline'} onClick={() => setView(v)}>
+    <Button size="sm" variant={view === v ? 'default' : 'outline'} onClick={() => setInventoryView(v)}>
       <Icon className="h-3 w-3 mr-1" /> {label}
     </Button>
   );
@@ -246,6 +269,8 @@ export default function InventoryTab() {
           <CardTitle className="flex flex-wrap items-center gap-2 justify-between">
             <div className="flex flex-wrap gap-2">
               {tabBtn('stock', 'Stock', ScrollText)}
+              {hasPerm('view_low_stock') && tabBtn('low', 'Low Stock', AlertTriangle)}
+              {hasPerm('view_expiring') && tabBtn('expiring', `Expiring (${expiringDays}d)`, CalendarX2)}
               {tabBtn('batches', 'All Batches', ScrollText)}
               {tabBtn('ledger', 'Stock Ledger', Sliders)}
             </div>
@@ -538,7 +563,7 @@ function TableForView({
   view, data, onAdjust, onCorrect, canAdjust, onDeleteLedger,
   selectedBatchIds = [], onToggleBatch, onPrintLabel,
 }) {
-  if (view === 'stock') {
+  if (view === 'stock' || view === 'low') {
     return (
       <table className="w-full text-sm">
         <thead><tr className="border-b text-left text-gray-600">
@@ -548,6 +573,7 @@ function TableForView({
           <th className="py-2 pr-4">Stock (tabs)</th>
           <th className="py-2 pr-4">Free</th>
           <th className="py-2 pr-4">Tabs/Strip</th>
+          {view === 'low' && <th className="py-2 pr-4">Min</th>}
           <th className="py-2 pr-4">Supplier</th>
           <th className="py-2 pr-4">Batches</th>
         </tr></thead>
@@ -563,7 +589,7 @@ function TableForView({
                 <td className="py-2 pr-4 text-xs">{r.manufacturer || '—'}</td>
                 <td className="py-2 pr-4 text-xs">{r.rack_code || '—'}</td>
                 <td className="py-2 pr-4 text-xs">{r.uom || '—'}</td>
-                <td className="py-2 pr-4 tabular-nums">
+                <td className={`py-2 pr-4 tabular-nums ${view === 'low' ? 'text-orange-700 font-medium' : ''}`}>
                   {tabs}
                   {scf > 1 && tabs > 0 ? (
                     <div className="text-[10px] text-gray-400">
@@ -573,8 +599,47 @@ function TableForView({
                 </td>
                 <td className="py-2 pr-4 tabular-nums">{free || '—'}</td>
                 <td className="py-2 pr-4 tabular-nums">{scf}</td>
+                {view === 'low' && (
+                  <td className="py-2 pr-4 tabular-nums">{r.min_qty ?? '—'}</td>
+                )}
                 <td className="py-2 pr-4 text-xs">{r.supplier_name || '—'}</td>
                 <td className="py-2 pr-4">{r.batch_count}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    );
+  }
+  if (view === 'expiring') {
+    return (
+      <table className="w-full text-sm">
+        <thead><tr className="border-b text-left text-gray-600">
+          <th className="py-2 pr-4">Medicine</th>
+          <th className="py-2 pr-4">Batch</th>
+          <th className="py-2 pr-4">Qty</th>
+          <th className="py-2 pr-4">Expiry</th>
+          <th className="py-2 pr-4">Days</th>
+          <th className="py-2 pr-4">Cost value</th>
+        </tr></thead>
+        <tbody>
+          {data.map((b) => {
+            const expired = (b.days_to_expiry ?? 0) < 0;
+            return (
+              <tr key={b.batch_id} className="border-b hover:bg-gray-50">
+                <td className="py-2 pr-4">
+                  <div>{b.medicine_name}</div>
+                  <div className="text-xs text-gray-500 font-mono">{b.medicine_code || ''}</div>
+                </td>
+                <td className="py-2 pr-4 font-mono text-xs">{b.batch_number}</td>
+                <td className="py-2 pr-4 tabular-nums">{b.quantity_in_stock}</td>
+                <td className="py-2 pr-4 text-xs">{b.expiry_date}</td>
+                <td className="py-2 pr-4">
+                  <Badge variant="outline" className={expired ? 'border-red-300 text-red-700' : 'border-orange-300 text-orange-700'}>
+                    {expired ? `${Math.abs(b.days_to_expiry)}d ago` : `${b.days_to_expiry}d`}
+                  </Badge>
+                </td>
+                <td className="py-2 pr-4 tabular-nums">{formatMoney(b.stock_value_cost)}</td>
               </tr>
             );
           })}

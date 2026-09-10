@@ -285,6 +285,7 @@ NEW_COLUMNS = [
     ("patients", "mrn_ean13", "VARCHAR(13)"),
     ("patient_lab_orders", "sample_ean13", "VARCHAR(13)"),
     ("hospitals", "favicon_url", "VARCHAR(255)"),
+    ("hospitals", "app_logo_url", "VARCHAR(255)"),
 ]
 
 # B6 — body release table is created via create_all on startup; no column adds.
@@ -378,6 +379,25 @@ def migrate():
                 print(f"  Added column: {table}.{col}")
             else:
                 print(f"  Already exists: {table}.{col}")
+
+        # One-time: copy hospital logo into app_logo_url so existing white-label
+        # installs keep their login/nav logo after the fields were split.
+        try:
+            result = conn.execute(text("PRAGMA table_info(hospitals)"))
+            hospital_cols = {row[1] for row in result.fetchall()}
+            if "app_logo_url" in hospital_cols and "logo_url" in hospital_cols:
+                copied = conn.execute(text(
+                    """
+                    UPDATE hospitals
+                    SET app_logo_url = logo_url
+                    WHERE (app_logo_url IS NULL OR app_logo_url = '')
+                      AND logo_url IS NOT NULL AND logo_url != ''
+                    """
+                ))
+                if copied.rowcount:
+                    print(f"  Copied logo_url → app_logo_url for {copied.rowcount} hospital(s)")
+        except Exception as e:
+            print(f"  Note (app_logo_url backfill): {e}")
 
         _migrate_appointments_time_nullable(conn)
 

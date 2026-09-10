@@ -22,7 +22,8 @@ def test_unlicensed_branding_ignores_stored_custom_name(client, db_session, seed
 
     hospital = db_session.query(Hospital).first()
     hospital.name = "Stored Custom Name"
-    hospital.logo_url = "/uploads/module-config/x.png"
+    hospital.app_logo_url = "/uploads/module-config/x.png"
+    hospital.logo_url = "/uploads/module-config/hospital.png"
     hospital.favicon_url = "/uploads/module-config/y.png"
     db_session.commit()
 

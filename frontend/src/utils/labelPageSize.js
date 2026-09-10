@@ -22,6 +22,17 @@ const DEFAULT_LAB = {
   sheet_height_mm: 297,
 };
 
+const DEFAULT_PATIENT_FILE = {
+  width_mm: 70,
+  height_mm: 40,
+  labels_per_row: 1,
+  labels_per_column: 1,
+  gutter_mm: 2,
+  sheet_mode: 'thermal',
+  sheet_width_mm: 210,
+  sheet_height_mm: 297,
+};
+
 /** Thermal rolls: stickers only sit side-by-side across the roll (one peel row). */
 export function applyThermalRollLayout(settings) {
   const s = settings || {};
@@ -62,6 +73,13 @@ export function labLabelPageSize(printSettings) {
   return computeLabelPageSizeMm({
     ...DEFAULT_LAB,
     ...(printSettings?.lab_label_settings || {}),
+  });
+}
+
+export function patientFileLabelPageSize(printSettings) {
+  return computeLabelPageSizeMm({
+    ...DEFAULT_PATIENT_FILE,
+    ...(printSettings?.patient_file_label_settings || {}),
   });
 }
 

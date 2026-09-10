@@ -146,3 +146,64 @@ def test_build_pharmacy_label_pdf_with_margins():
         pharmacy_display_name="TANEESH PHARMACY",
     )
     assert pdf[:4] == b"%PDF"
+
+
+def test_build_patient_file_label_pdf_with_ean13():
+    code = generate_patient_mrn_ean13(42)
+    layout = LabelLayoutConfig(width_mm=70, height_mm=40, sheet_mode="thermal")
+    pdf = build_label_pdf(
+        [{
+            "patient_name": "Jane Doe",
+            "mrn": "KTH-2026-00042",
+            "mrn_ean13": code,
+            "pat_type": "Self Paying",
+            "age_gender": "32Y / F",
+            "bill_date": "09-Sep-2026",
+            "order_no": "APT-001",
+            "ref_name": "Dr. Ref",
+        }],
+        layout,
+        "patient_file",
+    )
+    assert pdf[:4] == b"%PDF"
+    assert validate_ean13(code)
+
+
+def test_build_patient_file_label_pdf_omits_order_when_blank():
+    layout = LabelLayoutConfig(width_mm=70, height_mm=40, sheet_mode="thermal")
+    pdf = build_label_pdf(
+        [{
+            "patient_name": "No Order Patient",
+            "mrn": "KTH-2026-00001",
+            "mrn_ean13": generate_patient_mrn_ean13(1),
+            "pat_type": "Self Paying",
+            "age_gender": "10Y / M",
+            "bill_date": "09-Sep-2026",
+            "order_no": "",
+            "ref_name": "",
+        }],
+        layout,
+        "patient_file",
+    )
+    assert pdf[:4] == b"%PDF"
+
+
+def test_patient_file_label_endpoint(client, auth_headers, seed_data):
+    pid = seed_data["patient_id"]
+    res = client.get(
+        f"/api/patients/{pid}/file-label.pdf",
+        params={"source": "registration"},
+        headers=auth_headers,
+    )
+    assert res.status_code == 200
+    assert res.headers["content-type"].startswith("application/pdf")
+    assert res.content[:4] == b"%PDF"
+
+
+def test_patient_file_label_invalid_patient_404(client, auth_headers, seed_data):
+    res = client.get(
+        "/api/patients/99999999/file-label.pdf",
+        headers=auth_headers,
+    )
+    assert res.status_code == 404
+

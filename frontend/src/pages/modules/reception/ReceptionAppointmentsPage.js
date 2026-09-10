@@ -24,6 +24,7 @@ import {
 import { localDateString } from '../../../utils/localDate';
 import { printPdfFromUrl } from '../../../utils/printPdf';
 import PdfPreviewDialog from '../../../components/PdfPreviewDialog';
+import PatientFileLabelDialog from '../../../components/PatientFileLabelDialog';
 import {
   Calendar,
   Clock,
@@ -104,6 +105,8 @@ const ReceptionAppointmentsPage = () => {
   const [currentBill, setCurrentBill] = useState(null);
   const [billPdfUrl, setBillPdfUrl] = useState(null);
   const [currentBillAppointmentId, setCurrentBillAppointmentId] = useState(null);
+  const [fileLabelPatientId, setFileLabelPatientId] = useState(null);
+  const [fileLabelContext, setFileLabelContext] = useState({ source: 'appointment' });
 
   // Cancel dialog
   const [showCancelDialog, setShowCancelDialog] = useState(false);
@@ -630,6 +633,15 @@ const ReceptionAppointmentsPage = () => {
         setAvailableSlots([]);
         setSelectedPatient(null);
         setPatientFeeInfo({ is_new_patient: false, registration_fee: 0 });
+
+        if (appointmentData.patient_id) {
+          setFileLabelContext({
+            source: 'appointment',
+            appointmentId: appointmentData.id,
+            paymentMethod: appointmentForm.payment_method,
+          });
+          setFileLabelPatientId(appointmentData.patient_id);
+        }
 
         // Show bill preview if consultation fee exists or registration fee charged
         if (appointmentData.consultation_fee > 0 || appointmentData.registration_fee > 0) {
@@ -2231,6 +2243,13 @@ const ReceptionAppointmentsPage = () => {
         params={appointmentsPdfPreview?.params || {}}
         filename={appointmentsPdfPreview?.filename || 'appointments.pdf'}
         letterheadReportType="doctor_appointments"
+      />
+
+      <PatientFileLabelDialog
+        open={!!fileLabelPatientId}
+        patientId={fileLabelPatientId}
+        context={fileLabelContext}
+        onClose={() => setFileLabelPatientId(null)}
       />
     </div>
   );

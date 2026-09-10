@@ -391,9 +391,8 @@ async def update_hospital_info(
         code = (hospital_data.gst_state_code or "").strip()
         hospital.gst_state_code = code[:2] or None
     if hospital_data.logo_url is not None:
-        from app.services.license_service import license_allows_customisation
-        if 'super_admin' in current_user.role_names and license_allows_customisation(db):
-            hospital.logo_url = hospital_data.logo_url
+        # Hospital / PDF letterhead logo — independent of app chrome branding
+        hospital.logo_url = hospital_data.logo_url.strip() or None
     if hospital_data.description is not None:
         hospital.description = hospital_data.description
     if hospital_data.established_date is not None:
@@ -605,10 +604,7 @@ async def upload_module_file(
     if file.content_type not in allowed_types:
         raise HTTPException(status_code=400, detail="Only PNG, JPEG, and WebP images are allowed")
 
-    # Max 2MB
     content = await file.read()
-    if len(content) > 2 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="File size must be under 2MB")
 
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     ext = file.filename.rsplit(".", 1)[-1] if "." in file.filename else "png"
@@ -798,6 +794,7 @@ class PrintSettingsUpdate(BaseModel):
     report_footer_overrides: Optional[dict[str, str]] = None
     lab_label_settings: Optional[dict] = None
     pharmacy_label_settings: Optional[dict] = None
+    patient_file_label_settings: Optional[dict] = None
     show_patient_barcode_on_pdfs: Optional[bool] = None
 
 
@@ -951,6 +948,7 @@ async def update_print_settings(
         report_footer_overrides=data.report_footer_overrides,
         lab_label_settings=data.lab_label_settings,
         pharmacy_label_settings=data.pharmacy_label_settings,
+        patient_file_label_settings=data.patient_file_label_settings,
         show_patient_barcode_on_pdfs=data.show_patient_barcode_on_pdfs,
         created_by=current_user.id,
     )
@@ -1030,7 +1028,7 @@ async def upload_branding_image(
     current_user: User = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
-    """Upload a hospital logo or tab icon after dimension checks."""
+    """Upload an app logo or tab icon after dimension checks."""
     _require_customisation_license(db)
     from app.utils.branding import validate_branding_image
 
@@ -1103,7 +1101,8 @@ async def update_branding(
             raise HTTPException(status_code=400, detail="Hospital name cannot be empty")
         hospital.name = name
     if data.logo_url is not None:
-        hospital.logo_url = data.logo_url.strip() or None
+        # App chrome logo — separate from hospital/PDF letterhead (logo_url)
+        hospital.app_logo_url = data.logo_url.strip() or None
     if data.favicon_url is not None:
         hospital.favicon_url = data.favicon_url.strip() or None
 
@@ -4354,13 +4353,14 @@ async def report_opd_activity(
 async def report_lab_volume(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    test_id: Optional[int] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     _report_auth(current_user)
     from app.services.hub_reports import lab_volume
     d_from, d_to = _parse_date_range(date_from, date_to)
-    return lab_volume(db, current_user.hospital_id, d_from, d_to)
+    return lab_volume(db, current_user.hospital_id, d_from, d_to, test_id=test_id)
 
 
 @router.get("/billing/reports/daycare-volume")

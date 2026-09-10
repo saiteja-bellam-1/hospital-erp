@@ -23,7 +23,8 @@ class Hospital(Base):
     tax_id = Column(String(50))
     gstin = Column(String(20))
     gst_state_code = Column(String(2))
-    logo_url = Column(String(255))
+    logo_url = Column(String(255))  # Hospital / PDF letterhead logo
+    app_logo_url = Column(String(255))  # App chrome (login, nav) — customisation add-on
     favicon_url = Column(String(255))
     description = Column(Text)
     established_date = Column(DateTime)
