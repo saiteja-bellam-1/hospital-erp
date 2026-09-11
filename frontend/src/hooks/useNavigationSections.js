@@ -318,6 +318,9 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
     hasAnyRole(...CANTEEN_ROLE_NAMES, 'nurse', 'doctor', 'receptionist', 'inpatient_admin')
   )) {
     const items = [];
+    if (hasAnyRole('canteen_admin', 'canteen_sales', 'hospital_admin', 'super_admin')) {
+      add(items, make('Dashboard', LayoutDashboard, '/dashboard/canteen'));
+    }
     // IP ward food queue — primary for canteen_sales kitchen staff
     if (hasAnyRole('canteen_admin', 'canteen_sales', 'hospital_admin', 'super_admin')) {
       add(items, make('IP Food Orders', UtensilsCrossed, '/dashboard/canteen/orders'));

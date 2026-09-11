@@ -27,7 +27,12 @@ from app.models.lab import (
 from app.utils.dependencies import get_current_user, require_permission
 from app.utils.auth import Modules
 from app.utils.pdf_service import pdf_service
-from app.utils.label_pdf_service import LabelLayoutConfig, build_label_pdf
+from app.utils.label_pdf_service import (
+    LabelLayoutConfig,
+    build_label_pdf,
+    layout_overrides_from_params,
+    merge_label_layout,
+)
 from app.utils.lab_reference import (
     match_reference_range as _match_reference_range,
     filter_reference_ranges,
@@ -1768,6 +1773,16 @@ def _lab_labels_for_order(db: Session, order: PatientLabOrder, hospital_id: int)
 async def download_sample_label_pdf(
     order_id: int,
     reprint: bool = False,
+    width_mm: Optional[float] = None,
+    height_mm: Optional[float] = None,
+    labels_per_row: Optional[int] = None,
+    labels_per_column: Optional[int] = None,
+    margin_top_mm: Optional[float] = None,
+    margin_left_mm: Optional[float] = None,
+    gutter_mm: Optional[float] = None,
+    sheet_mode: Optional[str] = None,
+    sheet_width_mm: Optional[float] = None,
+    sheet_height_mm: Optional[float] = None,
     current_user: User = Depends(require_permission(Modules.LAB, "read")),
     db: Session = Depends(get_db),
 ):
@@ -1779,7 +1794,22 @@ async def download_sample_label_pdf(
         raise HTTPException(status_code=404, detail="Order not found")
     labels = _lab_labels_for_order(db, order, current_user.hospital_id)
     hospital = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
-    layout = LabelLayoutConfig.from_dict(get_lab_label_settings(db, current_user.hospital_id))
+    layout = merge_label_layout(
+        get_lab_label_settings(db, current_user.hospital_id),
+        layout_overrides_from_params(
+            width_mm=width_mm,
+            height_mm=height_mm,
+            labels_per_row=labels_per_row,
+            labels_per_column=labels_per_column,
+            margin_top_mm=margin_top_mm,
+            margin_left_mm=margin_left_mm,
+            gutter_mm=gutter_mm,
+            sheet_mode=sheet_mode,
+            sheet_width_mm=sheet_width_mm,
+            sheet_height_mm=sheet_height_mm,
+        ),
+        single_label=len(labels) <= 1,
+    )
     pdf_bytes = build_label_pdf(
         labels,
         layout,
@@ -1811,6 +1841,16 @@ class SampleLabelBatchIn(BaseModel):
 async def download_sample_labels_batch_pdf(
     body: SampleLabelBatchIn,
     reprint: bool = False,
+    width_mm: Optional[float] = None,
+    height_mm: Optional[float] = None,
+    labels_per_row: Optional[int] = None,
+    labels_per_column: Optional[int] = None,
+    margin_top_mm: Optional[float] = None,
+    margin_left_mm: Optional[float] = None,
+    gutter_mm: Optional[float] = None,
+    sheet_mode: Optional[str] = None,
+    sheet_width_mm: Optional[float] = None,
+    sheet_height_mm: Optional[float] = None,
     current_user: User = Depends(require_permission(Modules.LAB, "read")),
     db: Session = Depends(get_db),
 ):
@@ -1833,7 +1873,22 @@ async def download_sample_labels_batch_pdf(
     if not labels:
         raise HTTPException(status_code=400, detail="No collected samples found for label print")
     hospital = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
-    layout = LabelLayoutConfig.from_dict(get_lab_label_settings(db, current_user.hospital_id))
+    layout = merge_label_layout(
+        get_lab_label_settings(db, current_user.hospital_id),
+        layout_overrides_from_params(
+            width_mm=width_mm,
+            height_mm=height_mm,
+            labels_per_row=labels_per_row,
+            labels_per_column=labels_per_column,
+            margin_top_mm=margin_top_mm,
+            margin_left_mm=margin_left_mm,
+            gutter_mm=gutter_mm,
+            sheet_mode=sheet_mode,
+            sheet_width_mm=sheet_width_mm,
+            sheet_height_mm=sheet_height_mm,
+        ),
+        single_label=len(labels) <= 1,
+    )
     pdf_bytes = build_label_pdf(
         labels,
         layout,

@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Badge } from '../../components/ui/badge';
 import {
   Users,
-  Stethoscope,
   Receipt,
   Calendar,
   TrendingUp,
@@ -20,10 +20,14 @@ import {
   LogIn,
   LogOut,
   Timer,
+  Stethoscope,
 } from 'lucide-react';
 import { Button } from '../../components/ui/button';
 import axios from 'axios';
 import { useAuth } from '../../contexts/AuthContext';
+import ActionKpiCard from '../../components/dashboard/ActionKpiCard';
+import DashboardDrillDialog from '../../components/dashboard/DashboardDrillDialog';
+import { localDateString } from '../../utils/localDate';
 
 const formatCurrency = (val) => {
   if (val == null) return '\u20B90';
@@ -64,10 +68,12 @@ const labStatusColors = {
 
 const HospitalAdminDashboard = () => {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [lastRefresh, setLastRefresh] = useState(new Date());
+  const [drill, setDrill] = useState(null);
 
   const [enabledModules, setEnabledModules] = useState({});
   const [inpatientCensus, setInpatientCensus] = useState(null);
@@ -117,6 +123,28 @@ const HospitalAdminDashboard = () => {
     return () => clearInterval(interval);
   }, [fetchDashboard]);
 
+  const today = localDateString();
+
+  const loadTodayAppointments = useCallback(async (statusFilter = null) => {
+    const r = await axios.get('/api/appointments/', {
+      params: { date_from: today, date_to: today },
+    });
+    const rows = Array.isArray(r.data) ? r.data : [];
+    if (statusFilter) return rows.filter((a) => a.status === statusFilter);
+    return rows;
+  }, [today]);
+
+  const loadPendingLabs = useCallback(async () => {
+    const r = await axios.get('/api/lab/orders');
+    const rows = Array.isArray(r.data) ? r.data : [];
+    return rows.filter((o) => ['ordered', 'collected', 'processing'].includes(o.status));
+  }, []);
+
+  const loadAdmissions = useCallback(async () => {
+    const r = await axios.get('/api/inpatient/admissions', { params: { status: 'admitted', limit: 200 } });
+    return Array.isArray(r.data) ? r.data : (r.data?.items || []);
+  }, []);
+
   if (loading && !data) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -152,6 +180,8 @@ const HospitalAdminDashboard = () => {
   // Weekly trend bar chart max
   const maxTrend = Math.max(...weeklyTrend.map(w => w.count), 1);
 
+  const closeDrill = () => setDrill(null);
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -175,93 +205,55 @@ const HospitalAdminDashboard = () => {
       </div>
 
       {/* KPI Cards Row */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Today's Appointments — only when outpatient enabled */}
+      <div className="grid gap-3 grid-cols-2 lg:grid-cols-4">
         {enabledModules.outpatient && (
-          <Card className="border-0 shadow-sm bg-gradient-to-br from-blue-50 to-white">
-            <CardContent className="p-5">
-              <div className="flex items-start justify-between">
-                <div>
-                  <p className="text-xs font-medium text-blue-600 uppercase tracking-wide">Today's Appointments</p>
-                  <p className="text-3xl font-bold text-gray-900 mt-1">{appointments.total_today || 0}</p>
-                  <div className="flex items-center gap-1.5 mt-1.5">
-                    <CheckCircle2 className="h-3 w-3 text-green-500" />
-                    <span className="text-xs text-gray-500">
-                      {appointments.by_status?.completed || 0} completed
-                    </span>
-                  </div>
-                </div>
-                <div className="h-10 w-10 rounded-xl bg-blue-100 flex items-center justify-center">
-                  <Calendar className="h-5 w-5 text-blue-600" />
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+          <ActionKpiCard
+            icon={Calendar}
+            label="Today's Appointments"
+            value={appointments.total_today || 0}
+            sub={`${appointments.by_status?.completed || 0} completed`}
+            tone="blue"
+            onClick={() => setDrill({
+              type: 'appts',
+              title: "Today's appointments",
+              loadRows: () => loadTodayAppointments(),
+              viewAll: { label: 'Open appointments', onClick: () => navigate('/dashboard/reception/appointments') },
+            })}
+          />
         )}
 
-        {/* Total Patients */}
-        <Card className="border-0 shadow-sm bg-gradient-to-br from-emerald-50 to-white">
-          <CardContent className="p-5">
-            <div className="flex items-start justify-between">
-              <div>
-                <p className="text-xs font-medium text-emerald-600 uppercase tracking-wide">Total Patients</p>
-                <p className="text-3xl font-bold text-gray-900 mt-1">{patients.total || 0}</p>
-                <div className="flex items-center gap-1.5 mt-1.5">
-                  <UserPlus className="h-3 w-3 text-emerald-500" />
-                  <span className="text-xs text-gray-500">
-                    +{patients.new_today || 0} today
-                  </span>
-                </div>
-              </div>
-              <div className="h-10 w-10 rounded-xl bg-emerald-100 flex items-center justify-center">
-                <Users className="h-5 w-5 text-emerald-600" />
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+        <ActionKpiCard
+          icon={Users}
+          label="Total Patients"
+          value={patients.total || 0}
+          sub={`+${patients.new_today || 0} today`}
+          tone="green"
+          onClick={() => navigate('/dashboard/reception/patients')}
+        />
 
-        {/* Revenue Today */}
-        <Card className="border-0 shadow-sm bg-gradient-to-br from-amber-50 to-white">
-          <CardContent className="p-5">
-            <div className="flex items-start justify-between">
-              <div>
-                <p className="text-xs font-medium text-amber-600 uppercase tracking-wide">Revenue Today</p>
-                <p className="text-3xl font-bold text-gray-900 mt-1">{formatCurrency(totalRevenueToday)}</p>
-                <div className="flex items-center gap-1.5 mt-1.5">
-                  <Clock className="h-3 w-3 text-amber-500" />
-                  <span className="text-xs text-gray-500">
-                    {formatCurrency(revenue.today_pending || 0)} pending
-                  </span>
-                </div>
-              </div>
-              <div className="h-10 w-10 rounded-xl bg-amber-100 flex items-center justify-center">
-                <DollarSign className="h-5 w-5 text-amber-600" />
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+        <ActionKpiCard
+          icon={DollarSign}
+          label="Revenue Today"
+          value={formatCurrency(totalRevenueToday)}
+          sub={`${formatCurrency(revenue.today_pending || 0)} pending`}
+          tone="amber"
+          onClick={() => navigate('/dashboard/billing')}
+        />
 
-        {/* Lab Orders — only when lab enabled */}
         {enabledModules.lab && (
-          <Card className="border-0 shadow-sm bg-gradient-to-br from-purple-50 to-white">
-            <CardContent className="p-5">
-              <div className="flex items-start justify-between">
-                <div>
-                  <p className="text-xs font-medium text-purple-600 uppercase tracking-wide">Lab Orders Today</p>
-                  <p className="text-3xl font-bold text-gray-900 mt-1">{lab.orders_today || 0}</p>
-                  <div className="flex items-center gap-1.5 mt-1.5">
-                    <Activity className="h-3 w-3 text-purple-500" />
-                    <span className="text-xs text-gray-500">
-                      {lab.pending || 0} pending
-                    </span>
-                  </div>
-                </div>
-                <div className="h-10 w-10 rounded-xl bg-purple-100 flex items-center justify-center">
-                  <FlaskConical className="h-5 w-5 text-purple-600" />
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+          <ActionKpiCard
+            icon={FlaskConical}
+            label="Lab Orders Today"
+            value={lab.orders_today || 0}
+            sub={`${lab.pending || 0} pending`}
+            tone="purple"
+            onClick={() => setDrill({
+              type: 'labs',
+              title: 'Pending lab orders',
+              loadRows: loadPendingLabs,
+              viewAll: { label: 'Open lab queue', onClick: () => navigate('/dashboard/lab-home') },
+            })}
+          />
         )}
       </div>
 
@@ -272,93 +264,71 @@ const HospitalAdminDashboard = () => {
             <BedDouble className="h-4 w-4 text-rose-500" />
             Inpatient Census
           </h2>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <Card className="border-0 shadow-sm bg-gradient-to-br from-rose-50 to-white">
-              <CardContent className="p-5">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <p className="text-xs font-medium text-rose-600 uppercase tracking-wide">Total Beds</p>
-                    <p className="text-3xl font-bold text-gray-900 mt-1">{inpatientCensus.total_beds || 0}</p>
-                    <div className="flex items-center gap-1.5 mt-1.5">
-                      <CheckCircle2 className="h-3 w-3 text-green-500" />
-                      <span className="text-xs text-gray-500">
-                        {inpatientCensus.available || 0} available
-                      </span>
-                    </div>
-                  </div>
-                  <div className="h-10 w-10 rounded-xl bg-rose-100 flex items-center justify-center">
-                    <BedDouble className="h-5 w-5 text-rose-600" />
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card className="border-0 shadow-sm bg-gradient-to-br from-orange-50 to-white">
-              <CardContent className="p-5">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <p className="text-xs font-medium text-orange-600 uppercase tracking-wide">Occupied Beds</p>
-                    <p className="text-3xl font-bold text-gray-900 mt-1">{inpatientCensus.occupied || 0}</p>
-                    <div className="flex items-center gap-1.5 mt-1.5">
-                      <Activity className="h-3 w-3 text-orange-500" />
-                      <span className="text-xs text-gray-500">
-                        {inpatientCensus.total_beds > 0 ? Math.round((inpatientCensus.occupied / inpatientCensus.total_beds) * 100) : 0}% occupancy
-                      </span>
-                    </div>
-                  </div>
-                  <div className="h-10 w-10 rounded-xl bg-orange-100 flex items-center justify-center">
-                    <Users className="h-5 w-5 text-orange-600" />
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card className="border-0 shadow-sm bg-gradient-to-br from-cyan-50 to-white">
-              <CardContent className="p-5">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <p className="text-xs font-medium text-cyan-600 uppercase tracking-wide">Today's Admissions</p>
-                    <p className="text-3xl font-bold text-gray-900 mt-1">{inpatientCensus.today_admissions || 0}</p>
-                    <div className="flex items-center gap-1.5 mt-1.5">
-                      <LogIn className="h-3 w-3 text-cyan-500" />
-                      <span className="text-xs text-gray-500">
-                        {inpatientCensus.active_admissions || 0} active total
-                      </span>
-                    </div>
-                  </div>
-                  <div className="h-10 w-10 rounded-xl bg-cyan-100 flex items-center justify-center">
-                    <LogIn className="h-5 w-5 text-cyan-600" />
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card className="border-0 shadow-sm bg-gradient-to-br from-violet-50 to-white">
-              <CardContent className="p-5">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <p className="text-xs font-medium text-violet-600 uppercase tracking-wide">Pending Discharges</p>
-                    <p className="text-3xl font-bold text-gray-900 mt-1">{inpatientCensus.pending_discharges || 0}</p>
-                    <div className="flex items-center gap-1.5 mt-1.5">
-                      <Timer className="h-3 w-3 text-violet-500" />
-                      <span className="text-xs text-gray-500">
-                        Avg stay: {inpatientCensus.avg_stay_days != null ? inpatientCensus.avg_stay_days.toFixed(1) : '—'} days
-                      </span>
-                    </div>
-                  </div>
-                  <div className="h-10 w-10 rounded-xl bg-violet-100 flex items-center justify-center">
-                    <LogOut className="h-5 w-5 text-violet-600" />
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+          <div className="grid gap-3 grid-cols-2 lg:grid-cols-4">
+            <ActionKpiCard
+              icon={BedDouble}
+              label="Total Beds"
+              value={inpatientCensus.total_beds || 0}
+              sub={`${inpatientCensus.available || 0} available`}
+              tone="red"
+              onClick={() => navigate('/dashboard/inpatient/rooms')}
+            />
+            <ActionKpiCard
+              icon={Users}
+              label="Occupied Beds"
+              value={inpatientCensus.occupied || 0}
+              sub={`${inpatientCensus.total_beds > 0 ? Math.round((inpatientCensus.occupied / inpatientCensus.total_beds) * 100) : 0}% occupancy`}
+              tone="orange"
+              onClick={() => setDrill({
+                type: 'admissions',
+                title: 'Active admissions',
+                loadRows: loadAdmissions,
+                viewAll: { label: 'Open admissions', onClick: () => navigate('/dashboard/inpatient/admissions') },
+              })}
+            />
+            <ActionKpiCard
+              icon={LogIn}
+              label="Today's Admissions"
+              value={inpatientCensus.today_admissions || 0}
+              sub={`${inpatientCensus.active_admissions || 0} active total`}
+              tone="cyan"
+              onClick={() => setDrill({
+                type: 'admissions',
+                title: "Today's admissions",
+                loadRows: async () => {
+                  const rows = await loadAdmissions();
+                  return rows.filter((a) => (a.admission_date || '').slice(0, 10) === today);
+                },
+                viewAll: { label: 'Open admissions', onClick: () => navigate('/dashboard/inpatient/admissions') },
+              })}
+            />
+            <ActionKpiCard
+              icon={LogOut}
+              label="Pending Discharges"
+              value={inpatientCensus.pending_discharges || 0}
+              sub={`Avg stay: ${inpatientCensus.avg_stay_days != null ? inpatientCensus.avg_stay_days.toFixed(1) : '—'} days`}
+              tone={(inpatientCensus.pending_discharges || 0) > 0 ? 'purple' : 'slate'}
+              onClick={() => navigate('/dashboard/inpatient/discharge')}
+            />
           </div>
 
           {/* Room Type Breakdown */}
           {inpatientCensus.by_type && Object.keys(inpatientCensus.by_type).length > 0 && (
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mt-3">
               {Object.entries(inpatientCensus.by_type).map(([type, info]) => (
-                <Card key={type} className="border-0 shadow-sm">
+                <Card
+                  key={type}
+                  className="border-0 shadow-sm cursor-pointer hover:shadow-md transition-shadow"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => navigate('/dashboard/inpatient/rooms')}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      navigate('/dashboard/inpatient/rooms');
+                    }
+                  }}
+                >
                   <CardContent className="p-3">
                     <div className="flex items-center justify-between">
                       <div>
@@ -382,6 +352,110 @@ const HospitalAdminDashboard = () => {
         </div>
       )}
 
+      <DashboardDrillDialog
+        open={!!drill}
+        onOpenChange={(open) => { if (!open) closeDrill(); }}
+        title={drill?.title || ''}
+        loadRows={drill?.loadRows || (async () => [])}
+        viewAll={drill?.viewAll ? {
+          ...drill.viewAll,
+          onClick: () => {
+            closeDrill();
+            drill.viewAll.onClick();
+          },
+        } : undefined}
+        renderRows={(rows) => {
+          if (drill?.type === 'labs') {
+            return (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-left text-muted-foreground">
+                    <th className="py-2 pr-3 font-medium">Patient</th>
+                    <th className="py-2 pr-3 font-medium">Test</th>
+                    <th className="py-2 pr-3 font-medium">Status</th>
+                    <th className="py-2 text-right font-medium">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((o) => (
+                    <tr key={o.id} className="border-b">
+                      <td className="py-2 pr-3">{o.patient_name || '—'}</td>
+                      <td className="py-2 pr-3">{o.test_name || '—'}</td>
+                      <td className="py-2 pr-3">
+                        <Badge className={labStatusColors[o.status] || ''}>{o.status}</Badge>
+                      </td>
+                      <td className="py-2 text-right">
+                        <Button size="sm" variant="outline" onClick={() => { closeDrill(); navigate('/dashboard/lab-home'); }}>
+                          Open
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            );
+          }
+          if (drill?.type === 'admissions') {
+            return (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-left text-muted-foreground">
+                    <th className="py-2 pr-3 font-medium">Patient</th>
+                    <th className="py-2 pr-3 font-medium">Room</th>
+                    <th className="py-2 pr-3 font-medium">Admitted</th>
+                    <th className="py-2 text-right font-medium">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((a) => (
+                    <tr key={a.id} className="border-b">
+                      <td className="py-2 pr-3">{a.patient_name || '—'}</td>
+                      <td className="py-2 pr-3 text-xs">{a.room_number || a.room?.room_number || '—'}</td>
+                      <td className="py-2 pr-3 text-xs">{(a.admission_date || '').slice(0, 10) || '—'}</td>
+                      <td className="py-2 text-right">
+                        <Button size="sm" variant="outline" onClick={() => { closeDrill(); navigate('/dashboard/inpatient/admissions'); }}>
+                          Open
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            );
+          }
+          return (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-left text-muted-foreground">
+                  <th className="py-2 pr-3 font-medium">Time</th>
+                  <th className="py-2 pr-3 font-medium">Patient</th>
+                  <th className="py-2 pr-3 font-medium">Doctor</th>
+                  <th className="py-2 pr-3 font-medium">Status</th>
+                  <th className="py-2 text-right font-medium">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((a) => (
+                  <tr key={a.id} className="border-b">
+                    <td className="py-2 pr-3 text-xs">{a.appointment_time || a.time || '—'}</td>
+                    <td className="py-2 pr-3">{a.patient_name || '—'}</td>
+                    <td className="py-2 pr-3 text-xs">{a.doctor_name || '—'}</td>
+                    <td className="py-2 pr-3">
+                      <Badge className={statusColors[a.status] || ''}>{a.status}</Badge>
+                    </td>
+                    <td className="py-2 text-right">
+                      <Button size="sm" variant="outline" onClick={() => { closeDrill(); navigate('/dashboard/reception/appointments'); }}>
+                        Open
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          );
+        }}
+      />
+
       {/* Second Row: Revenue Summary + Appointment Status */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Revenue Breakdown */}
@@ -393,14 +467,26 @@ const HospitalAdminDashboard = () => {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            <div className="flex items-center justify-between py-2 px-3 rounded-lg bg-gray-50">
+            <div
+              className="flex items-center justify-between py-2 px-3 rounded-lg bg-gray-50 cursor-pointer hover:bg-gray-100"
+              role="button"
+              tabIndex={0}
+              onClick={() => navigate('/dashboard/billing')}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate('/dashboard/billing'); } }}
+            >
               <div>
                 <p className="text-xs text-gray-500">Consultation Revenue</p>
                 <p className="text-sm font-semibold text-gray-900">{formatCurrency(revenue.today || 0)}</p>
               </div>
               <span className="text-xs text-gray-400">Today</span>
             </div>
-            <div className="flex items-center justify-between py-2 px-3 rounded-lg bg-gray-50">
+            <div
+              className="flex items-center justify-between py-2 px-3 rounded-lg bg-gray-50 cursor-pointer hover:bg-gray-100"
+              role="button"
+              tabIndex={0}
+              onClick={() => navigate('/dashboard/billing')}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate('/dashboard/billing'); } }}
+            >
               <div>
                 <p className="text-xs text-gray-500">Lab Revenue</p>
                 <p className="text-sm font-semibold text-gray-900">{formatCurrency(revenue.lab_today || 0)}</p>
@@ -408,7 +494,13 @@ const HospitalAdminDashboard = () => {
               <span className="text-xs text-gray-400">Today</span>
             </div>
             <div className="border-t pt-3 mt-2">
-              <div className="flex items-center justify-between py-2 px-3 rounded-lg bg-blue-50">
+              <div
+                className="flex items-center justify-between py-2 px-3 rounded-lg bg-blue-50 cursor-pointer hover:bg-blue-100"
+                role="button"
+                tabIndex={0}
+                onClick={() => navigate('/dashboard/billing')}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate('/dashboard/billing'); } }}
+              >
                 <div>
                   <p className="text-xs text-blue-600 font-medium">Monthly Total</p>
                   <p className="text-lg font-bold text-gray-900">{formatCurrency(totalRevenueMonth)}</p>
@@ -436,7 +528,29 @@ const HospitalAdminDashboard = () => {
             ) : (
               <div className="space-y-2">
                 {Object.entries(appointments.by_status || {}).sort((a, b) => b[1] - a[1]).map(([status, count]) => (
-                  <div key={status} className="flex items-center justify-between py-1.5">
+                  <div
+                    key={status}
+                    className="flex items-center justify-between py-1.5 cursor-pointer hover:bg-gray-50 rounded px-1"
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => setDrill({
+                      type: 'appts',
+                      title: `${status.replace(/_/g, ' ')} appointments`,
+                      loadRows: () => loadTodayAppointments(status),
+                      viewAll: { label: 'Open appointments', onClick: () => navigate('/dashboard/reception/appointments') },
+                    })}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setDrill({
+                          type: 'appts',
+                          title: `${status.replace(/_/g, ' ')} appointments`,
+                          loadRows: () => loadTodayAppointments(status),
+                          viewAll: { label: 'Open appointments', onClick: () => navigate('/dashboard/reception/appointments') },
+                        });
+                      }
+                    }}
+                  >
                     <div className="flex items-center gap-2">
                       <Badge variant="secondary" className={`text-[10px] px-2 py-0.5 ${statusColors[status] || 'bg-gray-100 text-gray-600'}`}>
                         {status.replace(/_/g, ' ')}

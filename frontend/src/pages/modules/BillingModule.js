@@ -21,6 +21,7 @@ import PdfPreviewDialog from '../../components/PdfPreviewDialog';
 import PatientSearchPicker from '../../components/PatientSearchPicker';
 import EditBillDialog, { canEditBill, canCancelBill, isPharmacyPosBill } from '../../components/billing/EditBillDialog';
 import { localDateString, localDateStringOffset, localWeekStart, localMonthStart, localLastMonthRange } from '../../utils/localDate';
+import ActionKpiCard from '../../components/dashboard/ActionKpiCard';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -778,68 +779,47 @@ const BillingModule = () => {
       {/* Summary Cards */}
       {summary && (
         <div className="space-y-4">
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-            <Card>
-              <CardContent className="pt-5 pb-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-xs text-gray-500">Total Billed</p>
-                    <p className="text-xl font-bold">{formatCurrency(summary.total_billed)}</p>
-                  </div>
-                  <DollarSign className="h-8 w-8 text-blue-500" />
-                </div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-5 pb-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-xs text-gray-500">Collected</p>
-                    <p className="text-xl font-bold text-green-600">{formatCurrency(summary.total_paid)}</p>
-                  </div>
-                  <CheckCircle2 className="h-8 w-8 text-green-500" />
-                </div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-5 pb-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-xs text-gray-500">Pending</p>
-                    <p className="text-xl font-bold text-orange-600">{formatCurrency(summary.total_pending)}</p>
-                  </div>
-                  <Clock className="h-8 w-8 text-orange-500" />
-                </div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-5 pb-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-xs text-gray-500">Total Bills</p>
-                    <p className="text-xl font-bold">{summary.total_bills}</p>
-                    <p className="text-[10px] text-gray-400">
-                      {summary.appointment_count} consult + {summary.lab_count} lab
-                      {summary.pharmacy_count > 0 && ` + ${summary.pharmacy_count} pharmacy`}
-                      {summary.admission_count > 0 && ` + ${summary.admission_count} admission`}
-                      {(summary.physiotherapy_count || 0) > 0 && ` + ${summary.physiotherapy_count} physio`}
-                    </p>
-                  </div>
-                  <Receipt className="h-8 w-8 text-purple-500" />
-                </div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-5 pb-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-xs text-gray-500">Cancelled</p>
-                    <p className="text-xl font-bold text-red-600">{summary.cancelled_count}</p>
-                  </div>
-                  <XCircle className="h-8 w-8 text-red-400" />
-                </div>
-              </CardContent>
-            </Card>
+          <div className="grid gap-3 grid-cols-2 md:grid-cols-5">
+            <ActionKpiCard
+              icon={DollarSign}
+              label="Total Billed"
+              value={formatCurrency(summary.total_billed)}
+              sub="In selected range"
+              tone="blue"
+              onClick={() => setPaymentStatus('all')}
+            />
+            <ActionKpiCard
+              icon={CheckCircle2}
+              label="Collected"
+              value={formatCurrency(summary.total_paid)}
+              sub="Paid bills"
+              tone="green"
+              onClick={() => setPaymentStatus('paid')}
+            />
+            <ActionKpiCard
+              icon={Clock}
+              label="Pending"
+              value={formatCurrency(summary.total_pending)}
+              sub="Awaiting collection"
+              tone={Number(summary.total_pending) > 0 ? 'orange' : 'slate'}
+              onClick={() => setPaymentStatus('pending')}
+            />
+            <ActionKpiCard
+              icon={Receipt}
+              label="Total Bills"
+              value={summary.total_bills}
+              sub={`${summary.appointment_count} consult + ${summary.lab_count} lab${summary.pharmacy_count > 0 ? ` + ${summary.pharmacy_count} pharmacy` : ''}${summary.admission_count > 0 ? ` + ${summary.admission_count} admission` : ''}${(summary.physiotherapy_count || 0) > 0 ? ` + ${summary.physiotherapy_count} physio` : ''}`}
+              tone="purple"
+              onClick={() => setPaymentStatus('all')}
+            />
+            <ActionKpiCard
+              icon={XCircle}
+              label="Cancelled"
+              value={summary.cancelled_count}
+              sub="Cancelled in range"
+              tone={(summary.cancelled_count || 0) > 0 ? 'red' : 'slate'}
+              onClick={() => setPaymentStatus('cancelled')}
+            />
           </div>
           {activeTab === 'physiotherapy' && summary.physio_revenue_by_type && (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

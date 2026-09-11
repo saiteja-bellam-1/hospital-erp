@@ -18,6 +18,7 @@ import { format } from 'date-fns';
 import { localDateString, localDateStringOffset } from '../../utils/localDate';
 import PdfPreviewDialog from '../../components/PdfPreviewDialog';
 import LabelPreviewDialog from '../../components/LabelPreviewDialog';
+import ActionKpiCard from '../../components/dashboard/ActionKpiCard';
 
 const LabTechDashboard = () => {
   const { user } = useAuth();
@@ -521,54 +522,55 @@ const LabTechDashboard = () => {
     );
   };
 
-  const renderStats = () => (
-    <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-      <Card>
-        <CardContent className="pt-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-gray-500">Pending Orders</p>
-              <p className="text-2xl font-bold">{orders.filter(o => o.status === 'ordered').length}</p>
-            </div>
-            <Clock className="h-8 w-8 text-blue-500" />
-          </div>
-        </CardContent>
-      </Card>
-      <Card>
-        <CardContent className="pt-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-gray-500">Collected</p>
-              <p className="text-2xl font-bold">{orders.filter(o => o.status === 'collected').length}</p>
-            </div>
-            <Beaker className="h-8 w-8 text-yellow-500" />
-          </div>
-        </CardContent>
-      </Card>
-      <Card>
-        <CardContent className="pt-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-gray-500">Processing</p>
-              <p className="text-2xl font-bold">{orders.filter(o => o.status === 'processing').length}</p>
-            </div>
-            <Activity className="h-8 w-8 text-purple-500" />
-          </div>
-        </CardContent>
-      </Card>
-      <Card>
-        <CardContent className="pt-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-gray-500">Completed Today</p>
-              <p className="text-2xl font-bold">{stats?.completed_today || 0}</p>
-            </div>
-            <CheckCircle className="h-8 w-8 text-green-500" />
-          </div>
-        </CardContent>
-      </Card>
-    </div>
-  );
+  const renderStats = () => {
+    const orderedCount = orders.filter((o) => o.status === 'ordered').length;
+    const collectedCount = orders.filter((o) => o.status === 'collected').length;
+    const processingCount = orders.filter((o) => o.status === 'processing').length;
+    const goPending = (filter) => {
+      setActiveTab('pending');
+      setStatusFilter(filter);
+    };
+    return (
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 mb-6">
+        <ActionKpiCard
+          icon={Clock}
+          label="Pending Orders"
+          value={orderedCount}
+          sub="Awaiting sample collection"
+          tone={orderedCount > 0 ? 'blue' : 'slate'}
+          onClick={() => goPending('ordered')}
+        />
+        <ActionKpiCard
+          icon={Beaker}
+          label="Collected"
+          value={collectedCount}
+          sub="Ready to process"
+          tone={collectedCount > 0 ? 'amber' : 'slate'}
+          onClick={() => goPending('collected')}
+        />
+        <ActionKpiCard
+          icon={Activity}
+          label="Processing"
+          value={processingCount}
+          sub="Results in progress"
+          tone={processingCount > 0 ? 'purple' : 'slate'}
+          onClick={() => goPending('processing')}
+        />
+        <ActionKpiCard
+          icon={CheckCircle}
+          label="Completed Today"
+          value={stats?.completed_today || 0}
+          sub="Reports finished today"
+          tone="green"
+          onClick={() => {
+            setActiveTab('completed');
+            setCompletedDateFrom(today);
+            setCompletedDateTo(today);
+          }}
+        />
+      </div>
+    );
+  };
 
   const renderOrderCard = (order) => (
     <Card key={order.id} className={order.priority !== 'normal' ? 'border-red-300' : ''}>

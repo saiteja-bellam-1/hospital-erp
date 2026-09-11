@@ -1,18 +1,23 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
 import { useAuth } from '../../contexts/AuthContext';
 import axios from 'axios';
 import {
-  Users, Shield, Activity, Clock, CheckCircle2, AlertCircle, XCircle,
+  Users, Shield, Activity, Clock, CheckCircle2, XCircle,
   Monitor, UserCheck, LogIn, Loader2, RefreshCw, Database
 } from 'lucide-react';
+import ActionKpiCard from '../../components/dashboard/ActionKpiCard';
+import DashboardDrillDialog from '../../components/dashboard/DashboardDrillDialog';
 
 const SuperAdminDashboard = () => {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [drill, setDrill] = useState(null);
 
   const fetchData = useCallback(async () => {
     try {
@@ -31,6 +36,14 @@ const SuperAdminDashboard = () => {
     const interval = setInterval(fetchData, 60000);
     return () => clearInterval(interval);
   }, [fetchData]);
+
+  const loadUsers = useCallback(async (filter = 'all') => {
+    const r = await axios.get('/api/admin/users');
+    const rows = Array.isArray(r.data) ? r.data : [];
+    if (filter === 'active') return rows.filter((u) => u.is_active);
+    if (filter === 'inactive') return rows.filter((u) => !u.is_active);
+    return rows;
+  }, []);
 
   const formatTime = (ts) => {
     if (!ts) return '';
@@ -73,6 +86,8 @@ const SuperAdminDashboard = () => {
 
   const maxActivity = Math.max(...(data.audit.daily_activity || []).map(d => d.count), 1);
 
+  const closeDrill = () => setDrill(null);
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -87,79 +102,86 @@ const SuperAdminDashboard = () => {
       </div>
 
       {/* Top Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
-        <Card>
-          <CardContent className="pt-5 pb-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs text-gray-500">Total Users</p>
-                <p className="text-2xl font-bold">{data.users.total}</p>
-              </div>
-              <Users className="h-8 w-8 text-blue-500" />
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-5 pb-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs text-gray-500">Active Users</p>
-                <p className="text-2xl font-bold text-green-600">{data.users.active}</p>
-              </div>
-              <UserCheck className="h-8 w-8 text-green-500" />
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-5 pb-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs text-gray-500">Logged In Today</p>
-                <p className="text-2xl font-bold text-indigo-600">{data.users.logged_in_today}</p>
-              </div>
-              <LogIn className="h-8 w-8 text-indigo-500" />
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-5 pb-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs text-gray-500">Inactive Users</p>
-                <p className="text-2xl font-bold text-gray-400">{data.users.inactive}</p>
-              </div>
-              <XCircle className="h-8 w-8 text-gray-400" />
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-5 pb-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs text-gray-500">Audit Logs Today</p>
-                <p className="text-2xl font-bold text-orange-600">{data.audit.today_logs}</p>
-              </div>
-              <Activity className="h-8 w-8 text-orange-500" />
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-5 pb-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs text-gray-500">Total Logs</p>
-                <p className="text-2xl font-bold">{(data.audit.total_logs || 0).toLocaleString()}</p>
-              </div>
-              <Database className="h-8 w-8 text-slate-500" />
-            </div>
-          </CardContent>
-        </Card>
+      <div className="grid gap-3 grid-cols-2 md:grid-cols-3 lg:grid-cols-6">
+        <ActionKpiCard
+          icon={Users}
+          label="Total Users"
+          value={data.users.total}
+          sub="All accounts"
+          tone="blue"
+          onClick={() => setDrill({
+            type: 'users',
+            title: 'All users',
+            loadRows: () => loadUsers('all'),
+            viewAll: { label: 'Manage users', onClick: () => navigate('/dashboard/admin/users') },
+          })}
+        />
+        <ActionKpiCard
+          icon={UserCheck}
+          label="Active Users"
+          value={data.users.active}
+          sub="Currently active"
+          tone="green"
+          onClick={() => setDrill({
+            type: 'users',
+            title: 'Active users',
+            loadRows: () => loadUsers('active'),
+            viewAll: { label: 'Manage users', onClick: () => navigate('/dashboard/admin/users') },
+          })}
+        />
+        <ActionKpiCard
+          icon={LogIn}
+          label="Logged In Today"
+          value={data.users.logged_in_today}
+          sub="Unique logins"
+          tone="cyan"
+          onClick={() => setDrill({
+            type: 'logins',
+            title: "Today's logins",
+            loadRows: async () => data.recent_logins || [],
+            viewAll: { label: 'Open audit logs', onClick: () => navigate('/dashboard/audit') },
+          })}
+        />
+        <ActionKpiCard
+          icon={XCircle}
+          label="Inactive Users"
+          value={data.users.inactive}
+          sub="Archived / disabled"
+          tone="slate"
+          onClick={() => setDrill({
+            type: 'users',
+            title: 'Inactive users',
+            loadRows: () => loadUsers('inactive'),
+            viewAll: { label: 'Manage users', onClick: () => navigate('/dashboard/admin/users') },
+          })}
+        />
+        <ActionKpiCard
+          icon={Activity}
+          label="Audit Logs Today"
+          value={data.audit.today_logs}
+          sub="System events today"
+          tone="orange"
+          onClick={() => navigate('/dashboard/audit')}
+        />
+        <ActionKpiCard
+          icon={Database}
+          label="Total Logs"
+          value={(data.audit.total_logs || 0).toLocaleString()}
+          sub="All-time audit entries"
+          tone="slate"
+          onClick={() => navigate('/dashboard/audit')}
+        />
       </div>
 
       {/* License + Modules row */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* License Status */}
-        <Card>
+        <Card
+          className="cursor-pointer hover:shadow-md transition-shadow"
+          role="button"
+          tabIndex={0}
+          onClick={() => navigate('/dashboard/license')}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate('/dashboard/license'); } }}
+        >
           <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2 text-base">
               <Shield className="h-5 w-5" /> License Status
@@ -193,8 +215,13 @@ const SuperAdminDashboard = () => {
           </CardContent>
         </Card>
 
-        {/* Modules */}
-        <Card>
+        <Card
+          className="cursor-pointer hover:shadow-md transition-shadow"
+          role="button"
+          tabIndex={0}
+          onClick={() => navigate('/dashboard/admin/modules')}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate('/dashboard/admin/modules'); } }}
+        >
           <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2 text-base">
               <Monitor className="h-5 w-5" /> System Modules
@@ -220,7 +247,6 @@ const SuperAdminDashboard = () => {
 
       {/* Users by Role + Activity Trend */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Users by Role */}
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2 text-base">
@@ -230,11 +256,18 @@ const SuperAdminDashboard = () => {
           <CardContent>
             <div className="space-y-2">
               {Object.entries(data.users.by_role || {}).sort((a, b) => b[1] - a[1]).map(([role, count]) => (
-                <div key={role} className="flex items-center justify-between">
+                <div
+                  key={role}
+                  className="flex items-center justify-between cursor-pointer hover:bg-gray-50 rounded px-1 py-0.5"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => navigate('/dashboard/admin/users')}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate('/dashboard/admin/users'); } }}
+                >
                   <span className="text-sm capitalize text-gray-600">{role.replace(/_/g, ' ')}</span>
                   <div className="flex items-center gap-2">
                     <div className="w-24 h-2 bg-gray-100 rounded-full overflow-hidden">
-                      <div className="h-full bg-blue-500 rounded-full" style={{ width: `${(count / data.users.active) * 100}%` }} />
+                      <div className="h-full bg-blue-500 rounded-full" style={{ width: `${(count / Math.max(data.users.active, 1)) * 100}%` }} />
                     </div>
                     <span className="text-sm font-bold text-gray-700 w-6 text-right">{count}</span>
                   </div>
@@ -244,7 +277,6 @@ const SuperAdminDashboard = () => {
           </CardContent>
         </Card>
 
-        {/* Activity Trend */}
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2 text-base">
@@ -269,8 +301,13 @@ const SuperAdminDashboard = () => {
 
       {/* Audit Categories + Today's Logins */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Audit Categories this week */}
-        <Card>
+        <Card
+          className="cursor-pointer hover:shadow-md transition-shadow"
+          role="button"
+          tabIndex={0}
+          onClick={() => navigate('/dashboard/audit')}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate('/dashboard/audit'); } }}
+        >
           <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2 text-base">
               <Shield className="h-5 w-5" /> Activity by Category (This Week)
@@ -292,11 +329,10 @@ const SuperAdminDashboard = () => {
           </CardContent>
         </Card>
 
-        {/* Today's Logins */}
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2 text-base">
-              <LogIn className="h-5 w-5" /> Today's Logins
+              <LogIn className="h-5 w-5" /> Today&apos;s Logins
               <Badge variant="outline" className="ml-auto">{data.recent_logins.length}</Badge>
             </CardTitle>
           </CardHeader>
@@ -330,10 +366,13 @@ const SuperAdminDashboard = () => {
 
       {/* Recent System Actions */}
       <Card>
-        <CardHeader className="pb-3">
+        <CardHeader className="pb-3 flex flex-row items-center justify-between">
           <CardTitle className="flex items-center gap-2 text-base">
             <Clock className="h-5 w-5" /> Recent System Actions
           </CardTitle>
+          <Button size="sm" variant="outline" onClick={() => navigate('/dashboard/audit')}>
+            View all
+          </Button>
         </CardHeader>
         <CardContent>
           {data.recent_actions.length === 0 ? (
@@ -355,6 +394,78 @@ const SuperAdminDashboard = () => {
           )}
         </CardContent>
       </Card>
+
+      <DashboardDrillDialog
+        open={!!drill}
+        onOpenChange={(open) => { if (!open) closeDrill(); }}
+        title={drill?.title || ''}
+        loadRows={drill?.loadRows || (async () => [])}
+        viewAll={drill?.viewAll ? {
+          ...drill.viewAll,
+          onClick: () => {
+            closeDrill();
+            drill.viewAll.onClick();
+          },
+        } : undefined}
+        renderRows={(rows) => {
+          if (drill?.type === 'logins') {
+            return (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-left text-muted-foreground">
+                    <th className="py-2 pr-3 font-medium">User</th>
+                    <th className="py-2 pr-3 font-medium">Role</th>
+                    <th className="py-2 pr-3 font-medium">Time</th>
+                    <th className="py-2 font-medium">IP</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((login, i) => (
+                    <tr key={i} className="border-b">
+                      <td className="py-2 pr-3">{login.user_name || '—'}</td>
+                      <td className="py-2 pr-3 capitalize text-xs">{(login.user_role || '').replace(/_/g, ' ') || '—'}</td>
+                      <td className="py-2 pr-3 text-xs">{formatTime(login.time)}</td>
+                      <td className="py-2 font-mono text-xs">{login.ip || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            );
+          }
+          return (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-left text-muted-foreground">
+                  <th className="py-2 pr-3 font-medium">Name</th>
+                  <th className="py-2 pr-3 font-medium">Username</th>
+                  <th className="py-2 pr-3 font-medium">Role</th>
+                  <th className="py-2 pr-3 font-medium">Status</th>
+                  <th className="py-2 text-right font-medium">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((u) => (
+                  <tr key={u.id} className="border-b">
+                    <td className="py-2 pr-3">{u.full_name || [u.first_name, u.last_name].filter(Boolean).join(' ') || '—'}</td>
+                    <td className="py-2 pr-3 font-mono text-xs">{u.username || '—'}</td>
+                    <td className="py-2 pr-3 capitalize text-xs">
+                      {(u.user_role?.name || u.role || u.role_name || '').replace(/_/g, ' ') || '—'}
+                    </td>
+                    <td className="py-2 pr-3">
+                      <Badge variant="outline">{u.is_active ? 'Active' : 'Inactive'}</Badge>
+                    </td>
+                    <td className="py-2 text-right">
+                      <Button size="sm" variant="outline" onClick={() => { closeDrill(); navigate('/dashboard/admin/users'); }}>
+                        Manage
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          );
+        }}
+      />
     </div>
   );
 };

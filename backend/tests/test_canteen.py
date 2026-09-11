@@ -229,3 +229,18 @@ class TestCanteenPOS:
             json={"reason": "again"},
         )
         assert again.status_code == 400
+
+
+class TestCanteenDashboard:
+    def test_dashboard_overview(self, client, auth_headers):
+        res = client.get("/api/canteen/dashboard", headers=auth_headers)
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert "orders_by_status" in body
+        assert "open_orders" in body
+        assert "today_sales_total" in body
+        assert "today_sales_count" in body
+        assert "active_catalog_items" in body
+        assert isinstance(body["orders_by_status"], dict)
+        for key in ("pending", "preparing", "ready", "delivered", "cancelled"):
+            assert key in body["orders_by_status"]

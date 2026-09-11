@@ -27,6 +27,8 @@ import DischargeSummaryEditor from './inpatient/DischargeSummaryEditor';
 import DischargeSummaryPreviewCard from './inpatient/discharge/DischargeSummaryPreviewCard';
 import { DISCHARGE_SUMMARY_STATUS } from './inpatient/discharge/constants';
 import { enrichAdmissionsWithSummaryStatus, prepareDischargeSummaryEdit, summaryIsReadyForPrint } from './inpatient/discharge/dischargeSummaryUtils';
+import ActionKpiCard from '../../components/dashboard/ActionKpiCard';
+import DashboardDrillDialog from '../../components/dashboard/DashboardDrillDialog';
 
 const isMyInpatientAdmission = (adm, userId) => (
   adm.admitting_doctor_id === userId || adm.attending_physician_id === userId
@@ -47,6 +49,8 @@ const DoctorDashboard = () => {
   const [showVitalsDialog, setShowVitalsDialog] = useState(false);
   const [showPrintPreviewDialog, setShowPrintPreviewDialog] = useState(false);
   const [activeTab, setActiveTab] = useState('appointments');
+  const [appointmentStatusFilter, setAppointmentStatusFilter] = useState('all');
+  const [drill, setDrill] = useState(null);
   const [loading, setLoading] = useState(false);
 
   // Inpatient state
@@ -1116,15 +1120,26 @@ const DoctorDashboard = () => {
     withReport: labOrders.filter(o => o.status === 'completed' && o.has_report).length,
   };
 
+  const focusAppointments = (statusKey) => {
+    setAppointmentStatusFilter(statusKey);
+    setActiveTab('appointments');
+  };
+
+  const filteredScheduleAppointments = appointmentStatusFilter === 'all'
+    ? appointments
+    : appointmentStatusFilter === 'checked_in'
+      ? appointments.filter((a) => a.status === 'confirmed')
+      : appointments.filter((a) => a.status === appointmentStatusFilter);
+
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex justify-between items-center">
+      <div className="flex justify-between items-center flex-wrap gap-3">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Doctor Dashboard</h1>
+          <h1 className="text-2xl font-bold text-gray-900">Doctor Dashboard</h1>
           {user && (
-            <p className="text-gray-600">
-              Welcome, Dr. {user.full_name} - {user.specialization || 'General Medicine'}
+            <p className="text-sm text-gray-500 mt-0.5">
+              Welcome, Dr. {user.full_name} — {user.specialization || 'General Medicine'}
             </p>
           )}
         </div>
@@ -1143,44 +1158,155 @@ const DoctorDashboard = () => {
       </div>
 
       {/* Summary Stats Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
-        <Card>
-          <CardContent className="p-4 text-center">
-            <div className="text-2xl font-bold text-blue-600">{stats.total}</div>
-            <div className="text-xs text-gray-500">Total</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4 text-center">
-            <div className="text-2xl font-bold text-blue-500">{stats.scheduled}</div>
-            <div className="text-xs text-gray-500">Scheduled</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4 text-center">
-            <div className="text-2xl font-bold text-green-600">{stats.checked_in}</div>
-            <div className="text-xs text-gray-500">Checked In</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4 text-center">
-            <div className="text-2xl font-bold text-yellow-600">{stats.in_progress}</div>
-            <div className="text-xs text-gray-500">In Progress</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4 text-center">
-            <div className="text-2xl font-bold text-gray-600">{stats.completed}</div>
-            <div className="text-xs text-gray-500">Completed</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4 text-center">
-            <div className="text-2xl font-bold text-orange-600">{stats.no_show}</div>
-            <div className="text-xs text-gray-500">No Show</div>
-          </CardContent>
-        </Card>
+      <div className="grid gap-3 grid-cols-2 md:grid-cols-3 lg:grid-cols-6">
+        <ActionKpiCard
+          icon={Calendar}
+          label="Total Today"
+          value={stats.total}
+          sub="All appointments"
+          tone="blue"
+          onClick={() => focusAppointments('all')}
+        />
+        <ActionKpiCard
+          icon={Clock}
+          label="Scheduled"
+          value={stats.scheduled}
+          sub="Waiting to check in"
+          tone={stats.scheduled > 0 ? 'blue' : 'slate'}
+          onClick={() => focusAppointments('scheduled')}
+        />
+        <ActionKpiCard
+          icon={CheckCircle}
+          label="Checked In"
+          value={stats.checked_in}
+          sub="Ready to see"
+          tone={stats.checked_in > 0 ? 'green' : 'slate'}
+          onClick={() => focusAppointments('checked_in')}
+        />
+        <ActionKpiCard
+          icon={Activity}
+          label="In Progress"
+          value={stats.in_progress}
+          sub="Active consults"
+          tone={stats.in_progress > 0 ? 'amber' : 'slate'}
+          onClick={() => focusAppointments('in_progress')}
+        />
+        <ActionKpiCard
+          icon={CheckCircle}
+          label="Completed"
+          value={stats.completed}
+          sub="Finished today"
+          tone="slate"
+          onClick={() => {
+            setShowCompletedAppointments(true);
+            fetchCompletedAppointments(user?.id);
+            setDrill({
+              type: 'completed',
+              title: 'Completed appointments',
+              loadRows: async () => {
+                if (completedAppointments.length) return completedAppointments;
+                const doctorId = user?.id;
+                if (!doctorId) return [];
+                try {
+                  const res = await axios.get(`/api/appointments/doctor/${doctorId}`);
+                  const data = Array.isArray(res.data) ? res.data : [];
+                  return data.filter((apt) => apt.status === 'completed');
+                } catch {
+                  return [];
+                }
+              },
+            });
+          }}
+        />
+        <ActionKpiCard
+          icon={XCircle}
+          label="No Show"
+          value={stats.no_show}
+          sub="Missed visits"
+          tone={stats.no_show > 0 ? 'orange' : 'slate'}
+          onClick={() => focusAppointments('no_show')}
+        />
       </div>
+
+      {(labStats.total > 0 || (inpatientEnabled && doctorAdmissions.length > 0)) && (
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <ActionKpiCard
+            icon={TestTube}
+            label="Lab Pending"
+            value={labStats.ordered}
+            sub="Ordered, awaiting results"
+            tone={labStats.ordered > 0 ? 'blue' : 'slate'}
+            onClick={() => setActiveTab('lab-orders')}
+          />
+          <ActionKpiCard
+            icon={Activity}
+            label="Lab Processing"
+            value={labStats.processing}
+            sub="Collected / in progress"
+            tone={labStats.processing > 0 ? 'amber' : 'slate'}
+            onClick={() => setActiveTab('lab-orders')}
+          />
+          <ActionKpiCard
+            icon={FileText}
+            label="Reports Ready"
+            value={labStats.withReport}
+            sub="Completed with report"
+            tone={labStats.withReport > 0 ? 'green' : 'slate'}
+            onClick={() => setActiveTab('lab-orders')}
+          />
+          {inpatientEnabled && (
+            <ActionKpiCard
+              icon={Bed}
+              label="My Inpatients"
+              value={doctorAdmissions.length}
+              sub="Active admissions"
+              tone={doctorAdmissions.length > 0 ? 'cyan' : 'slate'}
+              onClick={() => setActiveTab('inpatients')}
+            />
+          )}
+        </div>
+      )}
+
+      <DashboardDrillDialog
+        open={!!drill}
+        onOpenChange={(open) => { if (!open) setDrill(null); }}
+        title={drill?.title || ''}
+        loadRows={drill?.loadRows || (async () => [])}
+        renderRows={(rows) => (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b text-left text-muted-foreground">
+                <th className="py-2 pr-3 font-medium">Time</th>
+                <th className="py-2 pr-3 font-medium">Patient</th>
+                <th className="py-2 pr-3 font-medium">Status</th>
+                <th className="py-2 text-right font-medium">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((a) => (
+                <tr key={a.id} className="border-b">
+                  <td className="py-2 pr-3 text-xs">{formatTime(a.appointment_time || a.time)}</td>
+                  <td className="py-2 pr-3">{a.patient_name || '—'}</td>
+                  <td className="py-2 pr-3"><Badge variant="outline">{a.status}</Badge></td>
+                  <td className="py-2 text-right">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        setDrill(null);
+                        setSelectedAppointment(a);
+                        setActiveTab('appointments');
+                      }}
+                    >
+                      Open
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      />
 
       {/* Quick Actions + Reports Row */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1311,11 +1437,25 @@ const DoctorDashboard = () => {
               </div>
             </CardHeader>
             <CardContent>
+              {appointmentStatusFilter !== 'all' && (
+                <div className="mb-3 flex items-center gap-2">
+                  <Badge variant="outline" className="capitalize">
+                    Filter: {appointmentStatusFilter === 'checked_in' ? 'Checked In' : appointmentStatusFilter.replace(/_/g, ' ')}
+                  </Badge>
+                  <Button size="sm" variant="ghost" onClick={() => setAppointmentStatusFilter('all')}>
+                    Clear
+                  </Button>
+                </div>
+              )}
               <div className="space-y-4">
-                {appointments.length === 0 ? (
-                  <p className="text-gray-500 text-center py-8">No appointments scheduled for today</p>
+                {filteredScheduleAppointments.length === 0 ? (
+                  <p className="text-gray-500 text-center py-8">
+                    {appointmentStatusFilter === 'all'
+                      ? 'No appointments scheduled for today'
+                      : 'No appointments match this filter'}
+                  </p>
                 ) : (
-                  appointments.map((appointment) => {
+                  filteredScheduleAppointments.map((appointment) => {
                     const timeStatus = getTimeSlotStatus(appointment.appointment_time, appointment.status);
                     return (
                       <Card

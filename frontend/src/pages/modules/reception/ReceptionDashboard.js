@@ -38,6 +38,8 @@ import {
   XCircle
 } from 'lucide-react';
 import { localDateString } from '../../../utils/localDate';
+import ActionKpiCard from '../../../components/dashboard/ActionKpiCard';
+import DashboardDrillDialog from '../../../components/dashboard/DashboardDrillDialog';
 
 const ReceptionDashboard = () => {
   const { toast } = useToast();
@@ -52,6 +54,7 @@ const ReceptionDashboard = () => {
   const [todayAppointments, setTodayAppointments] = useState([]);
   const [labOrders, setLabOrders] = useState([]);
   const [recentPrescriptions, setRecentPrescriptions] = useState([]);
+  const [drill, setDrill] = useState(null);
 
   // Register patient dialog
   const [showRegisterDialog, setShowRegisterDialog] = useState(false);
@@ -589,13 +592,16 @@ const ReceptionDashboard = () => {
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center">
+      <div className="flex justify-between items-center flex-wrap gap-3">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Reception Dashboard</h1>
-          <p className="text-gray-600">Welcome to the reception management center</p>
+          <h1 className="text-2xl font-bold text-gray-900">Reception Dashboard</h1>
+          <p className="text-sm text-gray-500 mt-0.5">
+            Front desk overview · {localDateString()}
+          </p>
         </div>
-        <div className="flex space-x-3">
+        <div className="flex flex-wrap gap-2">
           <Button
+            size="sm"
             className="flex items-center space-x-2"
             onClick={() => { setPatientForm(EMPTY_PATIENT_FORM); setShowRegisterDialog(true); }}
           >
@@ -604,6 +610,7 @@ const ReceptionDashboard = () => {
           </Button>
           {enabledModules.outpatient && (
             <Button
+              size="sm"
               className="flex items-center space-x-2"
               onClick={() => setShowQuickAppointment(true)}
             >
@@ -612,80 +619,143 @@ const ReceptionDashboard = () => {
             </Button>
           )}
           {enabledModules.lab && (
-            <Button variant="outline" className="flex items-center space-x-2" onClick={() => setShowLabBooking(true)}>
+            <Button size="sm" variant="outline" className="flex items-center space-x-2" onClick={() => setShowLabBooking(true)}>
               <TestTube className="h-4 w-4" />
               <span>Book Lab Test</span>
             </Button>
           )}
+          <Button size="sm" variant="outline" onClick={fetchDashboardData}>
+            <RefreshCw className="h-4 w-4" />
+          </Button>
         </div>
       </div>
 
       {/* Stats Cards */}
-      <div className={`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-${enabledModules.outpatient ? '5' : '2'} gap-6`}>
+      <div className={`grid gap-3 ${enabledModules.outpatient ? 'sm:grid-cols-2 lg:grid-cols-5' : 'sm:grid-cols-2'}`}>
         {enabledModules.outpatient && (
           <>
-            <Card>
-              <CardContent className="p-6">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm font-medium text-gray-600">Today's Appointments</p>
-                    <p className="text-3xl font-bold text-blue-600">{stats.todayAppointments}</p>
-                  </div>
-                  <Calendar className="h-8 w-8 text-blue-600" />
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardContent className="p-6">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm font-medium text-gray-600">Pending Appointments</p>
-                    <p className="text-3xl font-bold text-yellow-600">{stats.pendingAppointments}</p>
-                  </div>
-                  <Clock className="h-8 w-8 text-yellow-600" />
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardContent className="p-6">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm font-medium text-gray-600">Completed Today</p>
-                    <p className="text-3xl font-bold text-green-600">{stats.completedAppointments}</p>
-                  </div>
-                  <CheckCircle className="h-8 w-8 text-green-600" />
-                </div>
-              </CardContent>
-            </Card>
+            <ActionKpiCard
+              icon={Calendar}
+              label="Today's Appointments"
+              value={stats.todayAppointments}
+              sub="All statuses today"
+              tone="blue"
+              onClick={() => setDrill({
+                type: 'appts',
+                title: "Today's appointments",
+                filter: null,
+                viewAll: { label: 'Open appointments', onClick: () => navigate('/dashboard/reception/appointments') },
+              })}
+            />
+            <ActionKpiCard
+              icon={Clock}
+              label="Pending"
+              value={stats.pendingAppointments}
+              sub="Scheduled / waiting"
+              tone={stats.pendingAppointments > 0 ? 'amber' : 'slate'}
+              onClick={() => setDrill({
+                type: 'appts',
+                title: 'Pending appointments',
+                filter: 'scheduled',
+                viewAll: { label: 'Open appointments', onClick: () => navigate('/dashboard/reception/appointments') },
+              })}
+            />
+            <ActionKpiCard
+              icon={CheckCircle}
+              label="Completed Today"
+              value={stats.completedAppointments}
+              sub="Finished visits"
+              tone="green"
+              onClick={() => setDrill({
+                type: 'appts',
+                title: 'Completed appointments',
+                filter: 'completed',
+                viewAll: { label: 'Open appointments', onClick: () => navigate('/dashboard/reception/appointments') },
+              })}
+            />
           </>
         )}
 
-        <Card>
-          <CardContent className="p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-gray-600">Total Patients</p>
-                <p className="text-3xl font-bold text-purple-600">{stats.totalPatients}</p>
-              </div>
-              <Users className="h-8 w-8 text-purple-600" />
-            </div>
-          </CardContent>
-        </Card>
+        <ActionKpiCard
+          icon={Users}
+          label="Total Patients"
+          value={stats.totalPatients}
+          sub="Registered patients"
+          tone="purple"
+          onClick={() => navigate('/dashboard/reception/patients')}
+        />
 
-        <Card>
-          <CardContent className="p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-gray-600">New Patients Today</p>
-                <p className="text-3xl font-bold text-teal-600">{stats.newPatientsToday}</p>
-              </div>
-              <TrendingUp className="h-8 w-8 text-teal-600" />
-            </div>
-          </CardContent>
-        </Card>
+        <ActionKpiCard
+          icon={TrendingUp}
+          label="New Patients Today"
+          value={stats.newPatientsToday}
+          sub="Registered today"
+          tone="cyan"
+          onClick={() => navigate('/dashboard/reception/patients')}
+        />
       </div>
+
+      <DashboardDrillDialog
+        open={!!drill}
+        onOpenChange={(open) => { if (!open) setDrill(null); }}
+        title={drill?.title || ''}
+        loadRows={async () => {
+          const token = localStorage.getItem('token');
+          const today = localDateString();
+          const res = await fetch(`/api/appointments/?date_from=${today}&date_to=${today}`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (!res.ok) return [];
+          const rows = await res.json();
+          const list = Array.isArray(rows) ? rows : [];
+          if (drill?.filter) return list.filter((a) => a.status === drill.filter);
+          return list;
+        }}
+        viewAll={drill?.viewAll ? {
+          ...drill.viewAll,
+          onClick: () => {
+            setDrill(null);
+            drill.viewAll.onClick();
+          },
+        } : undefined}
+        renderRows={(rows) => (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b text-left text-muted-foreground">
+                <th className="py-2 pr-3 font-medium">Time</th>
+                <th className="py-2 pr-3 font-medium">Patient</th>
+                <th className="py-2 pr-3 font-medium">Doctor</th>
+                <th className="py-2 pr-3 font-medium">Status</th>
+                <th className="py-2 text-right font-medium">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((a) => (
+                <tr key={a.id} className="border-b">
+                  <td className="py-2 pr-3 text-xs">{a.appointment_time || a.time || '—'}</td>
+                  <td className="py-2 pr-3">{a.patient_name || '—'}</td>
+                  <td className="py-2 pr-3 text-xs">{a.doctor_name || '—'}</td>
+                  <td className="py-2 pr-3">
+                    <Badge className={getStatusBadge(a.status)}>{a.status}</Badge>
+                  </td>
+                  <td className="py-2 text-right">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        setDrill(null);
+                        navigate('/dashboard/reception/appointments');
+                      }}
+                    >
+                      Open
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      />
 
       {/* Today's Appointments Overview — only when outpatient enabled */}
       {enabledModules.outpatient && (

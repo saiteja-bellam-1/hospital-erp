@@ -37,6 +37,21 @@ def _pharmacy_band_heights(ih: float) -> tuple[float, float]:
     return header_h, footer_h
 
 
+# Query / dialog keys that may override saved hospital label settings.
+LABEL_LAYOUT_OVERRIDE_KEYS = frozenset({
+    "width_mm",
+    "height_mm",
+    "labels_per_row",
+    "labels_per_column",
+    "margin_top_mm",
+    "margin_left_mm",
+    "gutter_mm",
+    "sheet_mode",
+    "sheet_width_mm",
+    "sheet_height_mm",
+})
+
+
 @dataclass(frozen=True)
 class LabelLayoutConfig:
     width_mm: float = 50.0
@@ -75,6 +90,66 @@ class LabelLayoutConfig:
             show_pharmacy_name=bool(normalized.get("show_pharmacy_name", True)),
             pharmacy_name_override=normalized.get("pharmacy_name_override") or None,
         )
+
+
+def layout_overrides_from_params(
+    *,
+    width_mm: Optional[float] = None,
+    height_mm: Optional[float] = None,
+    labels_per_row: Optional[int] = None,
+    labels_per_column: Optional[int] = None,
+    margin_top_mm: Optional[float] = None,
+    margin_left_mm: Optional[float] = None,
+    gutter_mm: Optional[float] = None,
+    sheet_mode: Optional[str] = None,
+    sheet_width_mm: Optional[float] = None,
+    sheet_height_mm: Optional[float] = None,
+) -> dict[str, Any]:
+    """Collect non-None layout query params for merge_label_layout."""
+    raw = {
+        "width_mm": width_mm,
+        "height_mm": height_mm,
+        "labels_per_row": labels_per_row,
+        "labels_per_column": labels_per_column,
+        "margin_top_mm": margin_top_mm,
+        "margin_left_mm": margin_left_mm,
+        "gutter_mm": gutter_mm,
+        "sheet_mode": sheet_mode,
+        "sheet_width_mm": sheet_width_mm,
+        "sheet_height_mm": sheet_height_mm,
+    }
+    return {k: v for k, v in raw.items() if v is not None}
+
+
+def merge_label_layout(
+    base: Optional[dict[str, Any]],
+    overrides: Optional[dict[str, Any]] = None,
+    *,
+    single_label: bool = False,
+) -> LabelLayoutConfig:
+    """
+    Merge hospital defaults with per-print overrides.
+
+    When single_label=True and the caller did not pass labels_per_row, force
+    thermal 1×1 so hospital 2/3-across presets do not widen a solitary reprint.
+    An explicit labels_per_row from the print dialog is always honored.
+    """
+    data = dict(base or {})
+    explicit_across = overrides is not None and "labels_per_row" in overrides
+    if overrides:
+        for key, value in overrides.items():
+            if key in LABEL_LAYOUT_OVERRIDE_KEYS and value is not None:
+                data[key] = value
+    if single_label:
+        mode = str(data.get("sheet_mode") or "thermal").lower()
+        if mode != "avery":
+            data["sheet_mode"] = "thermal"
+            if not explicit_across:
+                data["labels_per_row"] = 1
+                data["labels_per_column"] = 1
+            else:
+                data["labels_per_column"] = 1
+    return LabelLayoutConfig.from_dict(data)
 
 
 def _truncate(text: str, max_len: int) -> str:
@@ -408,7 +483,8 @@ def _draw_patient_file_label(
     """Patient file sticker: horizontal patient MRN barcode on top + demographics."""
     w = layout.width_mm * mm
     h = layout.height_mm * mm
-    pad = 1.8 * mm
+    # Scale padding/band with sticker size so short stock (e.g. 25 mm) still fits.
+    pad = max(0.8 * mm, min(1.8 * mm, h * 0.04, w * 0.03))
 
     mrn = (label.get("mrn") or "").strip()
     mrn_ean = (label.get("mrn_ean13") or "").strip()
@@ -419,35 +495,40 @@ def _draw_patient_file_label(
     order_no = (label.get("order_no") or "").strip()
     ref_name = (label.get("ref_name") or "").strip()
 
-    # Top band: horizontal EAN-13 + MRN text to the right / under.
-    bar_h = min(12.0 * mm, h * 0.32)
+    usable_w = max(1.0, w - 2 * pad)
+    # Reserve body lines first, then give remaining height to the barcode band.
+    body_lines = 4 + (1 if (order_no or ref_name) else 0)
+    line = max(2.4 * mm, min(3.8 * mm, h * 0.085))
+    body_budget = body_lines * line + 1.2 * mm
+    bar_h = max(5.0 * mm, min(11.0 * mm, h - body_budget - 2 * pad))
+    if bar_h + body_budget + 2 * pad > h:
+        bar_h = max(4.0 * mm, h * 0.28)
+
     bar_top = y0 + h - pad
     bar_bottom = bar_top - bar_h
-    usable_w = w - 2 * pad
-    mrn_text_w = min(usable_w * 0.32, 28 * mm) if mrn else 0.0
-    bar_max_w = usable_w - mrn_text_w - (2 * mm if mrn else 0.0)
+    # On narrow stickers put MRN under the bars (full width); otherwise beside.
+    side_by_side = w >= 55 * mm and mrn
+    mrn_text_w = min(usable_w * 0.30, 26 * mm) if side_by_side else 0.0
+    bar_max_w = usable_w - mrn_text_w - (1.5 * mm if side_by_side else 0.0)
 
-    if mrn_ean and validate_ean13(mrn_ean) and bar_h >= 4.0 * mm:
+    if mrn_ean and validate_ean13(mrn_ean) and bar_h >= 3.5 * mm:
         _draw_ean13(
             c,
             mrn_ean,
             x0 + pad,
-            bar_bottom + 0.5 * mm,
+            bar_bottom + (0.2 * mm if side_by_side else 1.4 * mm),
             bar_max_w,
-            bar_h - 1.0 * mm,
+            bar_h - (0.6 * mm if side_by_side else 2.2 * mm),
             area_width=bar_max_w,
             align="left",
         )
 
-    if mrn:
-        c.setFont("Helvetica-Bold", 7)
+    if mrn and side_by_side:
+        c.setFont("Helvetica-Bold", max(5.5, min(7.0, (h / mm) * 0.16)))
         c.drawRightString(x0 + w - pad, bar_bottom + bar_h * 0.35, _truncate(mrn, 18))
 
-    # Body text below barcode band.
-    y = bar_bottom - 2.5 * mm
-    line = max(3.2 * mm, min(4.2 * mm, h * 0.09))
-    body_pt = max(5.5, min(7.5, (h / mm) * 0.18))
-    label_pt = body_pt
+    y = bar_bottom - 1.2 * mm
+    label_pt = max(5.0, min(7.0, (h / mm) * 0.16))
 
     def draw_line(text: str, *, bold: bool = False) -> None:
         nonlocal y
@@ -468,11 +549,12 @@ def _draw_patient_file_label(
             return
         c.setFont("Helvetica", label_pt)
         half = usable_w * 0.52
-        c.drawString(
-            x0 + pad,
-            y,
-            _truncate_to_width(c, left, "Helvetica", label_pt, half),
-        )
+        if left:
+            c.drawString(
+                x0 + pad,
+                y,
+                _truncate_to_width(c, left, "Helvetica", label_pt, half),
+            )
         if right:
             c.drawRightString(
                 x0 + w - pad,
@@ -517,7 +599,7 @@ def _label_positions(layout: LabelLayoutConfig) -> List[tuple[float, float]]:
     gy = layout.gutter_mm * mm
 
     if layout.sheet_mode == "thermal":
-        # Page size equals one label; margins are content inset (see _content_rect).
+        # Thermal page = N stickers across × M tall (usually 1×1 for single prints).
         for row in range(layout.labels_per_column):
             for col in range(layout.labels_per_row):
                 positions.append((col * (lw + gx), row * (lh + gy)))
@@ -550,6 +632,8 @@ def build_label_pdf(
     page_w, page_h = _page_size(layout)
     slots = _label_positions(layout)
     slots_per_page = len(slots)
+    lw = layout.width_mm * mm
+    lh = layout.height_mm * mm
 
     c = canvas.Canvas(buf, pagesize=(page_w, page_h))
 
@@ -558,12 +642,18 @@ def build_label_pdf(
             c.showPage()
         slot_idx = idx % slots_per_page
         x0, y0 = slots[slot_idx]
+        # Clip to the sticker rectangle so ink never bleeds into the next peel.
+        c.saveState()
+        clip = c.beginPath()
+        clip.rect(x0, y0, lw, lh)
+        c.clipPath(clip, stroke=0)
         if label_type == "lab_sample":
             _draw_lab_label(c, layout, x0, y0, label, lab_display_name)
         elif label_type == "patient_file":
             _draw_patient_file_label(c, layout, x0, y0, label)
         else:
             _draw_pharmacy_label(c, layout, x0, y0, label, pharmacy_display_name)
+        c.restoreState()
 
     c.save()
     return buf.getvalue()

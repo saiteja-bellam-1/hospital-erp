@@ -1,5 +1,5 @@
 import React from 'react';
-import LabelPreviewDialog from './LabelPreviewDialog';
+import BarcodeLabelPrintDialog from './BarcodeLabelPrintDialog';
 import { patientFileLabelParams, patientFileLabelPath } from '../utils/patientFileLabel';
 
 /**
@@ -20,7 +20,7 @@ export default function PatientFileLabelDialog({
 }) {
   if (!patientId) return null;
   return (
-    <LabelPreviewDialog
+    <BarcodeLabelPrintDialog
       open={open}
       onClose={onClose}
       title={title}

@@ -592,6 +592,16 @@ async def download_patient_file_label_pdf(
     pat_type: Optional[str] = None,
     bill_date: Optional[str] = None,
     payment_method: Optional[str] = None,
+    width_mm: Optional[float] = None,
+    height_mm: Optional[float] = None,
+    labels_per_row: Optional[int] = None,
+    labels_per_column: Optional[int] = None,
+    margin_top_mm: Optional[float] = None,
+    margin_left_mm: Optional[float] = None,
+    gutter_mm: Optional[float] = None,
+    sheet_mode: Optional[str] = None,
+    sheet_width_mm: Optional[float] = None,
+    sheet_height_mm: Optional[float] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -599,7 +609,11 @@ async def download_patient_file_label_pdf(
     import io
     from fastapi.responses import StreamingResponse
     from app.services.barcode_service import ensure_patient_mrn_ean13
-    from app.utils.label_pdf_service import LabelLayoutConfig, build_label_pdf
+    from app.utils.label_pdf_service import (
+        layout_overrides_from_params,
+        merge_label_layout,
+        build_label_pdf,
+    )
     from app.utils.pdf_settings import get_patient_file_label_settings
     from app.utils.patient_age import format_patient_age
     from app.utils.time import system_now
@@ -694,8 +708,21 @@ async def download_patient_file_label_pdf(
     if src in ("", "registration", "reprint") and not appointment_id and not order_id:
         label["order_no"] = ""
 
-    layout = LabelLayoutConfig.from_dict(
-        get_patient_file_label_settings(db, current_user.hospital_id)
+    layout = merge_label_layout(
+        get_patient_file_label_settings(db, current_user.hospital_id),
+        layout_overrides_from_params(
+            width_mm=width_mm,
+            height_mm=height_mm,
+            labels_per_row=labels_per_row,
+            labels_per_column=labels_per_column,
+            margin_top_mm=margin_top_mm,
+            margin_left_mm=margin_left_mm,
+            gutter_mm=gutter_mm,
+            sheet_mode=sheet_mode,
+            sheet_width_mm=sheet_width_mm,
+            sheet_height_mm=sheet_height_mm,
+        ),
+        single_label=True,
     )
     pdf_bytes = build_label_pdf([label], layout, "patient_file")
     db.commit()

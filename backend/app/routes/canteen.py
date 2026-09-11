@@ -11,6 +11,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy import func as sa_func
 from sqlalchemy.orm import Session, joinedload
 
 from config.database import get_db
@@ -33,6 +34,7 @@ router = APIRouter()
 
 ORDER_STATUSES = ("pending", "preparing", "ready", "delivered", "cancelled")
 ACTIVE_STATUSES = ("pending", "preparing", "ready", "delivered")
+OPEN_ORDER_STATUSES = ("pending", "preparing", "ready")
 CANCEL_BLOCKED_STATUSES = ("delivered", "cancelled")
 
 
@@ -41,6 +43,73 @@ def _get_hospital(db: Session) -> Hospital:
     if not hospital:
         raise HTTPException(status_code=404, detail="Hospital not configured")
     return hospital
+
+
+@router.get("/dashboard")
+async def canteen_dashboard(
+    current_user: User = Depends(require_canteen_permission("view_orders")),
+    db: Session = Depends(get_db),
+):
+    """Today's kitchen + POS overview for the canteen home dashboard."""
+    hospital = _get_hospital(db)
+    hid = hospital.id
+    today = date.today()
+    today_start = datetime.combine(today, datetime.min.time())
+    today_end = datetime.combine(today, datetime.max.time())
+
+    order_rows = (
+        db.query(CanteenOrder.status, sa_func.count(CanteenOrder.id))
+        .filter(
+            CanteenOrder.hospital_id == hid,
+            CanteenOrder.serve_date == today,
+        )
+        .group_by(CanteenOrder.status)
+        .all()
+    )
+    orders_by_status = {s: int(c or 0) for s, c in order_rows}
+    open_orders = sum(orders_by_status.get(s, 0) for s in OPEN_ORDER_STATUSES)
+
+    sales_row = (
+        db.query(
+            sa_func.coalesce(sa_func.sum(CanteenSale.grand_total), 0),
+            sa_func.count(CanteenSale.id),
+        )
+        .filter(
+            CanteenSale.hospital_id == hid,
+            CanteenSale.status == "completed",
+            CanteenSale.sale_date >= today_start,
+            CanteenSale.sale_date <= today_end,
+        )
+        .one()
+    )
+    sales_total = float(sales_row[0] or 0)
+    sales_count = int(sales_row[1] or 0)
+
+    catalog_active = (
+        db.query(sa_func.count(CanteenItem.id))
+        .filter(
+            CanteenItem.hospital_id == hid,
+            CanteenItem.is_active == True,  # noqa: E712
+        )
+        .scalar()
+        or 0
+    )
+
+    return {
+        "date": today.isoformat(),
+        "orders_by_status": {
+            "pending": orders_by_status.get("pending", 0),
+            "preparing": orders_by_status.get("preparing", 0),
+            "ready": orders_by_status.get("ready", 0),
+            "delivered": orders_by_status.get("delivered", 0),
+            "cancelled": orders_by_status.get("cancelled", 0),
+        },
+        "open_orders": open_orders,
+        "orders_today": sum(orders_by_status.values()),
+        "today_sales_total": round(sales_total, 2),
+        "today_sales_count": sales_count,
+        "active_catalog_items": int(catalog_active),
+    }
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────────

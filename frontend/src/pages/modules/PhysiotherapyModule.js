@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Routes, Route, Navigate, Link } from 'react-router-dom';
+import { Routes, Route, Navigate, Link, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
@@ -16,8 +16,10 @@ import { printPdfFromUrl } from '../../utils/printPdf';
 import {
   Package, Plus, RefreshCw,
   CheckCircle2, Play, UserX, XCircle, Loader2, Download,
-  Paperclip, Upload, Trash2,
+  Paperclip, Upload, Trash2, Activity, Banknote, AlertTriangle, Layers,
 } from 'lucide-react';
+import ActionKpiCard from '../../components/dashboard/ActionKpiCard';
+import DashboardDrillDialog from '../../components/dashboard/DashboardDrillDialog';
 
 function errMsg(e) {
   const d = e?.response?.data?.detail;
@@ -1502,9 +1504,11 @@ function TherapistsPage() {
 
 function DashboardPage() {
   const { toast } = useToast();
+  const navigate = useNavigate();
   const { canPackages, canReports, canSchedule } = usePhysioPermissions();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [drill, setDrill] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1521,6 +1525,58 @@ function DashboardPage() {
   useEffect(() => { load(); }, [load]);
 
   const status = data?.sessions_by_status || {};
+  const today = data?.date || todayISO();
+  const inClinic = (status.checked_in || 0) + (status.in_progress || 0);
+
+  const loadAppointments = useCallback(async (params = {}) => {
+    const r = await axios.get('/api/physiotherapy/appointments', {
+      params: { date: today, ...params },
+    });
+    return Array.isArray(r.data) ? r.data : [];
+  }, [today]);
+
+  const loadPackages = useCallback(async () => {
+    const r = await axios.get('/api/physiotherapy/packages');
+    const rows = Array.isArray(r.data) ? r.data : [];
+    return rows.filter((p) => p.status === 'active' && (p.sessions_remaining || 0) > 0);
+  }, []);
+
+  const closeDrill = () => setDrill(null);
+
+  const renderApptRows = (rows) => (
+    <table className="w-full text-sm">
+      <thead>
+        <tr className="border-b text-left text-muted-foreground">
+          <th className="py-2 pr-3 font-medium">When</th>
+          <th className="py-2 pr-3 font-medium">Patient</th>
+          <th className="py-2 pr-3 font-medium">Therapist</th>
+          <th className="py-2 pr-3 font-medium">Status</th>
+          <th className="py-2 text-right font-medium">Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((a) => (
+          <tr key={a.id} className="border-b">
+            <td className="py-2 pr-3 whitespace-nowrap text-xs">
+              {a.appointment_date}{a.appointment_time ? ` ${a.appointment_time}` : ''}
+            </td>
+            <td className="py-2 pr-3">{a.patient_name || '—'}</td>
+            <td className="py-2 pr-3">{a.therapist_name || '—'}</td>
+            <td className="py-2 pr-3">
+              <Badge className={STATUS_BADGE[a.status] || 'bg-gray-100 text-gray-700'}>
+                {(a.status || '').replace(/_/g, ' ')}
+              </Badge>
+            </td>
+            <td className="py-2 text-right">
+              <Button asChild size="sm" variant="outline" onClick={closeDrill}>
+                <Link to="/dashboard/physiotherapy/today">Board</Link>
+              </Button>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
 
   return (
     <div className="space-y-4">
@@ -1554,78 +1610,78 @@ function DashboardPage() {
       ) : (
         <>
           <div className={`grid gap-3 ${canReports ? 'sm:grid-cols-2 lg:grid-cols-4' : 'sm:grid-cols-2'}`}>
-            <Card>
-              <CardContent className="pt-6">
-                <p className="text-sm text-muted-foreground">Sessions today</p>
-                <p className="text-2xl font-bold">{data?.total_sessions ?? 0}</p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  {status.completed || 0} done · {status.scheduled || 0} scheduled
-                  {(status.checked_in || status.in_progress)
-                    ? ` · ${(status.checked_in || 0) + (status.in_progress || 0)} in clinic`
-                    : ''}
-                </p>
-              </CardContent>
-            </Card>
+            <ActionKpiCard
+              icon={Activity}
+              label="Sessions Today"
+              value={data?.total_sessions ?? 0}
+              sub={`${status.completed || 0} done · ${status.scheduled || 0} scheduled${inClinic ? ` · ${inClinic} in clinic` : ''}`}
+              tone="blue"
+              onClick={() => setDrill({
+                type: 'sessions',
+                title: 'Sessions today',
+                loadRows: () => loadAppointments(),
+                viewAll: { label: "Open today's board", onClick: () => navigate('/dashboard/physiotherapy/today') },
+              })}
+            />
             {canReports && data?.collections != null && (
-              <Card>
-                <CardContent className="pt-6">
-                  <p className="text-sm text-muted-foreground">Collections today</p>
-                  <p className="text-2xl font-bold">{fmt(data?.collections?.total)}</p>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Cash {fmt(data?.collections?.cash)} · UPI {fmt(data?.collections?.upi)}
-                  </p>
-                </CardContent>
-              </Card>
+              <ActionKpiCard
+                icon={Banknote}
+                label="Collections Today"
+                value={fmt(data?.collections?.total)}
+                sub={`Cash ${fmt(data?.collections?.cash)} · UPI ${fmt(data?.collections?.upi)}`}
+                tone="green"
+                onClick={() => setDrill({
+                  type: 'sessions',
+                  title: 'Completed sessions today',
+                  description: 'Sessions completed today (collections detail is on Reports)',
+                  loadRows: () => loadAppointments({ status: 'completed' }),
+                  viewAll: { label: 'Open reports', onClick: () => navigate('/dashboard/physiotherapy/reports') },
+                })}
+              />
             )}
             {canReports && data?.outstanding_dues != null && (
-              <Card>
-                <CardContent className="pt-6">
-                  <p className="text-sm text-muted-foreground">Outstanding</p>
-                  <p className="text-2xl font-bold">{fmt(data?.outstanding_dues)}</p>
-                  <p className="text-xs text-muted-foreground mt-1">Unpaid physio bills today</p>
-                </CardContent>
-              </Card>
+              <ActionKpiCard
+                icon={AlertTriangle}
+                label="Outstanding"
+                value={fmt(data?.outstanding_dues)}
+                sub="Unpaid physio bills"
+                tone={Number(data?.outstanding_dues) > 0 ? 'orange' : 'slate'}
+                onClick={() => navigate('/dashboard/billing')}
+              />
             )}
-            <Card>
-              <CardContent className="pt-6">
-                <p className="text-sm text-muted-foreground">Sessions owed</p>
-                <p className="text-2xl font-bold">{data?.package_liability?.sessions_owed ?? 0}</p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  {data?.package_liability?.active_packages ?? 0} active package
-                  {(data?.package_liability?.active_packages ?? 0) === 1 ? '' : 's'}
-                </p>
-              </CardContent>
-            </Card>
+            <ActionKpiCard
+              icon={Layers}
+              label="Sessions Owed"
+              value={data?.package_liability?.sessions_owed ?? 0}
+              sub={`${data?.package_liability?.active_packages ?? 0} active package${(data?.package_liability?.active_packages ?? 0) === 1 ? '' : 's'}`}
+              tone="purple"
+              onClick={canPackages ? () => setDrill({
+                type: 'packages',
+                title: 'Active packages with sessions remaining',
+                loadRows: loadPackages,
+                viewAll: { label: 'Open packages', onClick: () => navigate('/dashboard/physiotherapy/packages') },
+              }) : undefined}
+            />
           </div>
 
           {canReports && data?.revenue_by_type != null && (
           <div>
             <h3 className="text-sm font-medium mb-2">Revenue split (today)</h3>
             <div className="grid sm:grid-cols-2 gap-3">
-              <Card>
-                <CardContent className="pt-6">
-                  <p className="text-sm text-muted-foreground">Package revenue</p>
-                  <p className="text-2xl font-bold">{fmt(data?.revenue_by_type?.package?.collected)}</p>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Billed {fmt(data?.revenue_by_type?.package?.billed)}
-                    {data?.revenue_by_type?.package?.bill_count != null
-                      ? ` · ${data.revenue_by_type.package.bill_count} bill${data.revenue_by_type.package.bill_count === 1 ? '' : 's'}`
-                      : ''}
-                  </p>
-                </CardContent>
-              </Card>
-              <Card>
-                <CardContent className="pt-6">
-                  <p className="text-sm text-muted-foreground">À la carte revenue</p>
-                  <p className="text-2xl font-bold">{fmt(data?.revenue_by_type?.a_la_carte?.collected)}</p>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Billed {fmt(data?.revenue_by_type?.a_la_carte?.billed)}
-                    {data?.revenue_by_type?.a_la_carte?.bill_count != null
-                      ? ` · ${data.revenue_by_type.a_la_carte.bill_count} bill${data.revenue_by_type.a_la_carte.bill_count === 1 ? '' : 's'}`
-                      : ''}
-                  </p>
-                </CardContent>
-              </Card>
+              <ActionKpiCard
+                icon={Package}
+                label="Package Revenue"
+                value={fmt(data?.revenue_by_type?.package?.collected)}
+                sub={`Billed ${fmt(data?.revenue_by_type?.package?.billed)}${data?.revenue_by_type?.package?.bill_count != null ? ` · ${data.revenue_by_type.package.bill_count} bill${data.revenue_by_type.package.bill_count === 1 ? '' : 's'}` : ''}`}
+                tone="cyan"
+              />
+              <ActionKpiCard
+                icon={Banknote}
+                label="À la carte Revenue"
+                value={fmt(data?.revenue_by_type?.a_la_carte?.collected)}
+                sub={`Billed ${fmt(data?.revenue_by_type?.a_la_carte?.billed)}${data?.revenue_by_type?.a_la_carte?.bill_count != null ? ` · ${data.revenue_by_type.a_la_carte.bill_count} bill${data.revenue_by_type.a_la_carte.bill_count === 1 ? '' : 's'}` : ''}`}
+                tone="amber"
+              />
             </div>
           </div>
           )}
@@ -1687,6 +1743,52 @@ function DashboardPage() {
           </Card>
         </>
       )}
+
+      <DashboardDrillDialog
+        open={!!drill}
+        onOpenChange={(open) => { if (!open) closeDrill(); }}
+        title={drill?.title || ''}
+        description={drill?.description}
+        loadRows={drill?.loadRows || (async () => [])}
+        renderRows={(rows) => {
+          if (drill?.type === 'packages') {
+            return (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-left text-muted-foreground">
+                    <th className="py-2 pr-3 font-medium">Patient</th>
+                    <th className="py-2 pr-3 font-medium">Package</th>
+                    <th className="py-2 pr-3 font-medium">Remaining</th>
+                    <th className="py-2 text-right font-medium">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((p) => (
+                    <tr key={p.id} className="border-b">
+                      <td className="py-2 pr-3">{p.patient_name || '—'}</td>
+                      <td className="py-2 pr-3">{p.package_name || p.name || '—'}</td>
+                      <td className="py-2 pr-3">{p.sessions_remaining ?? '—'}</td>
+                      <td className="py-2 text-right">
+                        <Button asChild size="sm" variant="outline" onClick={closeDrill}>
+                          <Link to="/dashboard/physiotherapy/packages">Open</Link>
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            );
+          }
+          return renderApptRows(rows);
+        }}
+        viewAll={drill?.viewAll ? {
+          ...drill.viewAll,
+          onClick: () => {
+            closeDrill();
+            drill.viewAll.onClick();
+          },
+        } : undefined}
+      />
     </div>
   );
 }

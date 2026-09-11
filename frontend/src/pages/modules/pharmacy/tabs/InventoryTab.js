@@ -554,6 +554,8 @@ export default function InventoryTab() {
         params={{ reprint: true }}
         filename={labelPreview?.filename || 'label.pdf'}
         bulkBody={labelPreview?.bulk ? { inventory_ids: labelPreview.inventoryIds } : null}
+        labelKind="pharmacy"
+        allowMultiUp={!!labelPreview?.bulk}
       />
     </div>
   );

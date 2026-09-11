@@ -32,7 +32,12 @@ from app.services.barcode_service import (
     normalize_scanned_barcode,
     resolve_medicine_barcode,
 )
-from app.utils.label_pdf_service import LabelLayoutConfig, build_label_pdf
+from app.utils.label_pdf_service import (
+    LabelLayoutConfig,
+    build_label_pdf,
+    layout_overrides_from_params,
+    merge_label_layout,
+)
 
 _LABEL_PDF_HEADERS = {
     "Cache-Control": "no-store, no-cache, must-revalidate",
@@ -1594,6 +1599,7 @@ def _inventory_label_pdf(
     user: User,
     *,
     reprint: bool = False,
+    layout_overrides: Optional[dict] = None,
 ) -> bytes:
     labels: List[dict] = []
     for iid in inventory_ids:
@@ -1609,7 +1615,11 @@ def _inventory_label_pdf(
         labels.append(_pharmacy_label_dict(db, inv, med, hospital_id))
     if not labels:
         raise HTTPException(status_code=400, detail="No inventory batches found for label print")
-    layout = LabelLayoutConfig.from_dict(get_pharmacy_label_settings(db, hospital_id))
+    layout = merge_label_layout(
+        get_pharmacy_label_settings(db, hospital_id),
+        layout_overrides,
+        single_label=len(labels) <= 1,
+    )
     pharmacy_info = _pharmacy_hospital_info_for_pdf(db, hospital_id)
     pdf_bytes = build_label_pdf(
         labels,
@@ -1776,11 +1786,34 @@ def list_batches(
 def download_inventory_label_pdf(
     inventory_id: int,
     reprint: bool = False,
+    width_mm: Optional[float] = None,
+    height_mm: Optional[float] = None,
+    labels_per_row: Optional[int] = None,
+    labels_per_column: Optional[int] = None,
+    margin_top_mm: Optional[float] = None,
+    margin_left_mm: Optional[float] = None,
+    gutter_mm: Optional[float] = None,
+    sheet_mode: Optional[str] = None,
+    sheet_width_mm: Optional[float] = None,
+    sheet_height_mm: Optional[float] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_inventory")),
 ):
+    overrides = layout_overrides_from_params(
+        width_mm=width_mm,
+        height_mm=height_mm,
+        labels_per_row=labels_per_row,
+        labels_per_column=labels_per_column,
+        margin_top_mm=margin_top_mm,
+        margin_left_mm=margin_left_mm,
+        gutter_mm=gutter_mm,
+        sheet_mode=sheet_mode,
+        sheet_width_mm=sheet_width_mm,
+        sheet_height_mm=sheet_height_mm,
+    )
     pdf_bytes = _inventory_label_pdf(
-        db, current_user.hospital_id, [inventory_id], current_user, reprint=reprint,
+        db, current_user.hospital_id, [inventory_id], current_user,
+        reprint=reprint, layout_overrides=overrides,
     )
     db.commit()
     return StreamingResponse(
@@ -1801,11 +1834,34 @@ class InventoryLabelsIn(BaseModel):
 def download_inventory_labels_batch_pdf(
     body: InventoryLabelsIn,
     reprint: bool = False,
+    width_mm: Optional[float] = None,
+    height_mm: Optional[float] = None,
+    labels_per_row: Optional[int] = None,
+    labels_per_column: Optional[int] = None,
+    margin_top_mm: Optional[float] = None,
+    margin_left_mm: Optional[float] = None,
+    gutter_mm: Optional[float] = None,
+    sheet_mode: Optional[str] = None,
+    sheet_width_mm: Optional[float] = None,
+    sheet_height_mm: Optional[float] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_inventory")),
 ):
+    overrides = layout_overrides_from_params(
+        width_mm=width_mm,
+        height_mm=height_mm,
+        labels_per_row=labels_per_row,
+        labels_per_column=labels_per_column,
+        margin_top_mm=margin_top_mm,
+        margin_left_mm=margin_left_mm,
+        gutter_mm=gutter_mm,
+        sheet_mode=sheet_mode,
+        sheet_width_mm=sheet_width_mm,
+        sheet_height_mm=sheet_height_mm,
+    )
     pdf_bytes = _inventory_label_pdf(
-        db, current_user.hospital_id, body.inventory_ids, current_user, reprint=reprint,
+        db, current_user.hospital_id, body.inventory_ids, current_user,
+        reprint=reprint, layout_overrides=overrides,
     )
     db.commit()
     return StreamingResponse(

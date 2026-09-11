@@ -188,11 +188,48 @@ def test_build_patient_file_label_pdf_omits_order_when_blank():
     assert pdf[:4] == b"%PDF"
 
 
+def test_merge_label_layout_forces_single_thermal_1up():
+    from app.utils.label_pdf_service import merge_label_layout, _page_size
+    layout = merge_label_layout(
+        {
+            "width_mm": 38,
+            "height_mm": 25,
+            "labels_per_row": 3,
+            "labels_per_column": 1,
+            "gutter_mm": 2,
+            "sheet_mode": "thermal",
+        },
+        {"width_mm": 50, "height_mm": 30},
+        single_label=True,
+    )
+    assert layout.labels_per_row == 1
+    assert layout.labels_per_column == 1
+    assert layout.width_mm == 50
+    assert layout.height_mm == 30
+    page_w, page_h = _page_size(layout)
+    assert abs(page_w / mm - 50) < 0.01
+    assert abs(page_h / mm - 30) < 0.01
+
+
+def test_merge_label_layout_honors_explicit_across_override():
+    from app.utils.label_pdf_service import merge_label_layout, _page_size
+    layout = merge_label_layout(
+        {"width_mm": 38, "height_mm": 25, "labels_per_row": 1, "sheet_mode": "thermal"},
+        {"width_mm": 38, "height_mm": 25, "labels_per_row": 3, "gutter_mm": 2},
+        single_label=True,
+    )
+    assert layout.labels_per_row == 3
+    assert layout.labels_per_column == 1
+    page_w, page_h = _page_size(layout)
+    assert abs(page_w / mm - (3 * 38 + 2 * 2)) < 0.01
+    assert abs(page_h / mm - 25) < 0.01
+
+
 def test_patient_file_label_endpoint(client, auth_headers, seed_data):
     pid = seed_data["patient_id"]
     res = client.get(
         f"/api/patients/{pid}/file-label.pdf",
-        params={"source": "registration"},
+        params={"source": "registration", "width_mm": 50, "height_mm": 25},
         headers=auth_headers,
     )
     assert res.status_code == 200

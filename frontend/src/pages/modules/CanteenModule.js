@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Routes, Route, Navigate, useLocation, Link } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation, useSearchParams, Link } from 'react-router-dom';
 import axios from 'axios';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
@@ -14,6 +14,7 @@ import { useCanteenPermissions } from '../../hooks/useCanteenPermissions';
 import CanteenOrderPanel from './canteen/CanteenOrderPanel';
 import CanteenSalesCounter from './canteen/CanteenSalesCounter';
 import CanteenSalesHistory from './canteen/CanteenSalesHistory';
+import CanteenDashboard from './canteen/CanteenDashboard';
 
 function errMsg(e) {
   const d = e?.response?.data?.detail;
@@ -278,12 +279,23 @@ function CatalogPage({ hasPerm }) {
   );
 }
 
+const KITCHEN_STATUS_FILTERS = new Set(['open', 'pending', 'preparing', 'ready', 'delivered', 'all']);
+
 function KitchenPage({ hasPerm }) {
   const { toast } = useToast();
+  const [searchParams, setSearchParams] = useSearchParams();
   const canStatus = hasPerm('manage_order_status');
   const [orders, setOrders] = useState([]);
-  const [statusFilter, setStatusFilter] = useState('open');
+  const statusFromUrl = searchParams.get('status');
+  const statusFilter = KITCHEN_STATUS_FILTERS.has(statusFromUrl) ? statusFromUrl : 'open';
   const [loading, setLoading] = useState(false);
+
+  const setStatusFilter = (value) => {
+    const next = new URLSearchParams(searchParams);
+    if (!value || value === 'open') next.delete('status');
+    else next.set('status', value);
+    setSearchParams(next, { replace: true });
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -338,7 +350,11 @@ function KitchenPage({ hasPerm }) {
           </p>
         </div>
         <div className="flex gap-2 items-center">
-          <select className="h-8 text-xs border rounded-md px-2" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+          <select
+            className="h-8 text-xs border rounded-md px-2"
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+          >
             <option value="open">Open</option>
             <option value="pending">Pending</option>
             <option value="preparing">Preparing</option>
@@ -470,7 +486,10 @@ function PlaceOrderPage({ hasPerm }) {
 function CanteenNav({ hasPerm }) {
   const loc = useLocation();
   const links = [];
-  // IP ward orders first — kitchen staff (canteen_sales) need this queue
+  if (hasPerm('view_orders')) {
+    links.push({ to: '/dashboard/canteen', label: 'Dashboard', exact: true });
+  }
+  // IP ward orders — kitchen staff (canteen_sales) need this queue
   if (hasPerm('view_orders') || hasPerm('manage_order_status')) {
     links.push({ to: '/dashboard/canteen/orders', label: 'IP Food Orders' });
   }
@@ -488,19 +507,24 @@ function CanteenNav({ hasPerm }) {
   }
   return (
     <div className="flex gap-1 border-b mb-4 overflow-x-auto">
-      {links.map((l) => (
-        <Link
-          key={l.to}
-          to={l.to}
-          className={`px-4 py-2 text-sm whitespace-nowrap ${
-            loc.pathname.startsWith(l.to)
-              ? 'border-b-2 border-blue-600 font-semibold text-blue-700'
-              : 'text-gray-500 hover:text-gray-700'
-          }`}
-        >
-          {l.label}
-        </Link>
-      ))}
+      {links.map((l) => {
+        const active = l.exact
+          ? loc.pathname === l.to || loc.pathname === `${l.to}/`
+          : loc.pathname.startsWith(l.to);
+        return (
+          <Link
+            key={l.to}
+            to={l.to}
+            className={`px-4 py-2 text-sm whitespace-nowrap ${
+              active
+                ? 'border-b-2 border-blue-600 font-semibold text-blue-700'
+                : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            {l.label}
+          </Link>
+        );
+      })}
     </div>
   );
 }
@@ -512,20 +536,18 @@ export default function CanteenModule() {
     return <div className="p-6 text-sm text-gray-500">Loading canteen…</div>;
   }
 
-  // canteen_sales: land on IP food queue; admin with catalog lands on catalog; POS otherwise
-  const defaultPath = hasPerm('manage_order_status') && !hasPerm('manage_catalog')
-    ? 'orders'
+  // Prefer action dashboard; fall back to the first permitted workspace
+  const defaultPath = hasPerm('view_orders')
+    ? '.'
     : hasPerm('manage_catalog')
       ? 'catalog'
       : hasPerm('create_sale')
         ? 'pos'
-        : hasPerm('view_orders')
-          ? 'orders'
-          : hasPerm('view_sales')
-            ? 'sales'
-            : hasPerm('place_order')
-              ? 'order'
-              : null;
+        : hasPerm('view_sales')
+          ? 'sales'
+          : hasPerm('place_order')
+            ? 'order'
+            : null;
 
   if (!defaultPath) {
     return (
@@ -539,7 +561,15 @@ export default function CanteenModule() {
     <div className="space-y-2">
       <CanteenNav hasPerm={hasPerm} />
       <Routes>
-        <Route index element={<Navigate to={defaultPath} replace />} />
+        <Route
+          index
+          element={
+            hasPerm('view_orders')
+              ? <CanteenDashboard />
+              : <Navigate to={defaultPath} replace />
+          }
+        />
+        <Route path="dashboard" element={<Navigate to="/dashboard/canteen" replace />} />
         <Route path="pos" element={
           <CanteenSalesCounter canCreate={hasPerm('create_sale')} canViewSales={hasPerm('view_sales')} />
         } />
@@ -547,7 +577,10 @@ export default function CanteenModule() {
         <Route path="catalog" element={<CatalogPage hasPerm={hasPerm} />} />
         <Route path="orders" element={<KitchenPage hasPerm={hasPerm} />} />
         <Route path="order" element={<PlaceOrderPage hasPerm={hasPerm} />} />
-        <Route path="*" element={<Navigate to={defaultPath} replace />} />
+        <Route
+          path="*"
+          element={<Navigate to={defaultPath === '.' ? '/dashboard/canteen' : defaultPath} replace />}
+        />
       </Routes>
     </div>
   );

@@ -45,6 +45,8 @@ import {
 } from 'lucide-react';
 import axios from 'axios';
 import { localDateString, localDateTimeString, localDateTimeToApi } from '../../utils/localDate';
+import ActionKpiCard from '../../components/dashboard/ActionKpiCard';
+import DashboardDrillDialog from '../../components/dashboard/DashboardDrillDialog';
 
 // ============================================================
 // Status badge helpers
@@ -226,6 +228,7 @@ const InpatientModule = () => {
 
   // Dashboard
   const [dashboardData, setDashboardData] = useState(null);
+  const [dashboardDrill, setDashboardDrill] = useState(null);
 
   // Admissions
   const [admissions, setAdmissions] = useState([]);
@@ -3486,7 +3489,13 @@ const InpatientModule = () => {
           {/* ============ WARD OVERVIEW ============ */}
           {activeTab === 'dashboard' && (
             <div className="p-6 overflow-y-auto h-full space-y-4">
-          <div className="flex justify-end">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div>
+              <h2 className="text-base font-semibold">Ward overview</h2>
+              <p className="text-sm text-muted-foreground">
+                Occupancy and admissions — click a card for the patient list
+              </p>
+            </div>
             <Button size="sm" variant="outline"
               onClick={() => printPdfFromUrl('/api/inpatient/reports/census/pdf')}>
               <Printer className="h-4 w-4 mr-1" /> Print daily census
@@ -3494,72 +3503,83 @@ const InpatientModule = () => {
           </div>
           {dashboardData ? (
             <>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                <Card>
-                  <CardContent className="pt-6">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="text-sm text-gray-500">Total Beds</p>
-                        <p className="text-2xl font-bold">{dashboardData.total_beds}</p>
-                      </div>
-                      <Bed className="h-8 w-8 text-blue-500" />
-                    </div>
-                  </CardContent>
-                </Card>
-                <Card>
-                  <CardContent className="pt-6">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="text-sm text-gray-500">Occupied</p>
-                        <p className="text-2xl font-bold text-orange-600">{dashboardData.occupied}</p>
-                      </div>
-                      <Activity className="h-8 w-8 text-orange-500" />
-                    </div>
-                  </CardContent>
-                </Card>
-                <Card>
-                  <CardContent className="pt-6">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="text-sm text-gray-500">Available</p>
-                        <p className="text-2xl font-bold text-green-600">{dashboardData.available}</p>
-                      </div>
-                      <Bed className="h-8 w-8 text-green-500" />
-                    </div>
-                  </CardContent>
-                </Card>
-                <Card>
-                  <CardContent className="pt-6">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="text-sm text-gray-500">Today Admissions</p>
-                        <p className="text-2xl font-bold">{dashboardData.today_admissions}</p>
-                      </div>
-                      <Plus className="h-8 w-8 text-purple-500" />
-                    </div>
-                  </CardContent>
-                </Card>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <ActionKpiCard
+                  icon={Bed}
+                  label="Total Beds"
+                  value={dashboardData.total_beds}
+                  sub={`${dashboardData.available || 0} available`}
+                  tone="blue"
+                  onClick={() => setActiveTab('rooms')}
+                />
+                <ActionKpiCard
+                  icon={Activity}
+                  label="Occupied"
+                  value={dashboardData.occupied}
+                  sub={`${dashboardData.total_beds > 0 ? Math.round((dashboardData.occupied / dashboardData.total_beds) * 100) : 0}% occupancy`}
+                  tone="orange"
+                  onClick={() => setDashboardDrill({
+                    type: 'admitted',
+                    title: 'Active admissions (occupied)',
+                    loadRows: async () => {
+                      const r = await axios.get('/api/inpatient/admissions', { params: { status: 'admitted', limit: 200 } });
+                      return Array.isArray(r.data) ? r.data : (r.data?.items || []);
+                    },
+                    viewAll: { label: 'Open admissions', onClick: () => setActiveTab('admissions') },
+                  })}
+                />
+                <ActionKpiCard
+                  icon={Bed}
+                  label="Available"
+                  value={dashboardData.available}
+                  sub="Ready for admission"
+                  tone="green"
+                  onClick={() => setActiveTab('rooms')}
+                />
+                <ActionKpiCard
+                  icon={Plus}
+                  label="Today Admissions"
+                  value={dashboardData.today_admissions}
+                  sub={`${dashboardData.active_admissions || 0} active total`}
+                  tone="purple"
+                  onClick={() => setDashboardDrill({
+                    type: 'today',
+                    title: "Today's admissions",
+                    loadRows: async () => {
+                      const r = await axios.get('/api/inpatient/admissions', { params: { status: 'admitted', limit: 200 } });
+                      const rows = Array.isArray(r.data) ? r.data : (r.data?.items || []);
+                      const today = localDateString();
+                      return rows.filter((a) => (a.admission_date || '').slice(0, 10) === today);
+                    },
+                    viewAll: { label: 'Open admissions', onClick: () => setActiveTab('admissions') },
+                  })}
+                />
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <Card>
-                  <CardContent className="pt-6">
-                    <p className="text-sm text-gray-500">Active Admissions</p>
-                    <p className="text-2xl font-bold">{dashboardData.active_admissions}</p>
-                  </CardContent>
-                </Card>
-                <Card>
-                  <CardContent className="pt-6">
-                    <p className="text-sm text-gray-500">Pending Discharges</p>
-                    <p className="text-2xl font-bold text-yellow-600">{dashboardData.pending_discharges}</p>
-                  </CardContent>
-                </Card>
-                <Card>
-                  <CardContent className="pt-6">
-                    <p className="text-sm text-gray-500">Avg Stay (days)</p>
-                    <p className="text-2xl font-bold">{dashboardData.avg_stay_days}</p>
-                  </CardContent>
-                </Card>
+              <div className="grid gap-3 sm:grid-cols-3">
+                <ActionKpiCard
+                  icon={Users}
+                  label="Active Admissions"
+                  value={dashboardData.active_admissions}
+                  sub="Currently admitted"
+                  tone="cyan"
+                  onClick={() => setActiveTab('admissions')}
+                />
+                <ActionKpiCard
+                  icon={Clock}
+                  label="Pending Discharges"
+                  value={dashboardData.pending_discharges}
+                  sub="Past estimated stay"
+                  tone={(dashboardData.pending_discharges || 0) > 0 ? 'amber' : 'slate'}
+                  onClick={() => setActiveTab('discharge')}
+                />
+                <ActionKpiCard
+                  icon={Activity}
+                  label="Avg Stay (days)"
+                  value={dashboardData.avg_stay_days ?? '—'}
+                  sub="Across current census"
+                  tone="slate"
+                />
               </div>
 
               {/* By Type breakdown */}
@@ -3569,7 +3589,19 @@ const InpatientModule = () => {
                   <CardContent>
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                       {Object.entries(dashboardData.by_type).map(([type, data]) => (
-                        <div key={type} className="border rounded-lg p-3 text-center">
+                        <div
+                          key={type}
+                          className="border rounded-lg p-3 text-center cursor-pointer hover:bg-gray-50"
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => setActiveTab('rooms')}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              setActiveTab('rooms');
+                            }
+                          }}
+                        >
                           <p className="font-semibold text-sm">{roomTypeLabel[type] || type}</p>
                           <p className="text-xs text-gray-500 mt-1">
                             {data.occupied}/{data.total} occupied
@@ -3583,6 +3615,57 @@ const InpatientModule = () => {
                   </CardContent>
                 </Card>
               )}
+
+              <DashboardDrillDialog
+                open={!!dashboardDrill}
+                onOpenChange={(open) => { if (!open) setDashboardDrill(null); }}
+                title={dashboardDrill?.title || ''}
+                loadRows={dashboardDrill?.loadRows || (async () => [])}
+                viewAll={dashboardDrill?.viewAll ? {
+                  ...dashboardDrill.viewAll,
+                  onClick: () => {
+                    setDashboardDrill(null);
+                    dashboardDrill.viewAll.onClick();
+                  },
+                } : undefined}
+                renderRows={(rows) => (
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b text-left text-muted-foreground">
+                        <th className="py-2 pr-3 font-medium">Patient</th>
+                        <th className="py-2 pr-3 font-medium">Room / Bed</th>
+                        <th className="py-2 pr-3 font-medium">Admitted</th>
+                        <th className="py-2 text-right font-medium">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map((a) => (
+                        <tr key={a.id} className="border-b">
+                          <td className="py-2 pr-3">{a.patient_name || a.patient?.full_name || '—'}</td>
+                          <td className="py-2 pr-3 text-xs">
+                            {a.room_number || a.room?.room_number || '—'}
+                            {a.bed_number || a.bed?.bed_number ? ` / ${a.bed_number || a.bed?.bed_number}` : ''}
+                          </td>
+                          <td className="py-2 pr-3 text-xs">{(a.admission_date || '').slice(0, 10) || '—'}</td>
+                          <td className="py-2 text-right">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                setDashboardDrill(null);
+                                setActiveTab('admissions');
+                                setActivityAdmission(a);
+                              }}
+                            >
+                              Open
+                            </Button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              />
             </>
           ) : (
             <div className="flex items-center justify-center py-12">
