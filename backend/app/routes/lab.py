@@ -13,6 +13,7 @@ from app.utils.pdf_settings import bill_pdf_gen_kwargs, pdf_gen_kwargs, get_lab_
 from app.services.barcode_service import (
     ensure_patient_mrn_ean13,
     ensure_sample_ean13_for_order,
+    barcode_lookup_codes,
 )
 from app.services.audit_service import log_action
 from app.models.user import User
@@ -29,10 +30,12 @@ from app.utils.auth import Modules
 from app.utils.pdf_service import pdf_service
 from app.utils.label_pdf_service import (
     LabelLayoutConfig,
+    build_label_html,
     build_label_pdf,
     layout_overrides_from_params,
     merge_label_layout,
 )
+from fastapi.responses import HTMLResponse
 from app.utils.lab_reference import (
     match_reference_range as _match_reference_range,
     filter_reference_ranges,
@@ -47,7 +50,11 @@ from app.utils.lab_reference import (
 _LABEL_PDF_HEADERS = {
     "Cache-Control": "no-store, no-cache, must-revalidate",
     "Pragma": "no-cache",
-    "X-Label-Layout-Version": "pharmacy-retail-v4",
+    "X-Label-Layout-Version": "barcode-fit-v5",
+}
+_LABEL_HTML_HEADERS = {
+    **_LABEL_PDF_HEADERS,
+    "Content-Type": "text/html; charset=utf-8",
 }
 
 router = APIRouter()
@@ -273,6 +280,9 @@ class OrderResponse(BaseModel):
     package_name: Optional[str] = None
     package_booking_id: Optional[str] = None
     sample_id: Optional[str] = None
+    sample_ean13: Optional[str] = None
+    patient_mrn: Optional[str] = None
+    patient_mrn_ean13: Optional[str] = None
     sample_type_name: Optional[str] = None
     cancelled_reason: Optional[str] = None
     cancelled_at: Optional[datetime] = None
@@ -590,6 +600,9 @@ def _build_order_response(order: PatientLabOrder, db: Session) -> dict:
         "package_name": order.package.name if order.package_id and order.package else None,
         "package_booking_id": order.package_booking_id,
         "sample_id": order.sample_id,
+        "sample_ean13": order.sample_ean13,
+        "patient_mrn": patient.mrn if patient else None,
+        "patient_mrn_ean13": patient.mrn_ean13 if patient else None,
         "lab_bill_group_id": getattr(order, "lab_bill_group_id", None),
         "lab_bill_number": getattr(order, "lab_bill_number", None),
         "sample_type_name": (
@@ -1582,10 +1595,13 @@ async def list_orders(
     date_to: Optional[str] = None,
     patient_id: Optional[int] = None,
     appointment_id: Optional[int] = None,
+    search: Optional[str] = None,
     reception_view: bool = False,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    from sqlalchemy import or_
+
     query = db.query(PatientLabOrder).join(Patient).filter(
         Patient.hospital_id == current_user.hospital_id
     )
@@ -1600,6 +1616,28 @@ async def list_orders(
         query = query.filter(PatientLabOrder.order_date >= date_from)
     if date_to:
         query = query.filter(PatientLabOrder.order_date <= date_to + " 23:59:59")
+
+    search_term = (search or "").strip()
+    if search_term:
+        like = f"%{search_term}%"
+        query = query.outerjoin(LabTest, LabTest.id == PatientLabOrder.test_id)
+        clauses = [
+            Patient.first_name.ilike(like),
+            Patient.last_name.ilike(like),
+            Patient.primary_phone.ilike(like),
+            Patient.patient_id.ilike(like),
+            Patient.mrn.ilike(like),
+            Patient.mrn_ean13.ilike(like),
+            PatientLabOrder.order_number.ilike(like),
+            PatientLabOrder.sample_id.ilike(like),
+            PatientLabOrder.sample_ean13.ilike(like),
+            LabTest.name.ilike(like),
+            LabTest.test_code.ilike(like),
+        ]
+        for code in barcode_lookup_codes(search_term):
+            clauses.append(Patient.mrn_ean13 == code)
+            clauses.append(PatientLabOrder.sample_ean13 == code)
+        query = query.filter(or_(*clauses))
 
     # For doctors, only show their orders
     if current_user.has_role('doctor'):
@@ -1831,6 +1869,69 @@ async def download_sample_label_pdf(
             **_LABEL_PDF_HEADERS,
         },
     )
+
+
+@router.get("/orders/{order_id}/sample-label.html", response_class=HTMLResponse)
+async def download_sample_label_html(
+    order_id: int,
+    reprint: bool = False,
+    width_mm: Optional[float] = None,
+    height_mm: Optional[float] = None,
+    labels_per_row: Optional[int] = None,
+    labels_per_column: Optional[int] = None,
+    margin_top_mm: Optional[float] = None,
+    margin_left_mm: Optional[float] = None,
+    gutter_mm: Optional[float] = None,
+    sheet_mode: Optional[str] = None,
+    sheet_width_mm: Optional[float] = None,
+    sheet_height_mm: Optional[float] = None,
+    current_user: User = Depends(require_permission(Modules.LAB, "read")),
+    db: Session = Depends(get_db),
+):
+    """Thermal HTML print sheet (@page mm size) for a lab sample sticker."""
+    order = db.query(PatientLabOrder).join(Patient).filter(
+        PatientLabOrder.id == order_id,
+        Patient.hospital_id == current_user.hospital_id,
+    ).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    labels = _lab_labels_for_order(db, order, current_user.hospital_id)
+    hospital = db.query(Hospital).filter(Hospital.id == current_user.hospital_id).first()
+    layout = merge_label_layout(
+        get_lab_label_settings(db, current_user.hospital_id),
+        layout_overrides_from_params(
+            width_mm=width_mm,
+            height_mm=height_mm,
+            labels_per_row=labels_per_row,
+            labels_per_column=labels_per_column,
+            margin_top_mm=margin_top_mm,
+            margin_left_mm=margin_left_mm,
+            gutter_mm=gutter_mm,
+            sheet_mode=sheet_mode or "thermal",
+            sheet_width_mm=sheet_width_mm,
+            sheet_height_mm=sheet_height_mm,
+        ),
+        single_label=len(labels) <= 1,
+    )
+    if str(layout.sheet_mode).lower() == "avery":
+        raise HTTPException(
+            status_code=400,
+            detail="HTML thermal print is for roll labels; use Download PDF for Avery sheets",
+        )
+    html_body = build_label_html(
+        labels,
+        layout,
+        "lab_sample",
+        lab_display_name=hospital.name if hospital else "Laboratory",
+    )
+    log_action(
+        db, current_user, "lab_sample_label_printed", "lab",
+        resource_type="patient_lab_order", resource_id=order.id,
+        description=f"Sample label HTML for {order.sample_id}",
+        details={"order_id": order.id, "sample_id": order.sample_id, "reprint": reprint, "format": "html"},
+    )
+    db.commit()
+    return HTMLResponse(content=html_body, headers=_LABEL_HTML_HEADERS)
 
 
 class SampleLabelBatchIn(BaseModel):

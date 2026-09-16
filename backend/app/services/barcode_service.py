@@ -50,6 +50,36 @@ def normalize_scanned_barcode(raw: str) -> Optional[str]:
     return None
 
 
+def barcode_lookup_codes(raw: str) -> list[str]:
+    """
+    Codes to try for exact barcode match from typed/scanned input.
+
+    Returns the normalized EAN-13 when valid, plus the digit-only payload so
+    partial wedge reads and stored values still hit.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return []
+    codes: list[str] = []
+    normalized = normalize_scanned_barcode(raw)
+    if normalized:
+        codes.append(normalized)
+    digits = "".join(c for c in raw if c.isdigit())
+    if digits and digits not in codes:
+        codes.append(digits)
+    if normalized and len(normalized) == 13:
+        body = normalized[:12]
+        if body not in codes:
+            codes.append(body)
+    return codes
+
+
+def looks_like_barcode_query(raw: str) -> bool:
+    """True when the query is mostly digits long enough to be a barcode scan."""
+    digits = "".join(c for c in (raw or "") if c.isdigit())
+    return len(digits) >= 12
+
+
 def normalize_manufacturer_barcode(raw: str) -> Optional[str]:
     """Validate and normalize a manufacturer-supplied EAN-13."""
     code = normalize_scanned_barcode(raw)

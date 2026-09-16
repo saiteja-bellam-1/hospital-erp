@@ -139,7 +139,7 @@ All PDF printing follows: fetch PDF → blob URL → preview dialog with embedde
 | Bed/ward management + housekeeping | partial (housekeeping + accept) |   | ✓ |   |   |
 | Reservations |   |   | ✓ |   | ✓ |
 | Nurse assignments |   |   | ✓ |   |   |
-| Bill preview | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Bill preview |   |   | ✓ | ✓ | ✓ |
 | Interim bill / finalize / refund / splits |   |   |   | ✓ |   |
 | Receive deposits |   |   | ✓ | ✓ | ✓ |
 | Pre-auth + claim status |   |   | ✓ | ✓ |   |

@@ -19,7 +19,7 @@ const MAX_QUICK = 6;
 /** Preferred quick-jump paths per role (order = priority). Only shown if in nav. */
 const ROLE_QUICK_PATHS = {
   receptionist: [
-    '/dashboard/reception-home',
+    '/dashboard/outpatient',
     '/dashboard/reception/appointments',
     '/dashboard/reception/patients',
     '/dashboard/billing',
@@ -452,7 +452,7 @@ export default function UniversalSearch({
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={onKeyDown}
-              placeholder="Search pages or patients…"
+              placeholder="Search pages, patients, or scan barcode…"
               className="border-0 shadow-none focus-visible:ring-0 px-0 h-9"
             />
             {searchingPatients && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}

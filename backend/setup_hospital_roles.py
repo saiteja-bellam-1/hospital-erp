@@ -440,7 +440,8 @@ def setup_role_permissions():
                 "record_consent", "withdraw_consent",
                 "transfer_beds", "initiate_ward_transfer", "accept_ward_transfer",
                 "report_incident", "acknowledge_critical_alert",
-                "view_bill", "view_readmissions", "view_mortality",
+                # No billing for doctors — medical + consent only in IP.
+                "view_readmissions", "view_mortality",
                 "view_roster",
                 "upload_documents", "view_documents",
                 "view_food_orders", "order_food",
@@ -459,7 +460,7 @@ def setup_role_permissions():
                 "record_consent",
                 "report_incident", "acknowledge_critical_alert",
                 "view_roster",
-                "view_documents",
+                "upload_documents", "view_documents",
                 "view_food_orders", "order_food", "mark_food_delivered",
             ],
         },

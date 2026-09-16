@@ -167,7 +167,7 @@ const PatientsModule = () => {
             <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
               <Input
-                placeholder="Search by name, phone, or patient ID..."
+                placeholder="Search name, phone, MRN, or scan barcode…"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="pl-10"

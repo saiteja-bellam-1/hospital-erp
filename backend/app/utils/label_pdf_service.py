@@ -1,28 +1,43 @@
-"""Thermal / Avery label PDF generation (non-A4 page sizes)."""
+"""Thermal / Avery label PDF + HTML generation (non-A4 page sizes)."""
 from __future__ import annotations
 
+import html
 import io
 from dataclasses import dataclass
 from typing import Any, List, Optional
-
-from reportlab.graphics.barcode import eanbc
-from reportlab.graphics import renderPDF
-from reportlab.graphics.shapes import Drawing
 from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
 
-from app.services.barcode_service import validate_ean13
+from app.utils.barcode_draw import (
+    barcode_svg_markup,
+    draw_barcode_with_digits_below,
+    draw_linear_barcode,
+    resolve_label_symbology,
+)
 from app.utils.pdf_settings import apply_thermal_roll_layout
 
 # Pharmacy label layout ratios (retail-style: header / barcode / footer).
 PHARMACY_SIDE_MARGIN_RATIO = 0.01
 PHARMACY_HEADER_RATIO = 0.10
-PHARMACY_BARCODE_WIDTH_RATIO = 0.50
 PHARMACY_BARCODE_HEIGHT_RATIO = 0.45  # max barcode block height vs label
 PHARMACY_DETAIL_ZONE_RATIO = 0.28
 PHARMACY_ZONE_GAP = 0.5 * mm
 PHARMACY_HEADER_MIN_MM = 4.0
 PHARMACY_FOOTER_MIN_MM = 7.2
+# Vertical clearance between text glyph boxes and barcode bars (points→mm via helpers).
+TEXT_BARCODE_GAP = 0.8 * mm
+# Known Code128 payload for calibration stickers (also a valid EAN-13 check digit).
+TEST_LABEL_BARCODE = "2300000000108"
+
+
+def _text_ascent_mm(size_pt: float) -> float:
+    """Approximate Helvetica ascent height in mm for a font size in points."""
+    return _pt_to_mm(size_pt * 0.72)
+
+
+def _text_descent_mm(size_pt: float) -> float:
+    return _pt_to_mm(size_pt * 0.28)
+
 
 
 def _pharmacy_band_heights(ih: float) -> tuple[float, float]:
@@ -263,82 +278,6 @@ def _content_rect(
     return x0 + pad, y0 + pad, w - 2 * pad, h - 2 * pad
 
 
-def _ean13_size(
-    code: str,
-    max_width: float,
-    height: float,
-    *,
-    bars_only: bool = False,
-) -> tuple[float, float]:
-    widget = eanbc.Ean13BarcodeWidget(code[:13])
-    if bars_only:
-        widget.humanReadable = 0
-        widget.barHeight = max(1.0, height * 0.92)
-    bounds = widget.getBounds()
-    bw = max(bounds[2] - bounds[0], 1)
-    bh = max(bounds[3] - bounds[1], 1)
-    scale = min(max_width / bw, height / bh)
-    return bw * scale, bh * scale
-
-
-def _draw_pharmacy_ean13(
-    c: canvas.Canvas,
-    code: str,
-    center_x: float,
-    zone_bottom: float,
-    zone_width: float,
-    zone_height: float,
-) -> None:
-    """Draw scannable EAN-13 bars centered in a zone; digits sit below bars inside the zone."""
-    if not code or not validate_ean13(code) or zone_height < 2.0 * mm:
-        return
-    digit_pt = max(3.2, min(4.5, (zone_height / mm) * 1.15))
-    digit_band = _pt_to_mm(digit_pt) * 1.35 + 0.4 * mm
-    bars_zone_h = max(1.0, zone_height - digit_band)
-    max_bar_w = zone_width * PHARMACY_BARCODE_WIDTH_RATIO
-    widget = eanbc.Ean13BarcodeWidget(code[:13])
-    widget.humanReadable = 0
-    widget.barHeight = bars_zone_h * 0.92
-    bounds = widget.getBounds()
-    bw = max(bounds[2] - bounds[0], 1)
-    bh = max(bounds[3] - bounds[1], 1)
-    scale = min(max_bar_w / bw, bars_zone_h / bh)
-    widget.barHeight = widget.barHeight * scale
-    bounds = widget.getBounds()
-    dw = bounds[2] - bounds[0]
-    dh = bounds[3] - bounds[1]
-    bar_x = center_x - dw / 2
-    bar_y = zone_bottom + digit_band + max(0.0, (bars_zone_h - dh) / 2)
-    drawing = Drawing(dw, dh)
-    drawing.add(widget)
-    renderPDF.draw(drawing, c, bar_x, bar_y)
-    c.setFont("Helvetica", digit_pt)
-    c.drawCentredString(center_x, zone_bottom + 0.25 * mm, code[:13])
-
-
-def _draw_ean13(
-    c: canvas.Canvas,
-    code: str,
-    x: float,
-    y: float,
-    max_width: float,
-    height: float,
-    *,
-    area_width: Optional[float] = None,
-    align: str = "left",
-) -> None:
-    if not code or not validate_ean13(code):
-        return
-    dw, dh = _ean13_size(code, max_width, height)
-    widget = eanbc.Ean13BarcodeWidget(code[:13])
-    drawing = Drawing(dw, dh)
-    drawing.add(widget)
-    draw_x = x
-    if align == "center" and area_width is not None:
-        draw_x = x + max(0.0, (area_width - dw) / 2)
-    renderPDF.draw(drawing, c, draw_x, y)
-
-
 def _draw_lab_label(
     c: canvas.Canvas,
     layout: LabelLayoutConfig,
@@ -347,41 +286,74 @@ def _draw_lab_label(
     label: dict[str, Any],
     lab_display_name: str,
 ) -> None:
+    """Lab tube sticker: header text / barcode / footer MRN in exclusive bands."""
     w = layout.width_mm * mm
     h = layout.height_mm * mm
-    pad = 1.5 * mm
-    left_w = w * 0.62
-    right_w = w - left_w - pad
+    pad = max(1.0 * mm, min(1.8 * mm, h * 0.05, w * 0.03))
 
     patient_name = _truncate(label.get("patient_name") or "", 28)
     sample_id = label.get("sample_id") or ""
     mrn = label.get("mrn") or ""
     sample_ean = label.get("sample_ean13") or ""
-    mrn_ean = label.get("mrn_ean13") or ""
 
-    c.setFont("Helvetica-Bold", 7)
-    c.drawString(x0 + pad, y0 + h - pad - 6, patient_name)
+    name_pt = 7.0
+    meta_pt = 6.0
+    line_gap = 2.4 * mm
+    header_content = (
+        _text_ascent_mm(name_pt)
+        + line_gap
+        + _text_ascent_mm(meta_pt)
+        + _text_descent_mm(meta_pt)
+    )
+    footer_content = (
+        (_text_ascent_mm(meta_pt) + _text_descent_mm(meta_pt)) if mrn else 0.0
+    )
+    header_h = max(header_content + 0.4 * mm, min(10.0 * mm, h * 0.28))
+    footer_h = max(footer_content + 0.4 * mm, min(5.0 * mm, h * 0.14)) if mrn else 1.2 * mm
 
-    c.setFont("Helvetica", 6)
-    c.drawString(x0 + pad, y0 + h - pad - 14, f"Sample: {sample_id}")
-    if mrn:
-        c.drawString(x0 + pad, y0 + pad + 2, f"MRN: {mrn}")
+    usable_top = y0 + h - pad
+    usable_bottom = y0 + pad
+    header_bottom = usable_top - header_h
+    footer_top = usable_bottom + footer_h
+    bar_bottom = footer_top + TEXT_BARCODE_GAP
+    bar_top = header_bottom - TEXT_BARCODE_GAP
+    bar_h = max(0.0, bar_top - bar_bottom)
+    bar_w = max(1.0, w - 2 * pad)
+
+    # Header band (glyphs stay above header_bottom).
+    name_baseline = usable_top - _text_ascent_mm(name_pt)
+    sample_baseline = name_baseline - line_gap
+    c.setFont("Helvetica-Bold", name_pt)
+    c.drawString(x0 + pad, name_baseline, patient_name)
+    c.setFont("Helvetica", meta_pt)
+    c.drawString(x0 + pad, sample_baseline, f"Sample: {sample_id}")
 
     if layout.show_lab_name:
-        c.setFont("Helvetica-Bold", 6)
+        c.setFont("Helvetica-Bold", meta_pt)
         lab_name = _truncate(
             layout.lab_name_override or lab_display_name or "Laboratory",
             18,
         )
-        c.drawRightString(x0 + w - pad, y0 + h - pad - 8, lab_name)
+        c.drawRightString(x0 + w - pad, name_baseline, lab_name)
 
-    bar_y = y0 + pad + 8
-    bar_h = 8 * mm
-    bar_w = (left_w - 2 * pad) / 2 - 1 * mm
-    if sample_ean:
-        _draw_ean13(c, sample_ean, x0 + pad, bar_y, bar_w, bar_h)
-    if mrn_ean:
-        _draw_ean13(c, mrn_ean, x0 + pad + bar_w + 2 * mm, bar_y, bar_w, bar_h)
+    if sample_ean and bar_h >= 3.5 * mm:
+        draw_linear_barcode(
+            c,
+            sample_ean,
+            x0 + pad,
+            bar_bottom,
+            bar_w,
+            bar_h,
+            symbology=resolve_label_symbology(sample_ean, force="code128"),
+            human_readable=False,
+            align="center",
+            area_width=bar_w,
+        )
+
+    if mrn:
+        c.setFont("Helvetica", meta_pt)
+        mrn_baseline = usable_bottom + _text_descent_mm(meta_pt)
+        c.drawString(x0 + pad, mrn_baseline, f"MRN: {_truncate(mrn, 24)}")
 
 
 def _draw_pharmacy_label(
@@ -410,8 +382,9 @@ def _draw_pharmacy_label(
     header_h, footer_h = _pharmacy_band_heights(ih)
     header_bottom = iy + ih - header_h
     footer_top = iy + footer_h
-    bar_zone_bottom = footer_top + PHARMACY_ZONE_GAP
-    bar_zone_top = header_bottom - PHARMACY_ZONE_GAP
+    # Keep an explicit gap so barcode digits never touch footer text.
+    bar_zone_bottom = footer_top + max(PHARMACY_ZONE_GAP, TEXT_BARCODE_GAP)
+    bar_zone_top = header_bottom - max(PHARMACY_ZONE_GAP, TEXT_BARCODE_GAP)
     bar_zone_h = max(0.0, bar_zone_top - bar_zone_bottom)
 
     ref_h = layout.height_mm * mm
@@ -420,11 +393,21 @@ def _draw_pharmacy_label(
     detail_pt = max(3.8, min(5.5, 4.8 * scale))
     header_pt = max(3.5, min(6.0, (header_h / mm) * 1.55))
     line_gap = max(1.6 * mm, min(2.4 * mm, footer_h * 0.22))
-    descender_mm = _pt_to_mm(detail_pt * 0.28)
+    descent = _text_descent_mm(detail_pt)
+    ascent_name = _text_ascent_mm(name_pt)
 
-    expiry_y = iy + descender_mm
+    expiry_y = iy + descent
     batch_y = expiry_y + line_gap
     item_y = batch_y + line_gap
+    # If three lines would climb into the barcode gap, compress spacing.
+    item_top = item_y + ascent_name
+    max_item_top = footer_top - 0.2 * mm
+    if item_top > max_item_top and item_y > expiry_y:
+        overflow = item_top - max_item_top
+        shrink = overflow / 2.0
+        line_gap = max(1.2 * mm, line_gap - shrink)
+        batch_y = expiry_y + line_gap
+        item_y = batch_y + line_gap
 
     provider_fit = ""
     provider_pt = header_pt
@@ -439,18 +422,23 @@ def _draw_pharmacy_label(
             )
 
     if barcode and bar_zone_h >= 3.0 * mm:
-        _draw_pharmacy_ean13(
+        draw_barcode_with_digits_below(
             c,
             barcode,
             ix + iw / 2,
             bar_zone_bottom,
             iw,
             bar_zone_h,
+            symbology=resolve_label_symbology(barcode),
         )
 
     if provider_fit:
-        header_mid = iy + ih - header_h / 2
-        header_baseline = header_mid - _pt_to_mm(provider_pt) * 0.32
+        # Keep provider glyphs inside the header band.
+        header_baseline = header_bottom + (header_h - _text_ascent_mm(provider_pt)) / 2
+        header_baseline = min(
+            iy + ih - _text_ascent_mm(provider_pt) - 0.2 * mm,
+            max(header_bottom + _text_descent_mm(provider_pt), header_baseline),
+        )
         c.setFont("Helvetica-Bold", provider_pt)
         c.drawCentredString(ix + iw / 2, header_baseline, provider_fit)
 
@@ -480,10 +468,9 @@ def _draw_patient_file_label(
     y0: float,
     label: dict[str, Any],
 ) -> None:
-    """Patient file sticker: horizontal patient MRN barcode on top + demographics."""
+    """Patient file sticker: barcode band on top, demographics below — no overlap."""
     w = layout.width_mm * mm
     h = layout.height_mm * mm
-    # Scale padding/band with sticker size so short stock (e.g. 25 mm) still fits.
     pad = max(0.8 * mm, min(1.8 * mm, h * 0.04, w * 0.03))
 
     mrn = (label.get("mrn") or "").strip()
@@ -496,39 +483,62 @@ def _draw_patient_file_label(
     ref_name = (label.get("ref_name") or "").strip()
 
     usable_w = max(1.0, w - 2 * pad)
-    # Reserve body lines first, then give remaining height to the barcode band.
-    body_lines = 4 + (1 if (order_no or ref_name) else 0)
+    label_pt = max(5.0, min(7.0, (h / mm) * 0.16))
     line = max(2.4 * mm, min(3.8 * mm, h * 0.085))
-    body_budget = body_lines * line + 1.2 * mm
-    bar_h = max(5.0 * mm, min(11.0 * mm, h - body_budget - 2 * pad))
-    if bar_h + body_budget + 2 * pad > h:
-        bar_h = max(4.0 * mm, h * 0.28)
+    body_lines = 4 + (1 if (order_no or ref_name) else 0)
+    # Body needs ascent of first line + (n-1)*line + descent of last line.
+    body_budget = (
+        _text_ascent_mm(label_pt)
+        + max(0, body_lines - 1) * line
+        + _text_descent_mm(label_pt)
+        + 0.4 * mm
+    )
+
+    digit_pt = max(4.5, min(6.0, (h / mm) * 0.14))
+    side_by_side = w >= 55 * mm and bool(mrn)
+    digit_reserve = 0.0 if side_by_side else (
+        _text_ascent_mm(digit_pt) + _text_descent_mm(digit_pt) + 0.4 * mm
+    )
+
+    bar_h = max(5.0 * mm, min(11.0 * mm, h - body_budget - digit_reserve - 2 * pad - TEXT_BARCODE_GAP))
+    if bar_h + body_budget + digit_reserve + 2 * pad + TEXT_BARCODE_GAP > h:
+        bar_h = max(4.0 * mm, h * 0.26)
 
     bar_top = y0 + h - pad
     bar_bottom = bar_top - bar_h
-    # On narrow stickers put MRN under the bars (full width); otherwise beside.
-    side_by_side = w >= 55 * mm and mrn
     mrn_text_w = min(usable_w * 0.30, 26 * mm) if side_by_side else 0.0
     bar_max_w = usable_w - mrn_text_w - (1.5 * mm if side_by_side else 0.0)
+    bars_h = max(3.0 * mm, bar_h - (0.0 if side_by_side else 0.2 * mm))
 
-    if mrn_ean and validate_ean13(mrn_ean) and bar_h >= 3.5 * mm:
-        _draw_ean13(
+    if mrn_ean and bar_h >= 3.5 * mm:
+        # Bars sit in the upper part of the barcode band; digits (if any) below bars.
+        bars_bottom = bar_bottom + (0.0 if side_by_side else digit_reserve)
+        draw_linear_barcode(
             c,
             mrn_ean,
             x0 + pad,
-            bar_bottom + (0.2 * mm if side_by_side else 1.4 * mm),
+            bars_bottom,
             bar_max_w,
-            bar_h - (0.6 * mm if side_by_side else 2.2 * mm),
+            max(2.5 * mm, bar_top - bars_bottom - 0.2 * mm),
+            symbology=resolve_label_symbology(mrn_ean, force="code128"),
+            human_readable=False,
+            align="center" if not side_by_side else "left",
             area_width=bar_max_w,
-            align="left",
         )
+        if not side_by_side and mrn:
+            c.setFont("Helvetica", digit_pt)
+            digit_baseline = bar_bottom + _text_descent_mm(digit_pt)
+            c.drawCentredString(x0 + w / 2, digit_baseline, _truncate(mrn, 22))
 
     if mrn and side_by_side:
         c.setFont("Helvetica-Bold", max(5.5, min(7.0, (h / mm) * 0.16)))
-        c.drawRightString(x0 + w - pad, bar_bottom + bar_h * 0.35, _truncate(mrn, 18))
+        # Vertically center in barcode band without leaving the band.
+        side_pt = max(5.5, min(7.0, (h / mm) * 0.16))
+        side_baseline = bar_bottom + (bar_h - _text_ascent_mm(side_pt)) / 2
+        c.drawRightString(x0 + w - pad, side_baseline, _truncate(mrn, 18))
 
-    y = bar_bottom - 1.2 * mm
-    label_pt = max(5.0, min(7.0, (h / mm) * 0.16))
+    # First body baseline: full ascent stays below barcode band + gap.
+    y = bar_bottom - TEXT_BARCODE_GAP - _text_ascent_mm(label_pt)
 
     def draw_line(text: str, *, bold: bool = False) -> None:
         nonlocal y
@@ -579,6 +589,92 @@ def _draw_patient_file_label(
         draw_line(f"Ref Name: {_truncate(ref_name, 40)}")
 
 
+def _draw_test_label(
+    c: canvas.Canvas,
+    layout: LabelLayoutConfig,
+    x0: float,
+    y0: float,
+) -> None:
+    """Calibration sticker: exclusive header / barcode / footer bands."""
+    w = layout.width_mm * mm
+    h = layout.height_mm * mm
+    pad = 1.5 * mm
+    title_pt = 7.0
+    meta_pt = 5.5
+    digit_pt = 6.0
+    hint_pt = 5.0
+
+    header_h = (
+        _text_ascent_mm(title_pt)
+        + 2.2 * mm
+        + _text_ascent_mm(meta_pt)
+        + _text_descent_mm(meta_pt)
+        + 3.5 * mm  # ruler ticks + numbers
+    )
+    footer_h = (
+        _text_ascent_mm(digit_pt)
+        + 1.6 * mm
+        + _text_ascent_mm(hint_pt)
+        + _text_descent_mm(hint_pt)
+    )
+    usable_top = y0 + h - pad
+    usable_bottom = y0 + pad
+    header_bottom = usable_top - header_h
+    footer_top = usable_bottom + footer_h
+    bar_bottom = footer_top + TEXT_BARCODE_GAP
+    bar_top = header_bottom - TEXT_BARCODE_GAP
+    bar_h = max(4.0 * mm, bar_top - bar_bottom)
+
+    title_baseline = usable_top - _text_ascent_mm(title_pt)
+    meta_baseline = title_baseline - 2.2 * mm
+    c.setFont("Helvetica-Bold", title_pt)
+    c.drawString(x0 + pad, title_baseline, "KT HEALTH — TEST LABEL")
+    c.setFont("Helvetica", meta_pt)
+    c.drawString(
+        x0 + pad,
+        meta_baseline,
+        f"Configured {layout.width_mm:.1f}×{layout.height_mm:.1f} mm — measure edge",
+    )
+
+    tick_y = meta_baseline - 1.2 * mm
+    c.setStrokeColorRGB(0, 0, 0)
+    c.setLineWidth(0.4)
+    c.line(x0 + pad, tick_y, x0 + w - pad, tick_y)
+    n_ticks = max(1, int(layout.width_mm // 10))
+    for i in range(n_ticks + 1):
+        tx = x0 + pad + i * 10 * mm
+        if tx > x0 + w - pad + 0.1:
+            break
+        c.line(tx, tick_y, tx, tick_y - 2.0 * mm)
+        if i > 0:
+            c.setFont("Helvetica", 4)
+            c.drawCentredString(tx, tick_y - 3.6 * mm, f"{i * 10}")
+
+    if bar_h >= 3.5 * mm:
+        draw_linear_barcode(
+            c,
+            TEST_LABEL_BARCODE,
+            x0 + pad,
+            bar_bottom,
+            max(1.0, w - 2 * pad),
+            bar_h,
+            symbology="code128",
+            human_readable=False,
+            align="center",
+            area_width=max(1.0, w - 2 * pad),
+        )
+
+    c.setFont("Helvetica", digit_pt)
+    digit_baseline = footer_top - TEXT_BARCODE_GAP / 2 - _text_ascent_mm(digit_pt)
+    digit_baseline = max(usable_bottom + _text_descent_mm(hint_pt) + 1.6 * mm, digit_baseline)
+    c.drawCentredString(x0 + w / 2, digit_baseline, TEST_LABEL_BARCODE)
+    c.setFont("Helvetica", hint_pt)
+    c.drawCentredString(
+        x0 + w / 2,
+        usable_bottom + _text_descent_mm(hint_pt),
+        "Scan this Code128 — should read the digits above",
+    )
+
 def _page_size(layout: LabelLayoutConfig) -> tuple[float, float]:
     if layout.sheet_mode == "avery":
         return layout.sheet_width_mm * mm, layout.sheet_height_mm * mm
@@ -591,6 +687,12 @@ def _page_size(layout: LabelLayoutConfig) -> tuple[float, float]:
     return page_w, page_h
 
 
+def page_size_mm(layout: LabelLayoutConfig) -> tuple[float, float]:
+    """Page width/height in millimetres (thermal multi-up or Avery sheet)."""
+    pw, ph = _page_size(layout)
+    return pw / mm, ph / mm
+
+
 def _label_positions(layout: LabelLayoutConfig) -> List[tuple[float, float]]:
     positions: List[tuple[float, float]] = []
     lw = layout.width_mm * mm
@@ -599,7 +701,6 @@ def _label_positions(layout: LabelLayoutConfig) -> List[tuple[float, float]]:
     gy = layout.gutter_mm * mm
 
     if layout.sheet_mode == "thermal":
-        # Thermal page = N stickers across × M tall (usually 1×1 for single prints).
         for row in range(layout.labels_per_column):
             for col in range(layout.labels_per_row):
                 positions.append((col * (lw + gx), row * (lh + gy)))
@@ -625,8 +726,9 @@ def build_label_pdf(
     pharmacy_display_name: str = "",
 ) -> bytes:
     """Build a PDF for one or more labels. Each label dict is type-specific."""
-    if not labels:
+    if not labels and label_type != "test":
         raise ValueError("No labels to print")
+    work = labels if labels else [{}]
 
     buf = io.BytesIO()
     page_w, page_h = _page_size(layout)
@@ -637,12 +739,11 @@ def build_label_pdf(
 
     c = canvas.Canvas(buf, pagesize=(page_w, page_h))
 
-    for idx, label in enumerate(labels):
+    for idx, label in enumerate(work):
         if idx > 0 and idx % slots_per_page == 0:
             c.showPage()
         slot_idx = idx % slots_per_page
         x0, y0 = slots[slot_idx]
-        # Clip to the sticker rectangle so ink never bleeds into the next peel.
         c.saveState()
         clip = c.beginPath()
         clip.rect(x0, y0, lw, lh)
@@ -651,9 +752,275 @@ def build_label_pdf(
             _draw_lab_label(c, layout, x0, y0, label, lab_display_name)
         elif label_type == "patient_file":
             _draw_patient_file_label(c, layout, x0, y0, label)
+        elif label_type == "test":
+            _draw_test_label(c, layout, x0, y0)
         else:
             _draw_pharmacy_label(c, layout, x0, y0, label, pharmacy_display_name)
         c.restoreState()
 
     c.save()
     return buf.getvalue()
+
+
+def _svg_inner(svg: str) -> str:
+    """Strip XML declaration / doctype so SVG can be inlined in HTML."""
+    text = (svg or "").strip()
+    if not text:
+        return ""
+    start = text.lower().find("<svg")
+    if start < 0:
+        return text
+    return text[start:]
+
+
+def _esc(text: Any) -> str:
+    return html.escape(str(text or ""), quote=True)
+
+
+def _html_barcode_block(
+    value: str,
+    *,
+    max_width_mm: float,
+    max_height_mm: float,
+    force_code128: bool = False,
+) -> str:
+    sym = resolve_label_symbology(value, force="code128" if force_code128 else None)
+    svg = barcode_svg_markup(
+        value,
+        max_width_mm=max_width_mm,
+        max_height_mm=max_height_mm,
+        symbology=sym,
+        human_readable=False,
+    )
+    if not svg:
+        return f'<div class="digits">{_esc(value)}</div>'
+    return (
+        f'<div class="barcode">{_svg_inner(svg)}'
+        f'<div class="digits">{_esc(value)}</div></div>'
+    )
+
+
+def _html_lab_sticker(label: dict[str, Any], layout: LabelLayoutConfig, lab_name: str) -> str:
+    sample = label.get("sample_ean13") or ""
+    bar = ""
+    if sample:
+        bar = _html_barcode_block(
+            sample,
+            max_width_mm=max(10.0, layout.width_mm - 4),
+            max_height_mm=max(6.0, layout.height_mm * 0.40),
+            force_code128=True,
+        )
+    lab = layout.lab_name_override or lab_name or "Laboratory"
+    return (
+        f'<div class="sticker lab">'
+        f'<div class="zone-header">'
+        f'<div class="row"><strong>{_esc(_truncate(label.get("patient_name") or "", 28))}</strong>'
+        f'<span class="right">{_esc(_truncate(lab, 18))}</span></div>'
+        f'<div class="meta">Sample: {_esc(label.get("sample_id") or "")}</div>'
+        f'</div>'
+        f'{bar}'
+        f'<div class="zone-footer"><div class="meta">MRN: {_esc(label.get("mrn") or "")}</div></div>'
+        f'</div>'
+    )
+
+
+def _html_pharmacy_sticker(
+    label: dict[str, Any],
+    layout: LabelLayoutConfig,
+    pharmacy_name: str,
+) -> str:
+    barcode = label.get("batch_barcode") or label.get("barcode") or ""
+    expiry = label.get("expiry_date") or ""
+    if expiry:
+        expiry = str(expiry).split("T")[0]
+    provider = layout.pharmacy_name_override or pharmacy_name or ""
+    bar = ""
+    if barcode:
+        bar = _html_barcode_block(
+            barcode,
+            max_width_mm=max(10.0, layout.width_mm * 0.92),
+            max_height_mm=max(5.0, layout.height_mm * 0.36),
+        )
+    return (
+        f'<div class="sticker pharmacy">'
+        f'<div class="zone-header"><div class="provider">{_esc(_truncate(provider, 28))}</div></div>'
+        f'{bar}'
+        f'<div class="zone-footer">'
+        f'<div class="name">{_esc(_truncate(label.get("name") or "", 36))}</div>'
+        f'<div class="meta">Batch: {_esc(label.get("batch_number") or "")}</div>'
+        f'<div class="meta">Expiry: {_esc(expiry)}</div>'
+        f'</div>'
+        f'</div>'
+    )
+
+
+def _html_patient_sticker(label: dict[str, Any], layout: LabelLayoutConfig) -> str:
+    mrn_ean = label.get("mrn_ean13") or ""
+    bar = ""
+    if mrn_ean:
+        bar = _html_barcode_block(
+            mrn_ean,
+            max_width_mm=max(10.0, layout.width_mm - 4),
+            max_height_mm=max(6.0, min(10.0, layout.height_mm * 0.26)),
+            force_code128=True,
+        )
+    return (
+        f'<div class="sticker patient">'
+        f'{bar}'
+        f'<div class="zone-footer">'
+        f'<div class="meta">Pat Type: {_esc(label.get("pat_type") or "Self Paying")}</div>'
+        f'<div class="meta">YHNO : {_esc(label.get("mrn") or "—")}</div>'
+        f'<div class="name">{_esc(label.get("patient_name") or "")}</div>'
+        f'<div class="meta">Age: {_esc(label.get("age_gender") or "—")} · '
+        f'Bill Date: {_esc(label.get("bill_date") or "")}</div>'
+        f'<div class="meta">Order: {_esc(label.get("order_no") or "")} · '
+        f'Ref: {_esc(_truncate(label.get("ref_name") or "", 28))}</div>'
+        f'</div>'
+        f'</div>'
+    )
+
+
+def _html_test_sticker(layout: LabelLayoutConfig) -> str:
+    bar = _html_barcode_block(
+        TEST_LABEL_BARCODE,
+        max_width_mm=max(10.0, layout.width_mm - 4),
+        max_height_mm=max(7.0, layout.height_mm * 0.38),
+        force_code128=True,
+    )
+    ticks = "".join(
+        f'<span style="left:{i * 10}mm"></span>'
+        for i in range(1, max(1, int(layout.width_mm // 10)) + 1)
+    )
+    return (
+        f'<div class="sticker test">'
+        f'<div class="zone-header">'
+        f'<div class="ruler">{ticks}</div>'
+        f'<div class="name">KT HEALTH — TEST LABEL</div>'
+        f'<div class="meta">Configured {layout.width_mm:.1f}×{layout.height_mm:.1f} mm</div>'
+        f'</div>'
+        f'{bar}'
+        f'<div class="zone-footer">'
+        f'<div class="meta">Scan Code128 — should read {TEST_LABEL_BARCODE}</div>'
+        f'</div>'
+        f'</div>'
+    )
+
+
+def build_label_html(
+    labels: List[dict[str, Any]],
+    layout: LabelLayoutConfig,
+    label_type: str,
+    lab_display_name: str = "",
+    pharmacy_display_name: str = "",
+) -> str:
+    """
+    Browser thermal print sheet with exact @page size in millimetres.
+
+    Prefer this path for thermal roll printing; use PDF for Avery / download.
+    """
+    if not labels and label_type != "test":
+        raise ValueError("No labels to print")
+    work = labels if labels else [{}]
+    page_w_mm, page_h_mm = page_size_mm(layout)
+    lw = layout.width_mm
+    lh = layout.height_mm
+    gutter = layout.gutter_mm if layout.sheet_mode == "thermal" else layout.gutter_mm
+    cols = max(1, layout.labels_per_row)
+
+    stickers: List[str] = []
+    for label in work:
+        if label_type == "lab_sample":
+            stickers.append(_html_lab_sticker(label, layout, lab_display_name))
+        elif label_type == "patient_file":
+            stickers.append(_html_patient_sticker(label, layout))
+        elif label_type == "test":
+            stickers.append(_html_test_sticker(layout))
+        else:
+            stickers.append(_html_pharmacy_sticker(label, layout, pharmacy_display_name))
+
+    cells = "\n".join(stickers)
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Label print</title>
+<style>
+  @page {{
+    size: {page_w_mm:.3f}mm {page_h_mm:.3f}mm;
+    margin: 0;
+  }}
+  html, body {{
+    margin: 0;
+    padding: 0;
+    width: {page_w_mm:.3f}mm;
+    background: #fff;
+    color: #000;
+    font-family: Helvetica, Arial, sans-serif;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }}
+  .sheet {{
+    display: grid;
+    grid-template-columns: repeat({cols}, {lw:.3f}mm);
+    column-gap: {gutter:.3f}mm;
+    row-gap: {gutter:.3f}mm;
+    width: {page_w_mm:.3f}mm;
+    box-sizing: border-box;
+  }}
+  .sticker {{
+    width: {lw:.3f}mm;
+    height: {lh:.3f}mm;
+    box-sizing: border-box;
+    padding: 1.2mm;
+    overflow: hidden;
+    page-break-inside: avoid;
+    display: flex;
+    flex-direction: column;
+    gap: 0.8mm;
+  }}
+  .sticker .zone-header,
+  .sticker .zone-footer {{
+    flex: 0 0 auto;
+    min-height: 0;
+  }}
+  .sticker .row {{ display: flex; justify-content: space-between; gap: 1mm; }}
+  .sticker .right {{ font-size: 6pt; font-weight: 700; }}
+  .sticker .name {{ font-size: 7pt; font-weight: 700; line-height: 1.1; }}
+  .sticker .provider {{ font-size: 6pt; font-weight: 700; text-align: center; }}
+  .sticker .meta {{ font-size: 5.5pt; line-height: 1.15; }}
+  .barcode {{
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+    gap: 0.35mm;
+  }}
+  .barcode svg {{ max-width: 100%; max-height: 100%; height: auto; display: block; }}
+  .digits {{ font-size: 5.5pt; letter-spacing: 0.04em; text-align: center; margin: 0; line-height: 1; }}
+  .ruler {{ position: relative; height: 2.5mm; border-top: 0.3mm solid #000; margin-bottom: 1mm; }}
+  .ruler span {{
+    position: absolute; top: 0; width: 0; height: 2.2mm;
+    border-left: 0.25mm solid #000;
+  }}
+  @media print {{
+    body {{ margin: 0; }}
+  }}
+</style>
+</head>
+<body>
+<div class="sheet">
+{cells}
+</div>
+<script>
+  window.addEventListener('load', function () {{
+    setTimeout(function () {{
+      try {{ window.focus(); window.print(); }} catch (e) {{}}
+    }}, 250);
+  }});
+</script>
+</body>
+</html>
+"""

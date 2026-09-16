@@ -1771,7 +1771,7 @@ What every role gets out-of-box. You can override any of these in **Administrati
 | assign_nurses / manage_roster |   | ✓ |   |   |   |   |
 | schedule_ot | ✓ | ✓ |   |   |   |   |
 | record_ot_charges |   | ✓ | ✓ |   |   |   |
-| view_bill | ✓ | ✓ | ✓ | ✓ | ✓ |   |
+| view_bill |   | ✓ | ✓ | ✓ | ✓ |   |
 | generate_interim_bill / finalize_bill / manage_packages |   |   | ✓ |   |   |   |
 | manage_ancillary_charges |   | ✓ | ✓ |   |   |   |
 | receive_deposits |   | ✓ | ✓ | ✓ | ✓ |   |

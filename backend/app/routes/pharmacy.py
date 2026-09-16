@@ -34,15 +34,21 @@ from app.services.barcode_service import (
 )
 from app.utils.label_pdf_service import (
     LabelLayoutConfig,
+    build_label_html,
     build_label_pdf,
     layout_overrides_from_params,
     merge_label_layout,
 )
+from fastapi.responses import HTMLResponse
 
 _LABEL_PDF_HEADERS = {
     "Cache-Control": "no-store, no-cache, must-revalidate",
     "Pragma": "no-cache",
-    "X-Label-Layout-Version": "pharmacy-retail-v4",
+    "X-Label-Layout-Version": "barcode-fit-v5",
+}
+_LABEL_HTML_HEADERS = {
+    **_LABEL_PDF_HEADERS,
+    "Content-Type": "text/html; charset=utf-8",
 }
 from app.models.user import User
 from datetime import date, datetime, timedelta
@@ -1592,15 +1598,11 @@ def _pharmacy_label_dict(db: Session, inv: PharmacyInventory, med: Medicine, hos
     }
 
 
-def _inventory_label_pdf(
+def _inventory_label_rows(
     db: Session,
     hospital_id: int,
     inventory_ids: List[int],
-    user: User,
-    *,
-    reprint: bool = False,
-    layout_overrides: Optional[dict] = None,
-) -> bytes:
+) -> List[dict]:
     labels: List[dict] = []
     for iid in inventory_ids:
         row = db.query(PharmacyInventory, Medicine).join(
@@ -1613,6 +1615,19 @@ def _inventory_label_pdf(
             continue
         inv, med = row
         labels.append(_pharmacy_label_dict(db, inv, med, hospital_id))
+    return labels
+
+
+def _inventory_label_pdf(
+    db: Session,
+    hospital_id: int,
+    inventory_ids: List[int],
+    user: User,
+    *,
+    reprint: bool = False,
+    layout_overrides: Optional[dict] = None,
+) -> bytes:
+    labels = _inventory_label_rows(db, hospital_id, inventory_ids)
     if not labels:
         raise HTTPException(status_code=400, detail="No inventory batches found for label print")
     layout = merge_label_layout(
@@ -1633,6 +1648,48 @@ def _inventory_label_pdf(
         details={"inventory_ids": inventory_ids, "reprint": reprint, "count": len(labels)},
     )
     return pdf_bytes
+
+
+def _inventory_label_html(
+    db: Session,
+    hospital_id: int,
+    inventory_ids: List[int],
+    user: User,
+    *,
+    reprint: bool = False,
+    layout_overrides: Optional[dict] = None,
+) -> str:
+    labels = _inventory_label_rows(db, hospital_id, inventory_ids)
+    if not labels:
+        raise HTTPException(status_code=400, detail="No inventory batches found for label print")
+    layout = merge_label_layout(
+        get_pharmacy_label_settings(db, hospital_id),
+        layout_overrides,
+        single_label=len(labels) <= 1,
+    )
+    if str(layout.sheet_mode).lower() == "avery":
+        raise HTTPException(
+            status_code=400,
+            detail="HTML thermal print is for roll labels; use Download PDF for Avery sheets",
+        )
+    pharmacy_info = _pharmacy_hospital_info_for_pdf(db, hospital_id)
+    html_body = build_label_html(
+        labels,
+        layout,
+        "pharmacy_batch",
+        pharmacy_display_name=pharmacy_info.get("name") or "",
+    )
+    _audit(
+        db, user, "pharmacy_label_printed", "pharmacy_inventory", inventory_ids[0],
+        f"Pharmacy labels HTML ({len(labels)} batch/es)",
+        details={
+            "inventory_ids": inventory_ids,
+            "reprint": reprint,
+            "count": len(labels),
+            "format": "html",
+        },
+    )
+    return html_body
 
 
 def _dedupe_joined_names(raw: Optional[str]) -> Optional[str]:
@@ -1826,6 +1883,43 @@ def download_inventory_label_pdf(
     )
 
 
+@router.get("/inventory/{inventory_id}/label.html", response_class=HTMLResponse)
+def download_inventory_label_html(
+    inventory_id: int,
+    reprint: bool = False,
+    width_mm: Optional[float] = None,
+    height_mm: Optional[float] = None,
+    labels_per_row: Optional[int] = None,
+    labels_per_column: Optional[int] = None,
+    margin_top_mm: Optional[float] = None,
+    margin_left_mm: Optional[float] = None,
+    gutter_mm: Optional[float] = None,
+    sheet_mode: Optional[str] = None,
+    sheet_width_mm: Optional[float] = None,
+    sheet_height_mm: Optional[float] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_inventory")),
+):
+    overrides = layout_overrides_from_params(
+        width_mm=width_mm,
+        height_mm=height_mm,
+        labels_per_row=labels_per_row,
+        labels_per_column=labels_per_column,
+        margin_top_mm=margin_top_mm,
+        margin_left_mm=margin_left_mm,
+        gutter_mm=gutter_mm,
+        sheet_mode=sheet_mode or "thermal",
+        sheet_width_mm=sheet_width_mm,
+        sheet_height_mm=sheet_height_mm,
+    )
+    html_body = _inventory_label_html(
+        db, current_user.hospital_id, [inventory_id], current_user,
+        reprint=reprint, layout_overrides=overrides,
+    )
+    db.commit()
+    return HTMLResponse(content=html_body, headers=_LABEL_HTML_HEADERS)
+
+
 class InventoryLabelsIn(BaseModel):
     inventory_ids: List[int] = Field(..., min_length=1)
 
@@ -1872,6 +1966,43 @@ def download_inventory_labels_batch_pdf(
             **_LABEL_PDF_HEADERS,
         },
     )
+
+
+@router.post("/inventory/labels.html", response_class=HTMLResponse)
+def download_inventory_labels_batch_html(
+    body: InventoryLabelsIn,
+    reprint: bool = False,
+    width_mm: Optional[float] = None,
+    height_mm: Optional[float] = None,
+    labels_per_row: Optional[int] = None,
+    labels_per_column: Optional[int] = None,
+    margin_top_mm: Optional[float] = None,
+    margin_left_mm: Optional[float] = None,
+    gutter_mm: Optional[float] = None,
+    sheet_mode: Optional[str] = None,
+    sheet_width_mm: Optional[float] = None,
+    sheet_height_mm: Optional[float] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_inventory")),
+):
+    overrides = layout_overrides_from_params(
+        width_mm=width_mm,
+        height_mm=height_mm,
+        labels_per_row=labels_per_row,
+        labels_per_column=labels_per_column,
+        margin_top_mm=margin_top_mm,
+        margin_left_mm=margin_left_mm,
+        gutter_mm=gutter_mm,
+        sheet_mode=sheet_mode or "thermal",
+        sheet_width_mm=sheet_width_mm,
+        sheet_height_mm=sheet_height_mm,
+    )
+    html_body = _inventory_label_html(
+        db, current_user.hospital_id, body.inventory_ids, current_user,
+        reprint=reprint, layout_overrides=overrides,
+    )
+    db.commit()
+    return HTMLResponse(content=html_body, headers=_LABEL_HTML_HEADERS)
 
 
 @router.get("/inventory/low-stock", response_model=List[InventoryRowOut])

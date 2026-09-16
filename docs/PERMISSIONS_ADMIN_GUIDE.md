@@ -105,7 +105,7 @@ Legend: ✓ = granted by default, ✗ = not granted. Super Admin and Hospital Ad
 | view_vitals | ✓ | ✓ | ✗ | ✗ | ✗ |
 | view_io | ✓ | ✓ | ✗ | ✗ | ✗ |
 | view_mar | ✓ | ✓ | ✗ | ✗ | ✗ |
-| view_bill | ✗ | ✓ | ✓ | ✓ | ✓ |
+| view_bill | ✗ | ✗ | ✓ | ✓ | ✓ |
 | view_documents | ✓ | ✓ | ✓ | ✓ | ✓ |
 | view_readmissions | ✗ | ✓ | ✓ | ✗ | ✗ |
 | view_mortality | ✗ | ✓ | ✓ | ✗ | ✗ |

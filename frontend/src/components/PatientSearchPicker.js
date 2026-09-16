@@ -19,7 +19,7 @@ export default function PatientSearchPicker({
   value,
   onChange,
   label = 'Search Patient',
-  placeholder = 'Search by name, phone, or patient ID…',
+  placeholder = 'Search name, phone, MRN, or scan barcode…',
   required = false,
   id = 'patient_search',
   className = '',

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
@@ -77,6 +77,19 @@ const claimStatusColor = {
 
 const claimStatusLabel = { none: 'No Claim', draft: 'Draft', submitted: 'Submitted', approved: 'Approved', rejected: 'Rejected' };
 
+const ADMISSION_DOC_TYPES = [
+  { value: 'consent_form', label: 'Consent form' },
+  { value: 'referral_letter', label: 'Referral letter' },
+  { value: 'insurance_doc', label: 'Insurance document' },
+  { value: 'lab_report', label: 'Lab report' },
+  { value: 'discharge_summary', label: 'Discharge summary' },
+  { value: 'other', label: 'Other' },
+];
+
+function admissionDocTypeLabel(t) {
+  return ADMISSION_DOC_TYPES.find((x) => x.value === t)?.label || (t || 'Other').replace(/_/g, ' ');
+}
+
 // Map between activeTab keys and URL path segments under /dashboard/inpatient
 // Empty string = the bare /dashboard/inpatient root (Ward Overview).
 const TAB_TO_PATH = {
@@ -152,6 +165,9 @@ const InpatientModule = () => {
   const canteen = useCallback((key) => hasPerm('canteen', key), [hasPerm]);
   const canViewVitals = useMemo(() => ip('view_vitals'), [ip]);
   const canRecordVitals = useMemo(() => ip('record_vitals'), [ip]);
+  const canViewDocs = useMemo(() => ip('view_documents'), [ip]);
+  const canUploadDocs = useMemo(() => ip('upload_documents'), [ip]);
+  const canDeleteDocs = useMemo(() => ip('delete_documents'), [ip]);
   // Nurse-only users get a nurse-scoped Visit form (no Doctor Visit option,
   // visitor list limited to nurses, and the form defaults to nurse_visit).
   const isNurseOnly = isNurseRole && !isDoctorRole && !isAdminLike;
@@ -315,6 +331,8 @@ const InpatientModule = () => {
   const [admissionBeds, setAdmissionBeds] = useState([]);  // beds for selected room in admission form
   const [admissionDocs, setAdmissionDocs] = useState([]);
   const [docUploading, setDocUploading] = useState(false);
+  const [docUploadType, setDocUploadType] = useState('other');
+  const docUploadInputRef = useRef(null);
   const [pdfPreview, setPdfPreview] = useState(null);
   const [billDiscount, setBillDiscount] = useState({ type: 'flat', value: '' });
   const [billTaxPct, setBillTaxPct] = useState('');
@@ -1177,6 +1195,13 @@ const InpatientModule = () => {
     if (!canViewVitals) setActivityTab('mar');
   }, [permsLoaded, activityTab, canViewVitals]);
 
+  // Doctors / clinical-only roles must not land on billing or payments tabs.
+  useEffect(() => {
+    if (!canViewBilling && ['bill', 'deposits', 'insurance', 'payments'].includes(activityTab)) {
+      setActivityTab('visits');
+    }
+  }, [canViewBilling, activityTab]);
+
   // ============================================================
   // Handlers
   // ============================================================
@@ -1276,7 +1301,6 @@ const InpatientModule = () => {
     setBillDiscount({ type: 'flat', value: '' });
     setBillTaxPct('');
     fetchVisits(admission.id);
-    fetchBill(admission.id);
     fetchMedications(admission.id);
     fetchLabOrders(admission.id);
     fetchAdmissionDocs(admission.id);
@@ -1284,13 +1308,21 @@ const InpatientModule = () => {
     fetchVitals(admission.id);
     fetchAdmissionAllergies(admission.patient_id);
     fetchMAR(admission.id, marDate);
-    fetchDeposits(admission.id);
-    fetchBalance(admission.id);
-    fetchAncillaryCharges(admission.id);
-    fetchAncillaryServices();
-    fetchAdmissionBills(admission.id);
-    fetchAdmissionPackage(admission.id);
-    fetchPackages();
+    if (canViewBilling) {
+      fetchBill(admission.id);
+      fetchDeposits(admission.id);
+      fetchBalance(admission.id);
+      fetchAncillaryCharges(admission.id);
+      fetchAncillaryServices();
+      fetchAdmissionBills(admission.id);
+      fetchAdmissionPackage(admission.id);
+      fetchPackages();
+    } else {
+      setBillData(null);
+      setBalance(null);
+      setDeposits([]);
+      setAdmissionBills([]);
+    }
     fetchTransferHistory(admission.id);
     fetchNurseAssignments(admission.id);
     fetchNursesList();
@@ -2088,35 +2120,58 @@ const InpatientModule = () => {
 
   // Admission Documents
   const fetchAdmissionDocs = async (admissionId) => {
+    if (!admissionId) {
+      setAdmissionDocs([]);
+      return;
+    }
     try {
       const res = await axios.get(`/api/inpatient/admissions/${admissionId}/documents`);
-      setAdmissionDocs(res.data);
+      setAdmissionDocs(res.data || []);
     } catch { setAdmissionDocs([]); }
   };
 
   const handleDocUpload = async (admissionId, file, docType, docName, notes) => {
+    if (!file || !admissionId) return;
+    if (file.size > 10 * 1024 * 1024) {
+      toast({ variant: 'destructive', title: 'File too large', description: 'Max 10MB' });
+      return;
+    }
     setDocUploading(true);
     try {
       const formData = new FormData();
       formData.append('file', file);
-      formData.append('document_type', docType);
+      formData.append('document_type', docType || 'other');
       formData.append('document_name', docName || file.name);
       if (notes) formData.append('notes', notes);
       await axios.post(`/api/inpatient/admissions/${admissionId}/documents`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
-      toast({ title: 'Success', description: 'Document uploaded' });
+      toast({ title: 'Uploaded' });
       fetchAdmissionDocs(admissionId);
     } catch (err) {
       const detail = err.response?.data?.detail;
-      toast({ variant: 'destructive', title: 'Error', description: typeof detail === 'string' ? detail : 'Upload failed' });
+      toast({ variant: 'destructive', title: 'Upload failed', description: typeof detail === 'string' ? detail : 'Upload failed' });
     } finally { setDocUploading(false); }
+  };
+
+  const handleDocDownload = async (doc) => {
+    try {
+      const res = await axios.get(`/api/inpatient/documents/${doc.id}/download`, { responseType: 'blob' });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = doc.document_name || doc.file_name || 'document';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Download failed', description: errorDetail(err) || 'Download failed' });
+    }
   };
 
   const handleDocDelete = async (docId) => {
     try {
       await axios.delete(`/api/inpatient/documents/${docId}`);
-      toast({ title: 'Success', description: 'Document deleted' });
+      toast({ title: 'Deleted' });
       if (activityAdmission) fetchAdmissionDocs(activityAdmission.id);
     } catch (err) {
       toast({ variant: 'destructive', title: 'Error', description: 'Failed to delete document' });
@@ -3866,7 +3921,7 @@ const InpatientModule = () => {
                         <p className="text-xs text-gray-500">
                           {activityAdmission.admission_number} &bull; {roomTypeLabel[activityAdmission.room_type] || activityAdmission.room_type} - {activityAdmission.room_number} &bull; Dr. {activityAdmission.doctor_name || 'N/A'}
                         </p>
-                        {balance && (
+                        {canViewBilling && balance && (
                           <div className="flex items-center gap-2 mt-1 flex-wrap">
                             <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${
                               balance.balance > 0 ? 'bg-green-100 text-green-800' :
@@ -4039,16 +4094,14 @@ const InpatientModule = () => {
                             { v: 'deposits', l: 'Deposits' },
                             { v: 'insurance', l: 'Insurance' },
                           ]},
+                          payments: { label: 'Payments', tabs: [
+                            { v: 'payments', l: 'Deposits & Payments' },
+                          ]},
                         } : {}),
                         operations: { label: 'Operations', tabs: [
                           { v: 'staff', l: 'Staff' },
                           { v: 'docs', l: 'Docs' },
                         ]},
-                        ...((canViewBilling || ip('view_bill') || ip('receive_deposits')) ? {
-                          payments: { label: 'Payments', tabs: [
-                            { v: 'payments', l: 'Deposits & Payments' },
-                          ]},
-                        } : {}),
                       };
                       const groupOf = (tab) => Object.entries(TAB_GROUPS).find(([, g]) => g.tabs.some(t => t.v === tab))?.[0] || 'clinical';
                       const currentGroup = groupOf(activityTab);
@@ -5085,39 +5138,58 @@ const InpatientModule = () => {
                           );
                         })()}
 
-                        {/* Upload area */}
-                        <div className="border-2 border-dashed rounded-lg p-4 text-center">
-                          <input type="file" id="doc-upload-input" className="hidden"
-                            accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.doc,.docx"
-                            onChange={e => {
-                              const file = e.target.files?.[0];
-                              if (file && activityAdmission) {
-                                const docType = prompt('Document type:\nconsent_form, referral_letter, insurance_doc, lab_report, other', 'other') || 'other';
-                                handleDocUpload(activityAdmission.id, file, docType, file.name, '');
-                              }
-                              e.target.value = '';
-                            }} />
-                          <Button variant="outline" size="sm" disabled={docUploading}
-                            onClick={() => document.getElementById('doc-upload-input')?.click()}>
-                            <Upload className="h-4 w-4 mr-1" /> {docUploading ? 'Uploading...' : 'Upload Document'}
-                          </Button>
-                          <p className="text-xs text-gray-400 mt-1">PDF, images, Word docs (max 10MB)</p>
-                        </div>
+                        {/* Upload area — physio-style type select + permission gate */}
+                        {canUploadDocs && (
+                          <div className="border-2 border-dashed rounded-lg p-4 text-center space-y-2">
+                            <Select value={docUploadType} onValueChange={setDocUploadType}>
+                              <SelectTrigger><SelectValue placeholder="Document type" /></SelectTrigger>
+                              <SelectContent>
+                                {ADMISSION_DOC_TYPES.map((t) => (
+                                  <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                            <input
+                              ref={docUploadInputRef}
+                              type="file"
+                              className="hidden"
+                              accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.doc,.docx"
+                              onChange={(e) => {
+                                const file = e.target.files?.[0];
+                                if (file && activityAdmission) {
+                                  handleDocUpload(activityAdmission.id, file, docUploadType, file.name, '');
+                                }
+                                e.target.value = '';
+                              }}
+                            />
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={docUploading}
+                              onClick={() => docUploadInputRef.current?.click()}
+                            >
+                              <Upload className="h-4 w-4 mr-1" /> {docUploading ? 'Uploading...' : 'Upload'}
+                            </Button>
+                            <p className="text-xs text-gray-400">PDF, images, Word docs (max 10MB)</p>
+                          </div>
+                        )}
 
                         <div className="space-y-2">
                           <h3 className="text-sm font-semibold text-gray-800">Uploaded files</h3>
-                          {admissionDocs.length === 0 ? (
+                          {!canViewDocs ? (
+                            <p className="text-sm text-muted-foreground">You do not have permission to view uploaded files.</p>
+                          ) : admissionDocs.length === 0 ? (
                             <p className="text-sm text-gray-500 text-center py-4">No documents attached.</p>
                           ) : (
                             <div className="space-y-2">
                               {admissionDocs.map(doc => (
-                                <div key={doc.id} className="border rounded-lg p-3 text-sm flex items-center justify-between">
+                                <div key={doc.id} className="border rounded-lg p-3 text-sm flex items-center justify-between gap-2">
                                   <div className="flex items-center gap-2 min-w-0">
                                     <Paperclip className="h-4 w-4 text-gray-400 shrink-0" />
                                     <div className="min-w-0">
                                       <p className="font-medium truncate">{doc.document_name}</p>
-                                      <div className="flex items-center gap-2 text-xs text-gray-500">
-                                        <Badge className="bg-gray-100 text-gray-700 text-xs">{doc.document_type.replace('_', ' ')}</Badge>
+                                      <div className="flex items-center gap-2 text-xs text-gray-500 flex-wrap">
+                                        <Badge className="bg-gray-100 text-gray-700 text-xs">{admissionDocTypeLabel(doc.document_type)}</Badge>
                                         <span>{doc.file_size ? `${(doc.file_size / 1024).toFixed(0)} KB` : ''}</span>
                                         <span>{doc.uploaded_by_name || ''}</span>
                                         <span>{doc.created_at ? new Date(doc.created_at).toLocaleDateString() : ''}</span>
@@ -5126,19 +5198,29 @@ const InpatientModule = () => {
                                     </div>
                                   </div>
                                   <div className="flex gap-1 shrink-0">
-                                    <Button variant="ghost" size="sm" onClick={() => {
-                                      window.open(`/api/inpatient/documents/${doc.id}/download`, '_blank');
-                                    }} title="Download">
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      title="Download"
+                                      onClick={() => handleDocDownload(doc)}
+                                    >
                                       <Download className="h-4 w-4" />
                                     </Button>
-                                    <Button variant="ghost" size="sm" className="text-red-500"
-                                      onClick={() => setConfirmState({
-                                        open: true, title: 'Delete Document',
-                                        message: `Delete "${doc.document_name}"?`,
-                                        onConfirm: () => { setConfirmState({ open: false }); handleDocDelete(doc.id); }
-                                      })} title="Delete">
-                                      <Trash2 className="h-3 w-3" />
-                                    </Button>
+                                    {canDeleteDocs && (
+                                      <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        className="text-red-500"
+                                        title="Delete"
+                                        onClick={() => setConfirmState({
+                                          open: true, title: 'Delete Document',
+                                          message: `Delete "${doc.document_name}"?`,
+                                          onConfirm: () => { setConfirmState({ open: false }); handleDocDelete(doc.id); }
+                                        })}
+                                      >
+                                        <Trash2 className="h-3 w-3" />
+                                      </Button>
+                                    )}
                                   </div>
                                 </div>
                               ))}
@@ -6529,7 +6611,7 @@ const InpatientModule = () => {
           )}
 
           {/* ============ BILLING SETUP (catalogs) ============ */}
-          {activeTab === 'setup' && (
+          {activeTab === 'setup' && canViewBilling && (
             <div className="p-6 overflow-y-auto h-full space-y-4">
               <h2 className="text-lg font-semibold">Billing Setup</h2>
               <Tabs value={setupSubTab} onValueChange={(v) => { setSetupSubTab(v); if (v === 'consent-templates') fetchConsentTemplates(); if (v === 'room-type-rates') fetchRoomTypeRates(); }}>

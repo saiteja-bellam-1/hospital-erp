@@ -7,6 +7,7 @@ import { Label } from '../ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { Download, Eye, Loader2, Printer, RefreshCw } from 'lucide-react';
 import { fetchPdfBlobUrl, printPdfFromUrl } from '../../utils/printPdf';
+import { printThermalLabelHtml } from '../../utils/printThermalLabel';
 import { usePdfPrintSettings } from '../../hooks/usePdfPrintSettings';
 import { applyThermalRollLayout } from '../../utils/labelPageSize';
 import {
@@ -18,7 +19,9 @@ import {
 } from '../../utils/labelPrintLayout';
 
 const labelPath = (inventoryId) => `/api/pharmacy/inventory/${inventoryId}/label.pdf`;
+const labelHtmlPath = (inventoryId) => `/api/pharmacy/inventory/${inventoryId}/label.html`;
 const BULK_LABEL_PATH = '/api/pharmacy/inventory/labels.pdf';
+const BULK_LABEL_HTML_PATH = '/api/pharmacy/inventory/labels.html';
 
 function labelRequestParams(layoutParams, extra = {}) {
   return { reprint: true, _v: Date.now(), ...layoutParams, ...extra };
@@ -168,10 +171,17 @@ export default function PurchaseLabelsDialog({
     setBusy(inventoryId);
     try {
       rememberLabelPrintLayout('pharmacy', layout);
-      await printPdfFromUrl(labelPath(inventoryId), {
-        params: labelRequestParams(layoutToQueryParams(layout, { forceSingle: true })),
+      const params = labelRequestParams(layoutToQueryParams(layout, { forceSingle: true }));
+      const ok = await printThermalLabelHtml(labelHtmlPath(inventoryId), {
+        params,
         onError: setError,
       });
+      if (!ok) {
+        await printPdfFromUrl(labelPath(inventoryId), {
+          params,
+          onError: setError,
+        });
+      }
     } finally {
       setBusy(null);
     }
@@ -184,10 +194,18 @@ export default function PurchaseLabelsDialog({
     setError('');
     try {
       rememberLabelPrintLayout('pharmacy', layout);
+      const params = labelRequestParams(layoutParams);
+      const ok = await printThermalLabelHtml(BULK_LABEL_HTML_PATH, {
+        method: 'post',
+        body: { inventory_ids: ids },
+        params,
+        onError: setError,
+      });
+      if (ok) return;
       const res = await axios.post(
         BULK_LABEL_PATH,
         { inventory_ids: ids },
-        { params: labelRequestParams(layoutParams), responseType: 'blob' },
+        { params, responseType: 'blob' },
       );
       const url = window.URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
       await printPdfFromUrl(url, { onError: setError });
@@ -205,10 +223,17 @@ export default function PurchaseLabelsDialog({
     rememberLabelPrintLayout('pharmacy', layout);
     const singleParams = layoutToQueryParams(layout, { forceSingle: true });
     for (const line of printable) {
-      const ok = await printPdfFromUrl(
-        labelPath(line.inventoryId),
-        { params: labelRequestParams(singleParams), onError: setError },
-      );
+      const params = labelRequestParams(singleParams);
+      let ok = await printThermalLabelHtml(labelHtmlPath(line.inventoryId), {
+        params,
+        onError: setError,
+      });
+      if (!ok) {
+        ok = await printPdfFromUrl(labelPath(line.inventoryId), {
+          params,
+          onError: setError,
+        });
+      }
       if (!ok) break;
     }
     setBusy(null);
@@ -403,8 +428,9 @@ export default function PurchaseLabelsDialog({
             </div>
 
             <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950">
-              PDF page: <span className="font-mono">{pageLabel}</span>.
-              Choose your label printer in the OS dialog; paper size = that page; scale 100% (not Fit to page).
+              Page: <span className="font-mono">{pageLabel}</span>.
+              Print opens a browser page sized to your sticker (margins None, scale 100%).
+              Download keeps the PDF for archive / Avery.
               {stickersAcross > 1 && printable.length > 1 ? (
                 <> Use <strong>Print all (one row)</strong> to fill {stickersAcross} across.</>
               ) : null}

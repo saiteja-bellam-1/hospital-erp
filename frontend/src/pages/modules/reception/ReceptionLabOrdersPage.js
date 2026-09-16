@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import PdfPreviewDialog from '../../../components/PdfPreviewDialog';
 import { localDateString, localDateStringOffset } from '../../../utils/localDate';
+import { matchesLabOrderSearch } from '../../../utils/barcodeSearch';
 
 const getLabStatusColor = (status) => {
   const colors = {
@@ -46,7 +47,7 @@ const ReceptionLabOrdersPage = () => {
   })();
   const dashboardPath = roles.some((role) => ['lab_admin', 'lab_technician'].includes(role))
     ? '/dashboard/lab-home'
-    : '/dashboard/reception-home';
+    : '/dashboard/outpatient';
   const today = localDateString();
   const thirtyDaysAgo = localDateStringOffset(-30);
 
@@ -57,7 +58,7 @@ const ReceptionLabOrdersPage = () => {
   const [dateTo, setDateTo] = useState(today);
   const [reportPreview, setReportPreview] = useState(null);
 
-  const fetchOrders = useCallback(async () => {
+  const fetchOrders = useCallback(async (search = '') => {
     setLoading(true);
     try {
       const token = localStorage.getItem('token');
@@ -67,6 +68,8 @@ const ReceptionLabOrdersPage = () => {
         date_to: dateTo,
         reception_view: 'true',
       });
+      const q = (search || '').trim();
+      if (q) params.set('search', q);
       const res = await fetch(`/api/lab/orders?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -87,8 +90,13 @@ const ReceptionLabOrdersPage = () => {
   }, [dateFrom, dateTo, toast]);
 
   useEffect(() => {
-    fetchOrders();
+    fetchOrders(searchTerm);
   }, [fetchOrders]);
+
+  useEffect(() => {
+    const t = setTimeout(() => fetchOrders(searchTerm), 300);
+    return () => clearTimeout(t);
+  }, [searchTerm, fetchOrders]);
 
   const openReportPreview = (reportId, orderNumber, packageBookingId = null) => {
     if (packageBookingId) {
@@ -104,17 +112,7 @@ const ReceptionLabOrdersPage = () => {
     }
   };
 
-  const filteredOrders = orders.filter((order) => {
-    if (!searchTerm) return true;
-    const q = searchTerm.toLowerCase();
-    return (
-      order.patient_name?.toLowerCase().includes(q) ||
-      order.test_name?.toLowerCase().includes(q) ||
-      order.order_number?.toLowerCase().includes(q) ||
-      order.doctor_name?.toLowerCase().includes(q) ||
-      order.package_name?.toLowerCase().includes(q)
-    );
-  });
+  const filteredOrders = orders.filter((order) => matchesLabOrderSearch(order, searchTerm));
 
   const packageGroups = {};
   const standalone = [];
@@ -177,7 +175,7 @@ const ReceptionLabOrdersPage = () => {
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
                 <Input
                   className="pl-9"
-                  placeholder="Patient, test, order #..."
+                  placeholder="Patient, test, order #, or scan barcode…"
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                 />

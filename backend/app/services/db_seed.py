@@ -440,7 +440,8 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
                 "record_consent", "withdraw_consent",
                 "transfer_beds", "initiate_ward_transfer", "accept_ward_transfer",
                 "acknowledge_critical_alert",
-                "view_bill", "view_readmissions", "view_mortality",
+                # No billing for doctors — medical + consent only in IP.
+                "view_readmissions", "view_mortality",
                 "view_roster",
                 "upload_documents", "view_documents",
                 "accept_admission",
@@ -462,7 +463,7 @@ def _seed_role_permissions(db, UserRole, RoleModulePermission):
                 "accept_ward_transfer", "manage_housekeeping",
                 "acknowledge_critical_alert",
                 "view_roster",
-                "view_documents",
+                "upload_documents", "view_documents",
             ],
             "canteen": list(_CANTEEN_CLINICAL_ORDER),
         },

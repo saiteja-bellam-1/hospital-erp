@@ -32,7 +32,6 @@ import CanteenModule from './modules/CanteenModule';
 import PhysiotherapyModule from './modules/PhysiotherapyModule';
 import BillingHub from './modules/BillingHub';
 import EHRModule from './modules/EHRModule';
-import OutpatientModule from './modules/OutpatientModule';
 import InpatientModule from './modules/InpatientModule';
 import AdminModule from './modules/AdminModule';
 import HospitalAdminModule from './modules/HospitalAdminModule';
@@ -70,8 +69,9 @@ const HomeDashboard = ({ hasRole, enabledModules }) => {
   // Doctors always get their dashboard (same pattern as lab staff below).
   if (hasRole('doctor')) return <DoctorDashboard />;
   if (hasRole('lab_admin') || hasRole('lab_technician')) return <LabTechDashboard />;
-  if (hasRole('receptionist') && enabledModules.outpatient) return <ReceptionDashboard />;
-  if (hasRole('receptionist') && enabledModules.lab) return <LabTechDashboard />;
+  // Reception keeps its own dashboard even when outpatient is off — OP widgets
+  // inside ReceptionDashboard are gated by enabledModules.outpatient.
+  if (hasRole('receptionist')) return <ReceptionDashboard />;
   if (hasRole('physiotherapist') && enabledModules.physiotherapy) {
     return <Navigate to="/dashboard/physiotherapy/today" replace />;
   }
@@ -401,7 +401,8 @@ const DashboardShell = () => {
               <Route path="/hospital-admin-home" element={<HospitalAdminDashboard />} />
               <Route path="/doctor-home" element={<DoctorDashboard />} />
               <Route path="/lab-home" element={<LabTechDashboard />} />
-              <Route path="/reception-home" element={<ReceptionDashboard />} />
+              <Route path="/outpatient" element={<ReceptionDashboard />} />
+              <Route path="/reception-home" element={<Navigate to="/dashboard/outpatient" replace />} />
               <Route path="/nurse-home" element={<NurseDashboard />} />
               <Route
                 path="/home"
@@ -437,7 +438,15 @@ const DashboardShell = () => {
               <Route path="/ehr/*" element={<EHRModule />} />
               <Route path="/consultation" element={<ConsultationPage />} />
               <Route path="/availability/*" element={<AvailabilityModule />} />
-              <Route path="/outpatient/*" element={hasRole('doctor') ? <DoctorDashboard /> : <OutpatientModule />} />
+              {/* Legacy /outpatient/* → role home. Canonical OPD dashboard is /outpatient above. */}
+              <Route
+                path="/outpatient/*"
+                element={
+                  hasRole('doctor')
+                    ? <Navigate to="/dashboard/doctor-home" replace />
+                    : <Navigate to="/dashboard/outpatient" replace />
+                }
+              />
               <Route path="/inpatient/*" element={<InpatientModule />} />
               <Route path="/admin/*" element={<AdminModule />} />
               <Route path="/hospital-admin/*" element={<HospitalAdminModule />} />

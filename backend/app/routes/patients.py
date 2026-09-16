@@ -608,15 +608,12 @@ async def download_patient_file_label_pdf(
     """Thermal/Avery patient-file sticker PDF (MRN barcode + demographics)."""
     import io
     from fastapi.responses import StreamingResponse
-    from app.services.barcode_service import ensure_patient_mrn_ean13
     from app.utils.label_pdf_service import (
         layout_overrides_from_params,
         merge_label_layout,
         build_label_pdf,
     )
     from app.utils.pdf_settings import get_patient_file_label_settings
-    from app.utils.patient_age import format_patient_age
-    from app.utils.time import system_now
 
     if not current_user.hospital_id:
         raise HTTPException(status_code=400, detail="User not assigned to a hospital")
@@ -624,6 +621,62 @@ async def download_patient_file_label_pdf(
     patient = _resolve_patient(db, patient_ref)
     if patient.hospital_id != current_user.hospital_id:
         raise HTTPException(status_code=403, detail="Access denied")
+
+    label = _patient_file_label_payload(
+        db,
+        patient,
+        source=source,
+        appointment_id=appointment_id,
+        order_id=order_id,
+        pat_type=pat_type,
+        bill_date=bill_date,
+        payment_method=payment_method,
+    )
+    layout = merge_label_layout(
+        get_patient_file_label_settings(db, current_user.hospital_id),
+        layout_overrides_from_params(
+            width_mm=width_mm,
+            height_mm=height_mm,
+            labels_per_row=labels_per_row,
+            labels_per_column=labels_per_column,
+            margin_top_mm=margin_top_mm,
+            margin_left_mm=margin_left_mm,
+            gutter_mm=gutter_mm,
+            sheet_mode=sheet_mode,
+            sheet_width_mm=sheet_width_mm,
+            sheet_height_mm=sheet_height_mm,
+        ),
+        single_label=True,
+    )
+    pdf_bytes = build_label_pdf([label], layout, "patient_file")
+    db.commit()
+
+    safe_mrn = (patient.mrn or str(patient.id)).replace("/", "-")
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"inline; filename=patient_file_label_{safe_mrn}.pdf",
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+def _patient_file_label_payload(
+    db,
+    patient,
+    *,
+    source=None,
+    appointment_id=None,
+    order_id=None,
+    pat_type=None,
+    bill_date=None,
+    payment_method=None,
+):
+    """Shared label dict builder for PDF and HTML patient-file stickers."""
+    from app.services.barcode_service import ensure_patient_mrn_ean13
+    from app.utils.patient_age import format_patient_age
+    from app.utils.time import system_now
 
     ensure_patient_mrn_ean13(db, patient)
     db.flush()
@@ -704,10 +757,59 @@ async def download_patient_file_label_pdf(
         "order_no": order_no if src != "registration" else "",
         "ref_name": ref_name,
     }
-    # Registration / reprint without context: omit order number.
     if src in ("", "registration", "reprint") and not appointment_id and not order_id:
         label["order_no"] = ""
+    return label
 
+
+@router.get("/{patient_ref}/file-label.html")
+async def download_patient_file_label_html(
+    patient_ref: str,
+    source: Optional[str] = None,
+    appointment_id: Optional[int] = None,
+    order_id: Optional[int] = None,
+    pat_type: Optional[str] = None,
+    bill_date: Optional[str] = None,
+    payment_method: Optional[str] = None,
+    width_mm: Optional[float] = None,
+    height_mm: Optional[float] = None,
+    labels_per_row: Optional[int] = None,
+    labels_per_column: Optional[int] = None,
+    margin_top_mm: Optional[float] = None,
+    margin_left_mm: Optional[float] = None,
+    gutter_mm: Optional[float] = None,
+    sheet_mode: Optional[str] = None,
+    sheet_width_mm: Optional[float] = None,
+    sheet_height_mm: Optional[float] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Thermal HTML print sheet (@page mm) for a patient-file sticker."""
+    from fastapi.responses import HTMLResponse
+    from app.utils.label_pdf_service import (
+        layout_overrides_from_params,
+        merge_label_layout,
+        build_label_html,
+    )
+    from app.utils.pdf_settings import get_patient_file_label_settings
+
+    if not current_user.hospital_id:
+        raise HTTPException(status_code=400, detail="User not assigned to a hospital")
+
+    patient = _resolve_patient(db, patient_ref)
+    if patient.hospital_id != current_user.hospital_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    label = _patient_file_label_payload(
+        db,
+        patient,
+        source=source,
+        appointment_id=appointment_id,
+        order_id=order_id,
+        pat_type=pat_type,
+        bill_date=bill_date,
+        payment_method=payment_method,
+    )
     layout = merge_label_layout(
         get_patient_file_label_settings(db, current_user.hospital_id),
         layout_overrides_from_params(
@@ -718,25 +820,23 @@ async def download_patient_file_label_pdf(
             margin_top_mm=margin_top_mm,
             margin_left_mm=margin_left_mm,
             gutter_mm=gutter_mm,
-            sheet_mode=sheet_mode,
+            sheet_mode=sheet_mode or "thermal",
             sheet_width_mm=sheet_width_mm,
             sheet_height_mm=sheet_height_mm,
         ),
         single_label=True,
     )
-    pdf_bytes = build_label_pdf([label], layout, "patient_file")
+    if str(layout.sheet_mode).lower() == "avery":
+        raise HTTPException(
+            status_code=400,
+            detail="HTML thermal print is for roll labels; use Download PDF for Avery sheets",
+        )
+    html_body = build_label_html([label], layout, "patient_file")
     db.commit()
-
-    safe_mrn = (patient.mrn or str(patient.id)).replace("/", "-")
-    return StreamingResponse(
-        io.BytesIO(pdf_bytes),
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": f"inline; filename=patient_file_label_{safe_mrn}.pdf",
-            "Cache-Control": "no-store",
-        },
+    return HTMLResponse(
+        content=html_body,
+        headers={"Cache-Control": "no-store", "X-Label-Layout-Version": "barcode-fit-v5"},
     )
-
 
 @router.get("/{patient_ref}/allergies", response_model=List[AllergyResponse])
 async def list_patient_allergies(

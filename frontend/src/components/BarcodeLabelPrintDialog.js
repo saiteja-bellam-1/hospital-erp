@@ -6,8 +6,9 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
-import { Download, Loader2, Printer, RefreshCw } from 'lucide-react';
+import { Download, Loader2, Printer, RefreshCw, Ruler } from 'lucide-react';
 import { printPdfFromUrl } from '../utils/printPdf';
+import { labelPdfPathToHtml, printThermalLabelHtml } from '../utils/printThermalLabel';
 import { usePdfPrintSettings } from '../hooks/usePdfPrintSettings';
 import {
   LABEL_SIZE_PRESETS,
@@ -182,6 +183,29 @@ export default function BarcodeLabelPrintDialog({
 
   const handlePrint = async () => {
     await persistBeforePrint();
+    const htmlPath = labelPdfPathToHtml(path);
+    if (isThermal && htmlPath && !bulkBody) {
+      const ok = await printThermalLabelHtml(htmlPath, {
+        params: { ...queryParams, ...layoutParams, _v: Date.now() },
+        onError: (msg) => setError(msg),
+      });
+      if (ok) return;
+    }
+    if (isThermal && htmlPath && bulkBody) {
+      const ok = await printThermalLabelHtml(htmlPath, {
+        method: 'post',
+        body: bulkBody,
+        params: { ...queryParams, ...layoutParams, _v: Date.now(), reprint: queryParams.reprint ?? true },
+        onError: (msg) => setError(msg),
+      });
+      if (ok) return;
+    }
+    // Avery or HTML unavailable — PDF window print.
+    await handlePrintPdf();
+  };
+
+  const handlePrintPdf = async () => {
+    await persistBeforePrint();
     if (pdfUrl) {
       await printPdfFromUrl(pdfUrl, { onError: (msg) => setError(msg) });
       return;
@@ -197,6 +221,27 @@ export default function BarcodeLabelPrintDialog({
     } catch {
       setError('Print failed');
     }
+  };
+
+  const handleTestLabel = async () => {
+    await persistBeforePrint();
+    const params = {
+      ...layoutToQueryParams(layout, { forceSingle: true }),
+      label_kind: labelKind === 'patient_file' ? 'patient_file' : labelKind,
+      sheet_mode: 'thermal',
+      _v: Date.now(),
+    };
+    if (isThermal) {
+      const ok = await printThermalLabelHtml('/api/hospital/print-settings/test-label.html', {
+        params,
+        onError: (msg) => setError(msg),
+      });
+      if (ok) return;
+    }
+    await printPdfFromUrl('/api/hospital/print-settings/test-label.pdf', {
+      params,
+      onError: (msg) => setError(msg),
+    });
   };
 
   const handleDownload = async () => {
@@ -358,7 +403,7 @@ export default function BarcodeLabelPrintDialog({
 
           <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950 space-y-1">
             <p>
-              <span className="font-semibold">PDF page:</span>{' '}
+              <span className="font-semibold">Page size:</span>{' '}
               <span className="font-mono">{pageLabel}</span>
               {isThermal && stickersAcross > 1
                 ? ` (${stickersAcross} stickers across — one label prints in the left slot; right slots stay blank unless you print a combined batch)`
@@ -367,17 +412,54 @@ export default function BarcodeLabelPrintDialog({
                   : ''}.
             </p>
             <p>
-              In the system print dialog: choose your <span className="font-medium">label printer</span>,
-              set paper / custom size to <span className="font-mono">{pageLabel}</span>,
-              scale <span className="font-medium">100% / Actual size</span> — not Fit to page.
+              {isThermal
+                ? (
+                  <>
+                    <span className="font-medium">Print</span> uses a browser page sized to your sticker
+                    (best for thermal rolls). Use <span className="font-medium">Print PDF</span> or{' '}
+                    <span className="font-medium">Download</span> for Avery sheets / archives.
+                    Margins: None · scale 100%.
+                  </>
+                )
+                : (
+                  <>
+                    In the system print dialog: choose your <span className="font-medium">label printer</span>,
+                    set paper / custom size to <span className="font-mono">{pageLabel}</span>,
+                    scale <span className="font-medium">100% / Actual size</span> — not Fit to page.
+                  </>
+                )}
+            </p>
+            <p className="text-amber-900/80">
+              Manufacturer retail barcodes need ~30 mm+ sticker width. Internal codes print as Code128 so they fit smaller stock.
             </p>
           </div>
 
           <div className="flex flex-wrap gap-2 justify-end">
             <Button variant="ghost" size="sm" onClick={onClose}>Close</Button>
-            <Button variant="outline" size="sm" onClick={handleDownload} disabled={!pdfUrl || loading || savingDefault}>
-              <Download className="h-4 w-4 mr-1" /> Download
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={handleTestLabel}
+              disabled={loading || savingDefault}
+              title="Print a calibration sticker with ruler marks"
+            >
+              <Ruler className="h-4 w-4 mr-1" /> Test label
             </Button>
+            <Button variant="outline" size="sm" onClick={handleDownload} disabled={!pdfUrl || loading || savingDefault}>
+              <Download className="h-4 w-4 mr-1" /> Download PDF
+            </Button>
+            {!isThermal && (
+              <Button size="sm" className="bg-blue-600 hover:bg-blue-700" onClick={handlePrintPdf} disabled={(!path && !pdfUrl) || loading || savingDefault}>
+                {(loading || savingDefault) ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Printer className="h-4 w-4 mr-1" />}
+                Print PDF
+              </Button>
+            )}
+            {isThermal && (
+              <Button type="button" variant="outline" size="sm" onClick={handlePrintPdf} disabled={(!path && !pdfUrl) || loading || savingDefault}>
+                Print PDF
+              </Button>
+            )}
             <Button size="sm" className="bg-blue-600 hover:bg-blue-700" onClick={handlePrint} disabled={(!path && !pdfUrl) || loading || savingDefault}>
               {(loading || savingDefault) ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Printer className="h-4 w-4 mr-1" />}
               Print

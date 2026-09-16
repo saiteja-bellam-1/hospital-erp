@@ -759,6 +759,133 @@ async def get_print_settings(
     return payload
 
 
+@router.get("/print-settings/test-label.pdf")
+async def download_test_label_pdf(
+    width_mm: Optional[float] = None,
+    height_mm: Optional[float] = None,
+    labels_per_row: Optional[int] = None,
+    labels_per_column: Optional[int] = None,
+    margin_top_mm: Optional[float] = None,
+    margin_left_mm: Optional[float] = None,
+    gutter_mm: Optional[float] = None,
+    sheet_mode: Optional[str] = None,
+    sheet_width_mm: Optional[float] = None,
+    sheet_height_mm: Optional[float] = None,
+    label_kind: Optional[str] = Query("pharmacy"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Calibration sticker PDF (Code128 + 10 mm ruler) for thermal printer setup."""
+    from app.utils.label_pdf_service import (
+        build_label_pdf,
+        layout_overrides_from_params,
+        merge_label_layout,
+    )
+    from app.utils.pdf_settings import (
+        get_lab_label_settings,
+        get_patient_file_label_settings,
+        get_pharmacy_label_settings,
+    )
+
+    kind = (label_kind or "pharmacy").strip().lower()
+    if kind == "lab":
+        base = get_lab_label_settings(db, current_user.hospital_id)
+    elif kind in ("patient_file", "patient"):
+        base = get_patient_file_label_settings(db, current_user.hospital_id)
+    else:
+        base = get_pharmacy_label_settings(db, current_user.hospital_id)
+    layout = merge_label_layout(
+        base,
+        layout_overrides_from_params(
+            width_mm=width_mm,
+            height_mm=height_mm,
+            labels_per_row=labels_per_row,
+            labels_per_column=labels_per_column,
+            margin_top_mm=margin_top_mm,
+            margin_left_mm=margin_left_mm,
+            gutter_mm=gutter_mm,
+            sheet_mode=sheet_mode or "thermal",
+            sheet_width_mm=sheet_width_mm,
+            sheet_height_mm=sheet_height_mm,
+        ),
+        single_label=True,
+    )
+    pdf_bytes = build_label_pdf([{}], layout, "test")
+    return StreamingResponse(
+        BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": "inline; filename=test_label.pdf",
+            "Cache-Control": "no-store",
+            "X-Label-Layout-Version": "barcode-fit-v5",
+        },
+    )
+
+
+@router.get("/print-settings/test-label.html")
+async def download_test_label_html(
+    width_mm: Optional[float] = None,
+    height_mm: Optional[float] = None,
+    labels_per_row: Optional[int] = None,
+    labels_per_column: Optional[int] = None,
+    margin_top_mm: Optional[float] = None,
+    margin_left_mm: Optional[float] = None,
+    gutter_mm: Optional[float] = None,
+    sheet_mode: Optional[str] = None,
+    sheet_width_mm: Optional[float] = None,
+    sheet_height_mm: Optional[float] = None,
+    label_kind: Optional[str] = Query("pharmacy"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Calibration sticker HTML (@page mm) for browser thermal print."""
+    from fastapi.responses import HTMLResponse
+    from app.utils.label_pdf_service import (
+        build_label_html,
+        layout_overrides_from_params,
+        merge_label_layout,
+    )
+    from app.utils.pdf_settings import (
+        get_lab_label_settings,
+        get_patient_file_label_settings,
+        get_pharmacy_label_settings,
+    )
+
+    kind = (label_kind or "pharmacy").strip().lower()
+    if kind == "lab":
+        base = get_lab_label_settings(db, current_user.hospital_id)
+    elif kind in ("patient_file", "patient"):
+        base = get_patient_file_label_settings(db, current_user.hospital_id)
+    else:
+        base = get_pharmacy_label_settings(db, current_user.hospital_id)
+    layout = merge_label_layout(
+        base,
+        layout_overrides_from_params(
+            width_mm=width_mm,
+            height_mm=height_mm,
+            labels_per_row=labels_per_row,
+            labels_per_column=labels_per_column,
+            margin_top_mm=margin_top_mm,
+            margin_left_mm=margin_left_mm,
+            gutter_mm=gutter_mm,
+            sheet_mode=sheet_mode or "thermal",
+            sheet_width_mm=sheet_width_mm,
+            sheet_height_mm=sheet_height_mm,
+        ),
+        single_label=True,
+    )
+    if str(layout.sheet_mode).lower() == "avery":
+        raise HTTPException(
+            status_code=400,
+            detail="HTML thermal print is for roll labels; use the PDF test label for Avery",
+        )
+    html_body = build_label_html([{}], layout, "test")
+    return HTMLResponse(
+        content=html_body,
+        headers={"Cache-Control": "no-store", "X-Label-Layout-Version": "barcode-fit-v5"},
+    )
+
+
 @router.get("/vitals-config")
 async def get_vitals_config(
     current_user: User = Depends(get_current_user),

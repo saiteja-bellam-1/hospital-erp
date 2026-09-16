@@ -121,11 +121,15 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
   sections.push({ label: '', items: homeItems });
 
   // ── OUTPATIENT ── (visible to receptionist + hospital/super admin)
-  // Front-desk operations: patients, appointments, packages, day-care services,
-  // referrals, and the central billing views. Admins see the same items so they
-  // can manage OPD operations without needing a receptionist role.
+  // Front-desk operations: dashboard, patients, appointments, packages, day-care
+  // services, referrals, and reports. Admins see the same items so they can
+  // manage OPD without needing a receptionist role. Dashboard lives here (not
+  // only as a role-home tile) so multi-role users still see it in the sidebar.
   if (hasAnyRole('receptionist', 'hospital_admin', 'super_admin')) {
     const items = [];
+    // Always show the reception home — the page itself hides OP-only widgets
+    // when outpatient is disabled (patients / lab billing still useful).
+    add(items, make('Dashboard', LayoutDashboard, '/dashboard/outpatient'));
     add(items, make('Patients', Users, '/dashboard/reception/patients'));
     if (enabledModules.ehr) {
       add(items, make('EHR / Patient Chart', FileText, '/dashboard/ehr'));
@@ -133,15 +137,13 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
     if (enabledModules.outpatient) {
       add(items, make('Appointments', Calendar, '/dashboard/reception/appointments'));
       add(items, make('Doctor Schedule', CalendarClock, '/dashboard/reception/doctor-availability'));
+      add(items, make('Day Care', Stethoscope, '/dashboard/reception/procedures'));
+      add(items, make('Referrals', Share2, '/dashboard/reception/referrals'));
+      add(items, make('Reports', TrendingUp, '/dashboard/reception/reports'));
     }
     if (enabledModules.lab) {
       add(items, make('Lab Packages', Package, '/dashboard/reception/packages'));
       add(items, make('Lab Orders', TestTube, '/dashboard/reception/lab-orders'));
-    }
-    add(items, make('Day Care', Stethoscope, '/dashboard/reception/procedures'));
-    add(items, make('Referrals', Share2, '/dashboard/reception/referrals'));
-    if (enabledModules.outpatient) {
-      add(items, make('Reports', TrendingUp, '/dashboard/reception/reports'));
     }
     if (items.length > 0) sections.push({ label: 'Outpatient', items });
   }
@@ -394,18 +396,10 @@ export function getRoleDashboards({ hasRole, hasAnyRole, enabledModules, isLabSt
   if (isLabStaff || (hasAnyRole('lab_admin', 'lab_technician') && enabledModules.lab)) {
     out.push({ key: 'lab', label: 'Lab Tech Dashboard', path: '/dashboard/lab-home' });
   }
-  if (hasRole('receptionist') && enabledModules.outpatient) {
-    out.push({ key: 'reception', label: 'Reception Dashboard', path: '/dashboard/reception-home' });
-  }
-  // Receptionist-only with lab (no outpatient, no lab role) — fall back to lab dashboard.
-  if (
-    hasRole('receptionist') &&
-    !enabledModules.outpatient &&
-    enabledModules.lab &&
-    !hasAnyRole('lab_admin', 'lab_technician')
-  ) {
-    out.push({ key: 'lab', label: 'Lab Tech Dashboard', path: '/dashboard/lab-home' });
-  }
+  // Reception home lives under the Outpatient nav section (/dashboard/outpatient),
+  // not as a role-home tile — so multi-role users still see it in the sidebar
+  // even when Admin/Doctor priority wins at /dashboard. OP widgets on that page
+  // are gated by enabledModules.outpatient; do not fall back to Lab Tech.
   if (hasRole('nurse')) {
     out.push({ key: 'nurse', label: 'Nurse Dashboard', path: '/dashboard/nurse-home' });
   }

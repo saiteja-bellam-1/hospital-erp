@@ -10,11 +10,12 @@ import {
   Phone, MapPin, Heart, Clock, ChevronDown, ChevronUp, Printer,
   Stethoscope, AlertCircle, CheckCircle,
   ChevronLeft, ChevronRight, AlertTriangle, Bed, Receipt, Download,
-  IndianRupee, CalendarDays, CalendarPlus, BedDouble, ShoppingBag
+  IndianRupee, CalendarDays, CalendarPlus, BedDouble, ShoppingBag, FileSpreadsheet
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { printPdfFromUrl } from '../../utils/printPdf';
 import LabTestBookingDialog from '../../components/LabTestBookingDialog';
+import EhrExportDialog from '../../components/EhrExportDialog';
 
 const EHRModule = () => (
   <Routes>
@@ -38,6 +39,7 @@ const EHRPage = () => {
   const [currentPage, setCurrentPage] = useState(1);
   const [enabledModules, setEnabledModules] = useState({});
   const [showLabBooking, setShowLabBooking] = useState(false);
+  const [showExcelExport, setShowExcelExport] = useState(false);
   const patientsPerPage = 10;
 
   const token = localStorage.getItem('token');
@@ -571,6 +573,9 @@ const EHRPage = () => {
                 <TestTube className="h-4 w-4 mr-1" /> Book Lab
               </Button>
             )}
+            <Button size="sm" variant="outline" onClick={() => setShowExcelExport(true)}>
+              <FileSpreadsheet className="h-4 w-4 mr-1" /> Export Excel
+            </Button>
           </div>
         )}
       </div>
@@ -1260,6 +1265,14 @@ const EHRPage = () => {
           if (booked && routePatientId) loadPatientHistory(routePatientId);
         }}
         patient={patientHistory?.patient || null}
+      />
+
+      <EhrExportDialog
+        open={showExcelExport}
+        onClose={() => setShowExcelExport(false)}
+        patientUuid={patientHistory?.patient?.patient_id || routePatientId}
+        patientName={patientHistory?.patient?.full_name}
+        headers={headers}
       />
 
     </div>

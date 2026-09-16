@@ -428,7 +428,7 @@ export default function AppearanceSettingsPanel() {
             <CardContent className="space-y-3 max-w-2xl">
               <p className="text-sm text-muted-foreground">
                 When enabled, prescriptions and lab reports print the patient&apos;s MRN barcode
-                (same EAN-13 as sample labels) next to the MRN.
+                (Code128 of the stored MRN digits) next to the MRN.
               </p>
               <label className="flex items-start gap-3 cursor-pointer">
                 <input
@@ -457,6 +457,9 @@ export default function AppearanceSettingsPanel() {
               <p className="text-sm text-muted-foreground">
                 Configure dimensions for lab sample tube labels and pharmacy batch stickers.
                 Match the preset to your physical roll — 2-column rolls need labels/row = 2.
+                Internal barcodes print as Code128 (same digits as before). Manufacturer retail
+                EAN-13 stickers need about 30&nbsp;mm+ width to stay scannable on 203&nbsp;dpi printers.
+                Use Print in the label dialog (browser @page) for thermal rolls; Download PDF for Avery.
               </p>
               <LabelSettingsFields
                 title="Lab sample labels"

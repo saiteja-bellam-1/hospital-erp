@@ -34,7 +34,8 @@ async function parseApiErrorFromBlob(blob) {
 }
 
 /**
- * Print a PDF using an off-screen iframe.
+ * Print a PDF using a real browser window (better for custom page sizes than
+ * a 0×0 iframe on Windows Chrome/Edge). Falls back to off-screen iframe.
  *
  * Accepts either:
  *   - a blob: URL (already-fetched PDF), or
@@ -42,15 +43,12 @@ async function parseApiErrorFromBlob(blob) {
  *     is resolved server-side from Print Settings (global + per-report overrides).
  *     Do not pass include_header unless intentionally overriding the hospital default.
  *
- * Hidden iframes with display:none often produce blank prints on Windows
- * Chrome/Edge; we keep the iframe in the layout at 0×0 instead. Blob URLs are
- * kept alive long enough for the OS print dialog to finish loading the PDF.
- *
  * @param {string} urlOrPath - blob: URL or API path
  * @param {object} [options]
  *   params {object}  Extra query params (API-path mode only).
  *   filename {string}  Reserved; informational only.
  *   onError {function(string)}  Called with a user-facing message on failure.
+ *   preferWindow {boolean}  Open PDF in a tab then print (default true).
  * @returns {Promise<boolean>} false when fetch/validation/print failed
  */
 export const printPdfFromUrl = async (urlOrPath, options = {}) => {
@@ -90,6 +88,31 @@ export const printPdfFromUrl = async (urlOrPath, options = {}) => {
         ? err.response.data.detail
         : 'Could not load the PDF');
     }
+  }
+
+  const preferWindow = options.preferWindow !== false;
+  if (preferWindow) {
+    const w = window.open(blobUrl, '_blank', 'noopener,noreferrer');
+    if (w) {
+      const scheduleCleanup = () => {
+        if (!createdBlobHere) return;
+        setTimeout(() => {
+          try { URL.revokeObjectURL(blobUrl); } catch (_) { /* ignore */ }
+        }, CLEANUP_DELAY_MS);
+      };
+      const tryPrint = () => {
+        try {
+          w.focus();
+          w.print();
+        } catch (e) {
+          console.error('printPdfFromUrl: window.print failed', e);
+        }
+        scheduleCleanup();
+      };
+      setTimeout(tryPrint, PRINT_RENDER_DELAY_MS);
+      return true;
+    }
+    // Pop-up blocked — fall through to iframe path.
   }
 
   return new Promise((resolve) => {

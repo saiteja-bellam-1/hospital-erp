@@ -19,6 +19,7 @@ import { localDateString, localDateStringOffset } from '../../utils/localDate';
 import PdfPreviewDialog from '../../components/PdfPreviewDialog';
 import LabelPreviewDialog from '../../components/LabelPreviewDialog';
 import ActionKpiCard from '../../components/dashboard/ActionKpiCard';
+import { matchesLabOrderSearch } from '../../utils/barcodeSearch';
 
 const LabTechDashboard = () => {
   const { user } = useAuth();
@@ -86,10 +87,13 @@ const LabTechDashboard = () => {
 
   // ============ Data fetching ============
 
-  const fetchOrders = useCallback(async () => {
+  const fetchOrders = useCallback(async (search = '') => {
     setLoading(true);
     try {
-      const pendingRes = await axios.get('/api/lab/orders');
+      const params = {};
+      const q = (search || '').trim();
+      if (q) params.search = q;
+      const pendingRes = await axios.get('/api/lab/orders', { params });
       const pending = (pendingRes.data || []).filter(
         (o) => ['ordered', 'collected', 'processing'].includes(o.status)
           && !(o.lab_bill_number || '').startsWith('LB-CU-')
@@ -102,16 +106,17 @@ const LabTechDashboard = () => {
     }
   }, []);
 
-  const fetchCompletedOrders = useCallback(async () => {
+  const fetchCompletedOrders = useCallback(async (search = '') => {
     setCompletedLoading(true);
     try {
-      const res = await axios.get('/api/lab/orders', {
-        params: {
-          status: 'completed',
-          date_from: completedDateFrom,
-          date_to: completedDateTo,
-        },
-      });
+      const params = {
+        status: 'completed',
+        date_from: completedDateFrom,
+        date_to: completedDateTo,
+      };
+      const q = (search || '').trim();
+      if (q) params.search = q;
+      const res = await axios.get('/api/lab/orders', { params });
       setCompletedOrders(Array.isArray(res.data) ? res.data : []);
     } catch (err) {
       console.error('Failed to fetch completed orders:', err);
@@ -131,30 +136,41 @@ const LabTechDashboard = () => {
   }, []);
 
   useEffect(() => {
-    fetchOrders();
+    fetchOrders(searchQuery);
     fetchStats();
-    fetchCompletedOrders();
+    fetchCompletedOrders(completedSearchQuery);
   }, [fetchOrders, fetchStats, fetchCompletedOrders]);
+
+  // Debounced barcode / text search refetch so scans hit the API (not only the loaded page).
+  useEffect(() => {
+    const t = setTimeout(() => fetchOrders(searchQuery), 300);
+    return () => clearTimeout(t);
+  }, [searchQuery, fetchOrders]);
+
+  useEffect(() => {
+    const t = setTimeout(() => fetchCompletedOrders(completedSearchQuery), 300);
+    return () => clearTimeout(t);
+  }, [completedSearchQuery, fetchCompletedOrders]);
 
   // Auto-refresh every 30 seconds
   useEffect(() => {
     const interval = setInterval(() => {
-      fetchOrders();
+      fetchOrders(searchQuery);
       fetchStats();
       if (activeTab === 'completed') {
-        fetchCompletedOrders();
+        fetchCompletedOrders(completedSearchQuery);
       }
     }, 30000);
     return () => clearInterval(interval);
-  }, [fetchOrders, fetchStats, fetchCompletedOrders, activeTab]);
+  }, [fetchOrders, fetchStats, fetchCompletedOrders, activeTab, searchQuery, completedSearchQuery]);
 
   useEffect(() => {
     if (activeTab === 'completed') {
-      fetchCompletedOrders();
+      fetchCompletedOrders(completedSearchQuery);
     } else {
       setSelectedReportIds(new Set());
     }
-  }, [activeTab, completedDateFrom, completedDateTo, fetchCompletedOrders]);
+  }, [activeTab, completedDateFrom, completedDateTo, fetchCompletedOrders, completedSearchQuery]);
 
   // ============ Status update ============
 
@@ -437,25 +453,19 @@ const LabTechDashboard = () => {
     }
   };
 
-  const matchesOrderSearch = (order, q) => (
-    order.patient_name?.toLowerCase().includes(q) ||
-    order.test_name?.toLowerCase().includes(q) ||
-    order.order_number?.toLowerCase().includes(q) ||
-    order.doctor_name?.toLowerCase().includes(q) ||
-    order.package_name?.toLowerCase().includes(q)
-  );
+  const matchesOrderSearch = (order, q) => matchesLabOrderSearch(order, q);
 
   const filteredOrders = orders.filter(order => {
     if (statusFilter !== 'all_pending' && order.status !== statusFilter) return false;
     if (searchQuery) {
-      return matchesOrderSearch(order, searchQuery.toLowerCase());
+      return matchesOrderSearch(order, searchQuery);
     }
     return true;
   });
 
   const filteredCompletedOrders = completedOrders.filter(order => {
     if (!completedSearchQuery) return true;
-    return matchesOrderSearch(order, completedSearchQuery.toLowerCase());
+    return matchesOrderSearch(order, completedSearchQuery);
   });
 
   // Group orders: package orders by package_booking_id, then by patient+sample_type, rest standalone
@@ -836,7 +846,7 @@ const LabTechDashboard = () => {
       <div className="flex flex-col md:flex-row gap-3">
         <div className="relative flex-1 max-w-sm">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
-          <Input placeholder="Search patient, test, order #..." value={searchQuery}
+          <Input placeholder="Search patient, test, order #, or scan barcode…" value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)} className="pl-10" />
         </div>
         <Select value={statusFilter} onValueChange={setStatusFilter}>
@@ -927,7 +937,7 @@ const LabTechDashboard = () => {
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
                 <Input
                   className="pl-9"
-                  placeholder="Patient, test, order #, doctor..."
+                  placeholder="Patient, test, order #, or scan barcode…"
                   value={completedSearchQuery}
                   onChange={(e) => setCompletedSearchQuery(e.target.value)}
                 />

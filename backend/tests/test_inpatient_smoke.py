@@ -2110,7 +2110,8 @@ def boundary_setup(TestSessionLocal, seed_data):
             "administer_medications", "view_mar",
             "manage_nursing_notes", "manage_allergies", "record_visits",
             "record_consent", "acknowledge_critical_alert",
-            "accept_ward_transfer", "manage_housekeeping", "view_roster", "view_documents",
+            "accept_ward_transfer", "manage_housekeeping", "view_roster",
+            "upload_documents", "view_documents",
         ],
         "billing_admin": [
             "view_occupancy", "view_bill", "generate_interim_bill", "finalize_bill",
@@ -2129,7 +2130,7 @@ def boundary_setup(TestSessionLocal, seed_data):
             "record_consent", "withdraw_consent",
             "transfer_beds", "initiate_ward_transfer", "accept_ward_transfer",
             "acknowledge_critical_alert",
-            "view_bill", "view_readmissions", "view_mortality",
+            "view_readmissions", "view_mortality",
             "upload_documents", "view_documents",
         ],
     }
@@ -2326,6 +2327,19 @@ class TestRoleBoundaries:
         r = client.post(
             f"/api/inpatient/admissions/{boundary_setup['admission_id']}/bill/finalize",
             json={}, headers=boundary_setup["doc_headers"],
+        )
+        assert r.status_code == 403
+
+    def test_doctor_cannot_view_bill(self, client, boundary_setup):
+        """Doctors keep medical/consent access only — no IP billing preview."""
+        r = client.get(
+            f"/api/inpatient/admissions/{boundary_setup['admission_id']}/bill",
+            headers=boundary_setup["doc_headers"],
+        )
+        assert r.status_code == 403
+        r = client.get(
+            f"/api/inpatient/admissions/{boundary_setup['admission_id']}/balance",
+            headers=boundary_setup["doc_headers"],
         )
         assert r.status_code == 403
 

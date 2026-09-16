@@ -1,6 +1,6 @@
 import uuid
 from sqlalchemy.orm import Session
-from sqlalchemy import func, case
+from sqlalchemy import func, case, or_
 from sqlalchemy.exc import IntegrityError
 from app.models.patient import Patient, PatientContact, PatientMedicalHistory
 from app.models.hospital import Hospital
@@ -8,7 +8,26 @@ from app.models.outpatient import Appointment
 from typing import Optional, List, Dict, Any, Tuple
 from datetime import date, datetime, timedelta
 from app.utils.patient_age import compute_age_parts_from_dob
+from app.services.barcode_service import barcode_lookup_codes
 
+
+def patient_search_match_clause(search_term: str):
+    """OR clause: name / phone / id / MRN text / patient MRN barcode."""
+    term = (search_term or "").strip()
+    if not term:
+        return True
+    like = f"%{term}%"
+    clauses = [
+        Patient.first_name.ilike(like),
+        Patient.last_name.ilike(like),
+        Patient.primary_phone.ilike(like),
+        Patient.patient_id.ilike(like),
+        Patient.mrn.ilike(like),
+        Patient.mrn_ean13.ilike(like),
+    ]
+    for code in barcode_lookup_codes(term):
+        clauses.append(Patient.mrn_ean13 == code)
+    return or_(*clauses)
 
 def _next_mrn_for(db: Session, hospital_id: int) -> str:
     """Compute the next MRN for a hospital.
@@ -134,15 +153,13 @@ class PatientService:
         return patient
     
     def search_patients(self, search_term: str, hospital_id: int) -> List[Patient]:
-        return self.db.query(Patient).filter(
+        query = self.db.query(Patient).filter(
             Patient.hospital_id == hospital_id,
             Patient.is_active == True,
-            (Patient.first_name.ilike(f"%{search_term}%") |
-             Patient.last_name.ilike(f"%{search_term}%") |
-             Patient.primary_phone.ilike(f"%{search_term}%") |
-             Patient.patient_id.ilike(f"%{search_term}%") |
-             Patient.mrn.ilike(f"%{search_term}%"))
-        ).all()
+        )
+        if (search_term or "").strip():
+            query = query.filter(patient_search_match_clause(search_term))
+        return query.all()
     
     def calculate_age(self, date_of_birth: date) -> int:
         """Calculate whole years from date of birth."""
@@ -169,13 +186,7 @@ class PatientService:
         # Apply search term filter
         search_term = filters.get('search_term')
         if search_term:
-            query = query.filter(
-                (Patient.first_name.ilike(f"%{search_term}%") |
-                 Patient.last_name.ilike(f"%{search_term}%") |
-                 Patient.primary_phone.ilike(f"%{search_term}%") |
-                 Patient.patient_id.ilike(f"%{search_term}%") |
-                 Patient.mrn.ilike(f"%{search_term}%"))
-            )
+            query = query.filter(patient_search_match_clause(search_term))
         
         # Apply age filters
         if filters.get('min_age') or filters.get('max_age'):

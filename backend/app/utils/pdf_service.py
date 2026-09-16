@@ -34,37 +34,20 @@ def _patient_mrn_barcode_flowable(
     bar_length: float = _PATIENT_BARCODE_LENGTH_PT,
     bar_depth: float = _PATIENT_BARCODE_DEPTH_PT,
 ):
-    """Return a vertical (ladder) EAN-13 Drawing for a valid patient MRN code, or None.
+    """Return a vertical (ladder) Code128 Drawing for a patient MRN code, or None.
 
     Digits are omitted — MRN text is already in the info box, and human-readable
-    glyphs can paint outside the Drawing's reported bounds.
+    glyphs can paint outside the Drawing's reported bounds. Payload remains the
+    stored mrn_ean13 digit string so wedge scanners match label scans.
     """
-    from reportlab.graphics.barcode import createBarcodeDrawing
-    from reportlab.graphics.shapes import Drawing, Group
-    from app.services.barcode_service import validate_ean13
+    from app.utils.barcode_draw import vertical_mrn_barcode_drawing
 
-    digits = "".join(c for c in (code or "") if c.isdigit())
-    if len(digits) != 13 or not validate_ean13(digits):
-        return None
-    try:
-        length = max(float(bar_length), _PATIENT_BARCODE_MIN_LENGTH_PT)
-        depth = max(float(bar_depth), 14.0)
-        src = createBarcodeDrawing(
-            "EAN13",
-            value=digits,
-            width=length,
-            height=depth,
-            humanReadable=False,
-        )
-        group = Group(src)
-        group.rotate(-90)
-        group.shift(0, src.width)
-        out = Drawing(src.height, src.width)
-        out.add(group)
-        return out
-    except Exception:
-        return None
-
+    return vertical_mrn_barcode_drawing(
+        code,
+        bar_length=bar_length,
+        bar_depth=bar_depth,
+        min_length=_PATIENT_BARCODE_MIN_LENGTH_PT,
+    )
 
 class _PatientInfoWithBarcode(Flowable):
     """Patient demographics + vertical MRN barcode inside one bordered box."""

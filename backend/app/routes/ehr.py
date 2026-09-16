@@ -51,13 +51,8 @@ async def search_patients_ehr(
     )
 
     if q.strip():
-        search = f"%{q}%"
-        query = query.filter(
-            (Patient.first_name.ilike(search)) |
-            (Patient.last_name.ilike(search)) |
-            (Patient.primary_phone.ilike(search)) |
-            (Patient.patient_id.ilike(search))
-        )
+        from app.services.patient_service import patient_search_match_clause
+        query = query.filter(patient_search_match_clause(q))
 
     patients = query.order_by(Patient.first_name).limit(limit).all()
 
@@ -79,24 +74,18 @@ async def search_patients_ehr(
     ]
 
 
-@router.get("/patient/{patient_id}/history")
-async def get_patient_full_history(
-    patient_id: str,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Get complete patient history: consultations, prescriptions, lab orders, notes"""
-    _require_ehr_access(current_user)
-
-    # Find patient by UUID
+def _get_patient_or_404(db: Session, patient_id: str, hospital_id: int) -> Patient:
     patient = db.query(Patient).filter(
         Patient.patient_id == patient_id,
-        Patient.hospital_id == current_user.hospital_id
+        Patient.hospital_id == hospital_id,
     ).first()
-
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
+    return patient
 
+
+def _build_patient_history(db: Session, patient: Patient, hospital_id: int) -> dict:
+    """Assemble the full patient chart payload used by history + Excel export."""
     # --- Patient info ---
     patient_info = {
         "id": patient.id,
@@ -205,7 +194,7 @@ async def get_patient_full_history(
     # --- Prescriptions ---
     prescriptions_db = db.query(SimplePrescription).filter(
         SimplePrescription.patient_id == patient.patient_id,
-        SimplePrescription.hospital_id == current_user.hospital_id
+        SimplePrescription.hospital_id == hospital_id
     ).order_by(SimplePrescription.prescription_date.desc()).all()
 
     prescriptions = []
@@ -344,7 +333,7 @@ async def get_patient_full_history(
     # interim/unbilled charges (tracked per-admission) are not reflected here.
     bills_db = db.query(Bill).filter(
         Bill.patient_id == patient.id,
-        Bill.hospital_id == current_user.hospital_id
+        Bill.hospital_id == hospital_id
     ).order_by(Bill.bill_date.desc()).all()
 
     bills = []
@@ -412,7 +401,7 @@ async def get_patient_full_history(
     sales_db = (
         db.query(PharmacySale)
         .filter(
-            PharmacySale.hospital_id == current_user.hospital_id,
+            PharmacySale.hospital_id == hospital_id,
             or_(*sale_filters),
         )
         .order_by(PharmacySale.sale_date.desc())
@@ -482,7 +471,7 @@ async def get_patient_full_history(
     # --- Physiotherapy sessions ---
     physio_db = db.query(PhysioAppointment).filter(
         PhysioAppointment.patient_id == patient.id,
-        PhysioAppointment.hospital_id == current_user.hospital_id,
+        PhysioAppointment.hospital_id == hospital_id,
     ).order_by(PhysioAppointment.appointment_date.desc()).limit(200).all()
 
     physio_sessions = []
@@ -549,6 +538,60 @@ async def get_patient_full_history(
         "summary": summary,
         "timeline": timeline,
     }
+
+
+@router.get("/patient/{patient_id}/history")
+async def get_patient_full_history(
+    patient_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get complete patient history: consultations, prescriptions, lab orders, notes"""
+    _require_ehr_access(current_user)
+    patient = _get_patient_or_404(db, patient_id, current_user.hospital_id)
+    return _build_patient_history(db, patient, current_user.hospital_id)
+
+
+@router.get("/patient/{patient_id}/export.xlsx")
+async def export_patient_chart_excel(
+    patient_id: str,
+    sections: Optional[str] = Query(
+        None,
+        description="Comma-separated chart tabs: timeline,visits,consultations,prescriptions,lab,pharmacy,billing,documents",
+    ),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Download selected patient-chart tabs as a multi-sheet Excel workbook."""
+    from fastapi.responses import StreamingResponse
+    import io
+    from urllib.parse import quote
+
+    from app.services.ehr_excel_export import build_patient_chart_xlsx, parse_sections
+
+    _require_ehr_access(current_user)
+    patient = _get_patient_or_404(db, patient_id, current_user.hospital_id)
+    selected = parse_sections(sections)
+    if not selected:
+        raise HTTPException(
+            status_code=400,
+            detail="Select at least one valid section to export",
+        )
+
+    history = _build_patient_history(db, patient, current_user.hospital_id)
+    content = build_patient_chart_xlsx(
+        db, current_user.hospital_id, history, selected
+    )
+
+    safe_name = (patient.first_name or "patient").replace(" ", "_")
+    filename = f"patient_chart_{safe_name}_{patient.patient_id[:8]}.xlsx"
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f"attachment; filename=\"{filename}\"; filename*=UTF-8''{quote(filename)}"
+        },
+    )
 
 
 def _calc_age(dob: date) -> int:
