@@ -18,7 +18,7 @@ DEFAULT_LETTERHEAD_GAP_PT = 100.0
 # spacing uses letterhead_gap_pt (Spacer) when include_header is False.
 PDF_TOP_MARGIN_PT = 0.0
 
-# Patient MRN EAN-13 on prescription / lab report demographics (vertical / ladder).
+# Patient MRN (human-readable) on prescription / lab report demographics (vertical / ladder).
 # After 90° rotation: bar_length → strip height, bar_depth → strip width.
 _PATIENT_BARCODE_LENGTH_PT = 100.0  # fallback vertical extent if box height unknown
 _PATIENT_BARCODE_DEPTH_PT = 20.0    # horizontal thickness of bars-only strip
@@ -34,11 +34,10 @@ def _patient_mrn_barcode_flowable(
     bar_length: float = _PATIENT_BARCODE_LENGTH_PT,
     bar_depth: float = _PATIENT_BARCODE_DEPTH_PT,
 ):
-    """Return a vertical (ladder) Code128 Drawing for a patient MRN code, or None.
+    """Return a vertical (ladder) Code128 Drawing for the patient MRN, or None.
 
-    Digits are omitted — MRN text is already in the info box, and human-readable
-    glyphs can paint outside the Drawing's reported bounds. Payload remains the
-    stored mrn_ean13 digit string so wedge scanners match label scans.
+    Human-readable glyphs under the bars are omitted — MRN text is already in
+    the info box. Payload is the human MRN string (e.g. KTH-2026-00042).
     """
     from app.utils.barcode_draw import vertical_mrn_barcode_drawing
 
@@ -52,10 +51,10 @@ def _patient_mrn_barcode_flowable(
 class _PatientInfoWithBarcode(Flowable):
     """Patient demographics + vertical MRN barcode inside one bordered box."""
 
-    def __init__(self, info_table, mrn_ean13: str, page_width: float):
+    def __init__(self, info_table, mrn: str, page_width: float):
         super().__init__()
         self.info_table = info_table
-        self.mrn_ean13 = mrn_ean13 or ""
+        self.mrn = mrn or ""
         self.page_width = float(page_width)
         self._inner = None
 
@@ -80,7 +79,7 @@ class _PatientInfoWithBarcode(Flowable):
         else:
             target_len = _PATIENT_BARCODE_MIN_LENGTH_PT
 
-        barcode = _patient_mrn_barcode_flowable(self.mrn_ean13, bar_length=target_len)
+        barcode = _patient_mrn_barcode_flowable(self.mrn, bar_length=target_len)
         if barcode is None:
             self._inner = self.info_table
             return self.info_table.wrap(width, availHeight)
@@ -140,15 +139,15 @@ class _PatientInfoWithBarcode(Flowable):
             self._inner.drawOn(self.canv, 0, 0)
 
 
-def _append_patient_info_with_optional_barcode(elements, info_table, page_width, *, show_barcode: bool, mrn_ean13: str):
+def _append_patient_info_with_optional_barcode(elements, info_table, page_width, *, show_barcode: bool, mrn: str):
     """Append demographics table, optionally with vertical MRN barcode inside the box."""
-    if not show_barcode or not (mrn_ean13 or "").strip():
+    if not show_barcode or not (mrn or "").strip():
         elements.append(info_table)
         return
-    if _patient_mrn_barcode_flowable(mrn_ean13, bar_length=_PATIENT_BARCODE_MIN_LENGTH_PT) is None:
+    if _patient_mrn_barcode_flowable(mrn, bar_length=_PATIENT_BARCODE_MIN_LENGTH_PT) is None:
         elements.append(info_table)
         return
-    elements.append(_PatientInfoWithBarcode(info_table, mrn_ean13, page_width))
+    elements.append(_PatientInfoWithBarcode(info_table, mrn, page_width))
 
 
 def _to_system_local(val):
@@ -1623,7 +1622,7 @@ class PDFService:
             info_table,
             page_width,
             show_barcode=bool(show_patient_barcode),
-            mrn_ean13=prescription_data.get("mrn_ean13") or "",
+            mrn=prescription_data.get("mrn") or "",
         )
         elements.append(Spacer(1, 10))
 
@@ -2284,7 +2283,7 @@ class PDFService:
             info_table,
             page_width,
             show_barcode=bool(show_patient_barcode),
-            mrn_ean13=report_data.get("mrn_ean13") or "",
+            mrn=report_data.get("mrn") or "",
         )
         elements.append(Spacer(1, 10))
 
@@ -2590,7 +2589,7 @@ class PDFService:
             info_table,
             page_width,
             show_barcode=bool(show_patient_barcode),
-            mrn_ean13=first_report.get("mrn_ean13") or "",
+            mrn=first_report.get("mrn") or "",
         )
         elements.append(Spacer(1, 10))
 

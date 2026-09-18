@@ -758,6 +758,97 @@ class TestPayerSchemes:
         assert to_cash["reason"] == "Aarogyasri pre-auth rejected"
         assert any(r["to_payer_type"] == "govt_scheme" for r in rows)
 
+    def test_approved_amount_posts_scheme_deposit(self, client, auth_headers, seed_data):
+        """Approved scheme amount must land in the deposit pool so balance counts it."""
+        _discharge_active(client, auth_headers, seed_data["patient_id"])
+        room = client.post(
+            f"{API}/rooms",
+            json={"room_number": "PAY-APPR-1", "room_type": "general", "bed_count": 2,
+                  "room_charge_per_day": 700.0},
+            headers=auth_headers,
+        )
+        assert room.status_code == 201, room.text
+        adm = client.post(
+            f"{API}/admissions",
+            json={
+                "patient_id": seed_data["patient_id"],
+                "admitting_doctor_id": seed_data["doctor_user_id"],
+                "room_id": room.json()["id"],
+                "admission_type": "elective",
+                "admission_reason": "Approval deposit test",
+            },
+            headers=auth_headers,
+        )
+        assert adm.status_code == 201, adm.text
+        admission_id = adm.json()["id"]
+
+        # Convert to private insurance with ₹5,000 approved
+        private = next(
+            (s for s in client.get(f"{API}/payer-schemes", headers=auth_headers).json()
+             if s["scheme_type"] == "private_insurance"),
+            None,
+        )
+        if private is None:
+            created = client.post(
+                f"{API}/payer-schemes",
+                json={"code": "PRIVTEST", "name": "Private Insurance Test",
+                      "scheme_type": "private_insurance"},
+                headers=auth_headers,
+            )
+            assert created.status_code == 201, created.text
+            private = created.json()
+
+        r = client.patch(
+            f"{API}/admissions/{admission_id}/payer",
+            json={
+                "payer_scheme_id": private["id"],
+                "reason": "Insurance card produced",
+                "scheme_approval_status": "approved",
+                "scheme_approval_amount": 5000.0,
+            },
+            headers=auth_headers,
+        )
+        assert r.status_code == 200, r.text
+
+        deps = client.get(f"{API}/admissions/{admission_id}/deposits", headers=auth_headers)
+        assert deps.status_code == 200, deps.text
+        rows = deps.json()
+        scheme_deps = [d for d in rows
+                       if (d.get("reference_number") or "").startswith("SCHEME-APPR-")
+                       or d.get("payment_method") == "scheme_approval"]
+        assert scheme_deps, f"expected scheme approval deposit, got {rows}"
+        assert abs(sum(
+            float(d["amount"]) if d.get("deposit_type") != "refund" else -abs(float(d["amount"]))
+            for d in scheme_deps
+        ) - 5000.0) < 0.01
+
+        # Raising approval tops up via a second ledger entry (+₹2,500)
+        r2 = client.post(
+            f"{API}/admissions/{admission_id}/scheme-approvals",
+            data={
+                "amount": "2500",
+                "approval_reference": "EXP-001",
+                "notes": "Expansion approved",
+            },
+            headers=auth_headers,
+        )
+        assert r2.status_code == 201, r2.text
+        deps2 = client.get(f"{API}/admissions/{admission_id}/deposits", headers=auth_headers).json()
+        scheme_deps2 = [d for d in deps2
+                        if (d.get("reference_number") or "").startswith("SCHEME-APPR-")]
+        net2 = sum(
+            float(d["amount"]) if d.get("deposit_type") != "refund" else -abs(float(d["amount"]))
+            for d in scheme_deps2
+        )
+        assert abs(net2 - 7500.0) < 0.01
+
+        ledger = client.get(
+            f"{API}/admissions/{admission_id}/scheme-approvals", headers=auth_headers
+        )
+        assert ledger.status_code == 200, ledger.text
+        assert abs(ledger.json()["total_approved"] - 7500.0) < 0.01
+        assert len(ledger.json()["items"]) == 2
+
     def test_convert_to_inactive_scheme_rejected(self, client, auth_headers):
         # Deactivate via DELETE (soft-delete) then attempt to convert to it.
         dead = client.post(

@@ -14,6 +14,7 @@ from app.utils.barcode_draw import (
     DOT_PT,
     MIN_MODULE_DOTS,
     barcode_module_ok,
+    barcode_payload,
     measure_fitted_size,
     resolve_label_symbology,
 )
@@ -36,6 +37,12 @@ def test_ean13_check_digit_known():
     assert validate_ean13(code)
 
 
+def test_code128_payload_keeps_human_mrn():
+    mrn = "KTH-2026-00042"
+    assert barcode_payload(mrn, "code128") == mrn
+    # Pure digit internal codes still collapse to digits.
+    code = generate_patient_mrn_ean13(42)
+    assert barcode_payload(code, "code128") == code
 def test_internal_generators_valid_ean13():
     for fn, arg in (
         (generate_patient_mrn_ean13, 42),
@@ -267,13 +274,12 @@ def test_build_pharmacy_label_pdf_with_margins():
 
 
 def test_build_patient_file_label_pdf_with_ean13():
-    code = generate_patient_mrn_ean13(42)
     layout = LabelLayoutConfig(width_mm=70, height_mm=40, sheet_mode="thermal")
     pdf = build_label_pdf(
         [{
             "patient_name": "Jane Doe",
             "mrn": "KTH-2026-00042",
-            "mrn_ean13": code,
+            "mrn_ean13": generate_patient_mrn_ean13(42),  # fallback only; MRN preferred
             "pat_type": "Self Paying",
             "age_gender": "32Y / F",
             "bill_date": "09-Sep-2026",
@@ -284,7 +290,7 @@ def test_build_patient_file_label_pdf_with_ean13():
         "patient_file",
     )
     assert pdf[:4] == b"%PDF"
-    assert validate_ean13(code)
+    assert barcode_payload("KTH-2026-00042", "code128") == "KTH-2026-00042"
 
 
 def test_build_patient_file_label_pdf_omits_order_when_blank():

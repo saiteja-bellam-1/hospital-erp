@@ -3107,3 +3107,219 @@ class TestBodyRelease:
         assert pdf.status_code == 200
         assert pdf.headers["content-type"] == "application/pdf"
         assert pdf.content[:4] == b"%PDF"
+
+
+# ======================================================================
+# Billing dashboard: final bill + splits received must show as paid
+# ======================================================================
+
+_billing_split: dict = {}
+
+
+class TestBillingSplitDashboardSync:
+    """Reproduce: finalize without collect → partial; mark splits received →
+    dashboard must show paid amount / status (not stuck partial); reverse works.
+    """
+
+    def _discharge_active(self, client, auth_headers, patient_id):
+        existing = client.get(
+            f"/api/inpatient/admissions/patient/{patient_id}",
+            headers=auth_headers,
+        )
+        if existing.status_code == 200:
+            for adm in existing.json():
+                if adm.get("status") == "admitted":
+                    client.post(
+                        f"/api/inpatient/admissions/{adm['id']}/discharge",
+                        json={
+                            "discharge_type": "normal",
+                            "condition_on_discharge": "stable",
+                            "discharge_summary": "Cleanup for billing split test",
+                            "force_outstanding_balance": True,
+                            "force_unacknowledged_alerts": True,
+                            "force_missing_consents": True,
+                            "override_reason": "test cleanup",
+                        },
+                        headers=auth_headers,
+                    )
+
+    def test_01_setup_admit_deposit_ancillary(self, client, auth_headers, seed_data):
+        self._discharge_active(client, auth_headers, seed_data["patient_id"])
+
+        r = client.post(
+            "/api/inpatient/rooms",
+            json={
+                "room_number": "BILL-SP-1",
+                "room_type": "private",
+                "bed_count": 1,
+                "room_charge_per_day": 1000.0,
+            },
+            headers=auth_headers,
+        )
+        assert r.status_code == 201, r.text
+        room_id = r.json()["id"]
+
+        a = client.post(
+            "/api/inpatient/admissions",
+            json={
+                "patient_id": seed_data["patient_id"],
+                "admitting_doctor_id": seed_data["doctor_user_id"],
+                "room_id": room_id,
+                "admission_type": "elective",
+                "admission_reason": "Billing split dashboard sync",
+                "condition_on_admission": "stable",
+            },
+            headers=auth_headers,
+        )
+        assert a.status_code == 201, a.text
+        adm_id = a.json()["id"]
+        _billing_split["admission_id"] = adm_id
+
+        d = client.post(
+            f"/api/inpatient/admissions/{adm_id}/deposits",
+            json={"amount": 2000.0, "payment_method": "cash", "deposit_type": "initial"},
+            headers=auth_headers,
+        )
+        assert d.status_code == 201, d.text
+
+        svc = client.post(
+            "/api/inpatient/ancillary-services",
+            json={
+                "service_name": "Split Test Scan",
+                "category": "imaging",
+                "default_charge": 8000.0,
+                "charge_unit": "per_session",
+            },
+            headers=auth_headers,
+        )
+        assert svc.status_code == 201, svc.text
+        ch = client.post(
+            f"/api/inpatient/admissions/{adm_id}/ancillary-charges",
+            json={"service_id": svc.json()["id"], "quantity": 1, "unit_price": 8000.0},
+            headers=auth_headers,
+        )
+        assert ch.status_code == 201, ch.text
+
+    def test_02_finalize_without_collect_shows_partial(self, client, auth_headers):
+        adm_id = _billing_split["admission_id"]
+        r = client.post(
+            f"/api/inpatient/admissions/{adm_id}/bill/finalize",
+            json={},
+            headers=auth_headers,
+        )
+        assert r.status_code == 200, r.text
+        data = r.json()
+        _billing_split["bill_id"] = data["bill_id"]
+        _billing_split["bill_total"] = float(data["total_amount"])
+        assert data["total_amount"] >= 8000.0
+        # Deposits 2k < bill → not fully settled
+        assert data.get("requires_action") in ("collect", "none") or float(data.get("amount_to_collect") or 0) >= 0
+
+        listing = client.get("/api/hospital/billing?bill_type=admission", headers=auth_headers)
+        assert listing.status_code == 200, listing.text
+        bills = listing.json().get("bills", [])
+        row = next((b for b in bills if b.get("admission_id") == adm_id), None)
+        assert row is not None, f"Admission row missing from billing list: {listing.json()}"
+        assert row["payment_status"] == "partial"
+        assert abs(float(row["amount_paid"]) - 2000.0) < 0.02
+        assert float(row["balance_due"]) > 0
+
+    def test_03_mark_splits_received_shows_paid_on_dashboard(self, client, auth_headers):
+        bill_id = _billing_split["bill_id"]
+        adm_id = _billing_split["admission_id"]
+        total = _billing_split["bill_total"]
+        deposit = 2000.0
+        tpa_part = round(total - deposit, 2)
+        cash_part = round(total - tpa_part, 2)
+        assert abs(cash_part - deposit) < 0.02
+
+        tpa = client.post(
+            "/api/inpatient/tpa",
+            json={"tpa_name": "SplitDash TPA", "tpa_code": "SD-TPA", "default_discount_percent": 0},
+            headers=auth_headers,
+        )
+        assert tpa.status_code == 201, tpa.text
+        tpa_id = tpa.json()["id"]
+
+        split = client.post(
+            f"/api/inpatient/bills/{bill_id}/split",
+            json={
+                "splits": [
+                    {"payer_type": "tpa", "payer_name": "SplitDash TPA", "tpa_id": tpa_id, "amount": tpa_part},
+                    {"payer_type": "cash", "payer_name": "Patient", "amount": cash_part},
+                ],
+            },
+            headers=auth_headers,
+        )
+        assert split.status_code == 200, split.text
+        splits = split.json()
+        _billing_split["splits"] = splits
+
+        for s in splits:
+            r = client.patch(
+                f"/api/inpatient/bill-splits/{s['id']}/payment?payment_reference=REF-{s['id']}",
+                headers=auth_headers,
+            )
+            assert r.status_code == 200, r.text
+            assert r.json()["payment_status"] == "received"
+
+        detail = client.get(f"/api/hospital/billing/bills/{bill_id}", headers=auth_headers)
+        assert detail.status_code == 200, detail.text
+        d = detail.json()
+        assert float(d["balance_due"]) <= 0.01
+        assert float(d["amount_paid"]) >= total - 0.01
+        assert d["status"] == "paid"
+
+        listing = client.get("/api/hospital/billing?bill_type=admission", headers=auth_headers)
+        assert listing.status_code == 200, listing.text
+        bills = listing.json().get("bills", [])
+        row = next((b for b in bills if b.get("admission_id") == adm_id), None)
+        assert row is not None
+        assert row["payment_status"] == "paid", row
+        assert abs(float(row["amount_paid"]) - total) < 0.05
+        assert float(row["balance_due"]) <= 0.01
+
+        bal = client.get(f"/api/inpatient/admissions/{adm_id}/balance", headers=auth_headers)
+        assert bal.status_code == 200
+        assert float(bal.json()["balance"]) >= -0.01  # settled / credit, not owing
+
+    def test_04_reverse_split_unpays_and_allows_resplit(self, client, auth_headers):
+        splits = _billing_split["splits"]
+        bill_id = _billing_split["bill_id"]
+        adm_id = _billing_split["admission_id"]
+        total = _billing_split["bill_total"]
+
+        # Reverse TPA split
+        tpa_split = next(s for s in splits if s["payer_type"] == "tpa")
+        rev = client.patch(
+            f"/api/inpatient/bill-splits/{tpa_split['id']}/reverse",
+            headers=auth_headers,
+        )
+        assert rev.status_code == 200, rev.text
+        assert rev.json()["payment_status"] == "pending"
+
+        listing = client.get("/api/hospital/billing?bill_type=admission", headers=auth_headers)
+        bills = listing.json().get("bills", [])
+        row = next((b for b in bills if b.get("admission_id") == adm_id), None)
+        assert row is not None
+        assert row["payment_status"] == "partial"
+        assert float(row["balance_due"]) > 0
+        assert float(row["amount_paid"]) < total - 0.01
+
+        # Cannot replace splits while cash is still received
+        bad = client.post(
+            f"/api/inpatient/bills/{bill_id}/split",
+            json={"splits": [{"payer_type": "cash", "payer_name": "Patient", "amount": total}]},
+            headers=auth_headers,
+        )
+        assert bad.status_code == 409
+
+        # Reverse cash too, then resplit is allowed
+        cash_split = next(s for s in splits if s["payer_type"] == "cash")
+        client.patch(f"/api/inpatient/bill-splits/{cash_split['id']}/reverse", headers=auth_headers)
+        ok = client.post(
+            f"/api/inpatient/bills/{bill_id}/split",
+            json={"splits": [{"payer_type": "cash", "payer_name": "Patient", "amount": total}]},
+            headers=auth_headers,
+        )
+        assert ok.status_code == 200, ok.text

@@ -630,18 +630,20 @@ def test_patient_file_label_settings_defaults_and_round_trip(db_session):
 
 
 def test_generate_prescription_and_lab_pdf_with_patient_barcode(db_session):
-    from app.services.barcode_service import generate_patient_mrn_ean13
+    from app.utils.barcode_draw import barcode_payload, vertical_mrn_barcode_drawing
     from app.utils.pdf_service import PDFService
 
-    code = generate_patient_mrn_ean13(99)
+    mrn = "KTH-2026-00099"
+    assert barcode_payload(mrn, "code128") == mrn
+    assert vertical_mrn_barcode_drawing(mrn, bar_length=80, bar_depth=20) is not None
+
     svc = PDFService()
     hi = {"name": "Test Hospital", "address": "", "phone": "", "email": ""}
 
     rx_buf = svc.generate_prescription_pdf(
         {
             "patient_name": "Barcode Patient",
-            "mrn": "KTH-2026-00099",
-            "mrn_ean13": code,
+            "mrn": mrn,
             "patient_age": 40,
             "patient_gender": "Female",
             "patient_phone": "9000000000",
@@ -658,8 +660,7 @@ def test_generate_prescription_and_lab_pdf_with_patient_barcode(db_session):
     lab_buf = svc.generate_lab_report_pdf(
         {
             "patient_name": "Barcode Patient",
-            "mrn": "KTH-2026-00099",
-            "mrn_ean13": code,
+            "mrn": mrn,
             "patient_age": 40,
             "patient_gender": "Female",
             "patient_phone": "9000000000",
@@ -675,8 +676,7 @@ def test_generate_prescription_and_lab_pdf_with_patient_barcode(db_session):
     off_buf = svc.generate_prescription_pdf(
         {
             "patient_name": "Barcode Patient",
-            "mrn": "KTH-2026-00099",
-            "mrn_ean13": code,
+            "mrn": mrn,
             "patient_age": 40,
             "patient_gender": "Female",
             "doctor_name": "Dr. Test",

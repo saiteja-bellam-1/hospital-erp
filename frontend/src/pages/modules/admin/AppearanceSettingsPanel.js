@@ -427,8 +427,8 @@ export default function AppearanceSettingsPanel() {
             </CardHeader>
             <CardContent className="space-y-3 max-w-2xl">
               <p className="text-sm text-muted-foreground">
-                When enabled, prescriptions and lab reports print the patient&apos;s MRN barcode
-                (Code128 of the stored MRN digits) next to the MRN.
+                When enabled, prescriptions and lab reports print the patient&apos;s MRN as a
+                Code128 barcode (the same value shown as MRN text, e.g. KTH-2026-00042).
               </p>
               <label className="flex items-start gap-3 cursor-pointer">
                 <input

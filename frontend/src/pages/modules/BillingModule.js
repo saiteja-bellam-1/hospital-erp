@@ -434,9 +434,33 @@ const BillingModule = () => {
         (reference ? `?payment_reference=${encodeURIComponent(reference)}` : '');
       await axios.patch(url);
       fetchSplits(detailBill.bill_id);
+      if (detailBill?.bill_id) {
+        const res = await axios.get(`/api/hospital/billing/bills/${detailBill.bill_id}`);
+        setDetailData(res.data);
+      }
+      fetchBills();
     } catch (err) {
       const detail = err.response?.data?.detail;
       alert(typeof detail === 'string' ? detail : 'Failed to record split payment');
+    }
+  };
+
+  const reverseSplitReceived = async (split) => {
+    if (!window.confirm(
+      `Reverse received payment for ${split.payer_name} (₹${split.amount})?\n\n` +
+      'This sets the split back to pending and reverses any linked payment.'
+    )) return;
+    try {
+      await axios.patch(`/api/inpatient/bill-splits/${split.id}/reverse`);
+      fetchSplits(detailBill.bill_id);
+      if (detailBill?.bill_id) {
+        const res = await axios.get(`/api/hospital/billing/bills/${detailBill.bill_id}`);
+        setDetailData(res.data);
+      }
+      fetchBills();
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      alert(typeof detail === 'string' ? detail : 'Failed to reverse split');
     }
   };
 
@@ -1186,6 +1210,15 @@ const BillingModule = () => {
                     <span>{formatCurrency(detailData.amount_paid)}</span>
                   </div>
                 )}
+                {(detailData.deposit_applied > 0 || detailData.splits_received > 0) && (
+                  <div className="flex justify-between text-[11px] text-gray-500">
+                    <span>
+                      {detailData.deposit_applied > 0 && `Deposits ${formatCurrency(detailData.deposit_applied)}`}
+                      {detailData.deposit_applied > 0 && detailData.splits_received > 0 && ' · '}
+                      {detailData.splits_received > 0 && `Splits received ${formatCurrency(detailData.splits_received)}`}
+                    </span>
+                  </div>
+                )}
                 {detailData.balance_due > 0 && (
                   <div className="flex justify-between text-sm text-red-600 font-medium">
                     <span>Balance Due:</span>
@@ -1242,7 +1275,16 @@ const BillingModule = () => {
                   <div className="flex items-center justify-between mb-2">
                     <Label className="text-sm font-medium text-gray-500">Bill Splits</Label>
                     {detailData.status !== 'cancelled' && (
-                      <Button size="sm" variant="outline" className="h-7 text-xs" onClick={openSplitEditor}>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-xs"
+                        onClick={openSplitEditor}
+                        disabled={splits.some((s) => s.payment_status === 'received')}
+                        title={splits.some((s) => s.payment_status === 'received')
+                          ? 'Reverse received splits before editing'
+                          : undefined}
+                      >
                         {splits.length ? 'Edit Splits' : 'Add Splits'}
                       </Button>
                     )}
@@ -1269,6 +1311,12 @@ const BillingModule = () => {
                               <Button size="sm" variant="ghost" className="h-6 text-[10px] text-green-700 hover:bg-green-100 px-2"
                                 onClick={() => markSplitReceived(s)}>
                                 Mark Received
+                              </Button>
+                            )}
+                            {s.payment_status === 'received' && detailData.status !== 'cancelled' && (
+                              <Button size="sm" variant="ghost" className="h-6 text-[10px] text-orange-700 hover:bg-orange-100 px-2"
+                                onClick={() => reverseSplitReceived(s)}>
+                                Reverse
                               </Button>
                             )}
                           </div>

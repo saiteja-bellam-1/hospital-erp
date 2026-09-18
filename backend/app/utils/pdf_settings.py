@@ -283,7 +283,7 @@ def set_show_patient_barcode_on_pdfs(
         key=PRINT_SHOW_PATIENT_BARCODE_KEY,
         value="true" if show_barcode else "false",
         setting_type="boolean",
-        description="Show patient MRN barcode on prescription and lab report PDFs",
+        description="Show patient MRN barcode (human MRN as Code128) on prescription and lab report PDFs",
         created_by=created_by,
     )
 

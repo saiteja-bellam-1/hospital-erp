@@ -174,6 +174,12 @@ class Admission(Base):
     ancillary_charges = relationship("AdmissionAncillaryCharge", back_populates="admission", cascade="all, delete-orphan")
     package_assignment = relationship("AdmissionPackage", back_populates="admission", uselist=False, cascade="all, delete-orphan")
     preauth_requests = relationship("InsurancePreAuth", back_populates="admission")
+    scheme_approvals = relationship(
+        "AdmissionSchemeApproval",
+        back_populates="admission",
+        cascade="all, delete-orphan",
+        order_by="AdmissionSchemeApproval.created_at",
+    )
     discharge_summary_doc = relationship(
         "AdmissionDischargeSummary",
         back_populates="admission",
@@ -1091,6 +1097,8 @@ class BillSplit(Base):
     payment_status = Column(String(20), default="pending")  # pending, received
     payment_date = Column(DateTime(timezone=True), nullable=True)
     payment_reference = Column(String(100), nullable=True)
+    # Payment row created when this split was marked received (nullable for legacy rows).
+    payment_id = Column(Integer, ForeignKey("payments.id"), nullable=True)
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), default=system_now)
     updated_at = Column(DateTime(timezone=True), onupdate=system_now)
@@ -1206,6 +1214,35 @@ class AdmissionPayerChange(Base):
     from_scheme = relationship("PayerScheme", foreign_keys=[from_scheme_id])
     to_scheme = relationship("PayerScheme", foreign_keys=[to_scheme_id])
     changed_by = relationship("User", foreign_keys=[changed_by_id])
+
+
+class AdmissionSchemeApproval(Base):
+    """Individual scheme / insurance approval credits for an admission.
+
+    Multiple rows accumulate (initial approval + later expansions). Each may
+    carry an optional supporting document. Active rows sum into
+    Admission.scheme_approval_amount and the SCHEME-APPR deposit credit.
+    """
+    __tablename__ = "admission_scheme_approvals"
+
+    id = Column(Integer, primary_key=True, index=True)
+    admission_id = Column(Integer, ForeignKey("admissions.id"), nullable=False)
+    amount = Column(Float, nullable=False)
+    approval_reference = Column(String(100), nullable=True)
+    notes = Column(Text, nullable=True)
+    document_path = Column(String(500), nullable=True)  # relative under uploads/
+    document_name = Column(String(255), nullable=True)
+    status = Column(String(20), default="approved", nullable=False)  # approved | voided
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    voided_at = Column(DateTime(timezone=True), nullable=True)
+    voided_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    void_reason = Column(Text, nullable=True)
+
+    admission = relationship("Admission", back_populates="scheme_approvals")
+    created_by = relationship("User", foreign_keys=[created_by_id])
+    voided_by = relationship("User", foreign_keys=[voided_by_id])
 
 
 # ======================================================================

@@ -286,6 +286,8 @@ NEW_COLUMNS = [
     ("patient_lab_orders", "sample_ean13", "VARCHAR(13)"),
     ("hospitals", "favicon_url", "VARCHAR(255)"),
     ("hospitals", "app_logo_url", "VARCHAR(255)"),
+    # Link BillSplit → Payment when Mark Received posts cash to the bill
+    ("bill_splits", "payment_id", "INTEGER REFERENCES payments(id)"),
 ]
 
 # B6 — body release table is created via create_all on startup; no column adds.

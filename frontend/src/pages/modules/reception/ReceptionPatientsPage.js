@@ -510,7 +510,9 @@ const ReceptionPatientsPage = () => {
                               {patient.first_name} {patient.last_name}
                             </span>
                           </div>
-                          <p className="text-sm text-gray-600 mt-1">ID: {patient.patient_id?.slice(0, 8)}...</p>
+                          <p className="text-sm text-gray-600 mt-1">
+                            MRN: {patient.mrn || '—'}
+                          </p>
                           {(patient.date_of_birth || patient.age != null || patient.age_months != null) && (
                             <p className="text-sm text-gray-600">
                               Age: {formatPatientAge(patient)}

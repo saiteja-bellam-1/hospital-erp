@@ -60,6 +60,7 @@ async def search_patients_ehr(
         {
             "id": p.id,
             "patient_id": p.patient_id,
+            "mrn": p.mrn,
             "first_name": p.first_name,
             "last_name": p.last_name,
             "full_name": f"{p.first_name} {p.last_name}",
@@ -90,6 +91,7 @@ def _build_patient_history(db: Session, patient: Patient, hospital_id: int) -> d
     patient_info = {
         "id": patient.id,
         "patient_id": patient.patient_id,
+        "mrn": patient.mrn,
         "first_name": patient.first_name,
         "last_name": patient.last_name,
         "full_name": f"{patient.first_name} {patient.last_name}",

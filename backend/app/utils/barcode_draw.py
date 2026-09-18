@@ -73,8 +73,12 @@ def barcode_payload(value: str, symbology: Symbology) -> Optional[str]:
         if validate_ean13(digits):
             return digits[:13]
         return None
-    # Code128: prefer digit payload when it is our stored EAN-13 string.
-    if digits and (len(digits) == 13 or len(digits) >= 6):
+    # Code128: keep alphanumeric payloads (human MRN e.g. KTH-2026-00042).
+    # Collapse to digits only when the value is already a pure digit barcode
+    # (internal EAN-13 / sample / batch codes).
+    if raw.isdigit():
+        return raw
+    if digits == raw and digits:
         return digits
     return raw
 
@@ -388,15 +392,19 @@ def vertical_mrn_barcode_drawing(
     bar_depth: float,
     min_length: float = 40.0,
 ) -> Optional[Drawing]:
-    """Rotated Code128 strip for prescription / lab-report demographics."""
-    digits = digits_only(code)
-    if not digits:
+    """Rotated Code128 strip for prescription / lab-report demographics.
+
+    Encodes the human-readable MRN string (e.g. KTH-2026-00042), not the
+    internal patient EAN-13, so scanners wedge the same value staff type/search.
+    """
+    payload = (code or "").strip()
+    if not payload:
         return None
     length = max(float(bar_length), float(min_length))
     depth = max(float(bar_depth), 14.0)
     # Build horizontal Code128 fitted to length × depth, then rotate -90°.
     built = build_barcode_drawing(
-        digits,
+        payload,
         max_width=length,
         max_height=depth,
         symbology="code128",

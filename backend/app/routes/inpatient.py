@@ -148,7 +148,7 @@ from app.utils.pdf_settings import bill_pdf_gen_kwargs, pdf_gen_kwargs
 from app.models.user import User
 from app.models.patient import Patient, PatientAllergy
 from app.models.hospital import Hospital
-from app.models.billing import Bill, BillItem
+from app.models.billing import Bill, BillItem, Payment
 from app.models.inpatient import (
     RoomManagement, Admission, DischargeRecord, DAMARecord,
     AdmissionDischargeSummary,
@@ -157,7 +157,7 @@ from app.models.inpatient import (
     AdmissionDeposit, AncillaryServiceCatalog, AdmissionAncillaryCharge, Procedure,
     SurgeryPackage, AdmissionPackage, InsurancePreAuth, InsurancePreAuthExpansion,
     TPACompany, BillSplit, LeaveOfAbsence, ShiftHandover, CodeBlueEvent, BodyReleaseRecord,
-    PayerScheme, AdmissionPayerChange, GatePass, DoctorDutyRoster, RoomMaintenance,
+    PayerScheme, AdmissionPayerChange, AdmissionSchemeApproval, GatePass, DoctorDutyRoster, RoomMaintenance,
     RoomTypeRateConfig, DoctorRoomTypeRate, RoomType,
     MealPlan, FoodOrder,
 )
@@ -1939,6 +1939,13 @@ async def create_admission(
     db.flush()
     _assign_bed_to_admission(db, admission, room, data.bed_id)
 
+    hospital = _get_hospital(db, current_user)
+    _sync_scheme_approval_deposit(
+        db, admission,
+        received_by_id=current_user.id,
+        hospital_id=hospital.id,
+    )
+
     db.commit()
     db.refresh(admission)
 
@@ -2082,6 +2089,13 @@ async def activate_admission_draft(
                 )
 
             _insert_deposit_safely(db, _dep_kwargs)
+
+    hospital = _get_hospital(db, current_user)
+    _sync_scheme_approval_deposit(
+        db, admission,
+        received_by_id=current_user.id,
+        hospital_id=hospital.id,
+    )
 
     db.commit()
     log_action(db, current_user, "activate_admission_draft", "inpatient", "Admission", admission.id,
@@ -2647,8 +2661,21 @@ async def update_admission(
                    f"Deposit waived for admission {admission.admission_number}",
                    {"reason": update_data.get("deposit_waiver_reason")})
 
+    approval_touched = bool(
+        {"scheme_approval_status", "scheme_approval_amount", "scheme_approval_ref"}
+        & update_data.keys()
+    )
+
     for key, value in update_data.items():
         setattr(admission, key, value)
+
+    if approval_touched:
+        _sync_scheme_approval_deposit(
+            db, admission,
+            received_by_id=current_user.id,
+            hospital_id=hospital.id,
+        )
+        reconcile_admission_bill_statuses(db, admission.id)
 
     # Record transfer history for room or bed change
     if room_changed or bed_changed:
@@ -8244,6 +8271,139 @@ def _insert_deposit_safely(db: Session, build_kwargs) -> AdmissionDeposit:
     raise RuntimeError("Failed to allocate deposit number after retries")
 
 
+SCHEME_APPROVAL_REF_PREFIX = "SCHEME-APPR-"
+
+
+def _scheme_approval_deposit_ref(admission_id: int) -> str:
+    return f"{SCHEME_APPROVAL_REF_PREFIX}{admission_id}"
+
+
+def _active_scheme_approval_total(db: Session, admission_id: int) -> float:
+    """Sum of non-voided ledger approvals for an admission."""
+    rows = db.query(AdmissionSchemeApproval).filter(
+        AdmissionSchemeApproval.admission_id == admission_id,
+        AdmissionSchemeApproval.status == "approved",
+    ).all()
+    return round(sum(float(r.amount or 0) for r in rows), 2)
+
+
+def _refresh_admission_approval_totals(db: Session, admission: Admission) -> float:
+    """Keep denormalised scheme_approval_* fields in sync with the ledger."""
+    total = _active_scheme_approval_total(db, admission.id)
+    admission.scheme_approval_amount = total if total > 0 else None
+    if total > 0:
+        if (admission.scheme_approval_status or "none") in ("none", "pending"):
+            admission.scheme_approval_status = "approved"
+    return total
+
+
+def _ensure_legacy_scheme_approval_row(
+    db: Session,
+    admission: Admission,
+    *,
+    created_by_id: int,
+    hospital_id: int,
+) -> None:
+    """If the admission only has the old single-field approval (no ledger rows),
+    seed one ledger row so multi-approval + deposit sync stay consistent."""
+    has_ledger = db.query(AdmissionSchemeApproval.id).filter(
+        AdmissionSchemeApproval.admission_id == admission.id,
+    ).first()
+    if has_ledger:
+        return
+    legacy_amt = float(admission.scheme_approval_amount or 0)
+    status = (admission.scheme_approval_status or "none").lower()
+    if status != "approved" or legacy_amt <= 0:
+        return
+    db.add(AdmissionSchemeApproval(
+        admission_id=admission.id,
+        amount=legacy_amt,
+        approval_reference=admission.scheme_approval_ref,
+        notes="Migrated from legacy single approval field",
+        status="approved",
+        created_by_id=created_by_id,
+        hospital_id=hospital_id,
+    ))
+    db.flush()
+
+
+def _sync_scheme_approval_deposit(
+    db: Session,
+    admission: Admission,
+    *,
+    received_by_id: int,
+    hospital_id: int,
+) -> Optional[AdmissionDeposit]:
+    """Mirror cumulative approved scheme amount into the deposit pool so
+    balance/bill math counts it.
+
+    Prefer the multi-approval ledger total. Fall back to the denormalised
+    admission field when no ledger rows exist yet. Status/amount changes
+    top up or refund the delta (idempotent via SCHEME-APPR-{id} tag).
+    """
+    if not admission or not admission.id:
+        return None
+
+    _ensure_legacy_scheme_approval_row(
+        db, admission, created_by_id=received_by_id, hospital_id=hospital_id,
+    )
+
+    ledger_count = db.query(AdmissionSchemeApproval.id).filter(
+        AdmissionSchemeApproval.admission_id == admission.id,
+    ).count()
+    if ledger_count > 0:
+        target = _refresh_admission_approval_totals(db, admission)
+    else:
+        status = (admission.scheme_approval_status or "none").lower()
+        amount = float(admission.scheme_approval_amount or 0)
+        target = amount if status == "approved" and amount > 0 else 0.0
+
+    ref = _scheme_approval_deposit_ref(admission.id)
+    existing = db.query(AdmissionDeposit).filter(
+        AdmissionDeposit.admission_id == admission.id,
+        AdmissionDeposit.reference_number == ref,
+    ).all()
+    current_net = sum(
+        float(d.amount) if d.deposit_type != "refund" else -abs(float(d.amount))
+        for d in existing
+    )
+    delta = round(target - current_net, 2)
+    if abs(delta) < 0.01:
+        return None
+
+    scheme_name = None
+    if getattr(admission, "payer_scheme_id", None):
+        sch = db.query(PayerScheme).filter(PayerScheme.id == admission.payer_scheme_id).first()
+        scheme_name = sch.name if sch else None
+    label = scheme_name or (admission.payer_type or "scheme").replace("_", " ").title()
+
+    if delta > 0:
+        notes = f"Scheme approval credit — {label}"
+        dep_type = "topup"
+        amt = delta
+    else:
+        notes = f"Scheme approval adjustment — {label}"
+        dep_type = "refund"
+        amt = abs(delta)
+    if admission.scheme_approval_ref:
+        notes += f" (ref {admission.scheme_approval_ref})"
+
+    def _kwargs():
+        return dict(
+            admission_id=admission.id,
+            deposit_number=_generate_deposit_number(db),
+            amount=amt,
+            deposit_type=dep_type,
+            payment_method="scheme_approval",
+            reference_number=ref,
+            received_by_id=received_by_id,
+            hospital_id=hospital_id,
+            notes=notes,
+        )
+
+    return _insert_deposit_safely(db, _kwargs)
+
+
 def _generate_txn_id(db: Session) -> str:
     """Auto-generate a transaction ID when the user doesn't supply one."""
     today = datetime.now().strftime("%Y%m%d")
@@ -8288,6 +8448,20 @@ def _admission_balance_summary(db: Session, admission: Admission) -> dict:
         for p in (b.payments or []):
             total_paid += float(p.amount_paid or 0)
 
+    # Received payer splits (TPA/insurance/cash) count as paid even when no
+    # Payment row exists yet (legacy Mark Received). Use max with total_paid
+    # so Mark Received that also posts a Payment is not double-counted.
+    bill_ids = [b.id for b in bills]
+    split_received = 0.0
+    if bill_ids:
+        split_received = sum(
+            float(s.amount or 0)
+            for s in db.query(BillSplit).filter(
+                BillSplit.bill_id.in_(bill_ids),
+                BillSplit.payment_status == "received",
+            ).all()
+        )
+
     # Fold in any charges that aren't on a saved Bill row yet so the balance
     # reflects what the patient actually owes for services rendered. Without
     # this, an admission that never had its bill finalized shows total_billed=0
@@ -8299,6 +8473,9 @@ def _admission_balance_summary(db: Session, admission: Admission) -> dict:
         unbilled_subtotal = 0.0
     total_billed = billed_from_bills + unbilled_subtotal
 
+    # Credit applied = deposits + max(cash payments, received splits).
+    applied = net_deposits + max(total_paid, split_received)
+
     return {
         "admission_id": admission.id,
         "admission_number": admission.admission_number,
@@ -8309,7 +8486,9 @@ def _admission_balance_summary(db: Session, admission: Admission) -> dict:
         "billed_on_bills": round(billed_from_bills, 2),
         "unbilled_charges": round(unbilled_subtotal, 2),
         "total_paid": round(total_paid, 2),
-        "balance": round(net_deposits - total_billed, 2),  # +ve = credit, -ve = patient owes
+        "splits_received": round(split_received, 2),
+        "amount_applied": round(min(total_billed, applied) if total_billed > 0 else applied, 2),
+        "balance": round(applied - total_billed, 2),  # +ve = credit, -ve = patient owes
         "deposit_count": len(deposits),
         "bill_count": len(bills),
     }
@@ -8329,7 +8508,12 @@ def allocate_deposits_to_bill(db: Session, bill: Bill) -> float:
     """Return the portion of the admission's net deposit pool that applies to
     *this* bill. Deposits are allocated oldest-bill-first, capped at each
     bill's outstanding (total - Payment rows on that bill). Bills are walked
-    in id order. Returns 0 for non-admission or cancelled bills."""
+    in id order. Returns 0 for non-admission or cancelled bills.
+
+    Received BillSplits are intentionally ignored here — callers combine
+    deposit_alloc with max(payments, received_splits) so partial TPA receipts
+    still leave room for deposits to cover the patient share.
+    """
     if (bill.bill_type or "") != "admission" or not bill.reference_id:
         return 0.0
     if (bill.status or "") == "cancelled":
@@ -8354,10 +8538,35 @@ def allocate_deposits_to_bill(db: Session, bill: Bill) -> float:
     return 0.0
 
 
+def _bill_received_splits_total(db: Session, bill_id: int) -> float:
+    rows = db.query(BillSplit).filter(
+        BillSplit.bill_id == bill_id,
+        BillSplit.payment_status == "received",
+    ).all()
+    return sum(float(s.amount or 0) for s in rows)
+
+
+def effective_bill_paid(db: Session, bill: Bill) -> float:
+    """Amount applied to a bill.
+
+    ``deposit_alloc + max(payments, received_splits)``, capped at bill total.
+    Using max() avoids double-counting when Mark Received also posts a Payment;
+    adding deposit_alloc lets patient deposits cover the cash share alongside
+    partial TPA split receipts.
+    """
+    if (bill.status or "") == "cancelled":
+        return 0.0
+    payments = sum(float(p.amount_paid or 0) for p in (bill.payments or []))
+    split_recv = _bill_received_splits_total(db, bill.id)
+    deposit_alloc = allocate_deposits_to_bill(db, bill)
+    total = float(bill.total_amount or 0)
+    return round(min(total, deposit_alloc + max(payments, split_recv)), 2)
+
+
 def reconcile_admission_bill_statuses(db: Session, admission_id: int) -> None:
     """Recompute Bill.status for every non-cancelled admission bill, folding
-    in both Payment rows and allocated AdmissionDeposit pool. Cascades
-    PatientLabOrder.payment_status. Caller is responsible for committing."""
+    in Payment rows, received BillSplits, and allocated AdmissionDeposit pool.
+    Cascades PatientLabOrder.payment_status. Caller is responsible for committing."""
     bills = db.query(Bill).filter(
         Bill.bill_type == "admission",
         Bill.reference_id == admission_id,
@@ -8368,11 +8577,12 @@ def reconcile_admission_bill_statuses(db: Session, admission_id: int) -> None:
         remaining = 0.0
     for b in bills:
         payments_on_b = sum(float(p.amount_paid or 0) for p in (b.payments or []))
+        split_recv = _bill_received_splits_total(db, b.id)
         total = float(b.total_amount or 0)
         outstanding = max(0.0, total - payments_on_b)
         alloc = min(outstanding, remaining)
         remaining -= alloc
-        effective_paid = payments_on_b + alloc
+        effective_paid = alloc + max(payments_on_b, split_recv)
         if effective_paid >= total - 0.01:
             b.status = "paid"
         elif effective_paid > 0.01:
@@ -8819,8 +9029,36 @@ async def convert_admission_payer(
         admission.scheme_approval_status = data.scheme_approval_status
     if data.scheme_approval_ref is not None:
         admission.scheme_approval_ref = data.scheme_approval_ref
-    if data.scheme_approval_amount is not None:
+
+    # Optional first/additional approval from the convert dialog → ledger row
+    # (amounts accumulate; use POST …/scheme-approvals for later expansions).
+    if (
+        data.scheme_approval_amount is not None
+        and float(data.scheme_approval_amount) > 0
+        and (data.scheme_approval_status or admission.scheme_approval_status) == "approved"
+    ):
+        db.add(AdmissionSchemeApproval(
+            admission_id=admission.id,
+            amount=float(data.scheme_approval_amount),
+            approval_reference=data.scheme_approval_ref or admission.scheme_approval_ref,
+            notes=f"Recorded with payer change: {data.reason}",
+            status="approved",
+            created_by_id=current_user.id,
+            hospital_id=hospital.id,
+        ))
+        db.flush()
+        _refresh_admission_approval_totals(db, admission)
+    elif data.scheme_approval_amount is not None:
+        # Pending/rejected etc. — keep denormalised field only
         admission.scheme_approval_amount = data.scheme_approval_amount
+
+    # Approved amount becomes a deposit credit so it reduces patient balance.
+    _sync_scheme_approval_deposit(
+        db, admission,
+        received_by_id=current_user.id,
+        hospital_id=hospital.id,
+    )
+    reconcile_admission_bill_statuses(db, admission.id)
 
     db.commit()
     db.refresh(admission)
@@ -8868,6 +9106,226 @@ async def list_payer_changes(
             "changed_at": r.changed_at.isoformat() if r.changed_at else None,
         })
     return out
+
+
+# ============================================================
+# Scheme approval ledger (multiple approvals + optional docs)
+# ============================================================
+
+class SchemeApprovalVoidRequest(BaseModel):
+    reason: str = Field(..., min_length=1, max_length=500)
+
+
+def _scheme_approval_to_response(row: AdmissionSchemeApproval, db: Session) -> dict:
+    creator = db.query(User).filter(User.id == row.created_by_id).first()
+    voider = db.query(User).filter(User.id == row.voided_by_id).first() if row.voided_by_id else None
+    return {
+        "id": row.id,
+        "admission_id": row.admission_id,
+        "amount": float(row.amount or 0),
+        "approval_reference": row.approval_reference,
+        "notes": row.notes,
+        "document_path": row.document_path,
+        "document_name": row.document_name,
+        "has_document": bool(row.document_path),
+        "status": row.status,
+        "created_by_id": row.created_by_id,
+        "created_by_name": (
+            f"{creator.first_name} {creator.last_name}" if creator else None
+        ),
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "voided_at": row.voided_at.isoformat() if row.voided_at else None,
+        "voided_by_name": (
+            f"{voider.first_name} {voider.last_name}" if voider else None
+        ),
+        "void_reason": row.void_reason,
+    }
+
+
+@router.get("/admissions/{admission_id}/scheme-approvals")
+async def list_scheme_approvals(
+    admission_id: int,
+    include_voided: bool = Query(False),
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_bill")),
+    db: Session = Depends(get_db),
+):
+    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    if not admission:
+        raise HTTPException(status_code=404, detail="Admission not found")
+
+    hospital = _get_hospital(db, current_user)
+    _ensure_legacy_scheme_approval_row(
+        db, admission, created_by_id=current_user.id, hospital_id=hospital.id,
+    )
+    if db.new or db.dirty:
+        db.commit()
+
+    q = db.query(AdmissionSchemeApproval).filter(
+        AdmissionSchemeApproval.admission_id == admission_id,
+    )
+    if not include_voided:
+        q = q.filter(AdmissionSchemeApproval.status == "approved")
+    rows = q.order_by(AdmissionSchemeApproval.created_at.asc()).all()
+    total = sum(float(r.amount or 0) for r in rows if r.status == "approved")
+    return {
+        "admission_id": admission_id,
+        "total_approved": round(total, 2),
+        "items": [_scheme_approval_to_response(r, db) for r in rows],
+    }
+
+
+@router.post("/admissions/{admission_id}/scheme-approvals", status_code=status.HTTP_201_CREATED)
+async def add_scheme_approval(
+    admission_id: int,
+    amount: float = Form(..., gt=0),
+    approval_reference: Optional[str] = Form(None),
+    notes: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None),
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "convert_payer")),
+    db: Session = Depends(get_db),
+):
+    """Add another approved amount (e.g. expansion). Optional PDF/image upload."""
+    admission = db.query(Admission).filter(Admission.id == admission_id).first()
+    if not admission:
+        raise HTTPException(status_code=404, detail="Admission not found")
+    if admission.status not in ("admitted", "draft"):
+        raise HTTPException(status_code=400, detail="Cannot add approvals on a closed admission")
+
+    hospital = _get_hospital(db, current_user)
+    _ensure_legacy_scheme_approval_row(
+        db, admission, created_by_id=current_user.id, hospital_id=hospital.id,
+    )
+
+    doc_path = None
+    doc_name = None
+    if file is not None and file.filename:
+        if file.content_type and file.content_type not in ALLOWED_MIME_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail="File type not allowed. Supported: PDF, images, Word documents",
+            )
+        content = await file.read()
+        if len(content) > MAX_FILE_SIZE:
+            raise HTTPException(status_code=400, detail="File too large. Max 10MB")
+        from app.utils.paths import get_uploads_dir
+        ext = os.path.splitext(file.filename)[1] or ".bin"
+        stored_name = f"scheme_appr_{admission_id}_{uuid.uuid4().hex[:10]}{ext}"
+        upload_dir = os.path.join(get_uploads_dir(), "scheme_approvals")
+        os.makedirs(upload_dir, exist_ok=True)
+        with open(os.path.join(upload_dir, stored_name), "wb") as fh:
+            fh.write(content)
+        doc_path = f"scheme_approvals/{stored_name}"
+        doc_name = file.filename
+        # Also register under admission documents for the Documents tab
+        db.add(AdmissionDocument(
+            admission_id=admission_id,
+            document_type="insurance_doc",
+            document_name=f"Scheme approval — {doc_name}",
+            file_name=stored_name,
+            file_path=doc_path,
+            file_size=len(content),
+            mime_type=file.content_type,
+            uploaded_by_id=current_user.id,
+            notes=notes or approval_reference or "Scheme approval document",
+        ))
+
+    row = AdmissionSchemeApproval(
+        admission_id=admission.id,
+        amount=float(amount),
+        approval_reference=(approval_reference or "").strip() or None,
+        notes=(notes or "").strip() or None,
+        document_path=doc_path,
+        document_name=doc_name,
+        status="approved",
+        created_by_id=current_user.id,
+        hospital_id=hospital.id,
+    )
+    db.add(row)
+    db.flush()
+
+    _refresh_admission_approval_totals(db, admission)
+    if approval_reference:
+        admission.scheme_approval_ref = approval_reference.strip()
+    _sync_scheme_approval_deposit(
+        db, admission,
+        received_by_id=current_user.id,
+        hospital_id=hospital.id,
+    )
+    reconcile_admission_bill_statuses(db, admission.id)
+    db.commit()
+    db.refresh(row)
+
+    log_action(
+        db, current_user, "add_scheme_approval", "inpatient",
+        "AdmissionSchemeApproval", row.id,
+        f"Scheme approval +₹{float(amount):,.2f} on {admission.admission_number}",
+        details={"amount": float(amount), "has_document": bool(doc_path)},
+    )
+    return _scheme_approval_to_response(row, db)
+
+
+@router.get("/scheme-approvals/{approval_id}/document")
+async def download_scheme_approval_document(
+    approval_id: int,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_documents")),
+    db: Session = Depends(get_db),
+):
+    row = db.query(AdmissionSchemeApproval).filter(
+        AdmissionSchemeApproval.id == approval_id
+    ).first()
+    if not row or not row.document_path:
+        raise HTTPException(status_code=404, detail="Document not found")
+    from app.utils.paths import get_uploads_dir
+    full_path = os.path.join(get_uploads_dir(), row.document_path)
+    if not os.path.isfile(full_path):
+        raise HTTPException(status_code=404, detail="File missing on disk")
+    return FileResponse(
+        full_path,
+        filename=row.document_name or os.path.basename(row.document_path),
+    )
+
+
+@router.post("/scheme-approvals/{approval_id}/void")
+async def void_scheme_approval(
+    approval_id: int,
+    data: SchemeApprovalVoidRequest,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "convert_payer")),
+    db: Session = Depends(get_db),
+):
+    row = db.query(AdmissionSchemeApproval).filter(
+        AdmissionSchemeApproval.id == approval_id
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Approval not found")
+    if row.status == "voided":
+        raise HTTPException(status_code=400, detail="Already voided")
+
+    admission = db.query(Admission).filter(Admission.id == row.admission_id).first()
+    if not admission:
+        raise HTTPException(status_code=404, detail="Admission not found")
+
+    hospital = _get_hospital(db, current_user)
+    row.status = "voided"
+    row.voided_at = _now()
+    row.voided_by_id = current_user.id
+    row.void_reason = data.reason.strip()
+
+    _refresh_admission_approval_totals(db, admission)
+    _sync_scheme_approval_deposit(
+        db, admission,
+        received_by_id=current_user.id,
+        hospital_id=hospital.id,
+    )
+    reconcile_admission_bill_statuses(db, admission.id)
+    db.commit()
+    db.refresh(row)
+
+    log_action(
+        db, current_user, "void_scheme_approval", "inpatient",
+        "AdmissionSchemeApproval", row.id,
+        f"Voided scheme approval ₹{float(row.amount):,.2f}: {data.reason}",
+    )
+    return _scheme_approval_to_response(row, db)
 
 
 # ============================================================
@@ -9188,6 +9646,7 @@ class BillSplitResponse(BaseModel):
     payment_status: str
     payment_date: Optional[datetime]
     payment_reference: Optional[str]
+    payment_id: Optional[int] = None
     notes: Optional[str]
     created_at: Optional[datetime]
 
@@ -9220,6 +9679,17 @@ async def set_bill_split(
     # Hospital scoping — prevent cross-tenant split mutation
     if getattr(bill, "hospital_id", None) and bill.hospital_id != _get_hospital(db, current_user).id:
         raise HTTPException(status_code=403, detail="Bill belongs to a different hospital")
+
+    existing = db.query(BillSplit).filter(BillSplit.bill_id == bill_id).all()
+    received = [s for s in existing if (s.payment_status or "") == "received"]
+    if received:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Cannot replace splits — one or more payer splits have already been marked as received. "
+                "Reverse those splits first."
+            ),
+        )
 
     total = round(sum(s.amount for s in data.splits), 2)
     bill_total = round(float(bill.total_amount or 0), 2)
@@ -9266,6 +9736,16 @@ async def get_bill_split(
     return [_split_to_response(s, db) for s in rows]
 
 
+def _next_payment_number(db: Session) -> str:
+    today_str = datetime.now().strftime("%Y%m%d")
+    pay_prefix = f"PAY-{today_str}-"
+    last_pay = db.query(Payment).filter(
+        Payment.payment_number.like(f"{pay_prefix}%")
+    ).order_by(Payment.id.desc()).first()
+    seq = (int(last_pay.payment_number.split("-")[-1]) + 1) if last_pay else 1
+    return f"{pay_prefix}{seq:04d}"
+
+
 @router.patch("/bill-splits/{split_id}/payment")
 async def record_split_payment(
     split_id: int,
@@ -9274,15 +9754,57 @@ async def record_split_payment(
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_bill_splits")),
     db: Session = Depends(get_db),
 ):
-    """Mark a split (cash/insurance/tpa) as received."""
+    """Mark a split (cash/insurance/tpa) as received.
+
+    Posts a Payment for any amount not already covered by deposits/other
+    payments so the billing dashboard and admission balance stay in sync.
+    """
     s = db.query(BillSplit).filter(BillSplit.id == split_id).first()
     if not s:
         raise HTTPException(status_code=404, detail="Split not found")
+    if (s.payment_status or "") == "received":
+        raise HTTPException(status_code=400, detail="Split is already marked as received")
     parent = db.query(Bill).filter(Bill.id == s.bill_id).first()
     if parent and parent.status == "cancelled":
         raise HTTPException(status_code=409, detail="Cannot record payment on a cancelled bill")
     if parent and getattr(parent, "hospital_id", None) and parent.hospital_id != _get_hospital(db, current_user).id:
         raise HTTPException(status_code=403, detail="Bill belongs to a different hospital")
+
+    # Expire relationship cache so allocate sees current Payment rows.
+    if parent:
+        db.refresh(parent, attribute_names=["payments"])
+
+    already_applied = effective_bill_paid(db, parent) if parent else 0.0
+    bill_total = float(parent.total_amount or 0) if parent else 0.0
+    remaining = max(0.0, bill_total - already_applied)
+
+    # Cash patient share is already tracked via AdmissionDeposit — posting a
+    # Payment for cash splits would double-count against deposits. TPA/insurance
+    # receipts are new money and get a Payment row for the billing ledger.
+    payer = (s.payer_type or "").lower()
+    if payer in ("tpa", "insurance") and remaining > 0.01:
+        payment_amount = round(min(float(s.amount or 0), remaining), 2)
+    else:
+        payment_amount = 0.0
+
+    linked_payment = None
+    if parent and payment_amount > 0.01:
+        linked_payment = Payment(
+            payment_number=_next_payment_number(db),
+            bill_id=parent.id,
+            amount_paid=payment_amount,
+            payment_method_name="online",
+            transaction_reference=payment_reference,
+            notes=(
+                f"Bill split #{s.id} ({s.payer_type}: {s.payer_name}) marked received"
+                + (f" — {notes}" if notes else "")
+            ),
+            received_by_id=current_user.id,
+        )
+        db.add(linked_payment)
+        db.flush()
+        s.payment_id = linked_payment.id
+
     s.payment_status = "received"
     s.payment_date = _now()
     if payment_reference:
@@ -9291,19 +9813,105 @@ async def record_split_payment(
         s.notes = (s.notes or "") + ("\n" if s.notes else "") + notes
     db.flush()
 
-    # If all splits on the parent bill are now received, mark the bill paid
-    # and cascade payment_status onto consumed lab orders.
-    bill = db.query(Bill).filter(Bill.id == s.bill_id).first()
-    if bill and bill.status != "cancelled":
-        all_splits = db.query(BillSplit).filter(BillSplit.bill_id == bill.id).all()
-        if all_splits and all(sp.payment_status == "received" for sp in all_splits):
-            bill.status = "paid"
-            if (bill.bill_type or "") == "admission":
-                db.query(PatientLabOrder).filter(
-                    PatientLabOrder.inpatient_bill_id == bill.id
-                ).update({PatientLabOrder.payment_status: "paid"}, synchronize_session=False)
+    # Ensure Payment relationship picks up the row we just inserted.
+    if parent:
+        db.refresh(parent, attribute_names=["payments"])
+
+    # Recompute status from deposits + payments + received splits.
+    if parent and parent.status != "cancelled":
+        if (parent.bill_type or "") == "admission" and parent.reference_id:
+            reconcile_admission_bill_statuses(db, parent.reference_id)
+        else:
+            # Non-admission: mark paid when all splits received or payments cover.
+            all_splits = db.query(BillSplit).filter(BillSplit.bill_id == parent.id).all()
+            if all_splits and all(sp.payment_status == "received" for sp in all_splits):
+                parent.status = "paid"
+            else:
+                paid = sum(float(p.amount_paid or 0) for p in (parent.payments or []))
+                if paid >= bill_total - 0.01:
+                    parent.status = "paid"
+                elif paid > 0.01:
+                    parent.status = "partial"
 
     db.commit()
+    db.refresh(s)
+    log_action(
+        db, current_user, "record_split_payment", "billing", "BillSplit", s.id,
+        f"Marked split #{s.id} received (₹{float(s.amount or 0):.2f}"
+        + (f", payment ₹{payment_amount:.2f}" if payment_amount > 0.01 else ", covered by deposits")
+        + ")",
+    )
+    return _split_to_response(s, db)
+
+
+@router.patch("/bill-splits/{split_id}/reverse")
+async def reverse_split_payment(
+    split_id: int,
+    reason: Optional[str] = None,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_bill_splits")),
+    db: Session = Depends(get_db),
+):
+    """Reverse a received split back to pending (and reverse its linked Payment)."""
+    s = db.query(BillSplit).filter(BillSplit.id == split_id).first()
+    if not s:
+        raise HTTPException(status_code=404, detail="Split not found")
+    if (s.payment_status or "") != "received":
+        raise HTTPException(status_code=400, detail="Split is not marked as received")
+    parent = db.query(Bill).filter(Bill.id == s.bill_id).first()
+    if parent and parent.status == "cancelled":
+        raise HTTPException(status_code=409, detail="Cannot reverse a split on a cancelled bill")
+    if parent and getattr(parent, "hospital_id", None) and parent.hospital_id != _get_hospital(db, current_user).id:
+        raise HTTPException(status_code=403, detail="Bill belongs to a different hospital")
+
+    if s.payment_id:
+        original = db.query(Payment).filter(Payment.id == s.payment_id).first()
+        if original and not original.reversed_at and float(original.amount_paid or 0) > 0:
+            prior_refunded = sum(
+                abs(float(p.amount_paid or 0))
+                for p in db.query(Payment).filter(Payment.parent_payment_id == original.id).all()
+            )
+            remaining = round(float(original.amount_paid or 0) - prior_refunded, 2)
+            if remaining > 0.01:
+                refund = Payment(
+                    payment_number=_next_payment_number(db),
+                    bill_id=original.bill_id,
+                    amount_paid=-remaining,
+                    payment_method_name=original.payment_method_name or "cash",
+                    notes=f"Reversal of split #{s.id}" + (f": {reason}" if reason else ""),
+                    received_by_id=current_user.id,
+                    parent_payment_id=original.id,
+                )
+                db.add(refund)
+                original.reversed_at = _now()
+                original.reversed_by_id = current_user.id
+                original.reversal_reason = reason or f"Bill split #{s.id} reversed"
+        s.payment_id = None
+
+    s.payment_status = "pending"
+    s.payment_date = None
+    if reason:
+        s.notes = (s.notes or "") + ("\n" if s.notes else "") + f"[REVERSED] {reason}"
+    db.flush()
+
+    if parent and parent.status != "cancelled":
+        if (parent.bill_type or "") == "admission" and parent.reference_id:
+            reconcile_admission_bill_statuses(db, parent.reference_id)
+        else:
+            paid = sum(float(p.amount_paid or 0) for p in (parent.payments or []))
+            total = float(parent.total_amount or 0)
+            if paid >= total - 0.01 and total > 0:
+                parent.status = "paid"
+            elif paid > 0.01:
+                parent.status = "partial"
+            else:
+                parent.status = "pending"
+
+    db.commit()
+    db.refresh(s)
+    log_action(
+        db, current_user, "reverse_split_payment", "billing", "BillSplit", s.id,
+        f"Reversed split #{s.id}" + (f": {reason}" if reason else ""),
+    )
     return _split_to_response(s, db)
 
 

@@ -31,6 +31,7 @@ from app.models.inpatient import (
     BedTransferHistory, BedTurnoverLog, BedReservation, NurseAssignment, NurseShiftRoster,
     ConsentTemplate, Consent,
     FluidBalance, CriticalLabAlert,
+    AdmissionSchemeApproval,
 )
 from app.models.patient import PatientAllergy
 from app.models.canteen import (  # noqa: F401

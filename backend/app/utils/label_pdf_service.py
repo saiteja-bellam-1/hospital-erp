@@ -475,6 +475,8 @@ def _draw_patient_file_label(
 
     mrn = (label.get("mrn") or "").strip()
     mrn_ean = (label.get("mrn_ean13") or "").strip()
+    # Prefer human MRN so scanners wedge the same value staff search by.
+    barcode_value = mrn or mrn_ean
     patient_name = (label.get("patient_name") or "").strip()
     pat_type = (label.get("pat_type") or "Self Paying").strip()
     age_gender = (label.get("age_gender") or "").strip()
@@ -510,17 +512,17 @@ def _draw_patient_file_label(
     bar_max_w = usable_w - mrn_text_w - (1.5 * mm if side_by_side else 0.0)
     bars_h = max(3.0 * mm, bar_h - (0.0 if side_by_side else 0.2 * mm))
 
-    if mrn_ean and bar_h >= 3.5 * mm:
+    if barcode_value and bar_h >= 3.5 * mm:
         # Bars sit in the upper part of the barcode band; digits (if any) below bars.
         bars_bottom = bar_bottom + (0.0 if side_by_side else digit_reserve)
         draw_linear_barcode(
             c,
-            mrn_ean,
+            barcode_value,
             x0 + pad,
             bars_bottom,
             bar_max_w,
             max(2.5 * mm, bar_top - bars_bottom - 0.2 * mm),
-            symbology=resolve_label_symbology(mrn_ean, force="code128"),
+            symbology="code128",
             human_readable=False,
             align="center" if not side_by_side else "left",
             area_width=bar_max_w,
@@ -855,11 +857,12 @@ def _html_pharmacy_sticker(
 
 
 def _html_patient_sticker(label: dict[str, Any], layout: LabelLayoutConfig) -> str:
-    mrn_ean = label.get("mrn_ean13") or ""
+    mrn = (label.get("mrn") or "").strip()
+    barcode_value = mrn or (label.get("mrn_ean13") or "").strip()
     bar = ""
-    if mrn_ean:
+    if barcode_value:
         bar = _html_barcode_block(
-            mrn_ean,
+            barcode_value,
             max_width_mm=max(10.0, layout.width_mm - 4),
             max_height_mm=max(6.0, min(10.0, layout.height_mm * 0.26)),
             force_code128=True,

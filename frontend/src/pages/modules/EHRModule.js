@@ -3,19 +3,33 @@ import { Routes, Route, useNavigate, useParams } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
+import { Label } from '../../components/ui/label';
 import { Badge } from '../../components/ui/badge';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/tabs';
 import {
   Search, FileText, Activity, Pill, TestTube, User, Calendar, ArrowLeft,
   Phone, MapPin, Heart, Clock, ChevronDown, ChevronUp, Printer,
-  Stethoscope, AlertCircle, CheckCircle,
+  Stethoscope, AlertCircle, CheckCircle, RefreshCw, Filter, Tag,
   ChevronLeft, ChevronRight, AlertTriangle, Bed, Receipt, Download,
   IndianRupee, CalendarDays, CalendarPlus, BedDouble, ShoppingBag, FileSpreadsheet
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { printPdfFromUrl } from '../../utils/printPdf';
 import LabTestBookingDialog from '../../components/LabTestBookingDialog';
+import PatientFileLabelDialog from '../../components/PatientFileLabelDialog';
+import ReferralSelectWithCreate from '../../components/ReferralSelectWithCreate';
 import EhrExportDialog from '../../components/EhrExportDialog';
+import { useToast } from '../../hooks/use-toast';
+import { applyDobToForm, formatPatientAge } from '../../utils/patientAge';
+
+const EMPTY_EDIT_FORM = {
+  first_name: '', last_name: '', date_of_birth: '', age: '', age_months: '', gender: '',
+  blood_group: '', marital_status: '', abha_id: '', gstin: '', email: '', referred_by: '',
+  emergency_contact_name: '', emergency_contact_phone: '', emergency_contact_relation: '',
+  address_line1: '', address_line2: '', village: '', mandal: '', district: '',
+};
 
 const EHRModule = () => (
   <Routes>
@@ -27,6 +41,7 @@ const EHRModule = () => (
 const EHRPage = () => {
   const { patientId: routePatientId } = useParams();
   const navigate = useNavigate();
+  const { toast } = useToast();
   const [searchQuery, setSearchQuery] = useState('');
   const [allPatients, setAllPatients] = useState([]);
   const [displayedPatients, setDisplayedPatients] = useState([]);
@@ -39,7 +54,17 @@ const EHRPage = () => {
   const [currentPage, setCurrentPage] = useState(1);
   const [enabledModules, setEnabledModules] = useState({});
   const [showLabBooking, setShowLabBooking] = useState(false);
+  const [labBookingPatient, setLabBookingPatient] = useState(null);
   const [showExcelExport, setShowExcelExport] = useState(false);
+  const [filterGender, setFilterGender] = useState('all');
+  const [filterBloodGroup, setFilterBloodGroup] = useState('all');
+  const [showFilters, setShowFilters] = useState(false);
+  const [fileLabelPatientId, setFileLabelPatientId] = useState(null);
+  const [fileLabelContext, setFileLabelContext] = useState({ source: 'reprint' });
+  const [showEditPatientDialog, setShowEditPatientDialog] = useState(false);
+  const [editPatientForm, setEditPatientForm] = useState(EMPTY_EDIT_FORM);
+  const [editLoading, setEditLoading] = useState(false);
+  const [referralList, setReferralList] = useState([]);
   const patientsPerPage = 10;
 
   const token = localStorage.getItem('token');
@@ -62,20 +87,37 @@ const EHRPage = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Filter/sort patients when search query changes
   useEffect(() => {
+    fetch('/api/referrals', { headers })
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data) => setReferralList(data || []))
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Filter/sort patients when search or filters change
+  useEffect(() => {
+    let list = allPatients;
+    if (filterGender && filterGender !== 'all') {
+      list = list.filter((p) => (p.gender || '') === filterGender);
+    }
+    if (filterBloodGroup && filterBloodGroup !== 'all') {
+      list = list.filter((p) => (p.blood_group || '') === filterBloodGroup);
+    }
     if (!searchQuery.trim()) {
-      setDisplayedPatients(allPatients);
+      setDisplayedPatients(list);
+      setCurrentPage(1);
       return;
     }
     const q = searchQuery.toLowerCase();
     const matched = [];
     const unmatched = [];
-    for (const p of allPatients) {
+    for (const p of list) {
       const name = (p.full_name || `${p.first_name} ${p.last_name}`).toLowerCase();
       const phone = (p.primary_phone || '').toLowerCase();
+      const mrn = (p.mrn || '').toLowerCase();
       const pid = (p.patient_id || '').toLowerCase();
-      if (name.includes(q) || phone.includes(q) || pid.includes(q)) {
+      if (name.includes(q) || phone.includes(q) || mrn.includes(q) || pid.includes(q)) {
         matched.push(p);
       } else {
         unmatched.push(p);
@@ -83,7 +125,7 @@ const EHRPage = () => {
     }
     setDisplayedPatients([...matched, ...unmatched]);
     setCurrentPage(1);
-  }, [searchQuery, allPatients]);
+  }, [searchQuery, allPatients, filterGender, filterBloodGroup]);
 
   const loadPatientHistory = useCallback(async (patientUuid) => {
     if (!patientUuid) return;
@@ -149,14 +191,95 @@ const EHRPage = () => {
     navigate('/dashboard/ehr');
   };
 
-  const bookAppointment = () => {
-    const uuid = patientHistory?.patient?.patient_id;
+  const clearFilters = () => {
+    setSearchQuery('');
+    setFilterGender('all');
+    setFilterBloodGroup('all');
+    setCurrentPage(1);
+  };
+
+  const openEditPatient = async (patient) => {
+    if (!patient?.patient_id) return;
+    setEditLoading(true);
+    try {
+      const res = await fetch(`/api/patients/${patient.patient_id}`, { headers });
+      if (!res.ok) throw new Error('Failed to load patient');
+      const data = await res.json();
+      setSelectedPatient(data);
+      setEditPatientForm({
+        first_name: data.first_name || '',
+        last_name: data.last_name || '',
+        date_of_birth: data.date_of_birth || '',
+        age: data.age != null ? String(data.age) : '',
+        age_months: data.age_months != null ? String(data.age_months) : '',
+        gender: data.gender || '',
+        blood_group: data.blood_group || '',
+        marital_status: data.marital_status || '',
+        abha_id: data.abha_id || '',
+        gstin: data.gstin || '',
+        email: data.email || '',
+        referred_by: data.referred_by || '',
+        emergency_contact_name: data.emergency_contact_name || '',
+        emergency_contact_phone: data.emergency_contact_phone || '',
+        emergency_contact_relation: data.emergency_contact_relation || '',
+        address_line1: data.address_line1 || '',
+        address_line2: data.address_line2 || '',
+        village: data.village || '',
+        mandal: data.mandal || '',
+        district: data.district || '',
+      });
+      setShowEditPatientDialog(true);
+    } catch (err) {
+      console.error(err);
+      toast({ title: 'Error', description: 'Failed to load patient for editing', variant: 'destructive' });
+    } finally {
+      setEditLoading(false);
+    }
+  };
+
+  const handleUpdatePatient = async () => {
+    if (!selectedPatient?.patient_id) return;
+    setEditLoading(true);
+    try {
+      const updateData = {};
+      Object.entries(editPatientForm).forEach(([key, value]) => {
+        if (value !== '' && value !== null && value !== undefined) {
+          updateData[key] = ['age', 'age_months'].includes(key) ? parseInt(value, 10) : value;
+        }
+      });
+      const res = await fetch(`/api/patients/${selectedPatient.patient_id}`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify(updateData),
+      });
+      if (res.ok) {
+        toast({ title: 'Success', description: 'Patient updated successfully!' });
+        setShowEditPatientDialog(false);
+        fetchAllPatients();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        toast({
+          title: 'Update Failed',
+          description: typeof err.detail === 'string' ? err.detail : 'Failed to update patient',
+          variant: 'destructive',
+        });
+      }
+    } catch (error) {
+      console.error('Error updating patient:', error);
+      toast({ title: 'Error', description: 'Error updating patient', variant: 'destructive' });
+    } finally {
+      setEditLoading(false);
+    }
+  };
+
+  const bookAppointment = (patient) => {
+    const uuid = patient?.patient_id || patientHistory?.patient?.patient_id;
     if (!uuid) return;
     navigate(`/dashboard/reception/appointments?action=schedule&patientUuid=${encodeURIComponent(uuid)}`);
   };
 
-  const admitPatient = () => {
-    const uuid = patientHistory?.patient?.patient_id;
+  const admitPatient = (patient) => {
+    const uuid = patient?.patient_id || patientHistory?.patient?.patient_id;
     if (!uuid) return;
     navigate(`/dashboard/inpatient/admissions?action=admit&patientUuid=${encodeURIComponent(uuid)}`);
   };
@@ -559,17 +682,20 @@ const EHRPage = () => {
         {patientHistory && !loadingHistory && (
           <div className="flex items-center gap-2 flex-wrap">
             {enabledModules.outpatient && (
-              <Button size="sm" onClick={bookAppointment}>
+              <Button size="sm" onClick={() => bookAppointment()}>
                 <CalendarPlus className="h-4 w-4 mr-1" /> Book Appointment
               </Button>
             )}
             {enabledModules.inpatient && (
-              <Button size="sm" variant="outline" onClick={admitPatient}>
+              <Button size="sm" variant="outline" onClick={() => admitPatient()}>
                 <BedDouble className="h-4 w-4 mr-1" /> Admit
               </Button>
             )}
             {enabledModules.lab && (
-              <Button size="sm" variant="outline" onClick={() => setShowLabBooking(true)}>
+              <Button size="sm" variant="outline" onClick={() => {
+                setLabBookingPatient(patientHistory?.patient || null);
+                setShowLabBooking(true);
+              }}>
                 <TestTube className="h-4 w-4 mr-1" /> Book Lab
               </Button>
             )}
@@ -582,108 +708,251 @@ const EHRPage = () => {
 
       {/* Patient Search + Full List */}
       {!showPatientDetail && (
-        <Card>
-          <CardContent className="pt-4">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
-              <Input
-                placeholder="Search patient by name, phone, or patient ID..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-10"
-              />
+        <>
+          <div className="flex justify-between items-center flex-wrap gap-3">
+            <div>
+              <p className="text-gray-600">Search patients and open their clinical chart</p>
             </div>
+            <Button onClick={fetchAllPatients} variant="outline" className="flex items-center space-x-2">
+              <RefreshCw className="h-4 w-4" />
+              <span>Refresh</span>
+            </Button>
+          </div>
 
-            {loadingPatients ? (
-              <div className="text-center py-12 text-gray-500 text-sm">Loading patients...</div>
-            ) : (
-              <>
-                <div className="mt-3">
-                  {displayedPatients.length === 0 ? (
-                    <p className="text-center text-gray-400 py-12 text-sm">No patients found.</p>
-                  ) : (
-                    <>
-                      <div className="text-xs text-gray-500 mb-2">
-                        Showing {Math.min((currentPage - 1) * patientsPerPage + 1, displayedPatients.length)}–{Math.min(currentPage * patientsPerPage, displayedPatients.length)} of {displayedPatients.length} patients
-                      </div>
-                      <div className="border rounded-lg divide-y">
-                        {displayedPatients.slice((currentPage - 1) * patientsPerPage, currentPage * patientsPerPage).map(p => {
-                          const q = searchQuery.toLowerCase();
-                          const isMatch = q && (
-                            (p.full_name || `${p.first_name} ${p.last_name}`).toLowerCase().includes(q) ||
-                            (p.primary_phone || '').includes(q) ||
-                            (p.patient_id || '').toLowerCase().includes(q)
-                          );
-                          return (
-                            <div
-                              key={p.patient_id}
-                              className={`flex items-center justify-between p-4 hover:bg-blue-50 cursor-pointer ${isMatch ? 'bg-yellow-50' : ''}`}
-                              onClick={() => selectPatient(p)}
-                            >
-                              <div className="flex items-center gap-4">
-                                <div className="h-10 w-10 rounded-full bg-blue-100 flex items-center justify-center shrink-0">
-                                  <User className="h-5 w-5 text-blue-600" />
-                                </div>
-                                <div>
-                                  <p className="font-medium">{p.full_name || `${p.first_name} ${p.last_name}`}</p>
-                                  <p className="text-sm text-gray-500">
-                                    {p.gender}{p.age ? `, ${p.age} yrs` : ''} | {p.primary_phone}
-                                  </p>
-                                </div>
-                              </div>
-                              <div className="flex items-center gap-3">
-                                {p.blood_group && <Badge variant="secondary" className="text-xs">{p.blood_group}</Badge>}
-                                <Badge variant="outline" className="text-xs">{p.patient_id.slice(0, 8)}...</Badge>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-
-                      {/* Pagination */}
-                      {Math.ceil(displayedPatients.length / patientsPerPage) > 1 && (
-                        <div className="flex items-center justify-between mt-4">
-                          <Button
-                            variant="outline" size="sm"
-                            disabled={currentPage === 1}
-                            onClick={() => setCurrentPage(prev => prev - 1)}
-                          >
-                            <ChevronLeft className="h-4 w-4 mr-1" /> Previous
-                          </Button>
-                          <div className="flex items-center gap-1">
-                            {Array.from({ length: Math.ceil(displayedPatients.length / patientsPerPage) }, (_, i) => i + 1)
-                              .filter(page => page === 1 || page === Math.ceil(displayedPatients.length / patientsPerPage) || Math.abs(page - currentPage) <= 2)
-                              .map((page, idx, arr) => (
-                                <React.Fragment key={page}>
-                                  {idx > 0 && arr[idx - 1] !== page - 1 && <span className="px-1 text-gray-400">...</span>}
-                                  <Button
-                                    variant={currentPage === page ? 'default' : 'outline'}
-                                    size="sm"
-                                    className="h-8 w-8 p-0"
-                                    onClick={() => setCurrentPage(page)}
-                                  >
-                                    {page}
-                                  </Button>
-                                </React.Fragment>
-                              ))
-                            }
-                          </div>
-                          <Button
-                            variant="outline" size="sm"
-                            disabled={currentPage >= Math.ceil(displayedPatients.length / patientsPerPage)}
-                            onClick={() => setCurrentPage(prev => prev + 1)}
-                          >
-                            Next <ChevronRight className="h-4 w-4 ml-1" />
-                          </Button>
-                        </div>
-                      )}
-                    </>
+          <Card>
+            <CardContent className="p-6">
+              <div className="flex flex-col lg:flex-row gap-4">
+                <div className="flex-1">
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                    <Input
+                      placeholder="Search name, phone, MRN, or scan barcode…"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="pl-10"
+                    />
+                  </div>
+                </div>
+                <div className="flex gap-3">
+                  <Button
+                    variant="outline"
+                    onClick={() => setShowFilters(!showFilters)}
+                    className="flex items-center space-x-2"
+                  >
+                    <Filter className="h-4 w-4" />
+                    <span>Filters</span>
+                  </Button>
+                  {(searchQuery || (filterGender && filterGender !== 'all') || (filterBloodGroup && filterBloodGroup !== 'all')) && (
+                    <Button variant="outline" onClick={clearFilters}>
+                      Clear
+                    </Button>
                   )}
                 </div>
-              </>
-            )}
-          </CardContent>
-        </Card>
+              </div>
+
+              {showFilters && (
+                <div className="mt-4 p-4 bg-gray-50 rounded-lg">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <Label htmlFor="filterGender">Gender</Label>
+                      <Select value={filterGender} onValueChange={setFilterGender}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="All Genders" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">All Genders</SelectItem>
+                          <SelectItem value="Male">Male</SelectItem>
+                          <SelectItem value="Female">Female</SelectItem>
+                          <SelectItem value="Other">Other</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div>
+                      <Label htmlFor="filterBloodGroup">Blood Group</Label>
+                      <Select value={filterBloodGroup} onValueChange={setFilterBloodGroup}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="All Blood Groups" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">All Blood Groups</SelectItem>
+                          <SelectItem value="A+">A+</SelectItem>
+                          <SelectItem value="A-">A-</SelectItem>
+                          <SelectItem value="B+">B+</SelectItem>
+                          <SelectItem value="B-">B-</SelectItem>
+                          <SelectItem value="AB+">AB+</SelectItem>
+                          <SelectItem value="AB-">AB-</SelectItem>
+                          <SelectItem value="O+">O+</SelectItem>
+                          <SelectItem value="O-">O-</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Patients ({displayedPatients.length})</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {loadingPatients ? (
+                <div className="flex items-center justify-center py-8">
+                  <RefreshCw className="h-6 w-6 animate-spin mr-2" />
+                  <span>Loading patients...</span>
+                </div>
+              ) : displayedPatients.length === 0 ? (
+                <div className="text-center py-8">
+                  <User className="h-12 w-12 text-gray-400 mx-auto mb-3" />
+                  <p className="text-gray-500">
+                    {searchQuery || filterGender !== 'all' || filterBloodGroup !== 'all'
+                      ? 'No patients found matching your criteria'
+                      : 'No patients found'}
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <div className="text-xs text-gray-500 mb-2">
+                    Showing {Math.min((currentPage - 1) * patientsPerPage + 1, displayedPatients.length)}–{Math.min(currentPage * patientsPerPage, displayedPatients.length)} of {displayedPatients.length} patients
+                  </div>
+                  <div className="overflow-x-auto border rounded-lg">
+                    <table className="w-full text-sm border-collapse">
+                      <thead>
+                        <tr className="border-b bg-gray-50 text-left">
+                          <th className="py-2.5 px-3 font-medium text-gray-600">Patient</th>
+                          <th className="py-2.5 px-3 font-medium text-gray-600">MRN</th>
+                          <th className="py-2.5 px-3 font-medium text-gray-600">Age</th>
+                          <th className="py-2.5 px-3 font-medium text-gray-600">Gender</th>
+                          <th className="py-2.5 px-3 font-medium text-gray-600">Phone</th>
+                          <th className="py-2.5 px-3 font-medium text-gray-600">Blood</th>
+                          <th className="py-2.5 px-3 font-medium text-gray-600">Address</th>
+                          <th className="py-2.5 px-3 font-medium text-gray-600 text-right min-w-[320px]">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {displayedPatients
+                          .slice((currentPage - 1) * patientsPerPage, currentPage * patientsPerPage)
+                          .map((p) => (
+                            <tr key={p.patient_id} className="border-b hover:bg-gray-50">
+                              <td className="py-3 px-3">
+                                <div className="flex items-center gap-2">
+                                  <User className="h-4 w-4 text-gray-400 shrink-0" />
+                                  <span className="font-semibold">
+                                    {p.full_name || `${p.first_name} ${p.last_name}`}
+                                  </span>
+                                </div>
+                              </td>
+                              <td className="py-3 px-3 text-gray-700 whitespace-nowrap">{p.mrn || '—'}</td>
+                              <td className="py-3 px-3 text-gray-600 whitespace-nowrap">
+                                {p.date_of_birth || p.age != null || p.age_months != null
+                                  ? formatPatientAge(p)
+                                  : '—'}
+                              </td>
+                              <td className="py-3 px-3">
+                                {p.gender ? <Badge variant="outline">{p.gender}</Badge> : '—'}
+                              </td>
+                              <td className="py-3 px-3 text-gray-700 whitespace-nowrap">
+                                <div className="flex items-center gap-1.5">
+                                  <Phone className="h-3.5 w-3.5 text-gray-400" />
+                                  {p.primary_phone || '—'}
+                                </div>
+                              </td>
+                              <td className="py-3 px-3">
+                                {p.blood_group ? <Badge variant="secondary">{p.blood_group}</Badge> : '—'}
+                              </td>
+                              <td className="py-3 px-3 text-gray-600 max-w-[180px] truncate" title={p.address || ''}>
+                                {p.address || '—'}
+                              </td>
+                              <td className="py-3 px-3">
+                                <div className="flex flex-wrap justify-end gap-1.5">
+                                  <Button size="sm" variant="outline" onClick={() => selectPatient(p)}>
+                                    View Chart
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    disabled={editLoading}
+                                    onClick={() => openEditPatient(p)}
+                                  >
+                                    Edit
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => {
+                                      setFileLabelContext({ source: 'reprint' });
+                                      setFileLabelPatientId(p.id);
+                                    }}
+                                  >
+                                    <Tag className="h-3.5 w-3.5 mr-1" />
+                                    File label
+                                  </Button>
+                                  {enabledModules.outpatient && (
+                                    <Button size="sm" onClick={() => bookAppointment(p)}>
+                                      Book Appointment
+                                    </Button>
+                                  )}
+                                  {enabledModules.lab && (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() => {
+                                        setLabBookingPatient(p);
+                                        setShowLabBooking(true);
+                                      }}
+                                    >
+                                      Book Lab Test
+                                    </Button>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {Math.ceil(displayedPatients.length / patientsPerPage) > 1 && (
+                    <div className="flex items-center justify-between mt-4">
+                      <Button
+                        variant="outline" size="sm"
+                        disabled={currentPage === 1}
+                        onClick={() => setCurrentPage((prev) => prev - 1)}
+                      >
+                        <ChevronLeft className="h-4 w-4 mr-1" /> Previous
+                      </Button>
+                      <div className="flex items-center gap-1">
+                        {Array.from({ length: Math.ceil(displayedPatients.length / patientsPerPage) }, (_, i) => i + 1)
+                          .filter((page) => page === 1 || page === Math.ceil(displayedPatients.length / patientsPerPage) || Math.abs(page - currentPage) <= 2)
+                          .map((page, idx, arr) => (
+                            <React.Fragment key={page}>
+                              {idx > 0 && arr[idx - 1] !== page - 1 && <span className="px-1 text-gray-400">...</span>}
+                              <Button
+                                variant={currentPage === page ? 'default' : 'outline'}
+                                size="sm"
+                                className="h-8 w-8 p-0"
+                                onClick={() => setCurrentPage(page)}
+                              >
+                                {page}
+                              </Button>
+                            </React.Fragment>
+                          ))}
+                      </div>
+                      <Button
+                        variant="outline" size="sm"
+                        disabled={currentPage >= Math.ceil(displayedPatients.length / patientsPerPage)}
+                        onClick={() => setCurrentPage((prev) => prev + 1)}
+                      >
+                        Next <ChevronRight className="h-4 w-4 ml-1" />
+                      </Button>
+                    </div>
+                  )}
+                </>
+              )}
+            </CardContent>
+          </Card>
+        </>
       )}
 
       {/* Loading */}
@@ -738,7 +1007,7 @@ const EHRPage = () => {
                 <div className="flex-1 grid grid-cols-2 md:grid-cols-4 gap-3">
                   <div>
                     <p className="text-lg font-bold">{patientHistory.patient.full_name}</p>
-                    <p className="text-xs text-gray-500">{patientHistory.patient.patient_id}</p>
+                    <p className="text-xs text-gray-500">MRN: {patientHistory.patient.mrn || '—'}</p>
                   </div>
                   <div className="text-sm space-y-0.5">
                     <p className="flex items-center gap-1 text-gray-600">
@@ -1262,10 +1531,249 @@ const EHRPage = () => {
         open={showLabBooking}
         onClose={(booked) => {
           setShowLabBooking(false);
+          setLabBookingPatient(null);
           if (booked && routePatientId) loadPatientHistory(routePatientId);
         }}
-        patient={patientHistory?.patient || null}
+        patient={labBookingPatient || patientHistory?.patient || null}
+        referralList={referralList}
+        onReferralsChange={setReferralList}
       />
+
+      <PatientFileLabelDialog
+        open={!!fileLabelPatientId}
+        patientId={fileLabelPatientId}
+        context={fileLabelContext}
+        onClose={() => setFileLabelPatientId(null)}
+      />
+
+      <Dialog open={showEditPatientDialog} onOpenChange={setShowEditPatientDialog}>
+        <DialogContent className="max-w-6xl w-[96vw] max-h-[90vh] flex flex-col overflow-hidden gap-0 p-0">
+          <div className="shrink-0 border-b px-6 pt-5 pb-3">
+            <DialogHeader className="space-y-0">
+              <DialogTitle>
+                Edit Patient - {selectedPatient?.first_name} {selectedPatient?.last_name}
+              </DialogTitle>
+            </DialogHeader>
+          </div>
+          <div className="flex-1 min-h-0 overflow-y-auto px-6 py-4">
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-x-3 gap-y-2">
+              <div>
+                <Label>First Name *</Label>
+                <Input
+                  value={editPatientForm.first_name}
+                  onChange={(e) => setEditPatientForm({ ...editPatientForm, first_name: e.target.value })}
+                />
+              </div>
+              <div>
+                <Label>Last Name *</Label>
+                <Input
+                  value={editPatientForm.last_name}
+                  onChange={(e) => setEditPatientForm({ ...editPatientForm, last_name: e.target.value })}
+                />
+              </div>
+              <div>
+                <Label>Date of Birth</Label>
+                <Input
+                  type="date"
+                  value={editPatientForm.date_of_birth}
+                  onChange={(e) => setEditPatientForm((prev) => applyDobToForm(prev, e.target.value))}
+                />
+              </div>
+              <div>
+                <Label>Age (years)</Label>
+                <Input
+                  type="number"
+                  min="0"
+                  max="150"
+                  placeholder="Years"
+                  value={editPatientForm.age}
+                  onChange={(e) => setEditPatientForm({ ...editPatientForm, age: e.target.value, date_of_birth: '' })}
+                />
+              </div>
+              <div>
+                <Label>Age (months)</Label>
+                <Input
+                  type="number"
+                  min="0"
+                  max="11"
+                  placeholder="Months (for infants)"
+                  value={editPatientForm.age_months}
+                  onChange={(e) => setEditPatientForm({ ...editPatientForm, age_months: e.target.value, date_of_birth: '' })}
+                />
+              </div>
+              <div>
+                <Label>Gender</Label>
+                <Select
+                  value={editPatientForm.gender || 'none'}
+                  onValueChange={(value) => setEditPatientForm({ ...editPatientForm, gender: value === 'none' ? '' : value })}
+                >
+                  <SelectTrigger><SelectValue placeholder="Select Gender" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Not specified</SelectItem>
+                    <SelectItem value="Male">Male</SelectItem>
+                    <SelectItem value="Female">Female</SelectItem>
+                    <SelectItem value="Other">Other</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Blood Group</Label>
+                <Select
+                  value={editPatientForm.blood_group || 'none'}
+                  onValueChange={(value) => setEditPatientForm({ ...editPatientForm, blood_group: value === 'none' ? '' : value })}
+                >
+                  <SelectTrigger><SelectValue placeholder="Select Blood Group" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Not specified</SelectItem>
+                    <SelectItem value="A+">A+</SelectItem>
+                    <SelectItem value="A-">A-</SelectItem>
+                    <SelectItem value="B+">B+</SelectItem>
+                    <SelectItem value="B-">B-</SelectItem>
+                    <SelectItem value="AB+">AB+</SelectItem>
+                    <SelectItem value="AB-">AB-</SelectItem>
+                    <SelectItem value="O+">O+</SelectItem>
+                    <SelectItem value="O-">O-</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Marital Status</Label>
+                <Select
+                  value={editPatientForm.marital_status || 'none'}
+                  onValueChange={(value) => setEditPatientForm({ ...editPatientForm, marital_status: value === 'none' ? '' : value })}
+                >
+                  <SelectTrigger><SelectValue placeholder="Select Status" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Not specified</SelectItem>
+                    <SelectItem value="Single">Single</SelectItem>
+                    <SelectItem value="Married">Married</SelectItem>
+                    <SelectItem value="Widowed">Widowed</SelectItem>
+                    <SelectItem value="Divorced">Divorced</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>ABHA ID</Label>
+                <Input
+                  value={editPatientForm.abha_id}
+                  onChange={(e) => setEditPatientForm({ ...editPatientForm, abha_id: e.target.value })}
+                  placeholder="14-digit ABHA number"
+                />
+              </div>
+              <div>
+                <Label>GSTIN (optional)</Label>
+                <Input
+                  value={editPatientForm.gstin || ''}
+                  onChange={(e) => setEditPatientForm({ ...editPatientForm, gstin: e.target.value.toUpperCase() })}
+                  placeholder="Customer GSTIN"
+                  maxLength={15}
+                />
+              </div>
+              <div>
+                <Label>Email</Label>
+                <Input
+                  type="email"
+                  value={editPatientForm.email}
+                  onChange={(e) => setEditPatientForm({ ...editPatientForm, email: e.target.value })}
+                  placeholder="patient@email.com"
+                />
+              </div>
+              <ReferralSelectWithCreate
+                value={editPatientForm.referred_by || ''}
+                onValueChange={(name) => setEditPatientForm({ ...editPatientForm, referred_by: name })}
+                referrals={referralList}
+                onReferralsChange={setReferralList}
+              />
+
+              <div className="col-span-full border-t pt-2 mt-1">
+                <Label className="text-sm font-semibold text-gray-700">Emergency Contact</Label>
+              </div>
+              <div>
+                <Label>Contact Name</Label>
+                <Input
+                  value={editPatientForm.emergency_contact_name}
+                  onChange={(e) => setEditPatientForm({ ...editPatientForm, emergency_contact_name: e.target.value })}
+                />
+              </div>
+              <div>
+                <Label>Contact Phone</Label>
+                <Input
+                  value={editPatientForm.emergency_contact_phone}
+                  onChange={(e) => setEditPatientForm({ ...editPatientForm, emergency_contact_phone: e.target.value })}
+                />
+              </div>
+              <div>
+                <Label>Relation</Label>
+                <Select
+                  value={editPatientForm.emergency_contact_relation || 'none'}
+                  onValueChange={(value) => setEditPatientForm({ ...editPatientForm, emergency_contact_relation: value === 'none' ? '' : value })}
+                >
+                  <SelectTrigger><SelectValue placeholder="Select Relation" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Not specified</SelectItem>
+                    <SelectItem value="Spouse">Spouse</SelectItem>
+                    <SelectItem value="Parent">Parent</SelectItem>
+                    <SelectItem value="Child">Child</SelectItem>
+                    <SelectItem value="Sibling">Sibling</SelectItem>
+                    <SelectItem value="Friend">Friend</SelectItem>
+                    <SelectItem value="Other">Other</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="col-span-full border-t pt-2 mt-1">
+                <Label className="text-sm font-semibold text-gray-700">Address</Label>
+              </div>
+              <div className="md:col-span-2 lg:col-span-3 xl:col-span-2">
+                <Label>Address Line 1</Label>
+                <Input
+                  value={editPatientForm.address_line1}
+                  onChange={(e) => setEditPatientForm({ ...editPatientForm, address_line1: e.target.value })}
+                />
+              </div>
+              <div className="md:col-span-2 lg:col-span-3 xl:col-span-2">
+                <Label>Address Line 2</Label>
+                <Input
+                  value={editPatientForm.address_line2}
+                  onChange={(e) => setEditPatientForm({ ...editPatientForm, address_line2: e.target.value })}
+                />
+              </div>
+              <div>
+                <Label>Village / Town</Label>
+                <Input
+                  value={editPatientForm.village}
+                  onChange={(e) => setEditPatientForm({ ...editPatientForm, village: e.target.value })}
+                />
+              </div>
+              <div>
+                <Label>Mandal / Taluka</Label>
+                <Input
+                  value={editPatientForm.mandal}
+                  onChange={(e) => setEditPatientForm({ ...editPatientForm, mandal: e.target.value })}
+                />
+              </div>
+              <div>
+                <Label>District</Label>
+                <Input
+                  value={editPatientForm.district}
+                  onChange={(e) => setEditPatientForm({ ...editPatientForm, district: e.target.value })}
+                />
+              </div>
+            </div>
+          </div>
+          <div className="shrink-0 border-t px-6 py-3 flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+            <Button variant="outline" onClick={() => setShowEditPatientDialog(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleUpdatePatient}
+              disabled={editLoading || !editPatientForm.first_name || !editPatientForm.last_name || !editPatientForm.age}
+            >
+              {editLoading ? 'Updating...' : 'Update Patient'}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <EhrExportDialog
         open={showExcelExport}

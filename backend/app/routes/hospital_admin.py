@@ -2578,12 +2578,30 @@ async def get_all_bills(
                 float(d.amount or 0) if d.deposit_type != "refund" else -abs(float(d.amount or 0))
                 for d in dep_rows
             )
-            balance_due = round(total_charges - net_deposits, 2)
+
+            # Cash payments + received payer splits on active admission bills.
+            # max(payments, splits) avoids double-counting when Mark Received
+            # also posted a Payment row.
+            payments_sum = 0.0
+            split_recv_sum = 0.0
+            for b in active_bills:
+                payments_sum += sum(float(p.amount_paid or 0) for p in (b.payments or []))
+                for sp in (b.splits or []):
+                    if (sp.payment_status or "") == "received":
+                        split_recv_sum += float(sp.amount or 0)
+
+            amount_paid = round(
+                min(total_charges, net_deposits + max(payments_sum, split_recv_sum))
+                if total_charges > 0
+                else max(0.0, net_deposits + max(payments_sum, split_recv_sum)),
+                2,
+            )
+            balance_due = round(max(0.0, total_charges - amount_paid), 2)
 
             # Admission-level status — based on financial balance, not bill status.
             if total_charges <= 0 or balance_due <= 0:
                 adm_status = "paid"
-            elif net_deposits > 0:
+            elif amount_paid > 0:
                 adm_status = "partial"
             else:
                 adm_status = "pending"
@@ -2634,11 +2652,13 @@ async def get_all_bills(
                 "cancel_reason": "",
                 "cancelled_by": "",
                 "cancelled_at": "",
-                "amount_paid": net_deposits,
+                "amount_paid": amount_paid,
                 "balance_due": balance_due,
                 "admission_id": adm_id,
                 "deposits": deposit_children,
                 "net_deposits": round(net_deposits, 2),
+                "payments_recorded": round(payments_sum, 2),
+                "splits_received": round(split_recv_sum, 2),
             })
 
     # --- Day-care bills from bills table (outpatient day-care services) ---
@@ -2872,7 +2892,7 @@ async def get_all_bills(
     active_bills = [b for b in bills if b["payment_status"] != "cancelled"]
     total_billed = sum(b["amount"] for b in active_bills)
     total_paid = sum(
-        (b["net_deposits"] if b["type"] == "admission" else b["amount"])
+        (b.get("amount_paid") if b["type"] == "admission" else b["amount"])
         for b in active_bills if b["payment_status"] == "paid"
     )
     total_pending = sum(b["amount"] for b in active_bills if b["payment_status"] in ("pending", "partial"))
@@ -3272,14 +3292,24 @@ async def get_bill_detail(
 
     total_paid = sum(float(p.amount_paid) for p in payments)
 
-    # For admission bills, fold in deposits already collected against the
-    # admission (allocated oldest-bill-first across sibling bills).
+    # Fold in deposits (admission) + received payer splits. max(payments, splits)
+    # avoids double-counting when Mark Received also posted a Payment.
     deposit_alloc = 0.0
+    from app.routes.inpatient import (
+        allocate_deposits_to_bill,
+        _bill_received_splits_total,
+        effective_bill_paid,
+    )
+    split_received = _bill_received_splits_total(db, bill.id)
     if (bill.bill_type or "") == "admission":
-        from app.routes.inpatient import allocate_deposits_to_bill
         deposit_alloc = allocate_deposits_to_bill(db, bill)
+        effective_paid = effective_bill_paid(db, bill)
+    else:
+        effective_paid = round(
+            min(float(bill.total_amount or 0), max(total_paid, split_received)),
+            2,
+        )
 
-    effective_paid = total_paid + deposit_alloc
     total_amt = float(bill.total_amount or 0)
 
     return {
@@ -3297,6 +3327,7 @@ async def get_bill_detail(
         "amount_paid": round(effective_paid, 2),
         "deposit_applied": round(deposit_alloc, 2),
         "payments_recorded": round(total_paid, 2),
+        "splits_received": round(split_received, 2),
         "balance_due": round(max(0.0, total_amt - effective_paid), 2),
         "notes": bill.notes,
         "items": [
@@ -3379,7 +3410,17 @@ async def record_bill_payment(
     if bill.status == "paid":
         raise HTTPException(status_code=400, detail="Bill is already fully paid")
 
-    existing_paid = sum(float(p.amount_paid) for p in (bill.payments or []))
+    from app.routes.inpatient import effective_bill_paid
+    existing_paid = effective_bill_paid(db, bill) if (bill.bill_type or "") == "admission" else sum(
+        float(p.amount_paid) for p in (bill.payments or [])
+    )
+    if (bill.bill_type or "") != "admission":
+        # Include received splits for non-admission bills too
+        from app.routes.inpatient import _bill_received_splits_total
+        existing_paid = round(
+            max(existing_paid, _bill_received_splits_total(db, bill.id)),
+            2,
+        )
     balance = float(bill.total_amount or 0) - existing_paid
 
     if req.amount_paid > balance + 0.01:
@@ -3404,12 +3445,17 @@ async def record_bill_payment(
         received_by_id=current_user.id,
     )
     db.add(payment)
+    db.flush()
 
-    new_paid = existing_paid + req.amount_paid
-    if new_paid >= float(bill.total_amount or 0) - 0.01:
-        bill.status = "paid"
+    if (bill.bill_type or "") == "admission" and bill.reference_id:
+        from app.routes.inpatient import reconcile_admission_bill_statuses
+        reconcile_admission_bill_statuses(db, bill.reference_id)
     else:
-        bill.status = "partial"
+        new_paid = existing_paid + req.amount_paid
+        if new_paid >= float(bill.total_amount or 0) - 0.01:
+            bill.status = "paid"
+        else:
+            bill.status = "partial"
 
     _sync_admission_item_payment_status(bill, db)
 
@@ -3419,13 +3465,14 @@ async def record_bill_payment(
     log_action(db, current_user, "record_payment", "billing", "Payment", payment.id,
                f"Recorded payment {payment_number} of ₹{req.amount_paid:.2f} for bill {bill.bill_number}")
 
+    new_total_paid = existing_paid + req.amount_paid
     return {
         "payment_id": payment.id,
         "payment_number": payment_number,
         "amount_paid": req.amount_paid,
         "bill_status": bill.status,
-        "total_paid": new_paid,
-        "balance_due": float(bill.total_amount or 0) - new_paid,
+        "total_paid": new_total_paid,
+        "balance_due": float(bill.total_amount or 0) - new_total_paid,
         "message": "Payment recorded successfully",
     }
 
@@ -3464,12 +3511,13 @@ def _ensure_bill_editable(bill: Bill):
 
 
 def _bill_net_paid(bill: Bill, db: Session) -> float:
-    """Cash payments plus, for admission bills, deposits already allocated."""
-    paid = sum(float(p.amount_paid or 0) for p in (bill.payments or []))
+    """Cash payments plus, for admission bills, deposits and received splits."""
+    from app.routes.inpatient import effective_bill_paid, _bill_received_splits_total
     if (bill.bill_type or "") == "admission":
-        from app.routes.inpatient import allocate_deposits_to_bill
-        paid += allocate_deposits_to_bill(db, bill)
-    return round(paid, 2)
+        return effective_bill_paid(db, bill)
+    paid = sum(float(p.amount_paid or 0) for p in (bill.payments or []))
+    split_recv = _bill_received_splits_total(db, bill.id)
+    return round(max(paid, split_recv), 2)
 
 
 def _recompute_bill_status(bill: Bill, net_paid: float) -> None:

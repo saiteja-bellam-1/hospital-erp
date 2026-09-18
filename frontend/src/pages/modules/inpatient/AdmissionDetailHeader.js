@@ -15,7 +15,7 @@ import { useToast } from '../../../hooks/use-toast';
 import {
   Banknote, Shield, FileCheck2, Landmark,
   CheckCircle2, XCircle, Clock, Loader2, History, ArrowRightLeft,
-  Stethoscope, UserCheck, UserPlus
+  Stethoscope, UserCheck, UserPlus, Plus, Paperclip, Download, Ban,
 } from 'lucide-react';
 
 const SCHEME_ICONS = {
@@ -62,6 +62,16 @@ const AdmissionDetailHeader = ({
   const [history, setHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
 
+  // Scheme approval ledger
+  const [approvalsOpen, setApprovalsOpen] = useState(false);
+  const [approvals, setApprovals] = useState([]);
+  const [approvalsTotal, setApprovalsTotal] = useState(0);
+  const [approvalsLoading, setApprovalsLoading] = useState(false);
+  const [addApprovalOpen, setAddApprovalOpen] = useState(false);
+  const [approvalForm, setApprovalForm] = useState({
+    amount: '', approval_reference: '', notes: '', file: null,
+  });
+
   // Keep local acceptance in sync with prop
   useEffect(() => {
     setAcceptanceStatus(admission?.acceptance_status || 'accepted');
@@ -77,6 +87,21 @@ const AdmissionDetailHeader = ({
       setHistory([]);
     } finally {
       setHistoryLoading(false);
+    }
+  }, [admission?.id]);
+
+  const fetchApprovals = useCallback(async () => {
+    if (!admission?.id) return;
+    setApprovalsLoading(true);
+    try {
+      const res = await axios.get(`/api/inpatient/admissions/${admission.id}/scheme-approvals`);
+      setApprovals(res.data?.items || []);
+      setApprovalsTotal(Number(res.data?.total_approved || 0));
+    } catch {
+      setApprovals([]);
+      setApprovalsTotal(0);
+    } finally {
+      setApprovalsLoading(false);
     }
   }, [admission?.id]);
 
@@ -104,6 +129,88 @@ const AdmissionDetailHeader = ({
     const next = !historyOpen;
     setHistoryOpen(next);
     if (next) await fetchHistory();
+  };
+
+  const openApprovals = async () => {
+    const next = !approvalsOpen;
+    setApprovalsOpen(next);
+    if (next) await fetchApprovals();
+  };
+
+  const openAddApproval = () => {
+    setApprovalForm({ amount: '', approval_reference: '', notes: '', file: null });
+    setAddApprovalOpen(true);
+  };
+
+  const submitAddApproval = async () => {
+    const amt = parseFloat(approvalForm.amount);
+    if (!amt || amt <= 0) {
+      toast({ variant: 'destructive', title: 'Enter a valid approved amount' });
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const fd = new FormData();
+      fd.append('amount', String(amt));
+      if (approvalForm.approval_reference.trim()) {
+        fd.append('approval_reference', approvalForm.approval_reference.trim());
+      }
+      if (approvalForm.notes.trim()) {
+        fd.append('notes', approvalForm.notes.trim());
+      }
+      if (approvalForm.file) {
+        fd.append('file', approvalForm.file);
+      }
+      await axios.post(`/api/inpatient/admissions/${admission.id}/scheme-approvals`, fd, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      toast({ title: 'Approval added', description: `₹${amt.toLocaleString('en-IN')} credited as deposit.` });
+      setAddApprovalOpen(false);
+      setApprovalsOpen(true);
+      await fetchApprovals();
+      onChanged?.();
+    } catch (err) {
+      toast({
+        variant: 'destructive', title: 'Error',
+        description: err.response?.data?.detail || 'Could not add approval',
+      });
+    } finally { setSubmitting(false); }
+  };
+
+  const downloadApprovalDoc = async (item) => {
+    try {
+      const res = await axios.get(
+        `/api/inpatient/scheme-approvals/${item.id}/document`,
+        { responseType: 'blob' },
+      );
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = item.document_name || 'approval-document';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      toast({ variant: 'destructive', title: 'Download failed' });
+    }
+  };
+
+  const voidApproval = async (item) => {
+    const reason = window.prompt('Reason to void this approval?');
+    if (!reason || !reason.trim()) return;
+    setSubmitting(true);
+    try {
+      await axios.post(`/api/inpatient/scheme-approvals/${item.id}/void`, {
+        reason: reason.trim(),
+      });
+      toast({ title: 'Approval voided' });
+      await fetchApprovals();
+      onChanged?.();
+    } catch (err) {
+      toast({
+        variant: 'destructive', title: 'Error',
+        description: err.response?.data?.detail || 'Could not void',
+      });
+    } finally { setSubmitting(false); }
   };
 
   const submitAccept = async () => {
@@ -293,11 +400,25 @@ const AdmissionDetailHeader = ({
           )}
         </div>
         <div className="flex items-center gap-1">
+          {admission.payer_type && admission.payer_type !== 'cash' && (
+            <Button size="sm" variant="ghost" className="h-7 text-xs"
+                    onClick={openApprovals}>
+              <FileCheck2 className="h-3.5 w-3.5 mr-1" />
+              {approvalsOpen ? 'Hide approvals' : 'Approvals'}
+            </Button>
+          )}
           <Button size="sm" variant="ghost" className="h-7 text-xs"
                   onClick={openHistory}>
             <History className="h-3.5 w-3.5 mr-1" />
             {historyOpen ? 'Hide history' : 'View history'}
           </Button>
+          {canConvertPayer && admission.status === 'admitted' && admission.payer_type &&
+            admission.payer_type !== 'cash' && (
+            <Button size="sm" variant="outline" className="h-7 text-xs"
+                    onClick={openAddApproval}>
+              <Plus className="h-3.5 w-3.5 mr-1" /> Add approval
+            </Button>
+          )}
           {canConvertPayer && admission.status === 'admitted' && (
             <Button size="sm" variant="outline" className="h-7 text-xs"
                     onClick={openPayerDialog}>
@@ -306,6 +427,76 @@ const AdmissionDetailHeader = ({
           )}
         </div>
       </div>
+
+      {/* Approvals ledger panel */}
+      {approvalsOpen && (
+        <div className="border rounded bg-white p-2 text-xs space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="font-medium text-gray-700">
+              Scheme approvals
+              {approvalsTotal > 0 && (
+                <span className="ml-2 text-green-700">
+                  Total ₹{approvalsTotal.toLocaleString('en-IN')}
+                </span>
+              )}
+            </span>
+            {canConvertPayer && admission.status === 'admitted' && (
+              <Button size="sm" variant="ghost" className="h-6 text-xs"
+                      onClick={openAddApproval}>
+                <Plus className="h-3 w-3 mr-1" /> Add
+              </Button>
+            )}
+          </div>
+          {approvalsLoading ? (
+            <div className="flex items-center gap-2 text-gray-500 py-1">
+              <Loader2 className="h-3 w-3 animate-spin" /> Loading…
+            </div>
+          ) : approvals.length === 0 ? (
+            <p className="text-gray-500 italic">
+              No approvals yet. Use &quot;Add approval&quot; when insurance/scheme credits more amount.
+            </p>
+          ) : (
+            <ul className="space-y-1.5">
+              {approvals.map((a) => (
+                <li key={a.id}
+                    className="flex items-start justify-between gap-2 border-l-2 border-green-400 pl-2 py-0.5">
+                  <div className="min-w-0">
+                    <div className="font-semibold text-gray-800">
+                      ₹{Number(a.amount).toLocaleString('en-IN')}
+                      {a.approval_reference && (
+                        <span className="font-normal text-gray-500 ml-1">
+                          · ref {a.approval_reference}
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-gray-500">
+                      {a.created_at ? new Date(a.created_at).toLocaleString() : ''}
+                      {a.created_by_name && ` — ${a.created_by_name}`}
+                      {a.notes && <span className="italic"> · {a.notes}</span>}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-0.5 shrink-0">
+                    {a.has_document && (
+                      <Button type="button" size="sm" variant="ghost" className="h-6 w-6 p-0"
+                              title={a.document_name || 'Download'}
+                              onClick={() => downloadApprovalDoc(a)}>
+                        <Download className="h-3.5 w-3.5 text-blue-600" />
+                      </Button>
+                    )}
+                    {canConvertPayer && a.status === 'approved' && (
+                      <Button type="button" size="sm" variant="ghost" className="h-6 w-6 p-0"
+                              title="Void" disabled={submitting}
+                              onClick={() => voidApproval(a)}>
+                        <Ban className="h-3.5 w-3.5 text-red-500" />
+                      </Button>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       {/* History inline panel */}
       {historyOpen && (
@@ -458,10 +649,13 @@ const AdmissionDetailHeader = ({
                          onChange={e => setPayerForm(p => ({ ...p, scheme_approval_ref: e.target.value }))} />
                 </div>
                 <div>
-                  <Label>Approved amount (₹)</Label>
+                  <Label>Add approved amount (₹)</Label>
                   <Input type="number" min="0" step="0.01"
                          value={payerForm.scheme_approval_amount}
                          onChange={e => setPayerForm(p => ({ ...p, scheme_approval_amount: e.target.value }))} />
+                  <p className="text-[10px] text-gray-500 mt-0.5">
+                    Posted as a credit deposit. Add more later via &quot;Add approval&quot;.
+                  </p>
                 </div>
               </div>
             )}
@@ -481,6 +675,63 @@ const AdmissionDetailHeader = ({
             <Button onClick={submitPayerChange} disabled={submitting}>
               {submitting && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
               Change payer
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Add scheme approval (+ optional document) */}
+      <Dialog open={addApprovalOpen} onOpenChange={setAddApprovalOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Add scheme approval</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            <p className="text-xs text-gray-600 bg-green-50 border border-green-200 rounded p-2">
+              Each approval is added on top of previous ones and credited as a deposit.
+            </p>
+            <div>
+              <Label>Approved amount (₹) *</Label>
+              <Input type="number" min="0.01" step="0.01"
+                     value={approvalForm.amount}
+                     onChange={e => setApprovalForm(p => ({ ...p, amount: e.target.value }))} />
+            </div>
+            <div>
+              <Label>Approval reference</Label>
+              <Input value={approvalForm.approval_reference}
+                     onChange={e => setApprovalForm(p => ({ ...p, approval_reference: e.target.value }))}
+                     placeholder="Insurer / TPA auth number" />
+            </div>
+            <div>
+              <Label>Notes</Label>
+              <Textarea rows={2} value={approvalForm.notes}
+                        onChange={e => setApprovalForm(p => ({ ...p, notes: e.target.value }))}
+                        placeholder="e.g. Expansion for ICU stay" />
+            </div>
+            <div>
+              <Label className="flex items-center gap-1">
+                <Paperclip className="h-3.5 w-3.5" /> Supporting document
+              </Label>
+              <Input type="file" accept=".pdf,image/*,.doc,.docx"
+                     className="mt-1 text-xs"
+                     onChange={e => setApprovalForm(p => ({
+                       ...p, file: e.target.files?.[0] || null,
+                     }))} />
+              {approvalForm.file && (
+                <p className="text-[10px] text-gray-500 mt-1 truncate">
+                  {approvalForm.file.name}
+                </p>
+              )}
+              <p className="text-[10px] text-gray-500 mt-0.5">
+                Optional. PDF / image / Word, max 10MB.
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAddApprovalOpen(false)}>Cancel</Button>
+            <Button onClick={submitAddApproval} disabled={submitting}>
+              {submitting && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Add approval
             </Button>
           </DialogFooter>
         </DialogContent>
