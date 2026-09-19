@@ -2579,9 +2579,22 @@ async def get_all_bills(
                 for d in dep_rows
             )
 
-            # Cash payments + received payer splits on active admission bills.
-            # max(payments, splits) avoids double-counting when Mark Received
-            # also posted a Payment row.
+            # Live received amount — same helper Collect Payment uses.
+            # Pending splits are not counted. Cash splits do not stack on deposits.
+            from app.routes.inpatient import effective_bill_paid
+            if final_bill:
+                amount_paid = effective_bill_paid(db, final_bill)
+            elif active_bills:
+                amount_paid = round(
+                    min(total_charges, sum(effective_bill_paid(db, b) for b in active_bills)),
+                    2,
+                )
+            else:
+                amount_paid = round(max(0.0, net_deposits), 2)
+            if total_charges <= 0:
+                amount_paid = round(max(0.0, net_deposits), 2)
+            balance_due = round(max(0.0, total_charges - amount_paid), 2)
+
             payments_sum = 0.0
             split_recv_sum = 0.0
             for b in active_bills:
@@ -2589,14 +2602,6 @@ async def get_all_bills(
                 for sp in (b.splits or []):
                     if (sp.payment_status or "") == "received":
                         split_recv_sum += float(sp.amount or 0)
-
-            amount_paid = round(
-                min(total_charges, net_deposits + max(payments_sum, split_recv_sum))
-                if total_charges > 0
-                else max(0.0, net_deposits + max(payments_sum, split_recv_sum)),
-                2,
-            )
-            balance_due = round(max(0.0, total_charges - amount_paid), 2)
 
             # Admission-level status — based on financial balance, not bill status.
             if total_charges <= 0 or balance_due <= 0:
@@ -3301,6 +3306,13 @@ async def get_bill_detail(
         effective_bill_paid,
     )
     split_received = _bill_received_splits_total(db, bill.id)
+    pending_splits_total = round(sum(
+        float(s.amount or 0)
+        for s in db.query(BillSplit).filter(
+            BillSplit.bill_id == bill.id,
+            BillSplit.payment_status != "received",
+        ).all()
+    ), 2)
     if (bill.bill_type or "") == "admission":
         deposit_alloc = allocate_deposits_to_bill(db, bill)
         effective_paid = effective_bill_paid(db, bill)
@@ -3328,6 +3340,7 @@ async def get_bill_detail(
         "deposit_applied": round(deposit_alloc, 2),
         "payments_recorded": round(total_paid, 2),
         "splits_received": round(split_received, 2),
+        "pending_splits": round(pending_splits_total, 2),
         "balance_due": round(max(0.0, total_amt - effective_paid), 2),
         "notes": bill.notes,
         "items": [
@@ -3407,24 +3420,38 @@ async def record_bill_payment(
         raise HTTPException(status_code=404, detail="Bill not found")
     if bill.status == "cancelled":
         raise HTTPException(status_code=400, detail="Cannot pay a cancelled bill")
-    if bill.status == "paid":
-        raise HTTPException(status_code=400, detail="Bill is already fully paid")
 
-    from app.routes.inpatient import effective_bill_paid
-    existing_paid = effective_bill_paid(db, bill) if (bill.bill_type or "") == "admission" else sum(
-        float(p.amount_paid) for p in (bill.payments or [])
-    )
-    if (bill.bill_type or "") != "admission":
-        # Include received splits for non-admission bills too
-        from app.routes.inpatient import _bill_received_splits_total
+    from app.routes.inpatient import effective_bill_paid, _bill_received_splits_total
+    db.refresh(bill, attribute_names=["payments"])
+    if (bill.bill_type or "") == "admission":
+        existing_paid = effective_bill_paid(db, bill)
+    else:
         existing_paid = round(
-            max(existing_paid, _bill_received_splits_total(db, bill.id)),
+            max(
+                sum(float(p.amount_paid or 0) for p in (bill.payments or [])),
+                _bill_received_splits_total(db, bill.id),
+            ),
             2,
         )
-    balance = float(bill.total_amount or 0) - existing_paid
+    total_amt = float(bill.total_amount or 0)
+    balance = round(max(0.0, total_amt - existing_paid), 2)
+
+    # Use live remaining, not the stored Bill.status. A pending TPA/insurance
+    # split is allocation only — it must not block collecting the cash still due.
+    if balance <= 0.01:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Nothing due — ₹{existing_paid:.2f} already received against "
+                f"₹{total_amt:.2f}. Pending splits are not cash until Mark Received."
+            ),
+        )
 
     if req.amount_paid > balance + 0.01:
-        raise HTTPException(status_code=400, detail=f"Amount exceeds balance due (₹{balance:.2f})")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Amount exceeds balance due (₹{balance:.2f}). Already received ₹{existing_paid:.2f}.",
+        )
 
     # Generate payment number
     today_str = datetime.now().strftime("%Y%m%d")

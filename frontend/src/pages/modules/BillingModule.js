@@ -674,10 +674,28 @@ const BillingModule = () => {
     }
   };
 
-  const openPaymentDialog = (bill) => {
-    setPayBill(bill);
+  const openPaymentDialog = async (bill) => {
+    let remaining = Number(bill.balance_due);
+    let pendingSplits = 0;
+    if (bill.bill_id) {
+      try {
+        const res = await axios.get(`/api/hospital/billing/bills/${bill.bill_id}`);
+        remaining = Number(res.data.balance_due);
+        pendingSplits = Number(res.data.pending_splits || 0);
+      } catch (err) {
+        console.error('Could not refresh bill balance', err);
+      }
+    }
+    if (!(remaining > 0.01)) {
+      const pendingNote = pendingSplits > 0
+        ? `\n\n₹${pendingSplits.toFixed(2)} is still on a pending split. Use Mark Received on that split if TPA/insurance paid, or the remaining is already in deposits.`
+        : '';
+      alert(`Nothing due on this bill.${pendingNote}`);
+      return;
+    }
+    setPayBill({ ...bill, balance_due: remaining, pending_splits: pendingSplits });
     setPaymentForm({
-      amount_paid: String(bill.balance_due || bill.amount || ''),
+      amount_paid: String(remaining),
       payment_method: 'cash',
       transaction_reference: '',
       notes: '',
@@ -1426,6 +1444,12 @@ const BillingModule = () => {
                   <span className="text-gray-500">Balance Due: </span>
                   <span className="text-lg font-bold text-red-600">{formatCurrency(payBill.balance_due || payBill.amount)}</span>
                 </p>
+                {Number(payBill.pending_splits) > 0 && (
+                  <p className="text-[11px] text-amber-800 mt-1">
+                    ₹{Number(payBill.pending_splits).toFixed(2)} is allocated on a pending split
+                    (not yet received). Collect cash here, or Mark Received on the TPA/insurance split.
+                  </p>
+                )}
               </div>
               <div>
                 <Label>Amount</Label>

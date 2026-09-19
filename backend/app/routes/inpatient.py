@@ -8448,19 +8448,22 @@ def _admission_balance_summary(db: Session, admission: Admission) -> dict:
         for p in (b.payments or []):
             total_paid += float(p.amount_paid or 0)
 
-    # Received payer splits (TPA/insurance/cash) count as paid even when no
-    # Payment row exists yet (legacy Mark Received). Use max with total_paid
-    # so Mark Received that also posts a Payment is not double-counted.
+    # Received splits: cash overlaps deposits; TPA/insurance overlaps Payment
+    # rows. Pending splits are not money in hand.
     bill_ids = [b.id for b in bills]
-    split_received = 0.0
+    cash_split_received = 0.0
+    other_split_received = 0.0
     if bill_ids:
-        split_received = sum(
-            float(s.amount or 0)
-            for s in db.query(BillSplit).filter(
-                BillSplit.bill_id.in_(bill_ids),
-                BillSplit.payment_status == "received",
-            ).all()
-        )
+        for s in db.query(BillSplit).filter(
+            BillSplit.bill_id.in_(bill_ids),
+            BillSplit.payment_status == "received",
+        ).all():
+            amt = float(s.amount or 0)
+            if (s.payer_type or "").lower() in _NON_CASH_SPLIT_PAYERS:
+                other_split_received += amt
+            else:
+                cash_split_received += amt
+    split_received = cash_split_received + other_split_received
 
     # Fold in any charges that aren't on a saved Bill row yet so the balance
     # reflects what the patient actually owes for services rendered. Without
@@ -8473,8 +8476,9 @@ def _admission_balance_summary(db: Session, admission: Admission) -> dict:
         unbilled_subtotal = 0.0
     total_billed = billed_from_bills + unbilled_subtotal
 
-    # Credit applied = deposits + max(cash payments, received splits).
-    applied = net_deposits + max(total_paid, split_received)
+    # Cash pool and TPA/payment pool are added; within each pool use max()
+    # so the same rupee is not counted twice.
+    applied = max(net_deposits, cash_split_received) + max(total_paid, other_split_received)
 
     return {
         "admission_id": admission.id,
@@ -8538,29 +8542,55 @@ def allocate_deposits_to_bill(db: Session, bill: Bill) -> float:
     return 0.0
 
 
-def _bill_received_splits_total(db: Session, bill_id: int) -> float:
+_NON_CASH_SPLIT_PAYERS = frozenset({"tpa", "insurance"})
+
+
+def _bill_received_splits_by_kind(db: Session, bill_id: int) -> tuple:
+    """Return (cash_received, non_cash_received) for splits marked received.
+
+    Pending splits are intentionally excluded — allocating a TPA/insurance
+    share is not the same as receiving it.
+    """
+    cash = 0.0
+    other = 0.0
     rows = db.query(BillSplit).filter(
         BillSplit.bill_id == bill_id,
         BillSplit.payment_status == "received",
     ).all()
-    return sum(float(s.amount or 0) for s in rows)
+    for s in rows:
+        amt = float(s.amount or 0)
+        if (s.payer_type or "").lower() in _NON_CASH_SPLIT_PAYERS:
+            other += amt
+        else:
+            cash += amt
+    return cash, other
+
+
+def _bill_received_splits_total(db: Session, bill_id: int) -> float:
+    cash, other = _bill_received_splits_by_kind(db, bill_id)
+    return round(cash + other, 2)
 
 
 def effective_bill_paid(db: Session, bill: Bill) -> float:
-    """Amount applied to a bill.
+    """Amount actually received against a bill (not merely allocated).
 
-    ``deposit_alloc + max(payments, received_splits)``, capped at bill total.
-    Using max() avoids double-counting when Mark Received also posts a Payment;
-    adding deposit_alloc lets patient deposits cover the cash share alongside
-    partial TPA split receipts.
+    Cash pool: max(deposits allocated to this bill, received cash splits).
+    Those are the same money, so they must not be added together.
+
+    Non-cash pool: max(Payment rows, received TPA/insurance splits).
+    Mark Received posts a Payment for TPA; max() avoids counting it twice.
+
+    Pending splits never count. Capped at bill total.
     """
     if (bill.status or "") == "cancelled":
         return 0.0
     payments = sum(float(p.amount_paid or 0) for p in (bill.payments or []))
-    split_recv = _bill_received_splits_total(db, bill.id)
+    cash_split, other_split = _bill_received_splits_by_kind(db, bill.id)
     deposit_alloc = allocate_deposits_to_bill(db, bill)
     total = float(bill.total_amount or 0)
-    return round(min(total, deposit_alloc + max(payments, split_recv)), 2)
+    cash_applied = max(deposit_alloc, cash_split)
+    other_applied = max(payments, other_split)
+    return round(min(total, cash_applied + other_applied), 2)
 
 
 def reconcile_admission_bill_statuses(db: Session, admission_id: int) -> None:
@@ -8572,18 +8602,11 @@ def reconcile_admission_bill_statuses(db: Session, admission_id: int) -> None:
         Bill.reference_id == admission_id,
         Bill.status != "cancelled",
     ).order_by(Bill.id.asc()).all()
-    remaining = _admission_net_deposits(db, admission_id)
-    if remaining < 0:
-        remaining = 0.0
     for b in bills:
-        payments_on_b = sum(float(p.amount_paid or 0) for p in (b.payments or []))
-        split_recv = _bill_received_splits_total(db, b.id)
+        db.refresh(b, attribute_names=["payments"])
         total = float(b.total_amount or 0)
-        outstanding = max(0.0, total - payments_on_b)
-        alloc = min(outstanding, remaining)
-        remaining -= alloc
-        effective_paid = alloc + max(payments_on_b, split_recv)
-        if effective_paid >= total - 0.01:
+        effective_paid = effective_bill_paid(db, b)
+        if effective_paid >= total - 0.01 and total > 0:
             b.status = "paid"
         elif effective_paid > 0.01:
             b.status = "partial"
