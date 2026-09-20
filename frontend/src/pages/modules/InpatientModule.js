@@ -17,6 +17,7 @@ import { printPdfFromUrl } from '../../utils/printPdf';
 import { errorDetail } from '../../utils/apiErrors';
 import PdfPreviewDialog from '../../components/PdfPreviewDialog';
 import AdmitPatientWizard from './inpatient/AdmitPatientWizard';
+import PreAuthorisationsTab from './inpatient/PreAuthorisationsTab';
 import PatientSearchPicker from '../../components/PatientSearchPicker';
 import PendingAcceptanceList from './inpatient/PendingAcceptanceList';
 import AdmissionDraftsList from './inpatient/AdmissionDraftsList';
@@ -31,6 +32,7 @@ import DoctorDischargeSummaryPage from './inpatient/discharge/DoctorDischargeSum
 import { canAccessDischargeCheckout, prepareDischargeSummaryEdit, summaryIsReadyForPrint } from './inpatient/discharge/dischargeSummaryUtils';
 import DischargeHistory from './inpatient/discharge/DischargeHistory';
 import CanteenOrderPanel from './canteen/CanteenOrderPanel';
+import RoomImportExportBar from './inpatient/RoomImportExportBar';
 import DischargeSummaryEditor from './inpatient/DischargeSummaryEditor';
 import DischargeSummaryPreviewCard from './inpatient/discharge/DischargeSummaryPreviewCard';
 import DischargeSummaryTemplatePage from './inpatient/DischargeSummaryTemplatePage';
@@ -448,17 +450,6 @@ const InpatientModule = () => {
   const [roomTypeRates, setRoomTypeRates] = useState([]);
   const [roomTypeRatesSaving, setRoomTypeRatesSaving] = useState({});
   const [roomTypeRatesEdits, setRoomTypeRatesEdits] = useState({});
-
-  // Phase 2: Pre-authorisations
-  const [preauths, setPreauths] = useState([]);
-  const [preauthSearch, setPreauthSearch] = useState('');
-  const [preauthStatusFilter, setPreauthStatusFilter] = useState('');
-  const [showPreauthDialog, setShowPreauthDialog] = useState(false);
-  const [preauthForm, setPreauthForm] = useState({ patient_id: '', admission_id: '', insurance_provider: '', policy_number: '', tpa_id: '', requested_amount: '', notes: '' });
-  const [activePreauth, setActivePreauth] = useState(null);
-  const [showPreauthDecisionDialog, setShowPreauthDecisionDialog] = useState(false);
-  const [preauthDecisionForm, setPreauthDecisionForm] = useState({ status: 'approved', approved_amount: '', validity_days: '', approval_reference: '', notes: '' });
-  const [preauthSelectedPatient, setPreauthSelectedPatient] = useState(null);
 
   // Phase 2: Bill split
   const [billForSplit, setBillForSplit] = useState(null);
@@ -1115,23 +1106,6 @@ const InpatientModule = () => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const fetchPreauths = useCallback(async () => {
-    try {
-      const params = preauthStatusFilter ? { status: preauthStatusFilter } : {};
-      const res = await axios.get('/api/inpatient/preauth', { params });
-      let data = res.data || [];
-      if (preauthSearch) {
-        const q = preauthSearch.toLowerCase();
-        data = data.filter(p =>
-          (p.patient_name || '').toLowerCase().includes(q) ||
-          (p.insurance_provider || '').toLowerCase().includes(q) ||
-          (p.tpa_name || '').toLowerCase().includes(q)
-        );
-      }
-      setPreauths(data);
-    } catch { setPreauths([]); }
-  }, [preauthStatusFilter, preauthSearch]);
-
   useEffect(() => {
     fetchDashboard();
     fetchDoctors();
@@ -1148,7 +1122,6 @@ const InpatientModule = () => {
     if (activeTab === 'discharge') fetchAdmissions('discharged', dischargePage);
     if (activeTab === 'ot') fetchOTSchedules();
     if (activeTab === 'dashboard') fetchDashboard();
-    if (activeTab === 'preauth') fetchPreauths();
     if (activeTab === 'setup') {
       fetchAncillaryServices();
       fetchPackages();
@@ -1180,7 +1153,7 @@ const InpatientModule = () => {
     }
     if (activeTab === 'procedures') fetchProcedures(false);
     if (activeTab === 'ot') fetchProcedures(true);  // OT scheduling needs the active catalog
-  }, [activeTab, admissionsPage, dischargePage, fetchAdmissions, fetchDraftAdmissions, fetchRooms, fetchDashboard, fetchAvailableRooms, fetchOTSchedules, fetchPreauths, fetchAncillaryServices, fetchPackages, fetchTpaList, fetchRoomTypeRates, fetchCleaningBeds, fetchTurnoverStats, fetchPendingTransfers, fetchReservations, fetchReadmissions, fetchMortalityList, fetchRosterGrid, fetchRosterCoverage, fetchNursesList, fetchProcedures, fetchTriageQueue]);
+  }, [activeTab, admissionsPage, dischargePage, fetchAdmissions, fetchDraftAdmissions, fetchRooms, fetchDashboard, fetchAvailableRooms, fetchOTSchedules, fetchAncillaryServices, fetchPackages, fetchTpaList, fetchRoomTypeRates, fetchCleaningBeds, fetchTurnoverStats, fetchPendingTransfers, fetchReservations, fetchReadmissions, fetchMortalityList, fetchRosterGrid, fetchRosterCoverage, fetchNursesList, fetchProcedures, fetchTriageQueue]);
 
   // Re-fetch MAR when the date changes for an open admission
   useEffect(() => {
@@ -2645,57 +2618,6 @@ const InpatientModule = () => {
       toast({ title: 'TPA deactivated' });
       fetchTpaList();
     } catch { toast({ variant: 'destructive', title: 'Error', description: 'Failed' }); }
-  };
-
-  // Phase 2: Pre-auth
-  const handleCreatePreauth = async (e) => {
-    e.preventDefault();
-    if (!preauthSelectedPatient) {
-      toast({ variant: 'destructive', title: 'Error', description: 'Pick a patient' });
-      return;
-    }
-    setLoading(true);
-    try {
-      const payload = {
-        patient_id: preauthSelectedPatient.id,
-        admission_id: preauthForm.admission_id ? parseInt(preauthForm.admission_id) : null,
-        insurance_provider: preauthForm.insurance_provider,
-        policy_number: preauthForm.policy_number || null,
-        tpa_id: preauthForm.tpa_id ? parseInt(preauthForm.tpa_id) : null,
-        requested_amount: parseFloat(preauthForm.requested_amount),
-        notes: preauthForm.notes || null,
-      };
-      await axios.post('/api/inpatient/preauth', payload);
-      toast({ title: 'Pre-authorisation requested' });
-      setShowPreauthDialog(false);
-      setPreauthForm({ patient_id: '', admission_id: '', insurance_provider: '', policy_number: '', tpa_id: '', requested_amount: '', notes: '' });
-      setPreauthSelectedPatient(null);
-      fetchPreauths();
-    } catch (err) {
-      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed';
-      toast({ variant: 'destructive', title: 'Error', description: msg });
-    } finally { setLoading(false); }
-  };
-
-  const handlePreauthDecision = async (e) => {
-    e.preventDefault();
-    setLoading(true);
-    try {
-      const payload = {
-        status: preauthDecisionForm.status,
-        approved_amount: preauthDecisionForm.approved_amount ? parseFloat(preauthDecisionForm.approved_amount) : null,
-        validity_days: preauthDecisionForm.validity_days ? parseInt(preauthDecisionForm.validity_days) : null,
-        approval_reference: preauthDecisionForm.approval_reference || null,
-        notes: preauthDecisionForm.notes || null,
-      };
-      await axios.post(`/api/inpatient/preauth/${activePreauth.id}/decision`, payload);
-      toast({ title: 'Decision recorded' });
-      setShowPreauthDecisionDialog(false);
-      fetchPreauths();
-    } catch (err) {
-      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed';
-      toast({ variant: 'destructive', title: 'Error', description: msg });
-    } finally { setLoading(false); }
   };
 
   // Phase 2: Bill split
@@ -5514,12 +5436,11 @@ const InpatientModule = () => {
           {/* ============ ROOM MANAGEMENT ============ */}
           {activeTab === 'rooms' && (
             <div className="p-6 overflow-y-auto h-full space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold">Room Management</h2>
-            <Button onClick={openAddRoomDialog}>
-              <Plus className="h-4 w-4 mr-2" /> Add Room
-            </Button>
-          </div>
+          <RoomImportExportBar
+            onAddRoom={openAddRoomDialog}
+            onImported={fetchRooms}
+            toast={toast}
+          />
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {rooms.map(room => {
@@ -5882,78 +5803,7 @@ const InpatientModule = () => {
 
           {/* ============ PRE-AUTHORISATIONS ============ */}
           {activeTab === 'preauth' && (
-            <div className="p-6 overflow-y-auto h-full space-y-4">
-              <div className="flex items-center justify-between">
-                <h2 className="text-lg font-semibold">Insurance Pre-Authorisations</h2>
-                <Button onClick={() => { setPreauthForm({ patient_id: '', admission_id: '', insurance_provider: '', policy_number: '', tpa_id: '', requested_amount: '', notes: '' }); setPreauthSelectedPatient(null); setShowPreauthDialog(true); }}>
-                  <Plus className="h-4 w-4 mr-2" /> New Request
-                </Button>
-              </div>
-              <div className="flex gap-3">
-                <Input className="max-w-xs" placeholder="Search by patient, provider, TPA..." value={preauthSearch} onChange={e => setPreauthSearch(e.target.value)} />
-                <Select value={preauthStatusFilter || 'all'} onValueChange={v => setPreauthStatusFilter(v === 'all' ? '' : v)}>
-                  <SelectTrigger className="max-w-[200px]"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All statuses</SelectItem>
-                    <SelectItem value="requested">Requested</SelectItem>
-                    <SelectItem value="approved">Approved</SelectItem>
-                    <SelectItem value="rejected">Rejected</SelectItem>
-                    <SelectItem value="expansion_requested">Expansion Requested</SelectItem>
-                    <SelectItem value="expanded">Expanded</SelectItem>
-                    <SelectItem value="expired">Expired</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              {preauths.length === 0 ? (
-                <Card><CardContent className="py-12 text-center text-gray-500">No pre-authorisation requests.</CardContent></Card>
-              ) : (
-                <div className="space-y-2">
-                  {preauths.map(p => {
-                    const statusColor = {
-                      requested: 'bg-blue-100 text-blue-800',
-                      approved: 'bg-green-100 text-green-800',
-                      rejected: 'bg-red-100 text-red-800',
-                      expansion_requested: 'bg-yellow-100 text-yellow-800',
-                      expanded: 'bg-purple-100 text-purple-800',
-                      expired: 'bg-gray-100 text-gray-800',
-                    }[p.status] || 'bg-gray-100 text-gray-800';
-                    return (
-                      <Card key={p.id}>
-                        <CardContent className="py-3">
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <span className="font-semibold text-sm">{p.patient_name || '—'}</span>
-                                <Badge className={`text-xs ${statusColor}`}>{p.status}</Badge>
-                                <span className="text-xs text-gray-500">{p.insurance_provider}</span>
-                                {p.tpa_name && <span className="text-xs text-gray-500">· TPA: {p.tpa_name}</span>}
-                              </div>
-                              <div className="text-xs text-gray-600 mt-1">
-                                Requested ₹{p.requested_amount.toFixed(2)}
-                                {p.approved_amount > 0 && <> · Approved ₹{p.approved_amount.toFixed(2)}</>}
-                                {p.policy_number && <> · Policy {p.policy_number}</>}
-                                · {new Date(p.request_date).toLocaleDateString()}
-                              </div>
-                              {p.admission_number && <div className="text-xs text-gray-500">Admission {p.admission_number}</div>}
-                              {p.notes && <p className="text-xs italic text-gray-600 mt-1">{p.notes}</p>}
-                            </div>
-                            <div className="flex gap-1">
-                              {(p.status === 'requested' || p.status === 'expansion_requested') && (
-                                <Button size="sm" variant="outline" onClick={() => {
-                                  setActivePreauth(p);
-                                  setPreauthDecisionForm({ status: 'approved', approved_amount: String(p.requested_amount), validity_days: '', approval_reference: '', notes: '' });
-                                  setShowPreauthDecisionDialog(true);
-                                }}>Record Decision</Button>
-                              )}
-                            </div>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
+            <PreAuthorisationsTab canManage={ip('manage_preauth')} />
           )}
 
           {/* ============ DUTY ROSTER ============ */}
@@ -7937,101 +7787,6 @@ const InpatientModule = () => {
                 </div>
               </div>
               <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Saving…' : 'Save Split'}</Button>
-            </form>
-          )}
-        </DialogContent>
-      </Dialog>
-
-      {/* Pre-auth Create Dialog */}
-      <Dialog open={showPreauthDialog} onOpenChange={(open) => { setShowPreauthDialog(open); if (!open) setPreauthSelectedPatient(null); }}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader><DialogTitle>New Pre-Authorisation Request</DialogTitle></DialogHeader>
-          <form onSubmit={handleCreatePreauth} className="space-y-3">
-            <PatientSearchPicker
-              value={preauthSelectedPatient}
-              onChange={setPreauthSelectedPatient}
-              label="Patient"
-              required
-            />
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <Label>Insurance Provider *</Label>
-                <Input value={preauthForm.insurance_provider} onChange={e => setPreauthForm(p => ({ ...p, insurance_provider: e.target.value }))} required placeholder="e.g. Star Health" />
-              </div>
-              <div>
-                <Label>Policy Number</Label>
-                <Input value={preauthForm.policy_number} onChange={e => setPreauthForm(p => ({ ...p, policy_number: e.target.value }))} />
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <Label>TPA</Label>
-                <Select value={preauthForm.tpa_id} onValueChange={v => setPreauthForm(p => ({ ...p, tpa_id: v }))}>
-                  <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
-                  <SelectContent>
-                    {tpaList.map(t => <SelectItem key={t.id} value={String(t.id)}>{t.tpa_name}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label>Requested Amount (₹) *</Label>
-                <Input type="number" step="0.01" min="0.01" value={preauthForm.requested_amount} onChange={e => setPreauthForm(p => ({ ...p, requested_amount: e.target.value }))} required />
-              </div>
-            </div>
-            <div>
-              <Label>Admission (if any)</Label>
-              <Input value={preauthForm.admission_id} onChange={e => setPreauthForm(p => ({ ...p, admission_id: e.target.value }))} placeholder="Admission ID (numeric)" />
-            </div>
-            <div>
-              <Label>Notes</Label>
-              <Textarea value={preauthForm.notes} onChange={e => setPreauthForm(p => ({ ...p, notes: e.target.value }))} rows={2} />
-            </div>
-            <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Saving…' : 'Submit Request'}</Button>
-          </form>
-        </DialogContent>
-      </Dialog>
-
-      {/* Pre-auth Decision Dialog */}
-      <Dialog open={showPreauthDecisionDialog} onOpenChange={setShowPreauthDecisionDialog}>
-        <DialogContent className="max-w-md">
-          <DialogHeader><DialogTitle>Record Insurer Decision</DialogTitle></DialogHeader>
-          {activePreauth && (
-            <form onSubmit={handlePreauthDecision} className="space-y-3">
-              <p className="text-sm">{activePreauth.insurance_provider} · Requested ₹{activePreauth.requested_amount.toFixed(2)}</p>
-              <div>
-                <Label>Decision *</Label>
-                <Select value={preauthDecisionForm.status} onValueChange={v => setPreauthDecisionForm(p => ({ ...p, status: v }))}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="approved">Approved</SelectItem>
-                    <SelectItem value="rejected">Rejected</SelectItem>
-                    <SelectItem value="expired">Expired</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              {preauthDecisionForm.status === 'approved' && (
-                <>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <Label>Approved Amount (₹) *</Label>
-                      <Input type="number" step="0.01" value={preauthDecisionForm.approved_amount} onChange={e => setPreauthDecisionForm(p => ({ ...p, approved_amount: e.target.value }))} required />
-                    </div>
-                    <div>
-                      <Label>Validity (days)</Label>
-                      <Input type="number" value={preauthDecisionForm.validity_days} onChange={e => setPreauthDecisionForm(p => ({ ...p, validity_days: e.target.value }))} />
-                    </div>
-                  </div>
-                  <div>
-                    <Label>Approval Reference</Label>
-                    <Input value={preauthDecisionForm.approval_reference} onChange={e => setPreauthDecisionForm(p => ({ ...p, approval_reference: e.target.value }))} />
-                  </div>
-                </>
-              )}
-              <div>
-                <Label>Notes</Label>
-                <Textarea value={preauthDecisionForm.notes} onChange={e => setPreauthDecisionForm(p => ({ ...p, notes: e.target.value }))} rows={2} />
-              </div>
-              <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Saving…' : 'Save Decision'}</Button>
             </form>
           )}
         </DialogContent>
