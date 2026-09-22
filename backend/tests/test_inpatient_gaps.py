@@ -175,7 +175,7 @@ _interim_preview: dict = {}
 
 
 class TestInterimPreviewPdf:
-    """Interim Bill UI prints a live PDF with INTERIM watermark — no Bill create."""
+    """Print charges to date is a live PDF — no Bill row is created."""
 
     def test_setup(self, client, auth_headers, seed_data):
         _discharge_active(client, auth_headers, seed_data["patient_id"])
@@ -572,7 +572,7 @@ class TestGatePass:
     def test_zero_balance_with_interim_bill_needs_no_gate_pass_override(
         self, client, auth_headers, seed_data,
     ):
-        """A comprehensive final bill replaces interim totals for the exit gate."""
+        """A final bill for the full stay settles the exit gate when deposits cover it."""
         adm = client.post(
             f"{API}/admissions",
             json={
@@ -592,13 +592,6 @@ class TestGatePass:
         total = float(preview.json()["grand_total"])
         assert total > 0
 
-        interim = client.post(
-            f"{API}/admissions/{adm_id}/bill/interim",
-            json={},
-            headers=auth_headers,
-        )
-        assert interim.status_code == 200, interim.text
-
         deposit = client.post(
             f"{API}/admissions/{adm_id}/deposits",
             json={"amount": total, "payment_method": "cash", "deposit_type": "topup"},
@@ -608,20 +601,11 @@ class TestGatePass:
 
         final = client.post(
             f"{API}/admissions/{adm_id}/bill/finalize",
-            json={
-                "items_override": [{
-                    "source": "custom",
-                    "source_id": None,
-                    "item_type": "admission_charges",
-                    "item_name": "Comprehensive admission charges",
-                    "quantity": 1,
-                    "unit_price": total,
-                    "total_price": total,
-                }],
-            },
+            json={},
             headers=auth_headers,
         )
         assert final.status_code == 200, final.text
+        assert abs(float(final.json()["total_amount"]) - total) < 0.01
 
         balance = client.get(
             f"{API}/admissions/{adm_id}/balance", headers=auth_headers,

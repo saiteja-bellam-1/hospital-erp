@@ -990,6 +990,8 @@ class PDFService:
         wm = None
         if (bill_data.get('status') or '').lower() == 'cancelled':
             wm = 'CANCELLED'
+        elif (bill_data.get('bill_subtype') or '').lower() == 'charges to date':
+            wm = 'NOT FINAL'
         elif (bill_data.get('bill_subtype') or '').lower() == 'interim':
             wm = 'INTERIM'
         _finalize(doc, elements, hospital_info, watermark=wm)

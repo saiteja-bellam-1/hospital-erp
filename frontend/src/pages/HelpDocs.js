@@ -1668,7 +1668,7 @@ The inpatient module uses 58 granular permission keys. Below is the full catalog
 
 | Key | Description |
 |---|---|
-| generate_interim_bill | Create interim bills during stay |
+| generate_interim_bill | Legacy key. Running charges are printed from the admission and are not saved |
 | finalize_bill | Finalize the admission bill |
 | manage_packages | Apply or remove surgery packages |
 | manage_ancillary_charges | Add / update / delete ancillary charges |

@@ -195,6 +195,10 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge, doct
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
+              <p className="text-xs text-gray-500">
+                This step saves the final bill for the whole stay. Until then, the admission
+                billing tab only shows live charges and deposits.
+              </p>
               {finalBill && (
                 <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2">
                   Final bill <b>{finalBill.bill_number}</b> already exists — continue to settlement.
