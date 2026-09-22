@@ -30,7 +30,7 @@ const STATUS_LABEL = {
 
 export async function downloadPharmacyBlob(url, fallbackName, toast) {
   try {
-    const res = await axios.get(url, { responseType: 'blob' });
+      const res = await axios.get(url, { responseType: 'blob', timeout: 60000 });
     const contentType = res.headers['content-type'] || '';
     if (contentType.includes('application/json')) {
       const text = await res.data.text?.() || await new Response(res.data).text();
@@ -122,6 +122,7 @@ export default function PharmacyImportDialog({
       }
       const res = await axios.post(importUrl, fd, {
         headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 60000,
       });
       if (dryRun) {
         setSummary(res.data);

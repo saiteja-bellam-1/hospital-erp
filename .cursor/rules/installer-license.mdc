@@ -1,0 +1,33 @@
+---
+description: Windows installer, dbcheck, seed bootstrap, and license apps
+globs: installer/**/*,license-manager/**/*,license-tools/**/*
+alwaysApply: false
+---
+
+# Installer, seed, license
+
+## First install (Windows only)
+
+`installer/installer.iss` writes `{app}\data\install_seed.json` and, in fresh mode, `.install_seed.pwd`. `backend/launcher.py` calls `consume_seed_if_present`.
+
+Modes: `fresh` (seed hospital + super_admin + roles + modules, optional `store_license`), `adopt_existing` (rebind `config.json` + engine), `restore_backup` (SQLite `.backup()` then migrate).
+
+Success deletes seed files. Failure writes `data/.bootstrap_status.json` and **leaves the seed** for retry.
+
+Source/macOS has no installer. Bootstrap a dev DB with a hand-written `install_seed.json` or `db_seed.init_database_and_seed`.
+
+`.install_seed.pwd` may be ACL-locked on old installs; bootstrap tries `icacls` self-heal. New installers dropped that lockdown because the exe relaunches as the user.
+
+## dbcheck
+
+`installer/dbcheck/dbcheck.py` → `installer/bin/dbcheck.exe`. Commands emit **one JSON line**. Spec **excludes** sqlalchemy/fastapi.
+
+Import only `app.services.license_inspect` (and other Session-free modules). Never import `license_service` from dbcheck.
+
+## License files
+
+`.lic` = base64 JSON + Ed25519, bound to machine ID. Seller info in the signed payload feeds PDF footer and Support Contact.
+
+License Manager (`license-manager/backend/app.py` `:9000`) is a **separate app** — do not mix its models/routes with the hospital API.
+
+Feature `customisation` gates white-label app name/logo only.

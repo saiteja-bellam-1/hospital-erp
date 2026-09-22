@@ -18,7 +18,9 @@ import {
   X,
   RefreshCw,
   KeyRound,
-  Upload
+  Upload,
+  Download,
+  Loader2,
 } from 'lucide-react';
 import axios from 'axios';
 import BulkUserImportDialog from './admin/BulkUserImport';
@@ -43,6 +45,7 @@ const AdminModule = () => {
   const [roles, setRoles] = useState([]);
   const [showUserForm, setShowUserForm] = useState(false);
   const [showBulkImport, setShowBulkImport] = useState(false);
+  const [exportingUsers, setExportingUsers] = useState(false);
   const [showRoleForm, setShowRoleForm] = useState(false);
   const [editingUser, setEditingUser] = useState(null);
   const [editingRole, setEditingRole] = useState(null);
@@ -141,6 +144,55 @@ const AdminModule = () => {
         title: "Error",
         description: "Failed to fetch users"
       });
+    }
+  };
+
+  const handleExportUsers = async () => {
+    setExportingUsers(true);
+    try {
+      const res = await axios.get('/api/admin/users/export/xlsx', {
+        responseType: 'blob',
+        timeout: 30000,
+      });
+      const contentType = res.headers['content-type'] || '';
+      if (contentType.includes('application/json')) {
+        const text = await res.data.text?.() || await new Response(res.data).text();
+        let detail = 'Failed to export users';
+        try { detail = JSON.parse(text).detail || detail; } catch { /* keep default */ }
+        throw new Error(typeof detail === 'string' ? detail : 'Failed to export users');
+      }
+      const disposition = res.headers['content-disposition'] || '';
+      const match = disposition.match(/filename=([^;]+)/);
+      const filename = match ? match[1].trim().replace(/"/g, '') : 'users_export.xlsx';
+      const url = window.URL.createObjectURL(new Blob([res.data], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      toast({ title: 'Users exported' });
+    } catch (error) {
+      const detail = error.response?.data;
+      let message = error.message || 'Failed to export users';
+      if (detail instanceof Blob) {
+        try {
+          const parsed = JSON.parse(await detail.text());
+          if (typeof parsed.detail === 'string') message = parsed.detail;
+        } catch { /* keep message */ }
+      } else if (typeof detail?.detail === 'string') {
+        message = detail.detail;
+      }
+      toast({
+        variant: 'destructive',
+        title: 'Error',
+        description: message,
+      });
+    } finally {
+      setExportingUsers(false);
     }
   };
 
@@ -589,6 +641,20 @@ const AdminModule = () => {
               {userLimit && !userLimit.unlimited && userLimit.remaining === 0 && (
                 <p className="text-xs text-red-600">Limit reached. Upgrade license to add more.</p>
               )}
+              <Button
+                variant="outline"
+                onClick={handleExportUsers}
+                className="flex items-center"
+                disabled={exportingUsers}
+                title="Download all users as an Excel file. Passwords are not included."
+              >
+                {exportingUsers ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Download className="h-4 w-4 mr-2" />
+                )}
+                Export
+              </Button>
               <Button
                 variant="outline"
                 onClick={() => setShowBulkImport(true)}

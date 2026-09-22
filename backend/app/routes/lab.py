@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+from sqlalchemy import and_, exists, or_
 from sqlalchemy import func as sqlfunc
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -335,6 +336,16 @@ class StatsResponse(BaseModel):
     total_orders: int
     pending_orders: int
     completed_today: int
+    ordered_count: int = 0
+    collected_count: int = 0
+    processing_count: int = 0
+    urgent_count: int = 0
+    orders_today: int = 0
+    ipd_pending_count: int = 0
+    unpaid_opd_count: int = 0
+    total_sample_types: int = 0
+    total_packages: int = 0
+    tests_missing_parameters: int = 0
 
 # --- Import Schemas ---
 
@@ -1270,6 +1281,22 @@ async def check_duplicate_orders(
 
 
 _RECEPTION_LAB_BOOK_ROLES = frozenset({"receptionist", "frontdesk", "hospital_admin", "super_admin"})
+_PIPELINE_STATUSES = ("ordered", "collected", "processing")
+_URGENT_PRIORITIES = ("urgent", "stat")
+
+
+def _lab_tech_payment_gate_applies(current_user: User) -> bool:
+    """Lab technicians only see paid OPD orders (IPD bypasses the payment gate)."""
+    return current_user.has_role("lab_technician")
+
+
+def _apply_lab_tech_payment_gate(query):
+    return query.filter(
+        or_(
+            PatientLabOrder.payment_status == "paid",
+            PatientLabOrder.admission_id.isnot(None),
+        )
+    )
 
 _LAB_READ_PERMISSIONS = frozenset({
     "view_appointments", "view_patients", "view_schedules", "read",
@@ -1652,11 +1679,8 @@ async def list_orders(
         reception_view
         and bool(_RECEPTION_LAB_BOOK_ROLES & set(current_user.role_names))
     )
-    if current_user.has_role('lab_technician') and not skip_payment_gate:
-        query = query.filter(
-            (PatientLabOrder.payment_status == 'paid')
-            | (PatientLabOrder.admission_id.isnot(None))
-        )
+    if _lab_tech_payment_gate_applies(current_user) and not skip_payment_gate:
+        query = _apply_lab_tech_payment_gate(query)
 
     orders = query.order_by(PatientLabOrder.order_date.desc()).limit(200).all()
     return [_build_order_response(o, db) for o in orders]
@@ -2881,32 +2905,116 @@ async def get_lab_stats(
     current_user: User = Depends(require_permission(Modules.LAB, "read")),
     db: Session = Depends(get_db)
 ):
+    hid = current_user.hospital_id
+    gate = _lab_tech_payment_gate_applies(current_user)
+    today = date.today()
+
+    def hospital_orders():
+        q = db.query(PatientLabOrder).join(Patient).filter(Patient.hospital_id == hid)
+        if gate:
+            q = _apply_lab_tech_payment_gate(q)
+        return q
+
     total_tests = db.query(LabTest).filter(
-        LabTest.hospital_id == current_user.hospital_id, LabTest.is_active == True
+        LabTest.hospital_id == hid, LabTest.is_active == True
     ).count()
     total_categories = db.query(LabTestCategory).filter(
-        LabTestCategory.hospital_id == current_user.hospital_id, LabTestCategory.is_active == True
+        LabTestCategory.hospital_id == hid, LabTestCategory.is_active == True
     ).count()
+    total_sample_types = db.query(SampleType).filter(
+        SampleType.hospital_id == hid, SampleType.is_active == True
+    ).count()
+    total_packages = db.query(LabTestPackage).filter(
+        LabTestPackage.hospital_id == hid, LabTestPackage.is_active == True
+    ).count()
+    tests_missing_parameters = db.query(sqlfunc.count(LabTest.id)).filter(
+        LabTest.hospital_id == hid,
+        LabTest.is_active == True,
+        ~exists().where(and_(
+            LabTestParameter.test_id == LabTest.id,
+            LabTestParameter.is_active == True,
+        )),
+    ).scalar() or 0
+
     total_orders = db.query(PatientLabOrder).join(Patient).filter(
-        Patient.hospital_id == current_user.hospital_id
+        Patient.hospital_id == hid
     ).count()
-    pending_orders = db.query(PatientLabOrder).join(Patient).filter(
-        Patient.hospital_id == current_user.hospital_id,
-        PatientLabOrder.status.in_(["ordered", "collected", "processing"])
-    ).count()
-    today = date.today()
-    completed_today = db.query(PatientLabOrder).join(Patient).filter(
-        Patient.hospital_id == current_user.hospital_id,
-        PatientLabOrder.status == "completed",
-        sqlfunc.date(PatientLabOrder.completion_date) == today
-    ).count()
+
+    status_rows = (
+        hospital_orders()
+        .with_entities(PatientLabOrder.status, sqlfunc.count(PatientLabOrder.id))
+        .filter(PatientLabOrder.status.in_(_PIPELINE_STATUSES))
+        .group_by(PatientLabOrder.status)
+        .all()
+    )
+    by_status = {status: n for status, n in status_rows}
+    ordered_count = by_status.get("ordered", 0)
+    collected_count = by_status.get("collected", 0)
+    processing_count = by_status.get("processing", 0)
+    pending_orders = ordered_count + collected_count + processing_count
+
+    urgent_count = (
+        hospital_orders()
+        .filter(
+            PatientLabOrder.status.in_(_PIPELINE_STATUSES),
+            PatientLabOrder.priority.in_(_URGENT_PRIORITIES),
+        )
+        .count()
+    )
+    orders_today = (
+        hospital_orders()
+        .filter(
+            PatientLabOrder.status != "cancelled",
+            sqlfunc.date(PatientLabOrder.order_date) == today,
+        )
+        .count()
+    )
+    completed_today = (
+        hospital_orders()
+        .filter(
+            PatientLabOrder.status == "completed",
+            sqlfunc.date(PatientLabOrder.completion_date) == today,
+        )
+        .count()
+    )
+    ipd_pending_count = (
+        db.query(PatientLabOrder)
+        .join(Patient)
+        .filter(
+            Patient.hospital_id == hid,
+            PatientLabOrder.admission_id.isnot(None),
+            PatientLabOrder.status.in_(_PIPELINE_STATUSES),
+        )
+        .count()
+    )
+    unpaid_opd_count = (
+        db.query(PatientLabOrder)
+        .join(Patient)
+        .filter(
+            Patient.hospital_id == hid,
+            PatientLabOrder.payment_status == "pending",
+            PatientLabOrder.admission_id.is_(None),
+            PatientLabOrder.status != "cancelled",
+        )
+        .count()
+    )
 
     return {
         "total_tests": total_tests,
         "total_categories": total_categories,
+        "total_sample_types": total_sample_types,
+        "total_packages": total_packages,
+        "tests_missing_parameters": tests_missing_parameters,
         "total_orders": total_orders,
         "pending_orders": pending_orders,
-        "completed_today": completed_today
+        "ordered_count": ordered_count,
+        "collected_count": collected_count,
+        "processing_count": processing_count,
+        "urgent_count": urgent_count,
+        "orders_today": orders_today,
+        "completed_today": completed_today,
+        "ipd_pending_count": ipd_pending_count,
+        "unpaid_opd_count": unpaid_opd_count,
     }
 
 @router.get("/tests/{test_id}/sample-report")
@@ -4110,237 +4218,3 @@ async def export_tests_xlsx(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Export failed: {e}")
 
-
-@router.post("/seed-defaults")
-async def seed_default_tests(
-    current_user: User = Depends(require_permission(Modules.LAB, "write")),
-    db: Session = Depends(get_db)
-):
-    """Seed default lab tests with parameters for the hospital"""
-    _require_lab_admin(current_user)
-    hospital_id = current_user.hospital_id
-
-    # Block only when an active catalog already exists. Soft-deleted leftovers
-    # are reactivated / refreshed by code instead of blocked or duplicated.
-    existing_active = db.query(LabTest).filter(
-        LabTest.hospital_id == hospital_id,
-        LabTest.is_active == True,
-    ).count()
-    if existing_active > 0:
-        raise HTTPException(status_code=400, detail="Lab tests already exist for this hospital. Delete existing tests first or add manually.")
-
-    seed_data = _get_seed_data()
-    created_tests = 0
-    reactivated_tests = 0
-
-    for cat_name, tests in seed_data.items():
-        cat = db.query(LabTestCategory).filter(
-            LabTestCategory.hospital_id == hospital_id,
-            LabTestCategory.name == cat_name,
-        ).first()
-        if not cat:
-            cat = LabTestCategory(name=cat_name, hospital_id=hospital_id)
-            db.add(cat)
-            db.flush()
-        elif not cat.is_active:
-            cat.is_active = True
-
-        for test_info in tests:
-            existing = db.query(LabTest).filter(
-                LabTest.hospital_id == hospital_id,
-                LabTest.test_code == test_info["code"],
-            ).first()
-            if existing:
-                existing.is_active = True
-                existing.name = test_info["name"]
-                existing.description = test_info.get("description", "")
-                existing.category_id = cat.id
-                existing.cost = test_info.get("cost", 0)
-                existing.sample_type = test_info.get("sample_type", "Blood")
-                existing.method = test_info.get("method")
-                existing.preparation_instructions = test_info.get("instructions", "")
-                db.query(LabTestParameter).filter(LabTestParameter.test_id == existing.id).delete(
-                    synchronize_session=False
-                )
-                db.flush()
-                for i, param in enumerate(test_info.get("parameters", [])):
-                    db.add(_create_seed_parameter(existing.id, param, i))
-                reactivated_tests += 1
-                continue
-
-            test = LabTest(
-                test_code=test_info["code"], name=test_info["name"],
-                description=test_info.get("description", ""),
-                category_id=cat.id, cost=test_info.get("cost", 0),
-                sample_type=test_info.get("sample_type", "Blood"),
-                method=test_info.get("method"),
-                preparation_instructions=test_info.get("instructions", ""),
-                hospital_id=hospital_id
-            )
-            db.add(test)
-            db.flush()
-
-            for i, param in enumerate(test_info.get("parameters", [])):
-                db.add(_create_seed_parameter(test.id, param, i))
-            created_tests += 1
-
-    db.commit()
-    parts = []
-    if created_tests:
-        parts.append(f"created {created_tests}")
-    if reactivated_tests:
-        parts.append(f"reactivated {reactivated_tests}")
-    summary = ", ".join(parts) if parts else "no changes"
-    return {"message": f"Seeded default lab tests ({summary})"}
-
-
-def _get_seed_data():
-    return {
-        "Biochemistry": [
-            {
-                "code": "LFT", "name": "Liver Function Test (LFT)",
-                "description": "Assesses liver health",
-                "cost": 600,
-                "sample_type": "Blood (Serum)",
-                "instructions": "Fasting 8-12 hours preferred",
-                "parameters": [
-                    {"name": "Total Bilirubin", "unit": "mg/dL", "reference_ranges": [{"min": 0.1, "max": 1.2}]},
-                    {"name": "Direct Bilirubin", "unit": "mg/dL", "reference_ranges": [{"min": 0.0, "max": 0.3}]},
-                    {"name": "Indirect Bilirubin", "unit": "mg/dL", "reference_ranges": [{"min": 0.1, "max": 0.9}]},
-                    {"name": "SGOT (AST)", "unit": "U/L", "reference_ranges": [{"min": 5.0, "max": 40.0}]},
-                    {"name": "SGPT (ALT)", "unit": "U/L", "reference_ranges": [{"min": 7.0, "max": 56.0}]},
-                    {"name": "Alkaline Phosphatase (ALP)", "unit": "U/L", "reference_ranges": [{"min": 44.0, "max": 147.0}]},
-                    {"name": "Total Protein", "unit": "g/dL", "reference_ranges": [{"min": 6.0, "max": 8.3}]},
-                    {"name": "Albumin", "unit": "g/dL", "reference_ranges": [{"min": 3.5, "max": 5.5}]},
-                    {"name": "Globulin", "unit": "g/dL", "reference_ranges": [{"min": 2.0, "max": 3.5}]},
-                ]
-            },
-            {
-                "code": "LIPID", "name": "Lipid Profile",
-                "description": "Measures cholesterol and triglyceride levels",
-                "cost": 500,
-                "sample_type": "Blood (Serum)",
-                "instructions": "Fasting 12 hours required",
-                "parameters": [
-                    {"name": "Total Cholesterol", "unit": "mg/dL", "reference_ranges": [{"min": 0.0, "max": 200.0}]},
-                    {"name": "Triglycerides", "unit": "mg/dL", "reference_ranges": [{"min": 0.0, "max": 150.0}]},
-                    {"name": "HDL Cholesterol", "unit": "mg/dL", "reference_ranges": [{"min": 40.0, "max": 999.0, "gender": "male"}, {"min": 50.0, "max": 999.0, "gender": "female"}]},
-                    {"name": "LDL Cholesterol", "unit": "mg/dL", "reference_ranges": [{"min": 0.0, "max": 100.0}]},
-                    {"name": "VLDL Cholesterol", "unit": "mg/dL", "reference_ranges": [{"min": 5.0, "max": 40.0}]},
-                ]
-            },
-            {
-                "code": "RFT", "name": "Renal Function Test (RFT)",
-                "description": "Evaluates kidney function",
-                "cost": 500,
-                "sample_type": "Blood (Serum)",
-                "instructions": "Fasting 8-12 hours preferred",
-                "parameters": [
-                    {"name": "Blood Urea", "unit": "mg/dL", "reference_ranges": [{"min": 15.0, "max": 40.0}]},
-                    {"name": "Serum Creatinine", "unit": "mg/dL", "reference_ranges": [{"min": 0.7, "max": 1.3, "gender": "male"}, {"min": 0.6, "max": 1.1, "gender": "female"}]},
-                    {"name": "Uric Acid", "unit": "mg/dL", "reference_ranges": [{"min": 3.5, "max": 7.2, "gender": "male"}, {"min": 2.6, "max": 6.0, "gender": "female"}]},
-                    {"name": "BUN", "unit": "mg/dL", "reference_ranges": [{"min": 7.0, "max": 20.0}]},
-                    {"name": "Sodium", "unit": "mEq/L", "reference_ranges": [{"min": 136.0, "max": 145.0}]},
-                    {"name": "Potassium", "unit": "mEq/L", "reference_ranges": [{"min": 3.5, "max": 5.1}]},
-                    {"name": "Chloride", "unit": "mEq/L", "reference_ranges": [{"min": 98.0, "max": 106.0}]},
-                ]
-            },
-        ],
-        "Blood Sugar": [
-            {
-                "code": "FBS", "name": "Fasting Blood Sugar",
-                "description": "Measures blood glucose after fasting",
-                "cost": 100,
-                "sample_type": "Blood (Fluoride)",
-                "instructions": "Fasting 8-12 hours required",
-                "parameters": [
-                    {"name": "Fasting Blood Glucose", "unit": "mg/dL", "reference_ranges": [{"min": 70.0, "max": 100.0}]},
-                ]
-            },
-            {
-                "code": "HBA1C", "name": "Glycated Hemoglobin (HbA1c)",
-                "description": "Average blood sugar over 2-3 months",
-                "cost": 450,
-                "sample_type": "Blood (EDTA)",
-                "instructions": "No special preparation",
-                "parameters": [
-                    {"name": "HbA1c", "unit": "%", "reference_ranges": [{"min": 4.0, "max": 5.6}]},
-                ]
-            },
-            {
-                "code": "PPBS", "name": "Post Prandial Blood Sugar",
-                "description": "Measures blood glucose 2 hours after eating",
-                "cost": 100,
-                "sample_type": "Blood (Fluoride)",
-                "instructions": "2 hours after meal",
-                "parameters": [
-                    {"name": "PP Blood Glucose", "unit": "mg/dL", "reference_ranges": [{"min": 70.0, "max": 140.0}]},
-                ]
-            },
-            {
-                "code": "RBS", "name": "Random Blood Sugar",
-                "description": "Random blood glucose measurement",
-                "cost": 80,
-                "sample_type": "Blood (Fluoride)",
-                "instructions": "No special preparation",
-                "parameters": [
-                    {"name": "Random Blood Glucose", "unit": "mg/dL", "reference_ranges": [{"min": 70.0, "max": 140.0}]},
-                ]
-            },
-        ],
-        "Hematology": [
-            {
-                "code": "CBC", "name": "Complete Blood Count (CBC)",
-                "description": "Measures different components of blood",
-                "cost": 350,
-                "sample_type": "Blood (EDTA)",
-                "instructions": "No special preparation",
-                "parameters": [
-                    {"name": "Hemoglobin", "unit": "g/dL", "reference_ranges": [{"min": 13.0, "max": 17.0, "gender": "male"}, {"min": 12.0, "max": 16.0, "gender": "female"}]},
-                    {"name": "RBC Count", "unit": "million/\u00b5L", "reference_ranges": [{"min": 4.5, "max": 5.5, "gender": "male"}, {"min": 4.0, "max": 5.0, "gender": "female"}]},
-                    {"name": "WBC Count", "unit": "cells/\u00b5L", "reference_ranges": [{"min": 4000.0, "max": 11000.0}]},
-                    {"name": "Platelet Count", "unit": "lakh/\u00b5L", "reference_ranges": [{"min": 1.5, "max": 4.0}]},
-                    {"name": "PCV / Hematocrit", "unit": "%", "reference_ranges": [{"min": 40.0, "max": 50.0, "gender": "male"}, {"min": 36.0, "max": 44.0, "gender": "female"}]},
-                    {"name": "MCV", "unit": "fL", "reference_ranges": [{"min": 80.0, "max": 100.0}]},
-                    {"name": "MCH", "unit": "pg", "reference_ranges": [{"min": 27.0, "max": 33.0}]},
-                    {"name": "MCHC", "unit": "g/dL", "reference_ranges": [{"min": 32.0, "max": 36.0}]},
-                    {"name": "ESR", "unit": "mm/hr", "reference_ranges": [{"min": 0.0, "max": 15.0, "gender": "male"}, {"min": 0.0, "max": 20.0, "gender": "female"}]},
-                ]
-            },
-        ],
-        "Thyroid": [
-            {
-                "code": "THYROID", "name": "Thyroid Profile",
-                "description": "Evaluates thyroid gland function",
-                "cost": 700,
-                "sample_type": "Blood (Serum)",
-                "instructions": "No special preparation",
-                "parameters": [
-                    {"name": "T3 (Triiodothyronine)", "unit": "ng/dL", "reference_ranges": [{"min": 80.0, "max": 200.0}]},
-                    {"name": "T4 (Thyroxine)", "unit": "\u00b5g/dL", "reference_ranges": [{"min": 4.5, "max": 12.5}]},
-                    {"name": "TSH", "unit": "\u00b5IU/mL", "reference_ranges": [{"min": 0.4, "max": 4.0}]},
-                ]
-            },
-        ],
-        "Urine Analysis": [
-            {
-                "code": "URINE-R", "name": "Urine Routine & Microscopy",
-                "description": "Physical, chemical and microscopic examination of urine",
-                "cost": 150,
-                "sample_type": "Urine (Mid-stream)",
-                "instructions": "Mid-stream clean catch sample",
-                "parameters": [
-                    {"name": "Color", "field_type": "text"},
-                    {"name": "Appearance", "field_type": "select", "possible_values": ["Clear", "Slightly Turbid", "Turbid"]},
-                    {"name": "pH", "reference_ranges": [{"min": 4.5, "max": 8.0}]},
-                    {"name": "Specific Gravity", "reference_ranges": [{"min": 1.005, "max": 1.03}]},
-                    {"name": "Protein", "field_type": "select", "possible_values": ["Nil", "Trace", "+", "++", "+++"]},
-                    {"name": "Glucose", "field_type": "select", "possible_values": ["Nil", "Trace", "+", "++", "+++"]},
-                    {"name": "Ketones", "field_type": "select", "possible_values": ["Nil", "Trace", "+", "++", "+++"]},
-                    {"name": "RBC", "unit": "/HPF", "reference_ranges": [{"min": 0.0, "max": 2.0}]},
-                    {"name": "Pus Cells (WBC)", "unit": "/HPF", "reference_ranges": [{"min": 0.0, "max": 5.0}]},
-                    {"name": "Epithelial Cells", "unit": "/HPF", "field_type": "select", "possible_values": ["Few", "Moderate", "Many"]},
-                ]
-            },
-        ],
-    }

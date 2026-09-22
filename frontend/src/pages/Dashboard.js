@@ -58,7 +58,7 @@ import SoftwareUpdate from './modules/SoftwareUpdate';
 import LicenseBanner from '../components/LicenseBanner';
 import BackupHealthBanner from '../components/BackupHealthBanner';
 import SetupProgressBanner from '../components/SetupProgressBanner';
-import { useNavigationSections, normalizeUserRoles, canAccessLabAdminDashboard } from '../hooks/useNavigationSections';
+import { useNavigationSections, normalizeUserRoles, canAccessLabModule } from '../hooks/useNavigationSections';
 import HomeGrid from './modules/HomeGrid';
 import SetupWizard from './setup/SetupWizard';
 
@@ -68,7 +68,9 @@ const HomeDashboard = ({ hasRole, enabledModules }) => {
   if (hasRole('hospital_admin')) return <HospitalAdminDashboard />;
   // Doctors always get their dashboard (same pattern as lab staff below).
   if (hasRole('doctor')) return <DoctorDashboard />;
-  if (hasRole('lab_admin') || hasRole('lab_technician')) return <LabTechDashboard />;
+  if (hasRole('lab_admin') || hasRole('lab_technician')) {
+    return <Navigate to="/dashboard/lab" replace />;
+  }
   // Reception keeps its own dashboard even when outpatient is off — OP widgets
   // inside ReceptionDashboard are gated by enabledModules.outpatient.
   if (hasRole('receptionist')) return <ReceptionDashboard />;
@@ -426,9 +428,9 @@ const DashboardShell = () => {
               <Route
                 path="lab/*"
                 element={
-                  canAccessLabAdminDashboard(roles)
+                  canAccessLabModule(roles)
                     ? <LabModule />
-                    : <Navigate to="/dashboard/lab-home" replace />
+                    : <Navigate to="/dashboard/home" replace />
                 }
               />
               <Route path="/pharmacy/*" element={<PharmacyModule />} />
@@ -447,6 +449,7 @@ const DashboardShell = () => {
                     : <Navigate to="/dashboard/outpatient" replace />
                 }
               />
+              <Route path="/inpatient/reports" element={<Navigate to="/dashboard/billing/reports?module=inpatient&kind=monthly-outcomes" replace />} />
               <Route path="/inpatient/*" element={<InpatientModule />} />
               <Route path="/admin/*" element={<AdminModule />} />
               <Route path="/hospital-admin/*" element={<HospitalAdminModule />} />

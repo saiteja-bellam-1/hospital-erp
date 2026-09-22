@@ -17,6 +17,7 @@ const I = (Icon) => <Icon className="h-[18px] w-[18px]" />;
 const B = (Icon) => <Icon className="h-7 w-7" />;
 
 const LAB_ADMIN_DASHBOARD_ROLES = ['lab_admin', 'hospital_admin', 'super_admin'];
+const LAB_MODULE_ROLES = ['lab_admin', 'lab_technician', 'hospital_admin', 'super_admin'];
 
 /** Normalize role entries from login/profile user objects or raw arrays. */
 export function normalizeUserRoles(userOrRoles) {
@@ -33,6 +34,12 @@ export function normalizeUserRoles(userOrRoles) {
 export function canAccessLabAdminDashboard(roles) {
   const normalized = normalizeUserRoles(roles);
   return normalized.some((r) => LAB_ADMIN_DASHBOARD_ROLES.includes(r));
+}
+
+/** Overview + queue. Catalog pages still require canAccessLabAdminDashboard. */
+export function canAccessLabModule(roles) {
+  const normalized = normalizeUserRoles(roles);
+  return normalized.some((r) => LAB_MODULE_ROLES.includes(r));
 }
 
 /**
@@ -105,7 +112,7 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
 
   // ── HOME ──
   // If the user has more than one role-specific dashboard, surface each as its
-  // own sidebar item (e.g. "Reception Dashboard", "Lab Tech Dashboard") so
+  // own sidebar item (e.g. "Reception Dashboard", "Lab Dashboard") so
   // nothing gets shadowed by the priority fallback at /dashboard.
   const roleDashboards = getRoleDashboards({ hasRole, hasAnyRole, enabledModules, isLabStaff });
   const homeItems = [];
@@ -188,14 +195,17 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
     if (items.length > 0) sections.push({ label: 'Doctor', items });
   }
 
-  // ── LAB (configuration — lab admin / hospital admin only) ──
-  if (canAccessLabAdminDashboard(roles) && labEnabled) {
+  // ── LAB (overview + queue for staff; catalog for lab admin / hospital admin) ──
+  if (canAccessLabModule(roles) && labEnabled) {
     const items = [];
     add(items, make('Dashboard', LayoutDashboard, '/dashboard/lab'));
-    add(items, make('Test Catalog', TestTube, '/dashboard/lab/tests'));
-    add(items, make('Categories', Tags, '/dashboard/lab/categories'));
-    add(items, make('Sample Types', Droplets, '/dashboard/lab/sample-types'));
-    add(items, make('Packages', Package, '/dashboard/lab/packages'));
+    add(items, make('Lab Queue', ClipboardList, '/dashboard/lab-home'));
+    if (canAccessLabAdminDashboard(roles)) {
+      add(items, make('Test Catalog', TestTube, '/dashboard/lab/tests'));
+      add(items, make('Categories', Tags, '/dashboard/lab/categories'));
+      add(items, make('Sample Types', Droplets, '/dashboard/lab/sample-types'));
+      add(items, make('Packages', Package, '/dashboard/lab/packages'));
+    }
     if (items.length > 0) sections.push({ label: 'Laboratory', items });
   }
 
@@ -269,9 +279,6 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
     }
     if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'doctor')) {
       add(items, make('Quality Reports', RotateCcw, '/dashboard/inpatient/quality'));
-    }
-    if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'receptionist', 'frontdesk')) {
-      add(items, make('Management Reports', FileText, '/dashboard/inpatient/reports'));
     }
     if (hasAnyRole('hospital_admin', 'super_admin', 'inpatient_admin', 'receptionist', 'frontdesk')) {
       add(items, make('Room Management', Building2, '/dashboard/inpatient/rooms'));
@@ -394,7 +401,7 @@ export function getRoleDashboards({ hasRole, hasAnyRole, enabledModules, isLabSt
     out.push({ key: 'doctor', label: 'Doctor Dashboard', path: '/dashboard/doctor-home' });
   }
   if (isLabStaff || (hasAnyRole('lab_admin', 'lab_technician') && enabledModules.lab)) {
-    out.push({ key: 'lab', label: 'Lab Tech Dashboard', path: '/dashboard/lab-home' });
+    out.push({ key: 'lab', label: 'Lab Dashboard', path: '/dashboard/lab' });
   }
   // Reception home lives under the Outpatient nav section (/dashboard/outpatient),
   // not as a role-home tile — so multi-role users still see it in the sidebar

@@ -18,7 +18,7 @@ DEFAULT_LETTERHEAD_GAP_PT = 100.0
 # spacing uses letterhead_gap_pt (Spacer) when include_header is False.
 PDF_TOP_MARGIN_PT = 0.0
 
-# Patient MRN (human-readable) on prescription / lab report demographics (vertical / ladder).
+# Patient MRN (human-readable) on prescription / lab report / OPD+lab bill demographics (vertical / ladder).
 # After 90° rotation: bar_length → strip height, bar_depth → strip width.
 _PATIENT_BARCODE_LENGTH_PT = 100.0  # fallback vertical extent if box height unknown
 _PATIENT_BARCODE_DEPTH_PT = 20.0    # horizontal thickness of bars-only strip
@@ -554,7 +554,7 @@ class PDFService:
           - items: [{description, code, qty, rate, amount}]
           - subtotal, discount, tax, total
           - deposits: [{date, method, reference, amount}]   (each receipt)
-          - deposits_total, balance_due
+          - deposits_total, payments_total, balance_due
           - prepared_by_name
         """
         buffer = BytesIO()
@@ -854,9 +854,10 @@ class PDFService:
         tax = float(bill_data.get('tax') or 0)
         total = float(bill_data.get('total') or (subtotal - discount + tax))
         deposits_total = float(bill_data.get('deposits_total') or 0)
+        payments_total = float(bill_data.get('payments_total') or 0)
         balance = float(bill_data.get('balance_due')
                         if bill_data.get('balance_due') is not None
-                        else (total - deposits_total))
+                        else (total - deposits_total - payments_total))
 
         summary_label_w = page_width - qty_w - amt_w
         # When neither a discount nor a tax row is shown, the Sub Total + Total
@@ -893,19 +894,27 @@ class PDFService:
                 Paragraph(f"{total:,.2f}", cell_value_right),
             ])
         if detailed_billing:
-            payment_data.extend([
-                [Paragraph('', cell_value_sm),
-                 Paragraph('<b>Deposits</b>', cell_value_sm),
-                 Paragraph(f"{deposits_total:,.2f}", cell_value_right)],
-                [Paragraph('', cell_value_sm),
-                 Paragraph('<b>Balance</b>'
-                           if balance > 0 else
-                           '<b>Refund Due</b>' if balance < -0.01 else
-                           '<b>Balance</b>', cell_value_sm),
-                 Paragraph(
+            payment_data.append([
+                Paragraph('', cell_value_sm),
+                Paragraph('<b>Deposits</b>', cell_value_sm),
+                Paragraph(f"{deposits_total:,.2f}", cell_value_right),
+            ])
+            if abs(payments_total) > 0.01:
+                payment_data.append([
+                    Paragraph('', cell_value_sm),
+                    Paragraph('<b>Payments</b>', cell_value_sm),
+                    Paragraph(f"{payments_total:,.2f}", cell_value_right),
+                ])
+            payment_data.append([
+                Paragraph('', cell_value_sm),
+                Paragraph('<b>Balance</b>'
+                          if balance > 0 else
+                          '<b>Refund Due</b>' if balance < -0.01 else
+                          '<b>Balance</b>', cell_value_sm),
+                Paragraph(
                     f"{abs(balance):,.2f}" if abs(balance) > 0.01 else "0.00",
                     ParagraphStyle('Bal', parent=cell_value_right,
-                        fontName='Helvetica-Bold'))],
+                        fontName='Helvetica-Bold')),
             ])
         payment_table = Table(payment_data, colWidths=[summary_label_w, qty_w, amt_w])
         payment_table.setStyle(TableStyle([
@@ -999,7 +1008,7 @@ class PDFService:
         return buffer
 
 
-    def generate_bill_pdf(self, bill_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, detailed_billing=True, include_footer=True):
+    def generate_bill_pdf(self, bill_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, detailed_billing=True, include_footer=True, show_patient_barcode=False):
         """Generate PDF for bill/receipt in tabular format"""
         buffer = BytesIO()
 
@@ -1166,7 +1175,13 @@ class PDFService:
 
         info_table = Table(patient_info_data, colWidths=[col_w, col_w])
         info_table.setStyle(TableStyle(info_style))
-        elements.append(info_table)
+        _append_patient_info_with_optional_barcode(
+            elements,
+            info_table,
+            page_width,
+            show_barcode=bool(show_patient_barcode),
+            mrn=bill_data.get("mrn") or "",
+        )
         elements.append(Spacer(1, 6))
 
         # ============================================================

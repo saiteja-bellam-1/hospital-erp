@@ -1115,6 +1115,7 @@ async def list_rooms(
     return query.order_by(RoomManagement.room_number).all()
 
 
+
 @router.post("/rooms", response_model=RoomResponse, status_code=status.HTTP_201_CREATED)
 async def create_room(
     room: RoomCreate,
@@ -5627,6 +5628,15 @@ async def get_admission_bill(
     net_deposits = sum(float(d.amount or 0) if d.deposit_type != "refund" else -abs(float(d.amount or 0))
                        for d in deposit_rows)
 
+    # Collect Payment / TPA receipts live on Payment rows, not deposits.
+    # Only fold them into remaining when this is the full-stay bill — the
+    # unbilled-only preview's grand_total is a subset and must not be
+    # reduced by money already applied to prior billed charges.
+    payments_total = 0.0
+    if not unbilled_only:
+        bal = _admission_balance_summary(db, admission)
+        payments_total = float(bal.get("total_paid") or 0)
+
     return {
         "admission_id": admission_id,
         "admission_number": admission.admission_number,
@@ -5640,7 +5650,8 @@ async def get_admission_bill(
         "grand_total": grand_total,
         "deposits": deposits_list,
         "deposits_total": round(net_deposits, 2),
-        "balance_due": round(grand_total - net_deposits, 2),
+        "payments_total": round(payments_total, 2),
+        "balance_due": round(grand_total - net_deposits - payments_total, 2),
     }
 
 
@@ -6824,14 +6835,13 @@ async def get_bill_pdf(
             bill_subtype = 'preview'
             status = 'not_finalized'
 
-    # Deposit summary + balance (uses existing helper)
+    # Deposit + payment trail, then remaining. Collect Payment / TPA receipts
+    # live on Payment rows — they must reduce the printed balance the same way
+    # the billing dashboard does. Do not use total - deposits only.
     bal = _admission_balance_summary(db, admission)
-    deposits_total = float(bal.get('net_deposits', 0))
-    # balance = net_deposits - total_billed; we want owes = total - deposits
-    balance_due = total - deposits_total
+    deposits_total = float(bal.get("net_deposits", 0))
+    payments_total = 0.0
 
-    # Itemised deposit receipts — list each payment so the patient sees the
-    # trail of payments collected before the final balance.
     deposit_rows = db.query(AdmissionDeposit).filter(
         AdmissionDeposit.admission_id == admission_id
     ).order_by(AdmissionDeposit.received_at).all()
@@ -6846,6 +6856,28 @@ async def get_bill_pdf(
         }
         for d in deposit_rows
     ]
+
+    if bill:
+        db.refresh(bill, attribute_names=["payments"])
+        cash_applied, other_applied, received = effective_bill_applied(db, bill)
+        deposits_total = cash_applied
+        payments_total = other_applied
+        balance_due = round(total - received, 2)
+        for p in sorted(bill.payments or [], key=lambda x: x.id or 0):
+            amt = float(p.amount_paid or 0)
+            if abs(amt) < 0.01:
+                continue
+            deposits_list.append({
+                "deposit_number": p.payment_number or "",
+                "date": format_bill_date(p.payment_date, empty=""),
+                "deposit_type": "refund" if amt < 0 else "payment",
+                "method": p.payment_method_name or "cash",
+                "reference": p.transaction_reference or "",
+                "amount": amt,
+            })
+    else:
+        payments_total = float(bal.get("total_paid") or 0)
+        balance_due = round(total - deposits_total - payments_total, 2)
 
     # Doctor names (admitting / attending / referring)
     def _name(user_id):
@@ -6930,6 +6962,7 @@ async def get_bill_pdf(
         "total": total,
         "deposits": deposits_list,
         "deposits_total": deposits_total,
+        "payments_total": payments_total,
         "balance_due": balance_due,
         "prepared_by_name": f"{current_user.first_name} {current_user.last_name}",
     }
@@ -8545,26 +8578,34 @@ def _bill_received_splits_total(db: Session, bill_id: int) -> float:
     return round(cash + other, 2)
 
 
-def effective_bill_paid(db: Session, bill: Bill) -> float:
-    """Amount actually received against a bill (not merely allocated).
+def effective_bill_applied(db: Session, bill: Bill) -> tuple:
+    """Return (cash_applied, other_applied, received) for a bill.
 
     Cash pool: max(deposits allocated to this bill, received cash splits).
-    Those are the same money, so they must not be added together.
-
     Non-cash pool: max(Payment rows, received TPA/insurance splits).
-    Mark Received posts a Payment for TPA; max() avoids counting it twice.
-
-    Pending splits never count. Capped at bill total.
+    ``received`` is not capped at bill total so excess deposits still show as
+    refund-due on the printed bill. Pending splits never count.
     """
     if (bill.status or "") == "cancelled":
-        return 0.0
+        return 0.0, 0.0, 0.0
     payments = sum(float(p.amount_paid or 0) for p in (bill.payments or []))
     cash_split, other_split = _bill_received_splits_by_kind(db, bill.id)
     deposit_alloc = allocate_deposits_to_bill(db, bill)
+    cash_applied = round(max(deposit_alloc, cash_split), 2)
+    other_applied = round(max(payments, other_split), 2)
+    return cash_applied, other_applied, round(cash_applied + other_applied, 2)
+
+
+def effective_bill_paid(db: Session, bill: Bill) -> float:
+    """Amount actually received against a bill (not merely allocated).
+
+    Same two-pool formula as ``effective_bill_applied``, capped at bill total.
+    """
+    if (bill.status or "") == "cancelled":
+        return 0.0
     total = float(bill.total_amount or 0)
-    cash_applied = max(deposit_alloc, cash_split)
-    other_applied = max(payments, other_split)
-    return round(min(total, cash_applied + other_applied), 2)
+    _, _, received = effective_bill_applied(db, bill)
+    return round(min(total, received), 2)
 
 
 def reconcile_admission_bill_statuses(db: Session, admission_id: int) -> None:

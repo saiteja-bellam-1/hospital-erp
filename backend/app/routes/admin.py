@@ -436,6 +436,43 @@ async def get_all_users(
         for user in users
     ]
 
+
+@router.get("/users/export/xlsx")
+async def export_users_xlsx(
+    current_user: User = Depends(require_admin_access),
+    db: Session = Depends(get_db),
+):
+    """Download all users as an Excel roster. Passwords are never included.
+
+    Hospital admins do not see the vendor super_admin account, matching GET /users.
+    """
+    import io
+    from fastapi.responses import StreamingResponse
+    from app.services.user_excel_export import build_users_xlsx
+    from app.utils.time import system_now
+
+    include_super_admin = current_user.has_role("super_admin")
+    content = build_users_xlsx(
+        db,
+        include_super_admin=include_super_admin,
+        hospital_id=current_user.hospital_id,
+    )
+    filename = f"users_export_{system_now().strftime('%Y%m%d')}.xlsx"
+    try:
+        from app.services.audit_service import log_action
+        log_action(
+            db, current_user, "export_users", "admin", "User", None,
+            "Exported users to Excel",
+        )
+    except Exception:
+        pass
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.post("/users", response_model=UserResponse)
 async def create_user(
     user_data: UserCreateRequest,

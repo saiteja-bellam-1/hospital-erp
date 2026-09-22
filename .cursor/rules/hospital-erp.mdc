@@ -1,0 +1,40 @@
+---
+description: KT HEALTH ERP live architecture, CLAUDE.md drift, and where to look
+alwaysApply: true
+---
+
+# KT HEALTH ERP — working memory
+
+Hospital LAN product. Brand `KTHEALTHERP`, display **KT HEALTH ERP**. Monorepo of three apps, not a workspace.
+
+Trust **current code** over `CLAUDE.md`, `TODO_*.md`, README, and `database_schema.md`. Those lag.
+
+## Apps
+
+- Hospital: `backend/` FastAPI `:8000` + `frontend/` React `:3000` (`proxy` → `:8000`)
+- License Manager: `license-manager/` `:9000` — issues `.lic` files
+- License Tools: `license-tools/` — CLI for the same Ed25519 format
+
+Run: `backend/venv/bin/python main.py` and `cd frontend && npm start`. Package Windows with `build_exe.bat` only.
+
+## CLAUDE.md is stale on these points
+
+- **Tests**: `backend/tests/` has many pytest files (pharmacy, billing, lab, backup, catch-up, canteen, physio, bootstrap). Not “one inpatient smoke test”.
+- **SetupWizard**: first-install React wizard is gone (`App.js` never bootstraps the DB). `/dashboard/setup` still exists as **post-install onboarding** for `super_admin`/`hospital_admin`, backed by `/api/onboarding`.
+- **License inspect split is done**: `app/services/license_inspect.py` is SQLAlchemy-free; `installer/dbcheck/dbcheck.py` imports it. `license_service.py` re-exports those helpers and still imports Session for DB ops.
+- **Print**: `frontend/src/utils/printPdf.js` (`printPdfFromUrl`) prefers a real window, not a hidden iframe. Letterhead comes from Print Settings server-side. Do not pass `include_header` unless overriding the hospital default.
+- **Incidents + diet orders were dropped** (`migrate_drop_incidents_diet.py`). Do not reintroduce those tables.
+- **No standalone `/api/billing` router** — it is commented out in `main.py`. Bills live on `hospital_admin`, pharmacy, lab, inpatient, canteen, physio, catch-up. UI hub is `BillingHub.js`.
+
+## Cross-cutting (every feature)
+
+1. Permission chain: `super_admin`/`hospital_admin` bypass → module enabled → license `features` → role grant.
+2. New routes: `require_feature_permission(module, key)` from `app/utils/dependencies.py`. Legacy `require_permission(module, action)` still used by some OP/lab/pharmacy paths.
+3. Module on only if admin toggle **and** license features include it. Catalog: `CANONICAL_SYSTEM_MODULES` in `system_modules.py` (`billing` + `admin` always on). Canteen is a real module with grants in `db_seed.py` but is **not** in that canonical list — do not assume upgrade healing inserts it.
+4. Patient identity: integer `patients.id` (FKs) vs UUID `patients.patient_id` (display/API). Check the endpoint.
+5. Pydantic 422 `detail` is an array. Frontend: `typeof err.detail === 'string'` before rendering.
+6. API URLs are relative. CORS `*` and bind `0.0.0.0` are intentional for LAN.
+7. Audit: `AuditMiddleware` plus explicit `log_action()`.
+8. Middleware order: Maintenance (writes) → Audit → License.
+
+Default credentials are **not** shipped. First super_admin comes from the installer seed.

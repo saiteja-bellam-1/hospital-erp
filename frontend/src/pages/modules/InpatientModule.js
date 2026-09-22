@@ -32,7 +32,7 @@ import DoctorDischargeSummaryPage from './inpatient/discharge/DoctorDischargeSum
 import { canAccessDischargeCheckout, prepareDischargeSummaryEdit, summaryIsReadyForPrint } from './inpatient/discharge/dischargeSummaryUtils';
 import DischargeHistory from './inpatient/discharge/DischargeHistory';
 import CanteenOrderPanel from './canteen/CanteenOrderPanel';
-import RoomImportExportBar from './inpatient/RoomImportExportBar';
+import PharmacyImportDialog from '../../components/pharmacy/PharmacyImportDialog';
 import DischargeSummaryEditor from './inpatient/DischargeSummaryEditor';
 import DischargeSummaryPreviewCard from './inpatient/discharge/DischargeSummaryPreviewCard';
 import DischargeSummaryTemplatePage from './inpatient/DischargeSummaryTemplatePage';
@@ -109,7 +109,6 @@ const TAB_TO_PATH = {
   rooms: 'rooms',
   setup: 'billing-setup',
   procedures: 'procedures',
-  reports: 'reports',
   'discharge-summary-template': 'discharge-summary-template',
 };
 const PATH_TO_TAB = Object.fromEntries(
@@ -316,6 +315,8 @@ const InpatientModule = () => {
     amenities: [], is_isolation: false, gender_policy: 'mixed',
   });
   const [roomDialogSection, setRoomDialogSection] = useState('basics'); // basics | pricing | features
+  const [showRoomImport, setShowRoomImport] = useState(false);
+  const [exportingRooms, setExportingRooms] = useState(false);
   const [roomTypes, setRoomTypes] = useState([]);
   const [amenityOptions, setAmenityOptions] = useState([]);
   // Maintenance
@@ -348,20 +349,6 @@ const InpatientModule = () => {
     start_datetime: '', expected_return_datetime: '', reason: '',
     approved_by_doctor_id: '', notes: '', bed_held: true });
   const [loaList, setLoaList] = useState([]);
-  // E2 — Monthly outcomes report
-  const [reportSubTab, setReportSubTab] = useState('outcomes');
-  const [outcomesMonth, setOutcomesMonth] = useState(() => {
-    const d = new Date(); d.setDate(0); // last day of previous month
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-  });
-  const [outcomesData, setOutcomesData] = useState(null);
-  // E3 — Doctor productivity report
-  const [productivityRange, setProductivityRange] = useState(() => {
-    const today = new Date();
-    const start = new Date(Date.now() - 30 * 86400 * 1000);
-    return { from: localDateString(start), to: localDateString(today), doctor_id: '' };
-  });
-  const [productivityData, setProductivityData] = useState(null);
   const [showNursingNoteDialog, setShowNursingNoteDialog] = useState(false);
   const [nursingNoteForm, setNursingNoteForm] = useState({ shift: 'morning', note_type: 'general', content: '' });
   const [editingNursingNote, setEditingNursingNote] = useState(null);
@@ -1066,36 +1053,6 @@ const InpatientModule = () => {
     } catch { setMortalityList([]); }
   }, []);
 
-  // E2 — monthly outcomes
-  const fetchMonthlyOutcomes = useCallback(async (month) => {
-    try {
-      const params = month ? { month } : {};
-      const res = await axios.get('/api/inpatient/reports/monthly-outcomes', { params });
-      setOutcomesData(res.data);
-    } catch (err) {
-      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed to load monthly outcomes';
-      toast({ variant: 'destructive', title: 'Error', description: msg });
-      setOutcomesData(null);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // E3 — doctor productivity
-  const fetchDoctorProductivity = useCallback(async (range) => {
-    try {
-      const params = { date_from: range.from, date_to: range.to };
-      if (range.doctor_id) params.doctor_id = range.doctor_id;
-      const res = await axios.get('/api/inpatient/reports/doctor-productivity', { params });
-      setProductivityData(res.data);
-    } catch (err) {
-      const detail = err.response?.data?.detail;
-      toast({ variant: 'destructive', title: 'Error',
-        description: typeof detail === 'string' ? detail : 'Failed to load doctor productivity' });
-      setProductivityData(null);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   useEffect(() => {
     fetchDashboard();
     fetchDoctors();
@@ -1130,11 +1087,6 @@ const InpatientModule = () => {
     if (activeTab === 'quality') {
       fetchReadmissions();
       fetchMortalityList();
-    }
-    if (activeTab === 'reports') {
-      if (reportSubTab === 'outcomes') fetchMonthlyOutcomes(outcomesMonth);
-      if (reportSubTab === 'productivity') fetchDoctorProductivity(productivityRange);
-      fetchDoctors();
     }
     if (activeTab === 'roster') {
       fetchRosterGrid();
@@ -1707,6 +1659,51 @@ const InpatientModule = () => {
     resetRoomForm();
     setEditingRoom(null);
     setShowRoomDialog(true);
+  };
+
+  const handleExportRooms = async () => {
+    setExportingRooms(true);
+    try {
+      const res = await axios.get('/api/inpatient/rooms/export/xlsx', {
+        responseType: 'blob',
+        timeout: 60000,
+      });
+      const contentType = res.headers['content-type'] || '';
+      if (contentType.includes('application/json')) {
+        const text = await res.data.text?.() || await new Response(res.data).text();
+        let detail = 'Failed to export rooms';
+        try { detail = JSON.parse(text).detail || detail; } catch { /* keep default */ }
+        throw new Error(typeof detail === 'string' ? detail : 'Failed to export rooms');
+      }
+      const disposition = res.headers['content-disposition'] || '';
+      const match = disposition.match(/filename=([^;]+)/);
+      const filename = match ? match[1].trim().replace(/"/g, '') : 'rooms_export.xlsx';
+      const url = window.URL.createObjectURL(new Blob([res.data], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      toast({ title: 'Rooms exported' });
+    } catch (err) {
+      const detail = err.response?.data;
+      let message = err.message || 'Failed to export rooms';
+      if (detail instanceof Blob) {
+        try {
+          const parsed = JSON.parse(await detail.text());
+          if (typeof parsed.detail === 'string') message = parsed.detail;
+        } catch { /* keep message */ }
+      } else if (typeof detail?.detail === 'string') {
+        message = detail.detail;
+      }
+      toast({ variant: 'destructive', title: 'Error', description: message });
+    } finally {
+      setExportingRooms(false);
+    }
   };
 
   const handleDeleteRoom = async (roomId) => {
@@ -5086,10 +5083,41 @@ const InpatientModule = () => {
           {/* ============ ROOM MANAGEMENT ============ */}
           {activeTab === 'rooms' && (
             <div className="p-6 overflow-y-auto h-full space-y-4">
-          <RoomImportExportBar
-            onAddRoom={openAddRoomDialog}
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold">Room Management</h2>
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={() => setShowRoomImport(true)}>
+                <Upload className="h-4 w-4 mr-2" /> Import
+              </Button>
+              <Button variant="outline" onClick={handleExportRooms} disabled={exportingRooms}>
+                {exportingRooms
+                  ? <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  : <Download className="h-4 w-4 mr-2" />}
+                Export
+              </Button>
+              <Button onClick={openAddRoomDialog}>
+                <Plus className="h-4 w-4 mr-2" /> Add Room
+              </Button>
+            </div>
+          </div>
+
+          <PharmacyImportDialog
+            open={showRoomImport}
+            onOpenChange={setShowRoomImport}
             onImported={fetchRooms}
-            toast={toast}
+            title="Import Rooms"
+            entityLabel="rooms"
+            importUrl="/api/inpatient/rooms/import"
+            templateUrl="/api/inpatient/rooms/import/template"
+            exportUrl="/api/inpatient/rooms/export/xlsx"
+            duplicateLabel="If a room number already exists:"
+            helpText={(
+              <>
+                Fill the <span className="font-medium">Rooms</span> sheet (required: room_number, room_type, room_charge_per_day).
+                The <span className="font-medium">Beds</span> sheet is optional — if omitted, beds are created as Bed-1..Bed-N from bed_count.
+                Occupancy is never imported. Export, edit rates or labels, then re-import with Update to refresh the catalog.
+              </>
+            )}
           />
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -5849,257 +5877,6 @@ const InpatientModule = () => {
                   </div>
                 )}
               </div>
-            </div>
-          )}
-
-          {/* ============ MANAGEMENT REPORTS ============ */}
-          {activeTab === 'reports' && (
-            <div className="p-6 overflow-y-auto h-full space-y-4">
-              <h2 className="text-lg font-semibold">Management Reports</h2>
-              <Tabs value={reportSubTab} onValueChange={(v) => {
-                setReportSubTab(v);
-                if (v === 'outcomes') fetchMonthlyOutcomes(outcomesMonth);
-                if (v === 'productivity') fetchDoctorProductivity(productivityRange);
-              }}>
-                <TabsList>
-                  <TabsTrigger value="outcomes">Monthly Outcomes</TabsTrigger>
-                  <TabsTrigger value="productivity">Doctor Productivity</TabsTrigger>
-                </TabsList>
-
-                {/* ----- E2: Monthly outcomes ----- */}
-                <TabsContent value="outcomes" className="space-y-4 mt-4">
-                  <div className="flex items-end gap-3 flex-wrap">
-                    <div>
-                      <Label className="text-xs">Month</Label>
-                      <Input type="month" value={outcomesMonth}
-                        onChange={e => setOutcomesMonth(e.target.value)} />
-                    </div>
-                    <Button size="sm" onClick={() => fetchMonthlyOutcomes(outcomesMonth)}>
-                      Refresh
-                    </Button>
-                    <Button size="sm" variant="outline"
-                      onClick={() => printPdfFromUrl('/api/inpatient/reports/monthly-outcomes/pdf',
-                        { month: outcomesMonth})}>
-                      <Printer className="h-4 w-4 mr-1" /> Print PDF
-                    </Button>
-                    {outcomesData && (
-                      <span className="text-xs text-gray-500 ml-auto">Window: {outcomesData.month}</span>
-                    )}
-                  </div>
-
-                  {!outcomesData ? (
-                    <p className="text-sm text-gray-500">Loading…</p>
-                  ) : (
-                    <>
-                      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
-                        {[
-                          ['Admissions', outcomesData.totals.admissions],
-                          ['Discharges', outcomesData.totals.discharges],
-                          ['Deaths', outcomesData.totals.deaths],
-                          ['Mortality %', `${outcomesData.totals.mortality_rate_pct}%`],
-                          ['Readmissions', outcomesData.totals.readmissions],
-                          ['Readmit %', `${outcomesData.totals.readmission_rate_pct}%`],
-                          ['Avg occupancy', `${outcomesData.totals.average_occupancy_pct}%`],
-                        ].map(([label, val]) => (
-                          <Card key={label}>
-                            <CardContent className="pt-4">
-                              <p className="text-xs text-gray-500">{label}</p>
-                              <p className="text-xl font-bold">{val}</p>
-                            </CardContent>
-                          </Card>
-                        ))}
-                      </div>
-
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <Card>
-                          <CardContent className="pt-4">
-                            <p className="font-semibold mb-2">Mortality — by department</p>
-                            {Object.keys(outcomesData.mortality.by_department).length === 0 ? (
-                              <p className="text-xs text-gray-400">No deaths in this window.</p>
-                            ) : (
-                              <table className="w-full text-sm">
-                                <tbody>
-                                  {Object.entries(outcomesData.mortality.by_department).map(([k, v]) => (
-                                    <tr key={k} className="border-b last:border-0">
-                                      <td className="py-1">{k}</td>
-                                      <td className="py-1 text-right font-medium">{v}</td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            )}
-                            <p className="text-xs text-gray-500 mt-2">
-                              MLC: {outcomesData.mortality.mlc_count} · Autopsy: {outcomesData.mortality.autopsy_count}
-                            </p>
-                          </CardContent>
-                        </Card>
-                        <Card>
-                          <CardContent className="pt-4">
-                            <p className="font-semibold mb-2">Mortality — top diagnoses</p>
-                            {Object.keys(outcomesData.mortality.by_diagnosis_top10).length === 0 ? (
-                              <p className="text-xs text-gray-400">—</p>
-                            ) : (
-                              <table className="w-full text-sm">
-                                <tbody>
-                                  {Object.entries(outcomesData.mortality.by_diagnosis_top10).map(([k, v]) => (
-                                    <tr key={k} className="border-b last:border-0">
-                                      <td className="py-1 truncate max-w-md">{k}</td>
-                                      <td className="py-1 text-right font-medium">{v}</td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            )}
-                          </CardContent>
-                        </Card>
-                        <Card>
-                          <CardContent className="pt-4">
-                            <p className="font-semibold mb-2">Readmissions — by days since discharge</p>
-                            <table className="w-full text-sm">
-                              <tbody>
-                                {Object.entries(outcomesData.readmissions.by_window_days).map(([k, v]) => (
-                                  <tr key={k} className="border-b last:border-0">
-                                    <td className="py-1">{k} days</td>
-                                    <td className="py-1 text-right font-medium">{v}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </CardContent>
-                        </Card>
-                        <Card>
-                          <CardContent className="pt-4">
-                            <p className="font-semibold mb-2">Length of stay (days)</p>
-                            <table className="w-full text-sm">
-                              <thead className="text-xs text-gray-500">
-                                <tr><th className="text-left">Scope</th><th>Count</th><th>Mean</th><th>Median</th><th>Min</th><th>Max</th></tr>
-                              </thead>
-                              <tbody>
-                                <tr className="border-b">
-                                  <td className="py-1 font-medium">Overall</td>
-                                  <td className="py-1 text-center">{outcomesData.length_of_stay.overall.count}</td>
-                                  <td className="py-1 text-center">{outcomesData.length_of_stay.overall.mean ?? '—'}</td>
-                                  <td className="py-1 text-center">{outcomesData.length_of_stay.overall.median ?? '—'}</td>
-                                  <td className="py-1 text-center">{outcomesData.length_of_stay.overall.min ?? '—'}</td>
-                                  <td className="py-1 text-center">{outcomesData.length_of_stay.overall.max ?? '—'}</td>
-                                </tr>
-                                {Object.entries(outcomesData.length_of_stay.by_department || {}).map(([dept, s]) => (
-                                  <tr key={dept} className="border-b last:border-0">
-                                    <td className="py-1">{dept}</td>
-                                    <td className="py-1 text-center">{s.count}</td>
-                                    <td className="py-1 text-center">{s.mean ?? '—'}</td>
-                                    <td className="py-1 text-center">{s.median ?? '—'}</td>
-                                    <td className="py-1 text-center">{s.min ?? '—'}</td>
-                                    <td className="py-1 text-center">{s.max ?? '—'}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </CardContent>
-                        </Card>
-                      </div>
-                    </>
-                  )}
-                </TabsContent>
-
-                {/* ----- E3: Doctor productivity ----- */}
-                <TabsContent value="productivity" className="space-y-4 mt-4">
-                  <div className="flex items-end gap-3 flex-wrap">
-                    <div>
-                      <Label className="text-xs">From</Label>
-                      <Input type="date" value={productivityRange.from}
-                        onChange={e => setProductivityRange(p => ({ ...p, from: e.target.value }))} />
-                    </div>
-                    <div>
-                      <Label className="text-xs">To</Label>
-                      <Input type="date" value={productivityRange.to}
-                        onChange={e => setProductivityRange(p => ({ ...p, to: e.target.value }))} />
-                    </div>
-                    <div className="min-w-[200px]">
-                      <Label className="text-xs">Doctor (optional)</Label>
-                      <Select value={productivityRange.doctor_id || 'all'}
-                        onValueChange={v => setProductivityRange(p => ({ ...p, doctor_id: v === 'all' ? '' : v }))}>
-                        <SelectTrigger><SelectValue placeholder="All doctors" /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="all">All doctors</SelectItem>
-                          {doctorsList.map(d => (
-                            <SelectItem key={d.id} value={String(d.id)}>Dr. {d.first_name} {d.last_name}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <Button size="sm" onClick={() => fetchDoctorProductivity(productivityRange)}>
-                      Refresh
-                    </Button>
-                    <Button size="sm" variant="outline"
-                      onClick={() => {
-                        const params = { date_from: productivityRange.from, date_to: productivityRange.to};
-                        if (productivityRange.doctor_id) params.doctor_id = productivityRange.doctor_id;
-                        printPdfFromUrl('/api/inpatient/reports/doctor-productivity/pdf', params);
-                      }}>
-                      <Printer className="h-4 w-4 mr-1" /> Print PDF
-                    </Button>
-                    <Button size="sm" variant="outline"
-                      onClick={() => {
-                        const qs = new URLSearchParams({ date_from: productivityRange.from, date_to: productivityRange.to });
-                        if (productivityRange.doctor_id) qs.append('doctor_id', productivityRange.doctor_id);
-                        window.open(`/api/inpatient/reports/doctor-productivity/csv?${qs.toString()}`, '_blank');
-                      }}>
-                      <Download className="h-4 w-4 mr-1" /> CSV
-                    </Button>
-                  </div>
-
-                  {!productivityData ? (
-                    <p className="text-sm text-gray-500">Loading…</p>
-                  ) : productivityData.rows.length === 0 ? (
-                    <p className="text-sm text-gray-500">No activity in this date range.</p>
-                  ) : (
-                    <div className="border rounded overflow-x-auto">
-                      <table className="w-full text-sm">
-                        <thead className="bg-gray-100 text-xs">
-                          <tr>
-                            <th className="p-2 text-left">Doctor</th>
-                            <th className="p-2 text-right">Adm</th>
-                            <th className="p-2 text-right">Dis</th>
-                            <th className="p-2 text-right">Death</th>
-                            <th className="p-2 text-right">Re-30d</th>
-                            <th className="p-2 text-right">OT-Sur</th>
-                            <th className="p-2 text-right">OT-An</th>
-                            <th className="p-2 text-right">Visits</th>
-                            <th className="p-2 text-right">Avg LOS</th>
-                            <th className="p-2 text-right">Visit ₹</th>
-                            <th className="p-2 text-right">OT-Sur ₹</th>
-                            <th className="p-2 text-right">OT-An ₹</th>
-                            <th className="p-2 text-right font-bold">Total ₹</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {productivityData.rows.map(r => (
-                            <tr key={r.doctor_id} className="border-b last:border-0">
-                              <td className="p-2">{r.doctor_name}</td>
-                              <td className="p-2 text-right">{r.admissions}</td>
-                              <td className="p-2 text-right">{r.discharges}</td>
-                              <td className="p-2 text-right">{r.deaths}</td>
-                              <td className="p-2 text-right">{r.readmissions_30d}</td>
-                              <td className="p-2 text-right">{r.ot_as_surgeon}</td>
-                              <td className="p-2 text-right">{r.ot_as_anaesthetist}</td>
-                              <td className="p-2 text-right">{r.visits}</td>
-                              <td className="p-2 text-right">{r.average_los_days ?? '—'}</td>
-                              <td className="p-2 text-right">₹{Number(r.visit_fees_billed).toLocaleString()}</td>
-                              <td className="p-2 text-right">₹{Number(r.ot_surgeon_fees).toLocaleString()}</td>
-                              <td className="p-2 text-right">₹{Number(r.ot_anaesthetist_fees).toLocaleString()}</td>
-                              <td className="p-2 text-right font-bold">₹{Number(r.total_billed_attributable).toLocaleString()}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                  <p className="text-xs text-gray-500 italic">
-                    Total ₹ = Visit fees + OT surgeon fees (for OTs led) + OT anaesthetist fees. Outpatient consultation fees not included.
-                  </p>
-                </TabsContent>
-              </Tabs>
             </div>
           )}
 

@@ -45,14 +45,17 @@ export default function ReferralSelectWithCreate({
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({ name: '', phone: '', village: '', mandal: '', district: '' });
 
-  const referrals = controlledReferrals ?? internalReferrals;
+  // An empty array is a real value, so `??` would skip the internal fetch.
+  // Only treat the list as controlled when the parent actually passed it.
+  const isControlled = controlledReferrals !== undefined;
+  const referrals = isControlled ? controlledReferrals : internalReferrals;
   const setReferrals = (list) => {
-    if (controlledReferrals == null) setInternalReferrals(list);
+    if (!isControlled) setInternalReferrals(list);
     onReferralsChange?.(list);
   };
 
   useEffect(() => {
-    if (controlledReferrals != null) return;
+    if (isControlled) return;
     let cancelled = false;
     (async () => {
       setLoading(true);
@@ -63,7 +66,7 @@ export default function ReferralSelectWithCreate({
       }
     })();
     return () => { cancelled = true; };
-  }, [controlledReferrals]);
+  }, [isControlled]);
 
   const openCreate = () => {
     setForm({ name: '', phone: '', village: '', mandal: '', district: '' });

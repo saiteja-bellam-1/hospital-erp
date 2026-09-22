@@ -572,13 +572,17 @@ def test_set_and_read_show_patient_barcode(db_session):
     assert row.setting_value == "true"
 
 
-def test_pdf_gen_kwargs_includes_patient_barcode_for_rx_and_lab_only(db_session):
+def test_pdf_gen_kwargs_includes_patient_barcode_for_rx_lab_and_bills(db_session):
     set_show_patient_barcode_on_pdfs(db_session, show_barcode=True, created_by=1)
     db_session.commit()
     assert pdf_gen_kwargs(db_session, 1, "prescription")["show_patient_barcode"] is True
     assert pdf_gen_kwargs(db_session, 1, "lab_report")["show_patient_barcode"] is True
-    assert "show_patient_barcode" not in pdf_gen_kwargs(db_session, 1, "opd_bill")
+    assert pdf_gen_kwargs(db_session, 1, "opd_bill")["show_patient_barcode"] is True
+    assert pdf_gen_kwargs(db_session, 1, "lab_bill")["show_patient_barcode"] is True
+    assert bill_pdf_gen_kwargs(db_session, 1, "opd_bill")["show_patient_barcode"] is True
+    assert bill_pdf_gen_kwargs(db_session, 1, "lab_bill")["show_patient_barcode"] is True
     assert "show_patient_barcode" not in pdf_gen_kwargs(db_session, 1, "discharge_summary")
+    assert "show_patient_barcode" not in bill_pdf_gen_kwargs(db_session, 1, "inpatient_bill")
 
 
 def test_update_print_settings_persists_patient_barcode(db_session):
@@ -689,3 +693,34 @@ def test_generate_prescription_and_lab_pdf_with_patient_barcode(db_session):
     assert off_buf.getvalue()[:4] == b"%PDF"
     # With barcode enabled the PDF should be larger (embedded barcode drawing).
     assert len(rx_buf.getvalue()) > len(off_buf.getvalue())
+
+
+def test_generate_bill_pdf_with_patient_barcode(db_session):
+    from app.utils.pdf_service import PDFService
+
+    mrn = "KTH-2026-00099"
+    svc = PDFService()
+    hi = {"name": "Test Hospital", "address": "", "phone": "", "email": ""}
+    bill = {
+        "bill_number": "BILL-1",
+        "bill_date": "2026-01-01T00:00:00",
+        "patient_name": "Barcode Patient",
+        "patient_age": 40,
+        "patient_gender": "Female",
+        "patient_phone": "9000000000",
+        "mrn": mrn,
+        "payment_method": "Cash",
+        "items": [{"item_name": "Consultation", "item_code": "CONSULT", "total_price": 500}],
+        "subtotal": 500,
+        "discount_amount": 0,
+        "total_amount": 500,
+        "amount_paid": 500,
+        "balance_due": 0,
+        "prepared_by": "Reception",
+    }
+
+    on_buf = svc.generate_bill_pdf(bill, hi, include_header=False, show_patient_barcode=True)
+    off_buf = svc.generate_bill_pdf(bill, hi, include_header=False, show_patient_barcode=False)
+    assert on_buf.getvalue()[:4] == b"%PDF"
+    assert off_buf.getvalue()[:4] == b"%PDF"
+    assert len(on_buf.getvalue()) > len(off_buf.getvalue())

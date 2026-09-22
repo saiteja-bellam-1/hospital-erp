@@ -1012,7 +1012,7 @@ const EHRPage = () => {
                   <div className="text-sm space-y-0.5">
                     <p className="flex items-center gap-1 text-gray-600">
                       <Calendar className="h-3.5 w-3.5" />
-                      {patientHistory.patient.age ? `${patientHistory.patient.age} yrs` : '—'} | {patientHistory.patient.gender || '—'}
+                      {formatPatientAge(patientHistory.patient) || '—'} | {patientHistory.patient.gender || '—'}
                     </p>
                     <p className="flex items-center gap-1 text-gray-600">
                       <Heart className="h-3.5 w-3.5" />

@@ -31,8 +31,8 @@ PRINT_PHARMACY_LABEL_SETTINGS_KEY = "pharmacy_label_settings"
 PRINT_PATIENT_FILE_LABEL_SETTINGS_KEY = "patient_file_label_settings"
 PRINT_SHOW_PATIENT_BARCODE_KEY = "show_patient_barcode_on_pdfs"
 
-# Report types that may draw the patient MRN EAN-13 barcode.
-PATIENT_BARCODE_REPORT_KEYS = frozenset({"prescription", "lab_report"})
+# Report types that may draw the patient MRN Code128 barcode in the demographics box.
+PATIENT_BARCODE_REPORT_KEYS = frozenset({"prescription", "lab_report", "opd_bill", "lab_bill"})
 
 DEFAULT_LETTERHEAD_GAP_MM = 35.0  # ~100 pt
 

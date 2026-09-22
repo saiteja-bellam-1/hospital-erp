@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import axios from 'axios';
 import { Card, CardContent, CardHeader, CardTitle } from '../../../components/ui/card';
 import { Button } from '../../../components/ui/button';
@@ -41,6 +42,7 @@ const REPORT_CATALOG = [
 
   { id: 'bed-occupancy', label: 'Bed occupancy', modules: ['inpatient'], requires: 'inpatient', uses: [], hint: 'Live occupancy by ward and room type' },
   { id: 'monthly-outcomes', label: 'Monthly outcomes', modules: ['inpatient'], requires: 'inpatient', uses: ['month'], hint: 'Occupancy, mortality, readmissions, LOS' },
+  { id: 'doctor-productivity', label: 'Doctor productivity', modules: ['inpatient'], requires: 'inpatient', uses: ['period', 'doctor'], hint: 'IP admissions, OT, visits, LOS, and attributable fees' },
   { id: 'readmissions', label: 'Readmissions (30-day)', modules: ['inpatient'], requires: 'inpatient', uses: ['patient'], hint: 'Patients readmitted within 30 days' },
   { id: 'mortality', label: 'Mortality', modules: ['inpatient'], requires: 'inpatient', uses: ['period', 'patient'], hint: 'Deaths in the selected period' },
 
@@ -65,6 +67,7 @@ const PATHS = {
   'lab-volume': '/api/hospital/billing/reports/lab-volume',
   'bed-occupancy': '/api/hospital/billing/reports/bed-occupancy',
   'monthly-outcomes': '/api/hospital/billing/reports/monthly-outcomes',
+  'doctor-productivity': '/api/inpatient/reports/doctor-productivity',
   readmissions: '/api/hospital/billing/reports/readmissions',
   mortality: '/api/hospital/billing/reports/mortality',
   'pharmacy-sales': '/api/hospital/billing/reports/pharmacy-sales',
@@ -118,9 +121,10 @@ function filterRowsByPatient(rows, patientId) {
 }
 
 export default function ReportsPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const range = defaultReportRange();
-  const [module, setModule] = useState('all');
-  const [kind, setKind] = useState('sales');
+  const [module, setModule] = useState(() => searchParams.get('module') || 'all');
+  const [kind, setKind] = useState(() => searchParams.get('kind') || 'sales');
   const [periodMode, setPeriodMode] = useState('range');
   const [dateFrom, setDateFrom] = useState(range.from);
   const [dateTo, setDateTo] = useState(range.to);
@@ -220,6 +224,14 @@ export default function ReportsPage() {
     }
   }, [reportOptions, kind]);
 
+  useEffect(() => {
+    const next = new URLSearchParams();
+    if (module && module !== 'all') next.set('module', module);
+    if (kind && kind !== 'sales') next.set('kind', kind);
+    const target = next.toString();
+    if (searchParams.toString() !== target) setSearchParams(next, { replace: true });
+  }, [module, kind, searchParams, setSearchParams]);
+
   // Clear context filters when the report no longer supports them
   useEffect(() => {
     const meta = REPORT_CATALOG.find((r) => r.id === kind);
@@ -237,6 +249,7 @@ export default function ReportsPage() {
 
   /** Reports that send patient_id to the API (vs client-side row filter). */
   const patientViaApi = ['sales', 'daily-collection', 'tax-summary', 'outstanding', 'doctor-revenue'].includes(kind);
+  const doctorViaApi = kind === 'doctor-productivity';
 
   const filterParams = useMemo(() => {
     const params = {};
@@ -249,9 +262,10 @@ export default function ReportsPage() {
     if (needed.includes('month')) params.month = month;
     if (meta.scopesModule && module && module !== 'all') params.module = module;
     if (needed.includes('patient') && patientViaApi && patient?.id) params.patient_id = patient.id;
+    if (needed.includes('doctor') && doctorViaApi && doctorId) params.doctor_id = Number(doctorId);
     if (needed.includes('test') && testId) params.test_id = Number(testId);
     return params;
-  }, [kind, dateFrom, dateTo, month, module, patient, patientViaApi, testId]);
+  }, [kind, dateFrom, dateTo, month, module, patient, patientViaApi, doctorId, doctorViaApi, testId]);
 
   const endpoint = PATHS[kind] || PATHS.sales;
 
@@ -274,7 +288,7 @@ export default function ReportsPage() {
     let next = data;
     let rows = data.rows;
 
-    if (uses.includes('doctor') && doctorId) {
+    if (uses.includes('doctor') && doctorId && !doctorViaApi) {
       rows = filterRowsByDoctor(rows, doctorId);
       next = { ...next, rows };
       if (kind === 'doctor-efficiency') {
@@ -337,7 +351,7 @@ export default function ReportsPage() {
     }
 
     return next;
-  }, [data, doctorId, therapistId, patient, uses, kind, patientViaApi]);
+  }, [data, doctorId, therapistId, patient, uses, kind, patientViaApi, doctorViaApi]);
 
   const view = displayData || data;
   const t = view?.totals || {};
@@ -421,6 +435,13 @@ export default function ReportsPage() {
         ['Readmit %', tot.readmission_rate_pct],
         ['Avg occupancy %', tot.average_occupancy_pct],
       ];
+    } else if (kind === 'doctor-productivity') {
+      header = ['Doctor', 'Adm', 'Dis', 'Death', 'Re-30d', 'OT-Sur', 'OT-An', 'Visits', 'Avg LOS', 'Visit ₹', 'OT-Sur ₹', 'OT-An ₹', 'Total ₹'];
+      lines = (data.rows || []).map((r) => [
+        r.doctor_name, r.admissions, r.discharges, r.deaths, r.readmissions_30d,
+        r.ot_as_surgeon, r.ot_as_anaesthetist, r.visits, r.average_los_days,
+        r.visit_fees_billed, r.ot_surgeon_fees, r.ot_anaesthetist_fees, r.total_billed_attributable,
+      ]);
     } else if (kind === 'opd-activity') {
       header = ['Doctor', 'Appointments', 'Completed', 'No-show', 'Cancelled', 'No-show %', 'Billed', 'Collected'];
       lines = (data.rows || []).map((r) => [
@@ -485,7 +506,7 @@ export default function ReportsPage() {
     ? '/api/hospital/billing/reports/sales-summary.pdf'
     : kind === 'bed-occupancy'
       ? '/api/inpatient/reports/census/pdf'
-      : kind === 'doctor-efficiency'
+      : kind === 'doctor-efficiency' || kind === 'doctor-productivity'
         ? '/api/inpatient/reports/doctor-productivity/pdf'
         : kind === 'monthly-outcomes'
           ? '/api/inpatient/reports/monthly-outcomes/pdf'
@@ -835,23 +856,48 @@ export default function ReportsPage() {
               {loading ? <Loader2 className="h-5 w-5 animate-spin text-gray-400" /> : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div>
-                    <p className="text-sm font-medium mb-2">Readmissions by window</p>
+                    <p className="text-sm font-medium mb-2">Mortality — by department</p>
+                    <MoneyTable
+                      columns={[
+                        { key: 'department', label: 'Department' },
+                        { key: 'count', label: 'Count', align: 'right' },
+                      ]}
+                      rows={Object.entries(view?.mortality?.by_department || {}).map(([department, count]) => ({ department, count }))}
+                    />
+                    <p className="text-xs text-gray-500 mt-2">
+                      MLC: {view?.mortality?.mlc_count ?? 0} · Autopsy: {view?.mortality?.autopsy_count ?? 0}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium mb-2">Mortality — top diagnoses</p>
+                    <MoneyTable
+                      columns={[
+                        { key: 'diagnosis', label: 'Diagnosis' },
+                        { key: 'count', label: 'Count', align: 'right' },
+                      ]}
+                      rows={Object.entries(view?.mortality?.by_diagnosis_top10 || {}).map(([diagnosis, count]) => ({ diagnosis, count }))}
+                    />
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium mb-2">Readmissions — by days since discharge</p>
                     <MoneyTable
                       columns={[
                         { key: 'window', label: 'Days since discharge' },
                         { key: 'count', label: 'Count', align: 'right' },
                       ]}
-                      rows={Object.entries(view?.readmissions?.by_window_days || {}).map(([window, count]) => ({ window, count }))}
+                      rows={Object.entries(view?.readmissions?.by_window_days || {}).map(([window, count]) => ({ window: `${window} days`, count }))}
                     />
                   </div>
                   <div>
-                    <p className="text-sm font-medium mb-2">Length of stay</p>
+                    <p className="text-sm font-medium mb-2">Length of stay (days)</p>
                     <MoneyTable
                       columns={[
                         { key: 'scope', label: 'Scope' },
                         { key: 'count', label: 'Count', align: 'right' },
                         { key: 'mean', label: 'Mean', align: 'right' },
                         { key: 'median', label: 'Median', align: 'right' },
+                        { key: 'min', label: 'Min', align: 'right' },
+                        { key: 'max', label: 'Max', align: 'right' },
                       ]}
                       rows={[
                         { scope: 'Overall', ...(view?.length_of_stay?.overall || {}) },
@@ -860,6 +906,43 @@ export default function ReportsPage() {
                     />
                   </div>
                 </div>
+              )}
+            </CardContent>
+          </Card>
+        </>
+      )}
+
+      {kind === 'doctor-productivity' && (
+        <>
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Doctor productivity</CardTitle>
+              <p className="text-xs font-normal text-gray-500 mt-1">
+                {kindMeta.hint}. Total ₹ = visit fees + OT surgeon fees + OT anaesthetist fees. Outpatient consultation fees are not included.
+              </p>
+            </CardHeader>
+            <CardContent>
+              {loading ? <Loader2 className="h-5 w-5 animate-spin text-gray-400" /> : !(view?.rows || []).length ? (
+                <p className="text-sm text-gray-500">No activity in this date range.</p>
+              ) : (
+                <MoneyTable
+                  columns={[
+                    { key: 'doctor_name', label: 'Doctor' },
+                    { key: 'admissions', label: 'Adm', align: 'right' },
+                    { key: 'discharges', label: 'Dis', align: 'right' },
+                    { key: 'deaths', label: 'Death', align: 'right' },
+                    { key: 'readmissions_30d', label: 'Re-30d', align: 'right' },
+                    { key: 'ot_as_surgeon', label: 'OT-Sur', align: 'right' },
+                    { key: 'ot_as_anaesthetist', label: 'OT-An', align: 'right' },
+                    { key: 'visits', label: 'Visits', align: 'right' },
+                    { key: 'average_los_days', label: 'Avg LOS', align: 'right', emptyDash: true },
+                    { key: 'visit_fees_billed', label: 'Visit ₹', align: 'right', money: true },
+                    { key: 'ot_surgeon_fees', label: 'OT-Sur ₹', align: 'right', money: true },
+                    { key: 'ot_anaesthetist_fees', label: 'OT-An ₹', align: 'right', money: true },
+                    { key: 'total_billed_attributable', label: 'Total ₹', align: 'right', money: true },
+                  ]}
+                  rows={view?.rows || []}
+                />
               )}
             </CardContent>
           </Card>
