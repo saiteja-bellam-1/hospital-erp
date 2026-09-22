@@ -245,15 +245,15 @@ class TestFoodBillingIntegration:
         # Subtotal should include food
         assert data["subtotal"] >= data["food_total"]
 
-    def test_interim_bill_includes_food(self, client, auth_headers):
+    def test_final_bill_includes_food(self, client, auth_headers):
         resp = client.post(
-            f"/api/inpatient/admissions/{_state['adm_id']}/bill/interim",
+            f"/api/inpatient/admissions/{_state['adm_id']}/bill/finalize",
             headers=auth_headers,
         )
         assert resp.status_code == 200, resp.text
         _state["interim_bill_id"] = resp.json()["bill_id"]
 
-    def test_food_marked_billed_after_interim(self, client, auth_headers):
+    def test_food_marked_billed_after_final(self, client, auth_headers):
         resp = client.get(
             f"/api/inpatient/admissions/{_state['adm_id']}/food-orders",
             headers=auth_headers,
@@ -265,7 +265,7 @@ class TestFoodBillingIntegration:
         assert len(billed_orders) == len(non_cancelled)
         assert len(billed_orders) > 0
 
-    def test_unbilled_after_interim_no_food(self, client, auth_headers):
+    def test_unbilled_after_final_no_food(self, client, auth_headers):
         resp = client.get(
             f"/api/inpatient/admissions/{_state['adm_id']}/bill",
             params={"unbilled_only": True},

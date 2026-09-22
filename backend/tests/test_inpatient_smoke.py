@@ -797,22 +797,22 @@ class TestInpatientPhase2:
         assert data["room_total"] >= 1500.0
 
     # ------------------------------------------------------------------
-    # Interim billing
+    # Final bill — the only saved admission bill
     # ------------------------------------------------------------------
-    def test_interim_bill_consumes_items(self, client, auth_headers):
+    def test_final_bill_consumes_items(self, client, auth_headers):
         r = client.post(
-            f"/api/inpatient/admissions/{_phase2['admission_id']}/bill/interim",
+            f"/api/inpatient/admissions/{_phase2['admission_id']}/bill/finalize",
             json={"discount_value": 0, "tax_percentage": 0},
             headers=auth_headers,
         )
         assert r.status_code == 200, r.text
         data = r.json()
-        assert data["bill_subtype"] == "interim"
+        assert data["bill_subtype"] == "final"
         assert data["total_amount"] > 0
         _phase2["interim_bill_id"] = data["bill_id"]
         _phase2["interim_total"] = data["total_amount"]
 
-    def test_interim_bill_marks_items_billed(self, client, auth_headers):
+    def test_final_bill_marks_items_billed(self, client, auth_headers):
         # Unbilled preview should now return zero for OT + ancillary
         r = client.get(
             f"/api/inpatient/admissions/{_phase2['admission_id']}/bill",
@@ -824,13 +824,13 @@ class TestInpatientPhase2:
         assert data["ot_total"] == 0.0
         assert data["ancillary_total"] == 0.0
 
-    def test_second_interim_fails_without_new_charges(self, client, auth_headers):
+    def test_second_finalize_blocked(self, client, auth_headers):
         r = client.post(
-            f"/api/inpatient/admissions/{_phase2['admission_id']}/bill/interim",
+            f"/api/inpatient/admissions/{_phase2['admission_id']}/bill/finalize",
             json={},
             headers=auth_headers,
         )
-        assert r.status_code == 400  # nothing new to bill
+        assert r.status_code == 409
 
     def test_list_admission_bills(self, client, auth_headers):
         r = client.get(
@@ -840,7 +840,7 @@ class TestInpatientPhase2:
         assert r.status_code == 200
         bills = r.json()
         assert len(bills) == 1
-        assert bills[0]["bill_subtype"] == "interim"
+        assert bills[0]["bill_subtype"] == "final"
 
     def test_balance_reflects_bill(self, client, auth_headers):
         r = client.get(f"/api/inpatient/admissions/{_phase2['admission_id']}/balance", headers=auth_headers)

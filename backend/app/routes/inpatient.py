@@ -6251,15 +6251,16 @@ async def finalize_bill(
             },
         )
 
-    breakdown = _compute_admission_charges(db, admission, unbilled_only=True)
     items_override = data.items_override if data else None
-    # Allow finalize with NO new computed charges if the operator submitted an
-    # explicit override (e.g. waiving everything but adding a single custom
-    # line). Without an override, refuse so we don't create empty final bills.
+    # Discharge saves one final bill for the whole stay. An override (kept for
+    # API compatibility) still stamps only the currently unbilled slice.
+    breakdown = _compute_admission_charges(
+        db, admission, unbilled_only=items_override is not None,
+    )
     if breakdown["subtotal"] <= 0 and items_override is None:
         raise HTTPException(
             status_code=400,
-            detail="No outstanding charges to finalize. All charges may already be on prior bills — the review dialog will let you confirm and close the admission.",
+            detail="No charges to finalize for this admission.",
         )
 
     # Finalize may leave an outstanding balance — collect/refund happens in a
@@ -6351,12 +6352,14 @@ async def finalize_and_settle_bill(
             },
         )
 
-    breakdown = _compute_admission_charges(db, admission, unbilled_only=True)
     items_override = data.items_override
+    breakdown = _compute_admission_charges(
+        db, admission, unbilled_only=items_override is not None,
+    )
     if breakdown["subtotal"] <= 0 and items_override is None:
         raise HTTPException(
             status_code=400,
-            detail="No outstanding charges to finalize.",
+            detail="No charges to finalize for this admission.",
         )
 
     # Verify the operator-supplied settle amount actually balances the bill.
@@ -6368,10 +6371,10 @@ async def finalize_and_settle_bill(
         items_override=items_override,
     )
     prior_summary = _admission_balance_summary(db, admission)
-    prior_billed_on_bills = float(prior_summary.get("billed_on_bills") or 0)
     net_deposits_before = float(prior_summary.get("net_deposits") or 0)
-    # Comprehensive override replaces interim totals; auto path adds to them.
-    billed_basis = draft_total if items_override is not None else (prior_billed_on_bills + draft_total)
+    # The saved final bill is the figure the balance uses. Auto-finalize is the
+    # full stay, so earlier bill rows are not added on top of this total.
+    billed_basis = draft_total
 
     settle = data.settle
     if settle.direction == "collect":
@@ -6469,43 +6472,15 @@ async def create_interim_bill(
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "generate_interim_bill")),
     db: Session = Depends(get_db),
 ):
-    """Create an interim bill snapshot of currently unbilled charges. Subsequent
-    interim/final bills will exclude items already on this one."""
-    admission = db.query(Admission).filter(Admission.id == admission_id).first()
-    if not admission:
-        raise HTTPException(status_code=404, detail="Admission not found")
-    hospital = _get_hospital(db, current_user)
-
-    breakdown = _compute_admission_charges(db, admission, unbilled_only=True)
-    if breakdown["subtotal"] <= 0:
-        raise HTTPException(status_code=400, detail="No new unbilled charges since the last bill")
-
-    bill = _create_admission_bill_record(
-        db, admission, hospital, current_user, breakdown,
-        discount_value=(data.discount_value if data else 0) or 0,
-        discount_type=(data.discount_type if data else "flat") or "flat",
-        tax_percentage=(data.tax_percentage if data else 0) or 0,
-        bill_subtype="interim",
+    """Running charges are printed, not stored. The only saved admission bill
+    is the final bill created during discharge."""
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "Interim bills are not saved. Print charges to date from the admission, "
+            "and generate the final bill during discharge."
+        ),
     )
-
-    reconcile_admission_bill_statuses(db, admission_id)
-    db.commit()
-    db.refresh(bill)
-
-    log_action(db, current_user, "create_interim_bill", "inpatient", "Bill", bill.id,
-               f"Generated interim bill {bill.bill_number} (Rs.{float(bill.total_amount):,.2f})",
-               {"admission_id": admission_id, "total": float(bill.total_amount)})
-
-    return {
-        "bill_id": bill.id,
-        "bill_number": bill.bill_number,
-        "bill_subtype": bill.bill_subtype,
-        "subtotal": float(bill.subtotal),
-        "discount_amount": float(bill.discount_amount or 0),
-        "tax_amount": float(bill.tax_amount or 0),
-        "total_amount": float(bill.total_amount),
-        "status": bill.status,
-    }
 
 
 @router.get("/admissions/{admission_id}/bill/pdf")
@@ -6514,8 +6489,7 @@ async def get_bill_pdf(
     bill_id: Optional[int] = Query(default=None, description="Specific bill row to render (any status). Defaults to the latest non-cancelled bill."),
     as_interim: bool = Query(
         default=False,
-        description="Print a live charges-so-far statement with INTERIM watermark. "
-                    "Does not create a Bill row or stamp charges. Ignored when bill_id is set.",
+        description="Print live charges up to now. Does not create a Bill row or stamp charges. Ignored when bill_id is set.",
     ),
     current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_bill")),
     db: Session = Depends(get_db),
@@ -6529,8 +6503,8 @@ async def get_bill_pdf(
     cancelled ones — for audit. Cancelled bills are rendered with a CANCELLED
     watermark; interim bills render with an INTERIM watermark.
 
-    ``as_interim=true`` forces a live preview of all charges so far (no Bill
-    create/stamp) with an INTERIM watermark — used by the Interim Bill button.
+    ``as_interim=true`` prints live charges up to now (no Bill create/stamp)
+    with a NOT FINAL watermark — used by Print charges to date.
     """
     admission = db.query(Admission).filter(Admission.id == admission_id).first()
     if not admission:
@@ -6842,8 +6816,8 @@ async def get_bill_pdf(
         total = subtotal
         bill_date = format_bill_date(system_now())
         if as_interim:
-            bill_number = f"INTERIM-PREVIEW-{admission.admission_number}"
-            bill_subtype = 'interim'
+            bill_number = f"CHARGES-{admission.admission_number}"
+            bill_subtype = 'charges to date'
             status = 'preview'
         else:
             bill_number = f"PREVIEW-{admission.admission_number}"

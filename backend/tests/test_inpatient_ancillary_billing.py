@@ -202,13 +202,13 @@ class TestAncillaryBillingFixes:
         )
         assert ch1.status_code == 201, ch1.text
 
-        interim = client.post(
-            f"/api/inpatient/admissions/{adm_id}/bill/interim",
+        final = client.post(
+            f"/api/inpatient/admissions/{adm_id}/bill/finalize",
             json={},
             headers=auth_headers,
         )
-        assert interim.status_code == 200, interim.text
-        interim_id = interim.json()["bill_id"]
+        assert final.status_code == 200, final.text
+        interim_id = final.json()["bill_id"]
 
         ch2 = client.post(
             f"/api/inpatient/admissions/{adm_id}/ancillary-charges",
@@ -246,21 +246,6 @@ class TestAncillaryBillingFixes:
         )
         assert ch.status_code == 201, ch.text
         charge_id = ch.json()["id"]
-
-        interim = client.post(
-            f"/api/inpatient/admissions/{adm_id}/bill/interim",
-            json={},
-            headers=auth_headers,
-        )
-        assert interim.status_code == 200, interim.text
-        interim_total = float(interim.json()["total_amount"])
-
-        bal = client.get(
-            f"/api/inpatient/admissions/{adm_id}/balance",
-            headers=auth_headers,
-        ).json()
-        prior_billed = float(bal["billed_on_bills"])
-        assert prior_billed == interim_total
 
         items = [
             {

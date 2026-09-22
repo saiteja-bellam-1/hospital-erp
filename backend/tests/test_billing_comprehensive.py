@@ -109,23 +109,15 @@ class TestComprehensiveBilling:
     # ------------------------------------------------------------------
     # 3. Generate interim bill
     # ------------------------------------------------------------------
-    def test_create_interim_bill(self, client, auth_headers):
+    def test_saved_interim_bill_rejected(self, client, auth_headers):
         resp = client.post(
             f"/api/inpatient/admissions/{_state['admission_id']}/bill/interim",
             headers=auth_headers,
         )
-        assert resp.status_code == 200, resp.text
-        data = resp.json()
-        assert data["bill_subtype"] == "interim"
-        assert data["total_amount"] > 0
-        _state["interim_bill_id"] = data["bill_id"]
-        _state["interim_bill_total"] = data["total_amount"]
+        assert resp.status_code == 410, resp.text
+        _state["interim_bill_total"] = 0
 
-    # ------------------------------------------------------------------
-    # 4. After interim bill — unbilled total should be ≈ room charges since
-    #    the visit was stamped
-    # ------------------------------------------------------------------
-    def test_unbilled_after_interim(self, client, auth_headers):
+    def test_charges_stay_unbilled_until_final(self, client, auth_headers):
         resp = client.get(
             f"/api/inpatient/admissions/{_state['admission_id']}/bill",
             params={"unbilled_only": True},
@@ -133,12 +125,8 @@ class TestComprehensiveBilling:
         )
         assert resp.status_code == 200, resp.text
         data = resp.json()
-        # Visit is stamped — should NOT appear in unbilled
-        assert data["visit_total"] == 0.0
+        assert data["visit_total"] == 500.0
 
-    # ------------------------------------------------------------------
-    # 5. All-charges view should still show visit
-    # ------------------------------------------------------------------
     def test_all_charges_includes_visit(self, client, auth_headers):
         resp = client.get(
             f"/api/inpatient/admissions/{_state['admission_id']}/bill",
@@ -147,10 +135,9 @@ class TestComprehensiveBilling:
         assert resp.status_code == 200, resp.text
         data = resp.json()
         assert data["visit_total"] == 500.0
-        # Visits have billed=True flag
         for vtype, group in data.get("visits", {}).items():
             for v in group.get("items", []):
-                assert v["billed"] is True, f"Visit {v['id']} should be flagged as billed"
+                assert v["billed"] is False, f"Visit {v['id']} should stay unbilled until the final bill"
 
     # ------------------------------------------------------------------
     # 6. Add another visit AFTER interim (new unbilled charge)
@@ -181,84 +168,34 @@ class TestComprehensiveBilling:
     # 8. Generate comprehensive final bill with ALL items
     # ------------------------------------------------------------------
     def test_generate_comprehensive_final_bill(self, client, auth_headers):
-        # First, get all charges (comprehensive view)
         all_resp = client.get(
             f"/api/inpatient/admissions/{_state['admission_id']}/bill",
             headers=auth_headers,
         )
         assert all_resp.status_code == 200
-        all_data = all_resp.json()
+        grand_total = float(all_resp.json()["grand_total"])
 
-        unbilled_resp = client.get(
-            f"/api/inpatient/admissions/{_state['admission_id']}/bill",
-            params={"unbilled_only": True},
-            headers=auth_headers,
-        )
-        assert unbilled_resp.status_code == 200
-        unbilled_data = unbilled_resp.json()
-
-        # Build comprehensive items_override (prior + new)
-        items = []
-
-        # Room: split prior-billed and new unbilled
-        full_room = all_data.get("room_total", 0)
-        unbilled_room = unbilled_data.get("room_total", 0)
-        billed_room = max(0, round(full_room - unbilled_room, 2))
-        rate = all_data.get("room", {}).get("charge_per_day", 0)
-        if billed_room > 0:
-            items.append({
-                "source": "room", "source_id": None,
-                "item_type": "room_charge",
-                "item_name": "Room — Prior (interim)",
-                "quantity": 1, "unit_price": billed_room, "total_price": billed_room,
-            })
-        if unbilled_room > 0:
-            items.append({
-                "source": "room", "source_id": None,
-                "item_type": "room_charge",
-                "item_name": "Room — New charges",
-                "quantity": 1, "unit_price": unbilled_room, "total_price": unbilled_room,
-            })
-
-        # Visits: ALL
-        for vtype, group in all_data.get("visits", {}).items():
-            for v in group.get("items", []):
-                items.append({
-                    "source": "visit", "source_id": v["id"],
-                    "item_type": vtype,
-                    "item_name": f"{vtype} visit",
-                    "quantity": 1, "unit_price": v["amount"], "total_price": v["amount"],
-                })
-
-        comprehensive_total = sum(it["total_price"] for it in items)
-
-        # Cover the comprehensive total so the settle-gate allows finalize.
         dep = client.post(
             f"/api/inpatient/admissions/{_state['admission_id']}/deposits",
-            json={"amount": comprehensive_total, "payment_method": "cash", "deposit_type": "initial"},
+            json={"amount": grand_total, "payment_method": "cash", "deposit_type": "initial"},
             headers=auth_headers,
         )
         assert dep.status_code == 201, dep.text
-        _state["settlement_deposit"] = float(comprehensive_total)
+        _state["settlement_deposit"] = grand_total
 
         resp = client.post(
             f"/api/inpatient/admissions/{_state['admission_id']}/bill/finalize",
-            json={"items_override": items},
+            json={},
             headers=auth_headers,
         )
         assert resp.status_code == 200, resp.text
         data = resp.json()
         assert data["bill_subtype"] == "final"
-        # Final bill total should equal comprehensive_total (all charges)
-        assert abs(float(data["total_amount"]) - comprehensive_total) < 0.01, (
-            f"Expected comprehensive total ≈ {comprehensive_total}, got {data['total_amount']}"
+        assert abs(float(data["total_amount"]) - grand_total) < 0.01, (
+            f"Expected full-stay total ≈ {grand_total}, got {data['total_amount']}"
         )
         _state["final_bill_id"] = data["bill_id"]
         _state["final_bill_total"] = float(data["total_amount"])
-        # Comprehensive total should be ≥ interim total (includes prior charges)
-        assert _state["final_bill_total"] >= _state["interim_bill_total"], (
-            "Final bill comprehensive total must be ≥ interim bill total"
-        )
 
     # ------------------------------------------------------------------
     # 9. Duplicate final bill is blocked
@@ -429,7 +366,7 @@ class TestComprehensiveBilling:
         assert resp.status_code == 200, resp.text
         bills = resp.json()
         subtypes = [b["bill_subtype"] for b in bills if b["status"] != "cancelled"]
-        assert "interim" in subtypes, "Should have an interim bill"
+        assert "interim" not in subtypes
         assert "final" in subtypes, "Should have a final bill"
 
     # ------------------------------------------------------------------
@@ -557,32 +494,24 @@ class TestInterimOnlyBilling:
         assert resp.status_code == 201, resp.text
         self._s["adm_id"] = resp.json()["id"]
 
-    def test_interim_bill(self, client, auth_headers):
+    def test_interim_bill_is_not_saved(self, client, auth_headers):
         resp = client.post(
             f"/api/inpatient/admissions/{self._s['adm_id']}/bill/interim",
             headers=auth_headers,
         )
-        assert resp.status_code == 200, resp.text
-        data = resp.json()
-        assert data["bill_subtype"] == "interim"
-        self._s["interim_id"] = data["bill_id"]
-        self._s["interim_total"] = float(data["total_amount"])
-
-    def test_dashboard_interim_only(self, client, auth_headers):
-        """When only interim bills exist, dashboard shows sum of interim bills."""
-        from datetime import date
-        today = date.today().isoformat()
-        resp = client.get(
-            "/api/hospital/billing",
-            params={"date_from": today, "date_to": today, "bill_type": "admission"},
+        assert resp.status_code == 410, resp.text
+        bills = client.get(
+            f"/api/inpatient/admissions/{self._s['adm_id']}/bills",
             headers=auth_headers,
         )
-        assert resp.status_code == 200, resp.text
-        bills = resp.json()["bills"]
-        adm_row = next((b for b in bills if b.get("admission_id") == self._s["adm_id"]), None)
-        assert adm_row is not None
-        assert adm_row["bill_subtype"] == "interim"
-        assert abs(float(adm_row["amount"]) - self._s["interim_total"]) < 0.01
+        assert bills.status_code == 200
+        assert bills.json() == []
+        preview = client.get(
+            f"/api/inpatient/admissions/{self._s['adm_id']}/bill",
+            headers=auth_headers,
+        )
+        assert preview.status_code == 200
+        assert float(preview.json()["subtotal"]) > 0
 
 
 class TestBillingEdgeCases:
@@ -628,31 +557,19 @@ class TestBillingEdgeCases:
         assert adm_resp.status_code == 201, adm_resp.text
         adm_id = adm_resp.json()["id"]
 
-        # Create + immediately cancel the only interim bill so nothing is unbilled
-        interim_resp = client.post(
+        rejected = client.post(
             f"/api/inpatient/admissions/{adm_id}/bill/interim",
             headers=auth_headers,
         )
-        # If no room charge yet (< 1 day), this may 400 — that's fine
-        if interim_resp.status_code == 400:
-            pytest.skip("No charges for brand-new admission — expected")
+        assert rejected.status_code == 410, rejected.text
 
-        interim_bill_id = interim_resp.json()["bill_id"]
-        cancel_resp = client.post(
-            f"/api/inpatient/admissions/{adm_id}/bills/{interim_bill_id}/cancel",
-            json={"reason": "Test cleanup"},
-            headers=auth_headers,
-        )
-        assert cancel_resp.status_code == 200
-
-        # Now there should be no unbilled charges (room < 1 day = 0)
-        # Trying to finalize without override should raise 400
         resp = client.post(
             f"/api/inpatient/admissions/{adm_id}/bill/finalize",
             headers=auth_headers,
         )
-        # Either 400 (no charges) or 200 with ₹0 if room time accumulated — both are valid
-        assert resp.status_code in (200, 400)
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["bill_subtype"] == "final"
+        assert float(resp.json()["total_amount"]) > 0
 
     def test_finalize_with_empty_override_allowed(self, client, auth_headers, seed_data, TestSessionLocal):
         """Finalizing with explicit empty items_override is allowed (operator-confirmed ₹0 close)."""
