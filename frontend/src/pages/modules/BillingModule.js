@@ -309,7 +309,7 @@ const BillingModule = () => {
     } catch (err) {
       const detail = err.response?.data?.detail;
       if (detail && typeof detail === 'object' && detail.code === 'bill_has_payments') {
-        alert(`${detail.message}\n\nAmount already paid: ₹${detail.amount_paid}\nUse the deposit refund flow first, then retry.`);
+        alert(`${detail.message}\n\nAmount still recorded: ₹${detail.amount_paid}\nReverse the insurer or TPA split, then retry.`);
       } else {
         alert(typeof detail === 'string' ? detail : 'Cancel failed');
       }
@@ -1222,6 +1222,12 @@ const BillingModule = () => {
                   <span>Total:</span>
                   <span>{formatCurrency(detailData.total_amount)}</span>
                 </div>
+                {detailData.payer_share > 0 && (
+                  <div className="flex justify-between text-sm text-blue-700">
+                    <span>Payer share:</span>
+                    <span>{formatCurrency(detailData.payer_share)}</span>
+                  </div>
+                )}
                 {detailData.amount_paid > 0 && (
                   <div className="flex justify-between text-sm text-green-600">
                     <span>Paid:</span>

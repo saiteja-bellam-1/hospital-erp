@@ -288,6 +288,10 @@ NEW_COLUMNS = [
     ("hospitals", "app_logo_url", "VARCHAR(255)"),
     # Link BillSplit → Payment when Mark Received posts cash to the bill
     ("bill_splits", "payment_id", "INTEGER REFERENCES payments(id)"),
+    # Payer share locked onto an admission final bill
+    ("bills", "payer_share_amount", "FLOAT"),
+    ("bills", "payer_approval_status", "VARCHAR(20)"),
+    ("bills", "payer_approval_ref", "VARCHAR(100)"),
 ]
 
 # B6 — body release table is created via create_all on startup; no column adds.

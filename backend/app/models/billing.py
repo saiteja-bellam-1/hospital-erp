@@ -43,6 +43,11 @@ class Bill(Base):
     referred_by = Column(String(100), nullable=True)
     # Snapshot of the paying party's GSTIN at invoice time (B2B vs B2C).
     customer_gstin = Column(String(20), nullable=True)
+    # Locked when an admission final bill is saved. Null on older bills,
+    # which still read the live scheme approval.
+    payer_share_amount = Column(Float, nullable=True)
+    payer_approval_status = Column(String(20), nullable=True)
+    payer_approval_ref = Column(String(100), nullable=True)
 
     patient = relationship("Patient", back_populates="bills")
     items = relationship("BillItem", back_populates="bill")

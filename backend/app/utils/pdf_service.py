@@ -854,9 +854,10 @@ class PDFService:
         tax = float(bill_data.get('tax') or 0)
         total = float(bill_data.get('total') or (subtotal - discount + tax))
         deposits_total = float(bill_data.get('deposits_total') or 0)
+        payer_share = float(bill_data.get('payer_share') or 0)
         balance = float(bill_data.get('balance_due')
                         if bill_data.get('balance_due') is not None
-                        else (total - deposits_total))
+                        else (total - payer_share - deposits_total))
 
         summary_label_w = page_width - qty_w - amt_w
         # When neither a discount nor a tax row is shown, the Sub Total + Total
@@ -893,6 +894,12 @@ class PDFService:
                 Paragraph(f"{total:,.2f}", cell_value_right),
             ])
         if detailed_billing:
+            if payer_share > 0.01:
+                payment_data.append([
+                    Paragraph('', cell_value_sm),
+                    Paragraph('<b>Payer share</b>', cell_value_sm),
+                    Paragraph(f"{payer_share:,.2f}", cell_value_right),
+                ])
             payment_data.extend([
                 [Paragraph('', cell_value_sm),
                  Paragraph('<b>Deposits</b>', cell_value_sm),

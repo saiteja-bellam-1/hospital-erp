@@ -41,7 +41,7 @@ import {
   ClipboardList, LayoutDashboard, Scissors, Shield, Upload, Download, Paperclip,
   HeartPulse, Pill, AlertTriangle, Check, XCircle, Wallet, Package, Receipt, FileCheck, Building2,
   Sparkles, CalendarDays, ArrowRightLeft, UserPlus, FileSignature, AlertOctagon, RotateCcw, Skull,
-  CalendarRange, Printer, Wrench, Eye
+  CalendarRange, Printer, Wrench, Eye, Maximize2, Minimize2
 } from 'lucide-react';
 import axios from 'axios';
 import { localDateString, localDateTimeString, localDateTimeToApi } from '../../utils/localDate';
@@ -284,6 +284,7 @@ const InpatientModule = () => {
 
   // Activity slide-over
   const [activityAdmission, setActivityAdmission] = useState(null);
+  const [activityPanelExpanded, setActivityPanelExpanded] = useState(false);
   const clinicalActionsLocked = activityAdmission?.acceptance_status === 'pending'
     || activityAdmission?.acceptance_status === 'rejected';
   const [activityTab, setActivityTab] = useState('visits');
@@ -1288,8 +1289,6 @@ const InpatientModule = () => {
   const openActivity = (admission) => {
     setActivityAdmission(admission);
     setActivityTab('visits');
-    setBillDiscount({ type: 'flat', value: '' });
-    setBillTaxPct('');
     fetchVisits(admission.id);
     fetchMedications(admission.id);
     fetchLabOrders(admission.id);
@@ -1658,7 +1657,13 @@ const InpatientModule = () => {
       );
       const r = res.data?.released || {};
       const released = (r.visits || 0) + (r.ot || 0) + (r.ancillary || 0) + (r.prescriptions || 0) + (r.lab_orders || 0);
-      toast({ title: 'Bill cancelled', description: `Released ${released} item(s) for re-billing.` });
+      const moved = Number(res.data?.deposit_transferred || 0);
+      toast({
+        title: 'Bill cancelled',
+        description: moved > 0.01
+          ? `Released ${released} item(s). ₹${moved.toFixed(2)} cash kept as a deposit.`
+          : `Released ${released} item(s) for re-billing.`,
+      });
       setCancelBillDialog({ open: false, bill: null, reason: '' });
       if (admId) {
         fetchAdmissionBills(admId);
@@ -1671,7 +1676,7 @@ const InpatientModule = () => {
       const detail = err.response?.data?.detail;
       let msg = 'Failed to cancel bill';
       if (typeof detail === 'string') msg = detail;
-      else if (detail?.code === 'bill_has_payments') msg = `Cannot cancel — ₹${detail.amount_paid} has been paid. Refund first.`;
+      else if (detail?.code === 'bill_has_payments') msg = detail.message || `Cannot cancel — ₹${detail.amount_paid} insurer receipt is still on this bill. Reverse that split first.`;
       else if (detail?.message) msg = detail.message;
       toast({ variant: 'destructive', title: 'Error', description: msg });
     } finally { setLoading(false); }
@@ -3192,9 +3197,14 @@ const InpatientModule = () => {
   useEffect(() => {
     if (activeTab !== 'admissions') {
       setActivityAdmission(null);
+      setActivityPanelExpanded(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
+
+  useEffect(() => {
+    if (!activityAdmission) setActivityPanelExpanded(false);
+  }, [activityAdmission]);
 
   return (
     <div className="flex h-[calc(100vh-4rem)]">
@@ -3432,7 +3442,7 @@ const InpatientModule = () => {
           {activeTab === 'admissions' && (
             <div className="flex h-full">
               {/* Left: Admissions list */}
-              <div className={`${activityAdmission ? 'w-1/2 border-r' : 'w-full'} overflow-y-auto p-6 transition-all space-y-4`}>
+              <div className={`${activityAdmission ? (activityPanelExpanded ? 'hidden' : 'w-1/2 border-r') : 'w-full'} overflow-y-auto p-6 transition-all space-y-4`}>
                 {/* Sub-tabs: Active vs. Pending Acceptance vs. Drafts */}
                 <div className="flex items-center gap-1 border-b">
                   <button
@@ -3611,7 +3621,7 @@ const InpatientModule = () => {
 
               {/* Right: Patient detail (inline) */}
               {activityAdmission && (
-                <div className="w-1/2 overflow-y-auto flex flex-col">
+                <div className={`${activityPanelExpanded ? 'w-full' : 'w-1/2'} overflow-y-auto flex flex-col`}>
                   <div className="sticky top-0 bg-white border-b z-10">
                     <div className="px-4 py-3 flex items-start justify-between gap-3">
                       <div className="min-w-0 flex-1">
@@ -3631,14 +3641,28 @@ const InpatientModule = () => {
                                `Settled`}
                             </span>
                             <span className="text-xs text-gray-400">
-                              Deposits ₹{balance.net_deposits.toFixed(2)} · Billed ₹{balance.total_billed.toFixed(2)}
+                              Deposits ₹{(balance.patient_deposits ?? balance.net_deposits).toFixed(2)}
+                              {(balance.payer_share || 0) > 0.01 ? ` · Payer ₹${Number(balance.payer_share).toFixed(2)}` : ''}
+                              {' · '}Billed ₹{(balance.charges ?? balance.total_billed).toFixed(2)}
                             </span>
                           </div>
                         )}
                       </div>
-                      <Button variant="ghost" size="icon" className="shrink-0" onClick={() => setActivityAdmission(null)}>
-                        <X className="h-4 w-4" />
-                      </Button>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          title={activityPanelExpanded ? 'Restore split view' : 'Enlarge section'}
+                          onClick={() => setActivityPanelExpanded((expanded) => !expanded)}
+                        >
+                          {activityPanelExpanded
+                            ? <Minimize2 className="h-4 w-4" />
+                            : <Maximize2 className="h-4 w-4" />}
+                        </Button>
+                        <Button variant="ghost" size="icon" onClick={() => { setActivityPanelExpanded(false); setActivityAdmission(null); }} title="Close">
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </div>
                     </div>
 
                     {(canWriteDischargeSummary || ip('view_discharge_summary')) && (
@@ -4332,8 +4356,10 @@ const InpatientModule = () => {
                                 <div className="grid grid-cols-2 gap-2">
                                   <div><span className="text-gray-500">Collected:</span> <span className="font-semibold">₹{balance.total_collected.toFixed(2)}</span></div>
                                   <div><span className="text-gray-500">Refunded:</span> <span className="font-semibold">₹{balance.total_refunded.toFixed(2)}</span></div>
-                                  <div><span className="text-gray-500">Net deposits:</span> <span className="font-semibold">₹{balance.net_deposits.toFixed(2)}</span></div>
-                                  <div><span className="text-gray-500">Total billed:</span> <span className="font-semibold">₹{balance.total_billed.toFixed(2)}</span></div>
+                                  <div><span className="text-gray-500">Patient deposits:</span> <span className="font-semibold">₹{(balance.patient_deposits ?? balance.net_deposits).toFixed(2)}</span></div>
+                                  <div><span className="text-gray-500">Charges:</span> <span className="font-semibold">₹{(balance.charges ?? balance.total_billed).toFixed(2)}</span></div>
+                                  <div><span className="text-gray-500">Payer share:</span> <span className="font-semibold">₹{Number(balance.payer_share || 0).toFixed(2)}</span></div>
+                                  <div><span className="text-gray-500">Patient due:</span> <span className="font-semibold">₹{Math.max(0, Number(balance.patient_due ?? -balance.balance)).toFixed(2)}</span></div>
                                 </div>
                                 <div className={`mt-2 pt-2 border-t font-semibold ${balance.balance > 0 ? 'text-green-700' : balance.balance < 0 ? 'text-red-700' : ''}`}>
                                   Balance: ₹{balance.balance.toFixed(2)}
@@ -9186,7 +9212,7 @@ const InpatientModule = () => {
           </DialogHeader>
           <div className="space-y-3 text-sm">
             <p className="text-gray-600">
-              Cancelling releases every visit / OT / ancillary / prescription / lab order on this bill so they can be billed again. Bills with recorded payments cannot be cancelled — refund first.
+              Cancelling releases every visit / OT / ancillary / prescription / lab order on this bill so they can be billed again. Cash already collected stays on the admission as a deposit. Insurer or TPA receipts must be reversed first.
             </p>
             <div>
               <Label>Reason *</Label>

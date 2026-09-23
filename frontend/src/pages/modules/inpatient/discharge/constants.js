@@ -73,7 +73,8 @@ export function computeCheckoutSettlement(derived, form, hasFinalBill = false) {
   const afterDiscount = Math.max(0, subtotal - discountAmount);
   const taxAmount = afterDiscount * Math.min(Math.max(Number(form.taxPct || 0), 0), 100) / 100;
   const adjustedTotal = +(afterDiscount + taxAmount).toFixed(2);
-  const owes = +(adjustedTotal - Number(derived.deposited || 0)).toFixed(2);
+  const payerShare = Math.min(Number(derived.payerShare || 0), adjustedTotal);
+  const owes = +(adjustedTotal - payerShare - Number(derived.deposited || 0)).toFixed(2);
 
   return {
     subtotal,
@@ -111,17 +112,15 @@ export const fmtInr = (n) => `₹${(Number(n) || 0).toLocaleString('en-IN', {
 
 export function computeDerived(bill, balance, admission, finalBill = null) {
   if (!bill || !balance) return null;
-  const computed = Number(bill.grand_total ?? bill.subtotal ?? 0);
-  const billed = Number(balance.total_billed ?? 0);
-  const deposited = Number(balance.net_deposits ?? 0);
-  // A final bill is authoritative because it includes locked discounts/tax.
-  // The live charge preview remains pre-discount and must not replace it.
-  const stayCharges = finalBill
-    ? Number(finalBill.total_amount ?? billed)
-    : Math.max(computed, billed);
-  const owes = +(stayCharges - deposited).toFixed(2);
+  const deposited = Number(balance.patient_deposits ?? balance.net_deposits ?? 0);
+  const payerShare = Number(balance.payer_share ?? 0);
+  // The balance endpoint freezes charges on the final bill and applies payer share.
+  const stayCharges = Number(balance.charges ?? balance.total_billed ?? 0);
+  const owes = balance.patient_due != null
+    ? Number(balance.patient_due)
+    : +(stayCharges - payerShare - deposited).toFixed(2);
   const isDischarged = admission?.status === 'discharged';
-  return { stayCharges, billed, deposited, owes, isDischarged };
+  return { stayCharges, billed: stayCharges, deposited, payerShare, owes, isDischarged, finalBill };
 }
 
 /** Pick the first incomplete step based on server state. */
