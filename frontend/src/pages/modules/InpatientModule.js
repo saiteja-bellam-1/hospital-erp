@@ -1213,8 +1213,6 @@ const InpatientModule = () => {
   const openActivity = (admission) => {
     setActivityAdmission(admission);
     setActivityTab('visits');
-    setBillDiscount({ type: 'flat', value: '' });
-    setBillTaxPct('');
     fetchVisits(admission.id);
     fetchMedications(admission.id);
     fetchLabOrders(admission.id);
