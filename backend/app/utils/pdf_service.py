@@ -854,10 +854,10 @@ class PDFService:
         tax = float(bill_data.get('tax') or 0)
         total = float(bill_data.get('total') or (subtotal - discount + tax))
         deposits_total = float(bill_data.get('deposits_total') or 0)
-        payments_total = float(bill_data.get('payments_total') or 0)
+        payer_share = float(bill_data.get('payer_share') or 0)
         balance = float(bill_data.get('balance_due')
                         if bill_data.get('balance_due') is not None
-                        else (total - deposits_total - payments_total))
+                        else (total - payer_share - deposits_total))
 
         summary_label_w = page_width - qty_w - amt_w
         # When neither a discount nor a tax row is shown, the Sub Total + Total
@@ -894,27 +894,26 @@ class PDFService:
                 Paragraph(f"{total:,.2f}", cell_value_right),
             ])
         if detailed_billing:
-            payment_data.append([
-                Paragraph('', cell_value_sm),
-                Paragraph('<b>Deposits</b>', cell_value_sm),
-                Paragraph(f"{deposits_total:,.2f}", cell_value_right),
-            ])
-            if abs(payments_total) > 0.01:
+            if payer_share > 0.01:
                 payment_data.append([
                     Paragraph('', cell_value_sm),
-                    Paragraph('<b>Payments</b>', cell_value_sm),
-                    Paragraph(f"{payments_total:,.2f}", cell_value_right),
+                    Paragraph('<b>Payer share</b>', cell_value_sm),
+                    Paragraph(f"{payer_share:,.2f}", cell_value_right),
                 ])
-            payment_data.append([
-                Paragraph('', cell_value_sm),
-                Paragraph('<b>Balance</b>'
-                          if balance > 0 else
-                          '<b>Refund Due</b>' if balance < -0.01 else
-                          '<b>Balance</b>', cell_value_sm),
-                Paragraph(
+            payment_data.extend([
+                [Paragraph('', cell_value_sm),
+                 Paragraph('<b>Deposits</b>', cell_value_sm),
+                 Paragraph(f"{deposits_total:,.2f}", cell_value_right)],
+                [Paragraph('', cell_value_sm),
+                 Paragraph('<b>Balance</b>'
+                           if balance > 0 else
+                           '<b>Refund Due</b>' if balance < -0.01 else
+                           '<b>Balance</b>', cell_value_sm),
+                 Paragraph(
                     f"{abs(balance):,.2f}" if abs(balance) > 0.01 else "0.00",
                     ParagraphStyle('Bal', parent=cell_value_right,
                         fontName='Helvetica-Bold')),
+                ],
             ])
         payment_table = Table(payment_data, colWidths=[summary_label_w, qty_w, amt_w])
         payment_table.setStyle(TableStyle([

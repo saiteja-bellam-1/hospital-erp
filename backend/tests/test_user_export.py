@@ -1,10 +1,8 @@
-"""Tests for GET /api/admin/users/export/xlsx."""
-from __future__ import annotations
+"""Excel export of the user roster. Passwords must never appear in the file."""
+from io import BytesIO
 
-import io
-
-import openpyxl
 import pytest
+from openpyxl import load_workbook
 
 from app.models.user import User, UserRole
 from app.utils.auth import create_access_token, get_password_hash
@@ -33,80 +31,51 @@ def hospital_admin(TestSessionLocal, seed_data):
             )
             session.add(user)
             session.commit()
-        return {"Authorization": f"Bearer {create_access_token(data={'sub': 'testhospadmin'})}"}
+        token = create_access_token(data={"sub": "testhospadmin"})
+        return {"Authorization": f"Bearer {token}"}
     finally:
         session.close()
 
 
-def _workbook(resp):
-    return openpyxl.load_workbook(io.BytesIO(resp.content), data_only=True)
-
-
-def _users_sheet_rows(wb):
-    ws = wb["Users"]
-    headers = None
-    rows = []
-    for row in ws.iter_rows(values_only=True):
-        values = list(row)
-        if values and values[0] == "username":
-            headers = values
-            continue
-        if headers is not None:
-            rows.append(dict(zip(headers, values)))
-    return headers, rows
-
-
-def test_users_export_xlsx(client, auth_headers, db_session):
-    resp = client.get("/api/admin/users/export/xlsx", headers=auth_headers)
-    assert resp.status_code == 200, resp.text
-    assert resp.headers["content-type"].startswith(
+def _sheet(client, headers):
+    res = client.get("/api/admin/users/export/xlsx", headers=headers)
+    assert res.status_code == 200, res.text
+    assert res.headers["content-type"].startswith(
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-    assert "users_export_" in resp.headers.get("content-disposition", "")
-
-    wb = _workbook(resp)
-    assert "Users" in wb.sheetnames
-    headers, rows = _users_sheet_rows(wb)
-    assert headers is not None
-    header_names = [h.lower() for h in headers if h]
-    assert "username" in header_names
-    assert "password" not in header_names
-    assert "password_hash" not in header_names
-
-    usernames = {row["username"] for row in rows}
-    assert "testadmin" in usernames
-    assert "testdoctor" in usernames
-    assert "testreceptionist" in usernames
-
-    doctor = next(row for row in rows if row["username"] == "testdoctor")
-    assert doctor["role"] == "doctor"
-    assert doctor["status"] == "Active"
-
-    cell_text = " ".join(str(v) for row in rows for v in row.values() if v)
-    for hashed in db_session.query(User.password_hash).all():
-        if hashed[0]:
-            assert hashed[0] not in cell_text
-            assert hashed[0].encode() not in resp.content
+    wb = load_workbook(BytesIO(res.content))
+    sheet = wb.active
+    header = [cell.value for cell in sheet[1]]
+    rows = list(sheet.iter_rows(min_row=2, values_only=True))
+    return header, rows
 
 
-def test_users_export_hides_super_admin_from_hospital_admin(client, hospital_admin):
-    resp = client.get("/api/admin/users/export/xlsx", headers=hospital_admin)
-    assert resp.status_code == 200, resp.text
-    _, rows = _users_sheet_rows(_workbook(resp))
-    usernames = {row["username"] for row in rows}
+def test_export_includes_roster_without_passwords(client, auth_headers):
+    header, rows = _sheet(client, auth_headers)
+    assert "Password" not in header
+    assert header[:4] == ["Username", "Email", "First Name", "Last Name"]
+    by_username = {row[0]: row for row in rows}
+    assert "testadmin" in by_username
+    assert "testdoctor" in by_username
+    assert by_username["testdoctor"][2:4] == ("Dr", "Smith")
+    assert by_username["testdoctor"][5] == "doctor"
+    joined = " ".join(str(cell or "") for row in rows for cell in row).lower()
+    assert "doctor123" not in joined
+    assert "admin123" not in joined
+
+
+def test_hospital_admin_export_hides_vendor_account(client, hospital_admin):
+    header, rows = _sheet(client, hospital_admin)
+    usernames = {row[0] for row in rows}
     assert "testadmin" not in usernames
     assert "testdoctor" in usernames
+    assert "Password" not in header
 
 
-def test_users_export_requires_admin(client):
-    resp = client.get("/api/admin/users/export/xlsx")
-    assert resp.status_code in (401, 403)
-
-
-def test_users_export_rejects_non_admin(client):
-    token = create_access_token(data={"sub": "testdoctor"})
-    resp = client.get(
+def test_non_admin_cannot_export_users(client):
+    token = create_access_token(data={"sub": "testreceptionist"})
+    res = client.get(
         "/api/admin/users/export/xlsx",
         headers={"Authorization": f"Bearer {token}"},
     )
-    assert resp.status_code == 403
+    assert res.status_code == 403

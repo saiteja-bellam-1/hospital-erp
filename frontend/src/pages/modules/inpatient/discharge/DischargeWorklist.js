@@ -48,11 +48,11 @@ const DischargeWorklist = ({ onPick, refreshKey = 0 }) => {
           axios.get(`/api/inpatient/admissions/${a.id}/bills`).catch(() => ({ data: [] })),
           axios.get(`/api/inpatient/admissions/${a.id}/discharge-summary`).catch(() => ({ data: null })),
         ]);
-        const computed = Number(billRes.data?.grand_total ?? billRes.data?.subtotal ?? 0);
-        const billed = Number(balRes.data?.total_billed ?? 0);
-        const deposited = Number(balRes.data?.net_deposits ?? 0);
-        const stayCharges = Math.max(computed, billed);
-        const owes = +(stayCharges - deposited).toFixed(2);
+        const deposited = Number(balRes.data?.patient_deposits ?? balRes.data?.net_deposits ?? 0);
+        const stayCharges = Number(balRes.data?.charges ?? balRes.data?.total_billed ?? 0);
+        const owes = balRes.data?.patient_due != null
+          ? Number(balRes.data.patient_due)
+          : +(stayCharges - deposited).toFixed(2);
         const bills = billsRes.data?.items || billsRes.data || [];
         const finalBill = bills.find(b => b.bill_subtype === 'final' && b.status !== 'cancelled');
         const summaryStatus = summaryRes.data?.status || null;

@@ -224,7 +224,7 @@ AMENITY_OPTIONS = [
 
 class RoomCreate(BaseModel):
     room_number: str = Field(..., max_length=20)
-    room_type: str = Field(..., pattern=ROOM_TYPE_PATTERN)
+    room_type: str = Field(..., min_length=1, max_length=100)
     floor: Optional[str] = None
     department: Optional[str] = None
     ward: Optional[str] = None
@@ -237,7 +237,7 @@ class RoomCreate(BaseModel):
 
 class RoomUpdate(BaseModel):
     room_number: Optional[str] = None
-    room_type: Optional[str] = Field(default=None, pattern=ROOM_TYPE_PATTERN)
+    room_type: Optional[str] = Field(default=None, min_length=1, max_length=100)
     floor: Optional[str] = None
     department: Optional[str] = None
     ward: Optional[str] = None
@@ -572,6 +572,7 @@ class AdmissionResponse(BaseModel):
     updated_at: Optional[datetime]
     # Joined fields
     patient_name: Optional[str] = None
+    patient_phone: Optional[str] = None
     doctor_name: Optional[str] = None
     room_number: Optional[str] = None
     room_type: Optional[str] = None
@@ -902,7 +903,7 @@ class BillItemOverride(BaseModel):
     items so the source record's `bill_id` (or `billed` flag) is set correctly
     when the bill is committed. `source=None` is a custom add-on line that has
     no source record."""
-    source: Optional[str] = Field(default=None, pattern=r"^(room|visit|ot|ancillary|pharmacy_rx|pharmacy_pos|lab_order|package|custom)$")
+    source: Optional[str] = Field(default=None, pattern=r"^(room|visit|ot|ancillary|pharmacy_rx|pharmacy_pos|lab_order|package|food|canteen|custom)$")
     source_id: Optional[int] = None
     item_type: str = Field(..., max_length=40)
     item_name: str = Field(..., min_length=1, max_length=300)
@@ -1018,6 +1019,7 @@ def _admission_to_response(adm) -> dict:
     return {
         **{c.name: getattr(adm, c.name) for c in adm.__table__.columns},
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else None,
+        "patient_phone": (patient.primary_phone or None) if patient else None,
         "doctor_name": f"{doctor.first_name} {doctor.last_name}" if doctor else None,
         "room_number": room.room_number if room else None,
         "room_type": room.room_type if room else None,
@@ -1078,8 +1080,41 @@ async def list_inpatient_nurses(
 # ============================================================
 # Room metadata helpers
 @router.get("/room-types")
-async def get_room_types(current_user: User = Depends(get_current_user)):
-    return [{"value": k, "label": v} for k, v in ROOM_TYPES.items()]
+async def get_room_types(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from app.services.room_type_catalog import list_room_types
+
+    hospital = _get_hospital(db, current_user)
+    rows = list_room_types(db, hospital.id)
+    db.commit()
+    return [
+        {"value": row.key, "label": row.label, "is_default": bool(row.is_default)}
+        for row in rows
+    ]
+
+
+@router.post("/room-types", status_code=status.HTTP_201_CREATED)
+async def create_room_type(
+    payload: dict = Body(...),
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_beds")),
+    db: Session = Depends(get_db),
+):
+    """Add a room type by display name. The stored key is a slug of that name."""
+    from app.services.room_type_catalog import ensure_room_type, room_type_labels
+
+    hospital = _get_hospital(db, current_user)
+    name = (payload.get("name") or payload.get("label") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Room type name is required")
+    try:
+        key = ensure_room_type(db, hospital.id, name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    db.commit()
+    log_action(db, current_user, "create_room_type", "inpatient", "RoomType", None, f"Room type {key}")
+    return {"value": key, "label": room_type_labels(db, hospital.id).get(key, key)}
 
 @router.get("/amenity-options")
 async def get_amenity_options(current_user: User = Depends(get_current_user)):
@@ -1115,6 +1150,53 @@ async def list_rooms(
     return query.order_by(RoomManagement.room_number).all()
 
 
+@router.get("/rooms/export")
+async def export_rooms(
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_beds")),
+    db: Session = Depends(get_db),
+):
+    """Download active rooms and beds in the workbook format accepted by import."""
+    import io
+    from app.services.onboarding_import import build_rooms_xlsx
+
+    hospital = _get_hospital(db, current_user)
+    payload = build_rooms_xlsx(db, hospital.id)
+    return StreamingResponse(
+        io.BytesIO(payload),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="rooms.xlsx"'},
+    )
+
+
+@router.post("/rooms/import")
+async def import_rooms_file(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_beds")),
+    db: Session = Depends(get_db),
+):
+    """Create rooms and beds from an .xlsx or .csv file. Existing room numbers are skipped."""
+    from app.services.onboarding_import import import_rooms as _import_rooms
+
+    hospital = _get_hospital(db, current_user)
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="File is empty")
+    if len(raw) > 2 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File is too large")
+    name = (file.filename or "").lower()
+    if not (name.endswith(".xlsx") or name.endswith(".csv")):
+        raise HTTPException(status_code=400, detail="Upload an .xlsx or .csv file")
+    try:
+        result = _import_rooms(db, raw, file.filename or "", hospital_id=hospital.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if result.get("ok"):
+        log_action(
+            db, current_user, "import_rooms", "inpatient", "Room", None,
+            f"Imported rooms ({result['created_rooms']} rooms, {result['created_beds']} beds, {result['skipped']} skipped)",
+        )
+    return result
+
 
 @router.post("/rooms", response_model=RoomResponse, status_code=status.HTTP_201_CREATED)
 async def create_room(
@@ -1131,7 +1213,13 @@ async def create_room(
         raise HTTPException(status_code=400, detail="Room number already exists")
 
     import json as _json
+    from app.services.room_type_catalog import ensure_room_type
+
     data = room.model_dump()
+    try:
+        data["room_type"] = ensure_room_type(db, hospital.id, data["room_type"])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     if data.get("amenities") is not None:
         data["amenities"] = _json.dumps(data["amenities"])
     db_room = RoomManagement(
@@ -1159,7 +1247,14 @@ async def update_room(
         raise HTTPException(status_code=404, detail="Room not found")
 
     import json as _json
+    from app.services.room_type_catalog import ensure_room_type
+
     update_data = room.model_dump(exclude_unset=True)
+    if update_data.get("room_type"):
+        try:
+            update_data["room_type"] = ensure_room_type(db, db_room.hospital_id, update_data["room_type"])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
     if "amenities" in update_data and update_data["amenities"] is not None:
         update_data["amenities"] = _json.dumps(update_data["amenities"])
@@ -1384,8 +1479,12 @@ async def get_room_type_rates(
         ).all()
     }
     
+    from app.services.room_type_catalog import list_room_types
+
     result = []
-    for room_type, label in ROOM_TYPES.items():
+    for room_type_row in list_room_types(db, hospital.id):
+        room_type = room_type_row.key
+        label = room_type_row.label
         row = existing.get(room_type)
         result.append({
             "room_type": room_type,
@@ -1405,8 +1504,12 @@ async def upsert_room_type_rate(
 ):
     hospital = _get_hospital(db, current_user)
     
-    if room_type not in ROOM_TYPES:
-        raise HTTPException(status_code=400, detail="Invalid room type")
+    from app.services.room_type_catalog import ensure_room_type, room_type_labels
+
+    try:
+        room_type = ensure_room_type(db, hospital.id, room_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     row = db.query(RoomTypeRateConfig).filter(
         RoomTypeRateConfig.hospital_id == hospital.id,
         RoomTypeRateConfig.room_type == room_type,
@@ -1424,10 +1527,59 @@ async def upsert_room_type_rate(
     db.refresh(row)
     return {
         "room_type": row.room_type,
-        "room_type_label": ROOM_TYPES.get(row.room_type, row.room_type),
+        "room_type_label": room_type_labels(db, hospital.id).get(row.room_type, row.room_type),
         "nursing_charge_per_visit": float(row.nursing_charge_per_visit) if row.nursing_charge_per_visit is not None else None,
         "id": row.id,
     }
+
+
+@router.get("/room-type-rates/export")
+async def export_room_type_config(
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "set_room_rates")),
+    db: Session = Depends(get_db),
+):
+    """Download nursing rates and doctor room-type visit rates as an .xlsx file."""
+    import io
+    from app.services.room_type_config_io import build_room_type_config_xlsx
+
+    hospital = _get_hospital(db, current_user)
+    payload = build_room_type_config_xlsx(db, hospital.id)
+    return StreamingResponse(
+        io.BytesIO(payload),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="room_type_configuration.xlsx"'},
+    )
+
+
+@router.post("/room-type-rates/import")
+async def import_room_type_config(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "set_room_rates")),
+    db: Session = Depends(get_db),
+):
+    """Upsert room-type nursing rates and doctor visit overrides from .xlsx or .csv."""
+    from app.services.room_type_config_io import import_room_type_config as _import
+
+    hospital = _get_hospital(db, current_user)
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="File is empty")
+    if len(raw) > 2 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File is too large")
+    name = (file.filename or "").lower()
+    if not (name.endswith(".xlsx") or name.endswith(".csv")):
+        raise HTTPException(status_code=400, detail="Upload an .xlsx or .csv file")
+    try:
+        result = _import(db, hospital.id, raw, file.filename or "")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if result.get("ok"):
+        log_action(
+            db, current_user, "import_room_type_config", "inpatient", "RoomTypeRateConfig", None,
+            f"Imported room type configuration ({result['nursing_updated']} nursing, "
+            f"{result['doctor_rates_upserted']} doctor rates)",
+        )
+    return result
 
 
 # ============================================================
@@ -1447,13 +1599,16 @@ async def get_doctor_room_rates(
     )
     if doctor_id:
         q = q.filter(DoctorRoomTypeRate.doctor_id == doctor_id)
+    from app.services.room_type_catalog import room_type_labels
+
     rows = q.all()
+    labels = room_type_labels(db, hospital.id)
     return [
         {
             "id": r.id,
             "doctor_id": r.doctor_id,
             "room_type": r.room_type,
-            "room_type_label": ROOM_TYPES.get(r.room_type, r.room_type),
+            "room_type_label": labels.get(r.room_type, r.room_type),
             "visit_rate": float(r.visit_rate),
         }
         for r in rows
@@ -1468,15 +1623,19 @@ async def upsert_doctor_room_rate(
 ):
     hospital = _get_hospital(db, current_user)
     
-    if data.room_type not in ROOM_TYPES:
-        raise HTTPException(status_code=400, detail="Invalid room type")
+    from app.services.room_type_catalog import ensure_room_type, room_type_labels
+
+    try:
+        room_type_key = ensure_room_type(db, hospital.id, data.room_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     doctor = db.query(User).filter(User.id == data.doctor_id).first()
     if not doctor:
         raise HTTPException(status_code=404, detail="Doctor not found")
     row = db.query(DoctorRoomTypeRate).filter(
         DoctorRoomTypeRate.hospital_id == hospital.id,
         DoctorRoomTypeRate.doctor_id == data.doctor_id,
-        DoctorRoomTypeRate.room_type == data.room_type,
+        DoctorRoomTypeRate.room_type == room_type_key,
     ).first()
     if row:
         row.visit_rate = data.visit_rate
@@ -1484,7 +1643,7 @@ async def upsert_doctor_room_rate(
         row = DoctorRoomTypeRate(
             hospital_id=hospital.id,
             doctor_id=data.doctor_id,
-            room_type=data.room_type,
+            room_type=room_type_key,
             visit_rate=data.visit_rate,
         )
         db.add(row)
@@ -1494,7 +1653,7 @@ async def upsert_doctor_room_rate(
         "id": row.id,
         "doctor_id": row.doctor_id,
         "room_type": row.room_type,
-        "room_type_label": ROOM_TYPES.get(row.room_type, row.room_type),
+        "room_type_label": room_type_labels(db, hospital.id).get(row.room_type, row.room_type),
         "visit_rate": float(row.visit_rate),
     }
 
@@ -5624,18 +5783,14 @@ async def get_admission_bill(
             "amount": float(d.amount or 0) if d.deposit_type != "refund" else -abs(float(d.amount or 0)),
         }
         for d in deposit_rows
+        if (d.payment_method or "") != "scheme_approval"
     ]
-    net_deposits = sum(float(d.amount or 0) if d.deposit_type != "refund" else -abs(float(d.amount or 0))
-                       for d in deposit_rows)
-
-    # Collect Payment / TPA receipts live on Payment rows, not deposits.
-    # Only fold them into remaining when this is the full-stay bill — the
-    # unbilled-only preview's grand_total is a subset and must not be
-    # reduced by money already applied to prior billed charges.
-    payments_total = 0.0
-    if not unbilled_only:
-        bal = _admission_balance_summary(db, admission)
-        payments_total = float(bal.get("total_paid") or 0)
+    money = _admission_balance_summary(db, admission)
+    net_deposits = float(money["patient_deposits"])
+    payer_share = float(money["payer_share"])
+    # This payload is the live charge list. Patient due follows those charges,
+    # the locked or current payer share, and patient cash.
+    preview_share = min(payer_share, float(grand_total or 0))
 
     return {
         "admission_id": admission_id,
@@ -5650,8 +5805,8 @@ async def get_admission_bill(
         "grand_total": grand_total,
         "deposits": deposits_list,
         "deposits_total": round(net_deposits, 2),
-        "payments_total": round(payments_total, 2),
-        "balance_due": round(grand_total - net_deposits - payments_total, 2),
+        "payer_share": round(preview_share, 2),
+        "balance_due": round(float(grand_total or 0) - preview_share - net_deposits, 2),
     }
 
 
@@ -5697,6 +5852,26 @@ class CancelAdmissionBillRequest(BaseModel):
     reason: str = Field(..., min_length=1, max_length=500)
 
 
+def _payment_remaining(db: Session, payment: Payment) -> float:
+    """Unrefunded amount still sitting on a positive Payment row."""
+    original = float(payment.amount_paid or 0)
+    if original <= 0.01 or payment.reversed_at:
+        return 0.0
+    refunded = 0.0
+    for child in db.query(Payment).filter(Payment.parent_payment_id == payment.id).all():
+        if float(child.amount_paid or 0) < 0:
+            refunded += abs(float(child.amount_paid or 0))
+    return round(max(0.0, original - refunded), 2)
+
+
+def _payer_split_for_payment(db: Session, payment_id: int):
+    """TPA/insurance split that posted this Payment, if any."""
+    split = db.query(BillSplit).filter(BillSplit.payment_id == payment_id).first()
+    if split and (split.payer_type or "").lower() in _NON_CASH_SPLIT_PAYERS:
+        return split
+    return None
+
+
 @router.post("/admissions/{admission_id}/bills/{bill_id}/cancel")
 async def cancel_admission_bill(
     admission_id: int,
@@ -5707,8 +5882,12 @@ async def cancel_admission_bill(
 ):
     """Cancel an admission bill (interim or final) and release every source
     item that was attached to it. After cancel, those items become eligible
-    to be re-billed on the next interim/final bill. Cancellation is rejected
-    if any payment has been recorded against the bill (refund first)."""
+    to be re-billed on the next interim/final bill.
+
+    Customer cash collected against the bill (Collect Payment) is moved onto
+    the admission as a deposit so it still counts toward the next bill.
+    Insurer/TPA receipts stay blocking until those splits are reversed.
+    """
     bill = db.query(Bill).filter(
         Bill.id == bill_id,
         Bill.bill_type == "admission",
@@ -5719,27 +5898,47 @@ async def cancel_admission_bill(
     if bill.status == "cancelled":
         raise HTTPException(status_code=400, detail="Bill is already cancelled")
 
-    # Block if any payment has been recorded — operator must refund through
-    # the deposit/refund flow first to avoid silently breaking accounting.
-    paid = sum(float(p.amount_paid or 0) for p in (bill.payments or []))
-    if paid > 0:
+    db.refresh(bill, attribute_names=["payments"])
+    payer_receipts = []
+    customer_cash = []
+    for p in (bill.payments or []):
+        remaining = _payment_remaining(db, p)
+        if remaining <= 0.01:
+            continue
+        if _payer_split_for_payment(db, p.id):
+            payer_receipts.append((p, remaining))
+        else:
+            customer_cash.append((p, remaining))
+
+    if payer_receipts:
+        amount = round(sum(rem for _, rem in payer_receipts), 2)
         raise HTTPException(
             status_code=409,
             detail={
                 "code": "bill_has_payments",
-                "message": "Cannot cancel a bill with recorded payments. Refund through the deposit flow first.",
-                "amount_paid": round(paid, 2),
+                "message": (
+                    "Cannot cancel — an insurer or TPA receipt is still on this bill. "
+                    "Reverse that split first."
+                ),
+                "amount_paid": amount,
             },
         )
 
-    # Also block when any bill_split has been collected — those flow through
-    # the BillSplit table, not the Payment table, so the paid-check above
-    # misses TPA / insurance receipts.
-    received_splits = db.query(BillSplit).filter(
+    # Cash splits only mirror the deposit. A TPA/insurance split with no
+    # remaining linked payment did not bring in separate money.
+    blocking_splits = []
+    for s in db.query(BillSplit).filter(
         BillSplit.bill_id == bill.id,
         BillSplit.payment_status == "received",
-    ).all()
-    if received_splits:
+    ).all():
+        if (s.payer_type or "").lower() not in _NON_CASH_SPLIT_PAYERS:
+            continue
+        if not s.payment_id:
+            continue
+        linked = db.query(Payment).filter(Payment.id == s.payment_id).first()
+        if linked and _payment_remaining(db, linked) > 0.01:
+            blocking_splits.append(s)
+    if blocking_splits:
         raise HTTPException(
             status_code=409,
             detail={
@@ -5747,12 +5946,50 @@ async def cancel_admission_bill(
                 "message": "Cannot cancel — one or more payer splits have already been marked as received. Reverse those splits first.",
                 "received_splits": [
                     {"id": s.id, "payer_type": s.payer_type, "payer_name": s.payer_name, "amount": float(s.amount or 0)}
-                    for s in received_splits
+                    for s in blocking_splits
                 ],
             },
         )
 
+    deposit_transferred = 0.0
     try:
+        # Customer cash collected on the bill stays with the admission. A
+        # patient refund is not required just to void the invoice.
+        if customer_cash:
+            hospital = _get_hospital(db, current_user)
+            for p, remaining in customer_cash:
+                reversal = Payment(
+                    payment_number=_next_payment_number(db),
+                    bill_id=bill.id,
+                    amount_paid=-remaining,
+                    payment_method_name=p.payment_method_name or "cash",
+                    notes=f"Moved to admission deposit when {bill.bill_number} was cancelled",
+                    received_by_id=current_user.id,
+                    parent_payment_id=p.id,
+                )
+                db.add(reversal)
+                db.flush()
+                p.reversed_at = _now()
+                p.reversed_by_id = current_user.id
+                p.reversal_reason = f"Transferred to deposit on bill cancel: {data.reason}"
+                deposit_transferred += remaining
+            deposit_transferred = round(deposit_transferred, 2)
+            method = customer_cash[0][0].payment_method_name or "cash"
+            if method not in ("cash", "card", "upi", "cheque", "online", "bank_transfer"):
+                method = "cash"
+            db.add(AdmissionDeposit(
+                admission_id=admission_id,
+                deposit_number=_generate_deposit_number(db),
+                amount=deposit_transferred,
+                deposit_type="topup",
+                payment_method=method,
+                reference_number=f"BILL-CANCEL-{bill.id}",
+                notes=f"Cash collected on {bill.bill_number} kept on the admission when the bill was cancelled",
+                received_by_id=current_user.id,
+                hospital_id=hospital.id,
+            ))
+            db.flush()
+
         # Release every source row tagged with this bill_id so it can be billed again.
         visits_q = db.query(PatientVisit).filter(PatientVisit.bill_id == bill.id)
         visits_released = visits_q.count()
@@ -5815,6 +6052,7 @@ async def cancel_admission_bill(
     return {
         "message": f"Bill {bill.bill_number} cancelled",
         "bill_id": bill.id,
+        "deposit_transferred": deposit_transferred,
         "released": {
             "visits": visits_released,
             "ot": ot_released,
@@ -5892,6 +6130,10 @@ def _create_admission_bill_record_inner(
         tax_pct = min(max(float(tax_percentage), 0.0), 100.0)
         tax_amount = round(after_discount * tax_pct / 100, 2)
     grand_total = round(after_discount + tax_amount, 2)
+    if bill_subtype == "final":
+        payer_share, payer_status, payer_ref = _qualified_payer_share(admission, grand_total)
+    else:
+        payer_share, payer_status, payer_ref = 0.0, None, None
 
     today = datetime.now().strftime("%Y%m%d")
     prefix = f"BILL-ADM-{today}-"
@@ -5912,6 +6154,9 @@ def _create_admission_bill_record_inner(
         status="pending",
         created_by_id=current_user.id,
         hospital_id=hospital.id,
+        payer_share_amount=payer_share if bill_subtype == "final" else None,
+        payer_approval_status=payer_status if bill_subtype == "final" else None,
+        payer_approval_ref=payer_ref if bill_subtype == "final" else None,
     )
     db.add(bill)
     db.flush()
@@ -6382,10 +6627,11 @@ async def finalize_and_settle_bill(
         items_override=items_override,
     )
     prior_summary = _admission_balance_summary(db, admission)
-    net_deposits_before = float(prior_summary.get("net_deposits") or 0)
-    # The saved final bill is the figure the balance uses. Auto-finalize is the
-    # full stay, so earlier bill rows are not added on top of this total.
-    billed_basis = draft_total
+    net_deposits_before = float(prior_summary.get("patient_deposits") or 0)
+    # Patient responsibility is the draft total minus the payer share that
+    # will be locked onto this bill.
+    payer_share = _qualified_payer_share(admission, draft_total)[0]
+    billed_basis = round(max(0.0, draft_total - payer_share), 2)
 
     settle = data.settle
     if settle.direction == "collect":
@@ -6835,12 +7081,12 @@ async def get_bill_pdf(
             bill_subtype = 'preview'
             status = 'not_finalized'
 
-    # Deposit + payment trail, then remaining. Collect Payment / TPA receipts
-    # live on Payment rows — they must reduce the printed balance the same way
-    # the billing dashboard does. Do not use total - deposits only.
+    # Same four numbers as the admission balance. Scheme-approval rows are
+    # payer share, not cash, so they are left out of the deposit trail.
     bal = _admission_balance_summary(db, admission)
-    deposits_total = float(bal.get("net_deposits", 0))
-    payments_total = 0.0
+    deposits_total = float(bal.get("patient_deposits") or 0)
+    payer_share = float(bal.get("payer_share") or 0)
+    balance_due = float(bal.get("patient_due") or 0)
 
     deposit_rows = db.query(AdmissionDeposit).filter(
         AdmissionDeposit.admission_id == admission_id
@@ -6855,29 +7101,8 @@ async def get_bill_pdf(
             "amount": float(d.amount or 0) if d.deposit_type != "refund" else -abs(float(d.amount or 0)),
         }
         for d in deposit_rows
+        if (d.payment_method or "") != "scheme_approval"
     ]
-
-    if bill:
-        db.refresh(bill, attribute_names=["payments"])
-        cash_applied, other_applied, received = effective_bill_applied(db, bill)
-        deposits_total = cash_applied
-        payments_total = other_applied
-        balance_due = round(total - received, 2)
-        for p in sorted(bill.payments or [], key=lambda x: x.id or 0):
-            amt = float(p.amount_paid or 0)
-            if abs(amt) < 0.01:
-                continue
-            deposits_list.append({
-                "deposit_number": p.payment_number or "",
-                "date": format_bill_date(p.payment_date, empty=""),
-                "deposit_type": "refund" if amt < 0 else "payment",
-                "method": p.payment_method_name or "cash",
-                "reference": p.transaction_reference or "",
-                "amount": amt,
-            })
-    else:
-        payments_total = float(bal.get("total_paid") or 0)
-        balance_due = round(total - deposits_total - payments_total, 2)
 
     # Doctor names (admitting / attending / referring)
     def _name(user_id):
@@ -6962,7 +7187,7 @@ async def get_bill_pdf(
         "total": total,
         "deposits": deposits_list,
         "deposits_total": deposits_total,
-        "payments_total": payments_total,
+        "payer_share": payer_share,
         "balance_due": balance_due,
         "prepared_by_name": f"{current_user.first_name} {current_user.last_name}",
     }
@@ -8278,13 +8503,6 @@ def _insert_deposit_safely(db: Session, build_kwargs) -> AdmissionDeposit:
     raise RuntimeError("Failed to allocate deposit number after retries")
 
 
-SCHEME_APPROVAL_REF_PREFIX = "SCHEME-APPR-"
-
-
-def _scheme_approval_deposit_ref(admission_id: int) -> str:
-    return f"{SCHEME_APPROVAL_REF_PREFIX}{admission_id}"
-
-
 def _active_scheme_approval_total(db: Session, admission_id: int) -> float:
     """Sum of non-voided ledger approvals for an admission."""
     rows = db.query(AdmissionSchemeApproval).filter(
@@ -8341,12 +8559,8 @@ def _sync_scheme_approval_deposit(
     received_by_id: int,
     hospital_id: int,
 ) -> Optional[AdmissionDeposit]:
-    """Mirror cumulative approved scheme amount into the deposit pool so
-    balance/bill math counts it.
-
-    Prefer the multi-approval ledger total. Fall back to the denormalised
-    admission field when no ledger rows exist yet. Status/amount changes
-    top up or refund the delta (idempotent via SCHEME-APPR-{id} tag).
+    """Keep the approval ledger in sync. Approved amounts are payer share,
+    not patient cash, so they are not written as deposits.
     """
     if not admission or not admission.id:
         return None
@@ -8359,56 +8573,10 @@ def _sync_scheme_approval_deposit(
         AdmissionSchemeApproval.admission_id == admission.id,
     ).count()
     if ledger_count > 0:
-        target = _refresh_admission_approval_totals(db, admission)
-    else:
-        status = (admission.scheme_approval_status or "none").lower()
-        amount = float(admission.scheme_approval_amount or 0)
-        target = amount if status == "approved" and amount > 0 else 0.0
-
-    ref = _scheme_approval_deposit_ref(admission.id)
-    existing = db.query(AdmissionDeposit).filter(
-        AdmissionDeposit.admission_id == admission.id,
-        AdmissionDeposit.reference_number == ref,
-    ).all()
-    current_net = sum(
-        float(d.amount) if d.deposit_type != "refund" else -abs(float(d.amount))
-        for d in existing
-    )
-    delta = round(target - current_net, 2)
-    if abs(delta) < 0.01:
-        return None
-
-    scheme_name = None
-    if getattr(admission, "payer_scheme_id", None):
-        sch = db.query(PayerScheme).filter(PayerScheme.id == admission.payer_scheme_id).first()
-        scheme_name = sch.name if sch else None
-    label = scheme_name or (admission.payer_type or "scheme").replace("_", " ").title()
-
-    if delta > 0:
-        notes = f"Scheme approval credit — {label}"
-        dep_type = "topup"
-        amt = delta
-    else:
-        notes = f"Scheme approval adjustment — {label}"
-        dep_type = "refund"
-        amt = abs(delta)
-    if admission.scheme_approval_ref:
-        notes += f" (ref {admission.scheme_approval_ref})"
-
-    def _kwargs():
-        return dict(
-            admission_id=admission.id,
-            deposit_number=_generate_deposit_number(db),
-            amount=amt,
-            deposit_type=dep_type,
-            payment_method="scheme_approval",
-            reference_number=ref,
-            received_by_id=received_by_id,
-            hospital_id=hospital_id,
-            notes=notes,
-        )
-
-    return _insert_deposit_safely(db, _kwargs)
+        _refresh_admission_approval_totals(db, admission)
+    # An approved amount is payer share. It is not patient cash, so it is
+    # not mirrored into the deposit pool.
+    return None
 
 
 def _generate_txn_id(db: Session) -> str:
@@ -8428,80 +8596,130 @@ def _generate_txn_id(db: Session) -> str:
     return f"{prefix}{seq:04d}"
 
 
-def _admission_balance_summary(db: Session, admission: Admission) -> dict:
-    """Compute deposits/charges/balance for an admission. Positive balance =
-    patient has unused credit (refund due on discharge); negative = patient owes."""
+def _qualified_payer_share(admission: Admission, cap: float) -> tuple:
+    """Payer share is the approved scheme amount, capped at the bill.
+
+    Returns (amount, status, ref). A reference is recorded when present, but
+    an approved amount still reduces what the patient owes without one.
+    """
+    status = (getattr(admission, "scheme_approval_status", None) or "none").lower()
+    amount = float(getattr(admission, "scheme_approval_amount", None) or 0)
+    ref = (getattr(admission, "scheme_approval_ref", None) or "").strip()
+    if status == "approved" and amount > 0.01:
+        return round(min(amount, max(float(cap or 0), 0.0)), 2), "approved", ref or None
+    return 0.0, status, ref or None
+
+
+def _admission_patient_cash(db: Session, admission_id: int) -> dict:
+    """Cash the patient has actually paid.
+
+    Scheme-approval rows are not cash. A Collect Payment row on an admission
+    bill counts until cancel moves it into a deposit. A payment posted for a
+    TPA or insurance split is a payer receipt and is left out.
+    """
     deposits = db.query(AdmissionDeposit).filter(
-        AdmissionDeposit.admission_id == admission.id
+        AdmissionDeposit.admission_id == admission_id
     ).all()
-    total_collected = sum(float(d.amount) for d in deposits if d.deposit_type != "refund")
-    total_refunded = sum(abs(float(d.amount)) for d in deposits if d.deposit_type == "refund")
-    net_deposits = total_collected - total_refunded
+    cash_rows = [d for d in deposits if (d.payment_method or "") != "scheme_approval"]
+    total_collected = sum(float(d.amount or 0) for d in cash_rows if d.deposit_type != "refund")
+    total_refunded = sum(abs(float(d.amount or 0)) for d in cash_rows if d.deposit_type == "refund")
+    net_deposit_cash = total_collected - total_refunded
 
     bills = db.query(Bill).filter(
         Bill.bill_type == "admission",
-        Bill.reference_id == admission.id,
+        Bill.reference_id == admission_id,
         Bill.status != "cancelled",
     ).all()
-    # When a comprehensive final bill exists it already includes prior interim charges
-    # — use only the final bill total to avoid double-counting with interim bills.
-    final_bill = next((b for b in bills if b.bill_subtype == "final"), None)
-    if final_bill:
-        billed_from_bills = float(final_bill.total_amount or 0)
-    else:
-        billed_from_bills = sum(float(b.total_amount or 0) for b in bills)
-    total_paid = 0.0
+    legacy_payments = 0.0
     for b in bills:
         for p in (b.payments or []):
-            total_paid += float(p.amount_paid or 0)
+            if _payer_split_for_payment(db, p.id):
+                continue
+            legacy_payments += float(p.amount_paid or 0)
+    legacy_payments = round(legacy_payments, 2)
+    return {
+        "deposits": deposits,
+        "cash_rows": cash_rows,
+        "total_collected": round(total_collected, 2),
+        "total_refunded": round(total_refunded, 2),
+        "net_deposit_cash": round(net_deposit_cash, 2),
+        "legacy_payments": legacy_payments,
+        "patient_deposits": round(net_deposit_cash + legacy_payments, 2),
+        "bills": bills,
+    }
 
-    # Received splits: cash overlaps deposits; TPA/insurance overlaps Payment
-    # rows. Pending splits are not money in hand.
-    bill_ids = [b.id for b in bills]
-    cash_split_received = 0.0
-    other_split_received = 0.0
-    if bill_ids:
-        for s in db.query(BillSplit).filter(
-            BillSplit.bill_id.in_(bill_ids),
-            BillSplit.payment_status == "received",
-        ).all():
-            amt = float(s.amount or 0)
-            if (s.payer_type or "").lower() in _NON_CASH_SPLIT_PAYERS:
-                other_split_received += amt
-            else:
-                cash_split_received += amt
-    split_received = cash_split_received + other_split_received
 
-    # Fold in any charges that aren't on a saved Bill row yet so the balance
-    # reflects what the patient actually owes for services rendered. Without
-    # this, an admission that never had its bill finalized shows total_billed=0
-    # and the discharge gate misclassifies deposits as refundable credit.
+def _admission_balance_summary(db: Session, admission: Admission) -> dict:
+    """One admission balance.
+
+    Patient due = charges − payer share − patient deposits.
+    Positive ``balance`` is unused patient credit. Negative means the patient owes.
+
+    While a final bill exists, charges are that bill's total. Later services
+    stay visible as ``unbilled_charges`` and do not raise the due until the
+    bill is cancelled.
+    """
+    cash = _admission_patient_cash(db, admission.id)
+    bills = cash["bills"]
+    final_bill = next((b for b in bills if b.bill_subtype == "final"), None)
+
+    try:
+        live = _compute_admission_charges(db, admission, unbilled_only=False)
+        live_total = float(live.get("subtotal", 0) or 0)
+    except Exception:
+        live_total = 0.0
     try:
         unbilled = _compute_admission_charges(db, admission, unbilled_only=True)
         unbilled_subtotal = float(unbilled.get("subtotal", 0) or 0)
     except Exception:
         unbilled_subtotal = 0.0
-    total_billed = billed_from_bills + unbilled_subtotal
 
-    # Cash pool and TPA/payment pool are added; within each pool use max()
-    # so the same rupee is not counted twice.
-    applied = max(net_deposits, cash_split_received) + max(total_paid, other_split_received)
+    if final_bill:
+        charges = float(final_bill.total_amount or 0)
+        billed_from_bills = charges
+        if final_bill.payer_share_amount is not None and float(final_bill.payer_share_amount or 0) > 0.01:
+            payer_share = round(min(float(final_bill.payer_share_amount or 0), charges), 2)
+            payer_status = final_bill.payer_approval_status or "none"
+            payer_ref = final_bill.payer_approval_ref
+        else:
+            # A saved 0 means the approval was not qualified when the bill was
+            # written. Use the live approved amount so it still reduces the due.
+            payer_share, payer_status, payer_ref = _qualified_payer_share(admission, charges)
+    else:
+        charges = live_total
+        billed_from_bills = 0.0
+        payer_share, payer_status, payer_ref = _qualified_payer_share(admission, charges)
+
+    patient_deposits = cash["patient_deposits"]
+    responsibility = round(max(0.0, charges - payer_share), 2)
+    patient_due = round(responsibility - patient_deposits, 2)  # +ve owes, −ve credit
+    balance = round(-patient_due, 2)
 
     return {
         "admission_id": admission.id,
         "admission_number": admission.admission_number,
-        "total_collected": round(total_collected, 2),
-        "total_refunded": round(total_refunded, 2),
-        "net_deposits": round(net_deposits, 2),
-        "total_billed": round(total_billed, 2),
+        "total_collected": cash["total_collected"],
+        "total_refunded": cash["total_refunded"],
+        "net_deposits": patient_deposits,
+        "patient_deposits": patient_deposits,
+        "cash_deposits": cash["net_deposit_cash"],
+        "legacy_bill_payments": cash["legacy_payments"],
+        "charges": round(charges, 2),
+        "total_billed": round(charges, 2),
         "billed_on_bills": round(billed_from_bills, 2),
         "unbilled_charges": round(unbilled_subtotal, 2),
-        "total_paid": round(total_paid, 2),
-        "splits_received": round(split_received, 2),
-        "amount_applied": round(min(total_billed, applied) if total_billed > 0 else applied, 2),
-        "balance": round(applied - total_billed, 2),  # +ve = credit, -ve = patient owes
-        "deposit_count": len(deposits),
+        "payer_share": payer_share,
+        "payer_approval_status": payer_status,
+        "payer_approval_ref": payer_ref,
+        "patient_responsibility": responsibility,
+        "patient_due": patient_due,
+        "total_paid": cash["legacy_payments"],
+        "splits_received": 0.0,
+        "amount_applied": round(min(responsibility, patient_deposits) if responsibility > 0 else patient_deposits, 2),
+        "balance": balance,
+        "deposit_count": len(cash["cash_rows"]),
         "bill_count": len(bills),
+        "final_bill_id": final_bill.id if final_bill else None,
     }
 
 
@@ -8578,34 +8796,51 @@ def _bill_received_splits_total(db: Session, bill_id: int) -> float:
     return round(cash + other, 2)
 
 
-def effective_bill_applied(db: Session, bill: Bill) -> tuple:
-    """Return (cash_applied, other_applied, received) for a bill.
-
-    Cash pool: max(deposits allocated to this bill, received cash splits).
-    Non-cash pool: max(Payment rows, received TPA/insurance splits).
-    ``received`` is not capped at bill total so excess deposits still show as
-    refund-due on the printed bill. Pending splits never count.
-    """
-    if (bill.status or "") == "cancelled":
-        return 0.0, 0.0, 0.0
-    payments = sum(float(p.amount_paid or 0) for p in (bill.payments or []))
-    cash_split, other_split = _bill_received_splits_by_kind(db, bill.id)
-    deposit_alloc = allocate_deposits_to_bill(db, bill)
-    cash_applied = round(max(deposit_alloc, cash_split), 2)
-    other_applied = round(max(payments, other_split), 2)
-    return cash_applied, other_applied, round(cash_applied + other_applied, 2)
-
-
 def effective_bill_paid(db: Session, bill: Bill) -> float:
-    """Amount actually received against a bill (not merely allocated).
+    """Patient cash applied to this bill's patient portion.
 
-    Same two-pool formula as ``effective_bill_applied``, capped at bill total.
+    Admission bills use deposits (plus legacy Collect Payment rows). Payer
+    share and TPA receipts are not patient cash. Other bill types keep
+    payments and received splits, taking the higher so a split is not added
+    on top of the payment it posted.
     """
     if (bill.status or "") == "cancelled":
         return 0.0
     total = float(bill.total_amount or 0)
-    _, _, received = effective_bill_applied(db, bill)
-    return round(min(total, received), 2)
+    if (bill.bill_type or "") == "admission" and bill.reference_id:
+        cash = _admission_patient_cash(db, bill.reference_id)["patient_deposits"]
+        if bill.payer_share_amount is not None:
+            share = float(bill.payer_share_amount or 0)
+        else:
+            admission = db.query(Admission).filter(Admission.id == bill.reference_id).first()
+            share = _qualified_payer_share(admission, total)[0] if admission else 0.0
+        portion = max(0.0, total - min(share, total))
+        # One deposit pool, oldest bill first, against each bill's patient portion.
+        remaining = max(0.0, cash)
+        siblings = db.query(Bill).filter(
+            Bill.bill_type == "admission",
+            Bill.reference_id == bill.reference_id,
+            Bill.status != "cancelled",
+        ).order_by(Bill.id.asc()).all()
+        for b in siblings:
+            b_total = float(b.total_amount or 0)
+            if b.payer_share_amount is not None:
+                b_share = min(float(b.payer_share_amount or 0), b_total)
+            elif b.id == bill.id:
+                b_share = min(share, b_total)
+            else:
+                b_share = 0.0
+            b_portion = max(0.0, b_total - b_share)
+            applied = min(b_portion, remaining)
+            if b.id == bill.id:
+                return round(applied, 2)
+            remaining -= applied
+            if remaining <= 0:
+                return 0.0
+        return 0.0
+    payments = sum(float(p.amount_paid or 0) for p in (bill.payments or []))
+    split_received = _bill_received_splits_total(db, bill.id)
+    return round(min(total, max(payments, split_received)), 2)
 
 
 def reconcile_admission_bill_statuses(db: Session, admission_id: int) -> None:
@@ -8621,8 +8856,16 @@ def reconcile_admission_bill_statuses(db: Session, admission_id: int) -> None:
         db.refresh(b, attribute_names=["payments"])
         total = float(b.total_amount or 0)
         effective_paid = effective_bill_paid(db, b)
-        if effective_paid >= total - 0.01 and total > 0:
-            b.status = "paid"
+        if b.payer_share_amount is not None:
+            share = min(float(b.payer_share_amount or 0), total)
+        elif b.reference_id:
+            adm = db.query(Admission).filter(Admission.id == b.reference_id).first()
+            share = _qualified_payer_share(adm, total)[0] if adm else 0.0
+        else:
+            share = 0.0
+        patient_portion = max(0.0, total - share)
+        if patient_portion <= 0.01 or effective_paid >= patient_portion - 0.01:
+            b.status = "paid" if total > 0 else b.status
         elif effective_paid > 0.01:
             b.status = "partial"
         else:
@@ -14600,8 +14843,9 @@ async def list_meal_plans(
     # Determine the set of room_types to render. Prefer the RoomType catalog;
     # fall back to room types currently in use by rooms or existing plans;
     # finally to the built-in default list so the grid is never empty.
-    rt_rows = db.query(RoomType).filter(RoomType.hospital_id == hospital.id).all()
-    room_types = [r.type_key for r in rt_rows] if rt_rows else []
+    from app.services.room_type_catalog import list_room_types
+    rt_rows = list_room_types(db, hospital.id)
+    room_types = [r.key for r in rt_rows] if rt_rows else []
     if not room_types:
         room_types = list({r[0] for r in db.query(RoomManagement.room_type).filter(
             RoomManagement.hospital_id == hospital.id

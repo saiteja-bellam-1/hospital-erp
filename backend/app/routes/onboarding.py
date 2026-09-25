@@ -433,9 +433,11 @@ async def save_nursing_rates(
         raise HTTPException(status_code=404, detail="Hospital not found")
 
     for item in data.rates:
-        room_type = item.room_type.strip().lower()
-        if room_type not in importers.ROOM_TYPES:
-            raise HTTPException(status_code=400, detail=f"Invalid room_type '{room_type}'")
+        from app.services.room_type_catalog import ensure_room_type
+        try:
+            room_type = ensure_room_type(db, hospital.id, item.room_type)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
         row = (
             db.query(RoomTypeRateConfig)
             .filter(

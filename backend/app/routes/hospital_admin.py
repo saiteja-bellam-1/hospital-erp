@@ -2579,21 +2579,14 @@ async def get_all_bills(
                 for d in dep_rows
             )
 
-            # Live received amount — same helper Collect Payment uses.
-            # Pending splits are not counted. Cash splits do not stack on deposits.
-            from app.routes.inpatient import effective_bill_paid
-            if final_bill:
-                amount_paid = effective_bill_paid(db, final_bill)
-            elif active_bills:
-                amount_paid = round(
-                    min(total_charges, sum(effective_bill_paid(db, b) for b in active_bills)),
-                    2,
-                )
-            else:
-                amount_paid = round(max(0.0, net_deposits), 2)
-            if total_charges <= 0:
-                amount_paid = round(max(0.0, net_deposits), 2)
-            balance_due = round(max(0.0, total_charges - amount_paid), 2)
+            # Same four numbers as the admission balance.
+            from app.routes.inpatient import _admission_balance_summary
+            summary = _admission_balance_summary(db, admission)
+            total_charges = float(summary["charges"])
+            net_deposits = float(summary["patient_deposits"])
+            amount_paid = float(summary["amount_applied"])
+            balance_due = round(max(0.0, float(summary["patient_due"])), 2)
+            payer_share = float(summary["payer_share"])
 
             payments_sum = 0.0
             split_recv_sum = 0.0
@@ -2659,6 +2652,8 @@ async def get_all_bills(
                 "cancelled_at": "",
                 "amount_paid": amount_paid,
                 "balance_due": balance_due,
+                "payer_share": payer_share,
+                "patient_deposits": net_deposits,
                 "admission_id": adm_id,
                 "deposits": deposit_children,
                 "net_deposits": round(net_deposits, 2),
@@ -3301,7 +3296,6 @@ async def get_bill_detail(
     # avoids double-counting when Mark Received also posted a Payment.
     deposit_alloc = 0.0
     from app.routes.inpatient import (
-        allocate_deposits_to_bill,
         _bill_received_splits_total,
         effective_bill_paid,
     )
@@ -3313,14 +3307,26 @@ async def get_bill_detail(
             BillSplit.payment_status != "received",
         ).all()
     ), 2)
-    if (bill.bill_type or "") == "admission":
-        deposit_alloc = allocate_deposits_to_bill(db, bill)
-        effective_paid = effective_bill_paid(db, bill)
+    payer_share = 0.0
+    if (bill.bill_type or "") == "admission" and bill.reference_id:
+        from app.models.inpatient import Admission
+        from app.routes.inpatient import _admission_balance_summary
+        adm = db.query(Admission).filter(Admission.id == bill.reference_id).first()
+        summary = _admission_balance_summary(db, adm) if adm else None
+        if summary:
+            deposit_alloc = float(summary["patient_deposits"])
+            effective_paid = float(summary["amount_applied"])
+            payer_share = float(summary["payer_share"])
+            balance_due = round(max(0.0, float(summary["patient_due"])), 2)
+        else:
+            effective_paid = effective_bill_paid(db, bill)
+            balance_due = round(max(0.0, float(bill.total_amount or 0) - effective_paid), 2)
     else:
         effective_paid = round(
             min(float(bill.total_amount or 0), max(total_paid, split_received)),
             2,
         )
+        balance_due = round(max(0.0, float(bill.total_amount or 0) - effective_paid), 2)
 
     total_amt = float(bill.total_amount or 0)
 
@@ -3338,10 +3344,11 @@ async def get_bill_detail(
         "total_amount": total_amt,
         "amount_paid": round(effective_paid, 2),
         "deposit_applied": round(deposit_alloc, 2),
+        "payer_share": round(payer_share, 2),
         "payments_recorded": round(total_paid, 2),
         "splits_received": round(split_received, 2),
         "pending_splits": round(pending_splits_total, 2),
-        "balance_due": round(max(0.0, total_amt - effective_paid), 2),
+        "balance_due": balance_due,
         "notes": bill.notes,
         "items": [
             {
@@ -3420,6 +3427,68 @@ async def record_bill_payment(
         raise HTTPException(status_code=404, detail="Bill not found")
     if bill.status == "cancelled":
         raise HTTPException(status_code=400, detail="Cannot pay a cancelled bill")
+
+    if (bill.bill_type or "") == "admission" and bill.reference_id:
+        from app.models.inpatient import Admission, AdmissionDeposit
+        from app.routes.inpatient import (
+            _admission_balance_summary,
+            _generate_deposit_number,
+            _generate_txn_id,
+            reconcile_admission_bill_statuses,
+        )
+        admission = db.query(Admission).filter(Admission.id == bill.reference_id).first()
+        if not admission:
+            raise HTTPException(status_code=404, detail="Admission not found")
+        summary = _admission_balance_summary(db, admission)
+        due = round(max(0.0, float(summary["patient_due"])), 2)
+        if due <= 0.01:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Nothing due — patient deposits ₹{summary['patient_deposits']:.2f} "
+                    f"already cover ₹{summary['patient_responsibility']:.2f}."
+                ),
+            )
+        if req.amount_paid > due + 0.01:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Amount exceeds balance due (₹{due:.2f}).",
+            )
+        method = req.payment_method or "cash"
+        if method not in ("cash", "card", "upi", "cheque", "online", "bank_transfer"):
+            method = "cash"
+        deposit = AdmissionDeposit(
+            admission_id=admission.id,
+            deposit_number=_generate_deposit_number(db),
+            amount=float(req.amount_paid),
+            deposit_type="topup",
+            payment_method=method,
+            reference_number=req.transaction_reference or _generate_txn_id(db),
+            notes=req.notes or f"Collected against {bill.bill_number}",
+            received_by_id=current_user.id,
+            hospital_id=bill.hospital_id,
+        )
+        db.add(deposit)
+        db.flush()
+        reconcile_admission_bill_statuses(db, admission.id)
+        _sync_admission_item_payment_status(bill, db)
+        db.commit()
+        db.refresh(bill)
+        after = _admission_balance_summary(db, admission)
+        from app.services.audit_service import log_action
+        log_action(
+            db, current_user, "record_payment", "billing", "AdmissionDeposit", deposit.id,
+            f"Collected ₹{req.amount_paid:.2f} as a deposit against {bill.bill_number}",
+        )
+        return {
+            "payment_id": deposit.id,
+            "payment_number": deposit.deposit_number,
+            "amount_paid": req.amount_paid,
+            "bill_status": bill.status,
+            "total_paid": after["patient_deposits"],
+            "balance_due": round(max(0.0, float(after["patient_due"])), 2),
+            "message": "Payment recorded as an admission deposit",
+        }
 
     from app.routes.inpatient import effective_bill_paid, _bill_received_splits_total
     db.refresh(bill, attribute_names=["payments"])

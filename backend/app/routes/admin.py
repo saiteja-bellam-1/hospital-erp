@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -437,39 +438,130 @@ async def get_all_users(
     ]
 
 
+_USER_EXPORT_HEADERS = [
+    "Username",
+    "Email",
+    "First Name",
+    "Last Name",
+    "Phone",
+    "Primary Role",
+    "Additional Roles",
+    "Status",
+    "License Number",
+    "Specialization",
+    "Qualification",
+    "Experience Years",
+    "Consultation Fee (INR)",
+    "Inpatient Fee (INR)",
+    "Inpatient Fee Mode",
+    "Emergency Fee (INR)",
+    "Must Change Password",
+    "Created At",
+]
+
+
+def _visible_users(db: Session, current_user: User):
+    """Same visibility as the user list: hide the vendor super admin from other admins."""
+    users = db.query(User).all()
+    if not current_user.has_role("super_admin"):
+        users = [u for u in users if not u.has_role("super_admin")]
+    return users
+
+
+def _user_export_roles(user: User):
+    primary = user.role.name if user.role else ""
+    additional = sorted(
+        {r.name for r in (user.roles or []) if r.name and r.name != primary}
+    )
+    return primary, "; ".join(additional)
+
+
+def _build_users_workbook(users):
+    import io
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    sheet = wb.active
+    sheet.title = "Users"
+    sheet.append(_USER_EXPORT_HEADERS)
+
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill("solid", fgColor="1F4E79")
+    for cell in sheet[1]:
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(vertical="center")
+
+    ordered = sorted(
+        users,
+        key=lambda u: (
+            (u.last_name or "").lower(),
+            (u.first_name or "").lower(),
+            (u.username or "").lower(),
+        ),
+    )
+    for user in ordered:
+        primary, additional = _user_export_roles(user)
+        created = user.created_at.strftime("%Y-%m-%d %H:%M") if user.created_at else ""
+        sheet.append([
+            user.username,
+            user.email,
+            user.first_name,
+            user.last_name,
+            user.phone or "",
+            primary,
+            additional,
+            "Active" if user.is_active else "Inactive",
+            user.license_number or "",
+            user.specialization or "",
+            user.qualification or "",
+            user.experience_years if user.experience_years is not None else "",
+            user.consultation_fee_inr or "",
+            user.inpatient_fee_inr or "",
+            _normalize_fee_charge_mode(getattr(user, "inpatient_fee_charge_mode", None))
+            if (primary == "doctor" or "doctor" in additional)
+            else "",
+            user.emergency_fee_inr or "",
+            "Yes" if user.must_change_password else "No",
+            created,
+        ])
+
+    sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = f"A1:{get_column_letter(len(_USER_EXPORT_HEADERS))}{max(sheet.max_row, 1)}"
+    widths = [18, 28, 16, 16, 16, 20, 28, 12, 20, 22, 24, 18, 22, 20, 20, 20, 22, 20]
+    for idx, width in enumerate(widths, start=1):
+        sheet.column_dimensions[get_column_letter(idx)].width = width
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+
 @router.get("/users/export/xlsx")
 async def export_users_xlsx(
     current_user: User = Depends(require_admin_access),
     db: Session = Depends(get_db),
 ):
-    """Download all users as an Excel roster. Passwords are never included.
-
-    Hospital admins do not see the vendor super_admin account, matching GET /users.
-    """
-    import io
-    from fastapi.responses import StreamingResponse
-    from app.services.user_excel_export import build_users_xlsx
-    from app.utils.time import system_now
-
-    include_super_admin = current_user.has_role("super_admin")
-    content = build_users_xlsx(
-        db,
-        include_super_admin=include_super_admin,
-        hospital_id=current_user.hospital_id,
-    )
-    filename = f"users_export_{system_now().strftime('%Y%m%d')}.xlsx"
+    """Download the user roster as an Excel workbook. Passwords are never included."""
+    users = _visible_users(db, current_user)
     try:
         from app.services.audit_service import log_action
         log_action(
             db, current_user, "export_users", "admin", "User", None,
-            "Exported users to Excel",
+            f"Exported {len(users)} users to Excel",
+            details={"count": len(users)},
         )
     except Exception:
         pass
+
+    buf = _build_users_workbook(users)
     return StreamingResponse(
-        io.BytesIO(content),
+        buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": "attachment; filename=users.xlsx"},
     )
 
 

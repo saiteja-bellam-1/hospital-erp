@@ -19,8 +19,7 @@ import {
   RefreshCw,
   KeyRound,
   Upload,
-  Download,
-  Loader2,
+  FileSpreadsheet
 } from 'lucide-react';
 import axios from 'axios';
 import BulkUserImportDialog from './admin/BulkUserImport';
@@ -86,22 +85,11 @@ const AdminModule = () => {
   const [doctorRoomRatesEdits, setDoctorRoomRatesEdits] = useState({});
   const [doctorRoomRatesSaving, setDoctorRoomRatesSaving] = useState({});
 
-  const ROOM_TYPES = [
-    { value: 'general',      label: 'General Ward' },
-    { value: 'semi_private', label: 'Semi-Private' },
-    { value: 'private',      label: 'Private' },
-    { value: 'suite',        label: 'Suite / Deluxe' },
-    { value: 'icu',          label: 'ICU' },
-    { value: 'hdu',          label: 'HDU / Step-Down' },
-    { value: 'nicu',         label: 'NICU' },
-    { value: 'picu',         label: 'PICU' },
-    { value: 'isolation',    label: 'Isolation' },
-    { value: 'labour',       label: 'Labour & Delivery' },
-    { value: 'recovery',     label: 'Post-Op Recovery' },
-    { value: 'daycare',      label: 'Day Care' },
-    { value: 'emergency',    label: 'Emergency / Casualty' },
-    { value: 'operation',    label: 'Operation Theatre' },
-  ];
+  const [roomTypes, setRoomTypes] = useState([
+    { value: 'general', label: 'General Ward' },
+    { value: 'private', label: 'Private' },
+    { value: 'icu', label: 'ICU' },
+  ]);
 
   useEffect(() => {
     if (hasRole('super_admin') || hasRole('hospital_admin')) {
@@ -111,6 +99,9 @@ const AdminModule = () => {
       fetchUsers(); fetchUserLimit();
       fetchRoles();
       fetchUserLimit();
+      axios.get('/api/inpatient/room-types').then(res => {
+        if (Array.isArray(res.data) && res.data.length) setRoomTypes(res.data);
+      }).catch(() => {});
     }
   }, [user]);
 
@@ -147,49 +138,23 @@ const AdminModule = () => {
     }
   };
 
-  const handleExportUsers = async () => {
+  const exportUsersExcel = async () => {
     setExportingUsers(true);
     try {
-      const res = await axios.get('/api/admin/users/export/xlsx', {
-        responseType: 'blob',
-        timeout: 30000,
-      });
-      const contentType = res.headers['content-type'] || '';
-      if (contentType.includes('application/json')) {
-        const text = await res.data.text?.() || await new Response(res.data).text();
-        let detail = 'Failed to export users';
-        try { detail = JSON.parse(text).detail || detail; } catch { /* keep default */ }
-        throw new Error(typeof detail === 'string' ? detail : 'Failed to export users');
-      }
-      const disposition = res.headers['content-disposition'] || '';
-      const match = disposition.match(/filename=([^;]+)/);
-      const filename = match ? match[1].trim().replace(/"/g, '') : 'users_export.xlsx';
-      const url = window.URL.createObjectURL(new Blob([res.data], {
-        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      }));
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.URL.revokeObjectURL(url);
-      toast({ title: 'Users exported' });
+      const res = await axios.get('/api/admin/users/export/xlsx', { responseType: 'blob' });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement('a');
+      const stamp = new Date().toISOString().slice(0, 10);
+      a.href = url;
+      a.download = `users_${stamp}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast({ title: 'Exported', description: 'User list downloaded as Excel.' });
     } catch (error) {
-      const detail = error.response?.data;
-      let message = error.message || 'Failed to export users';
-      if (detail instanceof Blob) {
-        try {
-          const parsed = JSON.parse(await detail.text());
-          if (typeof parsed.detail === 'string') message = parsed.detail;
-        } catch { /* keep message */ }
-      } else if (typeof detail?.detail === 'string') {
-        message = detail.detail;
-      }
       toast({
         variant: 'destructive',
-        title: 'Error',
-        description: message,
+        title: 'Export failed',
+        description: 'Could not export users to Excel.',
       });
     } finally {
       setExportingUsers(false);
@@ -643,17 +608,13 @@ const AdminModule = () => {
               )}
               <Button
                 variant="outline"
-                onClick={handleExportUsers}
+                onClick={exportUsersExcel}
                 className="flex items-center"
                 disabled={exportingUsers}
-                title="Download all users as an Excel file. Passwords are not included."
+                title="Download the user list as an Excel workbook"
               >
-                {exportingUsers ? (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                ) : (
-                  <Download className="h-4 w-4 mr-2" />
-                )}
-                Export
+                <FileSpreadsheet className="h-4 w-4 mr-2" />
+                {exportingUsers ? 'Exporting...' : 'Export Excel'}
               </Button>
               <Button
                 variant="outline"
@@ -875,7 +836,7 @@ const AdminModule = () => {
                           </tr>
                         </thead>
                         <tbody>
-                          {ROOM_TYPES.map(rt => {
+                          {roomTypes.map(rt => {
                             const existing = doctorRoomRates.find(r => r.room_type === rt.value);
                             const editVal = doctorRoomRatesEdits[rt.value] ?? '';
                             return (

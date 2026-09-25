@@ -152,12 +152,124 @@ def _hospital(db: Session) -> Hospital:
     return hospital
 
 
-def import_rooms(db: Session, content: bytes, filename: str) -> dict:
+ROOM_HEADERS = [
+    "room_number", "room_type", "floor", "department", "ward",
+    "bed_count", "room_charge_per_day", "nursing_charge_per_visit",
+    "amenities", "is_isolation", "gender_policy",
+]
+BED_HEADERS = ["room_number", "bed_label"]
+
+
+def _amenities_cell(raw: Optional[str]) -> str:
+    if not raw:
+        return ""
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        parsed = [part.strip() for part in str(raw).replace(";", ",").split(",") if part.strip()]
+    if isinstance(parsed, list):
+        return ";".join(str(item).strip() for item in parsed if str(item).strip())
+    return str(raw)
+
+
+def build_rooms_xlsx(db: Session, hospital_id: int) -> bytes:
+    """Export active rooms and beds in the workbook format accepted by import."""
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill
+
+    workbook = openpyxl.Workbook()
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill("solid", fgColor="2563EB")
+
+    rooms_sheet = workbook.active
+    rooms_sheet.title = "Rooms"
+    rooms_sheet.append(ROOM_HEADERS)
+    rooms = (
+        db.query(RoomManagement)
+        .filter(
+            RoomManagement.hospital_id == hospital_id,
+            RoomManagement.is_active.is_(True),
+        )
+        .order_by(RoomManagement.room_number)
+        .all()
+    )
+    for room in rooms:
+        rooms_sheet.append([
+            room.room_number,
+            room.room_type,
+            room.floor or "",
+            room.department or "",
+            room.ward or "",
+            room.bed_count or 1,
+            room.room_charge_per_day,
+            float(room.nursing_charge_per_visit or 0),
+            _amenities_cell(room.amenities),
+            "true" if room.is_isolation else "false",
+            room.gender_policy or "mixed",
+        ])
+
+    beds_sheet = workbook.create_sheet("Beds")
+    beds_sheet.append(BED_HEADERS)
+    if rooms:
+        room_ids = [room.id for room in rooms]
+        number_by_id = {room.id: room.room_number for room in rooms}
+        beds = (
+            db.query(Bed)
+            .filter(Bed.room_id.in_(room_ids))
+            .order_by(Bed.room_id, Bed.bed_label)
+            .all()
+        )
+        for bed in beds:
+            beds_sheet.append([number_by_id.get(bed.room_id, ""), bed.bed_label])
+
+    notes = workbook.create_sheet("Instructions")
+    notes.append(["KT HEALTH ERP — Rooms and beds"])
+    notes["A1"].font = Font(bold=True, size=14)
+    notes.append([])
+    for line in (
+        "Fill the Rooms sheet. Existing room numbers are skipped.",
+        "room_type can be a built-in key or a new name. New names are added to the room type list.",
+        "Required: room_number, room_type, room_charge_per_day.",
+        "If the Beds sheet has no rows for a room, beds are created as Bed-1..Bed-N from bed_count.",
+        "amenities: semicolon-separated keys such as ac, tv, wifi, oxygen_point.",
+        "gender_policy: mixed, male or female. is_isolation: true or false.",
+        "A CSV with the Rooms columns is also accepted. Beds are then created from bed_count.",
+    ):
+        notes.append([line])
+
+    for sheet in (rooms_sheet, beds_sheet):
+        for cell in sheet[1]:
+            cell.font = header_font
+            cell.fill = header_fill
+        sheet.freeze_panes = "A2"
+        if sheet.max_row >= 1 and sheet.max_column >= 1:
+            sheet.auto_filter.ref = sheet.dimensions
+        for column in sheet.columns:
+            letter = column[0].column_letter
+            width = max(len(str(cell.value or "")) for cell in column)
+            sheet.column_dimensions[letter].width = min(36, max(14, width + 2))
+    notes.column_dimensions["A"].width = 110
+
+    output = io.BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
+def import_rooms(db: Session, content: bytes, filename: str, hospital_id: int | None = None) -> dict:
     sheets = read_csv_or_xlsx(content, filename, ["Rooms", "Beds"])
     room_rows = sheets.get("Rooms") or []
     bed_rows = sheets.get("Beds") or []
+    if not room_rows and not bed_rows:
+        raise ValueError(
+            "No rooms found. Use the Rooms sheet with room_number, room_type and room_charge_per_day."
+        )
     errors: list[RowError] = []
-    hospital = _hospital(db)
+    if hospital_id is not None:
+        hospital = db.query(Hospital).filter(Hospital.id == hospital_id).first()
+        if not hospital:
+            raise ValueError("Hospital not found")
+    else:
+        hospital = _hospital(db)
 
     created_rooms = 0
     created_beds = 0
@@ -190,8 +302,11 @@ def import_rooms(db: Session, content: bytes, filename: str) -> dict:
         if not room_number:
             errors.append(RowError("Rooms", line, "room_number is required"))
             continue
-        if room_type not in ROOM_TYPES:
-            errors.append(RowError("Rooms", line, f"Invalid room_type '{room_type}'"))
+        from app.services.room_type_catalog import ensure_room_type
+        try:
+            room_type = ensure_room_type(db, hospital.id, room_type)
+        except ValueError as exc:
+            errors.append(RowError("Rooms", line, str(exc)))
             continue
         if charge is None:
             errors.append(RowError("Rooms", line, "room_charge_per_day is required"))
@@ -308,8 +423,11 @@ def import_nursing_rates(db: Session, content: bytes, filename: str) -> dict:
         except ValueError as exc:
             errors.append(RowError("Data", line, str(exc)))
             continue
-        if room_type not in ROOM_TYPES:
-            errors.append(RowError("Data", line, f"Invalid room_type '{room_type}'"))
+        from app.services.room_type_catalog import ensure_room_type
+        try:
+            room_type = ensure_room_type(db, hospital.id, room_type)
+        except ValueError as exc:
+            errors.append(RowError("Data", line, str(exc)))
             continue
         if rate is None:
             errors.append(RowError("Data", line, "nursing_charge_per_visit is required"))
@@ -437,8 +555,11 @@ def import_doctor_room_rates(db: Session, content: bytes, filename: str) -> dict
         if doctor_role and doctor.role_id != doctor_role.id and "doctor" not in doctor.role_names:
             errors.append(RowError("Data", line, f"User '{username}' is not a doctor"))
             continue
-        if room_type not in ROOM_TYPES:
-            errors.append(RowError("Data", line, f"Invalid room_type '{room_type}'"))
+        from app.services.room_type_catalog import ensure_room_type
+        try:
+            room_type = ensure_room_type(db, hospital.id, room_type)
+        except ValueError as exc:
+            errors.append(RowError("Data", line, str(exc)))
             continue
         if visit_rate is None:
             errors.append(RowError("Data", line, "visit_rate is required"))

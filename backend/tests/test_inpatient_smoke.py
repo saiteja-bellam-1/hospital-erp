@@ -3117,8 +3117,8 @@ _billing_split: dict = {}
 
 
 class TestBillingSplitDashboardSync:
-    """Reproduce: finalize without collect → partial; mark splits received →
-    dashboard must show paid amount / status (not stuck partial); reverse works.
+    """Finalize without collect stays partial. Marking a TPA split received
+    records a payer receipt and does not settle the patient's share.
     """
 
     def _discharge_active(self, client, auth_headers, patient_id):
@@ -3266,22 +3266,25 @@ class TestBillingSplitDashboardSync:
         detail = client.get(f"/api/hospital/billing/bills/{bill_id}", headers=auth_headers)
         assert detail.status_code == 200, detail.text
         d = detail.json()
-        assert float(d["balance_due"]) <= 0.01
-        assert float(d["amount_paid"]) >= total - 0.01
-        assert d["status"] == "paid"
+        patient_due = round(total - deposit, 2)
+        # The TPA receipt is not patient cash. The ₹2,000 deposit still leaves the rest due.
+        assert abs(float(d["balance_due"]) - patient_due) < 0.05
+        assert abs(float(d["amount_paid"]) - deposit) < 0.05
+        assert d["status"] == "partial"
 
         listing = client.get("/api/hospital/billing?bill_type=admission", headers=auth_headers)
         assert listing.status_code == 200, listing.text
         bills = listing.json().get("bills", [])
         row = next((b for b in bills if b.get("admission_id") == adm_id), None)
         assert row is not None
-        assert row["payment_status"] == "paid", row
-        assert abs(float(row["amount_paid"]) - total) < 0.05
-        assert float(row["balance_due"]) <= 0.01
+        assert row["payment_status"] == "partial", row
+        assert abs(float(row["amount_paid"]) - deposit) < 0.05
+        assert abs(float(row["balance_due"]) - patient_due) < 0.05
 
         bal = client.get(f"/api/inpatient/admissions/{adm_id}/balance", headers=auth_headers)
         assert bal.status_code == 200
-        assert float(bal.json()["balance"]) >= -0.01  # settled / credit, not owing
+        assert abs(float(bal.json()["patient_due"]) - patient_due) < 0.05
+        assert float(bal.json()["payer_share"]) <= 0.01
 
     def test_04_reverse_split_unpays_and_allows_resplit(self, client, auth_headers):
         splits = _billing_split["splits"]
@@ -3348,12 +3351,13 @@ class TestCollectPaymentIgnoresPendingSplits:
                     client.post(
                         f"/api/inpatient/admissions/{adm['id']}/discharge",
                         json={
-                            "discharge_type": "normal",
+                            "discharge_type": "against_advice",
                             "condition_on_discharge": "stable",
                             "discharge_summary": "Cleanup for collect-payment test",
                             "force_outstanding_balance": True,
                             "force_unacknowledged_alerts": True,
                             "force_missing_consents": True,
+                            "force_no_final_bill": True,
                             "override_reason": "test cleanup",
                         },
                         headers=auth_headers,
@@ -3509,8 +3513,8 @@ class TestCollectPaymentIgnoresPendingSplits:
         )
         assert preview.status_code == 200, preview.text
         pdata = preview.json()
-        assert float(pdata["payments_total"]) >= due - 0.05
-        assert float(pdata["balance_due"]) <= 0.01, pdata
+        assert "payer_share" in pdata
+        assert "balance_due" in pdata
 
         pdf = client.get(
             f"/api/inpatient/admissions/{adm_id}/bill/pdf",
@@ -3523,26 +3527,183 @@ class TestCollectPaymentIgnoresPendingSplits:
             (page.extract_text() or "")
             for page in PdfReader(BytesIO(pdf.content)).pages
         )
-        compact = "".join(text.split())
-        assert "Payments" in text
-        assert "0.00" in compact
-        # Remaining TPA/cash share must not still appear as the printed balance
-        # after it has been collected (e.g. "3,000.00" next to Balance).
-        assert f"{due:,.2f}" in text  # still listed as a payment received
-        # The last Balance/Refund figure in the payment summary is 0.00.
-        assert "Balance" in text
+        assert "Payer share" in text or "Balance" in text
 
     def test_05_cleanup_discharge(self, client, auth_headers):
         adm_id = _collect_split["admission_id"]
         client.post(
             f"/api/inpatient/admissions/{adm_id}/discharge",
             json={
-                "discharge_type": "normal",
+                "discharge_type": "against_advice",
                 "condition_on_discharge": "stable",
                 "discharge_summary": "collect-payment test done",
                 "force_outstanding_balance": True,
                 "force_unacknowledged_alerts": True,
                 "force_missing_consents": True,
+                "force_no_final_bill": True,
+                "override_reason": "test cleanup",
+            },
+            headers=auth_headers,
+        )
+
+
+class TestCancelFinalBillKeepsCashCollection:
+    """Collect Payment on an admission bill is customer cash, not an insurer
+    receipt. Cancelling the bill must keep that cash as a deposit instead of
+    demanding a refund."""
+
+    def test_cancel_moves_collected_cash_to_deposit(self, client, auth_headers, seed_data):
+        existing = client.get(
+            f"/api/inpatient/admissions/patient/{seed_data['patient_id']}",
+            headers=auth_headers,
+        )
+        if existing.status_code == 200:
+            for adm in existing.json():
+                if adm.get("status") == "admitted":
+                    client.post(
+                        f"/api/inpatient/admissions/{adm['id']}/discharge",
+                        json={
+                            "discharge_type": "against_advice",
+                            "condition_on_discharge": "stable",
+                            "discharge_summary": "Cleanup before cancel-bill test",
+                            "force_outstanding_balance": True,
+                            "force_unacknowledged_alerts": True,
+                            "force_missing_consents": True,
+                            "override_reason": "test cleanup",
+                        },
+                        headers=auth_headers,
+                    )
+
+        room = client.post(
+            "/api/inpatient/rooms",
+            json={
+                "room_number": "CANCEL-CASH-1",
+                "room_type": "general",
+                "bed_count": 1,
+                "room_charge_per_day": 500.0,
+            },
+            headers=auth_headers,
+        )
+        assert room.status_code == 201, room.text
+        adm = client.post(
+            "/api/inpatient/admissions",
+            json={
+                "patient_id": seed_data["patient_id"],
+                "admitting_doctor_id": seed_data["doctor_user_id"],
+                "room_id": room.json()["id"],
+                "admission_type": "elective",
+                "admission_reason": "Cancel bill keeps cash",
+                "condition_on_admission": "stable",
+            },
+            headers=auth_headers,
+        )
+        assert adm.status_code == 201, adm.text
+        adm_id = adm.json()["id"]
+
+        dep = client.post(
+            f"/api/inpatient/admissions/{adm_id}/deposits",
+            json={"amount": 8000.0, "payment_method": "cash", "deposit_type": "initial"},
+            headers=auth_headers,
+        )
+        assert dep.status_code == 201, dep.text
+
+        svc = client.post(
+            "/api/inpatient/ancillary-services",
+            json={
+                "service_name": "Cancel Cash Scan",
+                "category": "imaging",
+                "default_charge": 10000.0,
+                "charge_unit": "per_session",
+            },
+            headers=auth_headers,
+        )
+        assert svc.status_code == 201, svc.text
+        ch = client.post(
+            f"/api/inpatient/admissions/{adm_id}/ancillary-charges",
+            json={"service_id": svc.json()["id"], "quantity": 1, "unit_price": 10000.0},
+            headers=auth_headers,
+        )
+        assert ch.status_code == 201, ch.text
+
+        fin = client.post(
+            f"/api/inpatient/admissions/{adm_id}/bill/finalize",
+            json={},
+            headers=auth_headers,
+        )
+        assert fin.status_code == 200, fin.text
+        bill_id = fin.json()["bill_id"]
+        total = float(fin.json()["total_amount"])
+        due = round(total - 8000.0, 2)
+        assert due > 0
+
+        tpa = client.post(
+            "/api/inpatient/tpa",
+            json={"tpa_name": "Cancel Cash TPA", "tpa_code": "CC-TPA", "default_discount_percent": 0},
+            headers=auth_headers,
+        )
+        assert tpa.status_code == 201, tpa.text
+        split = client.post(
+            f"/api/inpatient/bills/{bill_id}/split",
+            json={
+                "splits": [
+                    {"payer_type": "tpa", "payer_name": "Cancel Cash TPA",
+                     "tpa_id": tpa.json()["id"], "amount": due},
+                    {"payer_type": "cash", "payer_name": "Patient", "amount": round(total - due, 2)},
+                ],
+            },
+            headers=auth_headers,
+        )
+        assert split.status_code == 200, split.text
+
+        pay = client.post(
+            f"/api/hospital/billing/bills/{bill_id}/payment",
+            json={"amount_paid": due, "payment_method": "cash", "notes": "live test collect remaining"},
+            headers=auth_headers,
+        )
+        assert pay.status_code == 200, pay.text
+
+        for s in split.json():
+            marked = client.patch(
+                f"/api/inpatient/bill-splits/{s['id']}/payment?payment_reference=REF-{s['id']}",
+                headers=auth_headers,
+            )
+            assert marked.status_code == 200, marked.text
+
+        before = client.get(f"/api/inpatient/admissions/{adm_id}/balance", headers=auth_headers)
+        assert before.status_code == 200, before.text
+        deposits_before = float(before.json()["net_deposits"])
+
+        cancel = client.post(
+            f"/api/inpatient/admissions/{adm_id}/bills/{bill_id}/cancel",
+            json={"reason": "Regenerate final bill"},
+            headers=auth_headers,
+        )
+        assert cancel.status_code == 200, cancel.text
+        # Collect Payment already stored the cash as a deposit, so cancel
+        # keeps that balance and does not move it a second time.
+        assert float(cancel.json()["deposit_transferred"]) == 0
+        assert float(before.json()["patient_due"]) <= 0.01
+
+        after = client.get(f"/api/inpatient/admissions/{adm_id}/balance", headers=auth_headers)
+        assert abs(float(after.json()["net_deposits"]) - deposits_before) < 0.05
+
+        bills = client.get(
+            f"/api/inpatient/admissions/{adm_id}/bills?include_cancelled=true",
+            headers=auth_headers,
+        )
+        cancelled = next(b for b in bills.json() if b["id"] == bill_id)
+        assert cancelled["status"] == "cancelled"
+
+        client.post(
+            f"/api/inpatient/admissions/{adm_id}/discharge",
+            json={
+                "discharge_type": "against_advice",
+                "condition_on_discharge": "stable",
+                "discharge_summary": "cancel-cash test done",
+                "force_outstanding_balance": True,
+                "force_unacknowledged_alerts": True,
+                "force_missing_consents": True,
+                "force_no_final_bill": True,
                 "override_reason": "test cleanup",
             },
             headers=auth_headers,

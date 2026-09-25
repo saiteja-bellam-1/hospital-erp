@@ -26,7 +26,6 @@ const BillDetailDialog = ({ open, onClose, admission, onFinalized }) => {
   const [discountType, setDiscountType] = useState('flat');
   const [discountValue, setDiscountValue] = useState('');
   const [taxPct, setTaxPct] = useState('');
-  const [submitting, setSubmitting] = useState(false);
   // Post-finalize settle dialog
   const [settle, setSettle] = useState(null);  // { mode: 'collect'|'refund', amount, method, reference, notes, busy }
 
@@ -75,41 +74,6 @@ const BillDetailDialog = ({ open, onClose, admission, onFinalized }) => {
 
   const hasFinalBill = existingBills.some(b => b.bill_subtype === 'final');
   const latestFinal = existingBills.find(b => b.bill_subtype === 'final');
-
-  // Generate (finalize) the bill with current discount/tax.
-  const generateBill = async () => {
-    setSubmitting(true);
-    try {
-      const res = await axios.post(
-        `/api/inpatient/admissions/${admission.id}/bill/finalize`,
-        {
-          discount_type: discountType,
-          discount_value: Number(discountValue) || 0,
-          tax_percentage: Number(taxPct) || 0,
-        },
-      );
-      toast({ title: 'Bill generated',
-              description: 'You can now download and share it with the patient.' });
-      await fetchData();
-      onFinalized?.();
-      // If there's a balance one way or the other, open the Settle dialog.
-      const r = res.data || {};
-      if (r.requires_action === 'collect' && r.amount_to_collect > 0) {
-        setSettle({ mode: 'collect', amount: String(r.amount_to_collect),
-                    method: 'cash', reference: '', notes: '', busy: false });
-      } else if (r.requires_action === 'refund' && r.amount_to_refund > 0) {
-        setSettle({ mode: 'refund', amount: String(r.amount_to_refund),
-                    method: 'cash', reference: '', notes: '', busy: false });
-      }
-    } catch (err) {
-      const detail = err.response?.data?.detail;
-      const msg = typeof detail === 'string' ? detail
-        : detail?.message || 'Could not generate bill';
-      toast({ variant: 'destructive', title: 'Error', description: msg });
-    } finally {
-      setSubmitting(false);
-    }
-  };
 
   const submitSettle = async () => {
     if (!settle) return;
@@ -214,8 +178,7 @@ const BillDetailDialog = ({ open, onClose, admission, onFinalized }) => {
               <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded p-2 text-xs">
                 <AlertTriangle className="h-4 w-4 text-amber-700 mt-0.5" />
                 <span className="text-amber-900">
-                  Bill not yet generated. Adjust discount / tax below and click
-                  <b> Generate bill</b> to create it, then download / share with the patient.
+                  No final bill yet. These are live charges. The final bill is saved during discharge.
                 </span>
               </div>
             )}
@@ -398,23 +361,9 @@ const BillDetailDialog = ({ open, onClose, admission, onFinalized }) => {
         <DialogFooter className="flex items-center justify-between">
           <Button variant="outline" onClick={onClose}>Close</Button>
           <div className="flex gap-2">
-            {hasFinalBill ? (
-              <Button onClick={downloadPdf}>
-                <FileDown className="h-4 w-4 mr-1" /> Download bill PDF
-              </Button>
-            ) : (
-              <>
-                <Button variant="outline" onClick={downloadPdf}
-                        title="Preview the bill as it stands now (not yet finalized)">
-                  <FileDown className="h-4 w-4 mr-1" /> Preview PDF
-                </Button>
-                <Button onClick={generateBill}
-                        disabled={submitting || !billData || grandTotal <= 0}>
-                  {submitting && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                  <Receipt className="h-4 w-4 mr-1" /> Generate bill
-                </Button>
-              </>
-            )}
+            <Button variant={hasFinalBill ? 'default' : 'outline'} onClick={downloadPdf}>
+              <FileDown className="h-4 w-4 mr-1" /> {hasFinalBill ? 'Download bill PDF' : 'Preview PDF'}
+            </Button>
           </div>
         </DialogFooter>
       </DialogContent>

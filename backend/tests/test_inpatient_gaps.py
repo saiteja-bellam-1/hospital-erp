@@ -127,7 +127,8 @@ class TestAdmissionAcceptance:
             f"{API}/admissions/{_acc['admission_id']}/discharge",
             json={"discharge_type": "normal", "condition_on_discharge": "stable",
                   "discharge_summary": "done",
-                  "force_outstanding_balance": True, "override_reason": "test"},
+                  "force_outstanding_balance": True, "force_no_final_bill": True,
+                  "override_reason": "test"},
             headers=auth_headers,
         )
         assert r.status_code == 201, r.text
@@ -789,6 +790,7 @@ class TestPayerSchemes:
                 "reason": "Insurance card produced",
                 "scheme_approval_status": "approved",
                 "scheme_approval_amount": 5000.0,
+                "scheme_approval_ref": "POL-5000",
             },
             headers=auth_headers,
         )
@@ -796,17 +798,16 @@ class TestPayerSchemes:
 
         deps = client.get(f"{API}/admissions/{admission_id}/deposits", headers=auth_headers)
         assert deps.status_code == 200, deps.text
-        rows = deps.json()
-        scheme_deps = [d for d in rows
-                       if (d.get("reference_number") or "").startswith("SCHEME-APPR-")
-                       or d.get("payment_method") == "scheme_approval"]
-        assert scheme_deps, f"expected scheme approval deposit, got {rows}"
-        assert abs(sum(
-            float(d["amount"]) if d.get("deposit_type") != "refund" else -abs(float(d["amount"]))
-            for d in scheme_deps
-        ) - 5000.0) < 0.01
+        scheme_deps = [d for d in deps.json()
+                       if d.get("payment_method") == "scheme_approval"]
+        assert scheme_deps == []
+        bal = client.get(f"{API}/admissions/{admission_id}/balance", headers=auth_headers)
+        assert bal.status_code == 200, bal.text
+        assert abs(float(r.json()["scheme_approval_amount"]) - 5000.0) < 0.01
+        assert abs(float(bal.json()["payer_share"]) - min(5000.0, float(bal.json()["charges"]))) < 0.01
+        assert bal.json()["payer_approval_status"] == "approved"
 
-        # Raising approval tops up via a second ledger entry (+₹2,500)
+        # Raising approval tops up the payer share (+₹2,500), not the deposit pool.
         r2 = client.post(
             f"{API}/admissions/{admission_id}/scheme-approvals",
             data={
@@ -817,14 +818,11 @@ class TestPayerSchemes:
             headers=auth_headers,
         )
         assert r2.status_code == 201, r2.text
+        bal2 = client.get(f"{API}/admissions/{admission_id}/balance", headers=auth_headers)
+        assert bal2.status_code == 200, bal2.text
+        assert abs(float(bal2.json()["payer_share"]) - min(7500.0, float(bal2.json()["charges"]))) < 0.01
         deps2 = client.get(f"{API}/admissions/{admission_id}/deposits", headers=auth_headers).json()
-        scheme_deps2 = [d for d in deps2
-                        if (d.get("reference_number") or "").startswith("SCHEME-APPR-")]
-        net2 = sum(
-            float(d["amount"]) if d.get("deposit_type") != "refund" else -abs(float(d["amount"]))
-            for d in scheme_deps2
-        )
-        assert abs(net2 - 7500.0) < 0.01
+        assert [d for d in deps2 if d.get("payment_method") == "scheme_approval"] == []
 
         ledger = client.get(
             f"{API}/admissions/{admission_id}/scheme-approvals", headers=auth_headers

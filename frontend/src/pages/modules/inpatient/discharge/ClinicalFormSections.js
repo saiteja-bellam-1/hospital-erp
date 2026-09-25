@@ -20,11 +20,12 @@ export const BillingRecap = ({ bill, balance, loading }) => {
   }
   if (!bill && !balance) return null;
 
-  const billedFromBills = Number(balance?.total_billed || 0);
-  const billedFromCompute = Number(bill?.grand_total || 0);
-  const totalBilled = Math.max(billedFromBills, billedFromCompute);
-  const netDeposits = Number(balance?.net_deposits || 0);
-  const net = netDeposits - totalBilled;
+  const totalBilled = Number(balance?.charges ?? balance?.total_billed ?? bill?.grand_total ?? 0);
+  const netDeposits = Number(balance?.patient_deposits ?? balance?.net_deposits ?? 0);
+  const payerShare = Number(balance?.payer_share || 0);
+  const net = balance?.patient_due != null
+    ? -Number(balance.patient_due)
+    : netDeposits - Math.max(0, totalBilled - payerShare);
   const refundDue = Math.max(0, net);
   const dueFromPatient = Math.max(0, -net);
 

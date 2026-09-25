@@ -7,10 +7,11 @@ export const PAYMENT_METHODS = [
 ];
 
 export const CHECKOUT_STEPS = [
-  { id: 1, key: 'finalize', label: 'Finalize Bill' },
-  { id: 2, key: 'settle', label: 'Collect / Refund' },
-  { id: 3, key: 'summary', label: 'Discharge Summary' },
-  { id: 4, key: 'gatepass', label: 'Gate Pass' },
+  { id: 1, key: 'review', label: 'Review' },
+  { id: 2, key: 'settle', label: 'Clear Account' },
+  { id: 3, key: 'finalize', label: 'Final Bill' },
+  { id: 4, key: 'summary', label: 'Discharge Summary' },
+  { id: 5, key: 'gatepass', label: 'Gate Pass' },
 ];
 
 export const EMPTY_CLINICAL_FORM = {
@@ -73,7 +74,8 @@ export function computeCheckoutSettlement(derived, form, hasFinalBill = false) {
   const afterDiscount = Math.max(0, subtotal - discountAmount);
   const taxAmount = afterDiscount * Math.min(Math.max(Number(form.taxPct || 0), 0), 100) / 100;
   const adjustedTotal = +(afterDiscount + taxAmount).toFixed(2);
-  const owes = +(adjustedTotal - Number(derived.deposited || 0)).toFixed(2);
+  const payerShare = Math.min(Number(derived.payerShare || 0), adjustedTotal);
+  const owes = +(adjustedTotal - payerShare - Number(derived.deposited || 0)).toFixed(2);
 
   return {
     subtotal,
@@ -111,28 +113,25 @@ export const fmtInr = (n) => `₹${(Number(n) || 0).toLocaleString('en-IN', {
 
 export function computeDerived(bill, balance, admission, finalBill = null) {
   if (!bill || !balance) return null;
-  const computed = Number(bill.grand_total ?? bill.subtotal ?? 0);
-  const billed = Number(balance.total_billed ?? 0);
-  const deposited = Number(balance.net_deposits ?? 0);
-  // A final bill is authoritative because it includes locked discounts/tax.
-  // The live charge preview remains pre-discount and must not replace it.
-  const stayCharges = finalBill
-    ? Number(finalBill.total_amount ?? billed)
-    : Math.max(computed, billed);
-  const owes = +(stayCharges - deposited).toFixed(2);
+  const deposited = Number(balance.patient_deposits ?? balance.net_deposits ?? 0);
+  const payerShare = Number(balance.payer_share ?? 0);
+  // The balance endpoint freezes charges on the final bill and applies payer share.
+  const stayCharges = Number(balance.charges ?? balance.total_billed ?? 0);
+  const owes = balance.patient_due != null
+    ? Number(balance.patient_due)
+    : +(stayCharges - payerShare - deposited).toFixed(2);
   const isDischarged = admission?.status === 'discharged';
-  return { stayCharges, billed, deposited, owes, isDischarged };
+  return { stayCharges, billed: stayCharges, deposited, payerShare, owes, isDischarged, finalBill };
 }
 
 /** Pick the first incomplete step based on server state. */
 export function resolveStartStep({ admission, finalBill, gatePass, derived }) {
   if (!admission || !derived) return 1;
-  if (gatePass) return 4;
-  if (derived.isDischarged) return 4;
+  if (gatePass) return 5;
+  if (derived.isDischarged) return 5;
   if (finalBill) {
-    // Final exists — jump to settle if unpaid/credit, else summary.
     if (Math.abs(Number(derived.owes || 0)) > 0.01) return 2;
-    return 3;
+    return 4;
   }
   return 1;
 }
