@@ -4160,10 +4160,41 @@ const InpatientModule = () => {
                                 const visitCovered = (t) => billData.package && (included.has('visits') || (t === 'doctor_visit' && included.has('doctor_visit')) || (t === 'nurse_visit' && included.has('nurse_visit')));
                                 return (
                                   <>
-                                    <div className="flex justify-between">
-                                      <span className="text-gray-500">Room ({billData.room?.room_number} - {billData.stay_days} days){billData.package && isIncluded('room') && <Tag />}</span>
-                                      <span>₹{billData.room_total?.toFixed(2)}</span>
-                                    </div>
+                                    {(() => {
+                                      const pkgRoomLines = (billData.package?.room_lines || []).filter(line => (line.total || 0) > 0);
+                                      const roomCovered = !!(billData.package && (
+                                        isIncluded('room')
+                                        || (billData.package.included_stay_days || 0) > 0
+                                        || pkgRoomLines.length
+                                      ));
+                                      const roomSegments = roomCovered
+                                        ? []
+                                        : (billData.room?.rate_segments || []).filter(seg => (seg.total || 0) > 0);
+                                      if (pkgRoomLines.length) {
+                                        return pkgRoomLines.map((line, idx) => (
+                                          <div key={`pkg-room-${idx}`} className="flex justify-between">
+                                            <span className="text-gray-500">{line.label}</span>
+                                            <span>₹{Number(line.total || 0).toFixed(2)}</span>
+                                          </div>
+                                        ));
+                                      }
+                                      if (roomSegments.length) {
+                                        return roomSegments.map((seg, idx) => (
+                                          <div key={`room-seg-${idx}`} className="flex justify-between">
+                                            <span className="text-gray-500">
+                                              Room {seg.room_number || billData.room?.room_number} ({seg.room_type || ''}) · {seg.days} day{seg.days === 1 ? '' : 's'} @ ₹{Number(seg.rate || 0).toFixed(2)}
+                                            </span>
+                                            <span>₹{Number(seg.total || 0).toFixed(2)}</span>
+                                          </div>
+                                        ));
+                                      }
+                                      return (
+                                        <div className="flex justify-between">
+                                          <span className="text-gray-500">Room ({billData.room?.room_number} - {billData.stay_days} days){billData.package && isIncluded('room') && <Tag />}</span>
+                                          <span>₹{billData.room_total?.toFixed(2)}</span>
+                                        </div>
+                                      );
+                                    })()}
                                     {billData.visits && Object.entries(billData.visits).map(([type, data]) => (
                                       <div key={type} className="flex justify-between">
                                         <span className="text-gray-500">

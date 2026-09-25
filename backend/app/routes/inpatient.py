@@ -5089,13 +5089,16 @@ def _apply_package_room(rate_segments, billable_stay_days, included_stay_days, i
         inc_days = min(seg_days, remaining_inc)
         exc_days = seg_days - inc_days
 
+        room_label = ""
+        if seg.get("room_number") and seg.get("room_number") != "N/A":
+            room_label = f"Room {seg['room_number']} ({seg.get('room_type') or ''}) "
         if inc_days > 0 and has_reference_rate:
             upgrade_rate = max(seg_rate - included_room_rate, 0.0)
             if upgrade_rate > 0:
                 total = round(upgrade_rate * inc_days, 2)
                 pkg_total += total
                 lines.append({
-                    "label": f"Room upgrade ({inc_days} days @ Rs. {upgrade_rate:.2f})",
+                    "label": f"{room_label}upgrade ({inc_days} days @ Rs. {upgrade_rate:.2f})".strip(),
                     "days": inc_days,
                     "rate": upgrade_rate,
                     "total": total,
@@ -5104,7 +5107,7 @@ def _apply_package_room(rate_segments, billable_stay_days, included_stay_days, i
             total = round(seg_rate * exc_days, 2)
             pkg_total += total
             lines.append({
-                "label": f"Room excess stay ({exc_days} days @ Rs. {seg_rate:.2f})",
+                "label": f"{room_label}excess stay ({exc_days} days @ Rs. {seg_rate:.2f})".strip(),
                 "days": exc_days,
                 "rate": seg_rate,
                 "total": total,
@@ -5112,6 +5115,153 @@ def _apply_package_room(rate_segments, billable_stay_days, included_stay_days, i
         days_consumed += seg_days
 
     return round(pkg_total, 2), lines
+
+
+def _room_bill_identity(room_row, snapshot_rate):
+    """Room label plus the rate locked for that stay segment."""
+    if room_row is None:
+        rate = float(snapshot_rate) if snapshot_rate is not None else 0.0
+        return {"room_id": None, "room_number": "N/A", "room_type": "N/A", "rate": rate}
+    rate = float(snapshot_rate) if snapshot_rate is not None else float(room_row.room_charge_per_day or 0)
+    return {
+        "room_id": room_row.id,
+        "room_number": room_row.room_number,
+        "room_type": room_row.room_type,
+        "rate": rate,
+    }
+
+
+def _build_stay_room_segments(db, admission, current_room, admit_dt, end_date, stay_days):
+    """One segment per room, priced at the rate in effect when each stay-day started.
+
+    A stay-day is the 24-hour block starting at admission_date + i days. The
+    room occupied at the start of that block owns the day, so a later move
+    does not reprice days already underway. Consecutive days in the same room
+    at the same rate collapse into one line. Bed moves inside one room stay
+    on that line.
+    """
+    from datetime import timedelta
+
+    transfers = db.query(BedTransferHistory).filter(
+        BedTransferHistory.admission_id == admission.id,
+        BedTransferHistory.status.in_(["completed", "accepted"]),
+    ).all()
+
+    def _eff_time(t):
+        return _as_naive(t.accepted_at or t.transferred_at or t.created_at)
+
+    transfers.sort(key=lambda t: _eff_time(t) or admit_dt)
+
+    room_ids = set()
+    if admission.room_id:
+        room_ids.add(admission.room_id)
+    for t in transfers:
+        if t.from_room_id:
+            room_ids.add(t.from_room_id)
+        if t.to_room_id:
+            room_ids.add(t.to_room_id)
+    rooms_by_id = {}
+    if room_ids:
+        for row in db.query(RoomManagement).filter(RoomManagement.id.in_(room_ids)).all():
+            rooms_by_id[row.id] = row
+
+    if transfers and transfers[0].from_room_id:
+        initial_room_id = transfers[0].from_room_id
+    else:
+        initial_room_id = admission.room_id
+    initial = _room_bill_identity(
+        rooms_by_id.get(initial_room_id) or current_room,
+        admission.initial_room_charge_per_day,
+    )
+
+    events = []
+    for t in transfers:
+        eff = _eff_time(t)
+        if not eff or eff <= admit_dt or eff > end_date:
+            continue
+        events.append((eff, _room_bill_identity(
+            rooms_by_id.get(t.to_room_id),
+            t.to_room_charge_per_day,
+        )))
+
+    def _room_at(moment):
+        current = initial
+        for eff, info in events:
+            if eff <= moment:
+                current = info
+            else:
+                break
+        return current
+
+    segments = []
+    for i in range(stay_days):
+        start = admit_dt + timedelta(days=i)
+        info = _room_at(start)
+        block_end = start + timedelta(days=1)
+        prev = segments[-1] if segments else None
+        if (
+            prev
+            and prev["room_id"] == info["room_id"]
+            and prev["rate"] == info["rate"]
+        ):
+            prev["days"] += 1
+            prev["to"] = block_end.isoformat()
+            prev["total"] = round(prev["rate"] * prev["days"], 2)
+        else:
+            segments.append({
+                "room_id": info["room_id"],
+                "room_number": info["room_number"],
+                "room_type": info["room_type"],
+                "from": start.isoformat(),
+                "to": block_end.isoformat(),
+                "days": 1,
+                "rate": info["rate"],
+                "total": round(info["rate"], 2),
+            })
+    return segments
+
+
+def _reduce_segment_for_loa(rate_segments, day_dt, fallback_rate):
+    """Take one billed day off the segment that contains ``day_dt``.
+
+    Returns the rate actually credited. A day that matches no segment uses
+    ``fallback_rate`` and is not removed from a line.
+    """
+    for seg in rate_segments:
+        seg_from = datetime.fromisoformat(seg["from"])
+        seg_to = datetime.fromisoformat(seg["to"])
+        if seg_from <= day_dt < seg_to and int(seg.get("days") or 0) > 0:
+            rate = float(seg.get("rate") or 0)
+            seg["days"] = int(seg["days"]) - 1
+            seg["total"] = round(rate * seg["days"], 2)
+            return rate
+    return float(fallback_rate or 0)
+
+
+def _unbilled_room_segments(segments, billed_amount):
+    """Drop stay segments already covered by earlier room lines, earliest first."""
+    remaining = round(float(billed_amount or 0), 2)
+    out = []
+    for seg in segments:
+        total = round(float(seg.get("total") or 0), 2)
+        days = seg.get("days") or 0
+        rate = float(seg.get("rate") or 0)
+        if total <= 0 or days <= 0:
+            continue
+        if remaining <= 0.009:
+            out.append(dict(seg))
+            continue
+        if total <= remaining + 0.009:
+            remaining = round(remaining - total, 2)
+            continue
+        unpaid = round(total - remaining, 2)
+        unpaid_days = round(unpaid / rate, 2) if rate else days
+        partial = dict(seg)
+        partial["days"] = unpaid_days
+        partial["total"] = unpaid
+        out.append(partial)
+        remaining = 0.0
+    return out
 
 
 def _compute_admission_charges(db: Session, admission: Admission, unbilled_only: bool = False, apply_package: bool = True) -> dict:
@@ -5132,69 +5282,16 @@ def _compute_admission_charges(db: Session, admission: Admission, unbilled_only:
     # The actual bill total is computed by summing rate-snapshotted segments.
     room_charge_per_day = float(room.room_charge_per_day) if room else 0.0
 
-    # ---- Rate-snapshotted room rent computation ----------------------------
-    # Walk the stay timeline as a series of segments, each at the rate that
-    # was actually in effect during that segment. Days per segment use whole
-    # `.days` (matches the original integer-day billing convention so the
-    # stay-day arithmetic stays consistent across the codebase). The last
-    # segment absorbs any rounding so total segment days == stay_days.
+    # Each stay-day is billed at the room occupied when that day started.
+    # Observation cases skip room rent entirely.
     full_room_total = 0.0
     rate_segments = []
-    # B7.6 — Observation cases skip room rent entirely (bed used briefly,
-    # typically ≤24h). Doctor visits, drugs, labs etc. still bill normally.
     is_observation = bool(getattr(admission, "is_observation", False))
     if admit_dt and not is_observation:
-        transfers = db.query(BedTransferHistory).filter(
-            BedTransferHistory.admission_id == admission.id,
-            BedTransferHistory.status.in_(["completed", "accepted"]),
-        ).all()
-
-        def _eff_time(t):
-            return _as_naive(t.accepted_at or t.transferred_at or t.created_at)
-
-        transfers.sort(key=lambda t: _eff_time(t) or admit_dt)
-
-        # Segment boundaries: admission_date → t1 → t2 → ... → end_date
-        boundaries = [admit_dt]
-        for t in transfers:
-            eff = _eff_time(t)
-            if eff and eff > boundaries[-1] and eff <= end_date:
-                boundaries.append(eff)
-        boundaries.append(end_date)
-
-        # Rates per segment: segment i uses the rate in effect at boundary i.
-        # First segment uses initial; subsequent uses to_room_charge_per_day
-        # of the transfer at boundary i.
-        rates = [(admission.initial_room_charge_per_day
-                  if admission.initial_room_charge_per_day is not None
-                  else room_charge_per_day)]
-        for t in transfers:
-            eff = _eff_time(t)
-            if eff and eff > admit_dt and eff <= end_date:
-                rates.append(t.to_room_charge_per_day
-                             if t.to_room_charge_per_day is not None
-                             else room_charge_per_day)
-
-        # Sum days per segment using `.days`; last segment absorbs remainder.
-        total_days_assigned = 0
-        n_segs = len(boundaries) - 1
-        for i in range(n_segs):
-            seg_from, seg_to = boundaries[i], boundaries[i + 1]
-            if i < n_segs - 1:
-                seg_days = max((seg_to - seg_from).days, 0)
-                total_days_assigned += seg_days
-            else:
-                # Last segment: ensure all stay_days are accounted for.
-                seg_days = max(stay_days - total_days_assigned, 0)
-                total_days_assigned += seg_days
-            seg_rate = rates[i]
-            seg_total = seg_rate * seg_days
-            full_room_total += seg_total
-            if seg_days > 0:
-                rate_segments.append({
-                    "from": seg_from.isoformat(), "to": seg_to.isoformat(),
-                    "days": seg_days, "rate": seg_rate, "total": round(seg_total, 2),
-                })
+        rate_segments = _build_stay_room_segments(
+            db, admission, room, admit_dt, end_date, stay_days,
+        )
+        full_room_total = round(sum(float(s["total"] or 0) for s in rate_segments), 2)
     elif not is_observation:
         full_room_total = room_charge_per_day * stay_days
 
@@ -5219,20 +5316,21 @@ def _compute_admission_charges(db: Session, admission: Admission, unbilled_only:
             cur = loa.start_datetime.date() + _td(days=1)
             while cur < loa_end.date():
                 loa_days_skipped += 1
-                # Find rate in effect on this date
                 day_dt = datetime.combine(cur, datetime.min.time(), tzinfo=loa.start_datetime.tzinfo)
-                applicable_rate = (admission.initial_room_charge_per_day
-                                   if admission.initial_room_charge_per_day is not None
-                                   else room_charge_per_day)
-                for seg in rate_segments:
-                    seg_from = datetime.fromisoformat(seg["from"])
-                    seg_to = datetime.fromisoformat(seg["to"])
-                    if seg_from <= day_dt < seg_to:
-                        applicable_rate = seg["rate"]
-                        break
-                loa_credit += applicable_rate
+                fallback = (admission.initial_room_charge_per_day
+                            if admission.initial_room_charge_per_day is not None
+                            else room_charge_per_day)
+                loa_credit += _reduce_segment_for_loa(rate_segments, day_dt, fallback)
                 cur += _td(days=1)
-    full_room_total = max(full_room_total - loa_credit, 0.0)
+        if rate_segments:
+            before = full_room_total
+            rate_segments = [s for s in rate_segments if int(s.get("days") or 0) > 0]
+            after = round(sum(float(s["total"] or 0) for s in rate_segments), 2)
+            removed = round(before - after, 2)
+            unmatched = max(round(loa_credit - removed, 2), 0.0)
+            full_room_total = round(max(after - unmatched, 0.0), 2)
+        else:
+            full_room_total = max(full_room_total - loa_credit, 0.0)
     billable_stay_days = max(stay_days - loa_days_skipped, 1)
 
     # How much room time has been billed already?
@@ -6249,15 +6347,33 @@ def _create_admission_bill_record_inner(
                 total_price=float(line.get("total") or 0),
             ))
     elif breakdown["room_total"] > 0 and room:
-        days_in_this_bill = round(breakdown["room_total"] / breakdown["_room_charge_per_day"], 2) if breakdown["_room_charge_per_day"] else 0
-        db.add(BillItem(
-            bill_id=bill.id,
-            item_type="room_charge",
-            item_name=f"Room {room.room_number} ({room.room_type}) - {days_in_this_bill} days",
-            quantity=int(days_in_this_bill) if days_in_this_bill.is_integer() else 1,
-            unit_price=breakdown["_room_charge_per_day"],
-            total_price=breakdown["room_total"],
-        ))
+        room_info = breakdown.get("room") or {}
+        segments = _unbilled_room_segments(
+            room_info.get("rate_segments") or [],
+            room_info.get("billed_so_far") or 0,
+        )
+        if segments:
+            for seg in segments:
+                days = seg.get("days") or 0
+                day_label = int(days) if float(days).is_integer() else days
+                db.add(BillItem(
+                    bill_id=bill.id,
+                    item_type="room_charge",
+                    item_name=f"Room {seg.get('room_number') or room.room_number} ({seg.get('room_type') or room.room_type}) - {day_label} days",
+                    quantity=float(days) if days else 1,
+                    unit_price=float(seg.get("rate") or 0),
+                    total_price=float(seg.get("total") or 0),
+                ))
+        else:
+            days_in_this_bill = round(breakdown["room_total"] / breakdown["_room_charge_per_day"], 2) if breakdown["_room_charge_per_day"] else 0
+            db.add(BillItem(
+                bill_id=bill.id,
+                item_type="room_charge",
+                item_name=f"Room {room.room_number} ({room.room_type}) - {days_in_this_bill} days",
+                quantity=int(days_in_this_bill) if float(days_in_this_bill).is_integer() else 1,
+                unit_price=breakdown["_room_charge_per_day"],
+                total_price=breakdown["room_total"],
+            ))
 
     for v in breakdown["_visits"]:
         visitor = v.visitor
@@ -6863,7 +6979,7 @@ async def get_bill_pdf(
                     if seg_days <= 0:
                         continue
                     bucket_included.append({
-                        "description": f"Room rent — {room_info.get('room_number')} ({room_info.get('room_type')}){INCLUDED_TAG}",
+                        "description": f"Room rent — {seg.get('room_number') or room_info.get('room_number')} ({seg.get('room_type') or room_info.get('room_type')}){INCLUDED_TAG}",
                         "qty": f"{seg_days} day(s)",
                         "rate": seg['rate'],
                         "amount": 0,
@@ -6888,7 +7004,7 @@ async def get_bill_pdf(
         elif room_segs:
             for seg in room_segs:
                 bucket_excluded.append({
-                    "description": f"Room rent — {room_info.get('room_number')} ({room_info.get('room_type')})",
+                    "description": f"Room rent — {seg.get('room_number') or room_info.get('room_number')} ({seg.get('room_type') or room_info.get('room_type')})",
                     "qty": f"{seg['days']} day(s)",
                     "rate": seg['rate'],
                     "amount": seg['total'],

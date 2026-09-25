@@ -1696,6 +1696,60 @@ class TestRoomRateSnapshot:
         data = r_bill.json()
         assert data["room"]["rate_segments"][0]["rate"] == 1000.0
 
+    def test_room_move_bills_each_room_at_its_own_rate(self, client, auth_headers, seed_data, db_session):
+        from datetime import datetime, timedelta
+        from app.models.inpatient import Admission, BedTransferHistory
+
+        db_session.query(Admission).filter(
+            Admission.patient_id == seed_data["patient_id"],
+            Admission.status == "admitted",
+        ).update({"status": "discharged"}, synchronize_session=False)
+        db_session.commit()
+
+        r1 = client.post("/api/inpatient/rooms",
+            json={"room_number": "SEG-A", "room_type": "general", "bed_count": 1,
+                  "room_charge_per_day": 1000.0},
+            headers=auth_headers)
+        r2 = client.post("/api/inpatient/rooms",
+            json={"room_number": "SEG-B", "room_type": "private", "bed_count": 1,
+                  "room_charge_per_day": 3000.0},
+            headers=auth_headers)
+        assert r1.status_code == 201 and r2.status_code == 201, (r1.text, r2.text)
+        r_adm = client.post("/api/inpatient/admissions",
+            json={"patient_id": seed_data["patient_id"],
+                  "admitting_doctor_id": seed_data["doctor_user_id"],
+                  "room_id": r1.json()["id"], "admission_type": "elective",
+                  "admission_reason": "Segmented room rent"},
+            headers=auth_headers)
+        assert r_adm.status_code == 201, r_adm.text
+        admission_id = r_adm.json()["id"]
+
+        now = datetime.now().replace(microsecond=0)
+        row = db_session.query(Admission).filter(Admission.id == admission_id).one()
+        row.admission_date = now - timedelta(days=5)
+        db_session.commit()
+
+        moved = client.put(f"/api/inpatient/admissions/{admission_id}",
+            json={"room_id": r2.json()["id"], "transfer_reason": "Shifted to private"},
+            headers=auth_headers)
+        assert moved.status_code == 200, moved.text
+        transfer = db_session.query(BedTransferHistory).filter(
+            BedTransferHistory.admission_id == admission_id,
+            BedTransferHistory.status == "completed",
+        ).order_by(BedTransferHistory.id.desc()).first()
+        transfer.transferred_at = now - timedelta(days=2)
+        db_session.commit()
+
+        bill = client.get(f"/api/inpatient/admissions/{admission_id}/bill", headers=auth_headers)
+        assert bill.status_code == 200, bill.text
+        segments = bill.json()["room"]["rate_segments"]
+        assert [(s["room_number"], s["days"], s["rate"]) for s in segments] == [
+            ("SEG-A", 3, 1000.0),
+            ("SEG-B", 2, 3000.0),
+        ]
+        assert bill.json()["room_total"] == 9000.0
+        assert sum(s["days"] for s in segments) == bill.json()["stay_days"]
+
 
 # ======================================================================
 # LOA — Leave of Absence (pass-out)

@@ -604,7 +604,28 @@ const BillingSummary = ({ loading, billing, balance, onSettle }) => {
 
   const rows = [];
   if (billing) {
-    if (billing.room_total > 0) {
+    const pkgRoomLines = (billing.package?.room_lines || []).filter(line => (line.total || 0) > 0);
+    const roomCovered = !!(billing.package && (
+      (billing.package.included_services || []).includes('room')
+      || (billing.package.included_stay_days || 0) > 0
+      || pkgRoomLines.length
+    ));
+    const roomSegments = roomCovered
+      ? []
+      : (billing.room?.rate_segments || []).filter(seg => (seg.total || 0) > 0);
+    if (pkgRoomLines.length) {
+      pkgRoomLines.forEach(line => {
+        rows.push({ label: line.label, amount: line.total });
+      });
+    } else if (roomSegments.length) {
+      roomSegments.forEach(seg => {
+        const days = seg.days || 0;
+        rows.push({
+          label: `Room ${seg.room_number || billing.room?.room_number || '—'} (${seg.room_type || ''}) · ${days} day${days === 1 ? '' : 's'} @ ₹${Number(seg.rate || 0).toLocaleString('en-IN')}`,
+          amount: seg.total,
+        });
+      });
+    } else if (billing.room_total > 0) {
       rows.push({
         label: `Room (${billing.room?.room_number || '—'} · ${billing.stay_days || 0} day${billing.stay_days === 1 ? '' : 's'})`,
         amount: billing.room_total,

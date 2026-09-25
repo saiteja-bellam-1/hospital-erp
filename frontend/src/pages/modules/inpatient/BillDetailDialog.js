@@ -188,14 +188,46 @@ const BillDetailDialog = ({ open, onClose, admission, onFinalized }) => {
               <p className="font-semibold mb-1 flex items-center gap-1.5">
                 <Receipt className="h-4 w-4" /> Charges breakdown
               </p>
-              {billData.room_total > 0 && (
-                <div className="flex justify-between">
-                  <span className="text-gray-600">
-                    Room ({billData.room?.room_number} · {billData.stay_days} day{billData.stay_days === 1 ? '' : 's'})
-                  </span>
-                  <span>₹{fmt(billData.room_total)}</span>
-                </div>
-              )}
+              {(() => {
+                const pkgRoomLines = (billData.package?.room_lines || []).filter(line => (line.total || 0) > 0);
+                const roomCovered = !!(billData.package && (
+                  (billData.package.included_services || []).includes('room')
+                  || (billData.package.included_stay_days || 0) > 0
+                  || pkgRoomLines.length
+                ));
+                const roomSegments = roomCovered
+                  ? []
+                  : (billData.room?.rate_segments || []).filter(seg => (seg.total || 0) > 0);
+                if (pkgRoomLines.length) {
+                  return pkgRoomLines.map((line, idx) => (
+                    <div key={`pkg-room-${idx}`} className="flex justify-between">
+                      <span className="text-gray-600">{line.label}</span>
+                      <span>₹{fmt(line.total)}</span>
+                    </div>
+                  ));
+                }
+                if (roomSegments.length) {
+                  return roomSegments.map((seg, idx) => (
+                    <div key={`room-seg-${idx}`} className="flex justify-between">
+                      <span className="text-gray-600">
+                        Room {seg.room_number || billData.room?.room_number} ({seg.room_type || ''}) · {seg.days} day{seg.days === 1 ? '' : 's'} @ ₹{fmt(seg.rate)}
+                      </span>
+                      <span>₹{fmt(seg.total)}</span>
+                    </div>
+                  ));
+                }
+                if (billData.room_total > 0) {
+                  return (
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">
+                        Room ({billData.room?.room_number} · {billData.stay_days} day{billData.stay_days === 1 ? '' : 's'})
+                      </span>
+                      <span>₹{fmt(billData.room_total)}</span>
+                    </div>
+                  );
+                }
+                return null;
+              })()}
               {billData.visits && Object.entries(billData.visits).map(([type, data]) => (
                 <div key={type} className="flex justify-between">
                   <span className="text-gray-600">

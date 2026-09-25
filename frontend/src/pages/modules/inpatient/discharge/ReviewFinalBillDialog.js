@@ -45,22 +45,80 @@ export async function loadReviewBillItems(admissionId) {
   const fullRoomTotal = b.room_total || 0;
   const unbilledRoomTotal = bu.room_total || 0;
   const billedRoomTotal = Math.max(0, Math.round((fullRoomTotal - unbilledRoomTotal) * 100) / 100);
-  const roomRate = b.room?.charge_per_day || 0;
-  const pushRoom = (total, prior) => {
-    if (!(total > 0) || !b.room) return;
-    const days = roomRate ? +(total / roomRate).toFixed(2) : 1;
-    items.push({
-      source: 'room', source_id: null,
-      item_type: 'room_charge',
-      item_name: `Room ${b.room.room_number || ''} (${b.room.room_type || ''}) — ${days} day${days === 1 ? '' : 's'}`,
-      quantity: Math.max(1, Math.round(days)),
-      unit_price: roomRate,
-      total_price: total,
-      is_prior: prior,
+  const packageRoomLines = (b.package?.room_lines || []).filter(line => (line.total || 0) > 0);
+  const roomCoveredByPackage = !!(b.package && (
+    (b.package.included_services || []).includes('room')
+    || (b.package.included_stay_days || 0) > 0
+    || packageRoomLines.length
+  ));
+  const staySegments = roomCoveredByPackage
+    ? []
+    : (b.room?.rate_segments || []).filter(seg => (seg.days || 0) > 0 && (seg.total || 0) > 0);
+  const roomLines = packageRoomLines.length
+    ? packageRoomLines.map(line => ({
+      name: line.label,
+      days: parseFloat(line.days || 1),
+      rate: parseFloat(line.rate || 0),
+      total: parseFloat(line.total || 0),
+    }))
+    : staySegments.map(seg => {
+      const days = parseFloat(seg.days || 0);
+      const dayLabel = Number.isInteger(days) ? days : days;
+      return {
+        name: `Room ${seg.room_number || b.room?.room_number || ''} (${seg.room_type || b.room?.room_type || ''}) — ${dayLabel} day${dayLabel === 1 ? '' : 's'}`,
+        days,
+        rate: parseFloat(seg.rate || 0),
+        total: parseFloat(seg.total || 0),
+      };
     });
-  };
-  pushRoom(billedRoomTotal, true);
-  pushRoom(unbilledRoomTotal, false);
+  if (roomLines.length) {
+    let billedLeft = billedRoomTotal;
+    roomLines.forEach(line => {
+      const push = (amount, dayCount, prior) => {
+        if (!(amount > 0)) return;
+        const shownDays = Math.max(0.01, dayCount || 1);
+        items.push({
+          source: 'room', source_id: null,
+          item_type: 'room_charge',
+          item_name: line.name,
+          quantity: Math.max(1, Math.round(shownDays)),
+          unit_price: line.rate,
+          total_price: amount,
+          is_prior: prior,
+        });
+      };
+      if (billedLeft <= 0.009) {
+        push(line.total, line.days, false);
+      } else if (line.total <= billedLeft + 0.009) {
+        push(line.total, line.days, true);
+        billedLeft = Math.round((billedLeft - line.total) * 100) / 100;
+      } else {
+        const priorDays = line.rate ? +(billedLeft / line.rate).toFixed(2) : line.days;
+        const rest = Math.round((line.total - billedLeft) * 100) / 100;
+        const restDays = line.rate ? +(rest / line.rate).toFixed(2) : 0;
+        push(billedLeft, priorDays, true);
+        push(rest, restDays, false);
+        billedLeft = 0;
+      }
+    });
+  } else if ((fullRoomTotal > 0 || unbilledRoomTotal > 0) && b.room) {
+    const roomRate = b.room.charge_per_day || 0;
+    const pushRoom = (total, prior) => {
+      if (!(total > 0)) return;
+      const days = roomRate ? +(total / roomRate).toFixed(2) : 1;
+      items.push({
+        source: 'room', source_id: null,
+        item_type: 'room_charge',
+        item_name: `Room ${b.room.room_number || ''} (${b.room.room_type || ''}) — ${days} day${days === 1 ? '' : 's'}`,
+        quantity: Math.max(1, Math.round(days)),
+        unit_price: roomRate,
+        total_price: total,
+        is_prior: prior,
+      });
+    };
+    pushRoom(billedRoomTotal, true);
+    pushRoom(unbilledRoomTotal, false);
+  }
 
   Object.entries(b.visits || {}).forEach(([vtype, group]) => {
     (group.items || []).forEach(v => {
