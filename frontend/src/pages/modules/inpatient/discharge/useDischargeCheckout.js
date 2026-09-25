@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import axios from 'axios';
 import { useToast } from '../../../../hooks/use-toast';
-import { printPdfFromUrl } from '../../../../utils/printPdf';
+import { fetchPdfBlobUrl, printPdfFromUrl } from '../../../../utils/printPdf';
 import {
   EMPTY_CLINICAL_FORM,
   EMPTY_GATE_PASS_FORM,
@@ -31,6 +31,7 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
   const [blockers, setBlockers] = useState([]);
   const [depositForm, setDepositForm] = useState(null);
   const [summaryDoc, setSummaryDoc] = useState(null);
+  const [reviewedBill, setReviewedBill] = useState(null);
 
   const canAddDeposit = permissions.receive_deposits !== false;
   const canFinalize = permissions.finalize_bill !== false;
@@ -43,9 +44,42 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
     () => computeDerived(bill, balance, admission, finalBill),
     [bill, balance, admission, finalBill],
   );
+  const account = useMemo(() => {
+    if (!derived) return null;
+    const deposited = Number(derived.deposited || 0);
+    const approved = admission?.scheme_approval_status === 'approved'
+      && Number(admission.scheme_approval_amount) > 0.01
+      ? Number(admission.scheme_approval_amount)
+      : Number(derived.payerShare || 0);
+    const target = reviewedBill?.grand != null
+      ? Number(reviewedBill.grand)
+      : Number(derived.stayCharges || 0);
+    const payerShare = Math.min(Math.max(approved, 0), Math.max(target, 0));
+    const owes = reviewedBill?.grand != null
+      ? +(target - payerShare - deposited).toFixed(2)
+      : Number(derived.owes || 0);
+    return {
+      target,
+      payerShare,
+      deposited,
+      owes,
+      clear: Math.abs(owes) <= 0.01,
+      direction: owes > 0.01 ? 'collect' : owes < -0.01 ? 'refund' : 'none',
+      amount: Math.abs(owes),
+      tpaPending: Boolean(admission?.payer_scheme_id)
+        && !['approved', 'rejected', 'disconnected'].includes(admission?.scheme_approval_status || 'none')
+        && approved <= 0.01,
+    };
+  }, [derived, admission, reviewedBill]);
   const settlement = useMemo(
-    () => computeCheckoutSettlement(derived, settleForm, !!finalBill),
-    [derived, settleForm, finalBill],
+    () => (account ? {
+      ...computeCheckoutSettlement(derived, settleForm, true),
+      owes: account.owes,
+      direction: account.direction,
+      amount: account.amount,
+      adjustedTotal: account.target,
+    } : null),
+    [account, derived, settleForm],
   );
 
   const loadDraft = useCallback((id) => {
@@ -130,7 +164,7 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
       }
       if (draft?.gatePassForm) setGatePassForm({ ...EMPTY_GATE_PASS_FORM, ...draft.gatePassForm });
       if (draft?.step && !gp) {
-        setStep(Math.max(start, Math.min(draft.step, 4)));
+        setStep(Math.max(start, Math.min(draft.step, 5)));
         setMaxReachable(Math.max(start, draft.maxReachable || start));
       } else {
         setStep(start);
@@ -172,8 +206,8 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
   const updateClinical = (patch) => setClinicalForm(p => ({ ...p, ...patch }));
 
   const goToStep = (n) => {
-    if (derived?.isDischarged && n === 3) return;
-    if (n >= 1 && n <= 4 && n <= maxReachable) setStep(n);
+    if (derived?.isDischarged && n === 4) return;
+    if (n >= 1 && n <= 5 && n <= maxReachable) setStep(n);
   };
 
   const advanceStep = (n) => {
@@ -182,15 +216,14 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
   };
 
   const validateStep = (s) => {
-    if (s === 1) {
+    if (s === 1) return null;
+    if (s === 2) return null;
+    if (s === 3) {
+      if (!account?.clear) return 'The account is not clear. Go back and settle it first.';
       if (!finalBill && !canFinalize) return 'You do not have permission to finalize bills.';
       return null;
     }
-    if (s === 2) {
-      if (!finalBill) return 'Generate the final bill before settling.';
-      return null;
-    }
-    if (s === 3) {
+    if (s === 4) {
       const dischargeType = clinicalForm.discharge_type || summaryDoc?.discharge_type || 'normal';
       const isDama = dischargeType === 'against_advice';
       const isDeath = dischargeType === 'death';
@@ -205,7 +238,7 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
       }
       return null;
     }
-    if (s === 4) {
+    if (s === 5) {
       if (!gatePassForm.attendant_name.trim()) return 'Attendant name is required.';
       if (gatePassForm.overrideErr && !gatePassForm.overrideReason.trim()) {
         return 'Override reason is required.';
@@ -215,35 +248,73 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
     return null;
   };
 
-  /** Step 1 — generate final bill only (discount/tax). Settlement is step 2. */
-  const submitFinalizeBill = async () => {
-    if (finalBill) {
-      const owes = Math.abs(Number(derived?.owes || 0));
-      advanceStep(owes > 0.01 ? 2 : 3);
-      return true;
+  const saveReviewedBill = (payload, grand) => {
+    setReviewedBill({ payload, grand: Number(grand) });
+    toast({ title: 'Charges saved', description: 'Settle payments, TPA, and refunds against this total.' });
+  };
+
+  const recordTpaApproval = async (amount, reference) => {
+    const amt = parseFloat(amount);
+    if (!(amt > 0)) {
+      toast({ variant: 'destructive', title: 'Enter the approved TPA amount' });
+      return false;
     }
-    if (!settleForm) return false;
+    if (!String(reference || '').trim()) {
+      toast({ variant: 'destructive', title: 'TPA approval reference is required' });
+      return false;
+    }
     setSubmitting(true);
     try {
-      const billBody = {
-        discount_value: parseFloat(settleForm.discountValue || '0') || 0,
-        discount_type: settleForm.discountType || 'flat',
-        tax_percentage: parseFloat(settleForm.taxPct || '0') || 0,
-      };
+      const body = new FormData();
+      body.append('amount', String(amt));
+      body.append('approval_reference', String(reference).trim());
+      body.append('notes', 'Recorded during discharge checkout');
+      await axios.post(`/api/inpatient/admissions/${admissionId}/scheme-approvals`, body);
+      toast({ title: 'TPA approval recorded', description: `${rupee(amt)} approved.` });
+      await fetchAll();
+      return true;
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      toast({
+        variant: 'destructive',
+        title: 'Could not record TPA approval',
+        description: typeof detail === 'string' ? detail : 'Check payer permission and try again.',
+      });
+      return false;
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  /** Step 2 — save the final bill only after the account due is zero. */
+  const submitFinalizeBill = async () => {
+    if (finalBill) {
+      advanceStep(4);
+      return true;
+    }
+    if (!account?.clear) {
+      toast({
+        variant: 'destructive',
+        title: 'Account is not clear',
+        description: 'Collect pending payments, record the TPA approval, or refund credit before generating the bill.',
+      });
+      setStep(2);
+      return false;
+    }
+    setSubmitting(true);
+    try {
+      const billBody = reviewedBill?.payload || {};
       await axios.post(`/api/inpatient/admissions/${admissionId}/bill/finalize`, billBody);
-      toast({ title: 'Final bill generated', description: 'Continue to collect or refund.' });
-      const refreshed = await fetchAll();
-      if (refreshed?.d) setSettleForm(EMPTY_SETTLE_FORM(refreshed.d));
-      const owes = Math.abs(Number(refreshed?.d?.owes || 0));
-      advanceStep(owes > 0.01 ? 2 : 3);
+      toast({ title: 'Final bill generated', description: 'Balance is zero.' });
+      await fetchAll();
+      advanceStep(4);
       return true;
     } catch (err) {
       const detail = err.response?.data?.detail;
       if (err.response?.status === 409 && detail?.code === 'final_bill_exists') {
-        toast({ title: 'Final bill already exists', description: 'Continue to settlement.' });
-        const refreshed = await fetchAll();
-        const owes = Math.abs(Number(refreshed?.d?.owes || 0));
-        advanceStep(owes > 0.01 ? 2 : 3);
+        toast({ title: 'Final bill already exists' });
+        await fetchAll();
+        advanceStep(4);
         return true;
       }
       const msg = typeof detail === 'string' ? detail : (detail?.message || 'Could not finalize bill');
@@ -254,14 +325,10 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
     }
   };
 
-  /** Step 2 — collect outstanding or refund credit against the final bill. */
+  /** Step 1 — collect the patient share or refund credit before the bill is saved. */
   const submitSettle = async () => {
-    if (!finalBill) {
-      toast({ variant: 'destructive', title: 'Final bill required', description: 'Generate the final bill first.' });
-      return false;
-    }
     if (!settlement || settlement.direction === 'none') {
-      advanceStep(3);
+      if (account?.clear) advanceStep(finalBill ? 4 : 3);
       return true;
     }
     if (settlement.direction === 'collect' && !canAddDeposit) {
@@ -291,12 +358,23 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
         },
       );
       const refreshed = await fetchAll();
-      if (Math.abs(refreshed?.d?.owes || 0) <= 0.01) {
+      if (Math.abs(refreshed?.d?.owes || 0) <= 0.01 && reviewedBill?.grand == null) {
         toast({
           title: isRefund ? 'Refund recorded' : 'Payment collected',
-          description: `${rupee(amt)} ${isRefund ? 'refunded' : 'received'}. Proceed to discharge summary.`,
+          description: `${rupee(amt)} ${isRefund ? 'refunded' : 'received'}. Generate the final bill next.`,
         });
-        advanceStep(3);
+        advanceStep(finalBill ? 4 : 3);
+        return true;
+      }
+      if (reviewedBill?.grand != null) {
+        const payer = Math.min(Number(refreshed?.d?.payerShare || 0), reviewedBill.grand);
+        const still = +(reviewedBill.grand - payer - Number(refreshed?.d?.deposited || 0)).toFixed(2);
+        toast({
+          title: isRefund ? 'Refund recorded' : 'Payment collected',
+          description: `${rupee(amt)} ${isRefund ? 'refunded' : 'received'}.`,
+        });
+        if (Math.abs(still) <= 0.01) advanceStep(3);
+        else setStep(2);
         return true;
       }
       toast({
@@ -334,7 +412,7 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
 
   const submitDischarge = async () => {
     if (derived?.isDischarged) {
-      advanceStep(4);
+      advanceStep(5);
       return { wasDeath: clinicalForm.discharge_type === 'death', skipped: true };
     }
     setSubmitting(true);
@@ -352,7 +430,7 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
           : 'Complete gate pass next.',
       });
       await fetchAll();
-      advanceStep(4);
+      advanceStep(5);
       return { wasDeath: isDeath, admissionId };
     } catch (err) {
       const detail = err.response?.data?.detail;
@@ -443,6 +521,25 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
     }
   };
 
+  const downloadBill = async () => {
+    try {
+      const url = await fetchPdfBlobUrl(`/api/inpatient/admissions/${admissionId}/bill/pdf`);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${finalBill?.bill_number || `final-bill-${admissionId}`}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err) {
+      toast({
+        variant: 'destructive',
+        title: 'Bill download failed',
+        description: err?.message || 'Could not download the final bill',
+      });
+    }
+  };
+
   const printGatePassPdf = async () => {
     try {
       const res = await axios.get(
@@ -524,25 +621,37 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
       return null;
     }
     if (step === 1) {
-      await submitFinalizeBill();
+      if (!reviewedBill) {
+        toast({ variant: 'destructive', title: 'Confirm the charges', description: 'Review the lines, then confirm them before collecting payment.' });
+        return null;
+      }
+      advanceStep(2);
       return null;
     }
     if (step === 2) {
+      if (account?.clear) {
+        advanceStep(finalBill ? 4 : 3);
+        return null;
+      }
       await submitSettle();
       return null;
     }
     if (step === 3) {
+      await submitFinalizeBill();
+      return null;
+    }
+    if (step === 4) {
       if (!canDischarge && !derived?.isDischarged) {
         toast({ variant: 'destructive', title: 'No permission to discharge patients' });
         return null;
       }
       if (derived?.isDischarged) {
-        advanceStep(4);
+        advanceStep(5);
         return null;
       }
       return submitDischarge();
     }
-    if (step === 4) {
+    if (step === 5) {
       if (!canIssuePass) {
         toast({ variant: 'destructive', title: 'No permission to issue gate pass' });
         return null;
@@ -602,12 +711,19 @@ export function useDischargeCheckout(admissionId, permissions = {}) {
         setSummaryDoc(null);
       }
     },
+    account,
+    reviewedBill,
+    saveReviewedBill,
+    recordTpaApproval,
     updateClinical,
     goToStep,
+    advanceStep,
+    submitFinalizeBill,
     handleNext,
     handleBack,
     fetchAll,
     printBill,
+    downloadBill,
     printGatePass,
     printDischargeSummary,
     printAdmissionDetail,

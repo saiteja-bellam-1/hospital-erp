@@ -18,7 +18,8 @@ import {
   X,
   RefreshCw,
   KeyRound,
-  Upload
+  Upload,
+  FileSpreadsheet
 } from 'lucide-react';
 import axios from 'axios';
 import BulkUserImportDialog from './admin/BulkUserImport';
@@ -43,6 +44,7 @@ const AdminModule = () => {
   const [roles, setRoles] = useState([]);
   const [showUserForm, setShowUserForm] = useState(false);
   const [showBulkImport, setShowBulkImport] = useState(false);
+  const [exportingUsers, setExportingUsers] = useState(false);
   const [showRoleForm, setShowRoleForm] = useState(false);
   const [editingUser, setEditingUser] = useState(null);
   const [editingRole, setEditingRole] = useState(null);
@@ -83,22 +85,11 @@ const AdminModule = () => {
   const [doctorRoomRatesEdits, setDoctorRoomRatesEdits] = useState({});
   const [doctorRoomRatesSaving, setDoctorRoomRatesSaving] = useState({});
 
-  const ROOM_TYPES = [
-    { value: 'general',      label: 'General Ward' },
-    { value: 'semi_private', label: 'Semi-Private' },
-    { value: 'private',      label: 'Private' },
-    { value: 'suite',        label: 'Suite / Deluxe' },
-    { value: 'icu',          label: 'ICU' },
-    { value: 'hdu',          label: 'HDU / Step-Down' },
-    { value: 'nicu',         label: 'NICU' },
-    { value: 'picu',         label: 'PICU' },
-    { value: 'isolation',    label: 'Isolation' },
-    { value: 'labour',       label: 'Labour & Delivery' },
-    { value: 'recovery',     label: 'Post-Op Recovery' },
-    { value: 'daycare',      label: 'Day Care' },
-    { value: 'emergency',    label: 'Emergency / Casualty' },
-    { value: 'operation',    label: 'Operation Theatre' },
-  ];
+  const [roomTypes, setRoomTypes] = useState([
+    { value: 'general', label: 'General Ward' },
+    { value: 'private', label: 'Private' },
+    { value: 'icu', label: 'ICU' },
+  ]);
 
   useEffect(() => {
     if (hasRole('super_admin') || hasRole('hospital_admin')) {
@@ -108,6 +99,9 @@ const AdminModule = () => {
       fetchUsers(); fetchUserLimit();
       fetchRoles();
       fetchUserLimit();
+      axios.get('/api/inpatient/room-types').then(res => {
+        if (Array.isArray(res.data) && res.data.length) setRoomTypes(res.data);
+      }).catch(() => {});
     }
   }, [user]);
 
@@ -141,6 +135,29 @@ const AdminModule = () => {
         title: "Error",
         description: "Failed to fetch users"
       });
+    }
+  };
+
+  const exportUsersExcel = async () => {
+    setExportingUsers(true);
+    try {
+      const res = await axios.get('/api/admin/users/export/xlsx', { responseType: 'blob' });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement('a');
+      const stamp = new Date().toISOString().slice(0, 10);
+      a.href = url;
+      a.download = `users_${stamp}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast({ title: 'Exported', description: 'User list downloaded as Excel.' });
+    } catch (error) {
+      toast({
+        variant: 'destructive',
+        title: 'Export failed',
+        description: 'Could not export users to Excel.',
+      });
+    } finally {
+      setExportingUsers(false);
     }
   };
 
@@ -591,6 +608,16 @@ const AdminModule = () => {
               )}
               <Button
                 variant="outline"
+                onClick={exportUsersExcel}
+                className="flex items-center"
+                disabled={exportingUsers}
+                title="Download the user list as an Excel workbook"
+              >
+                <FileSpreadsheet className="h-4 w-4 mr-2" />
+                {exportingUsers ? 'Exporting...' : 'Export Excel'}
+              </Button>
+              <Button
+                variant="outline"
                 onClick={() => setShowBulkImport(true)}
                 className="flex items-center"
                 disabled={userLimit && !userLimit.unlimited && userLimit.remaining === 0}
@@ -809,7 +836,7 @@ const AdminModule = () => {
                           </tr>
                         </thead>
                         <tbody>
-                          {ROOM_TYPES.map(rt => {
+                          {roomTypes.map(rt => {
                             const existing = doctorRoomRates.find(r => r.room_type === rt.value);
                             const editVal = doctorRoomRatesEdits[rt.value] ?? '';
                             return (

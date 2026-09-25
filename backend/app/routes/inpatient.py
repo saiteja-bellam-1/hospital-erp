@@ -224,7 +224,7 @@ AMENITY_OPTIONS = [
 
 class RoomCreate(BaseModel):
     room_number: str = Field(..., max_length=20)
-    room_type: str = Field(..., pattern=ROOM_TYPE_PATTERN)
+    room_type: str = Field(..., min_length=1, max_length=100)
     floor: Optional[str] = None
     department: Optional[str] = None
     ward: Optional[str] = None
@@ -237,7 +237,7 @@ class RoomCreate(BaseModel):
 
 class RoomUpdate(BaseModel):
     room_number: Optional[str] = None
-    room_type: Optional[str] = Field(default=None, pattern=ROOM_TYPE_PATTERN)
+    room_type: Optional[str] = Field(default=None, min_length=1, max_length=100)
     floor: Optional[str] = None
     department: Optional[str] = None
     ward: Optional[str] = None
@@ -572,6 +572,7 @@ class AdmissionResponse(BaseModel):
     updated_at: Optional[datetime]
     # Joined fields
     patient_name: Optional[str] = None
+    patient_phone: Optional[str] = None
     doctor_name: Optional[str] = None
     room_number: Optional[str] = None
     room_type: Optional[str] = None
@@ -902,7 +903,7 @@ class BillItemOverride(BaseModel):
     items so the source record's `bill_id` (or `billed` flag) is set correctly
     when the bill is committed. `source=None` is a custom add-on line that has
     no source record."""
-    source: Optional[str] = Field(default=None, pattern=r"^(room|visit|ot|ancillary|pharmacy_rx|pharmacy_pos|lab_order|package|custom)$")
+    source: Optional[str] = Field(default=None, pattern=r"^(room|visit|ot|ancillary|pharmacy_rx|pharmacy_pos|lab_order|package|food|canteen|custom)$")
     source_id: Optional[int] = None
     item_type: str = Field(..., max_length=40)
     item_name: str = Field(..., min_length=1, max_length=300)
@@ -1018,6 +1019,7 @@ def _admission_to_response(adm) -> dict:
     return {
         **{c.name: getattr(adm, c.name) for c in adm.__table__.columns},
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else None,
+        "patient_phone": (patient.primary_phone or None) if patient else None,
         "doctor_name": f"{doctor.first_name} {doctor.last_name}" if doctor else None,
         "room_number": room.room_number if room else None,
         "room_type": room.room_type if room else None,
@@ -1078,8 +1080,41 @@ async def list_inpatient_nurses(
 # ============================================================
 # Room metadata helpers
 @router.get("/room-types")
-async def get_room_types(current_user: User = Depends(get_current_user)):
-    return [{"value": k, "label": v} for k, v in ROOM_TYPES.items()]
+async def get_room_types(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from app.services.room_type_catalog import list_room_types
+
+    hospital = _get_hospital(db, current_user)
+    rows = list_room_types(db, hospital.id)
+    db.commit()
+    return [
+        {"value": row.key, "label": row.label, "is_default": bool(row.is_default)}
+        for row in rows
+    ]
+
+
+@router.post("/room-types", status_code=status.HTTP_201_CREATED)
+async def create_room_type(
+    payload: dict = Body(...),
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_beds")),
+    db: Session = Depends(get_db),
+):
+    """Add a room type by display name. The stored key is a slug of that name."""
+    from app.services.room_type_catalog import ensure_room_type, room_type_labels
+
+    hospital = _get_hospital(db, current_user)
+    name = (payload.get("name") or payload.get("label") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Room type name is required")
+    try:
+        key = ensure_room_type(db, hospital.id, name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    db.commit()
+    log_action(db, current_user, "create_room_type", "inpatient", "RoomType", None, f"Room type {key}")
+    return {"value": key, "label": room_type_labels(db, hospital.id).get(key, key)}
 
 @router.get("/amenity-options")
 async def get_amenity_options(current_user: User = Depends(get_current_user)):
@@ -1115,6 +1150,54 @@ async def list_rooms(
     return query.order_by(RoomManagement.room_number).all()
 
 
+@router.get("/rooms/export")
+async def export_rooms(
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_beds")),
+    db: Session = Depends(get_db),
+):
+    """Download active rooms and beds in the workbook format accepted by import."""
+    import io
+    from app.services.onboarding_import import build_rooms_xlsx
+
+    hospital = _get_hospital(db, current_user)
+    payload = build_rooms_xlsx(db, hospital.id)
+    return StreamingResponse(
+        io.BytesIO(payload),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="rooms.xlsx"'},
+    )
+
+
+@router.post("/rooms/import")
+async def import_rooms_file(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "manage_beds")),
+    db: Session = Depends(get_db),
+):
+    """Create rooms and beds from an .xlsx or .csv file. Existing room numbers are skipped."""
+    from app.services.onboarding_import import import_rooms as _import_rooms
+
+    hospital = _get_hospital(db, current_user)
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="File is empty")
+    if len(raw) > 2 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File is too large")
+    name = (file.filename or "").lower()
+    if not (name.endswith(".xlsx") or name.endswith(".csv")):
+        raise HTTPException(status_code=400, detail="Upload an .xlsx or .csv file")
+    try:
+        result = _import_rooms(db, raw, file.filename or "", hospital_id=hospital.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if result.get("ok"):
+        log_action(
+            db, current_user, "import_rooms", "inpatient", "Room", None,
+            f"Imported rooms ({result['created_rooms']} rooms, {result['created_beds']} beds, {result['skipped']} skipped)",
+        )
+    return result
+
+
 @router.post("/rooms", response_model=RoomResponse, status_code=status.HTTP_201_CREATED)
 async def create_room(
     room: RoomCreate,
@@ -1130,7 +1213,13 @@ async def create_room(
         raise HTTPException(status_code=400, detail="Room number already exists")
 
     import json as _json
+    from app.services.room_type_catalog import ensure_room_type
+
     data = room.model_dump()
+    try:
+        data["room_type"] = ensure_room_type(db, hospital.id, data["room_type"])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     if data.get("amenities") is not None:
         data["amenities"] = _json.dumps(data["amenities"])
     db_room = RoomManagement(
@@ -1158,7 +1247,14 @@ async def update_room(
         raise HTTPException(status_code=404, detail="Room not found")
 
     import json as _json
+    from app.services.room_type_catalog import ensure_room_type
+
     update_data = room.model_dump(exclude_unset=True)
+    if update_data.get("room_type"):
+        try:
+            update_data["room_type"] = ensure_room_type(db, db_room.hospital_id, update_data["room_type"])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
     if "amenities" in update_data and update_data["amenities"] is not None:
         update_data["amenities"] = _json.dumps(update_data["amenities"])
@@ -1383,8 +1479,12 @@ async def get_room_type_rates(
         ).all()
     }
     
+    from app.services.room_type_catalog import list_room_types
+
     result = []
-    for room_type, label in ROOM_TYPES.items():
+    for room_type_row in list_room_types(db, hospital.id):
+        room_type = room_type_row.key
+        label = room_type_row.label
         row = existing.get(room_type)
         result.append({
             "room_type": room_type,
@@ -1404,8 +1504,12 @@ async def upsert_room_type_rate(
 ):
     hospital = _get_hospital(db, current_user)
     
-    if room_type not in ROOM_TYPES:
-        raise HTTPException(status_code=400, detail="Invalid room type")
+    from app.services.room_type_catalog import ensure_room_type, room_type_labels
+
+    try:
+        room_type = ensure_room_type(db, hospital.id, room_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     row = db.query(RoomTypeRateConfig).filter(
         RoomTypeRateConfig.hospital_id == hospital.id,
         RoomTypeRateConfig.room_type == room_type,
@@ -1423,10 +1527,59 @@ async def upsert_room_type_rate(
     db.refresh(row)
     return {
         "room_type": row.room_type,
-        "room_type_label": ROOM_TYPES.get(row.room_type, row.room_type),
+        "room_type_label": room_type_labels(db, hospital.id).get(row.room_type, row.room_type),
         "nursing_charge_per_visit": float(row.nursing_charge_per_visit) if row.nursing_charge_per_visit is not None else None,
         "id": row.id,
     }
+
+
+@router.get("/room-type-rates/export")
+async def export_room_type_config(
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "set_room_rates")),
+    db: Session = Depends(get_db),
+):
+    """Download nursing rates and doctor room-type visit rates as an .xlsx file."""
+    import io
+    from app.services.room_type_config_io import build_room_type_config_xlsx
+
+    hospital = _get_hospital(db, current_user)
+    payload = build_room_type_config_xlsx(db, hospital.id)
+    return StreamingResponse(
+        io.BytesIO(payload),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="room_type_configuration.xlsx"'},
+    )
+
+
+@router.post("/room-type-rates/import")
+async def import_room_type_config(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "set_room_rates")),
+    db: Session = Depends(get_db),
+):
+    """Upsert room-type nursing rates and doctor visit overrides from .xlsx or .csv."""
+    from app.services.room_type_config_io import import_room_type_config as _import
+
+    hospital = _get_hospital(db, current_user)
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="File is empty")
+    if len(raw) > 2 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File is too large")
+    name = (file.filename or "").lower()
+    if not (name.endswith(".xlsx") or name.endswith(".csv")):
+        raise HTTPException(status_code=400, detail="Upload an .xlsx or .csv file")
+    try:
+        result = _import(db, hospital.id, raw, file.filename or "")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if result.get("ok"):
+        log_action(
+            db, current_user, "import_room_type_config", "inpatient", "RoomTypeRateConfig", None,
+            f"Imported room type configuration ({result['nursing_updated']} nursing, "
+            f"{result['doctor_rates_upserted']} doctor rates)",
+        )
+    return result
 
 
 # ============================================================
@@ -1446,13 +1599,16 @@ async def get_doctor_room_rates(
     )
     if doctor_id:
         q = q.filter(DoctorRoomTypeRate.doctor_id == doctor_id)
+    from app.services.room_type_catalog import room_type_labels
+
     rows = q.all()
+    labels = room_type_labels(db, hospital.id)
     return [
         {
             "id": r.id,
             "doctor_id": r.doctor_id,
             "room_type": r.room_type,
-            "room_type_label": ROOM_TYPES.get(r.room_type, r.room_type),
+            "room_type_label": labels.get(r.room_type, r.room_type),
             "visit_rate": float(r.visit_rate),
         }
         for r in rows
@@ -1467,15 +1623,19 @@ async def upsert_doctor_room_rate(
 ):
     hospital = _get_hospital(db, current_user)
     
-    if data.room_type not in ROOM_TYPES:
-        raise HTTPException(status_code=400, detail="Invalid room type")
+    from app.services.room_type_catalog import ensure_room_type, room_type_labels
+
+    try:
+        room_type_key = ensure_room_type(db, hospital.id, data.room_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     doctor = db.query(User).filter(User.id == data.doctor_id).first()
     if not doctor:
         raise HTTPException(status_code=404, detail="Doctor not found")
     row = db.query(DoctorRoomTypeRate).filter(
         DoctorRoomTypeRate.hospital_id == hospital.id,
         DoctorRoomTypeRate.doctor_id == data.doctor_id,
-        DoctorRoomTypeRate.room_type == data.room_type,
+        DoctorRoomTypeRate.room_type == room_type_key,
     ).first()
     if row:
         row.visit_rate = data.visit_rate
@@ -1483,7 +1643,7 @@ async def upsert_doctor_room_rate(
         row = DoctorRoomTypeRate(
             hospital_id=hospital.id,
             doctor_id=data.doctor_id,
-            room_type=data.room_type,
+            room_type=room_type_key,
             visit_rate=data.visit_rate,
         )
         db.add(row)
@@ -1493,7 +1653,7 @@ async def upsert_doctor_room_rate(
         "id": row.id,
         "doctor_id": row.doctor_id,
         "room_type": row.room_type,
-        "room_type_label": ROOM_TYPES.get(row.room_type, row.room_type),
+        "room_type_label": room_type_labels(db, hospital.id).get(row.room_type, row.room_type),
         "visit_rate": float(row.visit_rate),
     }
 
@@ -8437,15 +8597,16 @@ def _generate_txn_id(db: Session) -> str:
 
 
 def _qualified_payer_share(admission: Admission, cap: float) -> tuple:
-    """Payer share counts only for an approved scheme with an amount and a reference.
+    """Payer share is the approved scheme amount, capped at the bill.
 
-    Returns (amount, status, ref). Amount is capped at ``cap``.
+    Returns (amount, status, ref). A reference is recorded when present, but
+    an approved amount still reduces what the patient owes without one.
     """
     status = (getattr(admission, "scheme_approval_status", None) or "none").lower()
     amount = float(getattr(admission, "scheme_approval_amount", None) or 0)
     ref = (getattr(admission, "scheme_approval_ref", None) or "").strip()
-    if status == "approved" and amount > 0.01 and ref:
-        return round(min(amount, max(float(cap or 0), 0.0)), 2), "approved", ref
+    if status == "approved" and amount > 0.01:
+        return round(min(amount, max(float(cap or 0), 0.0)), 2), "approved", ref or None
     return 0.0, status, ref or None
 
 
@@ -8516,11 +8677,13 @@ def _admission_balance_summary(db: Session, admission: Admission) -> dict:
     if final_bill:
         charges = float(final_bill.total_amount or 0)
         billed_from_bills = charges
-        if final_bill.payer_share_amount is not None:
+        if final_bill.payer_share_amount is not None and float(final_bill.payer_share_amount or 0) > 0.01:
             payer_share = round(min(float(final_bill.payer_share_amount or 0), charges), 2)
             payer_status = final_bill.payer_approval_status or "none"
             payer_ref = final_bill.payer_approval_ref
         else:
+            # A saved 0 means the approval was not qualified when the bill was
+            # written. Use the live approved amount so it still reduces the due.
             payer_share, payer_status, payer_ref = _qualified_payer_share(admission, charges)
     else:
         charges = live_total
@@ -14660,8 +14823,9 @@ async def list_meal_plans(
     # Determine the set of room_types to render. Prefer the RoomType catalog;
     # fall back to room types currently in use by rooms or existing plans;
     # finally to the built-in default list so the grid is never empty.
-    rt_rows = db.query(RoomType).filter(RoomType.hospital_id == hospital.id).all()
-    room_types = [r.type_key for r in rt_rows] if rt_rows else []
+    from app.services.room_type_catalog import list_room_types
+    rt_rows = list_room_types(db, hospital.id)
+    room_types = [r.key for r in rt_rows] if rt_rows else []
     if not room_types:
         room_types = list({r[0] for r in db.query(RoomManagement.room_type).filter(
             RoomManagement.hospital_id == hospital.id

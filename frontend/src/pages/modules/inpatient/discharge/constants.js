@@ -7,10 +7,11 @@ export const PAYMENT_METHODS = [
 ];
 
 export const CHECKOUT_STEPS = [
-  { id: 1, key: 'finalize', label: 'Finalize Bill' },
-  { id: 2, key: 'settle', label: 'Collect / Refund' },
-  { id: 3, key: 'summary', label: 'Discharge Summary' },
-  { id: 4, key: 'gatepass', label: 'Gate Pass' },
+  { id: 1, key: 'review', label: 'Review' },
+  { id: 2, key: 'settle', label: 'Clear Account' },
+  { id: 3, key: 'finalize', label: 'Final Bill' },
+  { id: 4, key: 'summary', label: 'Discharge Summary' },
+  { id: 5, key: 'gatepass', label: 'Gate Pass' },
 ];
 
 export const EMPTY_CLINICAL_FORM = {
@@ -126,12 +127,11 @@ export function computeDerived(bill, balance, admission, finalBill = null) {
 /** Pick the first incomplete step based on server state. */
 export function resolveStartStep({ admission, finalBill, gatePass, derived }) {
   if (!admission || !derived) return 1;
-  if (gatePass) return 4;
-  if (derived.isDischarged) return 4;
+  if (gatePass) return 5;
+  if (derived.isDischarged) return 5;
   if (finalBill) {
-    // Final exists — jump to settle if unpaid/credit, else summary.
     if (Math.abs(Number(derived.owes || 0)) > 0.01) return 2;
-    return 3;
+    return 4;
   }
   return 1;
 }

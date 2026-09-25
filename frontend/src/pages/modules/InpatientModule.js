@@ -32,7 +32,6 @@ import { canAccessDischargeCheckout, prepareDischargeSummaryEdit, summaryIsReady
 import DischargeHistory from './inpatient/discharge/DischargeHistory';
 import CanteenOrderPanel from './canteen/CanteenOrderPanel';
 import DischargeSummaryEditor from './inpatient/DischargeSummaryEditor';
-import DischargeSummaryPreviewCard from './inpatient/discharge/DischargeSummaryPreviewCard';
 import DischargeSummaryTemplatePage from './inpatient/DischargeSummaryTemplatePage';
 import TakeHomeMedicinesSection from '../../components/prescription/TakeHomeMedicinesSection';
 import {
@@ -307,6 +306,11 @@ const InpatientModule = () => {
 
   // Rooms
   const [rooms, setRooms] = useState([]);
+  const [roomImportBusy, setRoomImportBusy] = useState(null);
+  const [roomImportResult, setRoomImportResult] = useState(null);
+  const roomImportInputRef = useRef(null);
+  const [newRoomTypeName, setNewRoomTypeName] = useState('');
+  const [addingRoomType, setAddingRoomType] = useState(false);
   const [showRoomDialog, setShowRoomDialog] = useState(false);
   const [editingRoom, setEditingRoom] = useState(null);
   const [roomForm, setRoomForm] = useState({
@@ -407,6 +411,9 @@ const InpatientModule = () => {
 
   // Phase 2: Bills history + interim
   const [admissionBills, setAdmissionBills] = useState([]);
+  const [schemeApprovals, setSchemeApprovals] = useState([]);
+  const [admissionPreauths, setAdmissionPreauths] = useState([]);
+  const [insuranceSplits, setInsuranceSplits] = useState([]);
 
   // Phase 2: Package
   const [admissionPackage, setAdmissionPackage] = useState(null);
@@ -439,6 +446,9 @@ const InpatientModule = () => {
   const [roomTypeRates, setRoomTypeRates] = useState([]);
   const [roomTypeRatesSaving, setRoomTypeRatesSaving] = useState({});
   const [roomTypeRatesEdits, setRoomTypeRatesEdits] = useState({});
+  const [roomTypeConfigBusy, setRoomTypeConfigBusy] = useState(null);
+  const [roomTypeImportResult, setRoomTypeImportResult] = useState(null);
+  const roomTypeConfigInputRef = useRef(null);
 
   // Phase 2: Pre-authorisations
   const [preauths, setPreauths] = useState([]);
@@ -661,6 +671,73 @@ const InpatientModule = () => {
     } catch { /* silent */ }
   }, []);
 
+  const exportRoomsFile = async () => {
+    setRoomImportBusy('export');
+    try {
+      const res = await axios.get('/api/inpatient/rooms/export', { responseType: 'blob' });
+      const disposition = res.headers['content-disposition'] || '';
+      const match = disposition.match(/filename="?([^";]+)"?/);
+      const name = match ? match[1] : 'rooms.xlsx';
+      const blobUrl = window.URL.createObjectURL(new Blob([res.data]));
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (err) {
+      toast({ title: 'Export failed', description: errorDetail(err) || 'Could not export rooms', variant: 'destructive' });
+    } finally {
+      setRoomImportBusy(null);
+    }
+  };
+
+  const addRoomType = async () => {
+    const name = newRoomTypeName.trim();
+    if (!name) return;
+    setAddingRoomType(true);
+    try {
+      const res = await axios.post('/api/inpatient/room-types', { name });
+      toast({ title: 'Room type added', description: res.data?.label || name });
+      setNewRoomTypeName('');
+      fetchRoomMeta();
+    } catch (err) {
+      toast({ title: 'Could not add room type', description: errorDetail(err) || 'Save failed', variant: 'destructive' });
+    } finally {
+      setAddingRoomType(false);
+    }
+  };
+
+  const importRoomsFile = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    setRoomImportBusy('import');
+    setRoomImportResult(null);
+    try {
+      const body = new FormData();
+      body.append('file', file);
+      const res = await axios.post('/api/inpatient/rooms/import', body, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      setRoomImportResult(res.data);
+      if (res.data?.ok) {
+        toast({
+          title: 'Rooms imported',
+          description: `${res.data.created_rooms} room(s) and ${res.data.created_beds} bed(s) added. ${res.data.skipped} existing row(s) skipped.`,
+        });
+        fetchRooms();
+      } else {
+        toast({ title: 'Import failed', description: 'No rooms were added. Fix the rows listed below.', variant: 'destructive' });
+      }
+    } catch (err) {
+      toast({ title: 'Import failed', description: errorDetail(err) || 'Import failed', variant: 'destructive' });
+    } finally {
+      setRoomImportBusy(null);
+    }
+  };
+
   const fetchRoomMeta = useCallback(async () => {
     try {
       const [typesRes, amenitiesRes] = await Promise.all([
@@ -777,6 +854,25 @@ const InpatientModule = () => {
       const res = await axios.get(`/api/inpatient/admissions/${admissionId}/deposits`);
       setDeposits(res.data || []);
     } catch { setDeposits([]); }
+  }, []);
+
+  const fetchInsuranceLedger = useCallback(async (admissionId) => {
+    if (!admissionId) return;
+    const [approvals, preauths, bills] = await Promise.all([
+      axios.get(`/api/inpatient/admissions/${admissionId}/scheme-approvals`, { params: { include_voided: true } }).catch(() => ({ data: { items: [] } })),
+      axios.get('/api/inpatient/preauth', { params: { admission_id: admissionId } }).catch(() => ({ data: [] })),
+      axios.get(`/api/inpatient/admissions/${admissionId}/bills`).catch(() => ({ data: [] })),
+    ]);
+    setSchemeApprovals(approvals.data?.items || []);
+    setAdmissionPreauths(Array.isArray(preauths.data) ? preauths.data : []);
+    const billRows = bills.data?.items || bills.data || [];
+    const splitLists = await Promise.all(
+      billRows.map(b => axios.get(`/api/inpatient/bills/${b.id}/split`).then(r => (r.data || []).map(s => ({
+        ...s,
+        bill_number: b.bill_number,
+      }))).catch(() => [])),
+    );
+    setInsuranceSplits(splitLists.flat().filter(s => s.payer_type === 'tpa' || s.payer_type === 'insurance'));
   }, []);
 
   const fetchBalance = useCallback(async (admissionId) => {
@@ -926,6 +1022,57 @@ const InpatientModule = () => {
       setRoomTypeRatesEdits(edits);
     } catch { setRoomTypeRates([]); }
   }, []);
+
+  const exportRoomTypeConfig = async () => {
+    setRoomTypeConfigBusy('export');
+    try {
+      const res = await axios.get('/api/inpatient/room-type-rates/export', { responseType: 'blob' });
+      const disposition = res.headers['content-disposition'] || '';
+      const match = disposition.match(/filename="?([^";]+)"?/);
+      const name = match ? match[1] : 'room_type_configuration.xlsx';
+      const blobUrl = window.URL.createObjectURL(new Blob([res.data]));
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (err) {
+      toast({ title: 'Export failed', description: errorDetail(err) || 'Could not export room type configuration', variant: 'destructive' });
+    } finally {
+      setRoomTypeConfigBusy(null);
+    }
+  };
+
+  const importRoomTypeConfig = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    setRoomTypeConfigBusy('import');
+    setRoomTypeImportResult(null);
+    try {
+      const body = new FormData();
+      body.append('file', file);
+      const res = await axios.post('/api/inpatient/room-type-rates/import', body, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      setRoomTypeImportResult(res.data);
+      if (res.data?.ok) {
+        toast({
+          title: 'Imported',
+          description: `Nursing rates updated: ${res.data.nursing_updated}. Doctor room rates updated: ${res.data.doctor_rates_upserted}.`,
+        });
+        fetchRoomTypeRates();
+      } else {
+        toast({ title: 'Import failed', description: 'No rates were changed. Fix the rows listed below.', variant: 'destructive' });
+      }
+    } catch (err) {
+      toast({ title: 'Import failed', description: errorDetail(err) || 'Import failed', variant: 'destructive' });
+    } finally {
+      setRoomTypeConfigBusy(null);
+    }
+  };
 
   // Phase 3 fetchers
   const fetchTransferHistory = useCallback(async (admissionId) => {
@@ -1175,6 +1322,13 @@ const InpatientModule = () => {
 
   // Re-fetch MAR when the date changes for an open admission
   useEffect(() => {
+    if (activityAdmission && activityTab === 'insurance' && canViewBilling) {
+      fetchInsuranceLedger(activityAdmission.id);
+      fetchDeposits(activityAdmission.id);
+    }
+  }, [activityAdmission, activityTab, canViewBilling, fetchInsuranceLedger, fetchDeposits]);
+
+  useEffect(() => {
     if (activityAdmission && activityTab === 'mar') {
       fetchMAR(activityAdmission.id, marDate);
     }
@@ -1304,6 +1458,7 @@ const InpatientModule = () => {
       fetchAncillaryCharges(admission.id);
       fetchAncillaryServices();
       fetchAdmissionBills(admission.id);
+      fetchInsuranceLedger(admission.id);
       fetchAdmissionPackage(admission.id);
       fetchPackages();
     } else {
@@ -3621,32 +3776,19 @@ const InpatientModule = () => {
 
               {/* Right: Patient detail (inline) */}
               {activityAdmission && (
-                <div className={`${activityPanelExpanded ? 'w-full' : 'w-1/2'} overflow-y-auto flex flex-col`}>
-                  <div className="sticky top-0 bg-white border-b z-10">
+                <div className={`${activityPanelExpanded ? 'w-full' : 'w-1/2'} h-full min-h-0 overflow-hidden flex flex-col bg-white`}>
+                  <div className="shrink-0 bg-white border-b">
                     <div className="px-4 py-3 flex items-start justify-between gap-3">
                       <div className="min-w-0 flex-1">
                         <h2 className="font-semibold truncate">{activityAdmission.patient_name}</h2>
                         <p className="text-xs text-gray-500">
                           {activityAdmission.admission_number} &bull; {roomTypeLabel[activityAdmission.room_type] || activityAdmission.room_type} - {activityAdmission.room_number} &bull; Dr. {activityAdmission.doctor_name || 'N/A'}
                         </p>
-                        {canViewBilling && balance && (
-                          <div className="flex items-center gap-2 mt-1 flex-wrap">
-                            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${
-                              balance.balance > 0 ? 'bg-green-100 text-green-800' :
-                              balance.balance < 0 ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-700'
-                            }`}>
-                              <Wallet className="h-3 w-3" />
-                              {balance.balance > 0 ? `Credit ₹${balance.balance.toFixed(2)}` :
-                               balance.balance < 0 ? `Owes ₹${Math.abs(balance.balance).toFixed(2)}` :
-                               `Settled`}
-                            </span>
-                            <span className="text-xs text-gray-400">
-                              Deposits ₹{(balance.patient_deposits ?? balance.net_deposits).toFixed(2)}
-                              {(balance.payer_share || 0) > 0.01 ? ` · Payer ₹${Number(balance.payer_share).toFixed(2)}` : ''}
-                              {' · '}Billed ₹{(balance.charges ?? balance.total_billed).toFixed(2)}
-                            </span>
-                          </div>
-                        )}
+                        <p className="text-sm font-medium text-gray-800 mt-1">
+                          Patient {activityAdmission.patient_phone || '—'}
+                          {' · '}
+                          Attender {activityAdmission.admitting_person_phone || '—'}
+                        </p>
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
                         <Button
@@ -3665,26 +3807,6 @@ const InpatientModule = () => {
                       </div>
                     </div>
 
-                    {(canWriteDischargeSummary || ip('view_discharge_summary')) && (
-                      <div className="px-4 pb-3">
-                        <DischargeSummaryPreviewCard
-                          summary={activitySummary}
-                          compact
-                          canWrite={canWriteDischargeSummary && activityAdmission.status === 'admitted'}
-                          readOnly={
-                            activityAdmission.status === 'discharged'
-                            || activitySummaryStatus === 'locked'
-                          }
-                          onEdit={openActivitySummaryEditor}
-                          onPrint={
-                            summaryIsReadyForPrint(activitySummaryStatus)
-                              ? () => handlePrintDischargePdf(activityAdmission.id)
-                              : undefined
-                          }
-                        />
-                      </div>
-                    )}
-
                     <div className="px-4 py-2 border-t bg-slate-50/80 flex flex-wrap items-center gap-2">
                       <Button
                         size="sm"
@@ -3694,6 +3816,29 @@ const InpatientModule = () => {
                       >
                         <Printer className="h-3.5 w-3.5 mr-1" /> Detailed Summary
                       </Button>
+                      {(canWriteDischargeSummary || ip('view_discharge_summary')) && (() => {
+                        const canEdit = canWriteDischargeSummary
+                          && activityAdmission.status === 'admitted'
+                          && activitySummaryStatus !== 'locked';
+                        const canPrint = summaryIsReadyForPrint(activitySummaryStatus);
+                        return (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={!canEdit && !canPrint}
+                            title={canEdit
+                              ? 'Write the discharge summary'
+                              : canPrint
+                                ? 'Print discharge summary'
+                                : 'Waiting for the doctor to submit the discharge summary'}
+                            onClick={canEdit
+                              ? openActivitySummaryEditor
+                              : () => handlePrintDischargePdf(activityAdmission.id)}
+                          >
+                            <FileText className="h-3.5 w-3.5 mr-1" /> Discharge Summary
+                          </Button>
+                        );
+                      })()}
                       {activityAdmission.status === 'admitted' && canShowLeave && (
                         <Button size="sm" variant="outline" onClick={() => openLoaDialog(activityAdmission)}>
                           <CalendarRange className="h-3.5 w-3.5 mr-1" /> Leave
@@ -3793,7 +3938,7 @@ const InpatientModule = () => {
                     </div>
                   )}
 
-                  <div className="p-4 flex-1">
+                  <div className="flex-1 min-h-0 flex flex-col">
                     {(() => {
                       const TAB_GROUPS = {
                         clinical: { label: 'Clinical', tabs: [
@@ -3829,9 +3974,10 @@ const InpatientModule = () => {
                       const currentGroup = groupOf(activityTab);
                       const subTabs = TAB_GROUPS[currentGroup].tabs;
                       return (
-                        <Tabs value={activityTab} onValueChange={setActivityTab}>
+                        <Tabs value={activityTab} onValueChange={setActivityTab} className="flex flex-col flex-1 min-h-0">
+                          <div className="shrink-0 bg-white border-b px-4 pt-2">
                           {/* Primary group selector */}
-                          <div className="flex gap-1 border-b mb-2">
+                          <div className="flex gap-1 border-b">
                             {Object.entries(TAB_GROUPS).map(([k, g]) => (
                               <button
                                 key={k}
@@ -3848,11 +3994,13 @@ const InpatientModule = () => {
                             ))}
                           </div>
                           {/* Sub-tabs for the active group */}
-                          <TabsList className="grid w-full text-xs" style={{ gridTemplateColumns: `repeat(${subTabs.length}, minmax(0, 1fr))` }}>
+                          <TabsList className="grid w-full text-xs my-2" style={{ gridTemplateColumns: `repeat(${subTabs.length}, minmax(0, 1fr))` }}>
                             {subTabs.map(t => (
                               <TabsTrigger key={t.v} value={t.v}>{t.l}</TabsTrigger>
                             ))}
                           </TabsList>
+                          </div>
+                          <div className="flex-1 overflow-y-auto p-4">
 
                       {/* Visits sub-tab */}
                       <TabsContent value="visits" className="space-y-3 mt-3">
@@ -4580,6 +4728,120 @@ const InpatientModule = () => {
                       {/* Insurance sub-tab */}
                       <TabsContent value="insurance" className="space-y-4 mt-3">
                         {(() => {
+                          const payerDeposits = (deposits || []).filter(d =>
+                            ['insurance', 'tpa', 'scheme_approval'].includes((d.payment_method || '').toLowerCase())
+                          );
+                          const inr = (n) => `₹${Number(n || 0).toFixed(2)}`;
+                          return (
+                            <>
+                              <div className="border rounded-lg p-4 space-y-2 text-sm">
+                                <h4 className="font-medium text-sm">Payer</h4>
+                                <div className="flex justify-between"><span className="text-gray-500">Scheme</span><span>{activityAdmission?.payer_scheme_name || 'Cash'}</span></div>
+                                <div className="flex justify-between"><span className="text-gray-500">Type</span><span>{(activityAdmission?.payer_type || 'cash').replace(/_/g, ' ')}</span></div>
+                                <div className="flex justify-between"><span className="text-gray-500">Member ID</span><span>{activityAdmission?.scheme_member_id || '—'}</span></div>
+                                <div className="flex justify-between"><span className="text-gray-500">Approval</span><span>{activityAdmission?.scheme_approval_status || 'none'}{activityAdmission?.scheme_approval_ref ? ` · ${activityAdmission.scheme_approval_ref}` : ''}</span></div>
+                                <div className="flex justify-between"><span className="text-gray-500">Approved amount</span><span>{activityAdmission?.scheme_approval_amount != null ? inr(activityAdmission.scheme_approval_amount) : '—'}</span></div>
+                                {balance?.payer_share != null && (
+                                  <div className="flex justify-between"><span className="text-gray-500">Payer share on bill</span><span className="font-medium">{inr(balance.payer_share)}</span></div>
+                                )}
+                              </div>
+
+                              <div className="border rounded-lg p-4">
+                                <h4 className="font-medium text-sm mb-2">TPA / scheme approvals</h4>
+                                {schemeApprovals.length === 0 ? (
+                                  <p className="text-xs text-gray-500">No approvals recorded.</p>
+                                ) : (
+                                  <table className="w-full text-xs">
+                                    <thead className="text-left text-gray-500">
+                                      <tr><th className="py-1">Date</th><th>Reference</th><th>Status</th><th className="text-right">Amount</th></tr>
+                                    </thead>
+                                    <tbody>
+                                      {schemeApprovals.map(a => (
+                                        <tr key={a.id} className="border-t">
+                                          <td className="py-1">{a.created_at ? new Date(a.created_at).toLocaleDateString() : '—'}</td>
+                                          <td>{a.approval_reference || '—'}</td>
+                                          <td>{a.status}</td>
+                                          <td className="text-right">{inr(a.amount)}</td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                )}
+                              </div>
+
+                              <div className="border rounded-lg p-4">
+                                <h4 className="font-medium text-sm mb-2">Insurance and TPA deposits</h4>
+                                {payerDeposits.length === 0 ? (
+                                  <p className="text-xs text-gray-500">No insurance or TPA deposits.</p>
+                                ) : (
+                                  <table className="w-full text-xs">
+                                    <thead className="text-left text-gray-500">
+                                      <tr><th className="py-1">Receipt</th><th>Method</th><th>Reference</th><th className="text-right">Amount</th></tr>
+                                    </thead>
+                                    <tbody>
+                                      {payerDeposits.map(d => (
+                                        <tr key={d.id} className="border-t">
+                                          <td className="py-1 font-mono">{d.deposit_number}</td>
+                                          <td>{d.payment_method}</td>
+                                          <td>{d.reference_number || '—'}</td>
+                                          <td className="text-right">{d.deposit_type === 'refund' ? '-' : ''}{inr(d.amount)}</td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                )}
+                              </div>
+
+                              <div className="border rounded-lg p-4">
+                                <h4 className="font-medium text-sm mb-2">Pre-authorisations</h4>
+                                {admissionPreauths.length === 0 ? (
+                                  <p className="text-xs text-gray-500">No pre-authorisations for this admission.</p>
+                                ) : (
+                                  <table className="w-full text-xs">
+                                    <thead className="text-left text-gray-500">
+                                      <tr><th className="py-1">Provider</th><th>TPA</th><th>Status</th><th className="text-right">Requested</th><th className="text-right">Approved</th></tr>
+                                    </thead>
+                                    <tbody>
+                                      {admissionPreauths.map(p => (
+                                        <tr key={p.id} className="border-t">
+                                          <td className="py-1">{p.insurance_provider}</td>
+                                          <td>{p.tpa_name || '—'}</td>
+                                          <td>{p.status}</td>
+                                          <td className="text-right">{inr(p.requested_amount)}</td>
+                                          <td className="text-right">{p.approved_amount != null ? inr(p.approved_amount) : '—'}</td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                )}
+                              </div>
+
+                              <div className="border rounded-lg p-4">
+                                <h4 className="font-medium text-sm mb-2">TPA and insurance bill splits</h4>
+                                {insuranceSplits.length === 0 ? (
+                                  <p className="text-xs text-gray-500">No TPA or insurance splits on this admission’s bills.</p>
+                                ) : (
+                                  <table className="w-full text-xs">
+                                    <thead className="text-left text-gray-500">
+                                      <tr><th className="py-1">Bill</th><th>Payer</th><th>Status</th><th className="text-right">Amount</th></tr>
+                                    </thead>
+                                    <tbody>
+                                      {insuranceSplits.map(s => (
+                                        <tr key={s.id} className="border-t">
+                                          <td className="py-1 font-mono">{s.bill_number || s.bill_id}</td>
+                                          <td>{s.tpa_name || s.payer_name} ({s.payer_type})</td>
+                                          <td>{s.payment_status}{s.payment_reference ? ` · ${s.payment_reference}` : ''}</td>
+                                          <td className="text-right">{inr(s.amount)}</td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                )}
+                              </div>
+                            </>
+                          );
+                        })()}
+                        {(() => {
                           const adm = activityAdmission;
                           const cs = adm?.claim_status || 'none';
                           const nextActions = {
@@ -5178,6 +5440,7 @@ const InpatientModule = () => {
                           </div>
                         )}
                       </TabsContent>
+                          </div>
                     </Tabs>
                       );
                     })()}
@@ -5190,12 +5453,58 @@ const InpatientModule = () => {
           {/* ============ ROOM MANAGEMENT ============ */}
           {activeTab === 'rooms' && (
             <div className="p-6 overflow-y-auto h-full space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold">Room Management</h2>
-            <Button onClick={openAddRoomDialog}>
-              <Plus className="h-4 w-4 mr-2" /> Add Room
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div>
+              <h2 className="text-lg font-semibold">Room Management</h2>
+              <p className="text-xs text-gray-500 mt-1">
+                Import a spreadsheet to add room numbers, types, charges and beds together. A room type name that is not in the list is created automatically. Existing room numbers are skipped.
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <Button variant="outline" disabled={!!roomImportBusy} onClick={exportRoomsFile}>
+                <Download className="h-4 w-4 mr-2" /> {roomImportBusy === 'export' ? 'Exporting...' : 'Export'}
+              </Button>
+              <Button variant="outline" disabled={!!roomImportBusy} onClick={() => roomImportInputRef.current?.click()}>
+                <Upload className="h-4 w-4 mr-2" /> {roomImportBusy === 'import' ? 'Importing...' : 'Import'}
+              </Button>
+              <input
+                ref={roomImportInputRef}
+                type="file"
+                accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
+                className="hidden"
+                onChange={importRoomsFile}
+              />
+              <Button onClick={openAddRoomDialog}>
+                <Plus className="h-4 w-4 mr-2" /> Add Room
+              </Button>
+            </div>
+          </div>
+          <div className="flex items-end gap-2 flex-wrap border rounded-md p-3 bg-gray-50">
+            <div className="flex-1 min-w-[200px]">
+              <Label className="text-xs">New room type</Label>
+              <Input
+                value={newRoomTypeName}
+                onChange={e => setNewRoomTypeName(e.target.value)}
+                placeholder="e.g. Deluxe, Isolation Cabin"
+                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addRoomType(); } }}
+              />
+            </div>
+            <Button type="button" variant="outline" disabled={addingRoomType || !newRoomTypeName.trim()} onClick={addRoomType}>
+              {addingRoomType ? 'Adding...' : 'Add room type'}
             </Button>
           </div>
+          {roomImportResult && !roomImportResult.ok && (roomImportResult.errors || []).length > 0 && (
+            <Card>
+              <CardContent className="py-3 space-y-1">
+                <p className="text-sm font-medium text-red-700">Import was not applied</p>
+                {(roomImportResult.errors || []).slice(0, 12).map((err, idx) => (
+                  <p key={`${err.sheet}-${err.row}-${idx}`} className="text-xs text-red-600">
+                    {err.sheet} row {err.row}: {err.message}
+                  </p>
+                ))}
+              </CardContent>
+            </Card>
+          )}
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {rooms.map(room => {
@@ -6447,10 +6756,42 @@ const InpatientModule = () => {
                 </TabsContent>
 
                 <TabsContent value="room-type-rates" className="space-y-3 mt-3">
-                  <p className="text-sm text-gray-500">
-                    Set nursing charge per day for each room type. This is the "layer 1" rate — applied when a room does not have its own nursing charge set. Multiple nurse visits on the same day are billed once.
-                    Doctor visit rates per room type are configured in Admin → Users (doctor profile).
+                  <div className="flex justify-between items-start gap-3 flex-wrap">
+                    <p className="text-sm text-gray-500 max-w-3xl">
+                      Set nursing charge per day for each room type. This is the layer 1 rate — applied when a room does not have its own nursing charge set. Multiple nurse visits on the same day are billed once.
+                      Doctor visit rates per room type are configured in Admin → Users (doctor profile), and are included in the export file.
+                    </p>
+                    <div className="flex gap-2">
+                      <Button size="sm" variant="outline" disabled={!!roomTypeConfigBusy} onClick={exportRoomTypeConfig}>
+                        <Download className="h-4 w-4 mr-1" /> {roomTypeConfigBusy === 'export' ? 'Exporting...' : 'Export'}
+                      </Button>
+                      <Button size="sm" variant="outline" disabled={!!roomTypeConfigBusy} onClick={() => roomTypeConfigInputRef.current?.click()}>
+                        <Upload className="h-4 w-4 mr-1" /> {roomTypeConfigBusy === 'import' ? 'Importing...' : 'Import'}
+                      </Button>
+                      <input
+                        ref={roomTypeConfigInputRef}
+                        type="file"
+                        accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
+                        className="hidden"
+                        onChange={importRoomTypeConfig}
+                      />
+                    </div>
+                  </div>
+                  <p className="text-xs text-gray-500">
+                    Export downloads the current nursing rates and doctor room-type visit rates. Import updates matching rows. Blank nursing charges and rates missing from the file are left as they are.
                   </p>
+                  {roomTypeImportResult && !roomTypeImportResult.ok && (roomTypeImportResult.errors || []).length > 0 && (
+                    <Card>
+                      <CardContent className="py-3 space-y-1">
+                        <p className="text-sm font-medium text-red-700">Import was not applied</p>
+                        {(roomTypeImportResult.errors || []).slice(0, 12).map((err, idx) => (
+                          <p key={`${err.sheet}-${err.row}-${idx}`} className="text-xs text-red-600">
+                            {err.sheet} row {err.row}: {err.message}
+                          </p>
+                        ))}
+                      </CardContent>
+                    </Card>
+                  )}
                   {roomTypeRates.length === 0 ? (
                     <Card><CardContent className="py-8 text-center text-gray-500 text-sm">Loading...</CardContent></Card>
                   ) : (

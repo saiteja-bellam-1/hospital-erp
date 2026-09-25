@@ -14,7 +14,7 @@ import {
 } from '../../../components/ui/select';
 import {
   ArrowLeft, Loader2, Wallet, Banknote, FileBadge, CheckCircle2,
-  AlertTriangle, IndianRupee, Plus, ChevronLeft, ChevronRight,
+  AlertTriangle, IndianRupee, Plus, ChevronLeft, ChevronRight, Printer, Download,
 } from 'lucide-react';
 import DischargeWorklist from './discharge/DischargeWorklist';
 import DischargeStepper from './discharge/DischargeStepper';
@@ -22,6 +22,7 @@ import DischargeSummaryReview from './discharge/DischargeSummaryReview';
 import DischargeSummaryEditor from './DischargeSummaryEditor';
 import DischargePrintBar from './discharge/DischargePrintBar';
 import useDischargeCheckout from './discharge/useDischargeCheckout';
+import ReviewFinalBillDialog from './discharge/ReviewFinalBillDialog';
 import { PAYMENT_METHODS, rupee } from './discharge/constants';
 import { SafetyGateOverride } from './discharge/ClinicalFormSections';
 
@@ -38,15 +39,16 @@ const Stat = ({ label, value, tone }) => (
 
 const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge, doctorsList = [] }) => {
   const [summaryEditorOpen, setSummaryEditorOpen] = useState(false);
+  const [tpaForm, setTpaForm] = useState({ amount: '', ref: '' });
   const checkout = useDischargeCheckout(admissionId, permissions);
   const {
-    loading, submitting, admission, bill, derived, settlement, deposits, finalBill, gatePass,
+    loading, submitting, admission, bill, balance, derived, settlement, deposits, finalBill, gatePass,
     step, maxReachable, clinicalForm, settleForm, setSettleForm, gatePassForm, setGatePassForm,
     blockers, depositForm, setDepositForm,
     canAddDeposit, canFinalize, canDischarge, canIssuePass, canWriteSummary, canViewSummary,
-    summaryDoc, refreshSummary,
+    summaryDoc, refreshSummary, account, reviewedBill, saveReviewedBill, recordTpaApproval,
     updateClinical,
-    goToStep, handleNext, handleBack, printBill, printGatePass, printDischargeSummary, printAdmissionDetail, submitDeposit,
+    goToStep, advanceStep, handleNext, handleBack, printBill, downloadBill, printGatePass, printDischargeSummary, printAdmissionDetail, submitDeposit,
   } = checkout;
 
   if (loading) {
@@ -79,7 +81,6 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge, doct
 
   const isDeath = (clinicalForm.discharge_type || summaryDoc?.discharge_type) === 'death';
   const isComplete = !!gatePass;
-  const readOnlyBill = !!finalBill && step > 1;
   const summaryReady = summaryDoc?.status === 'ready' || summaryDoc?.status === 'locked';
   const checkoutOwes = settlement?.owes ?? derived.owes;
 
@@ -104,25 +105,25 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge, doct
     if (result?.wasDeath) onDeathDischarge?.(result);
   };
 
+  const confirmReviewedBill = (payload, grand) => {
+    saveReviewedBill(payload, grand);
+    advanceStep(2);
+  };
+
   const primaryLabel = () => {
     if (isComplete) return 'Back to worklist';
-    if (step === 1) {
-      return finalBill ? 'Continue to Settlement' : 'Generate Final Bill';
-    }
+    if (step === 1) return 'Confirm charges';
     if (step === 2) {
-      if (settlement?.direction === 'collect') {
-        return `Collect ${rupee(settlement.amount)} & Continue`;
-      }
-      if (settlement?.direction === 'refund') {
-        return `Refund ${rupee(settlement.amount)} & Continue`;
-      }
-      return 'Continue to Summary';
+      if (settlement?.direction === 'collect') return `Collect ${rupee(settlement.amount)}`;
+      if (settlement?.direction === 'refund') return `Refund ${rupee(settlement.amount)}`;
+      return finalBill ? 'Continue to Summary' : 'Continue to Final Bill';
     }
-    if (step === 3) {
+    if (step === 3) return finalBill ? 'Continue to Summary' : 'Generate Final Bill';
+    if (step === 4) {
       if (derived.isDischarged) return 'Continue to Gate Pass';
       return blockers.length > 0 ? 'Override & Discharge' : 'Discharge & Continue';
     }
-    if (step === 4) return gatePass ? 'Reprint Documents' : 'Issue Gate Pass & Print';
+    if (step === 5) return gatePass ? 'Reprint Documents' : 'Issue Gate Pass & Print';
     return 'Next';
   };
 
@@ -176,13 +177,39 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge, doct
         </div>
       </div>
 
-      {/* Step 1 — Finalize bill (discount / tax) */}
       {step === 1 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Review charges</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ReviewFinalBillDialog
+              embedded
+              open
+              admissionId={admissionId}
+              patientName={admission.patient_name}
+              netDeposits={derived.deposited}
+              payerShare={
+                admission?.scheme_approval_status === 'approved'
+                  ? Number(admission.scheme_approval_amount || 0)
+                  : Number(balance?.payer_share || 0)
+              }
+              priorBilled={Number(balance?.billed_on_bills || 0)}
+              submitting={submitting}
+              confirmLabel="Confirm charges"
+              onConfirm={confirmReviewedBill}
+            />
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Step 2 — clear payments, TPA, and refunds before the bill is saved */}
+      {step === 2 && (
         <div className="space-y-4">
           <Card>
             <CardHeader className="pb-2 flex flex-row items-center justify-between">
               <CardTitle className="text-base flex items-center gap-2">
-                <IndianRupee className="h-4 w-4" /> Finalize Bill
+                <Wallet className="h-4 w-4" /> Clear Account
               </CardTitle>
               <div className="flex gap-1">
                 {canAddDeposit && !derived.isDischarged && (
@@ -196,78 +223,77 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge, doct
             </CardHeader>
             <CardContent className="space-y-4">
               <p className="text-xs text-gray-500">
-                This step saves the final bill for the whole stay. Until then, the admission
-                billing tab only shows live charges and deposits.
+                Collect what the patient still owes, record the TPA approval, and refund any credit.
+                The final bill is generated only after this balance is zero.
               </p>
-              {finalBill && (
-                <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2">
-                  Final bill <b>{finalBill.bill_number}</b> already exists — continue to settlement.
-                </div>
-              )}
               <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
-                <Stat label="Stay charges" value={rupee(derived.stayCharges)} />
+                <Stat label={reviewedBill ? 'Reviewed total' : 'Stay charges'} value={rupee(account?.target ?? derived.stayCharges)} />
+                <Stat label="Payer share" value={rupee(account?.payerShare || 0)} />
                 <Stat label="Deposits" value={rupee(derived.deposited)} />
-                <Stat label="Balance preview" value={rupee(Math.abs(checkoutOwes))}
-                      tone={checkoutOwes > 0.01 ? 'red' : checkoutOwes < -0.01 ? 'blue' : 'green'} />
-                {bill?.stay_days != null && <Stat label="Stay days" value={String(bill.stay_days)} />}
-                {bill?.room_total != null && <Stat label="Room" value={rupee(bill.room_total)} />}
-                {bill?.visit_total != null && <Stat label="Visits" value={rupee(bill.visit_total)} />}
-                {finalBill && Number(finalBill.discount_amount || 0) > 0 && (
-                  <Stat label="Discount applied" value={`-${rupee(finalBill.discount_amount)}`} tone="green" />
-                )}
-                {finalBill && <Stat label="Final bill total" value={rupee(finalBill.total_amount)} tone="blue" />}
+                <Stat label="Still to clear" value={rupee(Math.abs(account?.owes || 0))}
+                      tone={account?.direction === 'collect' ? 'red' : account?.direction === 'refund' ? 'blue' : 'green'} />
               </div>
-
-              {!readOnlyBill && settleForm && canFinalize && !finalBill && (
-                <>
-                  <div className="grid grid-cols-3 gap-3">
+              <div className="bg-gray-50 border rounded p-3 space-y-2 text-sm">
+                <div className="flex justify-between">
+                  <span>{account?.direction === 'refund' ? 'Refund due' : account?.direction === 'collect' ? 'Pending payment' : 'Balance'}</span>
+                  <b className={
+                    account?.direction === 'collect' ? 'text-red-600'
+                      : account?.direction === 'refund' ? 'text-blue-600' : 'text-green-600'
+                  }>{rupee(account?.amount || 0)}</b>
+                </div>
+                {account?.direction !== 'none' && settleForm && (
+                  <div className="grid grid-cols-2 gap-3 pt-2">
                     <div>
-                      <Label className="text-xs">Discount type</Label>
-                      <Select value={settleForm.discountType}
-                              onValueChange={v => setSettleForm(p => ({ ...p, discountType: v }))}>
+                      <Label className="text-xs">Amount (₹)</Label>
+                      <Input type="number" min="0" step="0.01" value={(account?.amount || 0).toFixed(2)} readOnly />
+                    </div>
+                    <div>
+                      <Label className="text-xs">Method</Label>
+                      <Select value={settleForm.method}
+                              onValueChange={v => setSettleForm(p => ({ ...p, method: v }))}>
                         <SelectTrigger><SelectValue /></SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="flat">Flat (₹)</SelectItem>
-                          <SelectItem value="percentage">Percentage (%)</SelectItem>
+                          {PAYMENT_METHODS.map(m => (
+                            <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>
+                          ))}
                         </SelectContent>
                       </Select>
                     </div>
-                    <div>
-                      <Label className="text-xs">Discount</Label>
-                      <Input type="number" min="0" value={settleForm.discountValue}
-                             onChange={e => setSettleForm(p => ({ ...p, discountValue: e.target.value }))} />
-                    </div>
-                    <div>
-                      <Label className="text-xs">Tax %</Label>
-                      <Input type="number" min="0" value={settleForm.taxPct}
-                             onChange={e => setSettleForm(p => ({ ...p, taxPct: e.target.value }))} />
+                    <div className="col-span-2">
+                      <Label className="text-xs">Reference</Label>
+                      <Input value={settleForm.ref}
+                             onChange={e => setSettleForm(p => ({ ...p, ref: e.target.value }))}
+                             placeholder="Txn / cheque #" />
                     </div>
                   </div>
-                  <div className="bg-gray-50 border rounded p-3 space-y-2 text-sm">
-                    {(settlement?.discountAmount > 0 || settlement?.taxAmount > 0) && (
-                      <div className="text-xs space-y-1">
-                        {settlement.discountAmount > 0 && (
-                          <div className="flex justify-between text-green-700">
-                            <span>Discount</span><span>-{rupee(settlement.discountAmount)}</span>
-                          </div>
-                        )}
-                        {settlement.taxAmount > 0 && (
-                          <div className="flex justify-between text-orange-700">
-                            <span>Tax</span><span>+{rupee(settlement.taxAmount)}</span>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                    <div className="flex justify-between font-medium">
-                      <span>Adjusted final total</span><span>{rupee(settlement?.adjustedTotal || derived.stayCharges)}</span>
+                )}
+                {account?.clear && (
+                  <p className="text-xs text-green-700 flex items-center gap-1">
+                    <CheckCircle2 className="h-3 w-3" /> Nothing left to collect or refund. Continue to the final bill.
+                  </p>
+                )}
+              </div>
+              {account?.tpaPending && (
+                <div className="border border-amber-200 bg-amber-50 rounded p-3 space-y-2">
+                  <p className="text-xs font-medium text-amber-900">TPA approval is still pending</p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <Label className="text-xs">Approved amount (₹)</Label>
+                      <Input type="number" min="0" step="0.01" value={tpaForm.amount}
+                             onChange={e => setTpaForm(p => ({ ...p, amount: e.target.value }))} />
                     </div>
-                    <p className="text-xs text-gray-500 pt-1 border-t">
-                      Payment collection / refund happens in the next step.
-                    </p>
+                    <div>
+                      <Label className="text-xs">Approval reference</Label>
+                      <Input value={tpaForm.ref}
+                             onChange={e => setTpaForm(p => ({ ...p, ref: e.target.value }))} />
+                    </div>
                   </div>
-                </>
+                  <Button size="sm" variant="outline" disabled={submitting}
+                          onClick={() => recordTpaApproval(tpaForm.amount, tpaForm.ref)}>
+                    Record TPA approval
+                  </Button>
+                </div>
               )}
-
               {deposits.length > 0 && (
                 <div className="border rounded overflow-hidden">
                   <div className="bg-gray-50 px-3 py-1.5 text-xs font-medium">Deposits ({deposits.length})</div>
@@ -288,100 +314,46 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge, doct
         </div>
       )}
 
-      {/* Step 2 — Collect / Refund */}
-      {step === 2 && (
+      {/* Step 3 — generate the final bill once the balance is zero */}
+      {step === 3 && (
         <div className="space-y-4">
           <Card>
-            <CardHeader className="pb-2 flex flex-row items-center justify-between">
+            <CardHeader className="pb-2">
               <CardTitle className="text-base flex items-center gap-2">
-                <Wallet className="h-4 w-4" /> Collect / Refund
+                <IndianRupee className="h-4 w-4" /> Final Bill
               </CardTitle>
-              {canAddDeposit && !derived.isDischarged && (
-                <Button size="sm" variant="outline" onClick={() => setDepositForm({
-                  amount: '', method: 'cash', ref: '', notes: '',
-                })}>
-                  <Plus className="h-3.5 w-3.5 mr-1" /> Add Deposit
-                </Button>
-              )}
             </CardHeader>
             <CardContent className="space-y-4">
-              {!finalBill ? (
-                <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2">
-                  Generate the final bill in the previous step before settling.
+              {finalBill ? (
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-green-800 bg-green-50 border border-green-200 rounded p-2">
+                  <span>Final bill <b>{finalBill.bill_number}</b> is saved. Continue to the discharge summary.</span>
+                  <span className="flex gap-2">
+                    <Button size="sm" variant="outline" className="h-7 text-xs" onClick={printBill}>
+                      <Printer className="h-3.5 w-3.5 mr-1" /> Print
+                    </Button>
+                    <Button size="sm" variant="outline" className="h-7 text-xs" onClick={downloadBill}>
+                      <Download className="h-3.5 w-3.5 mr-1" /> Download
+                    </Button>
+                  </span>
                 </div>
               ) : (
-                <>
-                  <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
-                    <Stat label="Final bill" value={rupee(finalBill.total_amount)} tone="blue" />
-                    <Stat label="Deposits" value={rupee(derived.deposited)} />
-                    <Stat label="Balance" value={rupee(Math.abs(checkoutOwes))}
-                          tone={checkoutOwes > 0.01 ? 'red' : checkoutOwes < -0.01 ? 'blue' : 'green'} />
-                  </div>
-                  <div className="bg-gray-50 border rounded p-3 space-y-2 text-sm">
-                    <div className="flex justify-between">
-                      <span>To {settlement?.direction === 'refund' ? 'refund' : settlement?.direction === 'collect' ? 'collect' : 'settle'}</span>
-                      <b className={
-                        settlement?.direction === 'collect' ? 'text-red-600'
-                          : settlement?.direction === 'refund' ? 'text-blue-600' : 'text-green-600'
-                      }>{rupee(settlement?.amount || 0)}</b>
-                    </div>
-                    {settlement?.direction !== 'none' && settleForm && (
-                      <div className="grid grid-cols-2 gap-3 pt-2">
-                        <div>
-                          <Label className="text-xs">Amount (₹)</Label>
-                          <Input type="number" min="0" step="0.01"
-                                 value={(settlement?.amount || 0).toFixed(2)} readOnly />
-                        </div>
-                        <div>
-                          <Label className="text-xs">Method</Label>
-                          <Select value={settleForm.method}
-                                  onValueChange={v => setSettleForm(p => ({ ...p, method: v }))}>
-                            <SelectTrigger><SelectValue /></SelectTrigger>
-                            <SelectContent>
-                              {PAYMENT_METHODS.map(m => (
-                                <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        <div className="col-span-2">
-                          <Label className="text-xs">Reference</Label>
-                          <Input value={settleForm.ref}
-                                 onChange={e => setSettleForm(p => ({ ...p, ref: e.target.value }))}
-                                 placeholder="Txn / cheque #" />
-                        </div>
-                      </div>
-                    )}
-                    {settlement?.direction === 'none' && (
-                      <p className="text-xs text-green-700 flex items-center gap-1">
-                        <CheckCircle2 className="h-3 w-3" /> Balance zero — continue to discharge summary.
-                      </p>
-                    )}
-                  </div>
-                </>
+                <p className="text-xs text-gray-500">
+                  Payments, TPA, and refunds are clear. Generating the bill locks these charges with a zero balance.
+                </p>
               )}
-              {deposits.length > 0 && (
-                <div className="border rounded overflow-hidden">
-                  <div className="bg-gray-50 px-3 py-1.5 text-xs font-medium">Deposits ({deposits.length})</div>
-                  <div className="max-h-32 overflow-y-auto text-xs">
-                    {deposits.map(d => (
-                      <div key={d.id} className="flex justify-between px-3 py-1 border-t">
-                        <span>{d.deposit_number} · {d.payment_method}</span>
-                        <span className={d.deposit_type === 'refund' ? 'text-blue-700' : ''}>
-                          {d.deposit_type === 'refund' ? '-' : ''}{rupee(d.amount)}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                <Stat label="Bill total" value={rupee(finalBill ? finalBill.total_amount : account?.target)} tone="blue" />
+                <Stat label="Approval" value={rupee(finalBill ? finalBill.payer_share_amount : account?.payerShare)} />
+                <Stat label="Deposits" value={rupee(derived.deposited)} />
+                <Stat label="Balance" value={rupee(0)} tone="green" />
+              </div>
             </CardContent>
           </Card>
         </div>
       )}
 
-      {/* Step 3 — Discharge summary */}
-      {step === 3 && (
+      {/* Step 4 — Discharge summary */}
+      {step === 4 && (
         <div className="space-y-4">
           <DischargeSummaryReview
             summary={summaryDoc}
@@ -396,7 +368,7 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge, doct
       )}
 
       {/* Step 4 — Gate pass */}
-      {step === 4 && (
+      {step === 5 && (
         <div className="space-y-4">
           {isComplete ? (
             <Card>
@@ -469,7 +441,7 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge, doct
         </div>
       )}
 
-      {step === 4 && derived.isDischarged && !isComplete && (
+      {step === 5 && derived.isDischarged && !isComplete && (
         <Card>
           <CardContent className="py-3 text-xs text-gray-500">
             Discharged on {admission.discharge_date
@@ -493,12 +465,14 @@ const CheckoutFlow = ({ admissionId, onBack, permissions, onDeathDischarge, doct
             </Button>
           )}
         </div>
+        {step !== 1 && (
         <Button onClick={onPrimaryAction} disabled={submitting && !isComplete}
-                variant={!isComplete && step === 3 && blockers.length > 0 ? 'destructive' : 'default'}>
+                variant={!isComplete && step === 4 && blockers.length > 0 ? 'destructive' : 'default'}>
           {submitting && !isComplete && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
           {primaryLabel()}
-          {!isComplete && step < 4 && step !== 3 && <ChevronRight className="h-4 w-4 ml-1" />}
+          {!isComplete && step < 5 && step !== 4 && <ChevronRight className="h-4 w-4 ml-1" />}
         </Button>
+        )}
       </div>
 
       {/* Deposit dialog — only auxiliary modal kept */}
