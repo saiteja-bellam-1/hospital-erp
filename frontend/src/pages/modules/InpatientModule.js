@@ -17,6 +17,7 @@ import { printPdfFromUrl } from '../../utils/printPdf';
 import { errorDetail } from '../../utils/apiErrors';
 import PdfPreviewDialog from '../../components/PdfPreviewDialog';
 import AdmitPatientWizard from './inpatient/AdmitPatientWizard';
+import PreAuthorisationsTab from './inpatient/PreAuthorisationsTab';
 import PatientSearchPicker from '../../components/PatientSearchPicker';
 import PendingAcceptanceList from './inpatient/PendingAcceptanceList';
 import AdmissionDraftsList from './inpatient/AdmissionDraftsList';
@@ -106,7 +107,6 @@ const TAB_TO_PATH = {
   rooms: 'rooms',
   setup: 'billing-setup',
   procedures: 'procedures',
-  reports: 'reports',
   'discharge-summary-template': 'discharge-summary-template',
 };
 const PATH_TO_TAB = Object.fromEntries(
@@ -351,20 +351,6 @@ const InpatientModule = () => {
     start_datetime: '', expected_return_datetime: '', reason: '',
     approved_by_doctor_id: '', notes: '', bed_held: true });
   const [loaList, setLoaList] = useState([]);
-  // E2 — Monthly outcomes report
-  const [reportSubTab, setReportSubTab] = useState('outcomes');
-  const [outcomesMonth, setOutcomesMonth] = useState(() => {
-    const d = new Date(); d.setDate(0); // last day of previous month
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-  });
-  const [outcomesData, setOutcomesData] = useState(null);
-  // E3 — Doctor productivity report
-  const [productivityRange, setProductivityRange] = useState(() => {
-    const today = new Date();
-    const start = new Date(Date.now() - 30 * 86400 * 1000);
-    return { from: localDateString(start), to: localDateString(today), doctor_id: '' };
-  });
-  const [productivityData, setProductivityData] = useState(null);
   const [showNursingNoteDialog, setShowNursingNoteDialog] = useState(false);
   const [nursingNoteForm, setNursingNoteForm] = useState({ shift: 'morning', note_type: 'general', content: '' });
   const [editingNursingNote, setEditingNursingNote] = useState(null);
@@ -449,17 +435,6 @@ const InpatientModule = () => {
   const [roomTypeConfigBusy, setRoomTypeConfigBusy] = useState(null);
   const [roomTypeImportResult, setRoomTypeImportResult] = useState(null);
   const roomTypeConfigInputRef = useRef(null);
-
-  // Phase 2: Pre-authorisations
-  const [preauths, setPreauths] = useState([]);
-  const [preauthSearch, setPreauthSearch] = useState('');
-  const [preauthStatusFilter, setPreauthStatusFilter] = useState('');
-  const [showPreauthDialog, setShowPreauthDialog] = useState(false);
-  const [preauthForm, setPreauthForm] = useState({ patient_id: '', admission_id: '', insurance_provider: '', policy_number: '', tpa_id: '', requested_amount: '', notes: '' });
-  const [activePreauth, setActivePreauth] = useState(null);
-  const [showPreauthDecisionDialog, setShowPreauthDecisionDialog] = useState(false);
-  const [preauthDecisionForm, setPreauthDecisionForm] = useState({ status: 'approved', approved_amount: '', validity_days: '', approval_reference: '', notes: '' });
-  const [preauthSelectedPatient, setPreauthSelectedPatient] = useState(null);
 
   // Phase 2: Bill split
   const [billForSplit, setBillForSplit] = useState(null);
@@ -1223,53 +1198,6 @@ const InpatientModule = () => {
     } catch { setMortalityList([]); }
   }, []);
 
-  // E2 — monthly outcomes
-  const fetchMonthlyOutcomes = useCallback(async (month) => {
-    try {
-      const params = month ? { month } : {};
-      const res = await axios.get('/api/inpatient/reports/monthly-outcomes', { params });
-      setOutcomesData(res.data);
-    } catch (err) {
-      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed to load monthly outcomes';
-      toast({ variant: 'destructive', title: 'Error', description: msg });
-      setOutcomesData(null);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // E3 — doctor productivity
-  const fetchDoctorProductivity = useCallback(async (range) => {
-    try {
-      const params = { date_from: range.from, date_to: range.to };
-      if (range.doctor_id) params.doctor_id = range.doctor_id;
-      const res = await axios.get('/api/inpatient/reports/doctor-productivity', { params });
-      setProductivityData(res.data);
-    } catch (err) {
-      const detail = err.response?.data?.detail;
-      toast({ variant: 'destructive', title: 'Error',
-        description: typeof detail === 'string' ? detail : 'Failed to load doctor productivity' });
-      setProductivityData(null);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const fetchPreauths = useCallback(async () => {
-    try {
-      const params = preauthStatusFilter ? { status: preauthStatusFilter } : {};
-      const res = await axios.get('/api/inpatient/preauth', { params });
-      let data = res.data || [];
-      if (preauthSearch) {
-        const q = preauthSearch.toLowerCase();
-        data = data.filter(p =>
-          (p.patient_name || '').toLowerCase().includes(q) ||
-          (p.insurance_provider || '').toLowerCase().includes(q) ||
-          (p.tpa_name || '').toLowerCase().includes(q)
-        );
-      }
-      setPreauths(data);
-    } catch { setPreauths([]); }
-  }, [preauthStatusFilter, preauthSearch]);
-
   useEffect(() => {
     fetchDashboard();
     fetchDoctors();
@@ -1286,7 +1214,6 @@ const InpatientModule = () => {
     if (activeTab === 'discharge') fetchAdmissions('discharged', dischargePage);
     if (activeTab === 'ot') fetchOTSchedules();
     if (activeTab === 'dashboard') fetchDashboard();
-    if (activeTab === 'preauth') fetchPreauths();
     if (activeTab === 'setup') {
       fetchAncillaryServices();
       fetchPackages();
@@ -1306,11 +1233,6 @@ const InpatientModule = () => {
       fetchReadmissions();
       fetchMortalityList();
     }
-    if (activeTab === 'reports') {
-      if (reportSubTab === 'outcomes') fetchMonthlyOutcomes(outcomesMonth);
-      if (reportSubTab === 'productivity') fetchDoctorProductivity(productivityRange);
-      fetchDoctors();
-    }
     if (activeTab === 'roster') {
       fetchRosterGrid();
       fetchRosterCoverage();
@@ -1318,7 +1240,7 @@ const InpatientModule = () => {
     }
     if (activeTab === 'procedures') fetchProcedures(false);
     if (activeTab === 'ot') fetchProcedures(true);  // OT scheduling needs the active catalog
-  }, [activeTab, admissionsPage, dischargePage, fetchAdmissions, fetchDraftAdmissions, fetchRooms, fetchDashboard, fetchAvailableRooms, fetchOTSchedules, fetchPreauths, fetchAncillaryServices, fetchPackages, fetchTpaList, fetchRoomTypeRates, fetchCleaningBeds, fetchTurnoverStats, fetchPendingTransfers, fetchReservations, fetchReadmissions, fetchMortalityList, fetchRosterGrid, fetchRosterCoverage, fetchNursesList, fetchProcedures, fetchTriageQueue]);
+  }, [activeTab, admissionsPage, dischargePage, fetchAdmissions, fetchDraftAdmissions, fetchRooms, fetchDashboard, fetchAvailableRooms, fetchOTSchedules, fetchAncillaryServices, fetchPackages, fetchTpaList, fetchRoomTypeRates, fetchCleaningBeds, fetchTurnoverStats, fetchPendingTransfers, fetchReservations, fetchReadmissions, fetchMortalityList, fetchRosterGrid, fetchRosterCoverage, fetchNursesList, fetchProcedures, fetchTriageQueue]);
 
   // Re-fetch MAR when the date changes for an open admission
   useEffect(() => {
@@ -2503,57 +2425,6 @@ const InpatientModule = () => {
       toast({ title: 'TPA deactivated' });
       fetchTpaList();
     } catch { toast({ variant: 'destructive', title: 'Error', description: 'Failed' }); }
-  };
-
-  // Phase 2: Pre-auth
-  const handleCreatePreauth = async (e) => {
-    e.preventDefault();
-    if (!preauthSelectedPatient) {
-      toast({ variant: 'destructive', title: 'Error', description: 'Pick a patient' });
-      return;
-    }
-    setLoading(true);
-    try {
-      const payload = {
-        patient_id: preauthSelectedPatient.id,
-        admission_id: preauthForm.admission_id ? parseInt(preauthForm.admission_id) : null,
-        insurance_provider: preauthForm.insurance_provider,
-        policy_number: preauthForm.policy_number || null,
-        tpa_id: preauthForm.tpa_id ? parseInt(preauthForm.tpa_id) : null,
-        requested_amount: parseFloat(preauthForm.requested_amount),
-        notes: preauthForm.notes || null,
-      };
-      await axios.post('/api/inpatient/preauth', payload);
-      toast({ title: 'Pre-authorisation requested' });
-      setShowPreauthDialog(false);
-      setPreauthForm({ patient_id: '', admission_id: '', insurance_provider: '', policy_number: '', tpa_id: '', requested_amount: '', notes: '' });
-      setPreauthSelectedPatient(null);
-      fetchPreauths();
-    } catch (err) {
-      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed';
-      toast({ variant: 'destructive', title: 'Error', description: msg });
-    } finally { setLoading(false); }
-  };
-
-  const handlePreauthDecision = async (e) => {
-    e.preventDefault();
-    setLoading(true);
-    try {
-      const payload = {
-        status: preauthDecisionForm.status,
-        approved_amount: preauthDecisionForm.approved_amount ? parseFloat(preauthDecisionForm.approved_amount) : null,
-        validity_days: preauthDecisionForm.validity_days ? parseInt(preauthDecisionForm.validity_days) : null,
-        approval_reference: preauthDecisionForm.approval_reference || null,
-        notes: preauthDecisionForm.notes || null,
-      };
-      await axios.post(`/api/inpatient/preauth/${activePreauth.id}/decision`, payload);
-      toast({ title: 'Decision recorded' });
-      setShowPreauthDecisionDialog(false);
-      fetchPreauths();
-    } catch (err) {
-      const msg = typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Failed';
-      toast({ variant: 'destructive', title: 'Error', description: msg });
-    } finally { setLoading(false); }
   };
 
   // Phase 2: Bill split
@@ -5867,78 +5738,7 @@ const InpatientModule = () => {
 
           {/* ============ PRE-AUTHORISATIONS ============ */}
           {activeTab === 'preauth' && (
-            <div className="p-6 overflow-y-auto h-full space-y-4">
-              <div className="flex items-center justify-between">
-                <h2 className="text-lg font-semibold">Insurance Pre-Authorisations</h2>
-                <Button onClick={() => { setPreauthForm({ patient_id: '', admission_id: '', insurance_provider: '', policy_number: '', tpa_id: '', requested_amount: '', notes: '' }); setPreauthSelectedPatient(null); setShowPreauthDialog(true); }}>
-                  <Plus className="h-4 w-4 mr-2" /> New Request
-                </Button>
-              </div>
-              <div className="flex gap-3">
-                <Input className="max-w-xs" placeholder="Search by patient, provider, TPA..." value={preauthSearch} onChange={e => setPreauthSearch(e.target.value)} />
-                <Select value={preauthStatusFilter || 'all'} onValueChange={v => setPreauthStatusFilter(v === 'all' ? '' : v)}>
-                  <SelectTrigger className="max-w-[200px]"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All statuses</SelectItem>
-                    <SelectItem value="requested">Requested</SelectItem>
-                    <SelectItem value="approved">Approved</SelectItem>
-                    <SelectItem value="rejected">Rejected</SelectItem>
-                    <SelectItem value="expansion_requested">Expansion Requested</SelectItem>
-                    <SelectItem value="expanded">Expanded</SelectItem>
-                    <SelectItem value="expired">Expired</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              {preauths.length === 0 ? (
-                <Card><CardContent className="py-12 text-center text-gray-500">No pre-authorisation requests.</CardContent></Card>
-              ) : (
-                <div className="space-y-2">
-                  {preauths.map(p => {
-                    const statusColor = {
-                      requested: 'bg-blue-100 text-blue-800',
-                      approved: 'bg-green-100 text-green-800',
-                      rejected: 'bg-red-100 text-red-800',
-                      expansion_requested: 'bg-yellow-100 text-yellow-800',
-                      expanded: 'bg-purple-100 text-purple-800',
-                      expired: 'bg-gray-100 text-gray-800',
-                    }[p.status] || 'bg-gray-100 text-gray-800';
-                    return (
-                      <Card key={p.id}>
-                        <CardContent className="py-3">
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <span className="font-semibold text-sm">{p.patient_name || '—'}</span>
-                                <Badge className={`text-xs ${statusColor}`}>{p.status}</Badge>
-                                <span className="text-xs text-gray-500">{p.insurance_provider}</span>
-                                {p.tpa_name && <span className="text-xs text-gray-500">· TPA: {p.tpa_name}</span>}
-                              </div>
-                              <div className="text-xs text-gray-600 mt-1">
-                                Requested ₹{p.requested_amount.toFixed(2)}
-                                {p.approved_amount > 0 && <> · Approved ₹{p.approved_amount.toFixed(2)}</>}
-                                {p.policy_number && <> · Policy {p.policy_number}</>}
-                                · {new Date(p.request_date).toLocaleDateString()}
-                              </div>
-                              {p.admission_number && <div className="text-xs text-gray-500">Admission {p.admission_number}</div>}
-                              {p.notes && <p className="text-xs italic text-gray-600 mt-1">{p.notes}</p>}
-                            </div>
-                            <div className="flex gap-1">
-                              {(p.status === 'requested' || p.status === 'expansion_requested') && (
-                                <Button size="sm" variant="outline" onClick={() => {
-                                  setActivePreauth(p);
-                                  setPreauthDecisionForm({ status: 'approved', approved_amount: String(p.requested_amount), validity_days: '', approval_reference: '', notes: '' });
-                                  setShowPreauthDecisionDialog(true);
-                                }}>Record Decision</Button>
-                              )}
-                            </div>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
+            <PreAuthorisationsTab canManage={ip('manage_preauth')} />
           )}
 
           {/* ============ DUTY ROSTER ============ */}
@@ -6334,257 +6134,6 @@ const InpatientModule = () => {
                   </div>
                 )}
               </div>
-            </div>
-          )}
-
-          {/* ============ MANAGEMENT REPORTS ============ */}
-          {activeTab === 'reports' && (
-            <div className="p-6 overflow-y-auto h-full space-y-4">
-              <h2 className="text-lg font-semibold">Management Reports</h2>
-              <Tabs value={reportSubTab} onValueChange={(v) => {
-                setReportSubTab(v);
-                if (v === 'outcomes') fetchMonthlyOutcomes(outcomesMonth);
-                if (v === 'productivity') fetchDoctorProductivity(productivityRange);
-              }}>
-                <TabsList>
-                  <TabsTrigger value="outcomes">Monthly Outcomes</TabsTrigger>
-                  <TabsTrigger value="productivity">Doctor Productivity</TabsTrigger>
-                </TabsList>
-
-                {/* ----- E2: Monthly outcomes ----- */}
-                <TabsContent value="outcomes" className="space-y-4 mt-4">
-                  <div className="flex items-end gap-3 flex-wrap">
-                    <div>
-                      <Label className="text-xs">Month</Label>
-                      <Input type="month" value={outcomesMonth}
-                        onChange={e => setOutcomesMonth(e.target.value)} />
-                    </div>
-                    <Button size="sm" onClick={() => fetchMonthlyOutcomes(outcomesMonth)}>
-                      Refresh
-                    </Button>
-                    <Button size="sm" variant="outline"
-                      onClick={() => printPdfFromUrl('/api/inpatient/reports/monthly-outcomes/pdf',
-                        { month: outcomesMonth})}>
-                      <Printer className="h-4 w-4 mr-1" /> Print PDF
-                    </Button>
-                    {outcomesData && (
-                      <span className="text-xs text-gray-500 ml-auto">Window: {outcomesData.month}</span>
-                    )}
-                  </div>
-
-                  {!outcomesData ? (
-                    <p className="text-sm text-gray-500">Loading…</p>
-                  ) : (
-                    <>
-                      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
-                        {[
-                          ['Admissions', outcomesData.totals.admissions],
-                          ['Discharges', outcomesData.totals.discharges],
-                          ['Deaths', outcomesData.totals.deaths],
-                          ['Mortality %', `${outcomesData.totals.mortality_rate_pct}%`],
-                          ['Readmissions', outcomesData.totals.readmissions],
-                          ['Readmit %', `${outcomesData.totals.readmission_rate_pct}%`],
-                          ['Avg occupancy', `${outcomesData.totals.average_occupancy_pct}%`],
-                        ].map(([label, val]) => (
-                          <Card key={label}>
-                            <CardContent className="pt-4">
-                              <p className="text-xs text-gray-500">{label}</p>
-                              <p className="text-xl font-bold">{val}</p>
-                            </CardContent>
-                          </Card>
-                        ))}
-                      </div>
-
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <Card>
-                          <CardContent className="pt-4">
-                            <p className="font-semibold mb-2">Mortality — by department</p>
-                            {Object.keys(outcomesData.mortality.by_department).length === 0 ? (
-                              <p className="text-xs text-gray-400">No deaths in this window.</p>
-                            ) : (
-                              <table className="w-full text-sm">
-                                <tbody>
-                                  {Object.entries(outcomesData.mortality.by_department).map(([k, v]) => (
-                                    <tr key={k} className="border-b last:border-0">
-                                      <td className="py-1">{k}</td>
-                                      <td className="py-1 text-right font-medium">{v}</td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            )}
-                            <p className="text-xs text-gray-500 mt-2">
-                              MLC: {outcomesData.mortality.mlc_count} · Autopsy: {outcomesData.mortality.autopsy_count}
-                            </p>
-                          </CardContent>
-                        </Card>
-                        <Card>
-                          <CardContent className="pt-4">
-                            <p className="font-semibold mb-2">Mortality — top diagnoses</p>
-                            {Object.keys(outcomesData.mortality.by_diagnosis_top10).length === 0 ? (
-                              <p className="text-xs text-gray-400">—</p>
-                            ) : (
-                              <table className="w-full text-sm">
-                                <tbody>
-                                  {Object.entries(outcomesData.mortality.by_diagnosis_top10).map(([k, v]) => (
-                                    <tr key={k} className="border-b last:border-0">
-                                      <td className="py-1 truncate max-w-md">{k}</td>
-                                      <td className="py-1 text-right font-medium">{v}</td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            )}
-                          </CardContent>
-                        </Card>
-                        <Card>
-                          <CardContent className="pt-4">
-                            <p className="font-semibold mb-2">Readmissions — by days since discharge</p>
-                            <table className="w-full text-sm">
-                              <tbody>
-                                {Object.entries(outcomesData.readmissions.by_window_days).map(([k, v]) => (
-                                  <tr key={k} className="border-b last:border-0">
-                                    <td className="py-1">{k} days</td>
-                                    <td className="py-1 text-right font-medium">{v}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </CardContent>
-                        </Card>
-                        <Card>
-                          <CardContent className="pt-4">
-                            <p className="font-semibold mb-2">Length of stay (days)</p>
-                            <table className="w-full text-sm">
-                              <thead className="text-xs text-gray-500">
-                                <tr><th className="text-left">Scope</th><th>Count</th><th>Mean</th><th>Median</th><th>Min</th><th>Max</th></tr>
-                              </thead>
-                              <tbody>
-                                <tr className="border-b">
-                                  <td className="py-1 font-medium">Overall</td>
-                                  <td className="py-1 text-center">{outcomesData.length_of_stay.overall.count}</td>
-                                  <td className="py-1 text-center">{outcomesData.length_of_stay.overall.mean ?? '—'}</td>
-                                  <td className="py-1 text-center">{outcomesData.length_of_stay.overall.median ?? '—'}</td>
-                                  <td className="py-1 text-center">{outcomesData.length_of_stay.overall.min ?? '—'}</td>
-                                  <td className="py-1 text-center">{outcomesData.length_of_stay.overall.max ?? '—'}</td>
-                                </tr>
-                                {Object.entries(outcomesData.length_of_stay.by_department || {}).map(([dept, s]) => (
-                                  <tr key={dept} className="border-b last:border-0">
-                                    <td className="py-1">{dept}</td>
-                                    <td className="py-1 text-center">{s.count}</td>
-                                    <td className="py-1 text-center">{s.mean ?? '—'}</td>
-                                    <td className="py-1 text-center">{s.median ?? '—'}</td>
-                                    <td className="py-1 text-center">{s.min ?? '—'}</td>
-                                    <td className="py-1 text-center">{s.max ?? '—'}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </CardContent>
-                        </Card>
-                      </div>
-                    </>
-                  )}
-                </TabsContent>
-
-                {/* ----- E3: Doctor productivity ----- */}
-                <TabsContent value="productivity" className="space-y-4 mt-4">
-                  <div className="flex items-end gap-3 flex-wrap">
-                    <div>
-                      <Label className="text-xs">From</Label>
-                      <Input type="date" value={productivityRange.from}
-                        onChange={e => setProductivityRange(p => ({ ...p, from: e.target.value }))} />
-                    </div>
-                    <div>
-                      <Label className="text-xs">To</Label>
-                      <Input type="date" value={productivityRange.to}
-                        onChange={e => setProductivityRange(p => ({ ...p, to: e.target.value }))} />
-                    </div>
-                    <div className="min-w-[200px]">
-                      <Label className="text-xs">Doctor (optional)</Label>
-                      <Select value={productivityRange.doctor_id || 'all'}
-                        onValueChange={v => setProductivityRange(p => ({ ...p, doctor_id: v === 'all' ? '' : v }))}>
-                        <SelectTrigger><SelectValue placeholder="All doctors" /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="all">All doctors</SelectItem>
-                          {doctorsList.map(d => (
-                            <SelectItem key={d.id} value={String(d.id)}>Dr. {d.first_name} {d.last_name}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <Button size="sm" onClick={() => fetchDoctorProductivity(productivityRange)}>
-                      Refresh
-                    </Button>
-                    <Button size="sm" variant="outline"
-                      onClick={() => {
-                        const params = { date_from: productivityRange.from, date_to: productivityRange.to};
-                        if (productivityRange.doctor_id) params.doctor_id = productivityRange.doctor_id;
-                        printPdfFromUrl('/api/inpatient/reports/doctor-productivity/pdf', params);
-                      }}>
-                      <Printer className="h-4 w-4 mr-1" /> Print PDF
-                    </Button>
-                    <Button size="sm" variant="outline"
-                      onClick={() => {
-                        const qs = new URLSearchParams({ date_from: productivityRange.from, date_to: productivityRange.to });
-                        if (productivityRange.doctor_id) qs.append('doctor_id', productivityRange.doctor_id);
-                        window.open(`/api/inpatient/reports/doctor-productivity/csv?${qs.toString()}`, '_blank');
-                      }}>
-                      <Download className="h-4 w-4 mr-1" /> CSV
-                    </Button>
-                  </div>
-
-                  {!productivityData ? (
-                    <p className="text-sm text-gray-500">Loading…</p>
-                  ) : productivityData.rows.length === 0 ? (
-                    <p className="text-sm text-gray-500">No activity in this date range.</p>
-                  ) : (
-                    <div className="border rounded overflow-x-auto">
-                      <table className="w-full text-sm">
-                        <thead className="bg-gray-100 text-xs">
-                          <tr>
-                            <th className="p-2 text-left">Doctor</th>
-                            <th className="p-2 text-right">Adm</th>
-                            <th className="p-2 text-right">Dis</th>
-                            <th className="p-2 text-right">Death</th>
-                            <th className="p-2 text-right">Re-30d</th>
-                            <th className="p-2 text-right">OT-Sur</th>
-                            <th className="p-2 text-right">OT-An</th>
-                            <th className="p-2 text-right">Visits</th>
-                            <th className="p-2 text-right">Avg LOS</th>
-                            <th className="p-2 text-right">Visit ₹</th>
-                            <th className="p-2 text-right">OT-Sur ₹</th>
-                            <th className="p-2 text-right">OT-An ₹</th>
-                            <th className="p-2 text-right font-bold">Total ₹</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {productivityData.rows.map(r => (
-                            <tr key={r.doctor_id} className="border-b last:border-0">
-                              <td className="p-2">{r.doctor_name}</td>
-                              <td className="p-2 text-right">{r.admissions}</td>
-                              <td className="p-2 text-right">{r.discharges}</td>
-                              <td className="p-2 text-right">{r.deaths}</td>
-                              <td className="p-2 text-right">{r.readmissions_30d}</td>
-                              <td className="p-2 text-right">{r.ot_as_surgeon}</td>
-                              <td className="p-2 text-right">{r.ot_as_anaesthetist}</td>
-                              <td className="p-2 text-right">{r.visits}</td>
-                              <td className="p-2 text-right">{r.average_los_days ?? '—'}</td>
-                              <td className="p-2 text-right">₹{Number(r.visit_fees_billed).toLocaleString()}</td>
-                              <td className="p-2 text-right">₹{Number(r.ot_surgeon_fees).toLocaleString()}</td>
-                              <td className="p-2 text-right">₹{Number(r.ot_anaesthetist_fees).toLocaleString()}</td>
-                              <td className="p-2 text-right font-bold">₹{Number(r.total_billed_attributable).toLocaleString()}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                  <p className="text-xs text-gray-500 italic">
-                    Total ₹ = Visit fees + OT surgeon fees (for OTs led) + OT anaesthetist fees. Outpatient consultation fees not included.
-                  </p>
-                </TabsContent>
-              </Tabs>
             </div>
           )}
 
@@ -7954,101 +7503,6 @@ const InpatientModule = () => {
                 </div>
               </div>
               <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Saving…' : 'Save Split'}</Button>
-            </form>
-          )}
-        </DialogContent>
-      </Dialog>
-
-      {/* Pre-auth Create Dialog */}
-      <Dialog open={showPreauthDialog} onOpenChange={(open) => { setShowPreauthDialog(open); if (!open) setPreauthSelectedPatient(null); }}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader><DialogTitle>New Pre-Authorisation Request</DialogTitle></DialogHeader>
-          <form onSubmit={handleCreatePreauth} className="space-y-3">
-            <PatientSearchPicker
-              value={preauthSelectedPatient}
-              onChange={setPreauthSelectedPatient}
-              label="Patient"
-              required
-            />
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <Label>Insurance Provider *</Label>
-                <Input value={preauthForm.insurance_provider} onChange={e => setPreauthForm(p => ({ ...p, insurance_provider: e.target.value }))} required placeholder="e.g. Star Health" />
-              </div>
-              <div>
-                <Label>Policy Number</Label>
-                <Input value={preauthForm.policy_number} onChange={e => setPreauthForm(p => ({ ...p, policy_number: e.target.value }))} />
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <Label>TPA</Label>
-                <Select value={preauthForm.tpa_id} onValueChange={v => setPreauthForm(p => ({ ...p, tpa_id: v }))}>
-                  <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
-                  <SelectContent>
-                    {tpaList.map(t => <SelectItem key={t.id} value={String(t.id)}>{t.tpa_name}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label>Requested Amount (₹) *</Label>
-                <Input type="number" step="0.01" min="0.01" value={preauthForm.requested_amount} onChange={e => setPreauthForm(p => ({ ...p, requested_amount: e.target.value }))} required />
-              </div>
-            </div>
-            <div>
-              <Label>Admission (if any)</Label>
-              <Input value={preauthForm.admission_id} onChange={e => setPreauthForm(p => ({ ...p, admission_id: e.target.value }))} placeholder="Admission ID (numeric)" />
-            </div>
-            <div>
-              <Label>Notes</Label>
-              <Textarea value={preauthForm.notes} onChange={e => setPreauthForm(p => ({ ...p, notes: e.target.value }))} rows={2} />
-            </div>
-            <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Saving…' : 'Submit Request'}</Button>
-          </form>
-        </DialogContent>
-      </Dialog>
-
-      {/* Pre-auth Decision Dialog */}
-      <Dialog open={showPreauthDecisionDialog} onOpenChange={setShowPreauthDecisionDialog}>
-        <DialogContent className="max-w-md">
-          <DialogHeader><DialogTitle>Record Insurer Decision</DialogTitle></DialogHeader>
-          {activePreauth && (
-            <form onSubmit={handlePreauthDecision} className="space-y-3">
-              <p className="text-sm">{activePreauth.insurance_provider} · Requested ₹{activePreauth.requested_amount.toFixed(2)}</p>
-              <div>
-                <Label>Decision *</Label>
-                <Select value={preauthDecisionForm.status} onValueChange={v => setPreauthDecisionForm(p => ({ ...p, status: v }))}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="approved">Approved</SelectItem>
-                    <SelectItem value="rejected">Rejected</SelectItem>
-                    <SelectItem value="expired">Expired</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              {preauthDecisionForm.status === 'approved' && (
-                <>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <Label>Approved Amount (₹) *</Label>
-                      <Input type="number" step="0.01" value={preauthDecisionForm.approved_amount} onChange={e => setPreauthDecisionForm(p => ({ ...p, approved_amount: e.target.value }))} required />
-                    </div>
-                    <div>
-                      <Label>Validity (days)</Label>
-                      <Input type="number" value={preauthDecisionForm.validity_days} onChange={e => setPreauthDecisionForm(p => ({ ...p, validity_days: e.target.value }))} />
-                    </div>
-                  </div>
-                  <div>
-                    <Label>Approval Reference</Label>
-                    <Input value={preauthDecisionForm.approval_reference} onChange={e => setPreauthDecisionForm(p => ({ ...p, approval_reference: e.target.value }))} />
-                  </div>
-                </>
-              )}
-              <div>
-                <Label>Notes</Label>
-                <Textarea value={preauthDecisionForm.notes} onChange={e => setPreauthDecisionForm(p => ({ ...p, notes: e.target.value }))} rows={2} />
-              </div>
-              <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Saving…' : 'Save Decision'}</Button>
             </form>
           )}
         </DialogContent>

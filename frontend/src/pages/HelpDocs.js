@@ -195,8 +195,7 @@ As the Super Admin, complete these steps to set up your hospital:
 
 ### 7. Set Up Lab (if enabled)
 - Go to **Laboratory** in the sidebar
-- Use **Seed Default Templates** to load common tests (CBC, LFT, etc.)
-- Customize test categories, tests, and parameters as needed
+- Create test categories, tests, and parameters, or import them from Excel
 
 ### 8. Configure Backup
 - Go to **Settings > Backup**
@@ -1127,23 +1126,6 @@ Each test can have multiple parameters (e.g., CBC has Hemoglobin, WBC, RBC, Plat
 4. Click **Save**
 
 > **Note**: Gender-specific reference ranges are used to detect abnormal values automatically.
-
-## Seed Templates
-
-Load pre-configured test templates to get started quickly:
-
-1. Go to **Laboratory > Dashboard** tab
-2. Click **Load Default Templates**
-3. The following templates are loaded:
-   - **CBC** (Complete Blood Count)
-   - **LFT** (Liver Function Test)
-   - **RFT** (Renal Function Test)
-   - **Lipid Profile**
-   - **Thyroid Profile**
-   - **Blood Sugar**
-   - **Urine Routine**
-
-Each template includes the test, all parameters, and gender-specific reference ranges.
         `
       },
       'technician-workflow': {
@@ -1520,6 +1502,40 @@ When a user clicks anything in a module, the system checks in this order:
 Users can hold multiple roles via the many-to-many \`user_roles\` association. Permission grants are unioned across all roles — a user with both \`doctor\` and \`inpatient_admin\` gets the union of both grant sets.
         `
       },
+      'inpatient-rooms': {
+        title: 'Room Import & Export',
+        content: `
+# Room Import & Export
+
+Inpatient → **Room Management** can import and export the room catalog as Excel.
+
+## Export
+
+Anyone with \`view_occupancy\` can download the current active rooms. The file uses the same columns as import, so you can edit rates or labels and send it back.
+
+Occupancy (available beds, bed status, admissions) is **not** written on import. This is a catalog dump, not a census report.
+
+## Import
+
+\`manage_beds\` is required. Download the Excel template, fill it, then **Preview** before confirming.
+
+| Sheet | Columns |
+|---|---|
+| Rooms | room_number, room_type, floor, department, ward, bed_count, room_charge_per_day, nursing_charge_per_visit, amenities, is_isolation, gender_policy |
+| Beds (optional) | room_number, bed_label |
+
+- **Match key:** \`room_number\` (case-insensitive).
+- **Skip** (default): leave existing rooms alone.
+- **Update:** change catalog fields, or reactivate a deactivated room. Bed count may grow; shrinking stops if it would drop below occupied or unavailable beds.
+- If the Beds sheet is empty for a room, beds are created as Bed-1..Bed-N from \`bed_count\`.
+- CSV imports the Rooms sheet only.
+- \`room_type\` must be a known key (general, icu, private, …).
+- \`amenities\` are comma- or semicolon-separated keys (ac, tv, oxygen_point, …).
+- \`gender_policy\`: mixed, male, or female.
+
+The same workbook layout is used in Guided Setup → Rooms and beds.
+        `
+      },
       'permission-catalog': {
         title: 'Permission Catalog (All Modules)',
         content: `
@@ -1631,7 +1647,7 @@ The inpatient module uses 58 granular permission keys. Below is the full catalog
 
 | Key | Description |
 |---|---|
-| manage_beds | Create / update / delete rooms and beds |
+| manage_beds | Create / update / delete rooms and beds; import/export the room catalog |
 | manage_wards | Ward-level configuration |
 | set_room_rates | Set room rates and visit rate config |
 | manage_housekeeping | Change bed status (cleaning / dirty / maintenance) |
@@ -1948,7 +1964,6 @@ If you encounter issues not listed here:
 ### For Lab Technicians
 - Orders appear only after **payment is collected** — if you don't see an expected order, check with reception
 - **Abnormal detection** is automatic based on reference ranges — just enter the values
-- Use **Seed Templates** to quickly set up standard tests with proper reference ranges
 
 ### For Administrators
 - **Disable unused modules** to keep the interface clean for all users

@@ -34,12 +34,13 @@ const ROLE_QUICK_PATHS = {
     '/dashboard/inpatient/ot',
   ],
   lab_technician: [
+    '/dashboard/lab',
     '/dashboard/lab-home',
     '/dashboard/reception/lab-orders',
   ],
   lab_admin: [
-    '/dashboard/lab-home',
     '/dashboard/lab',
+    '/dashboard/lab-home',
     '/dashboard/lab/tests',
     '/dashboard/lab/packages',
   ],

@@ -11,7 +11,7 @@ import PatientSearchPicker from './PatientSearchPicker';
 import ReferralSelectWithCreate from './ReferralSelectWithCreate';
 import PatientFileLabelDialog from './PatientFileLabelDialog';
 
-const LabTestBookingDialog = ({ open, onClose, patient = null, referralList = [], onReferralsChange }) => {
+const LabTestBookingDialog = ({ open, onClose, patient = null, referralList, onReferralsChange }) => {
   const token = localStorage.getItem('token');
   const [loading, setLoading] = useState(false);
 

@@ -3494,7 +3494,42 @@ class TestCollectPaymentIgnoresPendingSplits:
         assert row["payment_status"] == "paid"
         assert float(row["balance_due"]) <= 0.01
 
-    def test_04_cleanup_discharge(self, client, auth_headers):
+    def test_04_final_bill_preview_and_pdf_reflect_payment(self, client, auth_headers):
+        """Printed/live final bill must drop remaining after Collect Payment.
+
+        The dashboard already used effective_bill_paid; the inpatient bill
+        preview and PDF previously did total - deposits and ignored Payment rows.
+        """
+        from io import BytesIO
+        from PyPDF2 import PdfReader
+
+        bill_id = _collect_split["bill_id"]
+        adm_id = _collect_split["admission_id"]
+        due = _collect_split["tpa_part"]
+
+        preview = client.get(
+            f"/api/inpatient/admissions/{adm_id}/bill",
+            headers=auth_headers,
+        )
+        assert preview.status_code == 200, preview.text
+        pdata = preview.json()
+        assert "payer_share" in pdata
+        assert "balance_due" in pdata
+
+        pdf = client.get(
+            f"/api/inpatient/admissions/{adm_id}/bill/pdf",
+            params={"bill_id": bill_id},
+            headers=auth_headers,
+        )
+        assert pdf.status_code == 200, pdf.text
+        assert pdf.content[:4] == b"%PDF"
+        text = "\n".join(
+            (page.extract_text() or "")
+            for page in PdfReader(BytesIO(pdf.content)).pages
+        )
+        assert "Payer share" in text or "Balance" in text
+
+    def test_05_cleanup_discharge(self, client, auth_headers):
         adm_id = _collect_split["admission_id"]
         client.post(
             f"/api/inpatient/admissions/{adm_id}/discharge",

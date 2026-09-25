@@ -1,7 +1,7 @@
 import React from 'react';
 import { Routes, Route, Navigate, Outlet, useLocation } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
-import { normalizeUserRoles, canAccessLabAdminDashboard } from '../../hooks/useNavigationSections';
+import { normalizeUserRoles, canAccessLabAdminDashboard, canAccessLabModule } from '../../hooks/useNavigationSections';
 import { TestTube } from 'lucide-react';
 import LabTestParametersPage from './LabTestParametersPage';
 import DashboardTab from './lab/tabs/DashboardTab';
@@ -11,7 +11,7 @@ import SampleTypesTab from './lab/tabs/SampleTypesTab';
 import PackagesTab from './lab/tabs/PackagesTab';
 
 export const LAB_PAGE_META = {
-  '': { title: 'Dashboard', blurb: 'Lab catalog overview and quick actions' },
+  '': { title: 'Dashboard', blurb: "Today's pipeline and lab operations" },
   'tests': { title: 'Test Catalog', blurb: 'Manage individual lab tests and pricing' },
   'categories': { title: 'Categories', blurb: 'Test category master' },
   'sample-types': { title: 'Sample Types', blurb: 'Blood, urine, serum, and other sample types' },
@@ -44,30 +44,47 @@ function LabPageShell() {
   );
 }
 
-const LabAdminRouteGuard = ({ children }) => {
+const LabStaffRouteGuard = ({ children }) => {
   const { user } = useAuth();
-  if (!canAccessLabAdminDashboard(normalizeUserRoles(user))) {
-    return <Navigate to="/dashboard/lab-home" replace />;
+  if (!canAccessLabModule(normalizeUserRoles(user))) {
+    return <Navigate to="/dashboard/home" replace />;
   }
   return children;
 };
 
+const LabAdminRouteGuard = ({ children }) => {
+  const { user } = useAuth();
+  if (!canAccessLabAdminDashboard(normalizeUserRoles(user))) {
+    return <Navigate to="/dashboard/lab" replace />;
+  }
+  return children || <Outlet />;
+};
+
 const LabModule = () => (
-  <LabAdminRouteGuard>
+  <LabStaffRouteGuard>
     <Routes>
-      <Route path="tests/:testId/parameters" element={<LabTestParametersPage />} />
+      <Route
+        path="tests/:testId/parameters"
+        element={(
+          <LabAdminRouteGuard>
+            <LabTestParametersPage />
+          </LabAdminRouteGuard>
+        )}
+      />
 
       <Route element={<LabPageShell />}>
         <Route index element={<DashboardTab />} />
-        <Route path="tests" element={<TestsTab />} />
-        <Route path="categories" element={<CategoriesTab />} />
-        <Route path="sample-types" element={<SampleTypesTab />} />
-        <Route path="packages" element={<PackagesTab />} />
+        <Route element={<LabAdminRouteGuard />}>
+          <Route path="tests" element={<TestsTab />} />
+          <Route path="categories" element={<CategoriesTab />} />
+          <Route path="sample-types" element={<SampleTypesTab />} />
+          <Route path="packages" element={<PackagesTab />} />
+        </Route>
       </Route>
 
       <Route path="*" element={<Navigate to="/dashboard/lab" replace />} />
     </Routes>
-  </LabAdminRouteGuard>
+  </LabStaffRouteGuard>
 );
 
 export default LabModule;

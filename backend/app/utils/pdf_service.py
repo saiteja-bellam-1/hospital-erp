@@ -18,7 +18,7 @@ DEFAULT_LETTERHEAD_GAP_PT = 100.0
 # spacing uses letterhead_gap_pt (Spacer) when include_header is False.
 PDF_TOP_MARGIN_PT = 0.0
 
-# Patient MRN (human-readable) on prescription / lab report demographics (vertical / ladder).
+# Patient MRN (human-readable) on prescription / lab report / OPD+lab bill demographics (vertical / ladder).
 # After 90° rotation: bar_length → strip height, bar_depth → strip width.
 _PATIENT_BARCODE_LENGTH_PT = 100.0  # fallback vertical extent if box height unknown
 _PATIENT_BARCODE_DEPTH_PT = 20.0    # horizontal thickness of bars-only strip
@@ -554,7 +554,7 @@ class PDFService:
           - items: [{description, code, qty, rate, amount}]
           - subtotal, discount, tax, total
           - deposits: [{date, method, reference, amount}]   (each receipt)
-          - deposits_total, balance_due
+          - deposits_total, payments_total, balance_due
           - prepared_by_name
         """
         buffer = BytesIO()
@@ -912,7 +912,8 @@ class PDFService:
                  Paragraph(
                     f"{abs(balance):,.2f}" if abs(balance) > 0.01 else "0.00",
                     ParagraphStyle('Bal', parent=cell_value_right,
-                        fontName='Helvetica-Bold'))],
+                        fontName='Helvetica-Bold')),
+                ],
             ])
         payment_table = Table(payment_data, colWidths=[summary_label_w, qty_w, amt_w])
         payment_table.setStyle(TableStyle([
@@ -1006,7 +1007,7 @@ class PDFService:
         return buffer
 
 
-    def generate_bill_pdf(self, bill_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, detailed_billing=True, include_footer=True):
+    def generate_bill_pdf(self, bill_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, detailed_billing=True, include_footer=True, show_patient_barcode=False):
         """Generate PDF for bill/receipt in tabular format"""
         buffer = BytesIO()
 
@@ -1173,7 +1174,13 @@ class PDFService:
 
         info_table = Table(patient_info_data, colWidths=[col_w, col_w])
         info_table.setStyle(TableStyle(info_style))
-        elements.append(info_table)
+        _append_patient_info_with_optional_barcode(
+            elements,
+            info_table,
+            page_width,
+            show_barcode=bool(show_patient_barcode),
+            mrn=bill_data.get("mrn") or "",
+        )
         elements.append(Spacer(1, 6))
 
         # ============================================================

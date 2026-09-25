@@ -82,7 +82,7 @@ const LabTestParametersPage = () => {
   }, [fetchTest, hasLabAdminAccess]);
 
   if (!hasLabAdminAccess) {
-    return <Navigate to="/dashboard/lab-home" replace />;
+    return <Navigate to="/dashboard/lab" replace />;
   }
 
   // ============ Helpers ============

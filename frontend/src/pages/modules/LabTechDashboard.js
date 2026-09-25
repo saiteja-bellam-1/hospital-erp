@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
@@ -31,6 +32,7 @@ const LabTechDashboard = () => {
     return user?.role ? [user.role] : [];
   })();
   const isLabAdmin = roles.includes('lab_admin');
+  const [searchParams] = useSearchParams();
   const [orders, setOrders] = useState([]);
   const [completedOrders, setCompletedOrders] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -140,6 +142,19 @@ const LabTechDashboard = () => {
     fetchStats();
     fetchCompletedOrders(completedSearchQuery);
   }, [fetchOrders, fetchStats, fetchCompletedOrders]);
+
+  useEffect(() => {
+    const tab = searchParams.get('tab');
+    const status = searchParams.get('status');
+    if (status && ['ordered', 'collected', 'processing', 'all_pending'].includes(status)) {
+      setActiveTab('pending');
+      setStatusFilter(status);
+      return;
+    }
+    if (tab === 'completed') {
+      setActiveTab('completed');
+    }
+  }, [searchParams]);
 
   // Debounced barcode / text search refetch so scans hit the API (not only the loaded page).
   useEffect(() => {
@@ -1230,7 +1245,12 @@ const LabTechDashboard = () => {
       {renderFeedback()}
 
       <div className="flex items-center justify-between flex-wrap gap-3">
-        <h1 className="text-3xl font-bold text-gray-900">{isLabAdmin ? 'Lab Admin Dashboard' : 'Lab Technician Dashboard'}</h1>
+        <h1
+          className="text-3xl font-bold text-gray-900"
+          title={isLabAdmin ? 'Lab administration queue' : 'Lab technician queue'}
+        >
+          Lab Queue
+        </h1>
         <Button variant="outline" onClick={() => { fetchOrders(); fetchStats(); fetchCompletedOrders(); }}>
           <RefreshCw className="h-4 w-4 mr-2" /> Refresh
         </Button>

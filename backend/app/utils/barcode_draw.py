@@ -392,7 +392,7 @@ def vertical_mrn_barcode_drawing(
     bar_depth: float,
     min_length: float = 40.0,
 ) -> Optional[Drawing]:
-    """Rotated Code128 strip for prescription / lab-report demographics.
+    """Rotated Code128 strip for prescription / lab-report / bill demographics.
 
     Encodes the human-readable MRN string (e.g. KTH-2026-00042), not the
     internal patient EAN-13, so scanners wedge the same value staff type/search.

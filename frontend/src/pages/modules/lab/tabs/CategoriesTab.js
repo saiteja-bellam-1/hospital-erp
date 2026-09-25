@@ -102,7 +102,7 @@ export default function CategoriesTab() {
         ))}
         {categories.length === 0 && (
           <div className="col-span-full text-center py-8 text-gray-500">
-            No categories yet. Create one or seed defaults from the Dashboard.
+            No categories yet. Create one to get started.
           </div>
         )}
       </div>

@@ -1,0 +1,48 @@
+---
+description: React routing, module gating, print, and error handling
+globs: frontend/**/*.{js,jsx}
+alwaysApply: false
+---
+
+# Frontend conventions
+
+Stack: React 18, Tailwind, shadcn/Radix, react-query, react-hook-form, lucide, axios. Not Material UI.
+
+## Routing
+
+- `src/App.js` — `/login`, `/dashboard/*`, `/help/docs`. No install wizard.
+- `src/pages/Dashboard.js` — layout, banners, **all module `<Route>`s**
+- Nav SSOT: `src/hooks/useNavigationSections.js` (sidebar + `HomeGrid`). Keep both in sync.
+- Role home at `/dashboard` is priority-based (`HomeDashboard`). Extra role dashboards are separate paths (`/doctor-home`, `/lab-home`, …)
+- Canonical OPD: `/dashboard/outpatient`. `/reception-home` and `/outpatient/*` redirect.
+
+Post-install setup: `/dashboard/setup` → `pages/setup/SetupWizard.js` → `/api/onboarding` (admins only).
+
+## Auth and modules
+
+- `contexts/AuthContext.js`: token/user/`licenseStatus` in localStorage; axios `baseURL = ''`; 401 logout (skip login URL); 503 `maintenance` → `app:maintenance` event
+- `enabledModules` from `GET /api/system/enabled-modules`. Pharmacy/physio nav also uses `GET /api/admin/me/permissions`
+- `hasRole` / `hasAnyRole` in Dashboard; `normalizeUserRoles` in the nav hook (roles may be strings or `{name}`)
+
+## Pages
+
+`src/pages/modules/` — large modules are folders:
+
+- `inpatient/` including `discharge/`
+- `pharmacy/tabs/` + entry screens (`SalesCounter`, `PurchaseEntry`, …)
+- `lab/tabs/`
+- `reception/`
+- `billing/` (GST, reports) under `BillingHub.js`
+- `canteen/`
+
+## Print / PDFs
+
+Use `printPdfFromUrl` in `src/utils/printPdf.js`. Hospital letterhead is resolved on the server from Print Settings (`usePdfPrintSettings.js` is for the settings UI). Do not invent a second print path. Barcode labels: `components/BarcodeLabelPrintDialog.js`.
+
+## Errors and APIs
+
+```javascript
+const detail = typeof err.detail === 'string' ? err.detail : 'Failed to …';
+```
+
+Always relative `/api/...`. Axios timeout is 10s in AuthContext — long PDF/export calls need a higher per-request timeout.

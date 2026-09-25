@@ -4,6 +4,7 @@ from app.models.ehr import Consultation, Diagnosis, TreatmentPlan, MedicalNote
 from app.models.patient import Patient
 from app.models.lab import PatientLabOrder, LabTest
 from app.models.pharmacy import Prescription
+from app.utils.patient_age import patient_age_years_int
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 import json
@@ -270,7 +271,7 @@ class EHRService:
             "patient": {
                 "patient_id": patient.patient_id,
                 "name": f"{patient.first_name} {patient.last_name}",
-                "age": self._calculate_age(patient.date_of_birth),
+                "age": patient_age_years_int(patient),
                 "gender": patient.gender,
                 "blood_group": patient.blood_group,
                 "phone": patient.primary_phone
@@ -322,14 +323,6 @@ class EHRService:
                 for p in current_prescriptions
             ]
         }
-    
-    def _calculate_age(self, date_of_birth):
-        if not date_of_birth:
-            return None
-        
-        today = datetime.now().date()
-        age = today.year - date_of_birth.year - ((today.month, today.day) < (date_of_birth.month, date_of_birth.day))
-        return age
     
     # Vital Signs Helper
     def record_vital_signs(self, consultation_id: int, vital_signs_data: Dict[str, Any]) -> Optional[Consultation]:

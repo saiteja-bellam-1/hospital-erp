@@ -2,7 +2,6 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
 from typing import Optional
-from datetime import date
 import json
 
 from config.database import get_db
@@ -17,8 +16,15 @@ from app.models.pharmacy import PharmacySale
 from app.models.physiotherapy import PhysioAppointment
 from app.models.user import User
 from app.utils.dependencies import get_current_user
+from app.utils.patient_age import resolve_age_parts
 
 router = APIRouter()
+
+
+def _patient_age_fields(patient: Patient) -> dict:
+    """Age from DOB when present, otherwise the stored age/age_months fields."""
+    years, months, _ = resolve_age_parts(patient)
+    return {"age": years, "age_months": months}
 
 
 def _require_ehr_access(current_user: User):
@@ -65,7 +71,7 @@ async def search_patients_ehr(
             "last_name": p.last_name,
             "full_name": f"{p.first_name} {p.last_name}",
             "date_of_birth": p.date_of_birth.isoformat() if p.date_of_birth else None,
-            "age": _calc_age(p.date_of_birth) if p.date_of_birth else None,
+            **_patient_age_fields(p),
             "gender": p.gender,
             "blood_group": p.blood_group,
             "primary_phone": p.primary_phone,
@@ -96,7 +102,7 @@ def _build_patient_history(db: Session, patient: Patient, hospital_id: int) -> d
         "last_name": patient.last_name,
         "full_name": f"{patient.first_name} {patient.last_name}",
         "date_of_birth": patient.date_of_birth.isoformat() if patient.date_of_birth else None,
-        "age": _calc_age(patient.date_of_birth) if patient.date_of_birth else None,
+        **_patient_age_fields(patient),
         "gender": patient.gender,
         "blood_group": patient.blood_group,
         "primary_phone": patient.primary_phone,
@@ -596,6 +602,3 @@ async def export_patient_chart_excel(
     )
 
 
-def _calc_age(dob: date) -> int:
-    today = date.today()
-    return today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))

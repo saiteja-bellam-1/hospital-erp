@@ -10418,6 +10418,7 @@ async def upload_preauth_document(
     if not p:
         raise HTTPException(status_code=404, detail="Pre-auth not found")
 
+    from app.utils.paths import get_uploads_dir
     upload_dir = os.path.join(get_uploads_dir(), "preauth_docs")
     os.makedirs(upload_dir, exist_ok=True)
     ext = os.path.splitext(file.filename or "")[1]
@@ -10431,6 +10432,25 @@ async def upload_preauth_document(
     p.approval_document_path = f"preauth_docs/{stored_name}"
     db.commit()
     return {"document_path": p.approval_document_path}
+
+
+@router.get("/preauth/{preauth_id}/document")
+async def download_preauth_document(
+    preauth_id: int,
+    current_user: User = Depends(require_feature_permission(Modules.INPATIENT, "view_occupancy")),
+    db: Session = Depends(get_db),
+):
+    from app.utils.paths import get_uploads_dir
+    p = db.query(InsurancePreAuth).filter(InsurancePreAuth.id == preauth_id).first()
+    if not p or not p.approval_document_path:
+        raise HTTPException(status_code=404, detail="Document not found")
+    full_path = os.path.join(get_uploads_dir(), p.approval_document_path)
+    if not os.path.isfile(full_path):
+        raise HTTPException(status_code=404, detail="File missing on disk")
+    return FileResponse(
+        full_path,
+        filename=os.path.basename(p.approval_document_path),
+    )
 
 
 @router.post("/preauth/{preauth_id}/expansion-request", response_model=PreAuthExpansionResponse, status_code=status.HTTP_201_CREATED)

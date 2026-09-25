@@ -245,7 +245,7 @@ const BillDetailDialog = ({ open, onClose, admission, onFinalized }) => {
             </section>
 
             {/* Deposits received */}
-            {(billData.deposits || []).length > 0 ? (
+            {((billData.deposits || []).length > 0 || Number(billData.payments_total) > 0.01) ? (
               <section className="border rounded-lg p-3 text-sm space-y-1.5">
                 <p className="font-semibold mb-2">Deposits Received</p>
                 <div className="space-y-1">
@@ -278,6 +278,12 @@ const BillDetailDialog = ({ open, onClose, admission, onFinalized }) => {
                     <span>Net Deposits</span>
                     <span>₹{fmt(billData.deposits_total)}</span>
                   </div>
+                  {Number(billData.payments_total) > 0.01 && (
+                    <div className="flex justify-between font-semibold">
+                      <span>Payments received</span>
+                      <span>₹{fmt(billData.payments_total)}</span>
+                    </div>
+                  )}
                   <div className={`flex justify-between font-semibold ${billData.balance_due < -0.01 ? 'text-green-700' : billData.balance_due > 0.01 ? 'text-amber-700' : ''}`}>
                     <span>{billData.balance_due < -0.01 ? 'Refund Due' : 'Balance Due'}</span>
                     <span>₹{fmt(Math.abs(billData.balance_due))}</span>

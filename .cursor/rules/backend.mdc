@@ -1,0 +1,57 @@
+---
+description: FastAPI routes, models, migrations, permissions, and billing coupling
+globs: backend/**/*.py
+alwaysApply: false
+---
+
+# Backend conventions
+
+## Layout
+
+- Entry: `backend/main.py` — routers, `_run_schema_bootstrap()`, `_run_operational_startup()`, static frontend in bundled mode
+- Windows first launch: `launcher.py` → `bootstrap_from_seed.consume_seed_if_present`
+- Routes: `app/routes/` one domain per file. Nested under pharmacy: `pharmacy_stores`, `pharmacy_import`, `pharmacy_returns`
+- Models: `app/models/`. Tables via `create_all()` plus tracked migrations
+- Logic: `app/services/`. Paths: `app/utils/paths.py` (`sys.frozen`)
+- Auth helpers: `app/utils/auth.py` (`UserRoles`, `Modules`). `physiotherapist` is seeded in `db_seed.py` but **missing** from `UserRoles` — use the string, or add the constant if you touch that class
+- Lazy DB engine: `config/database.py` `_EngineProxy`
+
+## Routers (`main.py`)
+
+`/api/auth`, `/patients`, `/admin`, `/system`, `/modules`, `/hospital`, `/onboarding`, `/appointments`, `/consultations`, `/prescriptions`, `/prescriptions-simple`, `/medicines`, `/doctor-availability`, `/lab`, `/pharmacy`, `/ehr`, `/license`, `/backup`, `/referrals`, `/audit`, `/inpatient`, `/canteen`, `/physiotherapy`, `/admin/catch-up`, `/outpatient` (procedures only).
+
+Do not revive the commented `/api/billing` or `/api/outpatient` (legacy) routers.
+
+## Permissions
+
+```python
+# preferred
+Depends(require_feature_permission(Modules.INPATIENT, "finalize_bill"))
+# legacy action buckets: read/write/delete/admin
+Depends(require_permission(Modules.LAB, "write"))
+```
+
+Granular keys + default role matrix: `app/services/db_seed.py` (and live `GET /api/admin/module-permissions`). Admin UI writes `PUT /api/admin/roles/{role_id}/permissions`.
+
+## Schema
+
+Startup runs tracked migrations via `app/utils/schema_migrations.py` and **aborts boot on failure**:
+
+`migrate_patient_fields` (append `NEW_COLUMNS` here for new cols), `migrate_inpatient_indexes`, `migrate_drop_incidents_diet`, `migrate_pharmacy`, `migrate_pharmacy_stores`, `migrate_barcodes`.
+
+Other `migrate_*.py` at `backend/` root are one-shot; do not add a new file for a column.
+
+## Inpatient / billing coupling
+
+- Charge SSOT: `_compute_admission_charges(db, admission, unbilled_only=..., apply_package=...)` in `routes/inpatient.py`
+- Prevent double-bill with `inpatient_bill_id` / `bill_id` FKs on visits, OT, ancillary, Rx, lab orders, pharmacy sales
+- Catch-up bills: `routes/catch_up.py` reuses that helper
+- Central bill CRUD/payments/GST: `routes/hospital_admin.py`; model `app/models/billing.py` (`bill_type` includes admission, lab, pharmacy, canteen, physiotherapy, catch_up, day_care, …)
+
+## License / dbcheck
+
+DB + store: `license_service.py`. Pure verify (no SQLAlchemy): `license_inspect.py`. Crypto: `app/licensing/crypto.py`. Paid white-label add-on: feature `customisation` — print/letterhead is **not** gated by it.
+
+## Tests
+
+`cd backend && ./venv/bin/python -m pytest tests/` — temp SQLite file in `tests/conftest.py`. Import new models in conftest if you add tables.
