@@ -348,6 +348,7 @@ export default function SetupWizard() {
           ? printForm.prescription_vital_fields
           : undefined,
         letterhead_gap_mm: Number(printForm.letterhead_gap_mm ?? 35),
+        footer_gap_mm: Number(printForm.footer_gap_mm ?? 0),
       });
       await load();
     } catch (err) {
@@ -364,6 +365,7 @@ export default function SetupWizard() {
         ...printForm,
         report_type: 'opd_bill',
         letterhead_gap_mm: Number(printForm.letterhead_gap_mm ?? 35),
+        footer_gap_mm: Number(printForm.footer_gap_mm ?? 0),
       }, { responseType: 'blob' });
       window.open(window.URL.createObjectURL(new Blob([response.data], { type: 'application/pdf' })), '_blank', 'noopener,noreferrer');
     } catch (err) {
@@ -690,17 +692,30 @@ export default function SetupWizard() {
                   </div>
                 </div>
 
-                <label className="block space-y-1.5 text-sm font-medium text-slate-700">
-                  <span>Top gap for pre-printed stationery (mm)</span>
-                  <Input
-                    type="number"
-                    min="0"
-                    max="80"
-                    className="max-w-40"
-                    value={printForm.letterhead_gap_mm ?? 35}
-                    onChange={(event) => setPrintForm((form) => ({ ...form, letterhead_gap_mm: event.target.value }))}
-                  />
-                </label>
+                <div className="grid max-w-xl gap-4 sm:grid-cols-2">
+                  <label className="block space-y-1.5 text-sm font-medium text-slate-700">
+                    <span>Top gap for pre-printed stationery (mm)</span>
+                    <Input
+                      type="number"
+                      min="0"
+                      max="80"
+                      className="max-w-40"
+                      value={printForm.letterhead_gap_mm ?? 35}
+                      onChange={(event) => setPrintForm((form) => ({ ...form, letterhead_gap_mm: event.target.value }))}
+                    />
+                  </label>
+                  <label className="block space-y-1.5 text-sm font-medium text-slate-700">
+                    <span>Footer gap for pre-printed stationery (mm)</span>
+                    <Input
+                      type="number"
+                      min="0"
+                      max="80"
+                      className="max-w-40"
+                      value={printForm.footer_gap_mm ?? 0}
+                      onChange={(event) => setPrintForm((form) => ({ ...form, footer_gap_mm: event.target.value }))}
+                    />
+                  </label>
+                </div>
                 <div className="flex gap-2">
                   <Button onClick={savePrintSettings} disabled={busy}>
                     {busy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />} Save customisations

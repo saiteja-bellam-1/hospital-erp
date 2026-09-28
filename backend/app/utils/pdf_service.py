@@ -18,6 +18,17 @@ DEFAULT_LETTERHEAD_GAP_PT = 100.0
 # spacing uses letterhead_gap_pt (Spacer) when include_header is False.
 PDF_TOP_MARGIN_PT = 0.0
 
+
+def _bottom_margin(base_pt: float, footer_gap_pt: float = 0) -> float:
+    """Existing page bottom margin plus optional pre-printed footer clearance."""
+    try:
+        extra = float(footer_gap_pt or 0)
+    except (TypeError, ValueError):
+        extra = 0.0
+    if extra < 0:
+        extra = 0.0
+    return float(base_pt) + extra
+
 # Patient MRN (human-readable) on prescription / lab report / OPD+lab bill demographics (vertical / ladder).
 # After 90° rotation: bar_length → strip height, bar_depth → strip width.
 _PATIENT_BARCODE_LENGTH_PT = 100.0  # fallback vertical extent if box height unknown
@@ -539,7 +550,7 @@ class PDFService:
             textColor=colors.darkgrey
         ))
 
-    def generate_inpatient_bill_pdf(self, bill_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, detailed_billing=True):
+    def generate_inpatient_bill_pdf(self, bill_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0, detailed_billing=True):
         """Inpatient bill — mirrors the OPD receipt layout so both bills feel
         consistent. Adds an Admission Details box for IP-specific fields, and
         the Payment Summary lists every deposit received before the balance.
@@ -560,7 +571,7 @@ class PDFService:
         buffer = BytesIO()
         doc = SimpleDocTemplate(
             buffer, pagesize=A4,
-            rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=20,
+            rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(20, footer_gap_pt),
         )
         elements = []
         page_width = A4[0] - 60
@@ -1007,7 +1018,7 @@ class PDFService:
         return buffer
 
 
-    def generate_bill_pdf(self, bill_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, detailed_billing=True, include_footer=True, show_patient_barcode=False):
+    def generate_bill_pdf(self, bill_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0, detailed_billing=True, include_footer=True, show_patient_barcode=False):
         """Generate PDF for bill/receipt in tabular format"""
         buffer = BytesIO()
 
@@ -1017,7 +1028,7 @@ class PDFService:
             rightMargin=30,
             leftMargin=30,
             topMargin=PDF_TOP_MARGIN_PT,
-            bottomMargin=20
+            bottomMargin=_bottom_margin(20, footer_gap_pt)
         )
 
         elements = []
@@ -1413,7 +1424,7 @@ class PDFService:
         prescription_data,
         hospital_info,
         include_header=True,
-        letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT,
+        letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0,
         blank_mode=False,
         include_vitals=True,
         vital_fields=None,
@@ -1464,7 +1475,7 @@ class PDFService:
 
         doc = SimpleDocTemplate(
             buffer, pagesize=A4,
-            rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=30
+            rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt)
         )
 
         elements = []
@@ -2095,7 +2106,7 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_lab_report_pdf(self, report_data, hospital_info, lab_config=None, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, include_footer=True, show_patient_barcode=False):
+    def generate_lab_report_pdf(self, report_data, hospital_info, lab_config=None, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0, include_footer=True, show_patient_barcode=False):
         """Generate PDF for lab report"""
         if lab_config is None:
             lab_config = {}
@@ -2104,7 +2115,7 @@ class PDFService:
 
         doc = SimpleDocTemplate(
             buffer, pagesize=A4,
-            rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=20
+            rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(20, footer_gap_pt)
         )
 
         elements = []
@@ -2421,7 +2432,7 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_combined_lab_report_pdf(self, reports_list, hospital_info, lab_config=None, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, include_footer=True, show_patient_barcode=False):
+    def generate_combined_lab_report_pdf(self, reports_list, hospital_info, lab_config=None, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0, include_footer=True, show_patient_barcode=False):
         """Generate a single continuous PDF with all tests flowing together.
         Header repeats on every page (or blank space for pre-printed letterhead).
         Patient info on first page only, tests flow continuously, signatures at the end."""
@@ -2432,7 +2443,7 @@ class PDFService:
         # Reserve top margin only for the onPage header / letterhead gap (no extra pad)
         header_height = 100 if include_header else letterhead_gap_pt
         doc = SimpleDocTemplate(buffer, pagesize=A4,
-            rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT + header_height, bottomMargin=20)
+            rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT + header_height, bottomMargin=_bottom_margin(20, footer_gap_pt))
 
         elements = []
         page_width = A4[0] - 60
@@ -2717,7 +2728,7 @@ class PDFService:
         discharge_data,
         hospital_info,
         include_header=True,
-        letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT,
+        letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0,
         watermark=None,
         template=None,
     ):
@@ -2744,7 +2755,7 @@ class PDFService:
             rightMargin=30,
             leftMargin=30,
             topMargin=PDF_TOP_MARGIN_PT,
-            bottomMargin=20
+            bottomMargin=_bottom_margin(20, footer_gap_pt)
         )
 
         elements = []
@@ -3142,7 +3153,7 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_admission_detail_pdf(self, payload, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
+    def generate_admission_detail_pdf(self, payload, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0):
         """Detailed Admission Summary — auto-aggregated clinical dossier for a stay."""
         buffer = BytesIO()
         doc = SimpleDocTemplate(
@@ -3151,7 +3162,7 @@ class PDFService:
             rightMargin=30,
             leftMargin=30,
             topMargin=PDF_TOP_MARGIN_PT,
-            bottomMargin=20,
+            bottomMargin=_bottom_margin(20, footer_gap_pt),
         )
         elements = []
         page_width = A4[0] - 60
@@ -3449,14 +3460,14 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_deposit_receipt_pdf(self, deposit_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
+    def generate_deposit_receipt_pdf(self, deposit_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0):
         """Advance deposit / refund receipt — mirrors the OPD bill layout
         (logo+hospital header, bordered patient/receipt info box, single-line
         item table, payment summary, amount-in-words, prepared-by footer)."""
         buffer = BytesIO()
         doc = SimpleDocTemplate(
             buffer, pagesize=A4,
-            rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=20,
+            rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(20, footer_gap_pt),
         )
         elements = []
         page_width = A4[0] - 60
@@ -3721,12 +3732,12 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_refund_receipt_pdf(self, refund_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
+    def generate_refund_receipt_pdf(self, refund_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0):
         """Refund receipt for a reversed bill payment (Payment row with negative amount)."""
         buffer = BytesIO()
         doc = SimpleDocTemplate(
             buffer, pagesize=A4,
-            rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=30,
+            rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt),
         )
         elements = []
         page_width = A4[0] - 80
@@ -3818,12 +3829,12 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_credit_note_pdf(self, cn_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
+    def generate_credit_note_pdf(self, cn_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0):
         """Credit note PDF — reduces patient liability against a parent bill."""
         buffer = BytesIO()
         doc = SimpleDocTemplate(
             buffer, pagesize=A4,
-            rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=30,
+            rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt),
         )
         elements = []
         page_width = A4[0] - 80
@@ -3936,10 +3947,10 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_consent_pdf(self, consent_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
+    def generate_consent_pdf(self, consent_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0):
         """Signed consent form PDF."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=30)
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt))
         elements = []
         page_width = A4[0] - 80
 
@@ -4128,11 +4139,11 @@ class PDFService:
         return buffer
 
     def generate_admission_case_sheet_pdf(
-        self, payload, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT,
+        self, payload, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0,
     ):
         """Clinical case sheet printed at admission (Complaints & History)."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=30)
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt))
         elements = []
         page_width = A4[0] - 80
 
@@ -4315,10 +4326,10 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_death_certificate_pdf(self, cert_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
+    def generate_death_certificate_pdf(self, cert_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0):
         """Death certificate / mortality record."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=30)
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt))
         elements = []
         page_width = A4[0] - 80
 
@@ -4413,12 +4424,12 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_dama_pdf(self, dama_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
+    def generate_dama_pdf(self, dama_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0):
         """Discharge Against Medical Advice — signed liability form.
         Indian context: invokes Section 88/92 IPC ('act done in good faith for
         the benefit of a person, with consent') in the absolves clause."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=30)
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt))
         elements = []
         page_width = A4[0] - 80
 
@@ -4537,14 +4548,14 @@ class PDFService:
         return buffer
 
 
-    def generate_gate_pass_pdf(self, payload, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
+    def generate_gate_pass_pdf(self, payload, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0):
         """Printable gate pass — shown to security at exit. One half-page slip.
         Header matches the bill / lab report layout (logo + hospital name +
         subname + address + contact). Footer matches with Issued-by / Printed-by
         line plus a 'Generated on' timestamp."""
         buffer = BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=A4,
-            rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=20)
+            rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(20, footer_gap_pt))
         elements = []
         page_width = A4[0] - 60
 
@@ -4725,13 +4736,13 @@ class PDFService:
         return buffer
 
 
-    def generate_doctor_productivity_pdf(self, payload, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
+    def generate_doctor_productivity_pdf(self, payload, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0):
         """Per-doctor productivity table for revenue-share / performance review."""
         buffer = BytesIO()
         # Landscape — many columns
         from reportlab.lib.pagesizes import landscape
         doc = SimpleDocTemplate(buffer, pagesize=landscape(A4),
-            rightMargin=20, leftMargin=20, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=24)
+            rightMargin=20, leftMargin=20, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(24, footer_gap_pt))
         elements = []
         page_width = landscape(A4)[0] - 40
 
@@ -4817,10 +4828,10 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_monthly_outcomes_pdf(self, payload, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
+    def generate_monthly_outcomes_pdf(self, payload, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0):
         """Monthly outcomes — mortality + readmission + LOS + occupancy."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=30)
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt))
         elements = []
         page_width = A4[0] - 60
 
@@ -4949,10 +4960,10 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_handover_pdf(self, payload, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
+    def generate_handover_pdf(self, payload, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0):
         """Nurse-to-nurse shift handover sheet."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=30)
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt))
         elements = []
         page_width = A4[0] - 80
 
@@ -5035,10 +5046,10 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_census_pdf(self, payload, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
+    def generate_census_pdf(self, payload, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0):
         """Daily census report — totals + per-ward + per-room-type breakdown."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=30)
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt))
         elements = []
         page_width = A4[0] - 60
 
@@ -5162,12 +5173,12 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_mlc_register_pdf(self, mlc_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
+    def generate_mlc_register_pdf(self, mlc_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0):
         """Medico-Legal Case (MLC) register entry — printable form for the police
         intimation copy and hospital MLC register. India: required for RTA,
         assault, poisoning, burns, sexual assault, attempted suicide cases."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=30)
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt))
         elements = []
         page_width = A4[0] - 80
 
@@ -5257,11 +5268,11 @@ class PDFService:
         return buffer
 
 
-    def generate_body_release_pdf(self, rel, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
+    def generate_body_release_pdf(self, rel, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0):
         """B6 — Body release / mortuary handover form. Signed receipt for the
         family member receiving the body, witnessed by another adult."""
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=30)
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt))
         elements = []
         page_width = A4[0] - 80
 
@@ -5446,7 +5457,7 @@ class PDFService:
         elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
         elements.append(Spacer(1, 6))
 
-    def generate_pharmacy_sale_invoice_pdf(self, sale_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
+    def generate_pharmacy_sale_invoice_pdf(self, sale_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0):
         """Retail-style cash/credit pharmacy bill (reference layout).
 
         Expected `sale_data` keys (enriched by sale_invoice_pdf route):
@@ -5461,7 +5472,7 @@ class PDFService:
         buffer = BytesIO()
         page = landscape(A5)
         doc = SimpleDocTemplate(buffer, pagesize=page,
-            rightMargin=18, leftMargin=18, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=16)
+            rightMargin=18, leftMargin=18, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(16, footer_gap_pt))
         elements = []
         page_width = page[0] - 36
 
@@ -5714,7 +5725,7 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_pharmacy_purchase_pdf(self, purchase_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
+    def generate_pharmacy_purchase_pdf(self, purchase_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0):
         """GRN / purchase receipt — retail layout matching the pharmacy sale invoice.
 
         Expected `purchase_data` keys (enriched by purchase_pdf route):
@@ -5731,7 +5742,7 @@ class PDFService:
         buffer = BytesIO()
         page = landscape(A5)
         doc = SimpleDocTemplate(buffer, pagesize=page,
-            rightMargin=18, leftMargin=18, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=16)
+            rightMargin=18, leftMargin=18, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(16, footer_gap_pt))
         elements = []
         page_width = page[0] - 36
 
@@ -5999,11 +6010,11 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_pharmacy_transfer_pdf(self, transfer_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
+    def generate_pharmacy_transfer_pdf(self, transfer_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0):
         """Stock transfer receipt for master → satellite moves."""
         buffer = BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=A4,
-            rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=20)
+            rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(20, footer_gap_pt))
         elements = []
         page_width = A4[0] - 60
 
@@ -6064,7 +6075,7 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_pharmacy_dispense_slip_pdf(self, dispense_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
+    def generate_pharmacy_dispense_slip_pdf(self, dispense_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0):
         """Dispense slip — handed to the patient on Rx-linked dispensing.
 
         Expected keys: prescription_number, prescription_date, patient_name,
@@ -6073,7 +6084,7 @@ class PDFService:
         """
         buffer = BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=A4,
-            rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=20)
+            rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(20, footer_gap_pt))
         elements = []
         page_width = A4[0] - 60
 
@@ -6144,7 +6155,7 @@ class PDFService:
         buffer.seek(0)
         return buffer
 
-    def generate_narcotic_register_pdf(self, rows, period, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
+    def generate_narcotic_register_pdf(self, rows, period, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0):
         """Narcotic / Schedule-H register for compliance.
 
         `rows` is a list of dicts with keys: sale_date, sale_number,
@@ -6154,7 +6165,7 @@ class PDFService:
         """
         buffer = BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=A4,
-            rightMargin=20, leftMargin=20, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=20)
+            rightMargin=20, leftMargin=20, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(20, footer_gap_pt))
         elements = []
         page_width = A4[0] - 40
 
@@ -6213,6 +6224,7 @@ class PDFService:
         self, *, title: str, period: Optional[dict],
         columns: Optional[list] = None, rows: Optional[list] = None, hospital_info: dict,
         include_header: bool = True, letterhead_gap_pt: float = DEFAULT_LETTERHEAD_GAP_PT,
+        footer_gap_pt: float = 0,
         meta: Optional[dict] = None,
         sections: Optional[list] = None,
     ):
@@ -6235,7 +6247,7 @@ class PDFService:
         buffer = BytesIO()
         doc = SimpleDocTemplate(
             buffer, pagesize=landscape(_A4),
-            rightMargin=20, leftMargin=20, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=20,
+            rightMargin=20, leftMargin=20, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(20, footer_gap_pt),
         )
         elements = []
         page_width = landscape(_A4)[0] - 40
@@ -6319,13 +6331,13 @@ class PDFService:
 
 
     def generate_canteen_sale_receipt_pdf(
-        self, sale_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT,
+        self, sale_data, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0,
     ):
         """Walk-in canteen POS receipt."""
         buffer = BytesIO()
         doc = SimpleDocTemplate(
             buffer, pagesize=A4,
-            rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=20,
+            rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(20, footer_gap_pt),
         )
         elements = []
         page_width = A4[0] - 60
@@ -6439,7 +6451,7 @@ class PDFService:
 
     def generate_settlement_statement_pdf(
         self, statement, hospital_info, include_header=True,
-        letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT,
+        letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0,
     ):
         """Business-unit settlement statement.
 
@@ -6452,7 +6464,7 @@ class PDFService:
         buffer = BytesIO()
         doc = SimpleDocTemplate(
             buffer, pagesize=A4,
-            rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=20,
+            rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(20, footer_gap_pt),
         )
         elements = []
         page_width = A4[0] - 60
@@ -6591,7 +6603,7 @@ class PDFService:
         return buffer
 
     def generate_pharmacy_document_pdf(self, doc_data, hospital_info, include_header=True,
-                                       letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, **_kwargs):
+                                       letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0, **_kwargs):
         """Generic pharmacy document (sales return CN, purchase return, challan, DN).
 
         Expected keys:
@@ -6604,7 +6616,7 @@ class PDFService:
         """
         buffer = BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=A4,
-            rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=20)
+            rightMargin=30, leftMargin=30, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(20, footer_gap_pt))
         elements = []
         page_width = A4[0] - 60
         title = doc_data.get("document_title") or "PHARMACY DOCUMENT"
@@ -6717,13 +6729,13 @@ class PDFService:
         return buffer
 
     def generate_doctor_appointments_pdf(
-        self, payload, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT
+        self, payload, hospital_info, include_header=True, letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0
     ):
         """Printable list of active appointments for a doctor (single day or range)."""
         buffer = BytesIO()
         doc = SimpleDocTemplate(
             buffer, pagesize=A4,
-            rightMargin=28, leftMargin=28, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=30,
+            rightMargin=28, leftMargin=28, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(30, footer_gap_pt),
         )
         elements = []
         page_width = A4[0] - 56
@@ -6913,12 +6925,12 @@ class PDFService:
 
 
     def generate_gstr3b_pdf(self, data, hospital_info, include_header=True,
-                            letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT):
+                            letterhead_gap_pt=DEFAULT_LETTERHEAD_GAP_PT, footer_gap_pt=0):
         """Form GSTR-3B working paper (Rule 61(5) layout)."""
         buffer = BytesIO()
         doc = SimpleDocTemplate(
             buffer, pagesize=A4,
-            rightMargin=28, leftMargin=28, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=28,
+            rightMargin=28, leftMargin=28, topMargin=PDF_TOP_MARGIN_PT, bottomMargin=_bottom_margin(28, footer_gap_pt),
         )
         elements = []
         page_width = A4[0] - 56

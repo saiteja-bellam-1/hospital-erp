@@ -28,6 +28,8 @@ from app.utils.pdf_settings import (
     get_hospital_detailed_billing,
     get_hospital_pdf_include_header,
     get_hospital_pdf_include_footer,
+    DEFAULT_FOOTER_GAP_MM,
+    get_footer_gap_mm,
     get_letterhead_gap_mm,
     get_patient_file_label_settings,
     get_prescription_include_vitals,
@@ -47,6 +49,8 @@ from app.utils.pdf_settings import (
     set_hospital_detailed_billing,
     set_hospital_pdf_include_footer,
     set_hospital_pdf_include_header,
+    mm_to_pt,
+    set_footer_gap_mm,
     set_letterhead_gap_mm,
     set_patient_file_label_settings,
     set_prescription_include_vitals,
@@ -135,6 +139,43 @@ def test_letterhead_gap_default_and_custom(db_session):
     assert get_letterhead_gap_mm(db_session, 1) == 42.0
 
 
+def test_footer_gap_default_and_custom(db_session):
+    assert get_footer_gap_mm(db_session, 1) == DEFAULT_FOOTER_GAP_MM
+    set_footer_gap_mm(db_session, gap_mm=18, created_by=1)
+    db_session.commit()
+    assert get_footer_gap_mm(db_session, 1) == 18.0
+    kw = pdf_gen_kwargs(db_session, 1, "opd_bill")
+    assert kw["footer_gap_pt"] == pytest.approx(mm_to_pt(18))
+
+
+def test_footer_gap_increases_page_bottom_margin(monkeypatch):
+    from app.utils.pdf_service import PDFService, SimpleDocTemplate
+
+    captured = {}
+    real = SimpleDocTemplate
+
+    def wrapper(*args, **kwargs):
+        captured.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr("app.utils.pdf_service.SimpleDocTemplate", wrapper)
+    svc = PDFService()
+    bill = {
+        "bill_number": "T-GAP-1",
+        "bill_date": "2026-01-01T00:00:00",
+        "patient_name": "Test Patient",
+        "payment_method": "Cash",
+        "items": [{"item_name": "Consultation", "item_code": "C", "total_price": 500}],
+        "subtotal": 500,
+        "discount_amount": 0,
+        "amount_paid": 500,
+        "balance_due": 0,
+    }
+    hi = {"name": "Test Hospital", "address": "", "phone": "", "email": ""}
+    svc.generate_bill_pdf(bill, hi, include_header=False, footer_gap_pt=mm_to_pt(20))
+    assert captured["bottomMargin"] == pytest.approx(20 + mm_to_pt(20))
+
+
 def test_report_header_overrides(db_session):
     set_report_header_overrides(
         db_session,
@@ -206,6 +247,7 @@ def test_pdf_gen_kwargs_shape(db_session):
     kw = pdf_gen_kwargs(db_session, 1, "lab_report")
     assert "include_header" in kw
     assert "letterhead_gap_pt" in kw
+    assert "footer_gap_pt" in kw
 
 
 def test_resolve_print_options_draft(db_session):
@@ -243,12 +285,14 @@ def test_update_print_settings_payload(db_session):
         include_header_on_pdfs=False,
         detailed_billing_on_pdfs=False,
         letterhead_gap_mm=30,
+        footer_gap_mm=12,
         report_header_overrides={"opd_bill": "on"},
         created_by=1,
     )
     assert payload["include_header_on_pdfs"] is False
     assert payload["detailed_billing_on_pdfs"] is False
     assert payload["letterhead_gap_mm"] == 30.0
+    assert payload["footer_gap_mm"] == 12.0
     assert payload["report_header_overrides"]["opd_bill"] == "on"
     assert any(r["key"] == "prescription" for r in payload["report_catalog"])
 

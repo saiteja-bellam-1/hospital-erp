@@ -242,6 +242,7 @@ const PrintSettingsPage = () => {
   const [prescriptionVitalFields, setPrescriptionVitalFields] = useState(DEFAULT_VITAL_FIELDS);
   const [prescriptionVitalCatalog, setPrescriptionVitalCatalog] = useState([]);
   const [letterheadGapMm, setLetterheadGapMm] = useState(35);
+  const [footerGapMm, setFooterGapMm] = useState(0);
   const [reportCatalog, setReportCatalog] = useState([]);
   const [footerReportCatalog, setFooterReportCatalog] = useState([]);
   const [overrides, setOverrides] = useState({});
@@ -264,6 +265,7 @@ const PrintSettingsPage = () => {
     prescriptionVitalsColumnWidthIn,
     prescriptionVitalFields,
     letterheadGapMm,
+    footerGapMm,
     overrides,
     footerOverrides,
     resolveIncludeHeader: (reportType) =>
@@ -285,6 +287,7 @@ const PrintSettingsPage = () => {
     prescriptionVitalsColumnWidthIn,
     prescriptionVitalFields,
     letterheadGapMm,
+    footerGapMm,
     overrides,
     footerOverrides,
   ]);
@@ -316,6 +319,7 @@ const PrintSettingsPage = () => {
         );
         setPrescriptionVitalCatalog(res.data.prescription_vital_catalog || []);
         setLetterheadGapMm(res.data.letterhead_gap_mm ?? 35);
+        setFooterGapMm(res.data.footer_gap_mm ?? 0);
         setReportCatalog(res.data.report_catalog || []);
         setFooterReportCatalog(res.data.footer_report_catalog || []);
         setOverrides(res.data.report_header_overrides || {});
@@ -416,6 +420,15 @@ const PrintSettingsPage = () => {
       });
       return;
     }
+    const footerGap = parseFloat(footerGapMm);
+    if (Number.isNaN(footerGap) || footerGap < 0 || footerGap > 80) {
+      toast({
+        variant: 'destructive',
+        title: 'Invalid gap',
+        description: 'Footer gap must be between 0 and 80 mm',
+      });
+      return;
+    }
     const widthIn = parseFloat(prescriptionVitalsColumnWidthIn);
     const needsColumnWidth = prescriptionVitalsLayout !== 'remove' && prescriptionVitalsPosition !== 'top';
     if (
@@ -452,6 +465,7 @@ const PrintSettingsPage = () => {
         prescription_vitals_column_width_in: Number.isNaN(widthIn) ? 1.75 : widthIn,
         prescription_vital_fields: prescriptionVitalFields,
         letterhead_gap_mm: gap,
+        footer_gap_mm: footerGap,
         report_header_overrides: overrides,
         report_footer_overrides: footerOverrides,
       });
@@ -602,21 +616,39 @@ const PrintSettingsPage = () => {
                       </p>
                     </div>
                   </label>
-                  <div className="max-w-xs">
-                    <Label htmlFor="letterhead-gap">Letterhead gap when header is off (mm)</Label>
-                    <Input
-                      id="letterhead-gap"
-                      type="number"
-                      min={0}
-                      max={80}
-                      step={1}
-                      value={letterheadGapMm}
-                      onChange={(e) => setLetterheadGapMm(e.target.value)}
-                      className="mt-1"
-                    />
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Blank space at the top for pre-printed letterhead. Default 35 mm.
-                    </p>
+                  <div className="grid gap-4 sm:grid-cols-2 max-w-xl">
+                    <div>
+                      <Label htmlFor="letterhead-gap">Letterhead gap when header is off (mm)</Label>
+                      <Input
+                        id="letterhead-gap"
+                        type="number"
+                        min={0}
+                        max={80}
+                        step={1}
+                        value={letterheadGapMm}
+                        onChange={(e) => setLetterheadGapMm(e.target.value)}
+                        className="mt-1"
+                      />
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Blank space at the top for pre-printed letterhead. Default 35 mm.
+                      </p>
+                    </div>
+                    <div>
+                      <Label htmlFor="footer-gap">Footer gap (mm)</Label>
+                      <Input
+                        id="footer-gap"
+                        type="number"
+                        min={0}
+                        max={80}
+                        step={1}
+                        value={footerGapMm}
+                        onChange={(e) => setFooterGapMm(e.target.value)}
+                        className="mt-1"
+                      />
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Blank space at the bottom of every page for a pre-printed footer. Default 0 mm.
+                      </p>
+                    </div>
                   </div>
                   <Button type="button" variant="secondary" size="sm" onClick={() => openPreview('opd_bill', 'OPD Bill')}>
                     <Eye className="h-4 w-4 mr-2" />

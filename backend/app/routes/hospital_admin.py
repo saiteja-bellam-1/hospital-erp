@@ -917,6 +917,7 @@ class PrintSettingsUpdate(BaseModel):
     prescription_vitals_column_width_in: Optional[float] = None
     prescription_vital_fields: Optional[list[str]] = None
     letterhead_gap_mm: Optional[float] = None
+    footer_gap_mm: Optional[float] = None
     report_header_overrides: Optional[dict[str, str]] = None
     report_footer_overrides: Optional[dict[str, str]] = None
     lab_label_settings: Optional[dict] = None
@@ -936,6 +937,7 @@ class PrintSettingsPreviewRequest(BaseModel):
     prescription_vitals_column_width_in: Optional[float] = None
     prescription_vital_fields: Optional[list[str]] = None
     letterhead_gap_mm: float = 35.0
+    footer_gap_mm: float = 0.0
     report_header_overrides: Optional[dict[str, str]] = None
     report_footer_overrides: Optional[dict[str, str]] = None
 
@@ -949,8 +951,10 @@ async def preview_print_settings(
     """Return a sample PDF using draft settings (no save required)."""
     from fastapi.responses import Response
     from app.utils.pdf_settings import (
+        MAX_FOOTER_GAP_MM,
         MAX_LETTERHEAD_GAP_MM,
         MAX_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN,
+        MIN_FOOTER_GAP_MM,
         MIN_LETTERHEAD_GAP_MM,
         MIN_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN,
         PRESCRIPTION_VITALS_LAYOUTS,
@@ -964,6 +968,11 @@ async def preview_print_settings(
         raise HTTPException(
             status_code=400,
             detail=f"letterhead_gap_mm must be between {MIN_LETTERHEAD_GAP_MM} and {MAX_LETTERHEAD_GAP_MM}",
+        )
+    if not (MIN_FOOTER_GAP_MM <= data.footer_gap_mm <= MAX_FOOTER_GAP_MM):
+        raise HTTPException(
+            status_code=400,
+            detail=f"footer_gap_mm must be between {MIN_FOOTER_GAP_MM} and {MAX_FOOTER_GAP_MM}",
         )
     layout = data.prescription_vitals_layout
     if layout is None:
@@ -1001,6 +1010,7 @@ async def preview_print_settings(
         prescription_vitals_column_width_in=width_in,
         prescription_vital_fields=data.prescription_vital_fields,
         letterhead_gap_mm=data.letterhead_gap_mm,
+        footer_gap_mm=data.footer_gap_mm,
         report_header_overrides=data.report_header_overrides,
         report_footer_overrides=data.report_footer_overrides,
     )
@@ -1018,8 +1028,10 @@ async def update_print_settings(
     db: Session = Depends(get_db),
 ):
     from app.utils.pdf_settings import (
+        MAX_FOOTER_GAP_MM,
         MAX_LETTERHEAD_GAP_MM,
         MAX_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN,
+        MIN_FOOTER_GAP_MM,
         MIN_LETTERHEAD_GAP_MM,
         MIN_PRESCRIPTION_VITALS_COLUMN_WIDTH_IN,
         PRESCRIPTION_VITALS_LAYOUTS,
@@ -1034,6 +1046,12 @@ async def update_print_settings(
             raise HTTPException(
                 status_code=400,
                 detail=f"letterhead_gap_mm must be between {MIN_LETTERHEAD_GAP_MM} and {MAX_LETTERHEAD_GAP_MM}",
+            )
+    if data.footer_gap_mm is not None:
+        if not (MIN_FOOTER_GAP_MM <= data.footer_gap_mm <= MAX_FOOTER_GAP_MM):
+            raise HTTPException(
+                status_code=400,
+                detail=f"footer_gap_mm must be between {MIN_FOOTER_GAP_MM} and {MAX_FOOTER_GAP_MM}",
             )
     layout = data.prescription_vitals_layout
     if layout is not None:
@@ -1071,6 +1089,7 @@ async def update_print_settings(
         prescription_vitals_column_width_in=data.prescription_vitals_column_width_in,
         prescription_vital_fields=data.prescription_vital_fields,
         letterhead_gap_mm=data.letterhead_gap_mm,
+        footer_gap_mm=data.footer_gap_mm,
         report_header_overrides=data.report_header_overrides,
         report_footer_overrides=data.report_footer_overrides,
         lab_label_settings=data.lab_label_settings,

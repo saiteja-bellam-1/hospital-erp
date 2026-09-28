@@ -34,6 +34,11 @@ const PrintSettingsPreviewDialog = ({
       setError('Letterhead gap must be between 0 and 80 mm');
       return;
     }
+    const footerGap = parseFloat(draftSettings.footerGapMm ?? 0);
+    if (Number.isNaN(footerGap) || footerGap < 0 || footerGap > 80) {
+      setError('Footer gap must be between 0 and 80 mm');
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -53,6 +58,7 @@ const PrintSettingsPreviewDialog = ({
               : 1.75,
           prescription_vital_fields: draftSettings.prescriptionVitalFields || [],
           letterhead_gap_mm: gap,
+          footer_gap_mm: footerGap,
           report_header_overrides: draftSettings.overrides || {},
           report_footer_overrides: draftSettings.footerOverrides || {},
         },
@@ -120,7 +126,10 @@ const PrintSettingsPreviewDialog = ({
               Sample document with your current settings (unsaved changes included).
               Letterhead: <strong>{headerOn ? 'On' : 'Off'}</strong>
               {!headerOn && (
-                <> · Gap: <strong>{draftSettings?.letterheadGapMm} mm</strong></>
+                <> · Top gap: <strong>{draftSettings?.letterheadGapMm} mm</strong></>
+              )}
+              {(parseFloat(draftSettings?.footerGapMm) || 0) > 0 && (
+                <> · Footer gap: <strong>{draftSettings?.footerGapMm} mm</strong></>
               )}
               {['opd_bill', 'lab_bill', 'inpatient_bill'].includes(reportType) && (
                 <> · Bill summary: <strong>{draftSettings?.detailedBillingOnPdfs !== false ? 'Detailed' : 'Simple'}</strong></>

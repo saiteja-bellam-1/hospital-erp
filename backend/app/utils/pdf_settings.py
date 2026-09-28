@@ -13,6 +13,7 @@ PRINT_SETTING_CATEGORY = "print"
 PRINT_INCLUDE_HEADER_KEY = "include_header_on_pdfs"
 PRINT_INCLUDE_FOOTER_KEY = "include_footer_on_pdfs"
 PRINT_LETTERHEAD_GAP_MM_KEY = "letterhead_gap_mm"
+PRINT_FOOTER_GAP_MM_KEY = "footer_gap_mm"
 PRINT_REPORT_OVERRIDES_KEY = "report_header_overrides"
 PRINT_REPORT_FOOTER_OVERRIDES_KEY = "report_footer_overrides"
 
@@ -35,6 +36,7 @@ PRINT_SHOW_PATIENT_BARCODE_KEY = "show_patient_barcode_on_pdfs"
 PATIENT_BARCODE_REPORT_KEYS = frozenset({"prescription", "lab_report", "opd_bill", "lab_bill"})
 
 DEFAULT_LETTERHEAD_GAP_MM = 35.0  # ~100 pt
+DEFAULT_FOOTER_GAP_MM = 0.0
 
 DEFAULT_LAB_LABEL_SETTINGS: dict[str, Any] = {
     "width_mm": 50.0,
@@ -89,6 +91,8 @@ MAX_LABEL_DIM_MM = 120.0
 MAX_LABELS_PER_AXIS = 10
 MIN_LETTERHEAD_GAP_MM = 0.0
 MAX_LETTERHEAD_GAP_MM = 80.0
+MIN_FOOTER_GAP_MM = 0.0
+MAX_FOOTER_GAP_MM = 80.0
 MM_TO_PT = 72.0 / 25.4
 INCH_TO_PT = 72.0
 
@@ -178,6 +182,7 @@ class PrintOptions:
     include_header: bool
     letterhead_gap_pt: float
     include_footer: bool = True
+    footer_gap_pt: float = 0.0
 
 
 def _parse_bool(value: str | None, default: bool = True) -> bool:
@@ -238,6 +243,10 @@ def pt_to_mm(pt: float) -> float:
 
 def clamp_letterhead_gap_mm(mm: float) -> float:
     return max(MIN_LETTERHEAD_GAP_MM, min(MAX_LETTERHEAD_GAP_MM, float(mm)))
+
+
+def clamp_footer_gap_mm(mm: float) -> float:
+    return max(MIN_FOOTER_GAP_MM, min(MAX_FOOTER_GAP_MM, float(mm)))
 
 
 def get_hospital_detailed_billing(db: Session, hospital_id: int | None) -> bool:
@@ -519,6 +528,18 @@ def get_letterhead_gap_mm(db: Session, hospital_id: int | None) -> float:
         return DEFAULT_LETTERHEAD_GAP_MM
 
 
+def get_footer_gap_mm(db: Session, hospital_id: int | None) -> float:
+    if not hospital_id:
+        return DEFAULT_FOOTER_GAP_MM
+    row = _get_setting_row(db, PRINT_FOOTER_GAP_MM_KEY)
+    if not row or row.setting_value is None:
+        return DEFAULT_FOOTER_GAP_MM
+    try:
+        return clamp_footer_gap_mm(float(row.setting_value))
+    except (TypeError, ValueError):
+        return DEFAULT_FOOTER_GAP_MM
+
+
 def get_report_header_overrides(db: Session, hospital_id: int | None) -> dict[str, OverrideValue]:
     if not hospital_id:
         return {}
@@ -624,6 +645,7 @@ def resolve_print_options(
     footer_default = get_hospital_pdf_include_footer(db, hospital_id)
     footer_overrides = get_report_footer_overrides(db, hospital_id)
     gap_mm = get_letterhead_gap_mm(db, hospital_id)
+    footer_gap_mm = get_footer_gap_mm(db, hospital_id)
     include_header = resolve_include_header(
         global_default=global_default,
         report_type=report_type,
@@ -639,6 +661,7 @@ def resolve_print_options(
         include_header=include_header,
         letterhead_gap_pt=mm_to_pt(gap_mm),
         include_footer=include_footer,
+        footer_gap_pt=mm_to_pt(footer_gap_mm),
     )
 
 
@@ -783,6 +806,7 @@ def get_print_settings_payload(db: Session, hospital_id: int | None) -> dict[str
         "prescription_vital_fields": get_prescription_vital_fields(db, hospital_id),
         "prescription_vital_catalog": PRESCRIPTION_VITAL_CATALOG,
         "letterhead_gap_mm": get_letterhead_gap_mm(db, hospital_id),
+        "footer_gap_mm": get_footer_gap_mm(db, hospital_id),
         "report_catalog": REPORT_CATALOG,
         "footer_report_catalog": footer_catalog,
         "report_header_overrides": get_report_header_overrides(db, hospital_id),
@@ -827,6 +851,24 @@ def set_letterhead_gap_mm(
         value=str(clamped),
         setting_type="number",
         description="Top gap (mm) when letterhead is off, for pre-printed stationery",
+        created_by=created_by,
+    )
+    return clamped
+
+
+def set_footer_gap_mm(
+    db: Session,
+    *,
+    gap_mm: float,
+    created_by: int | None = None,
+) -> float:
+    clamped = clamp_footer_gap_mm(gap_mm)
+    _upsert_setting(
+        db,
+        key=PRINT_FOOTER_GAP_MM_KEY,
+        value=str(clamped),
+        setting_type="number",
+        description="Bottom gap (mm) reserved on every PDF page for a pre-printed footer",
         created_by=created_by,
     )
     return clamped
@@ -904,6 +946,7 @@ def resolve_print_options_draft(
     report_type: str,
     include_footer_on_pdfs: bool = True,
     report_footer_overrides: dict[str, str] | None = None,
+    footer_gap_mm: float = 0.0,
 ) -> PrintOptions:
     """Resolve print options from unsaved form values (preview / draft mode)."""
     cleaned: dict[str, OverrideValue] = {}
@@ -931,10 +974,12 @@ def resolve_print_options_draft(
         overrides=footer_cleaned,
     )
     gap_mm = clamp_letterhead_gap_mm(letterhead_gap_mm)
+    footer_mm = clamp_footer_gap_mm(footer_gap_mm)
     return PrintOptions(
         include_header=include_header,
         letterhead_gap_pt=mm_to_pt(gap_mm),
         include_footer=include_footer,
+        footer_gap_pt=mm_to_pt(footer_mm),
     )
 
 
@@ -952,6 +997,7 @@ def pdf_gen_kwargs(
     kw: dict[str, float | bool | list[str]] = {
         "include_header": opts.include_header,
         "letterhead_gap_pt": opts.letterhead_gap_pt,
+        "footer_gap_pt": opts.footer_gap_pt,
     }
     if report_type in FOOTER_REPORT_KEYS:
         kw["include_footer"] = opts.include_footer
@@ -998,6 +1044,7 @@ def update_print_settings(
     prescription_vitals_column_width_in: float | None = None,
     prescription_vital_fields: list[str] | None = None,
     letterhead_gap_mm: float | None = None,
+    footer_gap_mm: float | None = None,
     report_header_overrides: dict[str, str] | None = None,
     report_footer_overrides: dict[str, str] | None = None,
     lab_label_settings: dict[str, Any] | None = None,
@@ -1046,6 +1093,8 @@ def update_print_settings(
         )
     if letterhead_gap_mm is not None:
         set_letterhead_gap_mm(db, gap_mm=letterhead_gap_mm, created_by=created_by)
+    if footer_gap_mm is not None:
+        set_footer_gap_mm(db, gap_mm=footer_gap_mm, created_by=created_by)
     if report_header_overrides is not None:
         set_report_header_overrides(
             db, overrides=report_header_overrides, created_by=created_by

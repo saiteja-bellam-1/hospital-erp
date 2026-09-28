@@ -454,6 +454,7 @@ def generate_print_preview_pdf(
     letterhead_gap_mm: float,
     report_header_overrides: dict[str, str] | None = None,
     report_footer_overrides: dict[str, str] | None = None,
+    footer_gap_mm: float = 0.0,
 ):
     if report_type not in VALID_REPORT_KEYS:
         report_type = "opd_bill"
@@ -465,10 +466,12 @@ def generate_print_preview_pdf(
         report_type=report_type,
         include_footer_on_pdfs=include_footer_on_pdfs,
         report_footer_overrides=report_footer_overrides or {},
+        footer_gap_mm=footer_gap_mm,
     )
     kwargs = {
         "include_header": opts.include_header,
         "letterhead_gap_pt": opts.letterhead_gap_pt,
+        "footer_gap_pt": opts.footer_gap_pt,
     }
     from app.utils.pdf_settings import (
         DEFAULT_PRESCRIPTION_VITAL_FIELDS,

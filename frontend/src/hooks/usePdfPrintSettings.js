@@ -57,6 +57,7 @@ export function usePdfPrintSettings() {
     includeHeaderOnPdfs,
     includeFooterOnPdfs,
     letterheadGapMm: settings?.letterhead_gap_mm ?? 35,
+    footerGapMm: settings?.footer_gap_mm ?? 0,
     reportCatalog: settings?.report_catalog ?? [],
     footerReportCatalog: settings?.footer_report_catalog ?? [],
     reportHeaderOverrides: settings?.report_header_overrides ?? {},
