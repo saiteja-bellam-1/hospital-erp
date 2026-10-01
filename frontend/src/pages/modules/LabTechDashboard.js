@@ -54,6 +54,11 @@ const LabTechDashboard = () => {
   const [manualAbnormal, setManualAbnormal] = useState({});
   const [interpretation, setInterpretation] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [showResultChoice, setShowResultChoice] = useState(false);
+  const [resultChoice, setResultChoice] = useState(null);
+  const [showGroupedEntry, setShowGroupedEntry] = useState(false);
+  const [groupedForm, setGroupedForm] = useState(null);
+  const [interpretations, setInterpretations] = useState({});
 
   // Report view
   const [showReportDialog, setShowReportDialog] = useState(false);
@@ -254,21 +259,82 @@ const LabTechDashboard = () => {
     });
   };
 
-  const openEntryForm = async (orderId) => {
+  const errText = (err, fallback) => {
+    const detail = err.response?.data?.detail;
+    return typeof detail === 'string' ? detail : fallback;
+  };
+
+  const resetEntryFields = (parameters) => {
+    const initialValues = {};
+    (parameters || []).forEach((p) => {
+      initialValues[p.id] = '';
+    });
+    setEntryValues(initialValues);
+    setRemarkValues({});
+    setManualAbnormal({});
+  };
+
+  const applySingleForm = (section) => {
+    setEntryForm(section);
+    resetEntryFields(section.parameters);
+    setInterpretation('');
+    setShowResultChoice(false);
+    setShowEntryDialog(true);
+  };
+
+  const applyGroupedForm = (form) => {
+    setGroupedForm(form);
+    const parameters = (form.tests || []).flatMap((t) => t.parameters || []);
+    resetEntryFields(parameters);
+    const notes = {};
+    (form.tests || []).forEach((t) => {
+      notes[t.order_id] = '';
+    });
+    setInterpretations(notes);
+    setShowResultChoice(false);
+    setShowGroupedEntry(true);
+  };
+
+  const loadGroupedForm = async (orderId) => {
+    const res = await axios.get(`/api/lab/orders/${orderId}/grouped-entry-form`);
+    return res.data;
+  };
+
+  const beginResultEntry = async (orderId) => {
     try {
-      const res = await axios.get(`/api/lab/orders/${orderId}/entry-form`);
-      setEntryForm(res.data);
-      const initialValues = {};
-      res.data.parameters.forEach(p => {
-        initialValues[p.id] = '';
-      });
-      setEntryValues(initialValues);
-      setRemarkValues({});
-      setManualAbnormal({});
-      setInterpretation('');
-      setShowEntryDialog(true);
+      const form = await loadGroupedForm(orderId);
+      const tests = form.tests || [];
+      if (tests.length > 1) {
+        setResultChoice({ orderId, form });
+        setShowResultChoice(true);
+        return;
+      }
+      if (!tests[0]) {
+        showFeedback('No open tests on this sample', 'error');
+        return;
+      }
+      applySingleForm(tests[0]);
     } catch (err) {
-      showFeedback(err.response?.data?.detail || 'Failed to load entry form', 'error');
+      showFeedback(errText(err, 'Failed to load entry form'), 'error');
+    }
+  };
+
+  const openGroupedResults = async (orderId) => {
+    try {
+      const form = await loadGroupedForm(orderId);
+      const tests = form.tests || [];
+      if (tests.length < 2) {
+        if (tests[0]) {
+          showFeedback('Only one open test remains on this sample');
+          applySingleForm(tests[0]);
+        } else {
+          showFeedback('No open tests on this sample', 'error');
+        }
+        return;
+      }
+      applyGroupedForm(form);
+    } catch (err) {
+      showFeedback(errText(err, 'Failed to load grouped entry form'), 'error');
     }
   };
 
@@ -294,7 +360,48 @@ const LabTechDashboard = () => {
       fetchOrders();
       fetchStats();
     } catch (err) {
-      showFeedback(err.response?.data?.detail || 'Failed to submit results', 'error');
+      showFeedback(errText(err, 'Failed to submit results'), 'error');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleSubmitGroupedResults = async () => {
+    if (!groupedForm) return;
+    const tests = groupedForm.tests || [];
+    const blank = tests.filter((t) =>
+      (t.parameters || []).length > 0 &&
+      (t.parameters || []).every((p) => String(entryValues[p.id] ?? '').trim() === '')
+    );
+    if (blank.length > 0) {
+      showFeedback(
+        `Enter at least one result for ${blank.map((t) => t.test_name).join(', ')}`,
+        'error'
+      );
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const ordersPayload = tests.map((t) => ({
+        order_id: t.order_id,
+        results: (t.parameters || [])
+          .filter((p) => String(entryValues[p.id] ?? '').trim() !== '')
+          .map((p) => ({
+            parameter_id: p.id,
+            value: String(entryValues[p.id]),
+            remarks: remarkValues[p.id] || null,
+            manual_abnormal: manualAbnormal[p.id] || false,
+          })),
+        interpretation: interpretations[t.order_id] || null,
+      }));
+      const res = await axios.post('/api/lab/orders/grouped-results', { orders: ordersPayload });
+      showFeedback(res.data?.message || 'Results submitted successfully');
+      setShowGroupedEntry(false);
+      setGroupedForm(null);
+      fetchOrders();
+      fetchStats();
+    } catch (err) {
+      showFeedback(errText(err, 'Failed to submit results'), 'error');
     } finally {
       setSubmitting(false);
     }
@@ -534,6 +641,19 @@ const LabTechDashboard = () => {
     return groups;
   };
 
+  // Open tests that share one collected sample (2+ can be entered together).
+  const readySampleGroups = (orderList) => {
+    const map = {};
+    for (const order of orderList) {
+      if (!order.sample_id) continue;
+      if (order.status !== 'collected' && order.status !== 'processing') continue;
+      if (order.has_report) continue;
+      if (!map[order.sample_id]) map[order.sample_id] = [];
+      map[order.sample_id].push(order);
+    }
+    return Object.values(map).filter((group) => group.length >= 2);
+  };
+
   // ============ Render ============
 
   const renderFeedback = () => {
@@ -654,7 +774,7 @@ const LabTechDashboard = () => {
               </Button>
             )}
             {(order.status === 'collected' || order.status === 'processing') && (
-              <Button size="sm" onClick={() => openEntryForm(order.id)}>
+              <Button size="sm" onClick={() => beginResultEntry(order.id)}>
                 <FileText className="h-3 w-3 mr-1" /> Enter Results
               </Button>
             )}
@@ -672,6 +792,20 @@ const LabTechDashboard = () => {
         </div>
       </CardContent>
     </Card>
+  );
+
+  const renderGroupedResultButtons = (orderList) => (
+    readySampleGroups(orderList).map((sampleOrders) => (
+      <Button
+        key={sampleOrders[0].sample_id}
+        size="sm"
+        className="h-7 text-xs"
+        onClick={() => openGroupedResults(sampleOrders[0].id)}
+      >
+        <FileText className="h-3 w-3 mr-1" />
+        Enter grouped results ({sampleOrders.length} · {sampleOrders[0].sample_id})
+      </Button>
+    ))
   );
 
   const renderPackageGroup = (group, key) => {
@@ -736,7 +870,7 @@ const LabTechDashboard = () => {
                     </Button>
                   )}
                   {(order.status === 'collected' || order.status === 'processing') && (
-                    <Button size="sm" className="h-7 text-xs" onClick={() => openEntryForm(order.id)}>
+                    <Button size="sm" className="h-7 text-xs" onClick={() => beginResultEntry(order.id)}>
                       <FileText className="h-3 w-3 mr-1" /> Enter Results
                     </Button>
                   )}
@@ -754,6 +888,11 @@ const LabTechDashboard = () => {
               </div>
             ))}
           </div>
+          {readySampleGroups(group.orders).length > 0 && (
+            <div className="mt-3 pt-2 border-t border-indigo-200 flex flex-wrap gap-2">
+              {renderGroupedResultButtons(group.orders)}
+            </div>
+          )}
           {/* Preview / print all completed reports in package */}
           {completedCount > 0 && (
             <div className="mt-3 pt-2 border-t border-indigo-200 flex flex-wrap gap-2">
@@ -778,7 +917,7 @@ const LabTechDashboard = () => {
     <Card key={`sg-${key}`} className="border-2 border-amber-200 bg-amber-50/30">
       <CardContent className="py-3 px-4">
         {/* Sample group header */}
-        <div className="flex items-center justify-between mb-3 pb-2 border-b border-amber-200">
+        <div className="flex items-center justify-between gap-2 mb-3 pb-2 border-b border-amber-200 flex-wrap">
           <div className="flex items-center gap-2">
             <span className="font-semibold text-gray-900">{group.patient_name}</span>
             <span className="text-gray-400">|</span>
@@ -786,6 +925,11 @@ const LabTechDashboard = () => {
             <span className="font-semibold text-amber-700">{group.sample_type_name}</span>
             <Badge className="bg-amber-100 text-amber-700 text-xs">{group.orders.length} tests</Badge>
           </div>
+          {readySampleGroups(group.orders).length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {renderGroupedResultButtons(group.orders)}
+            </div>
+          )}
         </div>
         {/* Individual tests within sample group */}
         <div className="space-y-2">
@@ -826,7 +970,7 @@ const LabTechDashboard = () => {
                   </Button>
                 )}
                 {(order.status === 'collected' || order.status === 'processing') && (
-                  <Button size="sm" className="h-7 text-xs" onClick={() => openEntryForm(order.id)}>
+                  <Button size="sm" className="h-7 text-xs" onClick={() => beginResultEntry(order.id)}>
                     <FileText className="h-3 w-3 mr-1" /> Enter Results
                   </Button>
                 )}
@@ -993,6 +1137,144 @@ const LabTechDashboard = () => {
     </div>
   );
 
+  const renderParameterTable = (parameters) => (
+    <table className="w-full text-sm">
+      <thead>
+        <tr className="border-b text-left text-gray-500">
+          <th className="pb-2 pr-3">Parameter</th>
+          <th className="pb-2 pr-3">Value</th>
+          <th className="pb-2 pr-3">Unit</th>
+          <th className="pb-2 pr-3">Reference Range</th>
+          <th className="pb-2">Remarks</th>
+        </tr>
+      </thead>
+      <tbody>
+        {(parameters || []).map(param => {
+          const value = entryValues[param.id] || '';
+          const abnormal = isValueAbnormal(param, value) || (manualAbnormal[param.id] || false);
+          return (
+            <tr key={param.id} className={`border-b ${abnormal ? 'bg-red-50' : ''}`}>
+              <td className="py-2 pr-3 font-medium">{param.parameter_name}</td>
+              <td className="py-2 pr-3">
+                {(() => {
+                  const presetOptions = {
+                    positive_negative: ['Positive', 'Negative'],
+                    reactive: ['Reactive', 'Non-Reactive'],
+                    presence_absence: ['Present', 'Absent'],
+                    cloudy_clear: ['Clear', 'Cloudy', 'Slightly Cloudy', 'Inflamed'],
+                  };
+                  const opts = param.possible_values || presetOptions[param.field_type];
+                  if (opts) {
+                    return (
+                      <Select value={value}
+                        onValueChange={(v) => setEntryValues({ ...entryValues, [param.id]: v })}>
+                        <SelectTrigger className={`w-[170px] h-8 ${abnormal ? 'border-red-500 text-red-600 font-bold' : ''}`}>
+                          <SelectValue placeholder="Select..." />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {opts.map(pv => (
+                            <SelectItem key={pv} value={pv}>{pv}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    );
+                  }
+                  if (param.field_type === 'less_than') {
+                    return (
+                      <div className="flex items-center gap-1">
+                        <span className="text-sm font-bold text-gray-500">&lt;</span>
+                        <Input type="number" step="any" value={value}
+                          onChange={(e) => setEntryValues({ ...entryValues, [param.id]: e.target.value })}
+                          className={`w-[130px] h-8 ${abnormal ? 'border-red-500 text-red-600 font-bold' : ''}`}
+                          placeholder="Value" />
+                      </div>
+                    );
+                  }
+                  if (param.field_type === 'greater_than') {
+                    return (
+                      <div className="flex items-center gap-1">
+                        <span className="text-sm font-bold text-gray-500">&gt;</span>
+                        <Input type="number" step="any" value={value}
+                          onChange={(e) => setEntryValues({ ...entryValues, [param.id]: e.target.value })}
+                          className={`w-[130px] h-8 ${abnormal ? 'border-red-500 text-red-600 font-bold' : ''}`}
+                          placeholder="Value" />
+                      </div>
+                    );
+                  }
+                  if (param.field_type === 'numeric') {
+                    return (
+                      <div className="flex items-center gap-1">
+                        <div className="flex border rounded-md overflow-hidden h-8">
+                          <button type="button"
+                            className={`px-1.5 text-xs font-bold border-r ${value.toString().startsWith('<') ? 'bg-blue-100 text-blue-700' : 'bg-gray-50 text-gray-400 hover:bg-gray-100'}`}
+                            onClick={() => { const c = value.toString().replace(/^[<>]/, ''); setEntryValues({ ...entryValues, [param.id]: value.toString().startsWith('<') ? c : `<${c}` }); }}
+                          >&lt;</button>
+                          <input type="text" inputMode="decimal"
+                            value={value.toString().replace(/^[<>]/, '')}
+                            onChange={(e) => { const p = value.toString().startsWith('<') ? '<' : value.toString().startsWith('>') ? '>' : ''; setEntryValues({ ...entryValues, [param.id]: p + e.target.value }); }}
+                            className={`w-[100px] h-full px-2 text-sm outline-none ${abnormal ? 'text-red-600 font-bold' : ''}`}
+                            placeholder="Value" />
+                          <button type="button"
+                            className={`px-1.5 text-xs font-bold border-l ${value.toString().startsWith('>') ? 'bg-blue-100 text-blue-700' : 'bg-gray-50 text-gray-400 hover:bg-gray-100'}`}
+                            onClick={() => { const c = value.toString().replace(/^[<>]/, ''); setEntryValues({ ...entryValues, [param.id]: value.toString().startsWith('>') ? c : `>${c}` }); }}
+                          >&gt;</button>
+                        </div>
+                      </div>
+                    );
+                  }
+                  return (
+                    <Input type="text" value={value}
+                      onChange={(e) => setEntryValues({ ...entryValues, [param.id]: e.target.value })}
+                      className={`w-[150px] h-8 ${abnormal ? 'border-red-500 text-red-600 font-bold' : ''}`}
+                      placeholder={param.field_type === 'colour' ? 'e.g. Pale Yellow' : 'Enter value'} />
+                  );
+                })()}
+              </td>
+              <td className="py-2 pr-3 text-gray-500">{param.unit || '-'}</td>
+              <td className="py-2 text-gray-500 text-xs">
+                {param.field_type === 'less_than' && param.reference_max != null
+                  ? `< ${param.reference_max}`
+                  : param.field_type === 'greater_than' && param.reference_min != null
+                    ? `> ${param.reference_min}`
+                    : param.reference_min != null && param.reference_max != null
+                      ? `${param.reference_min} - ${param.reference_max}`
+                      : param.reference_min != null
+                        ? `> ${param.reference_min}`
+                        : param.reference_max != null
+                          ? `< ${param.reference_max}`
+                          : param.normal_value
+                            ? param.normal_value
+                            : '-'}
+                {abnormal && (
+                  <span className="ml-2 text-red-600 font-bold">
+                    <AlertCircle className="inline h-3 w-3" /> Abnormal
+                  </span>
+                )}
+              </td>
+              <td className="py-2">
+                <div className="flex items-center gap-2">
+                  <label className="flex items-center gap-1 cursor-pointer whitespace-nowrap" title="Mark as abnormal">
+                    <input type="checkbox" checked={manualAbnormal[param.id] || false}
+                      onChange={(e) => setManualAbnormal({ ...manualAbnormal, [param.id]: e.target.checked })}
+                      className="w-3.5 h-3.5 rounded border-red-300 text-red-500" />
+                    <span className="text-[10px] text-red-500 font-medium">Abnormal</span>
+                  </label>
+                  <Input
+                    type="text"
+                    value={remarkValues[param.id] || ''}
+                    onChange={(e) => setRemarkValues({ ...remarkValues, [param.id]: e.target.value })}
+                    className="w-[120px] h-8 text-xs"
+                    placeholder="Remarks"
+                  />
+                </div>
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+
   const renderEntryDialog = () => {
     if (!entryForm) return null;
     return (
@@ -1010,142 +1292,7 @@ const LabTechDashboard = () => {
           </div>
 
           <div className="space-y-1">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b text-left text-gray-500">
-                  <th className="pb-2 pr-3">Parameter</th>
-                  <th className="pb-2 pr-3">Value</th>
-                  <th className="pb-2 pr-3">Unit</th>
-                  <th className="pb-2 pr-3">Reference Range</th>
-                  <th className="pb-2">Remarks</th>
-                </tr>
-              </thead>
-              <tbody>
-                {entryForm.parameters.map(param => {
-                  const value = entryValues[param.id] || '';
-                  const abnormal = isValueAbnormal(param, value) || (manualAbnormal[param.id] || false);
-                  return (
-                    <tr key={param.id} className={`border-b ${abnormal ? 'bg-red-50' : ''}`}>
-                      <td className="py-2 pr-3 font-medium">{param.parameter_name}</td>
-                      <td className="py-2 pr-3">
-                        {(() => {
-                          const presetOptions = {
-                            positive_negative: ['Positive', 'Negative'],
-                            reactive: ['Reactive', 'Non-Reactive'],
-                            presence_absence: ['Present', 'Absent'],
-                            cloudy_clear: ['Clear', 'Cloudy', 'Slightly Cloudy', 'Inflamed'],
-                          };
-                          const opts = param.possible_values || presetOptions[param.field_type];
-                          if (opts) {
-                            return (
-                              <Select value={value}
-                                onValueChange={(v) => setEntryValues({ ...entryValues, [param.id]: v })}>
-                                <SelectTrigger className={`w-[170px] h-8 ${abnormal ? 'border-red-500 text-red-600 font-bold' : ''}`}>
-                                  <SelectValue placeholder="Select..." />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  {opts.map(pv => (
-                                    <SelectItem key={pv} value={pv}>{pv}</SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            );
-                          }
-                          if (param.field_type === 'less_than') {
-                            return (
-                              <div className="flex items-center gap-1">
-                                <span className="text-sm font-bold text-gray-500">&lt;</span>
-                                <Input type="number" step="any" value={value}
-                                  onChange={(e) => setEntryValues({ ...entryValues, [param.id]: e.target.value })}
-                                  className={`w-[130px] h-8 ${abnormal ? 'border-red-500 text-red-600 font-bold' : ''}`}
-                                  placeholder="Value" />
-                              </div>
-                            );
-                          }
-                          if (param.field_type === 'greater_than') {
-                            return (
-                              <div className="flex items-center gap-1">
-                                <span className="text-sm font-bold text-gray-500">&gt;</span>
-                                <Input type="number" step="any" value={value}
-                                  onChange={(e) => setEntryValues({ ...entryValues, [param.id]: e.target.value })}
-                                  className={`w-[130px] h-8 ${abnormal ? 'border-red-500 text-red-600 font-bold' : ''}`}
-                                  placeholder="Value" />
-                              </div>
-                            );
-                          }
-                          if (param.field_type === 'numeric') {
-                            return (
-                              <div className="flex items-center gap-1">
-                                <div className="flex border rounded-md overflow-hidden h-8">
-                                  <button type="button"
-                                    className={`px-1.5 text-xs font-bold border-r ${value.toString().startsWith('<') ? 'bg-blue-100 text-blue-700' : 'bg-gray-50 text-gray-400 hover:bg-gray-100'}`}
-                                    onClick={() => { const c = value.toString().replace(/^[<>]/, ''); setEntryValues({ ...entryValues, [param.id]: value.toString().startsWith('<') ? c : `<${c}` }); }}
-                                  >&lt;</button>
-                                  <input type="text" inputMode="decimal"
-                                    value={value.toString().replace(/^[<>]/, '')}
-                                    onChange={(e) => { const p = value.toString().startsWith('<') ? '<' : value.toString().startsWith('>') ? '>' : ''; setEntryValues({ ...entryValues, [param.id]: p + e.target.value }); }}
-                                    className={`w-[100px] h-full px-2 text-sm outline-none ${abnormal ? 'text-red-600 font-bold' : ''}`}
-                                    placeholder="Value" />
-                                  <button type="button"
-                                    className={`px-1.5 text-xs font-bold border-l ${value.toString().startsWith('>') ? 'bg-blue-100 text-blue-700' : 'bg-gray-50 text-gray-400 hover:bg-gray-100'}`}
-                                    onClick={() => { const c = value.toString().replace(/^[<>]/, ''); setEntryValues({ ...entryValues, [param.id]: value.toString().startsWith('>') ? c : `>${c}` }); }}
-                                  >&gt;</button>
-                                </div>
-                              </div>
-                            );
-                          }
-                          // text, manual, colour — free text input
-                          return (
-                            <Input type="text" value={value}
-                              onChange={(e) => setEntryValues({ ...entryValues, [param.id]: e.target.value })}
-                              className={`w-[150px] h-8 ${abnormal ? 'border-red-500 text-red-600 font-bold' : ''}`}
-                              placeholder={param.field_type === 'colour' ? 'e.g. Pale Yellow' : 'Enter value'} />
-                          );
-                        })()}
-                      </td>
-                      <td className="py-2 pr-3 text-gray-500">{param.unit || '-'}</td>
-                      <td className="py-2 text-gray-500 text-xs">
-                        {param.field_type === 'less_than' && param.reference_max != null
-                          ? `< ${param.reference_max}`
-                          : param.field_type === 'greater_than' && param.reference_min != null
-                            ? `> ${param.reference_min}`
-                            : param.reference_min != null && param.reference_max != null
-                              ? `${param.reference_min} - ${param.reference_max}`
-                              : param.reference_min != null
-                                ? `> ${param.reference_min}`
-                                : param.reference_max != null
-                                  ? `< ${param.reference_max}`
-                                  : param.normal_value
-                                    ? param.normal_value
-                                    : '-'}
-                        {abnormal && (
-                          <span className="ml-2 text-red-600 font-bold">
-                            <AlertCircle className="inline h-3 w-3" /> Abnormal
-                          </span>
-                        )}
-                      </td>
-                      <td className="py-2">
-                        <div className="flex items-center gap-2">
-                          <label className="flex items-center gap-1 cursor-pointer whitespace-nowrap" title="Mark as abnormal">
-                            <input type="checkbox" checked={manualAbnormal[param.id] || false}
-                              onChange={(e) => setManualAbnormal({ ...manualAbnormal, [param.id]: e.target.checked })}
-                              className="w-3.5 h-3.5 rounded border-red-300 text-red-500" />
-                            <span className="text-[10px] text-red-500 font-medium">Abnormal</span>
-                          </label>
-                          <Input
-                            type="text"
-                            value={remarkValues[param.id] || ''}
-                            onChange={(e) => setRemarkValues({ ...remarkValues, [param.id]: e.target.value })}
-                            className="w-[120px] h-8 text-xs"
-                            placeholder="Remarks"
-                          />
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+            {renderParameterTable(entryForm.parameters)}
           </div>
 
           <div className="mt-4">
@@ -1159,6 +1306,129 @@ const LabTechDashboard = () => {
             <Button onClick={handleSubmitResults} disabled={submitting}>
               {submitting ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
               Submit Results
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    );
+  };
+
+  const renderResultChoiceDialog = () => {
+    if (!resultChoice?.form) return null;
+    const form = resultChoice.form;
+    const tests = form.tests || [];
+    return (
+      <Dialog open={showResultChoice} onOpenChange={setShowResultChoice}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileText className="h-5 w-5 text-indigo-600" /> Enter Results
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <p className="text-sm text-gray-600">
+              Patient: <strong>{form.patient_name}</strong>
+            </p>
+            <p className="text-sm text-gray-600">
+              Sample: <strong className="font-mono text-indigo-700">{form.sample_id}</strong>
+              {form.sample_type_name && (
+                <span className="text-amber-700"> · {form.sample_type_name}</span>
+              )}
+            </p>
+            <div className="border rounded-lg p-3 bg-indigo-50">
+              <p className="text-sm font-medium mb-2">
+                These tests share one sample and can be entered together:
+              </p>
+              <ul className="space-y-1.5">
+                {tests.map((t) => (
+                  <li key={t.order_id} className="flex items-center gap-2 text-sm">
+                    <TestTube className="h-3.5 w-3.5 text-indigo-600" />
+                    <span className="font-medium">{t.test_name}</span>
+                    <Badge variant="outline" className="text-[10px]">{t.test_code}</Badge>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div className="flex flex-col gap-2">
+              <Button className="w-full" onClick={() => applyGroupedForm(form)}>
+                Enter grouped results ({tests.length} tests)
+              </Button>
+              <Button
+                variant="outline"
+                className="w-full"
+                onClick={() => {
+                  const section = tests.find((t) => t.order_id === resultChoice.orderId) || tests[0];
+                  if (section) applySingleForm(section);
+                }}
+              >
+                Enter this test only
+              </Button>
+              <Button variant="ghost" className="w-full text-gray-500" onClick={() => setShowResultChoice(false)}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    );
+  };
+
+  const renderGroupedEntryDialog = () => {
+    if (!groupedForm) return null;
+    const tests = groupedForm.tests || [];
+    return (
+      <Dialog open={showGroupedEntry} onOpenChange={setShowGroupedEntry}>
+        <DialogContent className="max-w-6xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>
+              Enter grouped results
+              {groupedForm.sample_type_name ? ` — ${groupedForm.sample_type_name}` : ''}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-1 mb-4">
+            <p className="text-sm text-gray-500">
+              Patient: <strong>{groupedForm.patient_name}</strong>
+              {groupedForm.patient_gender && <span> ({groupedForm.patient_gender})</span>}
+            </p>
+            <p className="text-sm text-gray-500">
+              Sample: <span className="font-mono font-semibold text-indigo-700">{groupedForm.sample_id}</span>
+              <span> · {tests.length} tests</span>
+            </p>
+          </div>
+          <div className="space-y-6">
+            {tests.map((test) => (
+              <div key={test.order_id} className="border rounded-lg p-3">
+                <div className="flex flex-wrap items-center gap-2 mb-2">
+                  <span className="font-semibold">{test.test_name}</span>
+                  <Badge variant="outline" className="text-[10px]">{test.test_code}</Badge>
+                  <span className="text-xs text-gray-400">#{test.order_number}</span>
+                  {test.doctor_name && (
+                    <span className="text-xs text-gray-500">{test.doctor_name}</span>
+                  )}
+                </div>
+                {(test.parameters || []).length === 0 ? (
+                  <p className="text-sm text-gray-500 mb-3">This test has no parameters.</p>
+                ) : (
+                  <div className="mb-3">{renderParameterTable(test.parameters)}</div>
+                )}
+                <Label>Interpretation / Notes</Label>
+                <Textarea
+                  value={interpretations[test.order_id] || ''}
+                  onChange={(e) => setInterpretations({
+                    ...interpretations,
+                    [test.order_id]: e.target.value,
+                  })}
+                  placeholder="Optional interpretation or notes..."
+                  rows={2}
+                />
+              </div>
+            ))}
+          </div>
+          <div className="flex justify-end gap-2 mt-4">
+            <Button variant="outline" onClick={() => setShowGroupedEntry(false)}>Cancel</Button>
+            <Button onClick={handleSubmitGroupedResults} disabled={submitting}>
+              {submitting ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
+              Submit all results
             </Button>
           </div>
         </DialogContent>
@@ -1273,6 +1543,8 @@ const LabTechDashboard = () => {
       </Tabs>
 
       {renderEntryDialog()}
+      {renderResultChoiceDialog()}
+      {renderGroupedEntryDialog()}
       {renderReportDialog()}
 
       {/* Sample Collection Confirmation Dialog */}

@@ -16,7 +16,6 @@ import {
 import { format } from 'date-fns';
 import { FREQUENCY_OPTIONS } from '../../utils/prescriptionSchedule';
 import MedicineLookupInput from '../../components/inpatient/MedicineLookupInput';
-import PatientFileLabelDialog from '../../components/PatientFileLabelDialog';
 import {
   buildVitalSignsPayload,
   showBmiOutput,
@@ -38,8 +37,6 @@ const ConsultationPage = () => {
   const [saving, setSaving] = useState(false);
   const [activeTab, setActiveTab] = useState('vitals');
   const [feedback, setFeedback] = useState({ message: '', type: '' });
-  const [fileLabelPatientId, setFileLabelPatientId] = useState(null);
-  const [fileLabelContext, setFileLabelContext] = useState({ source: 'lab' });
 
   // Consultation
   const [activeConsultation, setActiveConsultation] = useState(null);
@@ -562,15 +559,6 @@ const ConsultationPage = () => {
           showFeedback(typeof err.detail === 'string' ? err.detail : 'Failed to create lab orders', 'error');
           setSaving(false);
           return;
-        }
-        const created = await res.json();
-        const firstOrder = Array.isArray(created) ? created[0] : created;
-        if (patientId) {
-          setFileLabelContext({
-            source: 'lab',
-            orderId: firstOrder?.id,
-          });
-          setFileLabelPatientId(parseInt(patientId, 10));
         }
       }
       showFeedback(`${selectedLabTests.length + customLabTests.length} lab order(s) created`);
@@ -1517,12 +1505,6 @@ const ConsultationPage = () => {
           </Card>
         </TabsContent>
       </Tabs>
-      <PatientFileLabelDialog
-        open={!!fileLabelPatientId}
-        patientId={fileLabelPatientId}
-        context={fileLabelContext}
-        onClose={() => setFileLabelPatientId(null)}
-      />
     </div>
   );
 };

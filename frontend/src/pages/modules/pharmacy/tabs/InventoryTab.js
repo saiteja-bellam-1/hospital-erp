@@ -19,6 +19,14 @@ import { usePharmacyStore } from '../../../../contexts/PharmacyStoreContext';
 import { displayPharmacyNumericInput, formatMoney, pharmacyNoSpinInputClass } from '../../../../utils/pharmacyUnits';
 import { usePharmacyPermissions } from '../../../../hooks/usePharmacyPermissions';
 
+const SEARCH_PLACEHOLDERS = {
+  stock: 'Code, name, manufacturer, rack, supplier',
+  low: 'Code, name, manufacturer, rack, supplier',
+  expiring: 'Medicine, code, or batch',
+  batches: 'Medicine, batch, manufacturer, supplier',
+  ledger: 'Medicine, batch, type, user, notes',
+};
+
 const LEDGER_TXN_TYPES = [
   { value: 'purchase', label: 'Purchase' },
   { value: 'purchase_edit_reverse', label: 'Purchase edit reverse' },
@@ -51,7 +59,13 @@ export default function InventoryTab() {
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const expiringDays = Math.max(1, parseInt(searchParams.get('expiring') || '90', 10) || 90);
+
+  useEffect(() => {
+    const handle = setTimeout(() => setDebouncedSearch(search.trim()), 300);
+    return () => clearTimeout(handle);
+  }, [search]);
 
   const setInventoryView = (next) => {
     setView(next);
@@ -109,7 +123,8 @@ export default function InventoryTab() {
     setLoading(true);
     try {
       let url; const params = {};
-      if (view === 'stock') { url = '/api/pharmacy/inventory'; if (search) params.search = search; }
+      if (debouncedSearch) params.search = debouncedSearch;
+      if (view === 'stock') { url = '/api/pharmacy/inventory'; }
       else if (view === 'low') { url = '/api/pharmacy/inventory/low-stock'; }
       else if (view === 'expiring') {
         url = '/api/pharmacy/inventory/expiring';
@@ -130,7 +145,7 @@ export default function InventoryTab() {
     } catch (e) {
       toast({ variant: 'destructive', title: 'Load failed', description: errMsg(e) });
     } finally { setLoading(false); }
-  }, [view, search, toast, storeParams, ledgerMedicine, ledgerBatchId, ledgerTxnType, ledgerDateFrom, ledgerDateTo, expiringDays]);
+  }, [view, debouncedSearch, toast, storeParams, ledgerMedicine, ledgerBatchId, ledgerTxnType, ledgerDateFrom, ledgerDateTo, expiringDays]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -275,13 +290,39 @@ export default function InventoryTab() {
               {tabBtn('ledger', 'Stock Ledger', Sliders)}
             </div>
             <div className="flex items-center gap-2">
-              {view === 'stock' && (
-                <div className="relative">
-                  <Search className="absolute left-2 top-2.5 h-4 w-4 text-gray-400" />
-                  <Input className="pl-8 h-8 w-56" placeholder="Search…" value={search} onChange={e => setSearch(e.target.value)} />
-                </div>
-              )}
-              <Button size="sm" variant="outline" onClick={load}><RefreshCw className="h-3 w-3" /></Button>
+              <div className="relative">
+                <Search className="absolute left-2 top-2.5 h-4 w-4 text-gray-400" />
+                <Input
+                  className={`pl-8 h-8 w-72 ${search ? 'pr-8' : ''}`}
+                  placeholder={SEARCH_PLACEHOLDERS[view] || 'Search…'}
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                />
+                {search ? (
+                  <button
+                    type="button"
+                    className="absolute right-2 top-2 text-gray-400 hover:text-gray-600"
+                    title="Clear search"
+                    onClick={() => {
+                      setSearch('');
+                      setDebouncedSearch('');
+                    }}
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                ) : null}
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  const next = search.trim();
+                  if (next !== debouncedSearch) setDebouncedSearch(next);
+                  else load();
+                }}
+              >
+                <RefreshCw className="h-3 w-3" />
+              </Button>
               {view === 'batches' && selectedBatchIds.length > 0 && (
                 <Button size="sm" variant="outline" onClick={printSelectedLabels}>
                   <Printer className="h-3 w-3 mr-1" /> Print {selectedBatchIds.length} label(s)
@@ -397,7 +438,11 @@ export default function InventoryTab() {
             </div>
           )}
           {loading ? <p className="text-center py-6 text-sm text-gray-500">Loading…</p>
-            : data.length === 0 ? <p className="text-center py-6 text-sm text-gray-500">No records</p>
+            : data.length === 0 ? (
+              <p className="text-center py-6 text-sm text-gray-500">
+                {debouncedSearch ? 'No matching records' : 'No records'}
+              </p>
+            )
             : (
               <TableForView
                 view={view}

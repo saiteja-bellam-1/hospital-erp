@@ -1861,10 +1861,12 @@ class PDFService:
             top_vitals_table = Spacer(page_width, 48)
 
         # --- Lab tests ---
-        lab_tests = prescription_data.get('lab_tests', [])
+        # Blank slips stay handwritten. Do not print orders or statuses that
+        # already exist for this patient or appointment.
+        lab_tests = [] if blank_mode else (prescription_data.get('lab_tests') or [])
         lab_rows = []
         if lab_tests:
-            header = '<b><u>Tests Ordered</u></b>' if blank_mode else '<b><u>Tests Done</u></b>'
+            header = '<b><u>Tests Done</u></b>'
             lab_rows.append([Paragraph(header, cell_lbl), ''])
             for t in lab_tests:
                 status_text = (t.get('status', '') or '').capitalize()

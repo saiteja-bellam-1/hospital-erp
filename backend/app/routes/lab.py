@@ -301,6 +301,14 @@ class ResultSubmit(BaseModel):
     results: List[ResultEntry]
     interpretation: Optional[str] = None
 
+class GroupedResultOrder(BaseModel):
+    order_id: int
+    results: List[ResultEntry]
+    interpretation: Optional[str] = None
+
+class GroupedResultSubmit(BaseModel):
+    orders: List[GroupedResultOrder]
+
 class ReportParameterResult(BaseModel):
     parameter_id: int
     parameter_name: str
@@ -2546,22 +2554,21 @@ async def get_patient_orders(
 # Lab Result Entry (for technicians)
 # ============================================================
 
-@router.get("/orders/{order_id}/entry-form")
-async def get_entry_form(
-    order_id: int,
-    current_user: User = Depends(require_permission(Modules.LAB, "read")),
-    db: Session = Depends(get_db)
-):
-    """Get test parameters for result entry form"""
-    order = db.query(PatientLabOrder).join(Patient).filter(
-        PatientLabOrder.id == order_id,
-        Patient.hospital_id == current_user.hospital_id
-    ).first()
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
+def _sample_type_label(test: Optional[LabTest]) -> Optional[str]:
+    if not test:
+        return None
+    if test.sample_type_id and test.sample_type_ref:
+        return test.sample_type_ref.name
+    return test.sample_type
 
+
+def _build_entry_form_payload(order: PatientLabOrder, db: Session) -> dict:
+    """Parameter form for one order. Shared by single and grouped entry."""
     test = db.query(LabTest).filter(LabTest.id == order.test_id).first()
+    if not test:
+        raise HTTPException(status_code=404, detail="Test not found for this order")
     patient = db.query(Patient).filter(Patient.id == order.patient_id).first()
+    doctor = db.query(User).filter(User.id == order.doctor_id).first() if order.doctor_id else None
     params = db.query(LabTestParameter).filter(
         LabTestParameter.test_id == test.id,
         LabTestParameter.is_active == True
@@ -2586,6 +2593,9 @@ async def get_entry_form(
         "order_number": order.order_number,
         "test_name": test.name,
         "test_code": test.test_code,
+        "sample_id": order.sample_id,
+        "sample_type_name": _sample_type_label(test),
+        "doctor_name": f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else None,
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else "Unknown",
         "patient_gender": patient.gender if patient else None,
         "parameters": [
@@ -2605,51 +2615,194 @@ async def get_entry_form(
         ]
     }
 
+
+def _order_has_report(db: Session, order_id: int) -> bool:
+    return db.query(LabReport.id).filter(LabReport.order_id == order_id).first() is not None
+
+
+def _open_orders_on_sample(db: Session, order: PatientLabOrder, hospital_id: int) -> list:
+    """Collected/processing orders on this sample that still need a report.
+
+    The anchor order is first. Orders with no sample_id stay individual.
+    """
+    if not order.sample_id:
+        return [order]
+    rows = (
+        db.query(PatientLabOrder)
+        .join(Patient)
+        .filter(
+            PatientLabOrder.patient_id == order.patient_id,
+            Patient.hospital_id == hospital_id,
+            PatientLabOrder.sample_id == order.sample_id,
+            PatientLabOrder.status.in_(["collected", "processing"]),
+        )
+        .order_by(PatientLabOrder.id.asc())
+        .all()
+    )
+    open_rows = [row for row in rows if not _order_has_report(db, row.id)]
+    open_rows.sort(key=lambda row: (row.id != order.id, row.id))
+    return open_rows
+
+
+def _load_hospital_order(db: Session, order_id: int, hospital_id: int) -> PatientLabOrder:
+    order = db.query(PatientLabOrder).join(Patient).filter(
+        PatientLabOrder.id == order_id,
+        Patient.hospital_id == hospital_id,
+    ).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return order
+
+
+def _write_order_results(db: Session, order: PatientLabOrder, data: ResultSubmit, technician_id: int) -> LabReport:
+    if _order_has_report(db, order.id):
+        raise HTTPException(status_code=400, detail="Report already exists for this order")
+    if order.status == "cancelled":
+        raise HTTPException(status_code=400, detail="Cannot submit results for a cancelled order")
+    # Completed without a report is the legacy catch-up backfill path.
+    result_values = [
+        {
+            "parameter_id": r.parameter_id,
+            "value": r.value,
+            "remarks": r.remarks or "",
+            "manual_abnormal": r.manual_abnormal,
+        }
+        for r in data.results
+    ]
+    report = LabReport(
+        order_id=order.id,
+        result_values=result_values,
+        interpretation=data.interpretation,
+        technician_id=technician_id,
+        report_date=datetime.now(),
+    )
+    db.add(report)
+    order.status = "completed"
+    order.completion_date = datetime.now()
+    return report
+
+
+@router.get("/orders/{order_id}/entry-form")
+async def get_entry_form(
+    order_id: int,
+    current_user: User = Depends(require_permission(Modules.LAB, "read")),
+    db: Session = Depends(get_db)
+):
+    """Get test parameters for result entry form"""
+    order = _load_hospital_order(db, order_id, current_user.hospital_id)
+    return _build_entry_form_payload(order, db)
+
+
+@router.get("/orders/{order_id}/grouped-entry-form")
+async def get_grouped_entry_form(
+    order_id: int,
+    current_user: User = Depends(require_permission(Modules.LAB, "read")),
+    db: Session = Depends(get_db)
+):
+    """Entry forms for every open test that shares this order's sample."""
+    order = _load_hospital_order(db, order_id, current_user.hospital_id)
+    if order.status == "cancelled":
+        raise HTTPException(status_code=400, detail="Cannot enter results for a cancelled order")
+    open_orders = _open_orders_on_sample(db, order, current_user.hospital_id)
+    if order.sample_id and order.id not in {row.id for row in open_orders}:
+        raise HTTPException(status_code=400, detail="This order is not open for result entry")
+    tests = [_build_entry_form_payload(row, db) for row in open_orders]
+    anchor = tests[0] if tests else _build_entry_form_payload(order, db)
+    return {
+        "sample_id": order.sample_id,
+        "sample_type_name": anchor.get("sample_type_name"),
+        "patient_name": anchor.get("patient_name"),
+        "patient_gender": anchor.get("patient_gender"),
+        "tests": tests,
+    }
+
+
 @router.post("/orders/{order_id}/results")
 async def submit_results(
     order_id: int, data: ResultSubmit,
     current_user: User = Depends(require_permission(Modules.LAB, "write")),
     db: Session = Depends(get_db)
 ):
-    """Lab technician submits test results"""
-    order = db.query(PatientLabOrder).join(Patient).filter(
-        PatientLabOrder.id == order_id,
-        Patient.hospital_id == current_user.hospital_id
-    ).first()
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
-
-    # Check if report already exists
-    existing = db.query(LabReport).filter(LabReport.order_id == order_id).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Report already exists for this order")
-
-    # Legacy catch-up marked completed without a LabReport — allow late entry.
-    # If completed with a report, the existing check above already blocked.
-    if order.status == "completed":
-        # no report → fall through (admin/lab can backfill results)
-        pass
-    elif order.status == "cancelled":
-        raise HTTPException(status_code=400, detail="Cannot submit results for a cancelled order")
-
-    result_values = [{"parameter_id": r.parameter_id, "value": r.value, "remarks": r.remarks or "", "manual_abnormal": r.manual_abnormal} for r in data.results]
-
-    report = LabReport(
-        order_id=order_id,
-        result_values=result_values,
-        interpretation=data.interpretation,
-        technician_id=current_user.id,
-        report_date=datetime.now()
-    )
-    db.add(report)
-
-    order.status = "completed"
-    order.completion_date = datetime.now()
-
+    """Lab technician submits test results for one order."""
+    order = _load_hospital_order(db, order_id, current_user.hospital_id)
+    report = _write_order_results(db, order, data, current_user.id)
     db.commit()
     db.refresh(report)
-
     return {"message": "Results submitted successfully", "report_id": report.id}
+
+
+@router.post("/orders/grouped-results")
+async def submit_grouped_results(
+    data: GroupedResultSubmit,
+    current_user: User = Depends(require_permission(Modules.LAB, "write")),
+    db: Session = Depends(get_db)
+):
+    """Submit results for every open test on one shared sample, in one transaction."""
+    if not data.orders:
+        raise HTTPException(status_code=400, detail="At least one order is required")
+
+    seen = set()
+    loaded = []
+    for item in data.orders:
+        if item.order_id in seen:
+            raise HTTPException(status_code=400, detail="Duplicate order in grouped results")
+        seen.add(item.order_id)
+        order = _load_hospital_order(db, item.order_id, current_user.hospital_id)
+        loaded.append((order, item))
+
+    patient_ids = {order.patient_id for order, _ in loaded}
+    sample_ids = {order.sample_id for order, _ in loaded}
+    if len(patient_ids) != 1:
+        raise HTTPException(status_code=400, detail="Grouped results must be for one patient")
+    if len(sample_ids) != 1 or None in sample_ids:
+        raise HTTPException(status_code=400, detail="Grouped results must share one collected sample")
+
+    anchor = loaded[0][0]
+    open_ids = {row.id for row in _open_orders_on_sample(db, anchor, current_user.hospital_id)}
+    submitted_ids = {order.id for order, _ in loaded}
+    if submitted_ids != open_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="Grouped results must include every open test on this sample. Reload and try again.",
+        )
+
+    for order, item in loaded:
+        params = db.query(LabTestParameter).filter(
+            LabTestParameter.test_id == order.test_id,
+            LabTestParameter.is_active == True,
+        ).all()
+        allowed = {p.id for p in params}
+        test = order.test
+        test_name = test.name if test else order.order_number
+        filled = [r for r in item.results if str(r.value or "").strip()]
+        if params and not filled:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Enter at least one result for {test_name}",
+            )
+        for entry in item.results:
+            if entry.parameter_id not in allowed:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Parameter does not belong to {test_name}",
+                )
+
+    report_ids = []
+    for order, item in loaded:
+        report = _write_order_results(
+            db,
+            order,
+            ResultSubmit(results=item.results, interpretation=item.interpretation),
+            current_user.id,
+        )
+        db.flush()
+        report_ids.append(report.id)
+
+    db.commit()
+    return {
+        "message": f"Results submitted for {len(report_ids)} tests",
+        "report_ids": report_ids,
+    }
 
 @router.put("/reports/{report_id}")
 async def update_report(

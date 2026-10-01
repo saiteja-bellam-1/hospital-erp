@@ -483,33 +483,6 @@ def _build_patient_prescription_fields(patient: Patient, db: Optional[Session] =
     }
 
 
-def _fetch_lab_tests_for_appointment(
-    db: Session,
-    patient: Patient,
-    appointment_id: Optional[int] = None,
-) -> list:
-    from app.models.lab import PatientLabOrder, LabTest
-
-    lab_query = (
-        db.query(PatientLabOrder, LabTest)
-        .join(LabTest, PatientLabOrder.test_id == LabTest.id)
-        .filter(PatientLabOrder.patient_id == patient.id)
-    )
-    if appointment_id:
-        lab_query = lab_query.filter(PatientLabOrder.appointment_id == appointment_id)
-
-    lab_orders = lab_query.order_by(PatientLabOrder.order_date.desc()).limit(10).all()
-    return [
-        {
-            "test_name": test.name,
-            "test_code": test.test_code,
-            "status": order.status,
-            "order_date": format_bill_date(order.order_date, empty=""),
-        }
-        for order, test in lab_orders
-    ]
-
-
 def _resolve_referred_by(patient: Patient, appointment: Optional[Appointment] = None) -> str:
     if appointment and appointment.referred_by:
         return appointment.referred_by.strip()
@@ -598,8 +571,6 @@ def _build_blank_prescription_pdf_data(
             else:
                 rx_dt = datetime.combine(apt_date, time.min)
 
-    apt_id = appointment.id if appointment else None
-
     return {
         **_build_patient_prescription_fields(patient, db),
         "prescription_number": None,
@@ -613,9 +584,10 @@ def _build_blank_prescription_pdf_data(
         "status": "blank",
         "notes": None,
         "diagnosis": None,
+        # Handwritten blank slips do not list existing lab orders or statuses.
+        "lab_tests": [],
         "vitals": _fetch_vitals_for_prescription(db, patient, appointment=appointment, reference_date=rx_dt),
         "consultation": None,
-        "lab_tests": _fetch_lab_tests_for_appointment(db, patient, apt_id),
         "items": [],
     }
 

@@ -17,7 +17,7 @@ import io
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import func as sa_func, or_
+from sqlalchemy import String, cast, func as sa_func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -1692,6 +1692,14 @@ def _inventory_label_html(
     return html_body
 
 
+def _search_pattern(term: Optional[str]) -> Optional[str]:
+    """LIKE pattern for inventory tab search. Blank input means no filter."""
+    text = (term or "").strip()
+    if not text:
+        return None
+    return f"%{text}%"
+
+
 def _dedupe_joined_names(raw: Optional[str]) -> Optional[str]:
     if not raw:
         return None
@@ -1748,9 +1756,18 @@ def list_inventory(
         Medicine.is_active == True,  # noqa: E712
         Medicine.is_hidden == False,  # noqa: E712
      )
-    if search:
-        like = f"%{search.lower()}%"
-        rows = rows.filter(or_(Medicine.name.ilike(like), Medicine.medicine_code.ilike(like), Medicine.barcode.ilike(like)))
+    pattern = _search_pattern(search)
+    if pattern:
+        rows = rows.filter(or_(
+            Medicine.name.ilike(pattern),
+            Medicine.medicine_code.ilike(pattern),
+            Medicine.barcode.ilike(pattern),
+            Medicine.manufacturer.ilike(pattern),
+            PharmacyCompany.name.ilike(pattern),
+            PharmacyRack.code.ilike(pattern),
+            PharmacyUoM.abbreviation.ilike(pattern),
+            supplier_agg.c.supplier_names.ilike(pattern),
+        ))
 
     out = []
     for med, total, free_total, batches, rack_code, uom_abbr, company_name, supplier_names in rows.order_by(Medicine.name).all():
@@ -1777,6 +1794,7 @@ def list_batches(
     medicine_id: Optional[int] = None,
     supplier_id: Optional[int] = None,
     store_id: Optional[int] = None,
+    search: Optional[str] = None,
     active_only: bool = True,
     include_batch_id: Optional[int] = None,
     limit: int = 500,
@@ -1798,6 +1816,18 @@ def list_batches(
         q = q.filter(PharmacyInventory.medicine_id == medicine_id)
     if supplier_id:
         q = q.filter(PharmacyInventory.supplier_id == supplier_id)
+    pattern = _search_pattern(search)
+    if pattern:
+        q = q.filter(or_(
+            Medicine.name.ilike(pattern),
+            Medicine.medicine_code.ilike(pattern),
+            Medicine.barcode.ilike(pattern),
+            Medicine.manufacturer.ilike(pattern),
+            PharmacyCompany.name.ilike(pattern),
+            PharmacyInventory.batch_number.ilike(pattern),
+            PharmacyInventory.batch_barcode.ilike(pattern),
+            PharmacySupplier.name.ilike(pattern),
+        ))
     rows = q.order_by(
         PharmacyInventory.expiry_date.asc(),
         PharmacyInventory.id.asc(),
@@ -2007,12 +2037,13 @@ def download_inventory_labels_batch_html(
 
 @router.get("/inventory/low-stock", response_model=List[InventoryRowOut])
 def list_low_stock(
+    search: Optional[str] = None,
     store_id: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_low_stock")),
 ):
     """All medicines whose total stock ≤ min_qty (and min_qty > 0)."""
-    return list_inventory(search=None, low_only=True, store_id=store_id, db=db, current_user=current_user)
+    return list_inventory(search=search, low_only=True, store_id=store_id, db=db, current_user=current_user)
 
 
 class StockAdjustIn(BaseModel):
@@ -2219,6 +2250,7 @@ class ExpiringBatchOut(BaseModel):
 @router.get("/inventory/expiring", response_model=List[ExpiringBatchOut])
 def list_expiring_batches(
     days: int = 90,
+    search: Optional[str] = None,
     store_id: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_expiring")),
@@ -2234,7 +2266,7 @@ def list_expiring_batches(
     today = date.today()
     threshold = today + timedelta(days=days)
     sid = resolve_store_id(db, current_user, store_id)
-    rows = (
+    q = (
         db.query(PharmacyInventory, Medicine)
         .join(Medicine, Medicine.id == PharmacyInventory.medicine_id)
         .filter(
@@ -2245,9 +2277,17 @@ def list_expiring_batches(
             PharmacyInventory.expiry_date <= threshold,
             PharmacyInventory.expiry_date < _EXPIRY_SENTINEL,
         )
-        .order_by(PharmacyInventory.expiry_date.asc(), PharmacyInventory.id.asc())
-        .all()
     )
+    pattern = _search_pattern(search)
+    if pattern:
+        q = q.filter(or_(
+            Medicine.name.ilike(pattern),
+            Medicine.medicine_code.ilike(pattern),
+            PharmacyInventory.batch_number.ilike(pattern),
+        ))
+    rows = q.order_by(
+        PharmacyInventory.expiry_date.asc(), PharmacyInventory.id.asc(),
+    ).all()
     out: List[ExpiringBatchOut] = []
     for inv, med in rows:
         qty = float(inv.quantity_in_stock or 0)
@@ -2406,6 +2446,7 @@ def list_ledger(
     store_id: Optional[int] = None,
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
+    search: Optional[str] = None,
     limit: int = 500,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature_permission(Modules.PHARMACY, "view_stock_ledger")),
@@ -2430,6 +2471,19 @@ def list_ledger(
         q = q.filter(PharmacyStockLedger.created_at >= datetime.combine(date_from, datetime.min.time()))
     if date_to:
         q = q.filter(PharmacyStockLedger.created_at <= datetime.combine(date_to, datetime.max.time()))
+    pattern = _search_pattern(search)
+    if pattern:
+        q = q.filter(or_(
+            Medicine.name.ilike(pattern),
+            Medicine.medicine_code.ilike(pattern),
+            PharmacyInventory.batch_number.ilike(pattern),
+            PharmacyStockLedger.txn_type.ilike(pattern),
+            PharmacyStockLedger.notes.ilike(pattern),
+            PharmacyStockLedger.reference_type.ilike(pattern),
+            cast(PharmacyStockLedger.reference_id, String).ilike(pattern),
+            User.first_name.ilike(pattern),
+            User.last_name.ilike(pattern),
+        ))
     rows = q.order_by(PharmacyStockLedger.created_at.desc()).limit(limit).all()
 
     purchase_keys = {

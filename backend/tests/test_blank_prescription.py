@@ -4,6 +4,9 @@ from __future__ import annotations
 import io
 from datetime import datetime, time
 
+import uuid
+
+from app.models.lab import LabTest, LabTestCategory, PatientLabOrder
 from app.models.outpatient import Appointment
 from app.models.patient import Patient
 from app.models.pharmacy import Prescription, PrescriptionItem
@@ -177,6 +180,85 @@ def test_doctor_save_reuses_blank_prescription_id(client, auth_headers, db_sessi
     assert matched["patient_id"] == patient.patient_id
     assert matched["admission_id"] is None
     assert matched["items"][0]["medicine_name"] == "Paracetamol 500mg"
+
+
+def test_blank_prescription_ignores_lab_orders_and_status(
+    client, auth_headers, db_session, seed_data
+):
+    """Blank Rx must not list existing lab orders or their statuses."""
+    patient = db_session.query(Patient).filter(Patient.id == seed_data["patient_id"]).first()
+    appointment = _create_appointment(db_session, seed_data)
+    suffix = uuid.uuid4().hex[:8]
+
+    category = LabTestCategory(
+        name=f"Blank Rx labs {suffix}",
+        hospital_id=seed_data["hospital_id"],
+    )
+    db_session.add(category)
+    db_session.flush()
+
+    linked_test = LabTest(
+        name=f"BlankRxLinkedCBC {suffix}",
+        test_code=f"BL{suffix[:6]}",
+        category_id=category.id,
+        cost=100.0,
+        hospital_id=seed_data["hospital_id"],
+        is_active=True,
+    )
+    other_test = LabTest(
+        name=f"BlankRxWalkinLFT {suffix}",
+        test_code=f"BW{suffix[:6]}",
+        category_id=category.id,
+        cost=80.0,
+        hospital_id=seed_data["hospital_id"],
+        is_active=True,
+    )
+    db_session.add_all([linked_test, other_test])
+    db_session.flush()
+
+    db_session.add_all([
+        PatientLabOrder(
+            order_number=f"LAB-BLANK-APT-{suffix}",
+            patient_id=patient.id,
+            test_id=linked_test.id,
+            doctor_id=seed_data["doctor_user_id"],
+            appointment_id=appointment.id,
+            status="processing",
+            payment_status="paid",
+            amount=100.0,
+            priority="normal",
+        ),
+        PatientLabOrder(
+            order_number=f"LAB-BLANK-PT-{suffix}",
+            patient_id=patient.id,
+            test_id=other_test.id,
+            doctor_id=seed_data["doctor_user_id"],
+            status="completed",
+            payment_status="paid",
+            amount=80.0,
+            priority="normal",
+        ),
+    ])
+    db_session.commit()
+
+    response = client.post(
+        "/api/prescriptions-simple/blank",
+        json={
+            "patient_id": patient.patient_id,
+            "doctor_id": seed_data["doctor_user_id"],
+            "appointment_id": appointment.id,
+        },
+        headers=auth_headers,
+    )
+    assert response.status_code == 200
+    text = _extract_pdf_text(response.content)
+
+    assert linked_test.name not in text
+    assert other_test.name not in text
+    assert "Tests Ordered" not in text
+    assert "Processing" not in text
+    assert "Completed" not in text
+    assert "Lab Tests" in text
 
 
 def test_issue_blank_prescription_requires_doctor(client, auth_headers, db_session, seed_data):
