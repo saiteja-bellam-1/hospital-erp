@@ -18,11 +18,10 @@ export default function UnmappedMedicinesTab() {
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
   const [target, setTarget] = useState(null);
-  const [categories, setCategories] = useState([]);
   const [catalog, setCatalog] = useState([]);
   const [form, setForm] = useState({
     rate_a: '',
-    category_id: '',
+    company_id: null,
     generic_name: '',
     strength: '',
     dosage_form: '',
@@ -43,11 +42,7 @@ export default function UnmappedMedicinesTab() {
 
   const loadMasters = useCallback(async () => {
     try {
-      const [c, m] = await Promise.all([
-        axios.get('/api/pharmacy/categories'),
-        axios.get('/api/pharmacy/medicines', { params: { active_only: true, include_hidden: false, limit: 500 } }),
-      ]);
-      setCategories(c.data || []);
+      const m = await axios.get('/api/pharmacy/medicines', { params: { active_only: true, include_hidden: false, limit: 500 } });
       setCatalog(m.data || []);
     } catch { /* tolerate */ }
   }, []);
@@ -59,7 +54,7 @@ export default function UnmappedMedicinesTab() {
     setTarget(row);
     setForm({
       rate_a: '',
-      category_id: categories[0]?.id ? String(categories[0].id) : '',
+      company_id: null,
       generic_name: '',
       strength: '',
       dosage_form: '',
@@ -75,14 +70,14 @@ export default function UnmappedMedicinesTab() {
       toast({ variant: 'destructive', title: 'Enter a valid Rate-A price' });
       return;
     }
-    if (!mergeId && !form.category_id) {
-      toast({ variant: 'destructive', title: 'Select a category' });
+    if (!mergeId && !form.company_id) {
+      toast({ variant: 'destructive', title: 'Select a company' });
       return;
     }
     try {
       await axios.post(`/api/pharmacy/medicines/${target.id}/map`, {
         rate_a: mergeId ? 1 : parseFloat(form.rate_a),
-        category_id: mergeId ? (catalog.find(m => m.id === mergeId)?.category_id || parseInt(form.category_id, 10)) : parseInt(form.category_id, 10),
+        company_id: mergeId ? null : form.company_id,
         generic_name: form.generic_name || null,
         strength: form.strength || null,
         dosage_form: form.dosage_form || null,
@@ -172,16 +167,12 @@ export default function UnmappedMedicinesTab() {
                     onChange={e => setForm(f => ({ ...f, rate_a: e.target.value }))} />
                 </div>
                 <div>
-                  <Label className="text-xs">Category *</Label>
+                  <Label className="text-xs">Company *</Label>
                   <PharmacyMasterSelectWithCreate
-                    path="categories"
-                    value={form.category_id}
-                    onChange={v => setForm(f => ({ ...f, category_id: v }))}
-                    options={categories}
-                    onOptionsChange={setCategories}
-                    createFields={[{ key: 'name', label: 'Name', required: true }]}
-                    createTitle="New Category"
-                    placeholder="Select category…"
+                    path="companies"
+                    value={form.company_id}
+                    onChange={v => setForm(f => ({ ...f, company_id: v }))}
+                    placeholder="Select company…"
                   />
                 </div>
                 <div>

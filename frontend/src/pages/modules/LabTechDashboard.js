@@ -717,6 +717,55 @@ const LabTechDashboard = () => {
     );
   };
 
+  const updatePartnerStatus = async (orderId, partnerStatus) => {
+    try {
+      await axios.put(`/api/lab/orders/${orderId}/partner-status`, { partner_status: partnerStatus });
+      showFeedback(partnerStatus === 'sent' ? 'Marked as sent to partner lab' : 'Partner result marked received');
+      fetchOrders(searchQuery);
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      showFeedback(typeof detail === 'string' ? detail : 'Failed to update partner status', 'error');
+    }
+  };
+
+  const renderFulfillmentBadge = (order) => {
+    if (order.fulfillment === 'send_out') {
+      const status = order.partner_status ? String(order.partner_status).replace(/_/g, ' ') : '';
+      return (
+        <Badge className="bg-orange-100 text-orange-800 text-[10px]">
+          Send-out{order.partner_name ? ` · ${order.partner_name}` : ''}{status ? ` · ${status}` : ''}
+        </Badge>
+      );
+    }
+    if (order.fulfillment === 'receive_in') {
+      return (
+        <Badge className="bg-sky-100 text-sky-800 text-[10px]">
+          Receive-in{order.partner_name ? ` · ${order.partner_name}` : ''}
+        </Badge>
+      );
+    }
+    return null;
+  };
+
+  const renderPartnerButtons = (order, compact = false) => {
+    if (order.fulfillment !== 'send_out' || order.status === 'cancelled' || order.status === 'completed') return null;
+    const cls = compact ? 'h-7 text-xs' : '';
+    return (
+      <>
+        {order.partner_status === 'to_send' && order.status !== 'ordered' && (
+          <Button size="sm" variant="outline" className={cls} onClick={() => updatePartnerStatus(order.id, 'sent')}>
+            Mark Sent
+          </Button>
+        )}
+        {order.partner_status === 'sent' && (
+          <Button size="sm" variant="outline" className={cls} onClick={() => updatePartnerStatus(order.id, 'result_received')}>
+            Result Received
+          </Button>
+        )}
+      </>
+    );
+  };
+
   const renderOrderCard = (order) => (
     <Card key={order.id} className={order.priority !== 'normal' ? 'border-red-300' : ''}>
       <CardContent className="py-4">
@@ -735,6 +784,7 @@ const LabTechDashboard = () => {
                   {order.priority.toUpperCase()}
                 </Badge>
               )}
+              {renderFulfillmentBadge(order)}
             </div>
             <div className="text-sm text-gray-500 space-y-0.5">
               <p><TestTube className="inline h-3 w-3 mr-1" />{order.test_name} ({order.test_code})</p>
@@ -778,6 +828,7 @@ const LabTechDashboard = () => {
                 <FileText className="h-3 w-3 mr-1" /> Enter Results
               </Button>
             )}
+            {renderPartnerButtons(order)}
             {order.status === 'completed' && order.has_report && (
               <>
                 <Button size="sm" variant="outline" onClick={() => openReport(order.report_id)}>
@@ -846,6 +897,7 @@ const LabTechDashboard = () => {
                     <TestTube className="h-3 w-3 text-gray-400" />
                     <span className="font-medium text-sm">{order.test_name} ({order.test_code})</span>
                     <Badge className={`text-xs ${getStatusColor(order.status)}`}>{order.status}</Badge>
+                    {renderFulfillmentBadge(order)}
                   </div>
                   <div className="flex items-center gap-3 ml-5">
                     <span className="text-xs text-gray-400">#{order.order_number}</span>
@@ -874,6 +926,7 @@ const LabTechDashboard = () => {
                       <FileText className="h-3 w-3 mr-1" /> Enter Results
                     </Button>
                   )}
+                  {renderPartnerButtons(order, true)}
                   {order.status === 'completed' && order.has_report && (
                     <>
                       <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => openReport(order.report_id)}>
@@ -942,6 +995,7 @@ const LabTechDashboard = () => {
                   <TestTube className="h-3 w-3 text-gray-400" />
                   <span className="font-medium text-sm">{order.test_name} ({order.test_code})</span>
                   <Badge className={`text-xs ${getStatusColor(order.status)}`}>{order.status}</Badge>
+                  {renderFulfillmentBadge(order)}
                   {order.priority !== 'normal' && (
                     <Badge variant={getPriorityColor(order.priority)}>{order.priority.toUpperCase()}</Badge>
                   )}
@@ -974,6 +1028,7 @@ const LabTechDashboard = () => {
                     <FileText className="h-3 w-3 mr-1" /> Enter Results
                   </Button>
                 )}
+                {renderPartnerButtons(order, true)}
                 {order.status === 'completed' && order.has_report && (
                   <>
                     <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => openReport(order.report_id)}>

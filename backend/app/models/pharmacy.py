@@ -220,7 +220,7 @@ class Medicine(Base):
     name = Column(String(200), nullable=False)
     generic_name = Column(String(200))
     manufacturer = Column(String(100))  # Legacy free-text. New entries should use company_id.
-    category_id = Column(Integer, ForeignKey("medicine_categories.id"), nullable=False)
+    category_id = Column(Integer, ForeignKey("medicine_categories.id"), nullable=True)
     dosage_form = Column(String(50))  # tablet, capsule, syrup, injection
     strength = Column(String(50))
 

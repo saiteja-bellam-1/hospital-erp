@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
-import { patchHsnForm } from '../../utils/pharmacyHsnTax';
+import { computeIgstPct, patchHsnForm } from '../../utils/pharmacyHsnTax';
 import { displayPharmacyNumericInput, pharmacyNoSpinInputClass } from '../../utils/pharmacyUnits';
-import { payloadFromMasterForm } from '../../components/pharmacy/pharmacyMasterFieldSpecs';
+import { payloadFromMasterForm, PHARMACY_MASTER_FIELD_SPECS } from '../../components/pharmacy/pharmacyMasterFieldSpecs';
 import { Routes, Route, Navigate, Outlet, useLocation } from 'react-router-dom';
 import axios from 'axios';
 
@@ -81,23 +81,43 @@ export function MasterTable({ title, path, fields, displayColumns }) {
 
   const openCreate = () => {
     setEditing(null);
-    const initial = path === 'hsn' ? patchHsnForm(blank, 'sgst_pct', blank.sgst_pct ?? '') : blank;
-    setForm(initial);
+    setForm(blank);
     setOpen(true);
   };
   const openEdit = (row) => {
     setEditing(row);
     const merged = { ...blank, ...row };
     fields.forEach((f) => {
+      if (f.auto) return;
       if (f.type === 'number' && (merged[f.key] === 0 || merged[f.key] === '0')) {
         merged[f.key] = '';
       }
     });
-    setForm(path === 'hsn' ? patchHsnForm(merged, 'sgst_pct', merged.sgst_pct ?? '') : merged);
+    if (path === 'hsn') {
+      merged.gst_pct = computeIgstPct(row.sgst_pct, row.cgst_pct);
+      merged.sgst_pct = row.sgst_pct ?? 0;
+      merged.cgst_pct = row.cgst_pct ?? 0;
+      merged.igst_pct = row.igst_pct ?? merged.gst_pct;
+    }
+    setForm(merged);
     setOpen(true);
   };
 
   const save = async () => {
+    for (const f of fields) {
+      if (!f.required || f.type === 'bool') continue;
+      if (f.type === 'number') {
+        if (form[f.key] === '' || form[f.key] == null || Number.isNaN(Number(form[f.key]))) {
+          toast({ variant: 'destructive', title: `${f.label} is required` });
+          return;
+        }
+        continue;
+      }
+      if (!String(form[f.key] ?? '').trim()) {
+        toast({ variant: 'destructive', title: `${f.label} is required` });
+        return;
+      }
+    }
     const payload = payloadFromMasterForm(form, fields);
     try {
       if (editing) {
@@ -229,9 +249,16 @@ export function MasterTable({ title, path, fields, displayColumns }) {
                     Enabled
                   </label>
                 ) : f.type === 'number' ? (
-                  <Input className={pharmacyNoSpinInputClass} type="number" step="0.01"
-                    value={displayPharmacyNumericInput(form[f.key])}
-                    onChange={e => patchForm(f.key, e.target.value === '' ? '' : parseFloat(e.target.value))} />
+                  <Input
+                    className={`${pharmacyNoSpinInputClass}${f.auto ? ' bg-slate-50' : ''}`}
+                    type="number"
+                    step="0.01"
+                    readOnly={!!f.auto}
+                    value={(f.auto || f.key === 'gst_pct')
+                      ? (form[f.key] === '' || form[f.key] == null ? '' : String(form[f.key]))
+                      : displayPharmacyNumericInput(form[f.key])}
+                    onChange={e => patchForm(f.key, e.target.value === '' ? '' : parseFloat(e.target.value))}
+                  />
                 ) : (
                   <Input value={form[f.key] || ''} onChange={e => patchForm(f.key, e.target.value)} />
                 )}
@@ -340,20 +367,7 @@ const UomsMaster = () => (
 const HsnMaster = () => (
   <MasterTable
     title="HSN / Tax Codes" path="hsn"
-    fields={[
-      { key: 'code', label: 'HSN Code', required: true },
-      { key: 'description', label: 'Description', type: 'textarea' },
-      { key: 'sgst_pct', label: 'SGST %', type: 'number', default: '' },
-      { key: 'cgst_pct', label: 'CGST %', type: 'number', default: '' },
-      {
-        key: 'igst_pct',
-        label: 'IGST %',
-        type: 'number',
-        default: '',
-        hint: 'Auto-filled as SGST + CGST; you can edit to override.',
-      },
-      { key: 'is_active', label: 'Active', type: 'bool', default: true },
-    ]}
+    fields={PHARMACY_MASTER_FIELD_SPECS.hsn.fields}
     displayColumns={[
       { key: 'code', label: 'Code' },
       { key: 'description', label: 'Description' },

@@ -32,10 +32,16 @@ def _create_catalog(client, headers, tag):
         headers=headers,
     )
     assert category.status_code == 201, category.text
-    return supplier.json()["id"], hsn.json()["id"], category.json()["id"]
+    company = client.post(
+        "/api/pharmacy/companies",
+        json={"name": f"Co {tag}", "is_active": True},
+        headers=headers,
+    )
+    assert company.status_code == 201, company.text
+    return supplier.json()["id"], hsn.json()["id"], category.json()["id"], company.json()["id"]
 
 
-def _create_medicine(client, headers, *, code, name, manufacturer, category_id, hsn_id, min_qty):
+def _create_medicine(client, headers, *, code, name, manufacturer, category_id, company_id, hsn_id, min_qty):
     response = client.post(
         "/api/pharmacy/medicines",
         json={
@@ -43,6 +49,7 @@ def _create_medicine(client, headers, *, code, name, manufacturer, category_id, 
             "name": name,
             "manufacturer": manufacturer,
             "category_id": category_id,
+            "company_id": company_id,
             "hsn_id": hsn_id,
             "dosage_form": "tablet",
             "unit_price": 0,
@@ -91,7 +98,7 @@ def _confirm_purchase(client, headers, *, supplier_id, medicine_id, hsn_id, batc
 
 def test_inventory_tabs_search_by_displayed_fields(client, auth_headers):
     tag = _suffix()
-    supplier_id, hsn_id, category_id = _create_catalog(client, auth_headers, tag)
+    supplier_id, hsn_id, category_id, company_id = _create_catalog(client, auth_headers, tag)
     alpha_name = f"ZqAlpha {tag}"
     beta_name = f"ZqBeta {tag}"
     alpha_code = f"A{tag}"[:20]
@@ -103,12 +110,12 @@ def test_inventory_tabs_search_by_displayed_fields(client, auth_headers):
     alpha_id = _create_medicine(
         client, auth_headers,
         code=alpha_code, name=alpha_name, manufacturer=alpha_mfr,
-        category_id=category_id, hsn_id=hsn_id, min_qty=20,
+        category_id=category_id, company_id=company_id, hsn_id=hsn_id, min_qty=20,
     )
     beta_id = _create_medicine(
         client, auth_headers,
         code=beta_code, name=beta_name, manufacturer=f"MfrB{tag}",
-        category_id=category_id, hsn_id=hsn_id, min_qty=0,
+        category_id=category_id, company_id=company_id, hsn_id=hsn_id, min_qty=0,
     )
     soon = str(date.today() + timedelta(days=15))
     later = str(date.today() + timedelta(days=400))

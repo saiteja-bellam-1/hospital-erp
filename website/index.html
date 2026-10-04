@@ -9,7 +9,7 @@
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=Plus+Jakarta+Sans:wght@500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;600;700&family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=Plus+Jakarta+Sans:wght@500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
   <!--
     Standalone introduction page. It is not part of the hospital program.
@@ -22,11 +22,8 @@
   <header class="site-header">
     <div class="wrap header-inner">
       <a class="brand" href="#top">
-        <img src="logo.png" alt="" width="56" height="32">
-        <span class="brand-name">
-          <strong>KT HEALTH</strong>
-          <span>ERP</span>
-        </span>
+        <img src="logo.jpg" alt="" width="56" height="32">
+        <span class="brand-name">KT HEALTH <span>ERP</span></span>
       </a>
       <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="site-nav">
         <span class="visually-hidden">Menu</span>
@@ -41,6 +38,7 @@
         <a href="#place">Premises</a>
         <a href="#documents">Documents</a>
         <a href="#questions">Questions</a>
+        <a class="btn btn-primary nav-cta" href="#next">Request a walk-through</a>
       </nav>
     </div>
   </header>
@@ -50,12 +48,20 @@
       <div class="wrap hero-grid">
         <div>
           <p class="kicker">Clinics, nursing homes, and hospitals</p>
-          <h1>Hospital work, held in one place.</h1>
+          <h1>Hospital work, held in <span class="script">one place.</span></h1>
           <p class="hero-lead">KT HEALTH ERP is the program for reception, wards, laboratory, pharmacy, and billing. A patient is entered once. The same record follows the visit.</p>
           <div class="hero-actions">
             <a class="btn btn-primary" href="#coverage">View coverage</a>
             <a class="btn btn-secondary" href="#place">Where it runs</a>
           </div>
+          <ul class="apps" aria-label="Included work">
+            <li><i class="c1" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></i>Reception</li>
+            <li><i class="c2" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2v7.527a2 2 0 0 1-.211.896L4.72 20.55a1 1 0 0 0 .9 1.45h12.76a1 1 0 0 0 .9-1.45l-5.069-10.127A2 2 0 0 1 14 9.527V2"/><path d="M8.5 2h7"/><path d="M7 16h10"/></svg></i>Laboratory</li>
+            <li><i class="c3" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m10.5 20.5 10-10a4.95 4.95 0 1 0-7-7l-10 10a4.95 4.95 0 1 0 7 7Z"/><path d="m8.5 8.5 7 7"/></svg></i>Pharmacy</li>
+            <li><i class="c4" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1Z"/><path d="M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 1 1 0 4H8"/><path d="M12 17.5v-11"/></svg></i>Billing</li>
+            <li><i class="c5" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 20v-8a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v8"/><path d="M4 10V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v4"/><path d="M12 4v6"/><path d="M2 18h20"/></svg></i>Wards</li>
+            <li><i class="c6" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg></i>Records</li>
+          </ul>
           <p class="hero-note">This page introduces the program. It does not open it.</p>
         </div>
 
@@ -104,7 +110,7 @@
     <section class="section" id="coverage">
       <div class="wrap">
         <p class="kicker">Coverage</p>
-        <h2>The work of the hospital, on one screen.</h2>
+        <h2>The work of the hospital, <span class="script">on one screen.</span></h2>
         <p class="lede">The language on the screen is the language of the hospital. Patient, appointment, bed, report, bill.</p>
         <div class="catalog">
           <article>
@@ -141,7 +147,7 @@
       </div>
     </section>
 
-    <section class="section flush" id="visit">
+    <section class="section flush band" id="visit">
       <div class="wrap">
         <p class="kicker">A visit</p>
         <h2>From arrival to the bill.</h2>
@@ -189,7 +195,7 @@
       </div>
     </section>
 
-    <section class="section flush" id="place">
+    <section class="section flush band" id="place">
       <div class="wrap">
         <p class="kicker">Premises</p>
         <h2>It runs inside the hospital.</h2>
@@ -256,7 +262,7 @@
       </div>
     </section>
 
-    <section class="section flush" id="questions">
+    <section class="section flush band" id="questions">
       <div class="wrap">
         <p class="kicker">Questions</p>
         <h2>Before you decide.</h2>
@@ -297,10 +303,10 @@
       </div>
     </section>
 
-    <section class="close" aria-labelledby="close-title">
+    <section class="close" id="next" aria-labelledby="close-title">
       <div class="wrap">
         <p class="kicker">Next step</p>
-        <h2 id="close-title">Request a walk-through.</h2>
+        <h2 id="close-title">Request a <span class="script">walk-through.</span></h2>
         <p>Speak with the person who looks after KT HEALTH ERP for your hospital. They can show reception, a bill, and a printed report.</p>
         <p class="fine">This page does not open the program.</p>
       </div>

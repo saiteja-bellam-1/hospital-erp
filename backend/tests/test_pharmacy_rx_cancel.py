@@ -61,9 +61,13 @@ def rx_cancel_seed(client, auth_headers, seed_data):
     assert cat.status_code == 201, cat.text
     cat_id = cat.json()["id"]
 
+    company = client.post("/api/pharmacy/companies",
+                          json={"name": "Cancel Company", "is_active": True}, headers=H)
+    assert company.status_code == 201, company.text
+
     med = client.post("/api/pharmacy/medicines",
                       json={"medicine_code": "CN-MED", "name": "Cancel Med",
-                            "category_id": cat_id, "hsn_id": hsn_id,
+                            "category_id": cat_id, "company_id": company.json()["id"], "hsn_id": hsn_id,
                             "dosage_form": "tablet", "strength": "10mg",
                             "unit_price": 0, "mrp": 50.0,
                             "rate_a": 40.0, "rate_b": 45.0,

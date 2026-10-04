@@ -2309,7 +2309,13 @@ async def get_all_bills(
         PatientLabOrder.admission_id.is_(None),
         PatientLabOrder.payment_status != "consolidated",
         PatientLabOrder.payment_status != "deleted",
+        PatientLabOrder.payment_status != "partner_settled",
     )
+    from sqlalchemy import or_ as _or
+    lab_query = lab_query.filter(_or(
+        PatientLabOrder.bill_to.is_(None),
+        PatientLabOrder.bill_to == "patient",
+    ))
     if payment_status:
         lab_query = lab_query.filter(PatientLabOrder.payment_status == payment_status)
     if patient_search:
@@ -5549,15 +5555,21 @@ async def consolidate_preview(
     ).all()
     labs = []
     for o in lab_orders:
+        if getattr(o, "bill_to", None) == "partner":
+            continue
         test = db.query(LabTest).filter(LabTest.id == o.test_id).first()
-        if not test or (test.cost or 0) <= 0:
+        # Snapshotted order.amount wins. Older rows that never stored it fall back to the catalog price.
+        amount = float(o.amount or 0)
+        if amount <= 0 and not getattr(o, "rate_card_id", None) and test:
+            amount = float(test.cost or 0)
+        if not test or amount <= 0:
             continue
         labs.append({
             "id": o.id,
             "order_number": o.order_number,
             "test_name": test.name,
             "test_code": test.test_code,
-            "cost": float(test.cost or 0),
+            "cost": amount,
             "payment_status": o.payment_status,
         })
 
@@ -5656,10 +5668,14 @@ async def create_consolidated_bill(
             continue
         if o.payment_status not in ("pending", "partial"):
             continue
-        test = db.query(LabTest).filter(LabTest.id == o.test_id).first()
-        if not test or (test.cost or 0) <= 0:
+        if getattr(o, "bill_to", None) == "partner":
             continue
-        amount = float(test.cost or 0)
+        test = db.query(LabTest).filter(LabTest.id == o.test_id).first()
+        amount = float(o.amount or 0)
+        if amount <= 0 and not getattr(o, "rate_card_id", None) and test:
+            amount = float(test.cost or 0)
+        if not test or amount <= 0:
+            continue
         db.add(BillItem(
             bill_id=bill.id,
             item_type="lab_test",

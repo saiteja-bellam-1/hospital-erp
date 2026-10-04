@@ -21,6 +21,7 @@ import VitalsForm from '../../components/vitals/VitalsForm';
 import MedicineLookupInput from '../../components/inpatient/MedicineLookupInput';
 import PrescriptionScheduleFields from '../../components/prescription/PrescriptionScheduleFields';
 import { BLANK_INPATIENT_RX_ITEM } from '../../utils/prescriptionSchedule';
+import { canSeeLabTestRates, normalizeUserRoles } from '../../hooks/useNavigationSections';
 import { useToast } from '../../hooks/use-toast';
 import { printPdfFromUrl } from '../../utils/printPdf';
 import DischargeSummaryEditor from './inpatient/DischargeSummaryEditor';
@@ -38,6 +39,7 @@ const DoctorDashboard = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
   const [user, setUser] = useState(null);
+  const showLabRates = canSeeLabTestRates(normalizeUserRoles(user));
   const [appointments, setAppointments] = useState([]);
   const [completedAppointments, setCompletedAppointments] = useState([]);
   const [showCompletedAppointments, setShowCompletedAppointments] = useState(false);
@@ -2792,7 +2794,7 @@ const DoctorDashboard = () => {
                         <Badge variant="outline" className="text-xs">{test.test_code}</Badge>
                       </div>
                       <div className="text-xs text-gray-500 ml-6">
-                        {test.category_name} | Rs. {test.cost}
+                        {test.category_name}{showLabRates ? ` | Rs. ${test.cost}` : ''}
                         {test.sample_type && ` | ${test.sample_type}`}
                       </div>
                     </div>

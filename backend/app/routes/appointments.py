@@ -469,6 +469,9 @@ async def create_appointment(
     
     if patient.hospital_id != current_user.hospital_id:
         raise HTTPException(status_code=403, detail="Access denied")
+
+    from app.services.patient_referral import apply_patient_referral
+    referral_name = apply_patient_referral(patient, appointment_data.referred_by)
     
     # Verify doctor exists and belongs to same hospital
     doctor = db.query(User).filter(User.id == appointment_data.doctor_id).first()
@@ -566,7 +569,7 @@ async def create_appointment(
         payment_notes=appointment_data.payment_notes,
         discount_amount=appointment_data.discount_amount,
         final_amount=final_amount,
-        referred_by=appointment_data.referred_by,
+        referred_by=referral_name,
         override_availability=bool(appointment_data.override_availability),
         override_reason=(appointment_data.override_reason.strip()
                          if appointment_data.override_availability and appointment_data.override_reason

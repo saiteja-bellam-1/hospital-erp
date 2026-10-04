@@ -28,6 +28,8 @@ export default function PharmacyMedicinePicker({
   companyById = null,
   /** Prefill and search this term when the picker opens empty */
   autoSearch = '',
+  /** Shown when the catalog search returns nothing */
+  notFoundMessage = '',
 }) {
   const mfrOf = (m) => {
     if (!m) return '';
@@ -192,7 +194,11 @@ export default function PharmacyMedicinePicker({
       )}
       {open && query.trim().length >= 2 && !searching && results.length === 0 && (
         <div className={`${menuClass} p-2 text-xs`}>
-          <p className="text-gray-500 mb-1.5">No catalog match for &ldquo;{query.trim()}&rdquo;</p>
+          {notFoundMessage ? (
+            <p className="text-sm font-semibold text-red-600 mb-1.5">{notFoundMessage}</p>
+          ) : (
+            <p className="text-gray-500 mb-1.5">No catalog match for &ldquo;{query.trim()}&rdquo;</p>
+          )}
           {onCreateNew ? (
             <Button type="button" size="sm" variant="outline" className="w-full h-7 text-xs" onMouseDown={(e) => e.preventDefault()} onClick={triggerCreate}>
               <Plus className="h-3 w-3 mr-1" /> Create new medicine

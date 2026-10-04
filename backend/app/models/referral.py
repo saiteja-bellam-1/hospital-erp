@@ -14,6 +14,13 @@ class Referral(Base):
     mandal = Column(String(100), nullable=True)
     district = Column(String(100), nullable=True)
     is_active = Column(Boolean, default=True)
+    # Percent of collected bill value paid to this referrer, by service.
+    # Lab tests and pharmacy sales that are rolled into an admission bill are
+    # commissioned under the IP rate, not again under lab or pharmacy.
+    op_commission_pct = Column(Float, default=0.0)
+    lab_commission_pct = Column(Float, default=0.0)
+    ip_commission_pct = Column(Float, default=0.0)
+    pharmacy_commission_pct = Column(Float, default=0.0)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), default=system_now)
 

@@ -37,6 +37,7 @@ export default function ReferralSelectWithCreate({
   onReferralsChange,
   label = 'Referred By',
   className = '',
+  locked = false,
 }) {
   const { toast } = useToast();
   const [internalReferrals, setInternalReferrals] = useState([]);
@@ -111,7 +112,7 @@ export default function ReferralSelectWithCreate({
         <Select
           value={value || NONE}
           onValueChange={(v) => onValueChange?.(v === NONE ? '' : v)}
-          disabled={loading}
+          disabled={loading || locked}
         >
           <SelectTrigger className="flex-1">
             <SelectValue placeholder={loading ? 'Loading…' : 'Select referral'} />
@@ -128,10 +129,15 @@ export default function ReferralSelectWithCreate({
             ))}
           </SelectContent>
         </Select>
-        <Button type="button" variant="outline" size="icon" onClick={openCreate} title="Add referral">
-          <UserPlus className="h-4 w-4" />
-        </Button>
+        {!locked && (
+          <Button type="button" variant="outline" size="icon" onClick={openCreate} title="Add referral">
+            <UserPlus className="h-4 w-4" />
+          </Button>
+        )}
       </div>
+      {locked && (
+        <p className="text-xs text-muted-foreground mt-1">Saved on this patient.</p>
+      )}
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="max-w-md" formNav="grid">

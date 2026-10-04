@@ -44,9 +44,14 @@ def expiry_seed(client, auth_headers, seed_data):
                       json={"name": "Exp Cat", "is_active": True}, headers=H)
     assert cat.status_code == 201, cat.text
 
+    company = client.post("/api/pharmacy/companies",
+                          json={"name": "Exp Company", "is_active": True}, headers=H)
+    assert company.status_code == 201, company.text
+
     med = client.post("/api/pharmacy/medicines",
                       json={"medicine_code": "EXP-MED", "name": "Exp Med",
                             "category_id": cat.json()["id"],
+                            "company_id": company.json()["id"],
                             "hsn_id": hsn.json()["id"],
                             "dosage_form": "tablet", "strength": "100mg",
                             "unit_price": 0, "mrp": 50.0,
@@ -58,6 +63,7 @@ def expiry_seed(client, auth_headers, seed_data):
     return {
         "supplier_id": sup.json()["id"],
         "hsn_id": hsn.json()["id"],
+        "company_id": company.json()["id"],
         "medicine_id": med.json()["id"],
     }
 
@@ -135,6 +141,7 @@ def test_sale_picks_fefo_not_fifo(
     med = client.post("/api/pharmacy/medicines",
                       json={"medicine_code": "FEFO-MED", "name": "FEFO Med",
                             "category_id": cat.json()["id"],
+                            "company_id": expiry_seed["company_id"],
                             "hsn_id": expiry_seed["hsn_id"],
                             "dosage_form": "tablet", "strength": "10mg",
                             "unit_price": 0, "mrp": 20.0,

@@ -17,11 +17,12 @@ def test_cost_pcs_from_mrp_rounds():
 
 
 def test_medicine_create_rounds_prices(client, auth_headers, db_session, seed_data):
-    from app.models.pharmacy import MedicineCategory, Medicine
+    from app.models.pharmacy import MedicineCategory, Medicine, PharmacyCompany
 
     hid = seed_data["hospital_id"]
     cat = MedicineCategory(name=f"Cat-{uuid.uuid4().hex[:6]}", hospital_id=hid)
-    db_session.add(cat)
+    co = PharmacyCompany(name=f"Co-{uuid.uuid4().hex[:6]}", hospital_id=hid)
+    db_session.add_all([cat, co])
     db_session.commit()
 
     code = f"M{uuid.uuid4().hex[:6]}"
@@ -29,6 +30,7 @@ def test_medicine_create_rounds_prices(client, auth_headers, db_session, seed_da
         "medicine_code": code,
         "name": "Decimal Med",
         "category_id": cat.id,
+        "company_id": co.id,
         "mrp": 99.999,
         "purchase_rate": 45.556,
         "rate_a": 12.345,
@@ -92,20 +94,22 @@ def test_purchase_line_prices_rounded(client, auth_headers, db_session, seed_dat
 
 
 def _make_category(db_session, hospital_id):
-    from app.models.pharmacy import MedicineCategory
+    from app.models.pharmacy import MedicineCategory, PharmacyCompany
     cat = MedicineCategory(name=f"Cat-{uuid.uuid4().hex[:6]}", hospital_id=hospital_id)
-    db_session.add(cat)
+    co = PharmacyCompany(name=f"Co-{uuid.uuid4().hex[:6]}", hospital_id=hospital_id)
+    db_session.add_all([cat, co])
     db_session.commit()
-    return cat
+    return cat, co
 
 
 def test_medicine_code_unique_on_create(client, auth_headers, db_session, seed_data):
-    cat = _make_category(db_session, seed_data["hospital_id"])
+    cat, co = _make_category(db_session, seed_data["hospital_id"])
     code = f"UQ{uuid.uuid4().hex[:6]}"
     payload = {
         "medicine_code": code,
         "name": "Unique Med",
         "category_id": cat.id,
+        "company_id": co.id,
         "mrp": 10,
         "rate_a": 10,
     }
@@ -120,10 +124,10 @@ def test_medicine_code_unique_on_create(client, auth_headers, db_session, seed_d
 
 
 def test_medicine_code_unique_on_update(client, auth_headers, db_session, seed_data):
-    cat = _make_category(db_session, seed_data["hospital_id"])
+    cat, co = _make_category(db_session, seed_data["hospital_id"])
     code_a = f"UA{uuid.uuid4().hex[:6]}"
     code_b = f"UB{uuid.uuid4().hex[:6]}"
-    base = {"category_id": cat.id, "mrp": 10, "rate_a": 10}
+    base = {"category_id": cat.id, "company_id": co.id, "mrp": 10, "rate_a": 10}
     a = client.post(
         "/api/pharmacy/medicines",
         headers=auth_headers,

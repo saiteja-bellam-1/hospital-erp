@@ -22,6 +22,7 @@ import {
   validateAppointmentBooking,
 } from '../../../utils/appointmentBooking';
 import { localDateString } from '../../../utils/localDate';
+import { patientReferralName } from '../../../utils/patientReferral';
 import { printPdfFromUrl } from '../../../utils/printPdf';
 import PdfPreviewDialog from '../../../components/PdfPreviewDialog';
 import PatientFileLabelDialog from '../../../components/PatientFileLabelDialog';
@@ -177,8 +178,7 @@ const ReceptionAppointmentsPage = () => {
         });
         if (response.ok) {
           const patient = await response.json();
-          setSelectedPatient(patient);
-          fetchPatientFeeInfo(patient.patient_id);
+          selectPatientForBooking(patient);
         } else {
           toast({
             variant: 'destructive',
@@ -296,8 +296,7 @@ const ReceptionAppointmentsPage = () => {
       });
       if (response.ok) {
         const patient = await response.json();
-        setSelectedPatient(patient);
-        fetchPatientFeeInfo(patient.patient_id);
+        selectPatientForBooking(patient);
         return patient;
       }
     } catch (error) {
@@ -321,9 +320,17 @@ const ReceptionAppointmentsPage = () => {
     }
   };
 
-  const handlePatientSelected = (patient) => {
+  const selectPatientForBooking = (patient) => {
     setSelectedPatient(patient);
+    setAppointmentForm((prev) => ({
+      ...prev,
+      referred_by: patientReferralName(patient),
+    }));
     if (patient?.patient_id) fetchPatientFeeInfo(patient.patient_id);
+  };
+
+  const handlePatientSelected = (patient) => {
+    selectPatientForBooking(patient);
   };
 
   // Prescription preview
@@ -1628,6 +1635,7 @@ const ReceptionAppointmentsPage = () => {
                 <ReferralSelectWithCreate
                   value={appointmentForm.referred_by}
                   onValueChange={(name) => setAppointmentForm({ ...appointmentForm, referred_by: name })}
+                  locked={!!patientReferralName(selectedPatient)}
                   referrals={referralList}
                   onReferralsChange={setReferralList}
                 />

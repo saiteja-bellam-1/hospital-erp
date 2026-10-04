@@ -36,6 +36,11 @@ export function canAccessLabAdminDashboard(roles) {
   return normalized.some((r) => LAB_ADMIN_DASHBOARD_ROLES.includes(r));
 }
 
+/** Selling rates on a lab test list. Lab technicians and reception do not see them. */
+export function canSeeLabTestRates(roles) {
+  return canAccessLabAdminDashboard(roles);
+}
+
 /** Overview + queue. Catalog pages still require canAccessLabAdminDashboard. */
 export function canAccessLabModule(roles) {
   const normalized = normalizeUserRoles(roles);
@@ -205,6 +210,7 @@ export function useNavigationSections({ roles: rawRoles, enabledModules }) {
       add(items, make('Categories', Tags, '/dashboard/lab/categories'));
       add(items, make('Sample Types', Droplets, '/dashboard/lab/sample-types'));
       add(items, make('Packages', Package, '/dashboard/lab/packages'));
+      add(items, make('Partner Labs', Building2, '/dashboard/lab/partners'));
     }
     if (items.length > 0) sections.push({ label: 'Laboratory', items });
   }

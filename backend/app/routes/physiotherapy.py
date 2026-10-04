@@ -320,6 +320,8 @@ def _create_physio_bill(
     payment_method: Optional[str] = None,
     mark_paid: bool = False,
 ) -> Bill:
+    from app.services.patient_referral import apply_patient_referral
+    referred_by = apply_patient_referral(patient, referred_by)
     line_total = round(float(unit_price) * quantity, 2)
     bill_number = _next_bill_number(db)
     status = "paid" if mark_paid else ("pending" if line_total > 0 else "paid")

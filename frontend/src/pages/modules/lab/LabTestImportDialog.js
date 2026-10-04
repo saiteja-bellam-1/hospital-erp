@@ -129,7 +129,7 @@ export default function LabTestImportDialog({ open, onOpenChange, onImported, sh
           </div>
 
           <div className="text-xs text-slate-500 bg-slate-50 rounded-lg p-3 leading-relaxed">
-            Fill the <span className="font-medium">Tests</span> sheet (required: test_code, name, category, cost).
+            Fill the <span className="font-medium">Tests</span> sheet (required: test_code, name, category, cost). Optional <span className="font-medium">rate_b</span> is the second selling price; leave it blank to copy cost.
             Missing categories and sample types are created automatically. Add reference ranges on the
             optional <span className="font-medium">Parameters</span> sheet of the Excel template.
             CSV imports tests only.

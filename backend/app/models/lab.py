@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Float, JSON
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Float, JSON, UniqueConstraint
 from sqlalchemy.orm import relationship
 from config.database import Base
 from app.utils.time import system_now
@@ -45,6 +45,10 @@ class LabTest(Base):
     unit = Column(String(20))
     is_active = Column(Boolean, default=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+    # in_house: processed here. send_out: sample collected here, processed by a partner lab.
+    default_fulfillment = Column(String(20), default="in_house")
+    default_partner_id = Column(Integer, ForeignKey("lab_partners.id"), nullable=True)
+    default_partner_cost = Column(Float, nullable=True)
     created_at = Column(DateTime(timezone=True), default=system_now)
     updated_at = Column(DateTime(timezone=True), onupdate=system_now)
 
@@ -185,6 +189,20 @@ class PatientLabOrder(Base):
     # endpoint reconstruct the original combined PDF.
     lab_bill_group_id = Column(String(64), nullable=True, index=True)
     lab_bill_number = Column(String(64), nullable=True)
+    # Selling rate snapshotted at booking. amount remains the billed price.
+    rate_card_id = Column(Integer, ForeignKey("lab_rate_cards.id"), nullable=True)
+    # in_house | send_out | receive_in
+    fulfillment = Column(String(20), default="in_house")
+    partner_id = Column(Integer, ForeignKey("lab_partners.id"), nullable=True, index=True)
+    partner_cost = Column(Float, nullable=True)
+    # send_out: to_send, sent, result_received. receive_in: received, reported.
+    partner_status = Column(String(30), nullable=True)
+    partner_reference = Column(String(100), nullable=True)
+    # patient: charged on the patient bill. partner: charged to the referring lab.
+    bill_to = Column(String(20), default="patient")
+    partner_settlement_status = Column(String(20), nullable=True)  # unsettled | settled
+    partner_invoice_ref = Column(String(100), nullable=True)
+    partner_settled_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime(timezone=True), default=system_now)
 
     patient = relationship("Patient", back_populates="lab_orders")
@@ -210,3 +228,54 @@ class LabReport(Base):
     
     order = relationship("PatientLabOrder", back_populates="report")
     template = relationship("LabReportTemplate", back_populates="reports")
+
+
+class LabRateCard(Base):
+    """Named selling price for lab tests. Seeded as Rate A (default) and Rate B."""
+    __tablename__ = "lab_rate_cards"
+    __table_args__ = (
+        UniqueConstraint("hospital_id", "code", name="uq_lab_rate_card_code"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+    code = Column(String(20), nullable=False)
+    name = Column(String(100), nullable=False)
+    is_default = Column(Boolean, default=False)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), default=system_now)
+
+
+class LabTestRate(Base):
+    __tablename__ = "lab_test_rates"
+    __table_args__ = (
+        UniqueConstraint("test_id", "rate_card_id", name="uq_lab_test_rate"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    test_id = Column(Integer, ForeignKey("lab_tests.id"), nullable=False, index=True)
+    rate_card_id = Column(Integer, ForeignKey("lab_rate_cards.id"), nullable=False)
+    amount = Column(Float, nullable=False, default=0.0)
+
+
+class LabPartner(Base):
+    """External lab we send samples to, or that sends samples to us."""
+    __tablename__ = "lab_partners"
+    __table_args__ = (
+        UniqueConstraint("hospital_id", "name", name="uq_lab_partner_name"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False)
+    name = Column(String(200), nullable=False)
+    contact_person = Column(String(100), nullable=True)
+    phone = Column(String(30), nullable=True)
+    email = Column(String(100), nullable=True)
+    address = Column(Text, nullable=True)
+    # send_out: they process our samples. receive_in: we process theirs. both.
+    partner_role = Column(String(20), default="both")
+    default_rate_card_id = Column(Integer, ForeignKey("lab_rate_cards.id"), nullable=True)
+    notes = Column(Text, nullable=True)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), default=system_now)
+    updated_at = Column(DateTime(timezone=True), onupdate=system_now)

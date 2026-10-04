@@ -13,6 +13,7 @@ import {
   DialogTitle,
 } from '../../../components/ui/dialog';
 import { useToast } from '../../../hooks/use-toast';
+import { defaultRateCardId, testPrice } from '../../../utils/labPricing';
 import PatientSearchPicker from '../../../components/PatientSearchPicker';
 import PdfPreviewDialog from '../../../components/PdfPreviewDialog';
 import { Textarea } from '../../../components/ui/textarea';
@@ -125,6 +126,8 @@ const CatchUpBills = () => {
   const [consultFee, setConsultFee] = useState('');
   const [regFee, setRegFee] = useState('0');
   const [selectedTests, setSelectedTests] = useState([]);
+  const [labRateCards, setLabRateCards] = useState([]);
+  const [labRateCardId, setLabRateCardId] = useState('');
   const [lines, setLines] = useState([{ item_name: '', quantity: 1, unit_price: '' }]);
   const [affectStock, setAffectStock] = useState(false);
 
@@ -190,6 +193,11 @@ const CatchUpBills = () => {
       axios.get('/api/lab/tests').then((r) => {
         setLabTests(Array.isArray(r.data) ? r.data : (r.data?.tests || []));
       }).catch(() => setLabTests([]));
+      axios.get('/api/lab/rate-cards').then((r) => {
+        const cards = Array.isArray(r.data) ? r.data : [];
+        setLabRateCards(cards);
+        setLabRateCardId(defaultRateCardId(cards));
+      }).catch(() => setLabRateCards([]));
     }
     if (type === 'inpatient' || type === 'append') {
       Promise.all([
@@ -329,6 +337,7 @@ const CatchUpBills = () => {
           patient_id: patientId,
           test_ids: selectedTests.map(Number),
           doctor_id: doctorId ? Number(doctorId) : null,
+          rate_card_id: labRateCardId ? Number(labRateCardId) : null,
         },
       };
     }
@@ -711,6 +720,16 @@ const CatchUpBills = () => {
 
           {type === 'lab' && (
             <div className="space-y-2">
+              <Label>Rate</Label>
+              <select
+                className="w-full h-9 rounded-md border px-2 text-sm"
+                value={labRateCardId}
+                onChange={(e) => setLabRateCardId(e.target.value)}
+              >
+                {labRateCards.map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
               <Label>Lab tests</Label>
               <div className="border rounded-md max-h-48 overflow-auto p-2 space-y-1">
                 {labTests.map((t) => (
@@ -724,7 +743,7 @@ const CatchUpBills = () => {
                         );
                       }}
                     />
-                    <span>{t.name} — ₹{t.cost}</span>
+                    <span>{t.name} — ₹{testPrice(t, labRateCardId)}</span>
                   </label>
                 ))}
                 {labTests.length === 0 && (

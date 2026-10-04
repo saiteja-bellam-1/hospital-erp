@@ -45,11 +45,30 @@ export function computeLineTax(grossAfterDiscount, taxPct, taxMode = 'exclusive'
   };
 }
 
-/** Apply a field change; SGST/CGST edits auto-refresh IGST (user can still edit IGST after). */
+/**
+ * Split a GST rate into equal SGST and CGST. IGST is the full rate.
+ * Odd rates (5%) become 2.5 + 2.5; any half-paisa remainder stays on CGST.
+ */
+export function splitGstPct(gstPct) {
+  if (gstPct === '' || gstPct == null) {
+    return { gst_pct: '', sgst_pct: '', cgst_pct: '', igst_pct: '' };
+  }
+  const gst = Math.round((parseFloat(gstPct) || 0) * 100) / 100;
+  const sgst = Math.round((gst / 2) * 100) / 100;
+  const cgst = Math.round((gst - sgst) * 100) / 100;
+  return { gst_pct: gst, sgst_pct: sgst, cgst_pct: cgst, igst_pct: gst };
+}
+
+/** Apply a field change. GST % fills SGST, CGST, and IGST. */
 export function patchHsnForm(form, key, value) {
+  if (key === 'gst_pct') {
+    return { ...form, ...splitGstPct(value) };
+  }
   const next = { ...form, [key]: value };
   if (key === 'sgst_pct' || key === 'cgst_pct') {
-    next.igst_pct = computeIgstPct(next.sgst_pct, next.cgst_pct);
+    const combined = computeIgstPct(next.sgst_pct, next.cgst_pct);
+    next.igst_pct = combined;
+    next.gst_pct = combined;
   }
   return next;
 }

@@ -47,11 +47,18 @@ def pharmacy_seed(client, auth_headers, seed_data):
     assert cat.status_code == 201, cat.text
     cat_id = cat.json()["id"]
 
+    company = client.post(
+        "/api/pharmacy/companies",
+        json={"name": "Smoke Company", "is_active": True},
+        headers=H,
+    )
+    assert company.status_code == 201, company.text
+
     med = client.post(
         "/api/pharmacy/medicines",
         json={
             "medicine_code": "SMK-1", "name": "Smoke Med",
-            "category_id": cat_id, "hsn_id": hsn_id,
+            "category_id": cat_id, "company_id": company.json()["id"], "hsn_id": hsn_id,
             "dosage_form": "tablet", "strength": "500mg",
             "unit_price": 0, "mrp": 0, "rate_a": 20.0, "rate_b": 25.0,
             "min_qty": 5, "is_active": True,

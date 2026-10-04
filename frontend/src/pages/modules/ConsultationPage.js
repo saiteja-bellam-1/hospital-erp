@@ -14,6 +14,9 @@ import {
   ChevronRight, ChevronDown, History, XCircle
 } from 'lucide-react';
 import { format } from 'date-fns';
+import { useAuth } from '../../contexts/AuthContext';
+import { canSeeLabTestRates, normalizeUserRoles } from '../../hooks/useNavigationSections';
+import { defaultRateCardId, testPrice } from '../../utils/labPricing';
 import { FREQUENCY_OPTIONS } from '../../utils/prescriptionSchedule';
 import MedicineLookupInput from '../../components/inpatient/MedicineLookupInput';
 import {
@@ -25,6 +28,8 @@ import {
 } from '../../hooks/useConfiguredVitalFields';
 
 const ConsultationPage = () => {
+  const { user } = useAuth();
+  const showLabRates = canSeeLabTestRates(normalizeUserRoles(user));
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const appointmentId = searchParams.get('appointmentId');
@@ -68,6 +73,8 @@ const ConsultationPage = () => {
   const [labCategories, setLabCategories] = useState([]);
   const [selectedLabTests, setSelectedLabTests] = useState([]);
   const [labOrderPriority, setLabOrderPriority] = useState('normal');
+  const [labRateCards, setLabRateCards] = useState([]);
+  const [labRateCardId, setLabRateCardId] = useState('');
   const [labOrderNotes, setLabOrderNotes] = useState('');
   const [labSearchQuery, setLabSearchQuery] = useState('');
   const [labCategoryFilter, setLabCategoryFilter] = useState('all');
@@ -222,12 +229,18 @@ const ConsultationPage = () => {
 
   const fetchLabTests = async () => {
     try {
-      const [testsRes, catsRes] = await Promise.all([
+      const [testsRes, catsRes, cardsRes] = await Promise.all([
         fetch('/api/lab/tests', { headers }),
-        fetch('/api/lab/categories', { headers })
+        fetch('/api/lab/categories', { headers }),
+        fetch('/api/lab/rate-cards', { headers }),
       ]);
       if (testsRes.ok) setAvailableLabTests(await testsRes.json());
       if (catsRes.ok) setLabCategories(await catsRes.json());
+      if (cardsRes.ok) {
+        const cards = await cardsRes.json();
+        setLabRateCards(cards);
+        setLabRateCardId(defaultRateCardId(cards));
+      }
     } catch (err) {
       console.error('Failed to fetch lab tests:', err);
     }
@@ -540,6 +553,7 @@ const ConsultationPage = () => {
             priority: labOrderPriority,
             force: force,
             notes: combinedNotes || null,
+            rate_card_id: labRateCardId ? parseInt(labRateCardId, 10) : null,
           })
         });
         if (res.status === 409) {
@@ -1026,6 +1040,19 @@ const ConsultationPage = () => {
                 </div>
               )}
 
+              {showLabRates && (
+                <div className="max-w-xs">
+                  <Label>Rate</Label>
+                  <Select value={labRateCardId || '_none'} onValueChange={(v) => setLabRateCardId(v === '_none' ? '' : v)}>
+                    <SelectTrigger><SelectValue placeholder="Rate" /></SelectTrigger>
+                    <SelectContent>
+                      {labRateCards.map((c) => (
+                        <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
               <div className="border rounded-lg max-h-[250px] overflow-y-auto">
                 {filteredLabTests.length === 0 ? (
                   <p className="text-center text-gray-500 py-6 text-sm">No tests available.</p>
@@ -1037,7 +1064,7 @@ const ConsultationPage = () => {
                     <div>
                       <span className="font-medium text-sm">{test.name}</span>
                       <Badge variant="outline" className="text-xs ml-2">{test.test_code}</Badge>
-                      <div className="text-xs text-gray-500">{test.category_name} | Rs. {test.cost}{test.sample_type && ` | ${test.sample_type}`}</div>
+                      <div className="text-xs text-gray-500">{test.category_name}{showLabRates ? ` | Rs. ${testPrice(test, labRateCardId)}` : ''}{test.sample_type && ` | ${test.sample_type}`}</div>
                     </div>
                   </div>
                 ))}

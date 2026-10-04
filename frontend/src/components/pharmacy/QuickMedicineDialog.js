@@ -7,6 +7,8 @@ import PharmacyFormDialog from './PharmacyFormDialog';
 import MedicineFormFields, {
   EMPTY_MEDICINE_FORM,
   MEDICINE_FORM_STEPS,
+  medicineBasicBlockReason,
+  medicineCodeFromName,
   medicineStepCanProceed,
   patchMedicineForm,
   prepareMedicinePayload,
@@ -41,10 +43,12 @@ export default function QuickMedicineDialog({
     const name = prefill.name || '';
     const mrp = prefill.mrp ?? '';
     const vendorCode = String(prefill.medicine_code || '').trim();
+    const generated = medicineCodeFromName(name || vendorCode);
+    const sameAsName = vendorCode.toLowerCase() === String(name).trim().toLowerCase();
+    const useVendor = vendorCode.length > 0 && vendorCode.length <= 20 && !sameAsName;
     setForm(patchMedicineForm(EMPTY_MEDICINE_FORM, {
-      medicine_code: vendorCode && vendorCode.length <= 20
-        ? vendorCode
-        : (name ? suggestMedicineCode(name) : ''),
+      medicine_code: useVendor ? vendorCode.toUpperCase() : generated,
+      medicine_code_manual: useVendor,
       name,
       packaging: prefill.packaging || prefill.pack_size || '',
       manufacturer: prefill.manufacturer || '',
@@ -66,7 +70,7 @@ export default function QuickMedicineDialog({
 
   const handleNext = () => {
     if (!medicineStepCanProceed(form, activeStep)) {
-      toast({ variant: 'destructive', title: 'Code, name, and category are required' });
+      toast({ variant: 'destructive', title: medicineBasicBlockReason(form) || 'Name and company are required' });
       return;
     }
     setActiveStep((s) => Math.min(s + 1, MEDICINE_FORM_STEPS.length - 1));
@@ -74,7 +78,7 @@ export default function QuickMedicineDialog({
 
   const handleSave = async () => {
     if (!medicineStepCanProceed(form, 0)) {
-      toast({ variant: 'destructive', title: 'Code, name, and category are required' });
+      toast({ variant: 'destructive', title: medicineBasicBlockReason(form) || 'Name and company are required' });
       setActiveStep(0);
       return;
     }
@@ -121,9 +125,4 @@ export default function QuickMedicineDialog({
       />
     </PharmacyFormDialog>
   );
-}
-
-function suggestMedicineCode(name) {
-  const base = String(name || 'MED').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12) || 'MED';
-  return base.slice(0, 20);
 }

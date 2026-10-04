@@ -20,10 +20,21 @@ export const MEDICINE_FORM_STEPS = [
   { key: 'regulatory', label: 'Regulatory & notes' },
 ];
 
+/** Item code from the medicine name: uppercase letters and digits, max 20. */
+export function medicineCodeFromName(name) {
+  return String(name || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 20);
+}
+
+export function medicineBasicBlockReason(form) {
+  if (!form.name?.trim()) return 'Name is required';
+  if (!form.company_id) return 'Company is required';
+  const code = (form.medicine_code || '').trim() || medicineCodeFromName(form.name);
+  if (!code) return 'Item code could not be generated from the name';
+  return '';
+}
+
 export function medicineStepCanProceed(form, stepIndex) {
-  if (stepIndex === 0) {
-    return !!(form.medicine_code?.trim() && form.name?.trim() && form.category_id);
-  }
+  if (stepIndex === 0) return !medicineBasicBlockReason(form);
   return true;
 }
 
@@ -49,6 +60,10 @@ export function patchMedicineForm(prev, patch) {
 
 export function prepareMedicinePayload(form) {
   const payload = { ...form, cost_pcs: costPcsFromMrp(form) };
+  delete payload.medicine_code_manual;
+  if (!String(payload.medicine_code || '').trim()) {
+    payload.medicine_code = medicineCodeFromName(payload.name);
+  }
   if (typeof payload.medicine_code === 'string') {
     payload.medicine_code = payload.medicine_code.trim();
   }
@@ -142,28 +157,45 @@ export default function MedicineFormFields({
       {activeStep === 0 && (
         <Section title="Basic">
           <Grid>
-            <F label="Code *">
-              <Input value={form.medicine_code} onChange={(e) => set('medicine_code', e.target.value)} />
-              <p className="text-[10px] text-gray-500 mt-0.5">Must be unique for each medicine</p>
+            <F label="Code">
+              <Input
+                value={form.medicine_code}
+                onChange={(e) => onChange(patchMedicineForm(form, {
+                  medicine_code: e.target.value,
+                  medicine_code_manual: true,
+                }))}
+              />
+              <p className="text-[10px] text-gray-500 mt-0.5">Generated from the name. Edit it only if you need a different code.</p>
             </F>
             <F label="Name *">
               <Input
                 value={form.name}
-                onChange={(e) => set('name', e.target.value)}
+                onChange={(e) => {
+                  const name = e.target.value;
+                  if (nameReadOnly) return;
+                  if (medicineId || form.medicine_code_manual) {
+                    set('name', name);
+                    return;
+                  }
+                  onChange(patchMedicineForm(form, {
+                    name,
+                    medicine_code: medicineCodeFromName(name),
+                  }));
+                }}
                 readOnly={nameReadOnly}
                 className={nameReadOnly ? 'bg-slate-50' : undefined}
               />
             </F>
             <F label="Generic Name"><Input value={form.generic_name} onChange={(e) => set('generic_name', e.target.value)} /></F>
-            <F label="Category *">
+            <F label="Category">
               <PharmacyMasterSelectWithCreate path="categories" value={form.category_id}
                 onChange={(v) => set('category_id', v)} options={categories} onOptionsChange={setCategories}
-                placeholder="Pick category" />
+                placeholder="(none)" allowEmpty />
             </F>
-            <F label="Company">
+            <F label="Company *">
               <PharmacyMasterSelectWithCreate path="companies" value={form.company_id}
                 onChange={(v) => set('company_id', v)} options={companies} onOptionsChange={setCompanies}
-                placeholder="(none)" allowEmpty />
+                placeholder="Pick company" />
             </F>
             <F label="Salt / Composition">
               <PharmacyMasterSelectWithCreate path="salts" value={form.salt_id}

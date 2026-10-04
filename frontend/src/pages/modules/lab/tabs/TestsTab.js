@@ -10,11 +10,16 @@ import { Textarea } from '../../../../components/ui/textarea';
 import { Badge } from '../../../../components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../../../components/ui/dialog';
 import { Plus, Edit2, Trash2, Search, RefreshCw, Settings2, Loader2, Upload, Download, TestTube } from 'lucide-react';
+import { useAuth } from '../../../../contexts/AuthContext';
+import { canSeeLabTestRates, normalizeUserRoles } from '../../../../hooks/useNavigationSections';
 import { useLabFeedback } from '../useLabFeedback';
 import LabTestImportDialog from '../LabTestImportDialog';
+import { testPrice } from '../../../../utils/labPricing';
 
 export default function TestsTab() {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const showRates = canSeeLabTestRates(normalizeUserRoles(user));
   const { showFeedback, confirm, FeedbackToast, ConfirmDialogEl } = useLabFeedback();
   const [categories, setCategories] = useState([]);
   const [sampleTypes, setSampleTypes] = useState([]);
@@ -26,9 +31,11 @@ export default function TestsTab() {
   const [showDialog, setShowDialog] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [editing, setEditing] = useState(null);
+  const [partners, setPartners] = useState([]);
   const [form, setForm] = useState({
     test_code: '', name: '', description: '', category_id: '',
-    cost: '', sample_type_id: '', method: '', preparation_instructions: '',
+    cost: '', rate_b: '', sample_type_id: '', method: '', preparation_instructions: '',
+    default_fulfillment: 'in_house', default_partner_id: '', default_partner_cost: '',
   });
 
   const fetchCategories = useCallback(async () => {
@@ -67,6 +74,7 @@ export default function TestsTab() {
   useEffect(() => {
     fetchCategories();
     fetchSampleTypes();
+    axios.get('/api/lab/partners').then((res) => setPartners(res.data || [])).catch(() => {});
   }, [fetchCategories, fetchSampleTypes]);
 
   useEffect(() => { fetchTests(); }, [fetchTests]);
@@ -77,14 +85,20 @@ export default function TestsTab() {
       setForm({
         test_code: test.test_code, name: test.name,
         description: test.description || '', category_id: String(test.category_id),
-        cost: String(test.cost), sample_type_id: test.sample_type_id ? String(test.sample_type_id) : '',
+        cost: String(test.cost),
+        rate_b: String((test.rates || []).find((r) => r.code === 'B')?.amount ?? test.cost),
+        sample_type_id: test.sample_type_id ? String(test.sample_type_id) : '',
         method: test.method || '', preparation_instructions: test.preparation_instructions || '',
+        default_fulfillment: test.default_fulfillment || 'in_house',
+        default_partner_id: test.default_partner_id ? String(test.default_partner_id) : '',
+        default_partner_cost: test.default_partner_cost != null ? String(test.default_partner_cost) : '',
       });
     } else {
       setEditing(null);
       setForm({
         test_code: '', name: '', description: '', category_id: '',
-        cost: '', sample_type_id: '', method: '', preparation_instructions: '',
+        cost: '', rate_b: '', sample_type_id: '', method: '', preparation_instructions: '',
+        default_fulfillment: 'in_house', default_partner_id: '', default_partner_cost: '',
       });
     }
     setShowDialog(true);
@@ -93,10 +107,20 @@ export default function TestsTab() {
   const handleSave = async () => {
     if (!form.name.trim() || !form.test_code.trim() || !form.category_id || !form.cost) return;
     const payload = {
-      ...form,
-      category_id: parseInt(form.category_id),
+      test_code: form.test_code,
+      name: form.name,
+      description: form.description || null,
+      category_id: parseInt(form.category_id, 10),
       cost: parseFloat(form.cost),
-      sample_type_id: form.sample_type_id ? parseInt(form.sample_type_id) : null,
+      rate_b: form.rate_b === '' ? parseFloat(form.cost) : parseFloat(form.rate_b),
+      sample_type_id: form.sample_type_id ? parseInt(form.sample_type_id, 10) : null,
+      method: form.method || null,
+      preparation_instructions: form.preparation_instructions || null,
+      default_fulfillment: form.default_fulfillment || 'in_house',
+      default_partner_id: form.default_fulfillment === 'send_out' && form.default_partner_id
+        ? parseInt(form.default_partner_id, 10) : null,
+      default_partner_cost: form.default_fulfillment === 'send_out'
+        ? (parseFloat(form.default_partner_cost) || 0) : null,
     };
     try {
       if (editing) {
@@ -254,8 +278,16 @@ export default function TestsTab() {
                     </div>
                     <div className="flex items-center gap-3 text-sm text-gray-500 mt-1 flex-wrap">
                       <span>{test.category_name}</span>
-                      <span>|</span>
-                      <span>Rs. {test.cost}</span>
+                      {showRates && (
+                        <>
+                          <span>|</span>
+                          <span>A Rs. {testPrice(test, (test.rates || []).find((r) => r.code === 'A')?.rate_card_id)}</span>
+                          <span>B Rs. {testPrice(test, (test.rates || []).find((r) => r.code === 'B')?.rate_card_id)}</span>
+                        </>
+                      )}
+                      {test.default_fulfillment === 'send_out' && (
+                        <Badge variant="outline" className="text-xs">Send-out{test.default_partner_name ? ` · ${test.default_partner_name}` : ''}</Badge>
+                      )}
                       {test.sample_type_name && <><span>|</span><span>{test.sample_type_name}</span></>}
                       {test.method && <><span>|</span><span>{test.method}</span></>}
                       <span>|</span>
@@ -295,10 +327,16 @@ export default function TestsTab() {
                   placeholder="e.g. CBC" />
               </div>
               <div>
-                <Label>Cost (Rs.) *</Label>
+                <Label>Rate A (Rs.) *</Label>
                 <Input type="number" value={form.cost}
                   onChange={(e) => setForm({ ...form, cost: e.target.value })}
                   placeholder="0" />
+              </div>
+              <div>
+                <Label>Rate B (Rs.)</Label>
+                <Input type="number" value={form.rate_b}
+                  onChange={(e) => setForm({ ...form, rate_b: e.target.value })}
+                  placeholder="Same as Rate A if blank" />
               </div>
             </div>
             <div>
@@ -349,6 +387,38 @@ export default function TestsTab() {
                 placeholder="Optional description" rows={2} />
             </div>
             <div>
+              <Label>Where it is processed</Label>
+              <Select value={form.default_fulfillment} onValueChange={(v) => setForm({ ...form, default_fulfillment: v })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="in_house">In this lab</SelectItem>
+                  <SelectItem value="send_out">Send to a partner lab</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {form.default_fulfillment === 'send_out' && (
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label>Partner lab *</Label>
+                  <Select value={form.default_partner_id || '_none'} onValueChange={(v) => setForm({ ...form, default_partner_id: v === '_none' ? '' : v })}>
+                    <SelectTrigger><SelectValue placeholder="Select partner" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="_none">Select partner</SelectItem>
+                      {partners.filter((p) => p.partner_role !== 'receive_in').map((p) => (
+                        <SelectItem key={p.id} value={String(p.id)}>{p.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Their charge (Rs.)</Label>
+                  <Input type="number" value={form.default_partner_cost}
+                    onChange={(e) => setForm({ ...form, default_partner_cost: e.target.value })}
+                    placeholder="What we pay them" />
+                </div>
+              </div>
+            )}
+            <div>
               <Label>Preparation Instructions</Label>
               <Textarea value={form.preparation_instructions}
                 onChange={(e) => setForm({ ...form, preparation_instructions: e.target.value })}
@@ -357,7 +427,7 @@ export default function TestsTab() {
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => setShowDialog(false)}>Cancel</Button>
               <Button onClick={handleSave}
-                disabled={!form.name.trim() || !form.test_code.trim() || !form.category_id || !form.cost}>
+                disabled={!form.name.trim() || !form.test_code.trim() || !form.category_id || !form.cost || (form.default_fulfillment === 'send_out' && !form.default_partner_id)}>
                 {editing ? 'Update' : 'Create'}
               </Button>
             </div>

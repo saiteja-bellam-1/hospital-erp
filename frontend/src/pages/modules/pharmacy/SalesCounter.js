@@ -39,6 +39,17 @@ import FormNavContainer from '../../../components/FormNavContainer';
 import { NAV_SKIP_ATTR, navCellProps } from '../../../utils/formNavigation';
 import { groupSaleItemsForCart, lineHasStockIssue, lineEditStoreStock } from './saleEditUtils';
 
+function medicineNeedsDoctor(medicine) {
+  if (!medicine) return false;
+  return !!(
+    medicine.is_schedule_h
+    || medicine.is_schedule_h1
+    || medicine.is_narcotic
+    || medicine.is_tramadol
+    || medicine.is_controlled
+  );
+}
+
 const BARCODE_DIGIT_MIN = 12;
 
 function barcodeDigitCount(value) {
@@ -493,7 +504,8 @@ export default function SalesCounter() {
       batch_number: nearest?.batch_number || null,
       barcode_scanned: barcodeScanned,
     }]);
-    if (batches.length > 0 && !nearest) {
+    const specificBatch = Boolean(batchFromScan) || (med.matched_as === 'batch' && med.batch_id);
+    if (batches.length > 0 && !specificBatch) {
       setBatchPick({ lineIndex, medicine: med, batches, loading: false, rateOnly: false });
     }
     setLookupQ(''); setLookupResults([]);
@@ -670,6 +682,14 @@ export default function SalesCounter() {
         variant: 'destructive',
         title: 'Insufficient stock at this store',
         description: `${stockIssues[0].ln.medicine.name}: need ${stockIssues[0].need}, have ${stockIssues[0].avail}`,
+      });
+      return false;
+    }
+    if (items.some((ln) => medicineNeedsDoctor(ln.medicine)) && !String(customer.doctor_name || '').trim()) {
+      setPatientPanelOpen(true);
+      toast({
+        variant: 'destructive',
+        title: 'Doctor name is required for scheduled drugs',
       });
       return false;
     }
@@ -1130,7 +1150,17 @@ export default function SalesCounter() {
             <div className="col-span-2"><Label className="text-xs">Patient Name</Label><Input className={compactInput} value={customer.patient_name} onChange={e => setC('patient_name', e.target.value)} /></div>
             <div className="col-span-2"><Label className="text-xs">Address</Label><Input className={compactInput} value={customer.patient_address} onChange={e => setC('patient_address', e.target.value)} /></div>
             <div><Label className="text-xs">Doctor #</Label><Input className={compactInput} value={customer.doctor_number} onChange={e => setC('doctor_number', e.target.value)} /></div>
-            <div><Label className="text-xs">Doctor Name</Label><Input className={compactInput} value={customer.doctor_name} onChange={e => setC('doctor_name', e.target.value)} /></div>
+            <div>
+              <Label className="text-xs">Doctor Name{items.some((ln) => medicineNeedsDoctor(ln.medicine)) ? ' *' : ''}</Label>
+              <Input
+                className={`${compactInput}${items.some((ln) => medicineNeedsDoctor(ln.medicine)) && !String(customer.doctor_name || '').trim() ? ' border-red-300' : ''}`}
+                value={customer.doctor_name}
+                onChange={e => setC('doctor_name', e.target.value)}
+              />
+              {items.some((ln) => medicineNeedsDoctor(ln.medicine)) && (
+                <p className="text-[10px] text-amber-700 mt-0.5">Required for scheduled drugs on this sale.</p>
+              )}
+            </div>
             <div>
               <Label className="text-xs">Payment</Label>
               <Select value={customer.payment_type} onValueChange={setPaymentType}>

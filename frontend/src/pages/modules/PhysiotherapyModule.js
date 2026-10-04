@@ -12,6 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { useToast } from '../../hooks/use-toast';
 import { usePhysioPermissions } from '../../hooks/usePhysioPermissions';
 import PatientSearchPicker from '../../components/PatientSearchPicker';
+import { patientReferralName } from '../../utils/patientReferral';
 import { printPdfFromUrl } from '../../utils/printPdf';
 import {
   Package, Plus, RefreshCw,
@@ -834,7 +835,7 @@ function BookDialog({ open, onOpenChange, onSaved, therapists, services, initial
       appointment_date: todayISO(),
       appointment_time: '10:00',
       session_type: 'treatment',
-      referral_source: '',
+      referral_source: patientReferralName(p),
       chief_complaint: '',
       is_walk_in: false,
       package_id: pkgId,
@@ -923,7 +924,10 @@ function BookDialog({ open, onOpenChange, onSaved, therapists, services, initial
       <DialogContent className="max-w-lg">
         <DialogHeader><DialogTitle>Book session</DialogTitle></DialogHeader>
         <div className="space-y-3 max-h-[70vh] overflow-y-auto">
-          <div><Label>Patient</Label><PatientSearchPicker value={patient} onChange={setPatient} /></div>
+          <div><Label>Patient</Label><PatientSearchPicker value={patient} onChange={(next) => {
+            setPatient(next);
+            setForm((prev) => ({ ...prev, referral_source: patientReferralName(next) }));
+          }} /></div>
           <div>
             <Label>Billing</Label>
             <Select value={form.billing_mode} onValueChange={(v) => setForm({
@@ -1031,7 +1035,18 @@ function BookDialog({ open, onOpenChange, onSaved, therapists, services, initial
               </SelectContent>
             </Select>
           </div>
-          <div><Label>Referral source</Label><Input value={form.referral_source} onChange={(e) => setForm({ ...form, referral_source: e.target.value })} placeholder="Self / Doctor / Hospital" /></div>
+          <div>
+            <Label>Referral source</Label>
+            <Input
+              value={form.referral_source}
+              onChange={(e) => setForm({ ...form, referral_source: e.target.value })}
+              placeholder="Self / Doctor / Hospital"
+              disabled={!!patientReferralName(patient)}
+            />
+            {!!patientReferralName(patient) && (
+              <p className="text-xs text-muted-foreground mt-1">Saved on this patient.</p>
+            )}
+          </div>
           <div><Label>Chief complaint</Label><Textarea value={form.chief_complaint} onChange={(e) => setForm({ ...form, chief_complaint: e.target.value })} /></div>
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={form.is_walk_in} onChange={(e) => setForm({ ...form, is_walk_in: e.target.checked })} />

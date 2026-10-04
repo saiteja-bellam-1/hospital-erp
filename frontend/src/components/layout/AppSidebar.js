@@ -48,13 +48,10 @@ export default function AppSidebar({
         style={{ borderBottom: '1px solid hsl(var(--sidebar-border))' }}
       >
         <Link to="/dashboard" className="flex items-center gap-2" title="Dashboard" aria-label="Dashboard">
-          <HospitalLogo
-            variant="sidebar"
-            style={{ filter: 'brightness(1.1) contrast(1.05)' }}
-          />
+          <HospitalLogo variant="sidebar" />
         </Link>
         <button
-          className={`${hideOnDesktop ? '' : 'lg:hidden '}p-1 rounded-md hover:bg-white/10 transition-colors`}
+          className={`${hideOnDesktop ? '' : 'lg:hidden '}p-1 rounded-md transition-colors`}
           style={{ color: 'hsl(var(--sidebar-fg))' }}
           onClick={onClose}
           type="button"
@@ -86,7 +83,7 @@ export default function AppSidebar({
                   style={{ color: 'hsl(var(--sidebar-muted))' }}
                   onMouseEnter={(e) => {
                     e.currentTarget.style.background = 'hsl(var(--sidebar-hover))';
-                    e.currentTarget.style.color = '#fff';
+                    e.currentTarget.style.color = 'hsl(var(--sidebar-fg))';
                   }}
                   onMouseLeave={(e) => {
                     e.currentTarget.style.background = 'transparent';
@@ -121,7 +118,7 @@ export default function AppSidebar({
                         onMouseEnter={(e) => {
                           if (!active) {
                             e.currentTarget.style.background = 'hsl(var(--sidebar-hover))';
-                            e.currentTarget.style.color = '#fff';
+                            e.currentTarget.style.color = 'hsl(var(--sidebar-fg))';
                           }
                         }}
                         onMouseLeave={(e) => {
@@ -158,7 +155,7 @@ export default function AppSidebar({
           style={{ color: 'hsl(var(--sidebar-fg))' }}
           onMouseEnter={(e) => {
             e.currentTarget.style.background = 'hsl(var(--sidebar-hover))';
-            e.currentTarget.style.color = '#fff';
+            e.currentTarget.style.color = 'hsl(var(--sidebar-fg))';
           }}
           onMouseLeave={(e) => {
             e.currentTarget.style.background = 'transparent';
@@ -206,8 +203,8 @@ export default function AppSidebar({
           className="flex items-center gap-3 px-3 py-2 rounded-lg text-[13px] font-medium transition-all duration-150 w-full"
           style={{ color: 'hsl(var(--sidebar-fg))' }}
           onMouseEnter={(e) => {
-            e.currentTarget.style.background = 'hsla(0, 70%, 50%, 0.25)';
-            e.currentTarget.style.color = '#fca5a5';
+            e.currentTarget.style.background = 'hsl(0 70% 96%)';
+            e.currentTarget.style.color = 'hsl(0 72% 42%)';
           }}
           onMouseLeave={(e) => {
             e.currentTarget.style.background = 'transparent';
@@ -234,7 +231,7 @@ export default function AppSidebar({
             {userInitials}
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium truncate" style={{ color: '#fff' }}>
+            <p className="text-sm font-medium truncate" style={{ color: 'hsl(var(--foreground))' }}>
               {user?.full_name}
             </p>
             <p className="text-[11px] truncate" style={{ color: 'hsl(var(--sidebar-muted))' }}>

@@ -8,14 +8,71 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../../components/ui/dialog';
 import { Textarea } from '../../../components/ui/textarea';
 import { useToast } from '../../../hooks/use-toast';
+import { useAuth } from '../../../contexts/AuthContext';
+import { normalizeUserRoles } from '../../../hooks/useNavigationSections';
 import axios from 'axios';
 import {
   Users, Plus, Search, Edit2, Trash2, Phone, MapPin, Eye, Loader2,
-  DollarSign, ArrowLeft, Stethoscope, TestTube
+  DollarSign, ArrowLeft, Stethoscope, TestTube, Bed, Pill
 } from 'lucide-react';
+
+const EMPTY_FORM = {
+  name: '', phone: '', village: '', mandal: '', district: '',
+  op_commission_pct: '0', lab_commission_pct: '0', ip_commission_pct: '0', pharmacy_commission_pct: '0',
+};
+
+function errorMessage(err, fallback) {
+  const detail = err.response?.data?.detail;
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail) && detail[0]?.msg) return detail[0].msg;
+  return fallback;
+}
+
+function parseRate(value) {
+  if (value === '' || value === null || value === undefined) return 0;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0 || n > 100) return null;
+  return Math.round(n * 100) / 100;
+}
+
+function BillSection({ title, icon: Icon, rows, emptyLabel, formatCurrency, formatDate }) {
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base flex items-center gap-2">
+          <Icon className="h-4 w-4" /> {title} ({rows.length})
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        {rows.length === 0 ? (
+          <p className="text-sm text-gray-400 text-center py-4">{emptyLabel}</p>
+        ) : (
+          <div className="border rounded-lg divide-y max-h-64 overflow-y-auto">
+            {rows.map(b => (
+              <div key={`${b.type}-${b.id}`} className="p-2.5 flex items-center justify-between text-sm gap-3">
+                <div className="min-w-0">
+                  <p className="font-medium truncate">{b.patient_name}</p>
+                  <p className="text-xs text-gray-400 truncate">
+                    {[b.detail, b.reference, formatDate(b.date)].filter(Boolean).join(' | ')}
+                  </p>
+                </div>
+                <div className="text-right shrink-0">
+                  <p className="font-semibold">{formatCurrency(b.amount)}</p>
+                  <Badge className={`text-[10px] ${b.status === 'paid' || b.status === 'completed' ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'}`}>{b.status}</Badge>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 const ReferralManagementPage = () => {
   const { toast } = useToast();
+  const { user } = useAuth();
+  const canEditReferral = normalizeUserRoles(user).some((role) => role === 'hospital_admin' || role === 'super_admin');
   const token = localStorage.getItem('token');
   const headers = { Authorization: `Bearer ${token}` };
 
@@ -26,7 +83,7 @@ const ReferralManagementPage = () => {
   // Form dialog
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
-  const [form, setForm] = useState({ name: '', phone: '', village: '', mandal: '', district: '' });
+  const [form, setForm] = useState(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
 
   // Detail view
@@ -56,30 +113,64 @@ const ReferralManagementPage = () => {
   const openForm = (ref = null) => {
     if (ref) {
       setEditing(ref);
-      setForm({ name: ref.name, phone: ref.phone || '', village: ref.village || '', mandal: ref.mandal || '', district: ref.district || '' });
+      setForm({
+        name: ref.name,
+        phone: ref.phone || '',
+        village: ref.village || '',
+        mandal: ref.mandal || '',
+        district: ref.district || '',
+        op_commission_pct: String(ref.op_commission_pct ?? 0),
+        lab_commission_pct: String(ref.lab_commission_pct ?? 0),
+        ip_commission_pct: String(ref.ip_commission_pct ?? 0),
+        pharmacy_commission_pct: String(ref.pharmacy_commission_pct ?? 0),
+      });
     } else {
       setEditing(null);
-      setForm({ name: '', phone: '', village: '', mandal: '', district: '' });
+      setForm(EMPTY_FORM);
     }
     setShowForm(true);
   };
 
+  const referralPayload = () => {
+    const op = parseRate(form.op_commission_pct);
+    const lab = parseRate(form.lab_commission_pct);
+    const ip = parseRate(form.ip_commission_pct);
+    const pharmacy = parseRate(form.pharmacy_commission_pct);
+    if ([op, lab, ip, pharmacy].some((n) => n === null)) return null;
+    return {
+      name: form.name.trim(),
+      phone: form.phone || null,
+      village: form.village || null,
+      mandal: form.mandal || null,
+      district: form.district || null,
+      op_commission_pct: op,
+      lab_commission_pct: lab,
+      ip_commission_pct: ip,
+      pharmacy_commission_pct: pharmacy,
+    };
+  };
+
   const saveReferral = async () => {
     if (!form.name.trim()) return;
+    const payload = referralPayload();
+    if (!payload) {
+      toast({ variant: 'destructive', title: 'Invalid rate', description: 'Commission percents must be between 0 and 100.' });
+      return;
+    }
     setSaving(true);
     try {
       if (editing) {
-        await axios.put(`/api/referrals/${editing.id}`, form, { headers });
+        await axios.put(`/api/referrals/${editing.id}`, payload, { headers });
         toast({ title: 'Updated' });
       } else {
-        await axios.post('/api/referrals', form, { headers });
+        await axios.post('/api/referrals', payload, { headers });
         toast({ title: 'Added' });
       }
       setShowForm(false);
       fetchReferrals();
       if (selectedReferral && editing?.id === selectedReferral.id) fetchDetails(editing.id);
     } catch (err) {
-      toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed to save' });
+      toast({ variant: 'destructive', title: 'Error', description: errorMessage(err, 'Failed to save') });
     } finally { setSaving(false); }
   };
 
@@ -111,13 +202,25 @@ const ReferralManagementPage = () => {
       const res = await axios.get(`/api/referrals/${id}/details`, { headers });
       setDetails(res.data);
     } catch {
+      setSelectedReferral(null);
       toast({ variant: 'destructive', title: 'Error', description: 'Failed to load details' });
     } finally { setDetailsLoading(false); }
   };
 
   const openDetails = (ref) => {
     setSelectedReferral(ref);
+    setDetails(null);
     fetchDetails(ref.id);
+  };
+
+  const openPayDialog = () => {
+    const due = Math.max(0, Number(details?.summary?.commission_balance) || 0);
+    setCommForm({
+      amount: due > 0 ? String(due) : '',
+      payment_method: 'cash',
+      notes: '',
+    });
+    setShowCommForm(true);
   };
 
   const addCommission = async () => {
@@ -134,7 +237,7 @@ const ReferralManagementPage = () => {
       setCommForm({ amount: '', payment_method: 'cash', notes: '' });
       fetchDetails(selectedReferral.id);
     } catch (err) {
-      toast({ variant: 'destructive', title: 'Error', description: err.response?.data?.detail || 'Failed' });
+      toast({ variant: 'destructive', title: 'Error', description: errorMessage(err, 'Failed') });
     } finally { setCommSaving(false); }
   };
 
@@ -163,11 +266,19 @@ const ReferralManagementPage = () => {
       (r.mandal || '').toLowerCase().includes(q) || (r.phone || '').includes(q);
   });
 
-  if (loading) return <div className="flex items-center justify-center p-12"><Loader2 className="w-6 h-6 animate-spin" /></div>;
+  if (loading || (selectedReferral && !details)) {
+    return <div className="flex items-center justify-center p-12"><Loader2 className="w-6 h-6 animate-spin" /></div>;
+  }
 
   // ===== DETAIL VIEW =====
   if (selectedReferral && details) {
     const s = details.summary;
+    const serviceCards = [
+      { label: 'OP', count: s.total_consultations, revenue: s.op_revenue, pct: s.op_commission_pct, commission: s.op_commission },
+      { label: 'Lab', count: s.total_lab_orders, revenue: s.lab_revenue, pct: s.lab_commission_pct, commission: s.lab_commission },
+      { label: 'IP', count: s.total_ip_bills, revenue: s.ip_revenue, pct: s.ip_commission_pct, commission: s.ip_commission },
+      { label: 'Pharmacy', count: s.total_pharmacy_sales, revenue: s.pharmacy_revenue, pct: s.pharmacy_commission_pct, commission: s.pharmacy_commission },
+    ];
     return (
       <div className="space-y-6">
         <div className="flex items-center gap-3">
@@ -183,97 +294,52 @@ const ReferralManagementPage = () => {
           </div>
         </div>
 
-        {/* Summary Cards */}
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <p className="text-sm text-gray-500">
+          Bills are included for patients registered with this referral. Lab tests and pharmacy sales already on an inpatient bill are counted under IP only.
+        </p>
+
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          {serviceCards.map((card) => (
+            <Card key={card.label}><CardContent className="pt-4 pb-3">
+              <p className="text-xs text-gray-500">{card.label} · {card.count}</p>
+              <p className="text-lg font-bold">{formatCurrency(card.revenue)}</p>
+              <p className="text-xs text-gray-500">{card.pct}% → {formatCurrency(card.commission)}</p>
+            </CardContent></Card>
+          ))}
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <Card><CardContent className="pt-4 pb-3 text-center">
-            <p className="text-xs text-gray-500">Consultations</p>
-            <p className="text-xl font-bold">{s.total_consultations}</p>
+            <p className="text-xs text-gray-500">Commission earned</p>
+            <p className="text-xl font-bold text-blue-600">{formatCurrency(s.total_commission_earned)}</p>
           </CardContent></Card>
           <Card><CardContent className="pt-4 pb-3 text-center">
-            <p className="text-xs text-gray-500">Lab Orders</p>
-            <p className="text-xl font-bold">{s.total_lab_orders}</p>
-          </CardContent></Card>
-          <Card><CardContent className="pt-4 pb-3 text-center">
-            <p className="text-xs text-gray-500">Total Revenue</p>
-            <p className="text-xl font-bold text-blue-600">{formatCurrency(s.total_revenue)}</p>
-          </CardContent></Card>
-          <Card><CardContent className="pt-4 pb-3 text-center">
-            <p className="text-xs text-gray-500">Commission Paid</p>
+            <p className="text-xs text-gray-500">Paid out</p>
             <p className="text-xl font-bold text-green-600">{formatCurrency(s.total_commission_paid)}</p>
           </CardContent></Card>
           <Card><CardContent className="pt-4 pb-3 text-center">
-            <p className="text-xs text-gray-500">Balance</p>
-            <p className="text-xl font-bold text-orange-600">{formatCurrency(s.commission_balance)}</p>
+            <p className="text-xs text-gray-500">Balance due</p>
+            <p className={`text-xl font-bold ${s.commission_balance < 0 ? 'text-red-600' : 'text-orange-600'}`}>{formatCurrency(s.commission_balance)}</p>
           </CardContent></Card>
         </div>
 
-        {/* Consultations */}
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base flex items-center gap-2">
-              <Stethoscope className="h-4 w-4" /> Consultation Bills ({details.consultations.length})
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {details.consultations.length === 0 ? (
-              <p className="text-sm text-gray-400 text-center py-4">No consultation bills</p>
-            ) : (
-              <div className="border rounded-lg divide-y max-h-64 overflow-y-auto">
-                {details.consultations.map(b => (
-                  <div key={b.id} className="p-2.5 flex items-center justify-between text-sm">
-                    <div>
-                      <p className="font-medium">{b.patient_name}</p>
-                      <p className="text-xs text-gray-400">{b.reference} | {b.doctor_name} | {formatDate(b.date)}</p>
-                    </div>
-                    <div className="text-right">
-                      <p className="font-semibold">{formatCurrency(b.amount)}</p>
-                      <Badge className={`text-[10px] ${b.status === 'paid' ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'}`}>{b.status}</Badge>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
+        <BillSection title="OP consultations" icon={Stethoscope} rows={details.consultations || []}
+          emptyLabel="No outpatient bills" formatCurrency={formatCurrency} formatDate={formatDate} />
+        <BillSection title="Lab orders" icon={TestTube} rows={details.lab_orders || []}
+          emptyLabel="No lab bills" formatCurrency={formatCurrency} formatDate={formatDate} />
+        <BillSection title="Inpatient bills" icon={Bed} rows={details.inpatient_bills || []}
+          emptyLabel="No inpatient bills" formatCurrency={formatCurrency} formatDate={formatDate} />
+        <BillSection title="Pharmacy sales" icon={Pill} rows={details.pharmacy_sales || []}
+          emptyLabel="No pharmacy sales" formatCurrency={formatCurrency} formatDate={formatDate} />
 
-        {/* Lab Orders */}
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base flex items-center gap-2">
-              <TestTube className="h-4 w-4" /> Lab Order Bills ({details.lab_orders.length})
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {details.lab_orders.length === 0 ? (
-              <p className="text-sm text-gray-400 text-center py-4">No lab order bills</p>
-            ) : (
-              <div className="border rounded-lg divide-y max-h-64 overflow-y-auto">
-                {details.lab_orders.map(b => (
-                  <div key={b.id} className="p-2.5 flex items-center justify-between text-sm">
-                    <div>
-                      <p className="font-medium">{b.patient_name}</p>
-                      <p className="text-xs text-gray-400">{b.test_name} | {b.reference} | {formatDate(b.date)}</p>
-                    </div>
-                    <div className="text-right">
-                      <p className="font-semibold">{formatCurrency(b.amount)}</p>
-                      <Badge className={`text-[10px] ${b.status === 'paid' ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'}`}>{b.status}</Badge>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Commission Payments */}
         <Card>
           <CardHeader className="pb-2">
             <div className="flex items-center justify-between">
               <CardTitle className="text-base flex items-center gap-2">
-                <DollarSign className="h-4 w-4" /> Commission Payments ({details.commissions.length})
+                <DollarSign className="h-4 w-4" /> Commission payouts ({details.commissions.length})
               </CardTitle>
-              <Button size="sm" onClick={() => setShowCommForm(true)}>
-                <Plus className="h-3 w-3 mr-1" /> Pay Commission
+              <Button size="sm" onClick={openPayDialog}>
+                <Plus className="h-3 w-3 mr-1" /> Pay commission
               </Button>
             </div>
           </CardHeader>
@@ -306,6 +372,9 @@ const ReferralManagementPage = () => {
           <DialogContent className="max-w-sm">
             <DialogHeader><DialogTitle>Pay Commission — {selectedReferral.name}</DialogTitle></DialogHeader>
             <div className="space-y-3">
+              <p className="text-sm text-gray-500">
+                Balance due {formatCurrency(details.summary.commission_balance)}. The amount is filled with that balance and can be changed for a partial payout.
+              </p>
               <div>
                 <Label>Amount *</Label>
                 <Input type="number" step="0.01" value={commForm.amount}
@@ -348,7 +417,7 @@ const ReferralManagementPage = () => {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">Referral Management</h1>
-          <p className="text-muted-foreground text-sm">Manage referrals, view bills, and track commissions</p>
+          <p className="text-muted-foreground text-sm">Manage referrals, set commission rates, and record payouts</p>
         </div>
         <Button onClick={() => openForm()}>
           <Plus className="h-4 w-4 mr-1" /> Add Referral
@@ -378,18 +447,23 @@ const ReferralManagementPage = () => {
                 {!ref.is_active && <Badge variant="secondary">Inactive</Badge>}
               </div>
               {(ref.village || ref.mandal || ref.district) && (
-                <p className="text-xs text-gray-500 flex items-center gap-1 mb-3">
+                <p className="text-xs text-gray-500 flex items-center gap-1 mb-1">
                   <MapPin className="h-3 w-3 flex-shrink-0" />
                   {[ref.village, ref.mandal, ref.district].filter(Boolean).join(', ')}
                 </p>
               )}
+              <p className="text-xs text-gray-500 mb-3">
+                OP {ref.op_commission_pct ?? 0}% · Lab {ref.lab_commission_pct ?? 0}% · IP {ref.ip_commission_pct ?? 0}% · Pharmacy {ref.pharmacy_commission_pct ?? 0}%
+              </p>
               <div className="flex gap-1.5" onClick={(e) => e.stopPropagation()}>
                 <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => openDetails(ref)}>
                   <Eye className="h-3 w-3 mr-1" /> View
                 </Button>
-                <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => openForm(ref)}>
-                  <Edit2 className="h-3 w-3 mr-1" /> Edit
-                </Button>
+                {canEditReferral && (
+                  <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => openForm(ref)}>
+                    <Edit2 className="h-3 w-3 mr-1" /> Edit
+                  </Button>
+                )}
                 {ref.is_active ? (
                   <Button size="sm" variant="ghost" className="h-7 text-xs text-red-500" onClick={() => deleteReferral(ref.id)}>
                     <Trash2 className="h-3 w-3 mr-1" /> Deactivate
@@ -431,6 +505,21 @@ const ReferralManagementPage = () => {
               <div><Label>Mandal</Label><Input value={form.mandal} onChange={(e) => setForm({ ...form, mandal: e.target.value })} placeholder="Mandal" /></div>
               <div><Label>District</Label><Input value={form.district} onChange={(e) => setForm({ ...form, district: e.target.value })} placeholder="District" /></div>
             </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {[
+                ['op_commission_pct', 'OP %'],
+                ['lab_commission_pct', 'Lab %'],
+                ['ip_commission_pct', 'IP %'],
+                ['pharmacy_commission_pct', 'Pharmacy %'],
+              ].map(([key, label]) => (
+                <div key={key}>
+                  <Label>{label}</Label>
+                  <Input type="number" min="0" max="100" step="0.01" value={form[key]}
+                    onChange={(e) => setForm({ ...form, [key]: e.target.value })} />
+                </div>
+              ))}
+            </div>
+            <p className="text-xs text-gray-500">Percent of each bill for patients registered with this referral. Patients keep the name saved at registration, so renaming this referral changes which patients match.</p>
             <div className="flex justify-end gap-2 pt-2">
               <Button variant="outline" onClick={() => setShowForm(false)}>Cancel</Button>
               <Button onClick={saveReferral} disabled={!form.name.trim() || saving}>

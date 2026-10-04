@@ -36,7 +36,7 @@ export default function AppHeader({
   const idleStyle = { color: 'hsl(var(--sidebar-fg))' };
   const onIdleEnter = (e) => {
     e.currentTarget.style.background = 'hsl(var(--sidebar-hover))';
-    e.currentTarget.style.color = '#fff';
+    e.currentTarget.style.color = 'hsl(var(--sidebar-fg))';
   };
   const onIdleLeave = (e, active) => {
     if (active) return;
@@ -75,10 +75,7 @@ export default function AppHeader({
           title="Dashboard"
           aria-label="Dashboard"
         >
-          <HospitalLogo
-            variant="header"
-            style={{ filter: 'brightness(1.1) contrast(1.05)' }}
-          />
+          <HospitalLogo variant="header" />
         </Link>
 
         <nav className="header-nav hidden lg:flex items-center gap-0.5 flex-1 min-w-0 ml-2 overflow-x-auto">
@@ -137,7 +134,7 @@ export default function AppHeader({
               {userInitials}
             </div>
             <div className="hidden xl:block min-w-0 max-w-[120px]">
-              <p className="text-sm font-medium truncate" style={{ color: '#fff' }}>
+              <p className="text-sm font-medium truncate" style={{ color: 'hsl(var(--foreground))' }}>
                 {user?.full_name}
               </p>
               <p className="text-[11px] truncate" style={{ color: 'hsl(var(--sidebar-muted))' }}>
@@ -152,8 +149,8 @@ export default function AppHeader({
             className="p-2 rounded-lg transition-colors"
             style={{ color: 'hsl(var(--sidebar-fg))' }}
             onMouseEnter={(e) => {
-              e.currentTarget.style.background = 'hsla(0, 70%, 50%, 0.25)';
-              e.currentTarget.style.color = '#fca5a5';
+              e.currentTarget.style.background = 'hsl(0 70% 96%)';
+              e.currentTarget.style.color = 'hsl(0 72% 42%)';
             }}
             onMouseLeave={(e) => {
               e.currentTarget.style.background = 'transparent';
